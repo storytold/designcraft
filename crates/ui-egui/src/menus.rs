@@ -1780,7 +1780,9 @@ fn parse_shortcut(sc: &str) -> Option<(egui::Modifiers, egui::Key)> {
 
 /// Global keyboard shortcuts: menu commands and single-key tool shortcuts.
 pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
-    if ctx.egui_wants_keyboard_input() || app.ui.dialog.is_some() || app.ui.palette.is_some() {
+    // Only a focused text field takes the keys: the canvas (or a button) having focus after a click
+    // must not swallow tool shortcuts until Esc clears it.
+    if ctx.text_edit_focused() || app.ui.dialog.is_some() || app.ui.palette.is_some() {
         return;
     }
     let typing = app.session.wants_text();
@@ -2116,6 +2118,57 @@ mod tests {
         );
         assert!(app.power_zoom.is_none());
         assert!((app.view().unwrap().zoom - z0).abs() < 1e-9, "back at the zoom it started from");
+    }
+
+    #[test]
+    fn tool_shortcuts_work_after_drawing_on_the_canvas() {
+        // Clicking the canvas gives it keyboard focus; single-key tool shortcuts must still switch
+        // tools without pressing Esc first (#1).
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let key = |k: egui::Key| {
+            vec![
+                egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() },
+                egui::Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() },
+            ]
+        };
+        let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        frame(&mut app, key(egui::Key::F));
+        assert_eq!(app.session.tool_id(), "rectangleFrame");
+        // Draw a frame.
+        let a = app.canvas_rect.unwrap().center();
+        let b = a + egui::vec2(120.0, 80.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(a), button(a, true)]);
+        for i in 1..=4 {
+            frame(&mut app, vec![egui::Event::PointerMoved(a + (b - a) * (i as f32 / 4.0))]);
+        }
+        frame(&mut app, vec![button(b, false)]);
+        frame(&mut app, vec![]);
+        assert!(app.session.active().is_some_and(|d| !d.selection.items.is_empty()), "drew a frame");
+        frame(&mut app, key(egui::Key::V));
+        assert_eq!(app.session.tool_id(), "selection", "V switches tools straight after drawing");
+        frame(&mut app, key(egui::Key::F));
+        assert_eq!(app.session.tool_id(), "rectangleFrame");
     }
 
     #[test]

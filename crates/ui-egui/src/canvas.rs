@@ -1317,7 +1317,7 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     let Some(v) = app.view().copied() else { return };
     let xf = Xf::new(rect, &v);
     let wants_text = app.session.wants_text();
-    let space = ui.input(|i| i.key_down(egui::Key::Space)) && !wants_text && !ui.ctx().egui_wants_keyboard_input();
+    let space = ui.input(|i| i.key_down(egui::Key::Space)) && !wants_text && !ui.ctx().text_edit_focused();
     // Scroll / zoom.
     if resp.hovered() {
         let (scroll, zoom_delta, m, hover) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers, i.pointer.hover_pos()));
@@ -1415,7 +1415,7 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
         resp.request_focus();
     }
     // Keyboard for the active tool.
-    if ui.ctx().egui_wants_keyboard_input() && !resp.has_focus() {
+    if ui.ctx().text_edit_focused() && !resp.has_focus() {
         return;
     }
     let evs = ui.input(|i| i.events.clone());
