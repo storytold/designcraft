@@ -865,6 +865,7 @@ dependencies = [
  "muda",
  "rfd",
  "serde_json",
+ "winit",
  "winresource",
 ]
 
