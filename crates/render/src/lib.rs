@@ -46,7 +46,7 @@ pub struct Rendered {
 impl Rendered {
     pub fn to_straight(&self) -> Vec<u8> {
         let mut out = self.pixels.clone();
-        for px in out.chunks_exact_mut(4) {
+        for px in out.as_chunks_mut::<4>().0 {
             let a = px[3] as u32;
             if a != 0 && a != 255 {
                 for c in &mut px[..3] {
@@ -65,7 +65,9 @@ impl Rendered {
     pub fn to_jpeg(&self, quality: u8) -> Vec<u8> {
         let rgba = self.to_straight();
         let rgb: Vec<u8> = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| {
                 let a = p[3] as u32;
                 let mix = |c: u8| ((c as u32 * a + 255 * (255 - a)) / 255) as u8;
@@ -928,7 +930,7 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
     }
     if designcraft_images::is_svg(bytes) {
         let (px, w, h) = designcraft_images::render_svg(bytes, 3000)?;
-        let data = px.chunks_exact(4).map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect();
+        let data = px.as_chunks::<4>().0.iter().map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect();
         return Some(Pixmap::from_parts(data, w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
     }
     let img = designcraft_images::decode_rgba(bytes)?;
@@ -1033,7 +1035,7 @@ pub fn render_pdf_page(bytes: &[u8], page: usize, max_side: u32) -> Option<Pixma
     let pm = hayro::render(p, &hayro::RenderCache::new(), &hayro::hayro_interpret::InterpreterSettings::default(), &rs);
     let (pw, ph) = (pm.width(), pm.height());
     let data: Vec<vello_cpu::color::PremulRgba8> =
-        pm.data_as_u8_slice().chunks_exact(4).map(|c| vello_cpu::color::PremulRgba8 { r: c[0], g: c[1], b: c[2], a: c[3] }).collect();
+        pm.data_as_u8_slice().as_chunks::<4>().0.iter().map(|c| vello_cpu::color::PremulRgba8 { r: c[0], g: c[1], b: c[2], a: c[3] }).collect();
     Some(Pixmap::from_parts(data, pw, ph))
 }
 
@@ -1066,7 +1068,7 @@ pub fn pdf_page_box(bytes: &[u8], page: usize, kind: &str) -> Option<(f64, f64, 
 /// deficiencies) through the active colour settings' proof table.
 pub fn proof_view(img: &mut Rendered, setup: &designcraft_color::cms::ProofSetup) {
     let lut = designcraft_color::cms::active().proof_lut(setup);
-    for px in img.pixels.chunks_exact_mut(4) {
+    for px in img.pixels.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a == 0 {
             continue;
@@ -1091,7 +1093,7 @@ fn blend_space_view(img: &mut Rendered, area: Rect) {
     let (x1, y1) = ((area.x1.ceil() as i64).clamp(0, w), (area.y1.ceil() as i64).clamp(0, h));
     for y in y0..y1 {
         let row = &mut img.pixels[((y * w + x0) * 4) as usize..((y * w + x1) * 4) as usize];
-        for px in row.chunks_exact_mut(4) {
+        for px in row.as_chunks_mut::<4>().0 {
             let a = px[3];
             if a == 0 {
                 continue;
@@ -1107,7 +1109,7 @@ fn blend_space_view(img: &mut Rendered, area: Rect) {
 }
 
 pub fn separation_view(img: &mut Rendered, plate: Option<u8>, ink_limit: Option<f32>) {
-    for px in img.pixels.chunks_exact_mut(4) {
+    for px in img.pixels.as_chunks_mut::<4>().0 {
         let a = px[3] as f32 / 255.0;
         // Composite over paper white, then separate.
         let ch = |v: u8| (v as f32 / 255.0) + (1.0 - a);

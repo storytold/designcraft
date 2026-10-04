@@ -75,8 +75,12 @@ pub fn tagged_text(doc: &Document, story: &Story) -> String {
 fn decode(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
         let le = bytes[0] == 0xFF;
-        let units: Vec<u16> =
-            bytes[2..].chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        let units: Vec<u16> = bytes[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+            .collect();
         return String::from_utf16_lossy(&units);
     }
     String::from_utf8_lossy(bytes).trim_start_matches('\u{FEFF}').to_string()

@@ -132,7 +132,7 @@ pub fn add_catalog_entries(pdf: &[u8], entries: &str) -> Option<Vec<u8>> {
         out.push(b'\n');
     }
     let at = out.len();
-    out.extend_from_slice(format!("{root} 0 obj\n{}{entries}{}\nendobj\n", cat[..close].trim(), &cat[close..].trim()).as_bytes());
+    out.extend_from_slice(format!("{root} 0 obj\n{}{entries}{}\nendobj\n", cat[..close].trim(), cat[close..].trim()).as_bytes());
     let xref_at = out.len();
     out.extend_from_slice(
         format!("xref\n{root} 1\n{at:010} 00000 n\r\ntrailer\n<</Size {size}/Root {root} 0 R{info}{id}/Prev {prev}>>\nstartxref\n{xref_at}\n%%EOF\n")

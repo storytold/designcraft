@@ -531,7 +531,9 @@ mod tests {
         let count = |opts: &designcraft_render::RenderOptions, rr: &mut designcraft_render::Renderer| {
             let img = rr.render_page(&d, &s.cache, 0, 2.0, false, opts).unwrap();
             img.pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|p| {
                     (p[0] as i32 - col[0] as i32).abs() < 30 && (p[1] as i32 - col[1] as i32).abs() < 30 && (p[2] as i32 - col[2] as i32).abs() < 30
                 })

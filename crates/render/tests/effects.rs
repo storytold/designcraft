@@ -57,7 +57,7 @@ fn golden(name: &str, img: &Rendered) {
     assert_eq!((want.width(), want.height()), (img.width, img.height), "{name}: size");
     let got = img.to_straight();
     let (mut bad, mut sum, mut worst) = (0usize, 0u64, 0u8);
-    for (a, b) in got.chunks_exact(4).zip(want.as_raw().chunks_exact(4)) {
+    for (a, b) in got.as_chunks::<4>().0.iter().zip(want.as_raw().as_chunks::<4>().0) {
         let d = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
         sum += d as u64;
         worst = worst.max(d);
