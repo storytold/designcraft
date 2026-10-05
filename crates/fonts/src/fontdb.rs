@@ -14,6 +14,10 @@ use skrifa::{GlyphId, MetadataProvider};
 /// The family used when a requested family is unknown (the UI sans).
 pub const FALLBACK_FAMILY: &str = "Source Sans 3";
 
+/// Shippori Mincho (OFL): Japanese glyphs for documents and the UI without OS fonts. One copy,
+/// shared with the UI's egui fonts (it is ~8.7 MB).
+pub static JAPANESE_FALLBACK: &[u8] = include_bytes!("../../../assets/fonts/ShipporiMincho-Regular.ttf");
+
 /// The bundled fonts (OFL), as font file bytes.
 pub fn bundled() -> &'static [&'static [u8]] {
     BUNDLED
@@ -33,7 +37,7 @@ static BUNDLED: &[&[u8]] = &[
     include_bytes!("../../../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"),
     include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"),
-    include_bytes!("../../../assets/fonts/ShipporiMincho-Regular.ttf"),
+    JAPANESE_FALLBACK,
 ];
 
 #[derive(Clone)]

@@ -253,7 +253,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     add(&mut fonts, "ui", include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf"));
     add(&mut fonts, "ui-semibold", include_bytes!("../../../assets/fonts/SourceSans3-Semibold.ttf"));
     add(&mut fonts, "mono", include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"));
-    add(&mut fonts, "japanese", include_bytes!("../../../assets/fonts/ShipporiMincho-Regular.ttf"));
+    add(&mut fonts, "japanese", designcraft_fonts::JAPANESE_FALLBACK);
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui".into());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["ui-semibold".into(), "ui".into()]);

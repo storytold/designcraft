@@ -9,7 +9,7 @@
 
 mod fontdb;
 
-pub use fontdb::{FALLBACK_FAMILY, FaceRef, FontDb, FontFace, base_style, bundled};
+pub use fontdb::{FALLBACK_FAMILY, FaceRef, FontDb, FontFace, JAPANESE_FALLBACK, base_style, bundled};
 pub use harfrust::Feature;
 use harfrust::{Direction, ShapeOptions, Tag, UnicodeBuffer};
 pub use kurbo::BezPath;
@@ -251,8 +251,7 @@ mod tests {
     #[test]
     fn japanese_fallback_is_bundled_and_has_vertical_forms() {
         // Inspect the bundled face directly so this test cannot pass through an OS fallback.
-        let data = include_bytes!("../../../assets/fonts/ShipporiMincho-Regular.ttf");
-        let font = skrifa::FontRef::new(data).unwrap();
+        let font = skrifa::FontRef::new(JAPANESE_FALLBACK).unwrap();
         for ch in "日本語縦書き横書きルビ、。「」".chars() {
             assert_ne!(font.charmap().map(ch).unwrap_or_default(), skrifa::GlyphId::NOTDEF);
         }
