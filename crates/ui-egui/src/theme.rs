@@ -253,9 +253,13 @@ pub fn install_fonts(ctx: &egui::Context) {
     add(&mut fonts, "ui", include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf"));
     add(&mut fonts, "ui-semibold", include_bytes!("../../../assets/fonts/SourceSans3-Semibold.ttf"));
     add(&mut fonts, "mono", include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"));
+    add(&mut fonts, "japanese", include_bytes!("../../../assets/fonts/ShipporiMincho-Regular.ttf"));
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui".into());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["ui-semibold".into(), "ui".into()]);
+    for stack in fonts.families.values_mut() {
+        stack.push("japanese".into());
+    }
     ctx.set_fonts(fonts);
 }
 
@@ -321,5 +325,24 @@ impl Tokens {
     /// Tokens stored by [`apply`].
     pub fn get(ctx: &egui::Context) -> Tokens {
         ctx.data(|d| d.get_temp::<Tokens>(egui::Id::NULL)).unwrap_or_else(|| Tokens::for_brightness(Brightness::Dark))
+    }
+}
+
+#[cfg(test)]
+mod japanese_font_tests {
+    #[test]
+    fn japanese_ui_glyphs_are_available_in_every_family() {
+        let ctx = egui::Context::default();
+        super::install_fonts(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx.fonts_mut(|fonts| {
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace, egui::FontFamily::Name("semibold".into())] {
+                let font = egui::FontId::new(13.0, family);
+                for ch in "日本語縦書き横書き組み方向ルビ圏点".chars() {
+                    assert!(fonts.has_glyph(&font, ch), "missing {ch} in {font:?}");
+                }
+            }
+        });
     }
 }

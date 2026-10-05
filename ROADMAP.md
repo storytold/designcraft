@@ -211,3 +211,5 @@ same references), and from the app's JSON control channel. See [docs/agents.md](
 | M12 | Interactive & digital (EPUB, HTML, interactive PDF) | started (EPUB, PDF links/bookmarks) |
 | M13 | Automation (scripts, batch) | |
 | M14 | 1.0 polish & packaging | |
+
+- Japanese UI/document fallback: bundled OFL Shippori Mincho supplies Japanese glyphs on native and web without OS fonts. Story Direction, Horizontal/Vertical, Tate-Chu-Yoko, Ruby and Kenten menu labels are translated in all four non-English interface languages. Vertical metrics and warichu remain open.

@@ -247,4 +247,20 @@ mod tests {
         assert!(face.ascent > 0.0 && face.descent > 0.0 && face.cap_height > face.x_height);
         assert!(feature("abc").is_none());
     }
+
+    #[test]
+    fn japanese_fallback_is_bundled_and_has_vertical_forms() {
+        // Inspect the bundled face directly so this test cannot pass through an OS fallback.
+        let data = include_bytes!("../../../assets/fonts/ShipporiMincho-Regular.ttf");
+        let font = skrifa::FontRef::new(data).unwrap();
+        for ch in "日本語縦書き横書きルビ、。「」".chars() {
+            assert_ne!(font.charmap().map(ch).unwrap_or_default(), skrifa::GlyphId::NOTDEF);
+        }
+        let face = FontDb::global().face("Shippori Mincho", "Regular");
+        assert_eq!(face.family, "Shippori Mincho");
+        let horizontal = shape(&face, "「」、。", &[], |c| c);
+        let vertical = shape(&face, "「」、。", &[feature("vert").unwrap(), feature("vrt2").unwrap()], |c| c);
+        assert_eq!(horizontal.len(), vertical.len());
+        assert!(horizontal.iter().zip(&vertical).any(|(h, v)| h.gid != v.gid));
+    }
 }

@@ -59,6 +59,12 @@ const TABLE: &[(&str, [&str; 4])] = &[
         ],
     ),
     // Type.
+    ("Story Direction", ["Textrichtung", "Sens du texte", "Dirección del texto", "組み方向"]),
+    ("Horizontal", ["Horizontal", "Horizontal", "Horizontal", "横書き"]),
+    ("Vertical", ["Vertikal", "Vertical", "Vertical", "縦書き"]),
+    ("Tate-Chu-Yoko", ["Tate-Chu-Yoko", "Tate-Chu-Yoko", "Tate-Chu-Yoko", "縦中横"]),
+    ("Ruby…", ["Ruby …", "Ruby…", "Ruby…", "ルビ…"]),
+    ("Kenten", ["Kenten", "Kenten", "Kenten", "圏点"]),
     ("Font", ["Schriftart", "Police", "Fuente", "フォント"]),
     ("Size", ["Schriftgrad", "Corps", "Tamaño", "サイズ"]),
     ("Character", ["Zeichen", "Caractère", "Carácter", "文字"]),
@@ -159,6 +165,20 @@ mod tests {
         for (i, (en, t)) in TABLE.iter().enumerate() {
             assert!(TABLE[..i].iter().all(|(e, _)| e != en), "duplicate {en}");
             assert!(t.iter().all(|x| !x.is_empty()), "{en}");
+        }
+    }
+
+    #[test]
+    fn japanese_vertical_type_commands_are_translated() {
+        for (en, ja) in [
+            ("Story Direction", "組み方向"),
+            ("Horizontal", "横書き"),
+            ("Vertical", "縦書き"),
+            ("Tate-Chu-Yoko", "縦中横"),
+            ("Ruby…", "ルビ…"),
+            ("Kenten", "圏点"),
+        ] {
+            assert_eq!(tr("ja", en), ja);
         }
     }
 }

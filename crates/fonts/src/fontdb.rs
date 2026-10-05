@@ -33,6 +33,7 @@ static BUNDLED: &[&[u8]] = &[
     include_bytes!("../../../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"),
     include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/ShipporiMincho-Regular.ttf"),
 ];
 
 #[derive(Clone)]

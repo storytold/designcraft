@@ -24,3 +24,7 @@ Rust dependencies (vello_cpu, kurbo, skrifa, harfrust, image, egui, eframe, …)
 licensed (MIT/Apache-2.0/BSD/ISC/Zlib) and fetched through crates.io.
 
 No Adobe icons, images or artwork are included.
+
+Shippori Mincho: Copyright 2021 The Shippori Mincho Project Authors
+(https://github.com/fontdasu/ShipporiMincho). SIL Open Font License 1.1;
+see assets/fonts/OFL-ShipporiMincho.txt.
