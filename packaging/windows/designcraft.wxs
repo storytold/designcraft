@@ -2,7 +2,10 @@
 <!--
   DesignCraft MSI (WiX Toolset v5: `dotnet tool install -g wix`). Built by package.ps1:
 
-    wix build designcraft.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
+    wix build designcraft.wxs -arch x64|x86|arm64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
+
+  ProgramFiles6432Folder resolves to C:\Program Files for x64 and arm64 and to
+  C:\Program Files (x86) for x86; nothing else here depends on the architecture.
 
   Per-machine install into Program Files, a Start Menu shortcut, `.pcraft` owned by DesignCraft,
   and DesignCraft offered under "Open with" for PSD/PSB and the image formats it reads (without

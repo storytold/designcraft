@@ -1,0 +1,146 @@
+# Windows on ARM (#45): package the ARM64 release the way release.yml does (cross-compiled on an
+# x64 runner, unsigned here), then install that MSI on a Windows 11 ARM64 runner and run it, and
+# run the test suite natively on ARM64.
+name: Windows ARM64
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - "**/build.rs"
+      - .github/workflows/windows-arm64.yml
+      - packaging/windows/**
+  schedule:
+    - cron: "41 4 * * 1" # weekly, so drift in the runner images shows up
+  workflow_dispatch:
+
+concurrency:
+  group: windows-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  package:
+    name: package (cross-compiled on x64)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-arm64-package
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build and package (unsigned)
+        shell: pwsh
+        env:
+          DIST: ${{ github.workspace }}\dist\arm64
+        run: ./packaging/windows/package.ps1 -Arch arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: designcraft-windows-arm64
+          path: dist/arm64/*
+          if-no-files-found: error
+          retention-days: 7
+
+  install:
+    name: install and run on ARM64
+    needs: package
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: designcraft-windows-arm64
+          path: dist
+      - name: Install the MSI, check it, run it, uninstall it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/*.msi | Select-Object -First 1).FullName
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', 'install.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "msiexec /i exited $($p.ExitCode)" }
+          $dir = Join-Path $env:ProgramFiles 'DesignCraft'
+          foreach ($exe in 'designcraft.exe', 'designcraft-cli.exe') {
+            $path = Join-Path $dir $exe
+            if (-not (Test-Path $path)) { Get-ChildItem -Recurse $env:ProgramFiles -Filter $exe | Select-Object -First 3; throw "$exe not installed in $dir" }
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+            if ($machine -ne 0xAA64) { throw "$exe is for machine 0x$('{0:X}' -f $machine), not ARM64" }
+            Write-Output "ok $path (ARM64)"
+          }
+          # The installed CLI runs natively: lay out a page through the engine's commands, save it,
+          # export PNG/PDF/IDML, reopen the IDML, and export the sample magazine (fonts, images) to PDF.
+          $cli = Join-Path $dir 'designcraft-cli.exe'
+          function Invoke-Cli([string] $What, [string[]] $CliArgs) {
+            $out = & $cli @CliArgs 2>&1 | Out-String
+            Write-Host $out.Trim()
+            if ($LASTEXITCODE -ne 0) { throw "designcraft-cli $What exited $LASTEXITCODE" }
+            return $out
+          }
+          Invoke-Cli 'version' @('--version') | Out-Null
+          $cmds = Invoke-Cli 'commands' @('commands', 'frame.create')
+          if ($cmds -notmatch '"frame\.create"') { throw 'commands did not list frame.create' }
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          $steps = @('frame.create {"rect": [72, 72, 400, 200], "content": "text", "text": "Hello ARM64"}', 'story.get {"story": "$0.story"}')
+          [System.IO.File]::WriteAllLines("$PWD\smoke\steps.txt", $steps)
+          $out = Invoke-Cli 'script' @('script', 'smoke\steps.txt', '--save', 'smoke\hello.designcraft', '--export', 'smoke\hello.png')
+          if ($out -notmatch 'Hello ARM64') { throw 'story.get did not return the text' }
+          Invoke-Cli 'run (pdf)' @('run', '--in', 'smoke\hello.designcraft', '--export', 'smoke\hello.pdf') | Out-Null
+          Invoke-Cli 'run (idml)' @('run', '--in', 'smoke\hello.designcraft', '--export', 'smoke\hello.idml') | Out-Null
+          $out = Invoke-Cli 'run (idml in)' @('run', '--in', 'smoke\hello.idml', '--export', 'smoke\roundtrip.png')
+          if ($out -notmatch '\b[1-9]\d* glyphs') { throw 'the reopened IDML rendered no glyphs' }
+          Invoke-Cli 'run (sample)' @('run', '--sample', '--export', 'smoke\sample.pdf') | Out-Null
+          # File signatures (hex): PNG, PDF, ZIP (IDML); the native document only needs to exist.
+          $magic = @{ 'hello.png' = '89504E47'; 'roundtrip.png' = '89504E47'; 'hello.pdf' = '25504446'; 'sample.pdf' = '25504446'; 'hello.idml' = '504B'; 'hello.designcraft' = '' }
+          foreach ($f in $magic.Keys) {
+            $path = Join-Path $PWD "smoke\$f"
+            if (-not (Test-Path $path) -or (Get-Item $path).Length -eq 0) { throw "$f was not written" }
+            $head = -join ([System.IO.File]::ReadAllBytes($path)[0..3] | ForEach-Object { '{0:X2}' -f $_ })
+            if (-not $head.StartsWith($magic[$f])) { throw "$f starts with $head, expected $($magic[$f])" }
+            Write-Output "ok $f ($((Get-Item $path).Length) bytes)"
+          }
+          Write-Output 'ok designcraft-cli: laid out, saved, exported PNG/PDF/IDML, reopened IDML and exported the sample on ARM64'
+          $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
+          if (Test-Path (Join-Path $dir 'designcraft.exe')) { throw 'uninstall left designcraft.exe behind' }
+          Write-Output 'ok uninstalled'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: designcraft-windows-arm64-smoke
+          path: |
+            smoke/
+            install.log
+          retention-days: 7
+
+  test:
+    name: test (native ARM64)
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-arm64-test
+      - name: Test
+        run: cargo test --workspace --locked

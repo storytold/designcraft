@@ -92,7 +92,8 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
   JSON control channel and an **MCP server**, so Claude and other agents can lay out and edit
   documents like a designer. See [`docs/control-protocol.md`](docs/control-protocol.md) and
   [`docs/mcp.md`](docs/mcp.md).
-- **Everywhere.** One Rust codebase for desktop and the web.
+- **Everywhere.** One Rust codebase for desktop and the web. Windows builds come for x64, x86 and
+  ARM64 (Windows on ARM, no emulation); every ARM64 change is tested on ARM64 hardware in CI.
 
 ## Quick start
 
