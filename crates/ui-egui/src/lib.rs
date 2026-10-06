@@ -17,6 +17,7 @@ pub mod icons;
 pub mod menus;
 pub mod panels;
 pub mod render_worker;
+mod rtl;
 pub mod story_editor;
 pub mod taskbar;
 pub mod theme;
@@ -132,7 +133,7 @@ pub struct UiState {
     pub dynamic_spelling: bool,
     /// Preferences › Story Editor Display: text size (points).
     pub story_editor_size: f32,
-    /// Edit › Interface Language: "" (English), "de", "fr", "es" or "ja".
+    /// Edit › Interface Language: supported codes are listed in `i18n::LANGUAGES`.
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
     pub flattener: String,

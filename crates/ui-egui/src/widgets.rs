@@ -324,7 +324,7 @@ pub fn outline_button(ui: &mut Ui, label: &str, width: f32) -> Response {
         p.rect_filled(r, 2.0, t.hover);
     }
     p.rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    p.text(r.center(), egui::Align2::CENTER_CENTER, label, label_font(), t.text);
+    crate::rtl::paint(p, r.center(), egui::Align2::CENTER_CENTER, label, label_font(), t.text);
     resp
 }
 
@@ -349,7 +349,7 @@ pub fn full_width(ui: &Ui) -> f32 {
 pub fn link_label(ui: &mut Ui, text: &str, width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::click());
-    let g = ui.painter().layout_no_wrap(text.to_string(), label_font(), t.text);
+    let g = crate::rtl::plain(ui.ctx(), text, label_font(), t.text);
     let pos = pos2(r.min.x, r.center().y - g.size().y / 2.0);
     let w = g.size().x;
     ui.painter().galley(pos, g, t.text);
@@ -359,7 +359,7 @@ pub fn link_label(ui: &mut Ui, text: &str, width: f32) -> Response {
 }
 
 /// `•••` more-options, right-aligned on its own row at the bottom of a section.
-pub fn more_options(ui: &mut Ui) -> Response {
+pub fn more_options(ui: &mut Ui, language: &str) -> Response {
     let t = Tokens::get(ui.ctx());
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
     let r = Rect::from_min_max(pos2(row.max.x - 26.0, row.min.y), pos2(row.max.x - 4.0, row.max.y));
@@ -367,20 +367,22 @@ pub fn more_options(ui: &mut Ui) -> Response {
     for i in 0..3 {
         ui.painter().circle_filled(pos2(r.min.x + 4.0 + i as f32 * 7.0, r.center().y), 1.9, if resp.hovered() { t.text_strong } else { t.icon });
     }
-    resp.on_hover_text("More Options")
+    resp.on_hover_ui(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(language, "More Options"));
+    })
 }
 
 /// A small dim label (field captions like `X:` or `W:`).
 pub fn caption(ui: &mut Ui, s: &str) {
     let t = Tokens::get(ui.ctx());
-    ui.label(egui::RichText::new(s).size(LABEL_SIZE).color(t.text));
+    crate::rtl::label(ui, egui::RichText::new(s).size(LABEL_SIZE).color(t.text));
 }
 
 /// A right-aligned caption of a fixed width (`W:` before a spinner).
 pub fn caption_w(ui: &mut Ui, s: &str, w: f32) {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
-    ui.painter().text(pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, egui::FontId::proportional(11.5), t.text);
+    crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, egui::FontId::proportional(11.5), t.text);
 }
 
 /// The selection-type line at the top of the Properties panel ("No Selection", "Rectangle", …):
@@ -388,7 +390,7 @@ pub fn caption_w(ui: &mut Ui, s: &str, w: f32) {
 pub fn selection_band(ui: &mut Ui, title: &str) {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 33.0), Sense::hover());
-    ui.painter().text(pos2(r.min.x, r.center().y + 1.0), egui::Align2::LEFT_CENTER, title, crate::theme::semibold(11.5), t.text_strong);
+    crate::rtl::paint(ui.painter(), pos2(r.min.x, r.center().y + 1.0), egui::Align2::LEFT_CENTER, title, crate::theme::semibold(11.5), t.text_strong);
     rule(ui);
 }
 
@@ -398,7 +400,7 @@ pub fn section(ui: &mut Ui, title: &str, _default_open: bool) -> bool {
     let t = Tokens::get(ui.ctx());
     ui.add_space(7.0);
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
-    ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
+    crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
     ui.add_space(3.0);
     true
 }
@@ -411,7 +413,7 @@ pub fn section_row(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.set_min_height(23.0);
         let (r, _) = ui.allocate_exact_size(vec2(100.0, 23.0), Sense::hover());
-        ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
+        crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(4.0);
             add(ui)
@@ -514,7 +516,13 @@ pub fn icon_toggle_sized(ui: &mut Ui, icon: &str, on: bool, tip: &str, size: egu
     }
     let s = (size.y - 4.0).min(17.0);
     crate::icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, if on { t.text_strong } else { t.icon });
-    if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
+    if tip.is_empty() {
+        resp
+    } else {
+        resp.on_hover_ui(|ui| {
+            crate::rtl::label(ui, tip);
+        })
+    }
 }
 
 /// An InDesign checkbox: 12 pt rounded box, white check, label.
@@ -552,7 +560,7 @@ pub fn segmented(ui: &mut Ui, labels: &[&str], active: usize, width: f32) -> Opt
         } else if resp.hovered() {
             ui.painter().rect_filled(sr, 0.0, t.hover);
         }
-        ui.painter().text(sr.center(), egui::Align2::CENTER_CENTER, *l, label_font(), if i == active { t.accent } else { t.text });
+        crate::rtl::paint(ui.painter(), sr.center(), egui::Align2::CENTER_CENTER, l, label_font(), if i == active { t.accent } else { t.text });
         if i > 0 {
             ui.painter().line_segment([sr.left_top(), sr.left_bottom()], Stroke::new(1.0, t.field_border));
         }

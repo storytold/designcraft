@@ -36,7 +36,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         for (i, r) in story.para_ranges().iter().enumerate() {
                             let lines = story.text[r.clone()].len() / 60 + 1;
                             let style = &story.paras[i].style;
-                            ui.label(egui::RichText::new(style).size(11.0).color(t.text_dim));
+                            crate::rtl::label(ui, egui::RichText::new(crate::i18n::style_name(&app.ui.language, style)).size(11.0).color(t.text_dim));
                             for _ in 1..lines {
                                 ui.label(egui::RichText::new(" ").size(11.0));
                             }
@@ -66,10 +66,17 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 if let Some(o) = overset {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("OVERSET").color(egui::Color32::from_rgb(230, 40, 40)).strong());
-                        ui.label(
-                            egui::RichText::new(format!("{} characters don't fit", story.text[o.min(story.text.len())..].chars().count()))
-                                .color(t.text_dim),
+                        ui.label(crate::rtl::widget(
+                            ui,
+                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "OVERSET")).color(egui::Color32::from_rgb(230, 40, 40)).strong(),
+                        ));
+                        crate::rtl::label(
+                            ui,
+                            egui::RichText::new(
+                                crate::i18n::tr(&app.ui.language, "{count} characters don't fit")
+                                    .replace("{count}", &story.text[o.min(story.text.len())..].chars().count().to_string()),
+                            )
+                            .color(t.text_dim),
                         );
                     });
                 }

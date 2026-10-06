@@ -14,7 +14,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let text = st.selection.text.is_some();
     let fill_cur = super::sel_info(app).map(|i| i.fill);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(if text { "Applies to text" } else { "Applies to fill" }).size(11.0).color(t.text_dim));
+        crate::rtl::label(
+            ui,
+            egui::RichText::new(crate::i18n::tr(&app.ui.language, if text { "Applies to text" } else { "Applies to fill" }))
+                .size(11.0)
+                .color(t.text_dim),
+        );
     });
     // Unnamed colours (mixed in the Color panel) aren't listed until Add to Swatches; swatches in
     // colour groups are listed under their folder.
@@ -45,7 +50,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.data_mut(|d| d.insert_temp(open_id, open));
         }
         resp.context_menu(|ui| {
-            if ui.button("Ungroup Color Group").clicked() {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Ungroup Color Group"))).clicked() {
                 let _ = app.run("swatch.ungroupColorGroup", json!({"name": g.name}));
                 ui.close();
             }
@@ -60,22 +65,25 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Right-click: stroke, groups").size(10.5).color(t.text_disabled));
+        ui.label(crate::rtl::widget(
+            ui,
+            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Right-click: stroke, groups")).size(10.5).color(t.text_disabled),
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::button(ui, "plus", 20.0, false, "New Swatch").clicked() {
+            if icons::button(ui, "plus", 20.0, false, crate::i18n::tr(&app.ui.language, "New Swatch")).clicked() {
                 let _ = app.run("swatch.create", json!({"color": {"c": 0, "m": 50, "y": 100, "k": 0}}));
             }
             ui.menu_button("☰", |ui| {
-                ui.menu_button("Ink Manager", |ui| {
+                ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Ink Manager")), |ui| {
                     let Ok(l) = app.session.execute("ink.list", &json!({})) else { return };
                     let mut all = l["allToProcess"].as_bool().unwrap_or(false);
-                    if ui.checkbox(&mut all, "All Spots to Process").changed() {
+                    if ui.checkbox(&mut all, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "All Spots to Process"))).changed() {
                         let _ = app.run("ink.options", json!({"allToProcess": all}));
                     }
                     ui.separator();
                     let inks = l["inks"].as_array().cloned().unwrap_or_default();
                     if inks.is_empty() {
-                        ui.label("No spot inks");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "No spot inks"));
                     }
                     for ink in inks {
                         let name = ink["name"].as_str().unwrap_or("").to_string();
@@ -87,15 +95,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         });
                     }
                 });
-                if ui.button("New Color Group").clicked() {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Color Group"))).clicked() {
                     let _ = app.run("swatch.newColorGroup", json!({}));
                     ui.close();
                 }
-                if ui.button("Load Swatches…").clicked() {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load Swatches…"))).clicked() {
                     let _ = app.run("app.loadSwatches", json!({}));
                     ui.close();
                 }
-                if ui.button("Save Swatches for Exchange…").clicked() {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Save Swatches for Exchange…"))).clicked() {
                     let _ = app.run("app.saveSwatches", json!({}));
                     ui.close();
                 }
@@ -132,7 +140,7 @@ fn swatch_row(
             let m = match color {
                 designcraft_color::Color::Cmyk { .. } => "CMYK",
                 designcraft_color::Color::Rgb { .. } => "RGB",
-                designcraft_color::Color::Gray { .. } => "Gray",
+                designcraft_color::Color::Gray { .. } => crate::i18n::tr(&app.ui.language, "Gray"),
             };
             format!("{}{}", if *color_type == ColorType::Spot { "● " } else { "" }, m)
         }
@@ -149,13 +157,13 @@ fn swatch_row(
         let _ = r;
     }
     resp.context_menu(|ui| {
-        if ui.button("Apply to Stroke").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply to Stroke"))).clicked() {
             let _ = app.run("object.stroke", json!({"swatch": sw.name}));
             ui.close();
         }
         if !sw.locked {
-            ui.menu_button("Move to Color Group", |ui| {
-                if ui.button("(Top Level)").clicked() {
+            ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Move to Color Group")), |ui| {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "(Top Level)"))).clicked() {
                     let _ = app.run("swatch.moveToGroup", json!({"swatches": [sw.name], "group": null}));
                     ui.close();
                 }
@@ -166,12 +174,12 @@ fn swatch_row(
                     }
                 }
             });
-            if ui.button("New Color Group with Swatch").clicked() {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Color Group with Swatch"))).clicked() {
                 let _ = app.run("swatch.newColorGroup", json!({"swatches": [sw.name]}));
                 ui.close();
             }
             ui.separator();
-            if ui.button("Delete Swatch").clicked() {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Swatch"))).clicked() {
                 let _ = app.run("swatch.delete", json!({"name": sw.name}));
                 ui.close();
             }
@@ -192,7 +200,10 @@ pub enum ColorMode {
 pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(i) = super::sel_info(app) else {
-        ui.label(egui::RichText::new("Select an object to color its fill or stroke.").color(t.text_dim));
+        ui.label(crate::rtl::widget(
+            ui,
+            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select an object to color its fill or stroke.")).color(t.text_dim),
+        ));
         return;
     };
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
@@ -246,7 +257,10 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     let sw = doc.swatch(&name).cloned();
     let Some(c) = doc.resolve_color(&name, 1.0) else {
-        ui.label(egui::RichText::new("[None] — choose a colour on the ramp.").color(t.text_dim));
+        ui.label(crate::rtl::widget(
+            ui,
+            egui::RichText::new(crate::i18n::tr(&app.ui.language, "[None] — choose a colour on the ramp.")).color(t.text_dim),
+        ));
         spectrum(app, ui, target);
         return;
     };
@@ -299,7 +313,7 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     spectrum(app, ui, target);
     ui.horizontal(|ui| {
         let unnamed = sw.as_ref().is_some_and(|w| w.hidden);
-        if ui.add_enabled(unnamed, egui::Button::new("Add to Swatches")).clicked() {
+        if ui.add_enabled(unnamed, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add to Swatches")))).clicked() {
             let _ = app.run("swatch.addToSwatches", json!({"target": target}));
         }
     });
@@ -388,28 +402,40 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
     let Some(it) = st.selection.items.first().and_then(|i| st.doc.item(*i)) else {
-        ui.label(egui::RichText::new("Select an object to give its fill a gradient.").color(t.text_dim));
+        ui.label(crate::rtl::widget(
+            ui,
+            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select an object to give its fill a gradient.")).color(t.text_dim),
+        ));
         return;
     };
     let fill = it.fill.clone();
     let Some(g) = designcraft_color::swatch::resolve_gradient(&st.doc.swatches, &fill.swatch).cloned() else {
-        ui.label(egui::RichText::new("The fill isn't a gradient.").color(t.text_dim));
-        if ui.button("Apply Gradient").clicked() {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "The fill isn't a gradient.")).color(t.text_dim));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply Gradient"))).clicked() {
             let _ = app.run("object.gradient", json!({}));
         }
         return;
     };
     let radial = g.kind == designcraft_color::GradientKind::Radial;
     ui.horizontal(|ui| {
-        crate::widgets::caption(ui, "Type:");
-        egui::ComboBox::from_id_salt("grad_type").selected_text(g.kind.label()).width(100.0).show_ui(ui, |ui| {
-            for (k, v) in [("Linear", "linear"), ("Radial", "radial")] {
-                if ui.selectable_label(g.kind.label() == k, k).clicked() {
-                    let _ = app.run("object.gradient", json!({"kind": v}));
+        crate::widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Type:"));
+        egui::ComboBox::from_id_salt("grad_type")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, g.kind.label())))
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for (k, v) in [("Linear", "linear"), ("Radial", "radial")] {
+                    if ui.selectable_label(g.kind.label() == k, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, k))).clicked() {
+                        let _ = app.run("object.gradient", json!({"kind": v}));
+                    }
                 }
-            }
-        });
-        if ui.button("Reverse").on_hover_text("Reverse the gradient").clicked() {
+            });
+        if ui
+            .button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Reverse")))
+            .on_hover_ui(|ui| {
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Reverse the gradient"));
+            })
+            .clicked()
+        {
             let _ = app.run("object.gradient", json!({"reverse": true}));
         }
     });
@@ -417,7 +443,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let drag_id = egui::Id::new("grad_drag");
     let mut sel: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0).min(g.stops.len().saturating_sub(1));
     ui.horizontal(|ui| {
-        crate::widgets::caption(ui, "Location:");
+        crate::widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Location:"));
         let loc = g.stops.get(sel).map(|s| s.offset as f64 * 100.0);
         if let Some(v) = crate::widgets::number(ui, "grad_loc", loc, " %", 54.0, 1) {
             let mut stops = stops_json(&g);
@@ -425,7 +451,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("object.gradient", json!({"stops": stops}));
         }
         if !radial {
-            crate::widgets::caption(ui, "Angle:");
+            crate::widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Angle:"));
             let angle = fill.gradient_vector.map(|[x0, y0, x1, y1]| (-(y1 - y0)).atan2(x1 - x0).to_degrees()).or(fill.gradient_angle).unwrap_or(0.0);
             if let Some(v) = crate::widgets::number(ui, "grad_angle", Some(angle), "°", 54.0, 1) {
                 let _ = app.run("object.gradient", json!({"angle": v}));
@@ -534,7 +560,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     // The selected stop's colour.
     if let Some(s) = g.stops.get(sel) {
         ui.horizontal(|ui| {
-            crate::widgets::caption(ui, "Stop Color:");
+            crate::widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Stop Color:"));
             let [r, gg, bb] = s.color.to_rgb();
             let mut rgb = [(r * 255.0) as u8, (gg * 255.0) as u8, (bb * 255.0) as u8];
             if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {

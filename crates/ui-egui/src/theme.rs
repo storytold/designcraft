@@ -271,22 +271,17 @@ fn font_definitions(craft: &'static [designcraft_fonts::CraftFont]) -> FontDefin
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui".into());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["ui-semibold".into(), "ui".into()]);
-    let mut japanese: Vec<&designcraft_fonts::CraftFont> = craft.iter().filter(|f| f.scripts.contains(&"Jpan")).collect();
-    // BIZ UDPGothic (the UI face) first, Regular before Bold; the semibold family prefers Bold.
-    japanese.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Regular"));
-    let name = |f: &designcraft_fonts::CraftFont| format!("craft-{}-{}", f.family, f.style);
-    for f in &japanese {
-        add(&mut fonts, &name(f), f.bytes);
+    // Bundle a CJK fallback so interface languages work on every platform, including WASM.
+    add(&mut fonts, "cjk", include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf"));
+    add(&mut fonts, "arabic", include_bytes!("../../../assets/fonts/NotoSansArabic.ttf"));
+    // Keep Arabic letters and spaces in the same shaping run.
+    for family in ["arabic", "arabic-semibold"] {
+        fonts.families.insert(FontFamily::Name(family.into()), vec!["arabic".into(), "ui".into(), "cjk".into()]);
     }
-    for (family, stack) in fonts.families.iter_mut() {
-        let bold = *family == FontFamily::Name("semibold".into());
-        let mut order = japanese.clone();
-        if bold {
-            order.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Bold"));
-        }
-        stack.extend(order.iter().map(|f| name(f)));
+    for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("semibold".into())] {
+        fonts.families.entry(family).or_default().extend(["arabic".into(), "cjk".into()]);
     }
-    fonts
+    ctx.set_fonts(fonts);
 }
 
 pub fn semibold(size: f32) -> FontId {

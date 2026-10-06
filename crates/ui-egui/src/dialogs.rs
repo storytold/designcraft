@@ -98,7 +98,7 @@ impl Dialog {
 
 fn text_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32) {
     let mut s = d.s(key);
-    if ui.add(egui::TextEdit::singleline(&mut s).desired_width(w)).changed() {
+    if ui.add(egui::TextEdit::singleline(&mut s).desired_width(w).horizontal_align(egui::Align::Min)).changed() {
         d.fields.insert(key.into(), Value::String(s));
     }
 }
@@ -107,11 +107,18 @@ fn text_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32) {
 /// new keys (Esc cancels, Backspace clears).
 /// Edit › Spelling › User Dictionary: added words and hyphenation exceptions (applied at once).
 fn user_dictionary(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    ui.label(egui::RichText::new("Hyphenation Exceptions").font(semibold(12.0)));
-    ui.label(egui::RichText::new("Type a word with ~ at each allowed break (ex~am~ple); without ~ the word is never hyphenated.").size(10.5));
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Hyphenation Exceptions")).font(semibold(12.0)));
+    ui.label(crate::rtl::widget(
+        ui,
+        egui::RichText::new(crate::i18n::tr(
+            &app.ui.language,
+            "Type a word with ~ at each allowed break (ex~am~ple); without ~ the word is never hyphenated.",
+        ))
+        .size(10.5),
+    ));
     ui.horizontal(|ui| {
         text_field(ui, d, "word", 200.0);
-        if ui.button("Add").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add"))).clicked() {
             let w = d.s("word");
             if !w.trim().is_empty() {
                 match app.run("hyphenation.addException", json!({"word": w.trim()})) {
@@ -129,7 +136,7 @@ fn user_dictionary(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             let w = w.as_str().unwrap_or("").to_string();
             ui.horizontal(|ui| {
                 ui.label(&w);
-                if ui.small_button("Remove").clicked() {
+                if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Remove"))).clicked() {
                     let _ = app.run("hyphenation.removeException", json!({"word": w}));
                 }
             });
@@ -139,7 +146,11 @@ fn user_dictionary(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 
 fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let mut q = d.s("query");
-    ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search commands").desired_width(f32::INFINITY));
+    ui.add(
+        egui::TextEdit::singleline(&mut q)
+            .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Search commands")))
+            .desired_width(f32::INFINITY),
+    );
     d.fields.insert("query".into(), json!(q));
     let recording = d.s("recording");
     // Capture the next key press for the command being recorded.
@@ -181,7 +192,7 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
         egui::Grid::new("shortcuts").num_columns(3).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
             for (id, label, menu) in &rows {
-                ui.label(label.trim_end_matches('…'))
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label.trim_end_matches('…')))
                     .on_hover_text(format!("{id}{}", if menu.is_empty() { String::new() } else { format!("  ({menu})") }));
                 let cur = crate::menus::shortcut_of(app, id).map(|s| crate::menus::shortcut_text(&s)).unwrap_or_else(|| "—".into());
                 let text = if recording == *id { "Press keys…".to_string() } else { cur };
@@ -190,7 +201,7 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     d.fields.insert("message".into(), json!(""));
                 }
                 if app.ui.shortcuts.contains_key(id) {
-                    if ui.small_button("Default").clicked() {
+                    if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Default"))).clicked() {
                         let _ = app.run("window.setShortcut", json!({"id": id, "shortcut": null}));
                     }
                 } else {
@@ -204,7 +215,7 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     if !msg.is_empty() {
         ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(240, 180, 60)));
     }
-    if ui.button("Reset All to Defaults").clicked() {
+    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Reset All to Defaults"))).clicked() {
         let _ = app.run("window.resetShortcuts", json!({}));
     }
 }
@@ -219,7 +230,7 @@ pub fn open_print(app: &mut DesignApp) {
     ));
 }
 
-fn print_dialog(ui: &mut egui::Ui, d: &mut Dialog) {
+fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let printers: Vec<String> = d
         .fields
         .get("printers")
@@ -227,10 +238,10 @@ fn print_dialog(ui: &mut egui::Ui, d: &mut Dialog) {
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     egui::Grid::new("print").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Printer:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Printer:"));
         let cur = d.s("printer");
         if printers.is_empty() {
-            ui.label(egui::RichText::new("System default").italics());
+            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "System default")).italics());
         } else {
             egui::ComboBox::from_id_salt("printer").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
                 for p in &printers {
@@ -241,10 +252,10 @@ fn print_dialog(ui: &mut egui::Ui, d: &mut Dialog) {
             });
         }
         ui.end_row();
-        ui.label("Copies:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Copies:"));
         text_field(ui, d, "copies", 50.0);
         ui.end_row();
-        ui.label("Pages:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pages:"));
         ui.vertical(|ui| {
             let range = d.s("range");
             if ui.radio(range == "all", "All").clicked() {
@@ -260,9 +271,9 @@ fn print_dialog(ui: &mut egui::Ui, d: &mut Dialog) {
         ui.end_row();
         ui.label("");
         ui.vertical(|ui| {
-            check(ui, d, "spreads", "Spreads");
-            check(ui, d, "marks", "Printer's Marks");
-            check(ui, d, "bleed", "Include Bleed");
+            check(ui, d, "spreads", crate::i18n::tr(&app.ui.language, "Spreads"));
+            check(ui, d, "marks", crate::i18n::tr(&app.ui.language, "Printer's Marks"));
+            check(ui, d, "bleed", crate::i18n::tr(&app.ui.language, "Include Bleed"));
         });
         ui.end_row();
     });
@@ -283,20 +294,20 @@ pub fn open_document_setup(app: &mut DesignApp) {
     app.ui.dialog = Some(Dialog::new("documentSetup", f));
 }
 
-fn document_setup(ui: &mut egui::Ui, d: &mut Dialog) {
+fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     egui::Grid::new("ds").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Intent:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Intent:"));
         let cur = d.s("intent");
         egui::ComboBox::from_id_salt("ds_intent")
             .selected_text(match cur.as_str() {
-                "web" => "Web",
-                "mobile" => "Mobile",
-                _ => "Print",
+                "web" => crate::i18n::tr(&app.ui.language, "Web"),
+                "mobile" => crate::i18n::tr(&app.ui.language, "Mobile"),
+                _ => crate::i18n::tr(&app.ui.language, "Print"),
             })
             .width(110.0)
             .show_ui(ui, |ui| {
                 for (v, l) in [("print", "Print"), ("web", "Web"), ("mobile", "Mobile")] {
-                    if ui.selectable_label(cur == v, l).clicked() {
+                    if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
                         d.fields.insert("intent".into(), json!(v));
                     }
                 }
@@ -304,35 +315,35 @@ fn document_setup(ui: &mut egui::Ui, d: &mut Dialog) {
         ui.label("");
         ui.label("");
         ui.end_row();
-        ui.label("Number of Pages:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Number of Pages:"));
         text_field(ui, d, "pages", 60.0);
-        check(ui, d, "facingPages", "Facing Pages");
+        check(ui, d, "facingPages", crate::i18n::tr(&app.ui.language, "Facing Pages"));
         ui.label("");
         ui.end_row();
-        ui.label("Start Page #:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Start Page #:"));
         text_field(ui, d, "startPage", 60.0);
         ui.end_row();
-        ui.label("Binding:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Binding:"));
         let rtl = d.s("binding") == "rightToLeft";
-        egui::ComboBox::from_id_salt("ds_binding").selected_text(if rtl { "Right to Left" } else { "Left to Right" }).width(110.0).show_ui(
-            ui,
-            |ui| {
+        egui::ComboBox::from_id_salt("ds_binding")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if rtl { "Right to Left" } else { "Left to Right" })))
+            .width(110.0)
+            .show_ui(ui, |ui| {
                 for (v, l) in [("leftToRight", "Left to Right"), ("rightToLeft", "Right to Left")] {
-                    if ui.selectable_label((v == "rightToLeft") == rtl, l).clicked() {
+                    if ui.selectable_label((v == "rightToLeft") == rtl, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
                         d.fields.insert("binding".into(), json!(v));
                     }
                 }
-            },
-        );
+            });
         ui.end_row();
     });
     ui.add_space(8.0);
-    ui.label(egui::RichText::new("Page Size").font(semibold(12.0)));
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page Size")).font(semibold(12.0)));
     let (w, h) = (d.m("width").unwrap_or(612.0), d.m("height").unwrap_or(792.0));
     let preset =
         designcraft_doc::build::PRESETS.iter().find(|p| (p.width - w).abs() < 0.5 && (p.height - h).abs() < 0.5).map_or("Custom", |p| p.name);
     egui::Grid::new("ds_size").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Size:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Size:"));
         egui::ComboBox::from_id_salt("ds_preset").selected_text(preset).width(140.0).show_ui(ui, |ui| {
             for p in designcraft_doc::build::PRESETS {
                 if ui.selectable_label(p.name == preset, p.name).clicked() {
@@ -341,10 +352,12 @@ fn document_setup(ui: &mut egui::Ui, d: &mut Dialog) {
                 }
             }
         });
-        ui.label("Orientation:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Orientation:"));
         ui.horizontal(|ui| {
             for (portrait, l) in [(true, "Portrait"), (false, "Landscape")] {
-                if ui.selectable_label((h >= w) == portrait, l).clicked() && (h >= w) != portrait {
+                if ui.selectable_label((h >= w) == portrait, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked()
+                    && (h >= w) != portrait
+                {
                     let (fw, fh) = (d.s("width"), d.s("height"));
                     d.fields.insert("width".into(), json!(fh));
                     d.fields.insert("height".into(), json!(fw));
@@ -352,34 +365,34 @@ fn document_setup(ui: &mut egui::Ui, d: &mut Dialog) {
             }
         });
         ui.end_row();
-        ui.label("Width:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width:"));
         text_field(ui, d, "width", 80.0);
-        ui.label("Height:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Height:"));
         text_field(ui, d, "height", 80.0);
         ui.end_row();
     });
     ui.add_space(8.0);
-    ui.label(egui::RichText::new("Bleed and Slug").font(semibold(12.0)));
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Bleed and Slug")).font(semibold(12.0)));
     egui::Grid::new("ds_bleed").num_columns(5).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label("");
         for e in ["Top", "Bottom", "Inside", "Outside"] {
-            ui.label(e);
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, e));
         }
         ui.end_row();
         for (k, l) in [("bleed", "Bleed:"), ("slug", "Slug:")] {
-            ui.label(l);
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
             for e in ["Top", "Bottom", "Inside", "Outside"] {
                 text_field(ui, d, &format!("{k}{e}"), 60.0);
             }
             ui.end_row();
         }
     });
-    check(ui, d, "adjustLayout", "Adjust Layout (objects follow the new page size)");
+    check(ui, d, "adjustLayout", crate::i18n::tr(&app.ui.language, "Adjust Layout (objects follow the new page size)"));
 }
 
 /// Preferences: a section list and the section's options. Application options always; units and
 /// increments when a document is open (InDesign keeps those with the document).
-fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
+fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let has_doc = d.fields.contains_key("horizontalUnits");
     let sections: &[(&str, &str)] = if has_doc {
         &[
@@ -424,7 +437,7 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
         ui.vertical(|ui| {
             ui.set_width(150.0);
             for (id, label) in sections {
-                if ui.selectable_label(cur == *id, *label).clicked() {
+                if ui.selectable_label(cur == *id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                     d.fields.insert("section".into(), json!(id));
                 }
             }
@@ -434,8 +447,11 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
             ui.set_min_width(300.0);
             match cur.as_str() {
                 "dictionary" => {
-                    ui.label(egui::RichText::new("User Dictionary (this document)").font(semibold(12.0)));
-                    ui.label("Words, one per line:");
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "User Dictionary (this document)")).font(semibold(12.0)),
+                    ));
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Words, one per line:"));
                     let mut t = d.s("userWords");
                     if egui::ScrollArea::vertical()
                         .max_height(170.0)
@@ -447,14 +463,14 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     }
                 }
                 "spelling" => {
-                    ui.label(egui::RichText::new("Dynamic Spelling").font(semibold(12.0)));
-                    check(ui, d, "dynamicSpelling", "Enable Dynamic Spelling (underline misspelled words)");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Dynamic Spelling")).font(semibold(12.0)));
+                    check(ui, d, "dynamicSpelling", crate::i18n::tr(&app.ui.language, "Enable Dynamic Spelling (underline misspelled words)"));
                 }
                 "autocorrect" => {
-                    ui.label(egui::RichText::new("Options").font(semibold(12.0)));
-                    check(ui, d, "autocorrect", "Enable Autocorrect");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Options")).font(semibold(12.0)));
+                    check(ui, d, "autocorrect", crate::i18n::tr(&app.ui.language, "Enable Autocorrect"));
                     ui.add_space(6.0);
-                    ui.label("Misspelled word → Correction (one per line):");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Misspelled word → Correction (one per line):"));
                     let mut t = d.s("autocorrectText");
                     if egui::ScrollArea::vertical()
                         .max_height(150.0)
@@ -466,17 +482,20 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     }
                 }
                 "notes" => {
-                    ui.label(egui::RichText::new("Options").font(semibold(12.0)));
-                    check(ui, d, "showNoteAnchors", "Show Note Anchors in Layout View");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Options")).font(semibold(12.0)));
+                    check(ui, d, "showNoteAnchors", crate::i18n::tr(&app.ui.language, "Show Note Anchors in Layout View"));
                 }
                 "trackChanges" => {
-                    ui.label(egui::RichText::new("Show").font(semibold(12.0)));
-                    check(ui, d, "showAddedText", "Added Text (highlighted)");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Show")).font(semibold(12.0)));
+                    check(ui, d, "showAddedText", crate::i18n::tr(&app.ui.language, "Added Text (highlighted)"));
                 }
                 "storyEditor" => {
-                    ui.label(egui::RichText::new("Text Display Options").font(semibold(12.0)));
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Text Display Options")).font(semibold(12.0)),
+                    ));
                     ui.horizontal(|ui| {
-                        ui.label("Font Size:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Size:"));
                         let mut v = d.n("storyEditorSize").unwrap_or(14.0);
                         if ui.add(egui::Slider::new(&mut v, 8.0..=36.0).step_by(1.0).suffix(" pt")).changed() {
                             d.fields.insert("storyEditorSize".into(), json!(v));
@@ -484,9 +503,12 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     });
                 }
                 "files" => {
-                    ui.label(egui::RichText::new("Document Recovery Data").font(semibold(12.0)));
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Document Recovery Data")).font(semibold(12.0)),
+                    ));
                     ui.horizontal(|ui| {
-                        ui.label("Save recovery data every:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Save recovery data every:"));
                         let mut v = d.n("recoveryMinutes").unwrap_or(0.5);
                         if ui.add(egui::DragValue::new(&mut v).range(0.1..=60.0).speed(0.1).suffix(" min")).changed() {
                             d.fields.insert("recoveryMinutes".into(), json!(v));
@@ -494,28 +516,39 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     });
                 }
                 "type" => {
-                    ui.label(egui::RichText::new("Type Options").font(semibold(12.0)));
-                    check(ui, d, "typographersQuotes", "Use Typographer's Quotes");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Type Options")).font(semibold(12.0)));
+                    check(ui, d, "typographersQuotes", crate::i18n::tr(&app.ui.language, "Use Typographer's Quotes"));
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Smart Text Reflow").font(semibold(12.0)));
-                    check(ui, d, "smartTextReflow", "Add and remove pages as the primary text frame's story grows and shrinks");
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Smart Text Reflow")).font(semibold(12.0)),
+                    ));
+                    check(
+                        ui,
+                        d,
+                        "smartTextReflow",
+                        crate::i18n::tr(&app.ui.language, "Add and remove pages as the primary text frame's story grows and shrinks"),
+                    );
                 }
                 "composition" => {
-                    ui.label(egui::RichText::new("Highlight").font(semibold(12.0)));
-                    check(ui, d, "highlightKeeps", "Keep Violations");
-                    check(ui, d, "highlightHj", "H&J Violations");
-                    check(ui, d, "highlightCustomTracking", "Custom Tracking/Kerning");
-                    check(ui, d, "highlightSubstitutedFonts", "Substituted Fonts");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Highlight")).font(semibold(12.0)));
+                    check(ui, d, "highlightKeeps", crate::i18n::tr(&app.ui.language, "Keep Violations"));
+                    check(ui, d, "highlightHj", crate::i18n::tr(&app.ui.language, "H&J Violations"));
+                    check(ui, d, "highlightCustomTracking", crate::i18n::tr(&app.ui.language, "Custom Tracking/Kerning"));
+                    check(ui, d, "highlightSubstitutedFonts", crate::i18n::tr(&app.ui.language, "Substituted Fonts"));
                 }
                 "advancedType" => {
-                    ui.label(egui::RichText::new("Character Settings").font(semibold(12.0)));
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Character Settings")).font(semibold(12.0)),
+                    ));
                     egui::Grid::new("pref_adv").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                         ui.label("");
-                        ui.label("Size");
-                        ui.label("Position");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Size"));
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Position"));
                         ui.end_row();
                         for (k, l) in [("superscript", "Superscript:"), ("subscript", "Subscript:")] {
-                            ui.label(l);
+                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
                             for f in ["Size", "Position"] {
                                 ui.horizontal(|ui| {
                                     text_field(ui, d, &format!("adv.{k}{f}"), 50.0);
@@ -527,30 +560,45 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     });
                 }
                 "black" => {
-                    ui.label(egui::RichText::new("Options for Black on RGB and Grayscale Devices").font(semibold(12.0)));
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Options for Black on RGB and Grayscale Devices")).font(semibold(12.0)),
+                    ));
                     ui.horizontal(|ui| {
-                        ui.label("On Screen:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "On Screen:"));
                         let rich = d.b("richBlack");
                         egui::ComboBox::from_id_salt("pref_black")
-                            .selected_text(if rich { "Display All Blacks as Rich Black" } else { "Display All Blacks Accurately" })
+                            .selected_text(crate::rtl::widget(
+                                ui,
+                                crate::i18n::tr(
+                                    &app.ui.language,
+                                    if rich { "Display All Blacks as Rich Black" } else { "Display All Blacks Accurately" },
+                                ),
+                            ))
                             .width(240.0)
                             .show_ui(ui, |ui| {
                                 for (v, l) in [(false, "Display All Blacks Accurately"), (true, "Display All Blacks as Rich Black")] {
-                                    if ui.selectable_label(v == rich, l).clicked() {
+                                    if ui.selectable_label(v == rich, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
                                         d.fields.insert("richBlack".into(), json!(v));
                                     }
                                 }
                             });
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Printing / Exporting:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Printing / Exporting:"));
                         let rich = d.b("richBlackOutput");
                         egui::ComboBox::from_id_salt("pref_black_out")
-                            .selected_text(if rich { "Output All Blacks as Rich Black" } else { "Output All Blacks Accurately" })
+                            .selected_text(crate::rtl::widget(
+                                ui,
+                                crate::i18n::tr(
+                                    &app.ui.language,
+                                    if rich { "Output All Blacks as Rich Black" } else { "Output All Blacks Accurately" },
+                                ),
+                            ))
                             .width(240.0)
                             .show_ui(ui, |ui| {
                                 for (v, l) in [(false, "Output All Blacks Accurately"), (true, "Output All Blacks as Rich Black")] {
-                                    if ui.selectable_label(v == rich, l).clicked() {
+                                    if ui.selectable_label(v == rich, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
                                         d.fields.insert("richBlackOutput".into(), json!(v));
                                     }
                                 }
@@ -558,14 +606,17 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     });
                     if d.fields.contains_key("overprintBlack") {
                         ui.add_space(6.0);
-                        ui.label(egui::RichText::new("[Black] Overprint").font(semibold(12.0)));
-                        check(ui, d, "overprintBlack", "Overprint [Black] Swatch at 100%");
+                        ui.label(crate::rtl::widget(
+                            ui,
+                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "[Black] Overprint")).font(semibold(12.0)),
+                        ));
+                        check(ui, d, "overprintBlack", crate::i18n::tr(&app.ui.language, "Overprint [Black] Swatch at 100%"));
                     }
                 }
                 "interface" => {
-                    ui.label(egui::RichText::new("UI Scaling").font(semibold(12.0)));
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "UI Scaling")).font(semibold(12.0)));
                     ui.horizontal(|ui| {
-                        ui.label("UI Size:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "UI Size:"));
                         let mut v = d.n("uiScale").unwrap_or(100.0);
                         if ui.add(egui::Slider::new(&mut v, 50.0..=200.0).step_by(5.0).suffix("%")).changed() {
                             d.fields.insert("uiScale".into(), json!(v));
@@ -573,31 +624,33 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     });
                 }
                 "grids" => {
-                    ui.label(egui::RichText::new("Baseline Grid").font(semibold(12.0)));
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Baseline Grid")).font(semibold(12.0)));
                     egui::Grid::new("pref_bg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                        ui.label("Color:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
                         color_field(ui, d, "bg.color");
                         ui.end_row();
-                        ui.label("Start:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Start:"));
                         text_field(ui, d, "bg.start", 80.0);
                         ui.end_row();
-                        ui.label("Relative To:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Relative To:"));
                         let cur = d.s("bg.relativeTo");
-                        egui::ComboBox::from_id_salt("bg_rel").selected_text(if cur == "topMargin" { "Top Margin" } else { "Top of Page" }).show_ui(
-                            ui,
-                            |ui| {
+                        egui::ComboBox::from_id_salt("bg_rel")
+                            .selected_text(crate::rtl::widget(
+                                ui,
+                                crate::i18n::tr(&app.ui.language, if cur == "topMargin" { "Top Margin" } else { "Top of Page" }),
+                            ))
+                            .show_ui(ui, |ui| {
                                 for (v, l) in [("topOfPage", "Top of Page"), ("topMargin", "Top Margin")] {
-                                    if ui.selectable_label(cur == v, l).clicked() {
+                                    if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
                                         d.fields.insert("bg.relativeTo".into(), json!(v));
                                     }
                                 }
-                            },
-                        );
+                            });
                         ui.end_row();
-                        ui.label("Increment Every:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Increment Every:"));
                         text_field(ui, d, "bg.increment", 80.0);
                         ui.end_row();
-                        ui.label("View Threshold:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "View Threshold:"));
                         ui.horizontal(|ui| {
                             text_field(ui, d, "bg.viewThreshold", 50.0);
                             ui.label("%");
@@ -605,39 +658,42 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                         ui.end_row();
                     });
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Document Grid").font(semibold(12.0)));
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Document Grid")).font(semibold(12.0)));
                     egui::Grid::new("pref_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                        ui.label("Color:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
                         color_field(ui, d, "grid.color");
                         ui.end_row();
-                        ui.label("Horizontal Gridline Every:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Horizontal Gridline Every:"));
                         text_field(ui, d, "grid.horizontal", 80.0);
                         ui.end_row();
-                        ui.label("Vertical Gridline Every:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Vertical Gridline Every:"));
                         text_field(ui, d, "grid.vertical", 80.0);
                         ui.end_row();
-                        ui.label("Subdivisions:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Subdivisions:"));
                         text_field(ui, d, "grid.subdivisions", 50.0);
                         ui.end_row();
                     });
-                    check(ui, d, "grid.inBack", "Grids in Back");
+                    check(ui, d, "grid.inBack", crate::i18n::tr(&app.ui.language, "Grids in Back"));
                 }
                 "guides" => {
-                    ui.label(egui::RichText::new("Color").font(semibold(12.0)));
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Color")).font(semibold(12.0)));
                     egui::Grid::new("pref_guides").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                         for (k, l) in [("marginColor", "Margins:"), ("columnColor", "Columns:"), ("bleedColor", "Bleed:"), ("slugColor", "Slug:")] {
-                            ui.label(l);
+                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
                             color_field(ui, d, k);
                             ui.end_row();
                         }
                     });
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Pasteboard Options").font(semibold(12.0)));
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Pasteboard Options")).font(semibold(12.0)),
+                    ));
                     egui::Grid::new("pref_pb").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                        ui.label("Horizontal Margins:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Horizontal Margins:"));
                         text_field(ui, d, "pasteboard.h", 80.0);
                         ui.end_row();
-                        ui.label("Vertical Margins:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Vertical Margins:"));
                         text_field(ui, d, "pasteboard.v", 80.0);
                         ui.end_row();
                     });
@@ -655,19 +711,19 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     });
                 }
                 "display" => {
-                    ui.label(egui::RichText::new("Options").font(semibold(12.0)));
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Options")).font(semibold(12.0)));
                     let cur = d.s("displayQuality");
                     ui.horizontal(|ui| {
-                        ui.label("Default View:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Default View:"));
                         egui::ComboBox::from_id_salt("pref_dq")
                             .selected_text(match cur.as_str() {
-                                "fast" => "Fast",
-                                "typical" => "Typical",
-                                _ => "High Quality",
+                                "fast" => crate::i18n::tr(&app.ui.language, "Fast"),
+                                "typical" => crate::i18n::tr(&app.ui.language, "Typical"),
+                                _ => crate::i18n::tr(&app.ui.language, "High Quality"),
                             })
                             .show_ui(ui, |ui| {
                                 for (v, l) in [("fast", "Fast"), ("typical", "Typical"), ("high", "High Quality")] {
-                                    if ui.selectable_label(cur == v, l).clicked() {
+                                    if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
                                         d.fields.insert("displayQuality".into(), json!(v));
                                     }
                                 }
@@ -675,38 +731,47 @@ fn preferences(ui: &mut egui::Ui, d: &mut Dialog) {
                     });
                 }
                 "units" => {
-                    ui.label(egui::RichText::new("Ruler Units").font(semibold(12.0)));
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Ruler Units")).font(semibold(12.0)));
                     egui::Grid::new("pref_units").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                         for (key, label) in [("horizontalUnits", "Horizontal:"), ("verticalUnits", "Vertical:")] {
-                            ui.label(label);
+                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
                             let cur: Unit = d.fields.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-                            egui::ComboBox::from_id_salt(key).selected_text(cur.label()).width(140.0).show_ui(ui, |ui| {
-                                for u in Unit::ALL {
-                                    if ui.selectable_label(u == cur, u.label()).clicked() {
-                                        d.fields.insert(key.into(), json!(u));
+                            egui::ComboBox::from_id_salt(key)
+                                .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, cur.label())))
+                                .width(140.0)
+                                .show_ui(ui, |ui| {
+                                    for u in Unit::ALL {
+                                        if ui
+                                            .selectable_label(u == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, u.label())))
+                                            .clicked()
+                                        {
+                                            d.fields.insert(key.into(), json!(u));
+                                        }
                                     }
-                                }
-                            });
+                                });
                             ui.end_row();
                         }
                     });
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Keyboard Increments").font(semibold(12.0)));
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Keyboard Increments")).font(semibold(12.0)),
+                    ));
                     ui.horizontal(|ui| {
-                        ui.label("Cursor Key:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Cursor Key:"));
                         text_field(ui, d, "keyboardIncrement", 80.0);
                     });
                 }
                 _ => {
-                    ui.label(egui::RichText::new("When Scaling").font(semibold(12.0)));
-                    check(ui, d, "scaleStrokes", "Include Stroke Weight");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "When Scaling")).font(semibold(12.0)));
+                    check(ui, d, "scaleStrokes", crate::i18n::tr(&app.ui.language, "Include Stroke Weight"));
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Transform").font(semibold(12.0)));
-                    check(ui, d, "dimensionsIncludeStroke", "Dimensions Include Stroke Weight");
-                    check(ui, d, "transformationsAreTotals", "Transformations are Totals");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Transform")).font(semibold(12.0)));
+                    check(ui, d, "dimensionsIncludeStroke", crate::i18n::tr(&app.ui.language, "Dimensions Include Stroke Weight"));
+                    check(ui, d, "transformationsAreTotals", crate::i18n::tr(&app.ui.language, "Transformations are Totals"));
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Page Numbering").font(semibold(12.0)));
-                    check(ui, d, "absolutePageNumbers", "Absolute Numbering (instead of Section Numbering)");
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page Numbering")).font(semibold(12.0)));
+                    check(ui, d, "absolutePageNumbers", crate::i18n::tr(&app.ui.language, "Absolute Numbering (instead of Section Numbering)"));
                 }
             }
         });
@@ -724,7 +789,7 @@ fn color_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str) {
 
 fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
     let mut b = d.b(key);
-    if ui.checkbox(&mut b, label).changed() {
+    if ui.checkbox(&mut b, crate::rtl::widget(ui, label)).changed() {
         d.fields.insert(key.into(), Value::Bool(b));
     }
 }
@@ -733,46 +798,55 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.dialog.clone() else { return };
     let mut result: Option<bool> = None;
     let title = match d.id.as_str() {
-        "newDocument" => "New Document",
-        "frameSize" => "Rectangle",
-        "goToPage" => "Go to Page",
-        "ruby" => "Ruby",
-        "insertTable" => "Create Table",
-        "textFrameOptions" => "Text Frame Options",
-        "documentSetup" => "Document Setup",
-        "findChange" => "Find/Change",
-        "paragraphStyleOptions" => "Paragraph Style Options",
-        "footnoteOptions" => "Footnote Options",
-        "insertXref" => "New Cross-Reference",
-        "findFont" => "Find/Replace Font",
-        "polygonSettings" => "Polygon Settings",
-        "userDictionary" => "User Dictionary",
-        "newWorkspace" => "New Workspace",
-        "menus" => "Menu Customization",
-        "importOptions" => "Import Options",
-        "fittingOptions" => "Frame Fitting Options",
-        "qrCode" => "Generate QR Code",
-        "preferences" => "Preferences",
-        "print" => "Print",
-        "pdfImport" => "Place PDF",
-        "colorSettings" => "Color Settings",
-        "layerOptions" => "Object Layer Options",
-        "keyboardShortcuts" => "Keyboard Shortcuts",
-        "colorPicker" => "Color Picker",
+        "ruby" => crate::i18n::tr(&app.ui.language, "Ruby"),
+        "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
+        "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
+        "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
+        "insertTable" => crate::i18n::tr(&app.ui.language, "Create Table"),
+        "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
+        "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
+        "findChange" => crate::i18n::tr(&app.ui.language, "Find/Change"),
+        "paragraphStyleOptions" => crate::i18n::tr(&app.ui.language, "Paragraph Style Options"),
+        "footnoteOptions" => crate::i18n::tr(&app.ui.language, "Footnote Options"),
+        "insertXref" => crate::i18n::tr(&app.ui.language, "New Cross-Reference"),
+        "findFont" => crate::i18n::tr(&app.ui.language, "Find/Replace Font"),
+        "polygonSettings" => crate::i18n::tr(&app.ui.language, "Polygon Settings"),
+        "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
+        "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
+        "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
+        "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
+        "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
+        "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
+        "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
+        "print" => crate::i18n::tr(&app.ui.language, "Print"),
+        "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
+        "colorSettings" => crate::i18n::tr(&app.ui.language, "Color Settings"),
+        "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
+        "keyboardShortcuts" => crate::i18n::tr(&app.ui.language, "Keyboard Shortcuts"),
+        "colorPicker" => crate::i18n::tr(&app.ui.language, "Color Picker"),
         id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
-            Some(c) => c.label.trim_end_matches('…'),
-            None => "Dialog",
+            Some(c) => crate::i18n::tr(&app.ui.language, c.label.trim_end_matches('…')),
+            None => crate::i18n::tr(&app.ui.language, "Dialog"),
         },
     };
     egui::Modal::new(egui::Id::new("dialog")).show(ctx, |ui| {
         ui.set_min_width(380.0);
-        ui.set_max_width(640.0);
-        ui.label(egui::RichText::new(title).font(semibold(16.0)));
+        ui.set_max_width(if d.id == "newDocument" && crate::i18n::is_rtl(&app.ui.language) { 380.0 } else { 640.0 });
+        if crate::i18n::is_rtl(&app.ui.language) {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    crate::rtl::label(ui, egui::RichText::new(title).font(semibold(16.0)));
+                });
+            });
+        } else {
+            crate::rtl::label(ui, egui::RichText::new(title).font(semibold(16.0)));
+        }
         ui.add_space(10.0);
         match d.id.as_str() {
             "newDocument" => {
                 ui.horizontal(|ui| {
-                    ui.label("Preset");
+                    ui.with_layout(if crate::i18n::is_rtl(&app.ui.language) { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) }, |ui| {
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Preset"));
                     let cur = d.s("preset");
                     egui::ComboBox::from_id_salt("preset").selected_text(&cur).width(180.0).show_ui(ui, |ui| {
                         for p in designcraft_doc::build::PRESETS {
@@ -784,46 +858,73 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             }
                         }
                     });
+                    });
                 });
+                if crate::i18n::is_rtl(&app.ui.language) {
+                    // egui Grid currently supports LTR only. Use explicit RTL rows;
+                    // the numeric editors retain LTR alignment and logical values.
+                    for (first, key, second, other, toggle) in [
+                        ("Width", "width", "Height", "height", false),
+                        ("Pages", "pages", "Facing Pages", "facingPages", true),
+                        ("Columns", "columns", "Gutter", "gutter", false),
+                        ("Top", "marginTop", "Bottom", "marginBottom", false),
+                        ("Inside", "marginInside", "Outside", "marginOutside", false),
+                        ("Bleed", "bleed", "Primary Text Frame", "primaryTextFrame", true),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, first));
+                                text_field(ui, &mut d, key, 80.0);
+                                if toggle {
+                                    check(ui, &mut d, other, crate::i18n::tr(&app.ui.language, second));
+                                } else {
+                                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, second));
+                                    text_field(ui, &mut d, other, 80.0);
+                                }
+                            });
+                        });
+                    }
+                } else {
                 egui::Grid::new("nd").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Width");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width"));
                     text_field(ui, &mut d, "width", 80.0);
-                    ui.label("Height");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Height"));
                     text_field(ui, &mut d, "height", 80.0);
                     ui.end_row();
-                    ui.label("Pages");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pages"));
                     text_field(ui, &mut d, "pages", 80.0);
                     ui.label("");
-                    check(ui, &mut d, "facingPages", "Facing Pages");
+                    check(ui, &mut d, "facingPages", crate::i18n::tr(&app.ui.language, "Facing Pages"));
                     ui.end_row();
-                    ui.label("Columns");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Columns"));
                     text_field(ui, &mut d, "columns", 80.0);
-                    ui.label("Gutter");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Gutter"));
                     text_field(ui, &mut d, "gutter", 80.0);
                     ui.end_row();
-                    ui.label("Top");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Top"));
                     text_field(ui, &mut d, "marginTop", 80.0);
-                    ui.label("Bottom");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Bottom"));
                     text_field(ui, &mut d, "marginBottom", 80.0);
                     ui.end_row();
-                    ui.label("Inside");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Inside"));
                     text_field(ui, &mut d, "marginInside", 80.0);
-                    ui.label("Outside");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Outside"));
                     text_field(ui, &mut d, "marginOutside", 80.0);
                     ui.end_row();
-                    ui.label("Bleed");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Bleed"));
                     text_field(ui, &mut d, "bleed", 80.0);
                     ui.label("");
-                    check(ui, &mut d, "primaryTextFrame", "Primary Text Frame");
+                    check(ui, &mut d, "primaryTextFrame", crate::i18n::tr(&app.ui.language, "Primary Text Frame"));
                     ui.end_row();
                 });
+                }
             }
             "frameSize" => {
                 egui::Grid::new("fs").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Width");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width"));
                     text_field(ui, &mut d, "width", 90.0);
                     ui.end_row();
-                    ui.label("Height");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Height"));
                     text_field(ui, &mut d, "height", 90.0);
                     ui.end_row();
                 });
@@ -831,12 +932,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "findChange" => {
                 ui.horizontal(|ui| {
                     for (label, grep) in [("Text", false), ("GREP", true)] {
-                        if ui.selectable_label(!d.b("objectMode") && d.b("grep") == grep, label).clicked() {
+                        if ui.selectable_label(!d.b("objectMode") && d.b("grep") == grep, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                             d.fields.insert("grep".into(), json!(grep));
                             d.fields.insert("objectMode".into(), json!(false));
                         }
                     }
-                    if ui.selectable_label(d.b("objectMode"), "Object").clicked() {
+                    if ui.selectable_label(d.b("objectMode"),crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Object"))).clicked() {
                         d.fields.insert("objectMode".into(), json!(true));
                     }
                 });
@@ -845,10 +946,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     let swatches: Vec<String> = app.session.active().map(|st| st.doc.swatches.iter().filter(|w| !w.hidden).map(|w| w.name.clone()).collect()).unwrap_or_default();
                     egui::Grid::new("fco").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                         for (key, label, any) in [("objFill", "Find fill:", "(any)"), ("objChangeFill", "Change fill to:", "(unchanged)")] {
-                            ui.label(label);
+                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
                             let cur = d.s(key);
                             egui::ComboBox::from_id_salt(key).selected_text(if cur.is_empty() { any } else { cur.as_str() }).width(180.0).show_ui(ui, |ui| {
-                                if ui.selectable_label(cur.is_empty(), any).clicked() {
+                                if ui.selectable_label(cur.is_empty(), crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, any))).clicked() {
                                     d.fields.insert(key.into(), json!(""));
                                 }
                                 for w in &swatches {
@@ -859,11 +960,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             });
                             ui.end_row();
                         }
-                        ui.label("Kind:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Kind:"));
                         let cur = d.s("objKind");
                         egui::ComboBox::from_id_salt("objKind").selected_text(if cur.is_empty() { "(any)" } else { cur.as_str() }).show_ui(ui, |ui| {
                             for v in ["", "text", "graphic", "shape", "line", "group"] {
-                                if ui.selectable_label(cur == v, if v.is_empty() { "(any)" } else { v }).clicked() {
+                                if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if v.is_empty() { "(any)" } else { v }))).clicked() {
                                     d.fields.insert("objKind".into(), json!(v));
                                 }
                             }
@@ -878,11 +979,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         crit["kind"] = json!(d.s("objKind"));
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Find All").clicked() {
+                        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find All"))).clicked() {
                             let n = app.run("find.objects", crit.clone()).ok().and_then(|r| r["ids"].as_array().map(Vec::len)).unwrap_or(0);
                             d.fields.insert("status".into(), json!(format!("{n} found")));
                         }
-                        if ui.button("Change All").clicked() && !d.s("objChangeFill").is_empty() {
+                        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Change All"))).clicked() && !d.s("objChangeFill").is_empty() {
                             let mut p = crit.clone();
                             p["change"] = json!({"fill": d.s("objChangeFill")});
                             let n = app.run("find.changeObjects", p).ok().and_then(|r| r["changed"].as_u64()).unwrap_or(0);
@@ -892,17 +993,17 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     ui.label(d.s("status"));
                 } else {
                 egui::Grid::new("fc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Find what:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Find what:"));
                     text_field(ui, &mut d, "find", 260.0);
                     ui.end_row();
-                    ui.label("Change to:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Change to:"));
                     text_field(ui, &mut d, "change", 260.0);
                     ui.end_row();
-                    ui.label("Search:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Search:"));
                     let cur = d.s("scope");
-                    egui::ComboBox::from_id_salt("fcscope").selected_text(&cur).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("fcscope").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &cur))).show_ui(ui, |ui| {
                         for v in ["document", "story", "selection"] {
-                            if ui.selectable_label(cur == v, v).clicked() {
+                            if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, v))).clicked() {
                                 d.fields.insert("scope".into(), json!(v));
                             }
                         }
@@ -910,13 +1011,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     ui.end_row();
                 });
                 ui.horizontal(|ui| {
-                    check(ui, &mut d, "caseSensitive", "Case sensitive");
-                    check(ui, &mut d, "wholeWord", "Whole word");
+                    check(ui, &mut d, "caseSensitive", crate::i18n::tr(&app.ui.language, "Case sensitive"));
+                    check(ui, &mut d, "wholeWord", crate::i18n::tr(&app.ui.language, "Whole word"));
                 });
                 ui.horizontal(|ui| {
                     let params0 = json!({"find": d.s("find"), "change": d.s("change"), "grep": d.b("grep"), "caseSensitive": d.b("caseSensitive"), "wholeWord": d.b("wholeWord"), "scope": d.s("scope")});
                     let params = || params0.clone();
-                    if ui.button("Find Next").clicked() {
+                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find Next"))).clicked() {
                         let r = app.run("find.next", params());
                         let msg = match r {
                             Ok(Value::Null) => "No matches".to_string(),
@@ -925,14 +1026,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         };
                         d.fields.insert("status".into(), json!(msg));
                     }
-                    if ui.button("Change All").clicked() {
+                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Change All"))).clicked() {
                         let msg = match app.run("find.change", params()) {
                             Ok(v) => format!("{} replacement(s) made", v["count"]),
                             Err(e) => e,
                         };
                         d.fields.insert("status".into(), json!(msg));
                     }
-                    if ui.button("Count").clicked() {
+                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Count"))).clicked() {
                         let msg = match app.run("find.find", params()) {
                             Ok(v) => format!("{} match(es)", v.as_array().map(|a| a.len()).unwrap_or(0)),
                             Err(e) => e,
@@ -950,25 +1051,25 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "insertXref" => insert_xref(app, ui, &mut d),
             "findFont" => find_font(app, ui, &mut d),
             "colorPicker" => color_picker(ui, &mut d),
-            "preferences" => preferences(ui, &mut d),
-            "print" => print_dialog(ui, &mut d),
+            "preferences" => preferences(app, ui, &mut d),
+            "print" => print_dialog(app, ui, &mut d),
             "pdfImport" => {
                 ui.label(egui::RichText::new(d.s("path")).size(11.0));
                 ui.horizontal(|ui| {
-                    ui.label(format!("Page (1–{}):", d.n("pages").unwrap_or(1.0)));
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Page (1–{count}):").replace("{count}", &d.n("pages").unwrap_or(1.0).to_string()));
                     text_field(ui, &mut d, "page", 60.0);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Crop to:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Crop to:"));
                     let cur = d.s("crop");
                     let label = |v: &str| match v {
-                        "trim" => "Trim",
-                        "bleed" => "Bleed",
-                        "art" => "Art",
-                        "media" => "Media",
-                        _ => "Crop",
+                        "trim" => crate::i18n::tr(&app.ui.language, "Trim"),
+                        "bleed" => crate::i18n::tr(&app.ui.language, "Bleed"),
+                        "art" => crate::i18n::tr(&app.ui.language, "Art"),
+                        "media" => crate::i18n::tr(&app.ui.language, "Media"),
+                        _ => crate::i18n::tr(&app.ui.language, "Crop"),
                     };
-                    egui::ComboBox::from_id_salt("pdf_crop").selected_text(label(&cur)).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("pdf_crop").selected_text(crate::rtl::widget(ui, label(&cur))).show_ui(ui, |ui| {
                         for v in ["crop", "trim", "bleed", "art", "media"] {
                             if ui.selectable_label(label(&cur) == label(v), label(v)).clicked() {
                                 d.fields.insert("crop".into(), json!(v));
@@ -980,7 +1081,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "layerOptions" => {
                 let mut layers = d.fields.get("layers").and_then(Value::as_array).cloned().unwrap_or_default();
                 if layers.is_empty() {
-                    ui.label("This PDF has no layers.");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "This PDF has no layers."));
                 }
                 for l in &mut layers {
                     let mut on = l["visible"].as_bool().unwrap_or(true);
@@ -994,7 +1095,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 let profiles = d.fields.get("profiles").and_then(Value::as_array).cloned().unwrap_or_default();
                 egui::Grid::new("color_settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     for (key, label, kind) in [("rgb", "RGB:", "rgb"), ("cmyk", "CMYK:", "cmyk")] {
-                        ui.label(label);
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
                         let cur = d.s(key);
                         egui::ComboBox::from_id_salt(("ws", key)).selected_text(&cur).width(260.0).show_ui(ui, |ui| {
                             for pr in profiles.iter().filter(|p| p["kind"] == kind) {
@@ -1006,21 +1107,21 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         });
                         ui.end_row();
                     }
-                    ui.label("Intent:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Intent:"));
                     let cur = d.s("intent");
                     egui::ComboBox::from_id_salt("ws_intent")
-                        .selected_text(designcraft_color::cms::Intent::parse(&cur).map_or("", |i| i.label()))
+                        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, designcraft_color::cms::Intent::parse(&cur).map_or("", |i| i.label()))))
                         .show_ui(ui, |ui| {
                             for i in designcraft_color::cms::Intent::ALL {
-                                if ui.selectable_label(i.id() == cur, i.label()).clicked() {
+                                if ui.selectable_label(i.id() == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, i.label()))).clicked() {
                                     d.fields.insert("intent".into(), json!(i.id()));
                                 }
                             }
                         });
                     ui.end_row();
                 });
-                check(ui, &mut d, "bpc", "Use Black Point Compensation");
-                if ui.button("Load Profile…").clicked()
+                check(ui, &mut d, "bpc", crate::i18n::tr(&app.ui.language, "Use Black Point Compensation"));
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load Profile…"))).clicked()
                     && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("icc"))
                 {
                     match app.session.execute("color.loadProfile", &json!({"path": path})) {
@@ -1041,7 +1142,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     for (menu, label) in crate::menus::all_menu_items().into_iter().filter(|(m, l)| q.is_empty() || m.to_lowercase().contains(&q) || l.to_lowercase().contains(&q)) {
                         let key = crate::menus::menu_key(&menu, &label);
                         let mut visible = !app.ui.hidden_menu_items.contains(&key);
-                        if ui.checkbox(&mut visible, format!("{menu} › {label}")).changed() {
+                        if ui.checkbox(&mut visible, crate::rtl::widget(ui, format!("{} › {}", crate::i18n::tr(&app.ui.language, &menu), crate::i18n::tr(&app.ui.language, &label)))).changed() {
                             let _ = app.run("window.hideMenuItem", json!({"item": key, "hidden": !visible}));
                         }
                     }
@@ -1049,11 +1150,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             }
             "importOptions" => {
                 ui.label(egui::RichText::new(d.s("path")).size(10.5));
-                check(ui, &mut d, "removeStyles", "Remove Styles and Formatting from Text and Tables");
+                check(ui, &mut d, "removeStyles", crate::i18n::tr(&app.ui.language, "Remove Styles and Formatting from Text and Tables"));
                 if !d.b("removeStyles") {
-                    ui.label(egui::RichText::new("Style Name Conflicts").font(semibold(12.0)));
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Style Name Conflicts")).font(semibold(12.0)));
                     let conflicts: Vec<String> = d.fields.get("conflicts").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-                    ui.label(if conflicts.is_empty() { "No conflicts".to_string() } else { format!("{} conflict(s): {}", conflicts.len(), conflicts.join(", ")) });
+                    ui.label(if conflicts.is_empty() { crate::i18n::tr(&app.ui.language, "No conflicts").to_string() } else { format!("{} conflict(s): {}", conflicts.len(), conflicts.join(", ")) });
                     let cur = d.s("styleConflicts");
                     ui.horizontal(|ui| {
                         for (v, l) in [("useExisting", "Use Document Style Definition"), ("redefine", "Redefine Document Style"), ("autoRename", "Auto Rename")] {
@@ -1062,7 +1163,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             }
                         }
                     });
-                    ui.label(egui::RichText::new("Style Mapping").font(semibold(12.0)));
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Style Mapping")).font(semibold(12.0)));
                     let names: Vec<String> = app.session.active().map(|s| s.doc.styles.paragraph.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
                     let imported: Vec<String> = d.fields.get("styles").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
                     egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
@@ -1071,8 +1172,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 ui.label(w);
                                 let mapped = d.fields.get("map").and_then(|m| m.get(w)).and_then(Value::as_str).unwrap_or("").to_string();
                                 let shown = if mapped.is_empty() { "(import)".to_string() } else { mapped.clone() };
-                                egui::ComboBox::from_id_salt(("imp_map", w)).selected_text(shown).width(170.0).show_ui(ui, |ui| {
-                                    if ui.selectable_label(mapped.is_empty(), "(import)").clicked()
+                                egui::ComboBox::from_id_salt(("imp_map", w)).selected_text(crate::rtl::widget(ui, &shown)).width(170.0).show_ui(ui, |ui| {
+                                    if ui.selectable_label(mapped.is_empty(),crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "(import)"))).clicked()
                                         && let Some(m) = d.fields.get_mut("map").and_then(Value::as_object_mut)
                                     {
                                         m.remove(w);
@@ -1093,35 +1194,35 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             }
             "newWorkspace" => {
                 ui.horizontal(|ui| {
-                    ui.label("Name:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name:"));
                     text_field(ui, &mut d, "name", 220.0);
                 });
-                ui.label(egui::RichText::new("Saves which bars show and where the panels are.").size(10.5));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Saves which bars show and where the panels are.")).size(10.5));
             }
             "fittingOptions" => {
-                check(ui, &mut d, "autoFit", "Auto-Fit");
+                check(ui, &mut d, "autoFit", crate::i18n::tr(&app.ui.language, "Auto-Fit"));
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("Content Fitting").font(semibold(12.0)));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Content Fitting")).font(semibold(12.0)));
                 let cur = d.s("fitting");
                 let label = |v: &str| match v {
-                    "fillProportionally" => "Fill Frame Proportionally",
-                    "fitProportionally" => "Fit Content Proportionally",
-                    "fitContentToFrame" => "Fit Content to Frame",
-                    "centerContent" => "Center Content",
-                    _ => "None",
+                    "fillProportionally" => crate::i18n::tr(&app.ui.language, "Fill Frame Proportionally"),
+                    "fitProportionally" => crate::i18n::tr(&app.ui.language, "Fit Content Proportionally"),
+                    "fitContentToFrame" => crate::i18n::tr(&app.ui.language, "Fit Content to Frame"),
+                    "centerContent" => crate::i18n::tr(&app.ui.language, "Center Content"),
+                    _ => crate::i18n::tr(&app.ui.language, "None"),
                 };
                 ui.horizontal(|ui| {
-                    ui.label("Fitting:");
-                    egui::ComboBox::from_id_salt("ff_fit").selected_text(label(&cur)).width(200.0).show_ui(ui, |ui| {
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Fitting:"));
+                    egui::ComboBox::from_id_salt("ff_fit").selected_text(crate::rtl::widget(ui, label(&cur))).width(200.0).show_ui(ui, |ui| {
                         for v in ["none", "fillProportionally", "fitProportionally", "fitContentToFrame", "centerContent"] {
-                            if ui.selectable_label(cur == v, label(v)).clicked() {
+                            if ui.selectable_label(cur == v, crate::rtl::widget(ui, label(v))).clicked() {
                                 d.fields.insert("fitting".into(), json!(v));
                             }
                         }
                     });
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Align From:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Align From:"));
                     let a = d.n("align").unwrap_or(4.0) as u8;
                     egui::Grid::new("ff_align").spacing([2.0, 2.0]).show(ui, |ui| {
                         for row in 0..3u8 {
@@ -1142,15 +1243,15 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         }
                     });
                 });
-                ui.label(egui::RichText::new("Crop Amount").font(semibold(12.0)));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Crop Amount")).font(semibold(12.0)));
                 egui::Grid::new("ff_crop").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
                     for (k, l) in [("cropTop", "Top:"), ("cropLeft", "Left:")] {
-                        ui.label(l);
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
                         text_field(ui, &mut d, k, 70.0);
                     }
                     ui.end_row();
                     for (k, l) in [("cropBottom", "Bottom:"), ("cropRight", "Right:")] {
-                        ui.label(l);
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
                         text_field(ui, &mut d, k, 70.0);
                     }
                     ui.end_row();
@@ -1159,17 +1260,17 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "qrCode" => {
                 let cur = d.s("type");
                 ui.horizontal(|ui| {
-                    ui.label("Type:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Type:"));
                     let label = |v: &str| match v {
-                        "text" => "Plain Text",
-                        "sms" => "Text Message",
-                        "email" => "Email",
-                        "vcard" => "Business Card",
-                        _ => "Web Hyperlink",
+                        "text" => crate::i18n::tr(&app.ui.language, "Plain Text"),
+                        "sms" => crate::i18n::tr(&app.ui.language, "Text Message"),
+                        "email" => crate::i18n::tr(&app.ui.language, "Email"),
+                        "vcard" => crate::i18n::tr(&app.ui.language, "Business Card"),
+                        _ => crate::i18n::tr(&app.ui.language, "Web Hyperlink"),
                     };
-                    egui::ComboBox::from_id_salt("qr_type").selected_text(label(&cur)).width(160.0).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("qr_type").selected_text(crate::rtl::widget(ui, label(&cur))).width(160.0).show_ui(ui, |ui| {
                         for v in ["url", "text", "sms", "email", "vcard"] {
-                            if ui.selectable_label(cur == v, label(v)).clicked() {
+                            if ui.selectable_label(cur == v, crate::rtl::widget(ui, label(v))).clicked() {
                                 d.fields.insert("type".into(), json!(v));
                             }
                         }
@@ -1184,21 +1285,21 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 };
                 egui::Grid::new("qr_fields").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     for (k, l) in fields {
-                        ui.label(*l);
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
                         text_field(ui, &mut d, k, 260.0);
                         ui.end_row();
                     }
-                    ui.label("Color:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
                     text_field(ui, &mut d, "color", 160.0);
                     ui.end_row();
                 });
             }
             "polygonSettings" => {
                 egui::Grid::new("poly").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Number of Sides:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Number of Sides:"));
                     text_field(ui, &mut d, "sides", 60.0);
                     ui.end_row();
-                    ui.label("Star Inset:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Star Inset:"));
                     ui.horizontal(|ui| {
                         text_field(ui, &mut d, "starInset", 60.0);
                         ui.label("%");
@@ -1206,51 +1307,51 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     ui.end_row();
                 });
             }
-            id if id.starts_with("cmd:") => command_form(ui, &mut d),
+            id if id.starts_with("cmd:") => command_form(app, ui, &mut d),
             "goToPage" => {
                 ui.horizontal(|ui| {
-                    ui.label("Page");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Page"));
                     text_field(ui, &mut d, "page", 80.0);
                 });
             }
             "ruby" => {
                 ui.horizontal(|ui| {
-                    ui.label("Ruby:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Ruby:"));
                     text_field(ui, &mut d, "text", 200.0);
                 });
-                ui.label(egui::RichText::new("Set over the selected text; empty removes it.").size(11.0));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Set over the selected text; empty removes it.")).size(11.0));
             }
             "insertTable" => {
-                ui.label(egui::RichText::new("Table Dimensions").font(semibold(12.0)));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Table Dimensions")).font(semibold(12.0)));
                 egui::Grid::new("ins_table").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Body Rows");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Body Rows"));
                     text_field(ui, &mut d, "bodyRows", 60.0);
-                    ui.label("Columns");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Columns"));
                     text_field(ui, &mut d, "columns", 60.0);
                     ui.end_row();
-                    ui.label("Header Rows");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Header Rows"));
                     text_field(ui, &mut d, "headerRows", 60.0);
-                    ui.label("Footer Rows");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Footer Rows"));
                     text_field(ui, &mut d, "footerRows", 60.0);
                     ui.end_row();
                 });
             }
             "textFrameOptions" => {
                 egui::Grid::new("tfo").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Number of columns");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Number of columns"));
                     text_field(ui, &mut d, "columns", 80.0);
                     ui.end_row();
-                    ui.label("Gutter");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Gutter"));
                     text_field(ui, &mut d, "gutter", 80.0);
                     ui.end_row();
-                    ui.label("Inset spacing");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Inset spacing"));
                     text_field(ui, &mut d, "inset", 80.0);
                     ui.end_row();
-                    ui.label("Vertical justification");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Vertical justification"));
                     let cur = d.s("verticalJustification");
-                    egui::ComboBox::from_id_salt("vj").selected_text(&cur).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("vj").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &cur))).show_ui(ui, |ui| {
                         for v in ["top", "center", "bottom", "justify"] {
-                            if ui.selectable_label(cur == v, v).clicked() {
+                            if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, v))).clicked() {
                                 d.fields.insert("verticalJustification".into(), json!(v));
                             }
                         }
@@ -1258,7 +1359,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     ui.end_row();
                 });
             }
-            "documentSetup" => document_setup(ui, &mut d),
+            "documentSetup" => document_setup(app, ui, &mut d),
             _ => {}
         }
         ui.add_space(12.0);
@@ -1266,7 +1367,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(egui::RichText::new("  OK  ").color(egui::Color32::WHITE))
+                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  OK  ")).color(egui::Color32::WHITE)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
@@ -1274,7 +1375,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 {
                     result = Some(true);
                 }
-                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     result = Some(false);
                 }
             });
@@ -1635,7 +1736,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                 ("color", "Character Color"),
                 ("export", "Export Tagging"),
             ] {
-                if ui.selectable_label(d.s("section") == id, label).clicked() {
+                if ui.selectable_label(d.s("section") == id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                     d.fields.insert("section".into(), json!(id));
                 }
             }
@@ -1644,72 +1745,84 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
         let cnames: Vec<String> = app.session.active().map(|s| s.doc.styles.character.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
         ui.vertical(|ui| match d.s("section").as_str() {
             "export" => {
-                ui.label(egui::RichText::new("EPUB and HTML").font(semibold(12.0)));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "EPUB and HTML")).font(semibold(12.0)));
                 let et = app.session.active().and_then(|s| s.doc.styles.export_tag(&name, false).cloned()).unwrap_or_default();
                 if !d.fields.contains_key("x.tag") {
                     d.fields.insert("x.tag".into(), json!(if et.tag.is_empty() { "[Automatic]" } else { et.tag.as_str() }));
                     d.fields.insert("x.class".into(), json!(et.class));
                 }
                 ui.horizontal(|ui| {
-                    ui.label("Tag:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Tag:"));
                     let cur = d.s("x.tag");
-                    egui::ComboBox::from_id_salt("export_tag").selected_text(&cur).show_ui(ui, |ui| {
-                        for t in ["[Automatic]", "p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "li", "figcaption", "aside", "div"] {
-                            if ui.selectable_label(cur == t, t).clicked() {
-                                d.fields.insert("x.tag".into(), json!(t));
+                    egui::ComboBox::from_id_salt("export_tag")
+                        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &cur)))
+                        .show_ui(ui, |ui| {
+                            for t in ["[Automatic]", "p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "li", "figcaption", "aside", "div"]
+                            {
+                                if ui.selectable_label(cur == t, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, t))).clicked() {
+                                    d.fields.insert("x.tag".into(), json!(t));
+                                }
                             }
-                        }
-                    });
+                        });
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Class:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Class:"));
                     text_field(ui, d, "x.class", 160.0);
                 });
             }
             "nested" => {
-                ui.label(egui::RichText::new("Nested Styles").font(semibold(12.0)));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Nested Styles")).font(semibold(12.0)));
                 let mut list: Vec<Value> = cur(d, "p.nestedStyles", &pv["nestedStyles"]).as_array().cloned().unwrap_or_default();
                 let mut changed = false;
                 let mut remove = None;
                 for (i, ns) in list.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         let style = ns["style"].as_str().unwrap_or("[None]").to_string();
-                        egui::ComboBox::from_id_salt(("ns_style", i)).selected_text(&style).width(110.0).show_ui(ui, |ui| {
-                            for c in &cnames {
-                                if ui.selectable_label(*c == style, c).clicked() {
-                                    ns["style"] = json!(c);
-                                    changed = true;
+                        egui::ComboBox::from_id_salt(("ns_style", i))
+                            .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, &style)))
+                            .width(110.0)
+                            .show_ui(ui, |ui| {
+                                for c in &cnames {
+                                    if ui
+                                        .selectable_label(*c == style, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, c)))
+                                        .clicked()
+                                    {
+                                        ns["style"] = json!(c);
+                                        changed = true;
+                                    }
                                 }
-                            }
-                        });
+                            });
                         let through = ns["through"].as_bool().unwrap_or(true);
-                        egui::ComboBox::from_id_salt(("ns_thr", i)).selected_text(if through { "through" } else { "up to" }).width(70.0).show_ui(
-                            ui,
-                            |ui| {
+                        egui::ComboBox::from_id_salt(("ns_thr", i))
+                            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if through { "through" } else { "up to" })))
+                            .width(70.0)
+                            .show_ui(ui, |ui| {
                                 for (v, l) in [(true, "through"), (false, "up to")] {
-                                    if ui.selectable_label(v == through, l).clicked() {
+                                    if ui.selectable_label(v == through, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
                                         ns["through"] = json!(v);
                                         changed = true;
                                     }
                                 }
-                            },
-                        );
+                            });
                         let mut n = ns["count"].as_u64().unwrap_or(1) as u32;
                         if ui.add(egui::DragValue::new(&mut n).range(1..=999)).changed() {
                             ns["count"] = json!(n);
                             changed = true;
                         }
                         let kind = ns["until"]["kind"].as_str().unwrap_or("words").to_string();
-                        egui::ComboBox::from_id_salt(("ns_until", i)).selected_text(&kind).width(100.0).show_ui(ui, |ui| {
-                            for k in
-                                ["sentences", "words", "characters", "letters", "digits", "tab", "forcedLineBreak", "emSpace", "enSpace", "chars"]
-                            {
-                                if ui.selectable_label(k == kind, k).clicked() {
-                                    ns["until"] = if k == "chars" { json!({"kind": "chars", "chars": ":"}) } else { json!({"kind": k}) };
-                                    changed = true;
+                        egui::ComboBox::from_id_salt(("ns_until", i))
+                            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &kind)))
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                for k in
+                                    ["sentences", "words", "characters", "letters", "digits", "tab", "forcedLineBreak", "emSpace", "enSpace", "chars"]
+                                {
+                                    if ui.selectable_label(k == kind, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, k))).clicked() {
+                                        ns["until"] = if k == "chars" { json!({"kind": "chars", "chars": ":"}) } else { json!({"kind": k}) };
+                                        changed = true;
+                                    }
                                 }
-                            }
-                        });
+                            });
                         if kind == "chars" {
                             let mut c = ns["until"]["chars"].as_str().unwrap_or("").to_string();
                             if ui.add(egui::TextEdit::singleline(&mut c).desired_width(40.0)).changed() {
@@ -1717,7 +1830,13 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                                 changed = true;
                             }
                         }
-                        if ui.small_button("×").on_hover_text("Delete").clicked() {
+                        if ui
+                            .small_button("×")
+                            .on_hover_ui(|ui| {
+                                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Delete"));
+                            })
+                            .clicked()
+                        {
                             remove = Some(i);
                         }
                     });
@@ -1726,7 +1845,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     list.remove(i);
                     changed = true;
                 }
-                if ui.button("New Nested Style").clicked() {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Nested Style"))).clicked() {
                     list.push(json!({"style": cnames.get(1).cloned().unwrap_or_default(), "through": true, "count": 1, "until": {"kind": "words"}}));
                     changed = true;
                 }
@@ -1734,29 +1853,41 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     d.fields.insert("p.nestedStyles".into(), Value::Array(list));
                 }
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new("Nested Line Styles").font(semibold(12.0)));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Nested Line Styles")).font(semibold(12.0)));
                 let mut lines: Vec<Value> = cur(d, "p.nestedLineStyles", &pv["nestedLineStyles"]).as_array().cloned().unwrap_or_default();
                 let mut changed = false;
                 let mut remove = None;
                 for (i, l) in lines.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         let style = l["style"].as_str().unwrap_or("").to_string();
-                        egui::ComboBox::from_id_salt(("nls_style", i)).selected_text(&style).width(130.0).show_ui(ui, |ui| {
-                            for c in &cnames {
-                                if ui.selectable_label(*c == style, c).clicked() {
-                                    l["style"] = json!(c);
-                                    changed = true;
+                        egui::ComboBox::from_id_salt(("nls_style", i))
+                            .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, &style)))
+                            .width(130.0)
+                            .show_ui(ui, |ui| {
+                                for c in &cnames {
+                                    if ui
+                                        .selectable_label(*c == style, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, c)))
+                                        .clicked()
+                                    {
+                                        l["style"] = json!(c);
+                                        changed = true;
+                                    }
                                 }
-                            }
-                        });
-                        ui.label("for");
+                            });
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "for"));
                         let mut n = l["lines"].as_u64().unwrap_or(1) as u32;
                         if ui.add(egui::DragValue::new(&mut n).range(1..=999)).changed() {
                             l["lines"] = json!(n);
                             changed = true;
                         }
-                        ui.label(if n == 1 { "line" } else { "lines" });
-                        if ui.small_button("×").on_hover_text("Delete").clicked() {
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, if n == 1 { "line" } else { "lines" }));
+                        if ui
+                            .small_button("×")
+                            .on_hover_ui(|ui| {
+                                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Delete"));
+                            })
+                            .clicked()
+                        {
                             remove = Some(i);
                         }
                     });
@@ -1765,7 +1896,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     lines.remove(i);
                     changed = true;
                 }
-                if ui.button("New Line Style").clicked() {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Line Style"))).clicked() {
                     lines.push(json!({"style": cnames.get(1).cloned().unwrap_or_default(), "lines": 1}));
                     changed = true;
                 }
@@ -1774,23 +1905,29 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                 }
             }
             "grep" => {
-                ui.label(egui::RichText::new("GREP Styles").font(semibold(12.0)));
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "GREP Styles")).font(semibold(12.0)));
                 let mut list: Vec<Value> = cur(d, "p.grepStyles", &pv["grepStyles"]).as_array().cloned().unwrap_or_default();
                 let mut changed = false;
                 let mut remove = None;
                 for (i, g) in list.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.label("Apply Style:");
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Apply Style:"));
                         let style = g["style"].as_str().unwrap_or("").to_string();
-                        egui::ComboBox::from_id_salt(("gs_style", i)).selected_text(&style).width(110.0).show_ui(ui, |ui| {
-                            for c in &cnames {
-                                if ui.selectable_label(*c == style, c).clicked() {
-                                    g["style"] = json!(c);
-                                    changed = true;
+                        egui::ComboBox::from_id_salt(("gs_style", i))
+                            .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, &style)))
+                            .width(110.0)
+                            .show_ui(ui, |ui| {
+                                for c in &cnames {
+                                    if ui
+                                        .selectable_label(*c == style, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, c)))
+                                        .clicked()
+                                    {
+                                        g["style"] = json!(c);
+                                        changed = true;
+                                    }
                                 }
-                            }
-                        });
-                        ui.label("To Text:");
+                            });
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "To Text:"));
                         let mut pat = g["pattern"].as_str().unwrap_or("").to_string();
                         let bad = regex_ok(&pat).is_err();
                         let r = ui.add(
@@ -1802,7 +1939,13 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                             g["pattern"] = json!(pat);
                             changed = true;
                         }
-                        if ui.small_button("×").on_hover_text("Delete").clicked() {
+                        if ui
+                            .small_button("×")
+                            .on_hover_ui(|ui| {
+                                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Delete"));
+                            })
+                            .clicked()
+                        {
                             remove = Some(i);
                         }
                     });
@@ -1811,7 +1954,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     list.remove(i);
                     changed = true;
                 }
-                if ui.button("New GREP Style").clicked() {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New GREP Style"))).clicked() {
                     list.push(json!({"style": cnames.get(1).cloned().unwrap_or_default(), "pattern": "\\d+"}));
                     changed = true;
                 }
@@ -1821,7 +1964,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
             "chars" => {
                 egui::Grid::new("psc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Font Family:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Family:"));
                     let fam = cur(d, "c.fontFamily", &cv["fontFamily"]).as_str().unwrap_or("").to_string();
                     egui::ComboBox::from_id_salt("psfam").selected_text(&fam).width(200.0).show_ui(ui, |ui| {
                         for f in designcraft_fonts::FontDb::global().families() {
@@ -1831,7 +1974,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         }
                     });
                     ui.end_row();
-                    ui.label("Font Style:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Style:"));
                     let sty = cur(d, "c.fontStyle", &cv["fontStyle"]).as_str().unwrap_or("").to_string();
                     egui::ComboBox::from_id_salt("pssty").selected_text(&sty).width(200.0).show_ui(ui, |ui| {
                         for s in designcraft_fonts::FontDb::global().styles(&fam) {
@@ -1842,14 +1985,14 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     });
                     ui.end_row();
                     for (label, key, suffix) in [("Size:", "size", " pt"), ("Tracking:", "tracking", "")] {
-                        ui.label(label);
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
                         let v = cur(d, &format!("c.{key}"), &cv[key]).as_f64();
                         if let Some(n) = crate::widgets::number(ui, &format!("ps{key}"), v, suffix, 80.0, 2) {
                             d.fields.insert(format!("c.{key}"), json!(n));
                         }
                         ui.end_row();
                     }
-                    ui.label("Leading:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Leading:"));
                     let lv = match cur(d, "c.leading", &cv["leading"]) {
                         v if v["kind"] == "points" => v["value"].as_f64(),
                         _ => None,
@@ -1862,15 +2005,18 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
             "indents" => {
                 egui::Grid::new("psi").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Alignment:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Alignment:"));
                     let a: designcraft_doc::Align = serde_json::from_value(cur(d, "p.align", &pv["align"])).unwrap_or_default();
-                    egui::ComboBox::from_id_salt("psalign").selected_text(a.label()).width(240.0).show_ui(ui, |ui| {
-                        for al in designcraft_doc::Align::ALL {
-                            if ui.selectable_label(al == a, al.label()).clicked() {
-                                d.fields.insert("p.align".into(), serde_json::to_value(al).unwrap_or_default());
+                    egui::ComboBox::from_id_salt("psalign")
+                        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, a.label())))
+                        .width(240.0)
+                        .show_ui(ui, |ui| {
+                            for al in designcraft_doc::Align::ALL {
+                                if ui.selectable_label(al == a, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, al.label()))).clicked() {
+                                    d.fields.insert("p.align".into(), serde_json::to_value(al).unwrap_or_default());
+                                }
                             }
-                        }
-                    });
+                        });
                     ui.end_row();
                     for (label, key) in [
                         ("Left Indent:", "leftIndent"),
@@ -1879,7 +2025,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         ("Space Before:", "spaceBefore"),
                         ("Space After:", "spaceAfter"),
                     ] {
-                        ui.label(label);
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
                         let v = cur(d, &format!("p.{key}"), &pv[key]).as_f64();
                         if let Some(n) = crate::widgets::measure(ui, &format!("ps{key}"), v, units, 80.0) {
                             d.fields.insert(format!("p.{key}"), json!(n));
@@ -1890,7 +2036,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
             "hyph" => {
                 let mut h = cur(d, "p.hyphenate", &pv["hyphenate"]).as_bool().unwrap_or(true);
-                if ui.checkbox(&mut h, "Hyphenate").changed() {
+                if ui.checkbox(&mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
                     d.fields.insert("p.hyphenate".into(), json!(h));
                 }
                 egui::Grid::new("psh").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -1900,7 +2046,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         ("Before Last:", "hyphBeforeLast"),
                         ("Hyphen Limit:", "hyphLimit"),
                     ] {
-                        ui.label(label);
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
                         let v = cur(d, &format!("p.{key}"), &pv[key]).as_f64();
                         if let Some(n) = crate::widgets::number(ui, &format!("ps{key}"), v, "", 60.0, 0) {
                             d.fields.insert(format!("p.{key}"), json!(n.max(0.0) as u64));
@@ -1912,33 +2058,33 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             "justify" => {
                 egui::Grid::new("psj").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
                     ui.label("");
-                    ui.label("Minimum");
-                    ui.label("Desired");
-                    ui.label("Maximum");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Minimum"));
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Desired"));
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Maximum"));
                     ui.end_row();
                     for (label, base) in [("Word Spacing:", "wordSpace"), ("Letter Spacing:", "letterSpace"), ("Glyph Scaling:", "glyphScale")] {
-                        ui.label(label);
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
                         for suffix in ["Min", "Desired", "Max"] {
                             let key = format!("{base}{suffix}");
                             let v = cur(d, &format!("p.{key}"), &pv[key.as_str()]).as_f64().map(|x| x * 100.0);
-                            if let Some(n) = crate::widgets::number(ui, &format!("ps{key}"), v, "%", 60.0, 0) {
+                            if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{key}"), v, "%", 60.0, 0)).inner {
                                 d.fields.insert(format!("p.{key}"), json!(n / 100.0));
                             }
                         }
                         ui.end_row();
                     }
-                    ui.label("Composer:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Composer:"));
                     let single = cur(d, "p.composer", &pv["composer"]).as_str() == Some("singleLine");
-                    if ui.selectable_label(!single, "Paragraph Composer").clicked() {
+                    if ui.selectable_label(!single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph Composer"))).clicked() {
                         d.fields.insert("p.composer".into(), json!("paragraph"));
                     }
-                    if ui.selectable_label(single, "Single-line Composer").clicked() {
+                    if ui.selectable_label(single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Single-line Composer"))).clicked() {
                         d.fields.insert("p.composer".into(), json!("singleLine"));
                     }
                     ui.end_row();
-                    ui.label("Insert Kashidas:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Insert Kashidas:"));
                     let mut k = cur(d, "p.kashidas", &pv["kashidas"]).as_bool().unwrap_or(true);
-                    if ui.checkbox(&mut k, "In justified Arabic text").changed() {
+                    if ui.checkbox(&mut k, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "In justified Arabic text"))).changed() {
                         d.fields.insert("p.kashidas".into(), json!(k));
                     }
                     ui.end_row();
@@ -1962,7 +2108,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
             _ => {
                 egui::Grid::new("psg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("Style Name:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Style Name:"));
                     if !d.fields.contains_key("rename") {
                         d.fields.insert("rename".into(), json!(name));
                     }
@@ -1971,7 +2117,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         d.fields.insert("rename".into(), json!(rn));
                     }
                     ui.end_row();
-                    ui.label("Based On:");
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Based On:"));
                     let based = d
                         .fields
                         .get("basedOn")
@@ -1979,19 +2125,29 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         .map(str::to_string)
                         .or(style.based_on.clone())
                         .unwrap_or_else(|| "[No Paragraph Style]".into());
-                    egui::ComboBox::from_id_salt("psbased").selected_text(&based).width(220.0).show_ui(ui, |ui| {
-                        for n in &names {
-                            if ui.selectable_label(*n == based, n).clicked() {
-                                d.fields.insert("basedOn".into(), json!(n));
+                    egui::ComboBox::from_id_salt("psbased")
+                        .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, &based)))
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for n in &names {
+                                if ui.selectable_label(*n == based, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {
+                                    d.fields.insert("basedOn".into(), json!(n));
+                                }
                             }
-                        }
-                    });
+                        });
                     ui.end_row();
                 });
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(format!("{} {} {:.1} pt · {}", cp.font_family, cp.font_style, cp.size, pp.align.label()))
-                        .color(crate::theme::Tokens::get(ui.ctx()).text_dim),
+                crate::rtl::label(
+                    ui,
+                    egui::RichText::new(format!(
+                        "{} {} {:.1} pt · {}",
+                        cp.font_family,
+                        cp.font_style,
+                        cp.size,
+                        crate::i18n::tr(&app.ui.language, pp.align.label())
+                    ))
+                    .color(crate::theme::Tokens::get(ui.ctx()).text_dim),
                 );
             }
         });
@@ -2001,13 +2157,19 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
 fn combo(ui: &mut egui::Ui, d: &mut Dialog, key: &str, opts: &[(&str, &str)]) {
     let cur = d.s(key);
     let shown = opts.iter().find(|o| o.0 == cur).map_or(cur.as_str(), |o| o.1).to_string();
-    egui::ComboBox::from_id_salt(key).selected_text(shown).width(170.0).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt(key).selected_text(crate::rtl::widget(ui, &shown)).width(170.0).show_ui(ui, |ui| {
         for (v, label) in opts {
-            if ui.selectable_label(cur == *v, *label).clicked() {
+            if ui.selectable_label(cur == *v, crate::rtl::widget(ui, *label)).clicked() {
                 d.fields.insert(key.into(), json!(v));
             }
         }
     });
+}
+
+/// Translate enum captions without changing serialized values or user-defined names.
+fn translated_combo(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, key: &str, opts: &[(&str, &str)]) {
+    let opts: Vec<_> = opts.iter().map(|(value, label)| (*value, crate::i18n::tr(lang, label))).collect();
+    combo(ui, d, key, &opts);
 }
 
 /// Style name picker (paragraph or character styles of the active document).
@@ -2023,9 +2185,9 @@ fn style_combo(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str, ch
             }
         })
         .unwrap_or_default();
-    let mut opts: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), n.as_str())).collect();
+    let mut opts: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), crate::i18n::style_name(&app.ui.language, n))).collect();
     if character && !names.iter().any(|n| n == designcraft_doc::NO_CHAR_STYLE) {
-        opts.insert(0, (designcraft_doc::NO_CHAR_STYLE, designcraft_doc::NO_CHAR_STYLE));
+        opts.insert(0, (designcraft_doc::NO_CHAR_STYLE, crate::i18n::style_name(&app.ui.language, designcraft_doc::NO_CHAR_STYLE)));
     }
     combo(ui, d, key, &opts);
 }
@@ -2034,7 +2196,7 @@ fn style_combo(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str, ch
 fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         for (tab, label) in [("numbering", "Numbering and Formatting"), ("layout", "Layout")] {
-            if ui.selectable_label(d.s("tab") == tab, label).clicked() {
+            if ui.selectable_label(d.s("tab") == tab, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                 d.fields.insert("tab".into(), json!(tab));
             }
         }
@@ -2042,49 +2204,50 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.separator();
     let head = |ui: &mut egui::Ui, t: &str| {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(t).font(semibold(12.0)));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, t)).font(semibold(12.0)));
     };
     if d.s("tab") == "layout" {
         head(ui, "Spacing Options");
         egui::Grid::new("fn_sp").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("Minimum Space Before First Footnote:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Minimum Space Before First Footnote:"));
             text_field(ui, d, "spaceBefore", 70.0);
             ui.end_row();
-            ui.label("Space Between Footnotes:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Space Between Footnotes:"));
             text_field(ui, d, "spaceBetween", 70.0);
             ui.end_row();
         });
         head(ui, "First Baseline");
         egui::Grid::new("fn_fb").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("Offset:");
-            combo(
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Offset:"));
+            translated_combo(
+                &app.ui.language,
                 ui,
                 d,
                 "firstBaseline",
                 &[("ascent", "Ascent"), ("capHeight", "Cap Height"), ("leading", "Leading"), ("xHeight", "x Height"), ("fixed", "Fixed")],
             );
             ui.end_row();
-            ui.label("Min:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Min:"));
             text_field(ui, d, "firstBaselineMin", 70.0);
             ui.end_row();
         });
-        check(ui, d, "spanColumns", "Span Footnotes Across Columns");
+        check(ui, d, "spanColumns", crate::i18n::tr(&app.ui.language, "Span Footnotes Across Columns"));
         head(ui, "Rule Above");
-        check(ui, d, "rule.on", "Rule On");
+        check(ui, d, "rule.on", crate::i18n::tr(&app.ui.language, "Rule On"));
         egui::Grid::new("fn_rule").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("Weight:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
             text_field(ui, d, "rule.weight", 60.0);
-            ui.label("Color:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
             let swatches: Vec<String> = app.session.active().map(|st| st.doc.swatches.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
             let opts: Vec<(&str, &str)> = swatches.iter().map(|n| (n.as_str(), n.as_str())).collect();
             combo(ui, d, "rule.color", &opts);
             ui.end_row();
-            ui.label("Width:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width:"));
             text_field(ui, d, "rule.width", 60.0);
-            ui.label("Offset:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Offset:"));
             text_field(ui, d, "rule.offset", 60.0);
             ui.end_row();
-            ui.label("Left Indent:");
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Left Indent:"));
             text_field(ui, d, "rule.leftIndent", 60.0);
             ui.end_row();
         });
@@ -2092,8 +2255,9 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
     head(ui, "Numbering");
     egui::Grid::new("fn_num").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Style:");
-        combo(
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Style:"));
+        translated_combo(
+            &app.ui.language,
             ui,
             d,
             "style",
@@ -2108,26 +2272,39 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             ],
         );
         ui.end_row();
-        ui.label("Start at:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Start at:"));
         text_field(ui, d, "startAt", 60.0);
         ui.end_row();
-        ui.label("Restart Numbering Every:");
-        combo(ui, d, "restart", &[("never", "Never (continuous)"), ("page", "Page"), ("spread", "Spread"), ("section", "Section")]);
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Restart Numbering Every:"));
+        translated_combo(
+            &app.ui.language,
+            ui,
+            d,
+            "restart",
+            &[("never", "Never (continuous)"), ("page", "Page"), ("spread", "Spread"), ("section", "Section")],
+        );
         ui.end_row();
-        ui.label("Show Prefix/Suffix in:");
-        combo(ui, d, "affixIn", &[("none", "None"), ("reference", "Footnote Reference"), ("text", "Footnote Text"), ("both", "Both")]);
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Show Prefix/Suffix in:"));
+        translated_combo(
+            &app.ui.language,
+            ui,
+            d,
+            "affixIn",
+            &[("none", "None"), ("reference", "Footnote Reference"), ("text", "Footnote Text"), ("both", "Both")],
+        );
         ui.end_row();
-        ui.label("Prefix:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Prefix:"));
         text_field(ui, d, "prefix", 60.0);
         ui.end_row();
-        ui.label("Suffix:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Suffix:"));
         text_field(ui, d, "suffix", 60.0);
         ui.end_row();
     });
     head(ui, "Footnote Reference Number in Text");
     egui::Grid::new("fn_ref").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Position:");
-        combo(
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Position:"));
+        translated_combo(
+            &app.ui.language,
             ui,
             d,
             "refPosition",
@@ -2139,16 +2316,16 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             ],
         );
         ui.end_row();
-        ui.label("Character Style:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Character Style:"));
         style_combo(app, ui, d, "refCharStyle", true);
         ui.end_row();
     });
     head(ui, "Footnote Formatting");
     egui::Grid::new("fn_fmt").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Paragraph Style:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Paragraph Style:"));
         style_combo(app, ui, d, "paraStyle", false);
         ui.end_row();
-        ui.label("Separator:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Separator:"));
         text_field(ui, d, "separator", 60.0);
         ui.end_row();
     });
@@ -2238,18 +2415,22 @@ fn humanize(key: &str) -> String {
 }
 
 /// A form for any command, from its parameter documentation.
-fn command_form(ui: &mut egui::Ui, d: &mut Dialog) {
+fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let doc = designcraft_engine::find_command(&d.id[4..]).map_or("", |c| c.params);
     let fields = command_fields(doc);
     let dim = crate::theme::Tokens::get(ui.ctx()).text_dim;
     egui::Grid::new("cmdform").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         for f in &fields {
-            ui.label(format!("{}{}", humanize(&f.key), if f.optional { "" } else { " *" }));
+            ui.label(crate::rtl::widget(
+                ui,
+                format!("{}{}", crate::i18n::tr(&app.ui.language, &humanize(&f.key)), if f.optional { "" } else { " *" }),
+            ));
             if f.boolean {
                 check(ui, d, &f.key, "");
             } else if !f.choices.is_empty() {
                 let mut opts: Vec<(&str, &str)> = vec![("", "—")];
-                opts.extend(f.choices.iter().map(|c| (c.as_str(), c.as_str())));
+                let labels: Vec<_> = f.choices.iter().map(|c| humanize(c)).collect();
+                opts.extend(f.choices.iter().zip(&labels).map(|(value, label)| (value.as_str(), crate::i18n::tr(&app.ui.language, label))));
                 combo(ui, d, &f.key, &opts);
             } else {
                 let mut s = d.s(&f.key);
@@ -2273,7 +2454,7 @@ fn insert_xref(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let doc = &st.doc;
     let all = "[All Paragraphs]";
     ui.horizontal(|ui| {
-        ui.label("Link To:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Link To:"));
         combo(ui, d, "linkTo", &[("paragraph", "Paragraph"), ("anchor", "Text Anchor")]);
     });
     ui.add_space(6.0);
@@ -2291,7 +2472,10 @@ fn insert_xref(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 }
             }
             if !any {
-                ui.label(egui::RichText::new("No text anchors in this document.").color(dim));
+                ui.label(crate::rtl::widget(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "No text anchors in this document.")).color(dim),
+                ));
             }
         });
     } else {
@@ -2335,14 +2519,14 @@ fn insert_xref(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
     }
     ui.add_space(8.0);
-    ui.label(egui::RichText::new("Cross-Reference Format").font(semibold(12.0)));
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Cross-Reference Format")).font(semibold(12.0)));
     let names: Vec<String> = doc.xref_formats.iter().map(|f| f.name.clone()).collect();
     if d.s("format").is_empty() {
         d.fields.insert("format".into(), json!(names.first().cloned().unwrap_or_default()));
     }
     let opts: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), n.as_str())).collect();
     ui.horizontal(|ui| {
-        ui.label("Format:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Format:"));
         combo(ui, d, "format", &opts);
     });
     if let Some(m) = d.fields.get("status").and_then(Value::as_str) {
@@ -2400,7 +2584,12 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
     let fonts = d.fields.get("_fonts").and_then(Value::as_array).cloned().unwrap_or_default();
     let missing = fonts.iter().filter(|f| f["missing"] == true || f["styleMissing"] == true).count();
-    ui.label(format!("Fonts in Document: {}    Missing: {missing}", fonts.len()));
+    crate::rtl::label(
+        ui,
+        crate::i18n::tr(&app.ui.language, "Fonts in Document: {count}    Missing: {missing}")
+            .replace("{count}", &fonts.len().to_string())
+            .replace("{missing}", &missing.to_string()),
+    );
     egui::ScrollArea::vertical().id_salt("ff_list").max_height(180.0).show(ui, |ui| {
         for f in &fonts {
             let (fam, st) = (f["family"].as_str().unwrap_or(""), f["style"].as_str().unwrap_or(""));
@@ -2418,23 +2607,26 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         }
     });
     ui.add_space(8.0);
-    ui.label(egui::RichText::new("Replace With").font(semibold(12.0)));
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Replace With")).font(semibold(12.0)));
     let db = designcraft_fonts::FontDb::global();
     let families = db.families();
     let fam_opts: Vec<(&str, &str)> = families.iter().map(|f| (f.as_str(), f.as_str())).collect();
     egui::Grid::new("ff_to").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Font Family:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Family:"));
         combo(ui, d, "toFamily", &fam_opts);
         ui.end_row();
         let styles = db.styles(&d.s("toFamily"));
         let st_opts: Vec<(&str, &str)> = styles.iter().map(|s| (s.as_str(), s.as_str())).collect();
-        ui.label("Font Style:");
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Style:"));
         combo(ui, d, "toStyle", &st_opts);
         ui.end_row();
     });
-    ui.label(
-        egui::RichText::new("OK changes all: text and paragraph/character styles.").color(crate::theme::Tokens::get(ui.ctx()).text_dim).size(11.0),
-    );
+    ui.label(crate::rtl::widget(
+        ui,
+        egui::RichText::new(crate::i18n::tr(&app.ui.language, "OK changes all: text and paragraph/character styles."))
+            .color(crate::theme::Tokens::get(ui.ctx()).text_dim)
+            .size(11.0),
+    ));
 }
 
 #[cfg(test)]

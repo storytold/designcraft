@@ -17,10 +17,11 @@ fn list(app: &mut DesignApp, ui: &mut egui::Ui, para: bool) {
     let attrs = super::text_attrs(app);
     let current = attrs.as_ref().and_then(|a| a[if para { "paragraphStyle" } else { "characterStyle" }].as_str().map(str::to_string));
     let overrides = attrs.as_ref().map(|a| a[if para { "paraOverrides" } else { "charOverrides" }].as_u64().unwrap_or(0)).unwrap_or(0);
-    ui.label(
+    crate::rtl::label(
+        ui,
         egui::RichText::new(match &current {
-            Some(c) => format!("{c}{}", if overrides > 0 { "+" } else { "" }),
-            None => "No text selected".into(),
+            Some(c) => format!("{}{}", crate::i18n::style_name(&app.ui.language, c), if overrides > 0 { "+" } else { "" }),
+            None => crate::i18n::tr(&app.ui.language, "No text selected").into(),
         })
         .size(11.0)
         .color(t.text_dim),
@@ -47,9 +48,20 @@ fn list(app: &mut DesignApp, ui: &mut egui::Ui, para: bool) {
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("⌥-click clears overrides").size(10.5).color(t.text_disabled));
+        ui.label(crate::rtl::widget(
+            ui,
+            egui::RichText::new(crate::i18n::tr(&app.ui.language, "⌥-click clears overrides")).size(10.5).color(t.text_disabled),
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::button(ui, "plus", 20.0, false, "Create New Style from Selection").clicked() {
+            if icons::button(
+                ui,
+                "plus",
+                20.0,
+                false,
+                crate::i18n::tr(&app.ui.language, crate::i18n::tr(&app.ui.language, "Create New Style from Selection")),
+            )
+            .clicked()
+            {
                 let cmd = if para { "style.paragraph.create" } else { "style.character.create" };
                 let base = if para { "Paragraph Style 1" } else { "Character Style 1" };
                 let _ = app.run(cmd, json!({"name": base, "fromSelection": true}));
@@ -76,7 +88,14 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
         ui.painter().rect_filled(row, 0.0, t.hover);
     }
     let shown = n.rsplit('/').next().unwrap_or(n);
-    ui.painter().text(row.min + vec2(8.0, 11.0), egui::Align2::LEFT_CENTER, shown, egui::FontId::proportional(12.5), t.text);
+    crate::rtl::paint(
+        ui.painter(),
+        row.min + vec2(8.0, 11.0),
+        egui::Align2::LEFT_CENTER,
+        if n.contains('/') { shown } else { crate::i18n::style_name(&app.ui.language, shown) },
+        egui::FontId::proportional(12.5),
+        t.text,
+    );
     if resp.double_clicked() && para {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphStyleOptions", json!({"name": n})));
     } else if resp.clicked() {
@@ -86,18 +105,28 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
     }
     let kind = if para { "paragraph" } else { "character" };
     resp.context_menu(|ui| {
-        if ui.button(format!("Apply \"{shown}\"")).clicked() {
+        if ui
+            .button(crate::rtl::widget(
+                ui,
+                format!(
+                    "{} \"{}\"",
+                    crate::i18n::tr(&app.ui.language, "Apply"),
+                    if n.contains('/') { shown } else { crate::i18n::style_name(&app.ui.language, shown) }
+                ),
+            ))
+            .clicked()
+        {
             let cmd = if para { "style.paragraph.apply" } else { "style.character.apply" };
             let _ = app.run(cmd, json!({"name": n}));
             ui.close();
         }
-        if current == Some(n) && ui.button("Break Link to Style").clicked() {
+        if current == Some(n) && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Break Link to Style"))).clicked() {
             let _ = app.run("style.breakLink", json!({"kind": kind}));
             ui.close();
         }
         if !n.starts_with('[') {
-            ui.menu_button("Move to Group", |ui| {
-                if n.contains('/') && ui.button("[No Group]").clicked() {
+            ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Move to Group")), |ui| {
+                if n.contains('/') && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "[No Group]"))).clicked() {
                     let _ = app.run("style.group", json!({"kind": kind, "names": [n], "group": ""}));
                     ui.close();
                 }
@@ -110,7 +139,11 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
                 ui.separator();
                 let id = egui::Id::new(("new_style_group", para));
                 let mut name: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-                let r = ui.add(egui::TextEdit::singleline(&mut name).hint_text("New group…").desired_width(140.0));
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New group…")))
+                        .desired_width(140.0),
+                );
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !name.trim().is_empty() {
                     let _ = app.run("style.group", json!({"kind": kind, "names": [n], "group": name.trim()}));
                     name.clear();

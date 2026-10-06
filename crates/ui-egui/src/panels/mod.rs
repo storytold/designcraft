@@ -201,8 +201,14 @@ pub fn font_family_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str,
         |ui| {
             ui.set_min_width(300.0);
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search fonts").desired_width(200.0));
-                ui.toggle_value(&mut only_favs, "Favorites").on_hover_text("Show Favorites Only");
+                ui.add(
+                    egui::TextEdit::singleline(&mut query)
+                        .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Search fonts")))
+                        .desired_width(200.0),
+                );
+                ui.toggle_value(&mut only_favs, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Favorites"))).on_hover_ui(|ui| {
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Show Favorites Only"));
+                });
             });
             let q = query.to_lowercase();
             let ppp = ui.ctx().pixels_per_point();
@@ -285,10 +291,11 @@ pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, c
 pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, overridden: bool, width: f32) {
     let names: Vec<String> = app.session.active().map(|d| d.doc.styles.paragraph.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
     let mut pick = None;
-    let label = if overridden { format!("{current}+") } else { current.to_string() };
-    egui::ComboBox::from_id_salt("para_style").selected_text(label).width(width).show_ui(ui, |ui| {
+    let shown = crate::i18n::style_name(&app.ui.language, current);
+    let label = if overridden { format!("{shown}+") } else { shown.to_string() };
+    egui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
         for n in names.iter().filter(|n| *n != designcraft_doc::NO_PARA_STYLE) {
-            if ui.selectable_label(n == current, n).clicked() {
+            if ui.selectable_label(n == current, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {
                 pick = Some(n.clone());
             }
         }

@@ -50,7 +50,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         });
     });
-    ui.add(egui::TextEdit::singleline(&mut st.query).hint_text("Search: character or U+code").desired_width(f32::INFINITY));
+    ui.add(
+        egui::TextEdit::singleline(&mut st.query)
+            .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Search: character or U+code")))
+            .desired_width(f32::INFINITY),
+    );
     let face = db.face(&st.family, &st.style);
     let q = st.query.trim().to_string();
     let code = q.strip_prefix("U+").or_else(|| q.strip_prefix("u+")).and_then(|h| u32::from_str_radix(h, 16).ok());
@@ -64,7 +68,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let mut insert: Option<char> = None;
     if !st.recent.is_empty() {
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Recently Used").size(10.5).color(t.text_dim));
+            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Recently Used")).size(10.5).color(t.text_dim));
             for c in st.recent.clone() {
                 if ui.small_button(c.to_string()).on_hover_text(format!("U+{:04X}", c as u32)).clicked() {
                     insert = Some(c);
@@ -129,6 +133,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             Err(e) => app.status(format!("Glyphs: {e}")),
         }
     }
-    ui.label(egui::RichText::new(format!("{} glyphs — click to insert at the text cursor", chars.len())).size(10.5).color(t.text_dim));
+    crate::rtl::label(
+        ui,
+        egui::RichText::new(
+            crate::i18n::tr(&app.ui.language, "{count} glyphs — click to insert at the text cursor").replace("{count}", &chars.len().to_string()),
+        )
+        .size(10.5)
+        .color(t.text_dim),
+    );
     ui.data_mut(|d| d.insert_temp(id, st));
 }

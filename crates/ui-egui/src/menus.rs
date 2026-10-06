@@ -34,7 +34,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.menus", "Menus…", None, "{} — show or hide menu items"),
     ("window.hideMenuItem", "Hide Menu Item", None, "{item: \"Menu/Label\", hidden?: bool}"),
     ("edit.dynamicSpelling", "Dynamic Spelling", None, "{on?: bool} — underline misspelled words on the canvas"),
-    ("app.language", "Interface Language", None, "{lang: \"\"|de|fr|es|ja} — menus and panel names (the macOS menu bar follows on the next launch)"),
+    (
+        "app.language",
+        "Interface Language",
+        None,
+        "{lang: \"\"|de|fr|es|ja|zh|ar} — menus and panel names (the macOS menu bar follows on the next launch)",
+    ),
     (
         "app.flattener",
         "Transparency Flattener Presets",
@@ -221,6 +226,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.language|Français|{\"lang\": \"fr\"}",
             "ui:app.language|Español|{\"lang\": \"es\"}",
             "ui:app.language|日本語|{\"lang\": \"ja\"}",
+            "ui:app.language|简体中文|{\"lang\": \"zh\"}",
+            "ui:app.language|العربية|{\"lang\": \"ar\"}",
             "<",
             ">Transparency Flattener Presets",
             "ui:app.flattener|None (keep transparency)|{\"preset\": \"\"}",
@@ -1717,16 +1724,25 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
 /// The menu bar contents (inside the app bar; macOS uses the native menu instead).
 pub fn menu_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let lang = app.ui.language.clone();
-    for (menu, entries) in menu_tree() {
-        ui.menu_button(crate::i18n::tr(&lang, menu), |ui| {
-            ui.set_min_width(240.0);
-            let hidden = menu_items(app, ui, &entries, menu);
-            if hidden > 0 && !app.ui.show_full_menus {
-                ui.separator();
-                if ui.button(crate::i18n::tr(&lang, "Show All Menu Items")).clicked() {
-                    app.ui.show_full_menus = true;
-                }
+    let mut menus = menu_tree();
+    if crate::i18n::is_rtl(&lang) {
+        menus.reverse();
+    }
+    for (menu, entries) in menus {
+        ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&lang, menu)), |ui| {
+            if crate::i18n::is_rtl(&lang) {
+                ui.set_max_width(320.0);
             }
+            ui.with_layout(egui::Layout::top_down(if crate::i18n::is_rtl(&lang) { egui::Align::Max } else { egui::Align::Min }), |ui| {
+                ui.set_min_width(240.0);
+                let hidden = menu_items(app, ui, &entries, menu);
+                if hidden > 0 && !app.ui.show_full_menus {
+                    ui.separator();
+                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Show All Menu Items"))).clicked() {
+                        app.ui.show_full_menus = true;
+                    }
+                }
+            });
         });
     }
 }
@@ -1746,8 +1762,8 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
             }
             Item::Sub(name, children) => {
                 let sub = format!("{path}/{name}");
-                let shown = crate::i18n::tr(&app.ui.language, name).into_owned();
-                ui.menu_button(shown, |ui| {
+                let shown = crate::i18n::tr(&app.ui.language, name).to_owned();
+                ui.menu_button(crate::rtl::widget(ui, shown), |ui| {
                     hidden += menu_items(app, ui, children, &sub);
                 });
             }
@@ -1757,9 +1773,9 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
                 let text = match checked(app, id, params) {
                     Some(true) => format!("✓ {label}"),
                     Some(false) => format!("   {label}"),
-                    None => label.into_owned(),
+                    None => label.to_owned(),
                 };
-                let mut b = egui::Button::new(text);
+                let mut b = egui::Button::new(crate::rtl::widget(ui, text));
                 if let Some(sc) = shortcut_of(app, id) {
                     b = b.shortcut_text(shortcut_text(&sc));
                 }
@@ -1886,7 +1902,11 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
     let mut run: Option<(String, Value)> = None;
     egui::Modal::new(egui::Id::new("palette")).show(ctx, |ui| {
         ui.set_width(480.0);
-        let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search styles and commands…").desired_width(f32::INFINITY));
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut q)
+                .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Search styles and commands…")))
+                .desired_width(f32::INFINITY),
+        );
         r.request_focus();
         let items = quick_apply_items(&app.session, &q);
         egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
@@ -2058,9 +2078,56 @@ mod tests {
         assert_eq!(checked(&app, "app.language", &json!({"lang": "de"})), Some(true));
         assert_eq!(crate::i18n::tr(&app.ui.language, "Window"), "Fenster");
         assert!(run_ui(&mut app, "app.language", &json!({"lang": "xx"})).unwrap().is_err());
+
+        run_ui(&mut app, "app.language", &json!({"lang": "zh"})).unwrap().unwrap();
+        assert_eq!(app.ui.language, "zh");
+        assert_eq!(crate::i18n::tr(&app.ui.language, "File"), "文件");
+
+        app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+        let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+        run_ui(&mut app, "app.language", &json!({"lang": "ar"})).unwrap().unwrap();
+        assert_eq!(app.ui.language, "ar");
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "ar"})), Some(true));
+        assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+        for (title, _) in menu_tree() {
+            assert_ne!(crate::i18n::tr("ar", title), title, "{title}");
+        }
         // Every menu title has a translation (Japanese never matches the English).
         for (title, _) in menu_tree() {
             assert_ne!(crate::i18n::tr("ja", title), title, "{title}");
+        }
+    }
+
+    #[test]
+    fn arabic_dialog_and_language_switch_keep_finite_widget_geometry() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp| {
+            for _ in 0..4 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+                        max_texture_side: Some(8192),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        app.logic(&ui.ctx().clone());
+                        app.ui(ui);
+                    },
+                );
+                output.textures_delta.clear();
+            }
+        };
+        app.run("app.language", json!({"lang": "ar"})).unwrap();
+        frame(&mut app);
+        app.run("app.newDocumentDialog", json!({})).unwrap();
+        frame(&mut app); // egui asserts that all allocated rectangles are finite.
+        crate::dialogs::confirm(&mut app).unwrap();
+        frame(&mut app);
+        assert_eq!(app.session.documents().len(), 1);
+        for lang in ["zh", "", "ar"] {
+            app.run("app.language", json!({"lang": lang})).unwrap();
+            frame(&mut app);
         }
     }
 

@@ -49,7 +49,15 @@ fn c32(c: [u8; 3]) -> Color32 {
 }
 
 /// Eye and lock cells (with column rules). Returns (eye clicked, lock clicked).
-fn eye_lock(ui: &mut Ui, row: Rect, visible: bool, locked: bool, dim: bool, key: impl std::hash::Hash + std::fmt::Debug + Copy) -> (bool, bool) {
+fn eye_lock(
+    ui: &mut Ui,
+    language: &str,
+    row: Rect,
+    visible: bool,
+    locked: bool,
+    dim: bool,
+    key: impl std::hash::Hash + std::fmt::Debug + Copy,
+) -> (bool, bool) {
     let t = Tokens::get(ui.ctx());
     let eye = Rect::from_min_size(row.min, vec2(COL_W, ROW_H));
     let lock = Rect::from_min_size(row.min + vec2(COL_W, 0.0), vec2(COL_W, ROW_H));
@@ -63,13 +71,25 @@ fn eye_lock(ui: &mut Ui, row: Rect, visible: bool, locked: bool, dim: bool, key:
     if locked {
         icons::paint(ui.painter(), Rect::from_center_size(lock.center(), vec2(13.0, 13.0)), "lock", col);
     }
-    let e = ui.interact(eye, ui.id().with(("eye", key)), Sense::click()).on_hover_text(if visible { "Hide" } else { "Show" });
-    let l = ui.interact(lock, ui.id().with(("lock", key)), Sense::click()).on_hover_text(if locked { "Unlock" } else { "Lock" });
+    let e = ui.interact(eye, ui.id().with(("eye", key)), Sense::click()).on_hover_ui(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(language, if visible { "Hide" } else { "Show" }));
+    });
+    let l = ui.interact(lock, ui.id().with(("lock", key)), Sense::click()).on_hover_ui(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(language, if locked { "Unlock" } else { "Lock" }));
+    });
     (e.clicked(), l.clicked())
 }
 
 /// The selection square at the right of a row: filled = selected; hollow on hover.
-fn selection_square(ui: &mut Ui, row: Rect, color: Color32, selected: bool, small: bool, key: impl std::hash::Hash + std::fmt::Debug) -> bool {
+fn selection_square(
+    ui: &mut Ui,
+    language: &str,
+    row: Rect,
+    color: Color32,
+    selected: bool,
+    small: bool,
+    key: impl std::hash::Hash + std::fmt::Debug,
+) -> bool {
     let s = if small { 7.0 } else { 8.0 };
     let r = Rect::from_center_size(pos2(row.max.x - 12.0, row.center().y), vec2(s, s));
     let resp = ui.interact(r.expand(4.0), ui.id().with(("selsq", key)), Sense::click());
@@ -78,7 +98,10 @@ fn selection_square(ui: &mut Ui, row: Rect, color: Color32, selected: bool, smal
     } else if resp.hovered() {
         ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
     }
-    resp.on_hover_text("Select").clicked()
+    resp.on_hover_ui(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(language, "Select"));
+    })
+    .clicked()
 }
 
 pub fn show(app: &mut DesignApp, ui: &mut Ui) {
@@ -103,7 +126,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         } else if resp.hovered() {
             ui.painter().rect_filled(row, 0.0, t.hover);
         }
-        let (eye, lock) = eye_lock(ui, row, l.visible, l.locked, false, ("layer", l.id.0));
+        let (eye, lock) = eye_lock(ui, &app.ui.language, row, l.visible, l.locked, false, ("layer", l.id.0));
         // Disclosure triangle.
         let tri = Rect::from_min_size(row.min + vec2(2.0 * COL_W + 2.0, 0.0), vec2(14.0, ROW_H));
         let c = tri.center();
@@ -127,7 +150,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         if l.id == active {
             icons::paint(ui.painter(), Rect::from_center_size(pos2(row.max.x - 32.0, row.center().y), vec2(13.0, 13.0)), "tool-pen", t.icon);
         }
-        let sq = selection_square(ui, row, lc, sel_layers.contains(&l.id), false, ("layer", l.id.0));
+        let sq = selection_square(ui, &app.ui.language, row, lc, sel_layers.contains(&l.id), false, ("layer", l.id.0));
         if eye {
             let _ = app.run("layer.set", json!({"id": l.id.0, "visible": !l.visible}));
         } else if lock {
@@ -141,18 +164,18 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             let _ = app.run("layer.activate", json!({"id": l.id.0}));
         }
         resp.context_menu(|ui| {
-            if ui.button("Delete Layer").clicked() {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Layer"))).clicked() {
                 let _ = app.run("layer.delete", json!({"id": l.id.0}));
                 ui.close();
             }
-            if ui.button("Move Selection Here").clicked() {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Move Selection Here"))).clicked() {
                 let _ = app.run("object.setLayer", json!({"layer": l.id.0}));
                 ui.close();
             }
             ui.separator();
             let active = app.session.active().map(|d| d.active_layer);
             if let Some(a) = active.filter(|a| *a != l.id)
-                && ui.button("Merge into Active Layer").clicked()
+                && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Merge into Active Layer"))).clicked()
             {
                 let _ = app.run("layer.merge", json!({"ids": [a.0, l.id.0], "into": a.0}));
                 ui.close();
@@ -163,12 +186,12 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
                 ("Show All Layers", json!({"id": l.id.0, "show": true})),
                 ("Unlock All Layers", json!({"id": l.id.0, "unlock": true})),
             ] {
-                if ui.button(label).clicked() {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                     let _ = app.run("layer.others", params);
                     ui.close();
                 }
             }
-            if ui.button("Delete Unused Layers").clicked() {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Unused Layers"))).clicked() {
                 let _ = app.run("layer.deleteUnused", json!({}));
                 ui.close();
             }
@@ -182,7 +205,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             if resp.hovered() {
                 ui.painter().rect_filled(row, 0.0, t.hover);
             }
-            let (eye, lock) = eye_lock(ui, row, !it.hidden, it.locked, !l.visible, ("item", it.id.0));
+            let (eye, lock) = eye_lock(ui, &app.ui.language, row, !it.hidden, it.locked, !l.visible, ("item", it.id.0));
             let name = item_label(&doc, it);
             let clip = Rect::from_min_max(row.min, pos2(row.max.x - 26.0, row.max.y));
             ui.painter().with_clip_rect(clip).text(
@@ -192,7 +215,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
                 egui::FontId::proportional(11.0),
                 if it.hidden { t.text_dim } else { t.text },
             );
-            let sq = selection_square(ui, row, lc, is_sel, true, ("item", it.id.0));
+            let sq = selection_square(ui, &app.ui.language, row, lc, is_sel, true, ("item", it.id.0));
             if eye {
                 let _ = app.run("object.setFlags", json!({"ids": [it.id.0], "hidden": !it.hidden}));
             } else if lock {
@@ -217,10 +240,10 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             .color(t.text_dim),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::button(ui, "trash", 20.0, false, "Delete Layer").clicked() {
+            if icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete Layer")).clicked() {
                 let _ = app.run("layer.delete", json!({"id": active.0}));
             }
-            if icons::button(ui, "plus", 20.0, false, "Create New Layer").clicked() {
+            if icons::button(ui, "plus", 20.0, false, crate::i18n::tr(&app.ui.language, "Create New Layer")).clicked() {
                 let _ = app.run("layer.new", json!({}));
             }
         });

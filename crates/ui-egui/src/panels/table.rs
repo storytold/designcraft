@@ -11,9 +11,12 @@ use crate::widgets::{caption, divider, measure, number};
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Ok(info) = app.session.execute("table.get", &json!({})) else {
-        ui.label(egui::RichText::new("Place the insertion point in a table, or create one.").color(t.text_dim));
+        ui.label(crate::rtl::widget(
+            ui,
+            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Place the insertion point in a table, or create one.")).color(t.text_dim),
+        ));
         ui.add_space(6.0);
-        if ui.button("Create Table…").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Create Table…"))).clicked() {
             let _ = app.run("app.insertTableDialog", json!({}));
         }
         return;
@@ -29,19 +32,19 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let _ = app.run(id, p);
     };
     ui.horizontal(|ui| {
-        caption(ui, "Cell Type");
-        if ui.small_button("Graphic…").clicked()
+        caption(ui, crate::i18n::tr(&app.ui.language, "Cell Type"));
+        if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Graphic…"))).clicked()
             && let Err(e) = app.run("app.graphicCell", json!({}))
         {
             app.status(format!("Table: {e}"));
         }
-        if ui.small_button("Text").clicked() {
+        if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Text"))).clicked() {
             let _ = app.run("table.textCell", json!({}));
         }
     });
     // Move the target row / column (InDesign drags them).
     ui.horizontal(|ui| {
-        caption(ui, "Move");
+        caption(ui, crate::i18n::tr(&app.ui.language, "Move"));
         let (nr, nc) = (rows.len(), cols.len());
         for (label, id, from, to, ok) in [
             ("Row ↑", "table.moveRow", r0, r0.saturating_sub(1), r0 > 0),
@@ -49,7 +52,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ("Col ←", "table.moveColumn", c0, c0.saturating_sub(1), c0 > 0),
             ("Col →", "table.moveColumn", c0, c0 + 1, c0 + 1 < nc),
         ] {
-            if ui.add_enabled(ok, egui::Button::new(label).small()).clicked()
+            if ui.add_enabled(ok, egui::Button::new(crate::rtl::widget(ui, label)).small()).clicked()
                 && let Err(e) = app.run(id, json!({"from": from, "to": to}))
             {
                 app.status(format!("Table: {e}"));
@@ -65,7 +68,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let ccur = cell["style"].as_str().filter(|s| !s.is_empty()).unwrap_or(designcraft_doc::NO_CELL_STYLE).to_string();
         for (label, kind, names, cur) in [("Table Style", "table", tnames, tcur), ("Cell Style", "cell", cnames, ccur)] {
             ui.horizontal(|ui| {
-                caption(ui, label);
+                caption(ui, crate::i18n::tr(&app.ui.language, label));
                 egui::ComboBox::from_id_salt(("tp_style", kind)).selected_text(&cur).width(130.0).show_ui(ui, |ui| {
                     for n in &names {
                         if ui.selectable_label(*n == cur, n).clicked() {
@@ -84,7 +87,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     egui::Grid::new("table_panel").num_columns(4).spacing([6.0, 6.0]).show(ui, |ui| {
-        caption(ui, "Rows");
+        caption(ui, crate::i18n::tr(&app.ui.language, "Rows"));
         if let Some(v) = number(ui, "tp_rows", Some(rows.len() as f64), "", 52.0, 0) {
             let n = v.round().max(1.0) as usize;
             if n > rows.len() {
@@ -97,7 +100,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 run(app, "table.deleteRow", json!({"table": tid, "rows": [n, rows.len() - 1]}));
             }
         }
-        caption(ui, "Columns");
+        caption(ui, crate::i18n::tr(&app.ui.language, "Columns"));
         if let Some(v) = number(ui, "tp_cols", Some(cols.len() as f64), "", 52.0, 0) {
             let n = v.round().max(1.0) as usize;
             if n > cols.len() {
@@ -113,19 +116,23 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.end_row();
         let row = rows.get(r0).cloned().unwrap_or(Value::Null);
         let exactly = row["mode"] == "exactly";
-        caption(ui, "Row Height");
-        egui::ComboBox::from_id_salt("tp_rowmode").selected_text(if exactly { "Exactly" } else { "At Least" }).width(70.0).show_ui(ui, |ui| {
-            for (label, mode) in [("At Least", "atLeast"), ("Exactly", "exactly")] {
-                if ui.selectable_label((mode == "exactly") == exactly, label).clicked() {
-                    run(app, "table.setRowHeight", json!({"mode": mode}));
+        caption(ui, crate::i18n::tr(&app.ui.language, "Row Height"));
+        egui::ComboBox::from_id_salt("tp_rowmode")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if exactly { "Exactly" } else { "At Least" })))
+            .width(70.0)
+            .show_ui(ui, |ui| {
+                for (label, mode) in [("At Least", "atLeast"), ("Exactly", "exactly")] {
+                    if ui.selectable_label((mode == "exactly") == exactly, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked()
+                    {
+                        run(app, "table.setRowHeight", json!({"mode": mode}));
+                    }
                 }
-            }
-        });
+            });
         if let Some(h) = measure(ui, "tp_rowh", row["height"].as_f64(), unit, 64.0) {
             run(app, "table.setRowHeight", json!({"height": h}));
         }
         ui.end_row();
-        caption(ui, "Column Width");
+        caption(ui, crate::i18n::tr(&app.ui.language, "Column Width"));
         ui.label("");
         if let Some(w) = measure(ui, "tp_colw", cols.get(c0).and_then(|c| c["width"].as_f64()), unit, 64.0) {
             run(app, "table.setColumnWidth", json!({"width": w}));
@@ -133,10 +140,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.end_row();
     });
     divider(ui);
-    caption(ui, "Cell Text");
+    caption(ui, crate::i18n::tr(&app.ui.language, "Cell Text"));
     ui.horizontal(|ui| {
         for (label, vj) in [("Top", "top"), ("Center", "center"), ("Bottom", "bottom"), ("Justify", "justify")] {
-            if ui.selectable_label(cell["vj"] == vj, label).clicked() {
+            if ui.selectable_label(cell["vj"] == vj, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                 run(app, "table.setCell", json!({"vj": vj}));
             }
         }
@@ -146,7 +153,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     egui::Grid::new("table_insets").num_columns(4).spacing([6.0, 6.0]).show(ui, |ui| {
         let labels = ["Top", "Left", "Bottom", "Right"];
         for (i, l) in labels.iter().enumerate() {
-            caption(ui, l);
+            caption(ui, crate::i18n::tr(&app.ui.language, l));
             if let Some(v) = measure(ui, &format!("tp_inset{i}"), insets.get(i).copied(), unit, 56.0) {
                 let mut n = insets.clone();
                 n.resize(4, 4.0);
@@ -160,45 +167,45 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     divider(ui);
     ui.horizontal(|ui| {
-        if ui.button("Merge Cells").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Merge Cells"))).clicked() {
             run(app, "table.merge", json!({}));
         }
-        if ui.button("Unmerge").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Unmerge"))).clicked() {
             run(app, "table.unmerge", json!({}));
         }
     });
     ui.horizontal(|ui| {
-        if ui.button("Insert Row").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Insert Row"))).clicked() {
             run(app, "table.insertRowBelow", json!({}));
         }
-        if ui.button("Insert Column").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Insert Column"))).clicked() {
             run(app, "table.insertColumnRight", json!({}));
         }
     });
     ui.horizontal(|ui| {
-        if ui.button("Delete Row").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Row"))).clicked() {
             run(app, "table.deleteRow", json!({}));
         }
-        if ui.button("Delete Column").clicked() {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Column"))).clicked() {
             run(app, "table.deleteColumn", json!({}));
         }
     });
     divider(ui);
     let mut alt = !info["options"]["altRows"].is_null();
-    if ui.checkbox(&mut alt, "Alternating Row Fills").changed() {
+    if ui.checkbox(&mut alt, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Alternating Row Fills"))).changed() {
         let v = if alt { json!({"first": 1, "firstColor": "[Black]", "firstTint": 0.1, "next": 1, "nextColor": "[None]"}) } else { Value::Null };
         run(app, "table.options", json!({"altRows": v}));
     }
     let mut rep = info["options"]["repeatHeader"].as_bool().unwrap_or(true);
-    if ui.checkbox(&mut rep, "Repeat Header Rows").changed() {
+    if ui.checkbox(&mut rep, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Repeat Header Rows"))).changed() {
         run(app, "table.options", json!({"repeatHeader": rep}));
     }
     ui.horizontal(|ui| {
-        caption(ui, "Header Rows");
+        caption(ui, crate::i18n::tr(&app.ui.language, "Header Rows"));
         if let Some(v) = number(ui, "tp_hdr", info["headerRows"].as_f64(), "", 40.0, 0) {
             run(app, "table.options", json!({"headerRows": v.max(0.0) as u64}));
         }
-        caption(ui, "Footer Rows");
+        caption(ui, crate::i18n::tr(&app.ui.language, "Footer Rows"));
         if let Some(v) = number(ui, "tp_ftr", info["footerRows"].as_f64(), "", 40.0, 0) {
             run(app, "table.options", json!({"footerRows": v.max(0.0) as u64}));
         }
