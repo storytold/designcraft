@@ -60,6 +60,10 @@ pub struct ObjectStyle {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Styles {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composite_fonts: Vec<crate::cjk::CompositeFont>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mojikumi_tables: Vec<crate::cjk::MojikumiTable>,
     /// Export Tagging per style (`p:Name` or `c:Name`): the HTML tag and class for EPUB/HTML.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub export_tags: std::collections::BTreeMap<String, ExportTag>,
@@ -99,6 +103,8 @@ impl Styles {
 impl Default for Styles {
     fn default() -> Self {
         Styles {
+            composite_fonts: Vec::new(),
+            mojikumi_tables: Vec::new(),
             export_tags: Default::default(),
             paragraph: vec![
                 ParagraphStyle {
@@ -236,11 +242,12 @@ impl TableStyle {
         for r in 0..nr {
             let kind = t.rows[r].kind;
             for c in 0..nc {
+                let visual_column = if t.options.direction == crate::TextDirection::RightToLeft { nc - 1 - c } else { c };
                 let region = match kind {
                     crate::table::RowKind::Header => self.header.as_ref(),
                     crate::table::RowKind::Footer => self.footer.as_ref(),
-                    _ if c == 0 && self.left_column.is_some() => self.left_column.as_ref(),
-                    _ if c + 1 == nc && self.right_column.is_some() => self.right_column.as_ref(),
+                    _ if visual_column == 0 && self.left_column.is_some() => self.left_column.as_ref(),
+                    _ if visual_column + 1 == nc && self.right_column.is_some() => self.right_column.as_ref(),
                     _ => self.body.as_ref(),
                 };
                 if let (Some(name), Some(cell)) = (region, t.cells.get_mut(r * nc + c))

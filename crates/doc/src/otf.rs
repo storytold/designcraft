@@ -10,6 +10,14 @@ pub const TOGGLES: &[(&str, &str, &str)] = &[
     ("titl", "Titling Alternates", "OTFTitling"),
     ("calt", "Contextual Alternates", "OTFContextualAlternate"),
     ("zero", "Slashed Zero", "OTFSlashedZero"),
+    ("palt", "Proportional Metrics", "OTFProportionalMetrics"),
+    ("hkna", "Horizontal Kana", "OTFHVKana"),
+    ("locl", "Localized Forms", "OTFLocale"),
+    ("mark", "Mark Positioning", "OTFMark"),
+    ("hist", "Historical Forms", "OTFHistorical"),
+    ("salt", "Stylistic Alternates", "OTFStylisticAlternate"),
+    ("jalt", "Justification Alternates", "OTFJustificationAlternate"),
+    ("ital", "Roman Italics", "OTFRomanItalics"),
 ];
 
 /// Figure styles: (id, menu label, tags, IDML value).
@@ -23,7 +31,7 @@ pub const FIGURES: &[(&str, &str, &[&str], &str)] = &[
 
 /// Features shaping turns on by itself: "off" is an explicit `-tag`.
 fn default_on(tag: &str) -> bool {
-    tag == "calt"
+    matches!(tag, "calt" | "locl" | "mark")
 }
 
 pub fn is_on(list: &[String], tag: &str) -> bool {

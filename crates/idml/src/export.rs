@@ -276,6 +276,49 @@ impl<'a> Ex<'a> {
                 .attr("HyphenationVendor", "Hunspell")
                 .attr("SpellingVendor", "Hunspell"),
         );
+        let mut sets = std::collections::BTreeMap::new();
+        for a in d.styles.paragraph.iter().map(|p| &p.para).chain(d.stories.values().flat_map(|s| s.paras.iter().map(|p| &p.para))) {
+            if let Some(Some(k)) = &a.kinsoku
+                && !k.name.is_empty()
+            {
+                sets.insert(&k.name, k);
+            }
+        }
+        for k in sets.values() {
+            root.push(
+                El::new("KinsokuTable")
+                    .attr("Self", format!("KinsokuTable/{}", escape_id(&k.name)))
+                    .attr("Name", &k.name)
+                    .attr("CantBeginLineChars", &k.no_start)
+                    .attr("CantEndLineChars", &k.no_end)
+                    .attr("CantBeSeparatedChars", &k.inseparable)
+                    .attr("HangingPunctuationChars", &k.hanging),
+            );
+        }
+        for t in &d.styles.mojikumi_tables {
+            let mut e = El::new("MojikumiTable").attr("Self", format!("MojikumiTable/{}", escape_id(&t.name))).attr("Name", &t.name);
+            if !t.based_on.is_empty() {
+                e.set("BasedOnMojikumiSet", &t.based_on);
+            }
+            if !t.overrides.is_empty() {
+                let mut list = El::new("OverrideMojikumiAkiList");
+                for r in &t.overrides {
+                    list.push(
+                        El::new("OverrideMojikumiAkiType")
+                            .attr("TargetMojikumiClass", r.target_class)
+                            .attr("SideMojikumiClass", r.side_class)
+                            .attr("SideIsAfterTarget", bool_s(r.after))
+                            .attr("Minimum", num(r.minimum))
+                            .attr("Desired", num(r.desired))
+                            .attr("Maximum", num(r.maximum))
+                            .attr("CompressionPriority", r.priority)
+                            .attr("AkiDoesNotFloat", bool_s(r.does_not_float)),
+                    );
+                }
+                e.push(El::new("Properties").child(list));
+            }
+            root.push(e);
+        }
         root.push(El::new("idPkg:Graphic").attr("src", "Resources/Graphic.xml"));
         root.push(El::new("idPkg:Fonts").attr("src", "Resources/Fonts.xml"));
         root.push(El::new("idPkg:Styles").attr("src", "Resources/Styles.xml"));
@@ -619,6 +662,26 @@ impl<'a> Ex<'a> {
 
     fn fonts_part(&mut self) -> Vec<u8> {
         let mut root = pkg_root("Fonts");
+        for f in &self.d.styles.composite_fonts {
+            let mut el = El::new("CompositeFont").attr("Self", format!("CompositeFont/{}", escape_id(&f.name))).attr("Name", &f.name);
+            for (i, e) in f.entries.iter().enumerate() {
+                self.note_font(&e.family, &e.style);
+                el.push(
+                    El::new("CompositeFontEntry")
+                        .attr("Self", format!("dcComposite{}_{i}", escape_id(&f.name)))
+                        .attr("Name", &e.name)
+                        .attr("CustomCharacters", &e.characters)
+                        .attr("FontStyle", &e.style)
+                        .attr("RelativeSize", num(e.relative_size * 100.0))
+                        .attr("HorizontalScale", num(e.horizontal_scale * 100.0))
+                        .attr("VerticalScale", num(e.vertical_scale * 100.0))
+                        .attr("BaselineShift", num(e.baseline_shift * 100.0))
+                        .attr("ScaleOption", bool_s(e.scale_option))
+                        .child(El::new("Properties").child(p("AppliedFont", "string", &e.family))),
+                );
+            }
+            root.push(el);
+        }
         let fonts = std::mem::take(&mut self.fonts);
         for (fam, styles) in &fonts {
             let fid = format!("di{:x}", {
@@ -939,6 +1002,24 @@ impl<'a> Ex<'a> {
     }
 
     fn char_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
+        if let Some(v) = a.leading_aki {
+            el.set("LeadingAki", num(v.unwrap_or(-1.0)));
+        }
+        if let Some(v) = a.trailing_aki {
+            el.set("TrailingAki", num(v.unwrap_or(-1.0)));
+        }
+        if let Some(v) = a.tsume {
+            el.set("Tsume", num(v * 100.0));
+        }
+        if let Some(v) = a.jidori {
+            el.set("Jidori", v);
+        }
+        if let Some(v) = a.leading_model {
+            el.set("LeadingModel", crate::cjk::leading_out(v));
+        }
+        if let Some(v) = a.character_alignment {
+            el.set("CharacterAlignment", crate::cjk::alignment_out(v));
+        }
         if let Some(f) = &a.font_family {
             props.push(p("AppliedFont", "string", f.clone()));
             let style = a.font_style.clone().unwrap_or_else(|| "Regular".into());
@@ -1034,18 +1115,51 @@ impl<'a> Ex<'a> {
             }
             el.set("OTFStylisticSets", designcraft_doc::otf::stylistic_sets(list).to_string());
         }
+        if let Some(v) = &a.glyph_form {
+            el.set("GlyphForm", v);
+        }
         if let Some(v) = a.no_break {
             el.set("NoBreak", bool_s(v));
         }
         if let Some(v) = a.digits {
             el.set("DigitsType", names::digits_out(v));
         }
-        if let Some(r) = a.ruby.as_ref().filter(|r| !r.is_empty()) {
-            el.set("RubyFlag", "true");
+        if let Some(v) = a.character_direction {
+            el.set("CharacterDirection", crate::arabic::direction_out(v));
+        }
+        if let Some(v) = a.allow_kashidas {
+            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
+        }
+        if let Some(v) = a.diacritic_position {
+            el.set("DiacriticPosition", crate::arabic::diacritic_out(v));
+        }
+        if let Some(v) = a.diacritic_x_offset {
+            el.set("XOffsetDiacritic", num(v));
+        }
+        if let Some(v) = a.diacritic_y_offset {
+            el.set("YOffsetDiacritic", num(v));
+        }
+        if let Some(v) = &a.positional_form {
+            el.set("PositionalForm", v);
+        }
+        if let Some(r) = a.ruby.as_ref() {
+            el.set("RubyFlag", bool_s(!r.is_empty()));
             el.set("RubyString", r.as_str());
         }
         if let Some(k) = a.kenten {
             el.set("KentenKind", if k { "KentenSesameDot" } else { "None" });
+        }
+        if let Some(c) = &a.kenten_character
+            && !c.is_empty()
+        {
+            el.set("KentenKind", "Custom");
+            el.set("KentenCustomCharacter", c);
+        }
+        if let Some(v) = a.tate_chu_yoko_x_offset {
+            el.set("TatechuyokoXOffset", num(v));
+        }
+        if let Some(v) = a.tate_chu_yoko_y_offset {
+            el.set("TatechuyokoYOffset", num(v));
         }
         if let Some(v) = a.tate_chu_yoko {
             el.set("Tatechuyoko", bool_s(v));
@@ -1059,6 +1173,38 @@ impl<'a> Ex<'a> {
     }
 
     fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
+        if let Some(v) = &a.mojikumi {
+            props.push(p("Mojikumi", if v.starts_with("MojikumiTable/") { "object" } else { "enumeration" }, v));
+        }
+        if let Some(v) = &a.kinsoku_type {
+            el.set("KinsokuType", v);
+        }
+        if let Some(v) = a.kinsoku_hang {
+            el.set(
+                "KinsokuHangType",
+                match v {
+                    designcraft_doc::cjk::KinsokuHang::None => "None",
+                    designcraft_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular",
+                    designcraft_doc::cjk::KinsokuHang::Force => "KinsokuHangForce",
+                },
+            );
+        }
+        if let Some(v) = a.bunri_kinshi {
+            el.set("BunriKinshi", bool_s(v));
+        }
+        if let Some(v) = a.rensuuji {
+            el.set("Rensuuji", bool_s(v));
+        }
+        if let Some(v) = a.treat_ideographic_space_as_space {
+            el.set("TreatIdeographicSpaceAsSpace", bool_s(v));
+        }
+        if let Some(Some(k)) = &a.kinsoku {
+            props.push(p(
+                "KinsokuSet",
+                if k.name.is_empty() { "enumeration" } else { "object" },
+                if k.name.is_empty() { "Nothing".into() } else { format!("KinsokuTable/{}", escape_id(&k.name)) },
+            ));
+        }
         if let Some(n) = &a.list_name {
             el.set(
                 "AppliedNumberingList",
@@ -1141,6 +1287,15 @@ impl<'a> Ex<'a> {
                 "ParagraphDirection",
                 if v == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
             );
+        }
+        if let Some(v) = a.kashidas {
+            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
+        }
+        if let Some(v) = &a.arabic_justification {
+            el.set("ParagraphJustification", v);
+        }
+        if let Some(Some(v)) = a.paragraph_kashida_width {
+            el.set("ParagraphKashidaWidth", num(v));
         }
         n!(left_indent, "LeftIndent");
         n!(right_indent, "RightIndent");
@@ -1690,7 +1845,10 @@ impl<'a> Ex<'a> {
                 .attr("OpticalMarginSize", "12")
                 .attr("FrameType", "TextFrameType")
                 .attr("StoryOrientation", if vertical { "Vertical" } else { "Horizontal" })
-                .attr("StoryDirection", "LeftToRightDirection"),
+                .attr(
+                    "StoryDirection",
+                    if s.direction == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
+                ),
         );
         for psr in self.story_paras(s) {
             el.push(psr);
@@ -1968,7 +2126,10 @@ impl<'a> Ex<'a> {
                 "AppliedTableStyle",
                 names::style_self("TableStyle", names::TABLE_BUILTINS, if t.style.is_empty() { designcraft_doc::BASIC_TABLE } else { &t.style }),
             )
-            .attr("TableDirection", "LeftToRightDirection")
+            .attr(
+                "TableDirection",
+                if t.options.direction == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
+            )
             .attr("SpaceBefore", num(t.options.space_before))
             .attr("SpaceAfter", num(t.options.space_after))
             .attr("HeaderBehavior", if t.options.repeat_header { "RepeatOnEachTextColumn" } else { "RepeatOnce" })

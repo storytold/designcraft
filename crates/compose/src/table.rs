@@ -326,7 +326,11 @@ fn emit(
             let rs = (cell.row_span.max(1) as usize).min(table.nrows() - r);
             let last_row = r + rs - 1;
             let y1 = ry(last_row).map_or(y + heights[r], |ly| ly + heights[last_row]);
-            let rect = Rect::new(x0 + colx[c], y, x0 + colx[c + cs], y1);
+            let rect = if table.options.direction == designcraft_doc::TextDirection::RightToLeft {
+                Rect::new(right - colx[c + cs], y, right - colx[c], y1)
+            } else {
+                Rect::new(x0 + colx[c], y, x0 + colx[c + cs], y1)
+            };
             let fill = if cell.has_fill() {
                 Some((cell.fill.clone(), cell.fill_tint))
             } else if body.contains(&r) {
@@ -380,11 +384,11 @@ fn emit(
                 }
             };
             push(Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y0), edge(0, at_top));
-            push(Point::new(rect.x0, rect.y0), Point::new(rect.x0, rect.y1), edge(1, c == 0));
+            push(Point::new(rect.x0, rect.y0), Point::new(rect.x0, rect.y1), edge(1, (rect.x0 - x0).abs() < 1e-6));
             if at_bottom {
                 push(Point::new(rect.x0, rect.y1), Point::new(rect.x1, rect.y1), edge(2, true));
             }
-            if c + cs == nc {
+            if (rect.x1 - right).abs() < 1e-6 {
                 push(Point::new(rect.x1, rect.y0), Point::new(rect.x1, rect.y1), edge(3, true));
             }
         }

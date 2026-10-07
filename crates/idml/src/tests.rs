@@ -560,3 +560,145 @@ fn vertical_story_orientation_round_trips() {
     let frame = back.spreads[0].items.iter().find_map(|i| i.text_frame()).unwrap();
     assert!(frame.options.vertical);
 }
+
+#[test]
+fn cjk_character_attributes_import_from_independent_xml_and_round_trip() {
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" BunriKinshi="true" Rensuuji="false" TreatIdeographicSpaceAsSpace="true">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" LeadingAki="0.25" TrailingAki="-1" Tsume="20" Jidori="4" LeadingModel="LeadingModelCenter" CharacterAlignment="AlignEmCenter" KentenKind="KentenWhiteCircle"><Content>甲乙</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let doc = import_idml(&fixture_with_story(story)).unwrap();
+    let st = doc.stories.values().find(|s| s.text.contains("甲乙")).unwrap();
+    let a = &st.runs().next().unwrap().1.over;
+    assert_eq!(a.leading_aki, Some(Some(0.25)));
+    assert_eq!(a.trailing_aki, Some(None));
+    assert_eq!(a.jidori, Some(4));
+    assert_eq!(a.tsume, Some(0.2));
+    assert_eq!(a.kenten_character.as_deref(), Some("○"));
+    assert_eq!(a.leading_model, Some(designcraft_doc::cjk::LeadingModel::Center));
+    assert_eq!(st.paras[0].para.bunri_kinshi, Some(true));
+    assert_eq!(st.paras[0].para.rensuuji, Some(false));
+    let back = import_idml(&export_idml(&doc)).unwrap();
+    let st2 = back.stories.values().find(|s| s.text.contains("甲乙")).unwrap();
+    let b = &st2.runs().next().unwrap().1.over;
+    assert_eq!(a.leading_aki, b.leading_aki);
+    assert_eq!(a.trailing_aki, b.trailing_aki);
+    assert_eq!(a.kenten_character, b.kenten_character);
+    assert_eq!(a.leading_model, b.leading_model);
+}
+
+#[test]
+fn automatic_kerning_does_not_import_inactive_numeric_values() {
+    for (attributes, expected) in [
+        (r#"KerningMethod="$ID/Optical" KerningValue="1e+11""#, Some(designcraft_doc::Kerning::Optical)),
+        (r#"KerningMethod="$ID/Metrics" KerningValue="0""#, Some(designcraft_doc::Kerning::Metrics)),
+        (r#"KerningValue="-40""#, Some(designcraft_doc::Kerning::Manual(-40.0))),
+        (r#"KerningValue="1e+11""#, None),
+    ] {
+        let story = format!(
+            r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+        <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" {attributes}><Content>甲乙</Content></CharacterStyleRange>
+        </ParagraphStyleRange></Story></idPkg:Story>"#
+        );
+        let d = import_idml(&fixture_with_story(&story)).unwrap();
+        let s = d.stories.values().find(|s| s.text.contains("甲乙")).unwrap();
+        assert_eq!(s.runs().next().unwrap().1.over.kerning, expected, "{attributes}");
+    }
+}
+
+#[test]
+fn cjk_composite_fonts_and_custom_kinsoku_are_document_resources() {
+    let map = DESIGNMAP.replace("</Document>", r#"
+      <KinsokuTable Self="KinsokuTable/Test" Name="Test" CantBeginLineChars="乙" CantEndLineChars="甲" CantBeSeparatedChars="—" HangingPunctuationChars="。"/>
+      <CompositeFont Self="CompositeFont/Mixed" Name="Mixed"><CompositeFontEntry Self="cf1" Name="Base" FontStyle="Regular"><Properties><AppliedFont type="string">Source Serif 4</AppliedFont></Properties></CompositeFontEntry>
+      <CompositeFontEntry Self="cf2" Name="Digits" CustomCharacters="0123456789" FontStyle="Regular" RelativeSize="80" BaselineShift="10"><Properties><AppliedFont type="string">Source Sans 3</AppliedFont></Properties></CompositeFontEntry></CompositeFont>
+    </Document>"#);
+    let story = STORY.replace("<ParagraphStyleRange ", "<ParagraphStyleRange KinsokuSet=\"KinsokuTable/Test\" ");
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", &story),
+    ]);
+    let d = import_idml(&bytes).unwrap();
+    let f = &d.styles.composite_fonts[0];
+    assert_eq!(f.entry('1').unwrap().family, "Source Sans 3");
+    assert_eq!(f.entry('甲').unwrap().family, "Source Serif 4");
+    assert_eq!(f.entry('1').unwrap().relative_size, 0.8);
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.styles.composite_fonts, d.styles.composite_fonts);
+    assert!(
+        back.stories.values().flat_map(|s| &s.paras).any(|p| p.para.kinsoku.as_ref().and_then(Option::as_ref).is_some_and(|k| k.no_start == "乙"))
+    );
+}
+
+#[test]
+fn cjk_unsupported_mojikumi_is_preserved_instead_of_silently_dropped() {
+    let map = DESIGNMAP.replace("</Document>", r#"<MojikumiTable Self="MojikumiTable/Spacing" Name="Spacing" BasedOnMojikumiSet="SimpChineseDefault"><Properties><OverrideMojikumiAkiList>
+    <OverrideMojikumiAkiType TargetMojikumiClass="1" SideMojikumiClass="23" SideIsAfterTarget="false" Minimum="-0.1" Desired="0.25" Maximum="0.5" CompressionPriority="3" AkiDoesNotFloat="true"/>
+    </OverrideMojikumiAkiList></Properties></MojikumiTable></Document>"#);
+    let story =
+        STORY.replace("<ParagraphStyleRange ", "<ParagraphStyleRange Mojikumi=\"MojikumiTable/Spacing\" KinsokuType=\"KinsokuPushOutFirst\" ");
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", &story),
+    ]);
+    let d = import_idml(&bytes).unwrap();
+    let t = &d.styles.mojikumi_tables[0];
+    assert_eq!(t.overrides[0].minimum, -0.1);
+    assert!(t.overrides[0].does_not_float);
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.styles.mojikumi_tables, d.styles.mojikumi_tables);
+    assert!(back.stories.values().flat_map(|s| &s.paras).any(|p| p.para.mojikumi.as_deref() == Some("MojikumiTable/Spacing")));
+}
+
+#[test]
+fn arabic_controls_import_independent_xml_and_round_trip() {
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" ParagraphDirection="RightToLeftDirection" Kashidas="KashidasOff" ParagraphJustification="NaskhJustification" ParagraphKashidaWidth="2">
+    <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" CharacterDirection="LeftToRightDirection" Kashidas="KashidasOff" DiacriticPosition="OpentypePosition" XOffsetDiacritic="150" YOffsetDiacritic="-100" PositionalForm="Medial"><Properties><DigitsType type="enumeration">FarsiDigits</DigitsType></Properties><Content>بَ123</Content></CharacterStyleRange>
+    </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let d = import_idml(&fixture_with_story(story)).unwrap();
+    let st = d.stories.values().find(|s| s.text.contains('ب')).unwrap();
+    assert_eq!(st.paras[0].para.kashidas, Some(false));
+    assert_eq!(st.paras[0].para.arabic_justification.as_deref(), Some("NaskhJustification"));
+    let a = &st.runs().next().unwrap().1.over;
+    assert_eq!(a.character_direction, Some(designcraft_doc::arabic::CharacterDirection::LeftToRight));
+    assert_eq!(a.allow_kashidas, Some(false));
+    assert_eq!(a.diacritic_x_offset, Some(150.0));
+    assert_eq!(a.diacritic_y_offset, Some(-100.0));
+    assert_eq!(a.digits, Some(designcraft_doc::Digits::Farsi));
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let b = back.stories.values().find(|s| s.text.contains('ب')).unwrap();
+    let attrs = &b.runs().next().unwrap().1.over;
+    assert_eq!(attrs.character_direction, a.character_direction);
+    assert_eq!(attrs.diacritic_x_offset, a.diacritic_x_offset);
+    assert_eq!(attrs.diacritic_y_offset, a.diacritic_y_offset);
+    assert_eq!(attrs.allow_kashidas, a.allow_kashidas);
+    assert_eq!(attrs.positional_form, a.positional_form);
+    assert_eq!(b.paras[0].para.paragraph_kashida_width, Some(Some(2.0)));
+}
+
+#[test]
+fn arabic_story_and_table_directions_survive_idml_export() {
+    let mut d = Document::new(&NewDocument::default());
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.direction = designcraft_doc::TextDirection::RightToLeft;
+    let mut t = designcraft_doc::Table::new(42, 1, 2, 0, 0, 200.0);
+    t.options.direction = designcraft_doc::TextDirection::RightToLeft;
+    st.insert_table(0, t);
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let st = back.stories.values().find(|st| !st.tables.is_empty()).unwrap();
+    assert_eq!(st.direction, designcraft_doc::TextDirection::RightToLeft);
+    assert_eq!(st.tables.values().next().unwrap().options.direction, designcraft_doc::TextDirection::RightToLeft);
+}

@@ -128,7 +128,7 @@ pub enum TextDirection {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Digits {
-    /// As typed.
+    /// Contextual digits; composition selects the preceding strong script/language.
     #[default]
     Default,
     /// European (0123).
@@ -144,16 +144,31 @@ pub enum Digits {
 impl Digits {
     /// The digit `c` (0–9) is drawn as, for text in `language`.
     pub fn map(self, c: char, language: &str) -> char {
-        let Some(d) = c.to_digit(10) else { return c };
+        let d = match c {
+            '0'..='9' => c as u32 - '0' as u32,
+            '\u{0660}'..='\u{0669}' => c as u32 - 0x0660,
+            '\u{06F0}'..='\u{06F9}' => c as u32 - 0x06F0,
+            _ => return c,
+        };
         let zero = match self {
-            Digits::Default | Digits::Arabic => return c,
+            Digits::Default => return c,
+            Digits::Arabic => 0x0030,
             Digits::Hindi => 0x0660,
             Digits::Farsi => 0x06F0,
             Digits::Native => {
                 let l = language.to_ascii_lowercase();
                 match () {
-                    _ if l.starts_with("arabic") => 0x0660,
-                    _ if l.starts_with("persian") || l.starts_with("farsi") || l.starts_with("urdu") => 0x06F0,
+                    _ if l.starts_with("arabic") || l == "ar" || l.starts_with("ar-") => 0x0660,
+                    _ if l.starts_with("persian")
+                        || l.starts_with("farsi")
+                        || l.starts_with("urdu")
+                        || l == "fa"
+                        || l.starts_with("fa-")
+                        || l == "ur"
+                        || l.starts_with("ur-") =>
+                    {
+                        0x06F0
+                    }
                     _ if l.starts_with("hindi") || l.starts_with("marathi") || l.starts_with("nepali") || l.starts_with("sanskrit") => 0x0966,
                     _ if l.starts_with("bengali") => 0x09E6,
                     _ if l.starts_with("gujarati") => 0x0AE6,
@@ -501,6 +516,17 @@ attr_set! {
         kerning: Kerning = Kerning::Metrics,
         /// Tracking in 1/1000 em.
         tracking: f64 = 0.0,
+        /// Explicit CJK aki, in em; None restores automatic spacing.
+        leading_aki: Option<f64> = None,
+        trailing_aki: Option<f64> = None,
+        /// Proportional character compression, 0..1.
+        tsume: f64 = 0.0,
+        /// Target em cells for the contiguous formatted group (0 disables jidori).
+        jidori: u32 = 0,
+        character_alignment: crate::cjk::CharacterAlignment = crate::cjk::CharacterAlignment::Baseline,
+        leading_model: crate::cjk::LeadingModel = crate::cjk::LeadingModel::Roman,
+        /// Explicit emphasis character; empty uses the traditional sesame dot.
+        kenten_character: String = String::new(),
         /// Horizontal / vertical scale, 1.0 = 100%.
         h_scale: f64 = 1.0,
         v_scale: f64 = 1.0,
@@ -527,10 +553,13 @@ attr_set! {
         strikethrough_offset: Option<f64> = None,
         strikethrough_color: String = String::new(),
         strikethrough_tint: f32 = 1.0,
+        glyph_form: String = String::new(),
         ligatures: bool = true,
         no_break: bool = false,
         /// Tate-chu-yoko: in vertical text, the run is set horizontally within one em of the line.
         tate_chu_yoko: bool = false,
+        tate_chu_yoko_x_offset: f64 = 0.0,
+        tate_chu_yoko_y_offset: f64 = 0.0,
         /// Ruby: the reading set small above the text (to its right in vertical text), one group
         /// over each run that has it.
         ruby: String = String::new(),
@@ -538,6 +567,15 @@ attr_set! {
         kenten: bool = false,
         /// Digits (World-Ready): how 0–9 are drawn.
         digits: Digits = Digits::Default,
+        character_direction: crate::arabic::CharacterDirection = crate::arabic::CharacterDirection::Default,
+        /// Character-level permission, additionally gated by paragraph kashidas.
+        allow_kashidas: bool = true,
+        diacritic_position: crate::arabic::DiacriticPosition = crate::arabic::DiacriticPosition::Default,
+        /// Additional mark offsets, in thousandths of an em. Positive y is up.
+        diacritic_x_offset: f64 = 0.0,
+        diacritic_y_offset: f64 = 0.0,
+        /// IDML contextual-form request, separate from general OpenType features.
+        positional_form: String = String::new(),
         language: String = "English: USA".into(),
         /// Additional OpenType features, e.g. `["onum", "ss01"]`.
         otf_features: Vec<String> = Vec::new(),
@@ -599,6 +637,9 @@ attr_set! {
         single_word_justify: Align = Align::FullyJustified,
         /// Insert Kashidas (World-Ready): justified Arabic lines stretch at joins before spaces.
         kashidas: bool = true,
+        /// Preserved vendor policy; non-default policies require a dedicated composer.
+        arabic_justification: String = String::new(),
+        paragraph_kashida_width: Option<f64> = None,
         // Keeps
         keep_with_next: u32 = 0,
         keep_lines_together: bool = false,
@@ -621,6 +662,16 @@ attr_set! {
         list_separator: String = "\t".into(),
         balance_ragged: bool = false,
         optical_margin: bool = false,
+        /// None uses the legacy built-in rules; an empty set explicitly disables kinsoku.
+        kinsoku: Option<crate::cjk::Kinsoku> = None,
+        /// Preserved spacing-table reference; compatibility audit reports unsupported composition.
+        mojikumi: String = String::new(),
+        /// Preserved priority policy; the current breaker does not implement these priorities.
+        kinsoku_type: String = String::new(),
+        kinsoku_hang: crate::cjk::KinsokuHang = crate::cjk::KinsokuHang::None,
+        bunri_kinshi: bool = false,
+        rensuuji: bool = true,
+        treat_ideographic_space_as_space: bool = false,
         /// Paragraph shading, and how far it reaches past the text: top, left, bottom, right.
         shading_on: bool = false,
         shading_color: String = "[Black]".into(),

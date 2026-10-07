@@ -75,7 +75,7 @@ impl Default for Spacing {
 impl Spacing {
     /// Per-tier (word, letter, glyph) stretch and shrink of glyph `g` as a box.
     fn box_elastic(&self, g: &Glyph) -> ([f64; 3], [f64; 3]) {
-        if !self.justify {
+        if !self.justify || g.locked_advance {
             return ([0.0; 3], [0.0; 3]);
         }
         let natural = g.adv / self.glyph_desired.max(0.01);
@@ -86,7 +86,7 @@ impl Spacing {
     }
     /// Word-space stretch and shrink of space glyph `g` (only U+0020 is elastic).
     fn space_elastic(&self, g: &Glyph) -> (f64, f64) {
-        if g.ch != ' ' {
+        if g.ch != ' ' && !(g.ch == '\u{3000}' && g.ideographic_space_elastic) {
             return (0.0, 0.0);
         }
         (g.space * (self.word_max - self.word_desired).max(0.0), g.space * (self.word_desired - self.word_min).max(0.0))
@@ -205,6 +205,10 @@ fn hang_left(g: &Glyph) -> f64 {
     hang(g.ch).0 * g.adv
 }
 
+fn right_hang(g: &Glyph, sp: &Spacing) -> f64 {
+    g.cjk_hang.max(if sp.optical { hang_right(g) } else { 0.0 })
+}
+
 fn hang_right(g: &Glyph) -> f64 {
     hang(g.ch).1 * g.adv
 }
@@ -248,7 +252,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
     let mut hy_cache = Vec::new();
     let mut last_space = NONE;
     for (i, g) in glyphs.iter().enumerate() {
-        let prev_hang = if sp.optical && i > 0 { hang_right(&glyphs[i - 1]) } else { 0.0 };
+        let prev_hang = if i > 0 { right_hang(&glyphs[i - 1], sp) } else { 0.0 };
         if is_forced(g.ch) {
             it.push(Item::glue(0.0, INF, 0.0));
             ig.push(i);
@@ -259,7 +263,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
             last_space = NONE;
             continue;
         }
-        if g.is_space() && !g.no_break {
+        if g.is_space() && !g.no_break && g.break_after != Some(false) {
             let w = g.adv;
             if sp.justify {
                 let (st, sh) = sp.space_elastic(g);
@@ -301,14 +305,14 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
         it.push(bx);
         ig.push(i);
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
-        if i + 1 < n && !next_is_space && !g.no_break {
+        if i + 1 < n && !next_is_space && !g.no_break && g.break_after != Some(false) {
             if matches!(g.ch, '-' | '\u{2010}') {
                 let mut p = Item::penalty(0.0, 50.0, true);
-                p.hang = if sp.optical { hang_right(g) } else { 0.0 };
+                p.hang = right_hang(g, sp);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
-            } else if matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') || cjk_break_between(g.ch, glyphs[i + 1].ch) {
+            } else if matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') || g.break_after.unwrap_or_else(|| cjk_break_between(g.ch, glyphs[i + 1].ch)) {
                 let mut p = Item::penalty(0.0, 0.0, false);
-                p.hang = if sp.optical { hang_right(g) } else { 0.0 };
+                p.hang = right_hang(g, sp);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if hyph_after[i] {
                 let hw = hyphen_width(g, &mut hy_cache);
@@ -326,7 +330,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
     it.push(Item::glue(0.0, INF, 0.0));
     ig.push(n);
     let mut p = Item::penalty(0.0, -INF, false);
-    p.hang = if sp.optical && n > 0 { hang_right(&glyphs[n - 1]) } else { 0.0 };
+    p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
     it.push(p);
     ig.push(n);
     (it, ig)
@@ -581,7 +585,8 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
         out.push(Break { start: 0, end: n, next: n, hyphen: false, forced: true });
     }
     // Lines produced past the paragraph end (e.g. a trailing forced break) are dropped.
-    out.retain(|b| b.start <= n);
+    let trailing_forced = glyphs.last().is_some_and(|g| is_forced(g.ch));
+    out.retain(|b| b.start < n || (b.start == n && trailing_forced));
     out
 }
 
@@ -611,7 +616,7 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 brk = Some((i + 1, false, true));
                 break;
             }
-            if g.is_space() && !g.no_break {
+            if g.is_space() && !g.no_break && g.break_after != Some(false) {
                 if sp.justify {
                     shrink += sp.space_elastic(g).1;
                 }
@@ -621,8 +626,11 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 i += 1;
                 continue;
             }
-            let hang_r = if sp.optical { hang_right(g) } else { 0.0 };
-            if x + g.adv - hang_r > w + shrink && i > start {
+            let hang_r = right_hang(g, sp);
+            if x + g.adv - hang_r > w + shrink
+                && i > start
+                && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
+            {
                 // Overflow: break at the last opportunity, else before this glyph.
                 brk = Some(match last_ok {
                     // Hyphenation zone: break before the word if that leaves little space.
@@ -638,8 +646,10 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
             if sp.justify {
                 shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             }
-            if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break {
-                if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/') || cjk_break_between(g.ch, glyphs[i + 1].ch) {
+            if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
+                if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
+                    || g.break_after.unwrap_or_else(|| cjk_break_between(g.ch, glyphs[i + 1].ch))
+                {
                     last_ok = Some((i + 1, false));
                 } else if hyph_after[i] && may_hyphenate(hyphens) {
                     let hy = hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };

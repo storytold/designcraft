@@ -910,6 +910,7 @@ dependencies = [
  "proptest",
  "regex",
  "unicode-bidi",
+ "unicode-bidi-mirroring",
 ]
 
 [[package]]
@@ -972,6 +973,7 @@ dependencies = [
  "log",
  "skrifa 0.47.0",
  "unicode-bidi",
+ "unicode-script",
 ]
 
 [[package]]

@@ -204,6 +204,15 @@ impl FontFace {
     pub fn glyph_for(&self, c: char) -> u32 {
         self.skrifa().and_then(|f| f.charmap().map(c)).map(|g| g.to_u32()).unwrap_or(0)
     }
+
+    /// GDEF identifies marks even when shaping merges their source cluster with a base.
+    pub fn glyph_is_mark(&self, gid: u32) -> bool {
+        use skrifa::raw::TableProvider;
+        self.skrifa()
+            .and_then(|f| f.gdef().ok())
+            .and_then(|gdef| gdef.glyph_class_def()?.ok())
+            .is_some_and(|classes| classes.get(GlyphId::new(gid)) == 3)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

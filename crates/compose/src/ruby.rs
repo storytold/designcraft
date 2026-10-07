@@ -40,8 +40,16 @@ fn set(base: &PlacedGlyph, text: &str, size: f64, base_size: f64) -> (Vec<Placed
 }
 
 /// A sesame dot (or a bullet, when the font has none) centred over `b`.
-fn kenten(b: &PlacedGlyph, size: f64) -> Vec<PlacedGlyph> {
-    let (mut dot, mut w) = set(b, "\u{FE45}", size * SCALE, size);
+fn kenten(b: &PlacedGlyph, size: f64, character: &str) -> Vec<PlacedGlyph> {
+    let character = if character.is_empty() { "\u{FE45}" } else { character };
+    let mut base = b.clone();
+    if let Some(c) = character.chars().next()
+        && !base.face.covers(c)
+        && let Some(face) = designcraft_fonts::FontDb::global().fallback_for(c, base.face.id())
+    {
+        base.face = designcraft_fonts::FaceRef::of(&face);
+    }
+    let (mut dot, mut w) = set(&base, character, size * SCALE, size);
     if dot.first().is_some_and(|d| d.gid == 0) {
         (dot, w) = set(b, "\u{2022}", size * SCALE, size);
     }
@@ -74,7 +82,7 @@ pub(crate) fn annotate(styles: &[RunStyle], line: &mut Vec<PlacedGlyph>) {
             continue;
         };
         if st.kenten && g.adv > 0.0 {
-            extra.extend(kenten(g, st.size));
+            extra.extend(kenten(g, st.size, &st.kenten_character));
         }
         let Some(text) = &st.ruby else {
             i += 1;
@@ -106,7 +114,7 @@ pub(crate) fn annotate(styles: &[RunStyle], line: &mut Vec<PlacedGlyph>) {
         extra.extend(glyphs);
         // Kenten on the rest of the group.
         for b in line[i + 1..j].iter().filter(|b| st.kenten && b.len > 0 && b.adv > 0.0) {
-            extra.extend(kenten(b, st.size));
+            extra.extend(kenten(b, st.size, &st.kenten_character));
         }
         i = j;
     }

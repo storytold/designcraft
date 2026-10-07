@@ -55,7 +55,16 @@ fn list(d: &Document) -> Vec<Value> {
                     continue;
                 }
                 let p = d.styles.resolve_char(&base, fmt);
-                *used.entry((p.font_family, p.font_style)).or_default() += n;
+                if let Some(f) = d.styles.composite_fonts.iter().find(|f| f.name == p.font_family.trim_start_matches("CompositeFont/")) {
+                    let text = st.text.get(rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))).unwrap_or("");
+                    for c in text.chars() {
+                        if let Some(e) = f.entry(c) {
+                            *used.entry((e.family.clone(), e.style.clone())).or_default() += 1;
+                        }
+                    }
+                } else {
+                    *used.entry((p.font_family, p.font_style)).or_default() += n;
+                }
             }
         }
     });
@@ -100,6 +109,17 @@ fn replace(s: &mut Session, p: &Value) -> Result<Value> {
             }
             for cs in &mut st.character {
                 changed += swap(&mut cs.chars, &family, style.as_deref(), &to_family, to_style.as_deref()) as usize;
+            }
+            for f in &mut st.composite_fonts {
+                for e in &mut f.entries {
+                    if e.family.eq_ignore_ascii_case(&family) && style.as_ref().is_none_or(|s| e.style.eq_ignore_ascii_case(s)) {
+                        e.family.clone_from(&to_family);
+                        if let Some(s) = &to_style {
+                            e.style.clone_from(s);
+                        }
+                        changed += 1;
+                    }
+                }
             }
         }
         // Local formatting in every story (cells and footnotes too).

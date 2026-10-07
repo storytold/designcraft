@@ -9,6 +9,43 @@ use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(query "style.compositeFont.list", "List Composite Fonts", [], None, "{} → composite font definitions", has_doc, |s, _| {
+            serde_json::to_value(&s.doc()?.doc.styles.composite_fonts).map_err(|e| bad("style.compositeFont.list", e.to_string()))
+        }),
+        cmd!(
+            "style.compositeFont.set",
+            "Set Composite Font",
+            [],
+            None,
+            "{name, entries: [{name?, characters?, family, style?, relativeSize?, horizontalScale?, verticalScale?, baselineShift?, scaleOption?}]} — replaces a composite font definition; empty characters selects the base entry",
+            has_doc,
+            |s, p| {
+                let f: designcraft_doc::cjk::CompositeFont =
+                    serde_json::from_value(p.clone()).map_err(|e| bad("style.compositeFont.set", e.to_string()))?;
+                if f.name.trim().is_empty()
+                    || f.entries.is_empty()
+                    || f.entries.len() > 1024
+                    || !f.entries.iter().any(|e| e.characters.is_empty())
+                    || f.entries.iter().any(|e| {
+                        e.family.trim().is_empty()
+                            || ![e.relative_size, e.horizontal_scale, e.vertical_scale].iter().all(|v| v.is_finite() && *v > 0.0 && *v <= 100.0)
+                            || !e.baseline_shift.is_finite()
+                            || e.baseline_shift.abs() > 100.0
+                    })
+                {
+                    return Err(bad("style.compositeFont.set", "invalid name, base entry, font, scale or baseline shift"));
+                }
+                s.edit(|d, _| {
+                    let fonts = &mut d.styles_mut().composite_fonts;
+                    if let Some(old) = fonts.iter_mut().find(|old| old.name == f.name) {
+                        *old = f.clone();
+                    } else {
+                        fonts.push(f.clone());
+                    }
+                    Ok(json!({"name": f.name}))
+                })
+            }
+        ),
         cmd!(
             "style.exportTag",
             "Export Tagging",
@@ -1103,5 +1140,30 @@ mod export_tag_tests {
         let text = String::from_utf8_lossy(&pdf);
         assert!(text.contains("/S/H1") && text.contains("/S/P"), "structure elements");
         assert!(designcraft_render::pdf_page_count(&pdf) == Some(1));
+    }
+}
+
+#[cfg(test)]
+mod cjk_tests {
+    use super::*;
+    #[test]
+    fn cjk_composite_font_command_invalidates_layout_and_undo_restores_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 300, 150], "content": "text", "text": "AB"})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let definition = |scale| json!({"name": "Mixed", "entries": [{"family": "Source Serif 4", "relativeSize": scale}]});
+        s.execute("style.compositeFont.set", &definition(1.0)).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 2})).unwrap();
+        s.execute("type.char", &json!({"fontFamily": "Mixed", "leadingAki": 0.25, "jidori": 4})).unwrap();
+        let old = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        s.execute("style.compositeFont.set", &definition(2.0)).unwrap();
+        let new = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!(!std::sync::Arc::ptr_eq(&old, &new));
+        assert!(new.frames[0].lines[0].end_x > old.frames[0].lines[0].end_x);
+        s.execute("edit.undo", &json!({})).unwrap();
+        let restored = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert_eq!(old.frames[0].lines[0].end_x, restored.frames[0].lines[0].end_x);
+        assert!(s.execute("style.compositeFont.set", &definition(-1.0)).is_err());
     }
 }

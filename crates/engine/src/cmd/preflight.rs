@@ -39,6 +39,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     // Stories: overset and fonts.
     let db = designcraft_fonts::FontDb::global();
     let mut missing_fonts: Vec<String> = Vec::new();
+    let mut unsupported_typography = std::collections::BTreeSet::new();
     for story in d.stories.values() {
         let cs = s.cache.get(d, story.id, None);
         if cs.is_overset() {
@@ -47,22 +48,65 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             let n = story.text[cs.overset_at.unwrap_or(0).min(story.len())..].chars().count();
             out.push(Issue { severity: "error", kind: "overset", message: format!("Overset text: {n} characters"), item: last.map(|i| i.0), page });
         }
+        let ranges = story.para_ranges();
         for (pi, pf) in story.paras.iter().enumerate() {
-            let (_, base) = d.styles.resolve_para(pf);
-            let _ = pi;
+            let (para, base) = d.styles.resolve_para(pf);
+            let Some(range) = ranges.get(pi) else { continue };
+            let has_rtl = story.text.get(range.clone()).is_some_and(|text| text.chars().any(designcraft_fonts::is_rtl));
+            if has_rtl {
+                if !matches!(para.arabic_justification.as_str(), "" | "DefaultJustification") {
+                    unsupported_typography.insert(format!(
+                        "Arabic justification policy `{}` is preserved; vendor-specific Naskh/Arabic algorithms are not implemented",
+                        para.arabic_justification
+                    ));
+                }
+                if para.paragraph_kashida_width.is_some() && para.arabic_justification != "DefaultJustification" {
+                    unsupported_typography
+                        .insert("Paragraph Kashida width preset is preserved; automatic elongation uses the engine's bounded allocation".into());
+                }
+            }
+            if !matches!(para.mojikumi.as_str(), "" | "Nothing" | "None") {
+                unsupported_typography.insert(format!("Mojikumi `{}` is preserved, but its spacing table is not applied", para.mojikumi));
+            }
+            if !para.kinsoku_type.is_empty() {
+                unsupported_typography
+                    .insert(format!("Kinsoku priority `{}` is preserved, but push-in/push-out priority is not applied", para.kinsoku_type));
+            }
             let mut fams = vec![base.font_family.clone()];
-            for (_, f) in story.runs() {
-                fams.push(d.styles.resolve_char(&base, f).font_family);
+            for (run, f) in story.runs().filter(|(run, _)| run.start < range.end && run.end > range.start) {
+                let props = d.styles.resolve_char(&base, f);
+                if has_rtl
+                    && story.text.get(run.start.max(range.start)..run.end.min(range.end)).is_some_and(|t| t.chars().any(designcraft_fonts::is_rtl))
+                {
+                    use designcraft_doc::arabic::DiacriticPosition as P;
+                    if !matches!(props.diacritic_position, P::Default | P::OpenType) {
+                        unsupported_typography.insert(format!(
+                            "Diacritic preset `{:?}` is preserved; font OpenType anchors and explicit offsets are used",
+                            props.diacritic_position
+                        ));
+                    }
+                    if !matches!(props.positional_form.as_str(), "" | "None" | "Calculate" | "Initial" | "Medial" | "Final" | "Isolated") {
+                        unsupported_typography.insert(format!("Unknown positional form `{}` is preserved but not applied", props.positional_form));
+                    }
+                }
+                fams.push(props.font_family);
             }
             for fam in fams {
-                if !db.has_family(&fam) && !missing_fonts.contains(&fam) {
-                    missing_fonts.push(fam);
+                let composite = d.styles.composite_fonts.iter().find(|f| f.name == fam.trim_start_matches("CompositeFont/"));
+                let families: Vec<&str> = composite.map_or_else(|| vec![fam.as_str()], |f| f.entries.iter().map(|e| e.family.as_str()).collect());
+                for family in families {
+                    if !db.has_family(family) && !missing_fonts.iter().any(|f| f == family) {
+                        missing_fonts.push(family.to_string());
+                    }
                 }
             }
         }
     }
     for f in missing_fonts {
         out.push(Issue { severity: "error", kind: "missingFont", message: format!("Missing font: {f}"), item: None, page: None });
+    }
+    for message in unsupported_typography {
+        out.push(Issue { severity: "warning", kind: "unsupportedTypography", message, item: None, page: None });
     }
     // Items.
     for (si, sp) in d.spreads.iter().enumerate() {
@@ -157,5 +201,27 @@ mod placed_vector_tests {
         let low: Vec<&str> =
             r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "lowResolution").map(|i| i["message"].as_str().unwrap()).collect();
         assert_eq!(low, ["photo.png: effective 10 ppi (< 150)"]);
+    }
+}
+
+#[cfg(test)]
+mod arabic_tests {
+    use super::*;
+
+    #[test]
+    fn arabic_unsupported_presets_are_reported_without_flagging_supported_offsets() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = "بُسْمِ";
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": text})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": text.len()})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"diacriticPosition": "openType", "diacriticXOffset": 150}})).unwrap();
+        assert!(!check(&s, 150.0).iter().any(|i| i.kind == "unsupportedTypography"));
+        s.execute("type.para", &json!({"attrs": {"arabicJustification": "NaskhJustification", "paragraphKashidaWidth": 2}})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"diacriticPosition": "tight"}})).unwrap();
+        let issues = check(&s, 150.0);
+        let typography: Vec<_> = issues.iter().filter(|i| i.kind == "unsupportedTypography").collect();
+        assert_eq!(typography.len(), 3, "{typography:?}");
+        assert!(typography.iter().all(|i| i.severity == "warning"));
     }
 }

@@ -38,17 +38,32 @@ pub struct Glyph {
     pub style: u32,
     /// Unbreakable (No Break).
     pub no_break: bool,
+    pub locked_advance: bool,
     /// Tate-chu-yoko in a vertical frame: [centre of the group's em along the line from `x`,
     /// this glyph's left edge across the line from that centre, the em] (see [`collapse_tcy`]).
     pub tcy: Option<[f64; 3]>,
+    pub tcy_offset: [f64; 2],
     /// Width of a word space (U+0020) in this glyph's font, size and horizontal scale: the unit of
     /// word and letter spacing in justification.
     pub space: f64,
+    /// Resolved CJK boundary constraint, independent of glyph outlines.
+    pub break_after: Option<bool>,
+    pub cjk_hang: f64,
+    pub ideographic_space_elastic: bool,
+    pub character_alignment: designcraft_doc::cjk::CharacterAlignment,
+    pub leading_model: designcraft_doc::cjk::LeadingModel,
+    pub character_direction: designcraft_doc::arabic::CharacterDirection,
+    pub display_char: char,
+    pub bidi_offset: usize,
+    pub bidi_end: usize,
+    pub allow_kashidas: bool,
+    pub safe_tatweel_before: bool,
+    pub shaping_rtl: bool,
 }
 
 impl Glyph {
     pub fn is_space(&self) -> bool {
-        matches!(self.ch, ' ' | '\u{2002}'..='\u{200A}' | '\u{3000}')
+        matches!(self.ch, ' ' | '\u{2002}'..='\u{200A}') || (self.ch == '\u{3000}' && self.ideographic_space_elastic)
     }
     pub fn is_letter(&self) -> bool {
         self.ch.is_alphabetic() || matches!(self.ch, '\'' | '’')
@@ -143,6 +158,7 @@ impl StyleTable<'_> {
             xml_tag: (!p.xml_tag.is_empty()).then(|| p.xml_tag.clone()),
             ruby: (!p.ruby.is_empty()).then(|| p.ruby.clone()),
             kenten: p.kenten,
+            kenten_character: p.kenten_character.clone(),
         };
         if let Some(i) = self.styles.iter().rposition(|s| *s == rs) {
             return i as u32;
@@ -196,6 +212,7 @@ pub(crate) fn shape_para(
             segments.push((w[0], w[1], top, fmt));
         }
     }
+    let mut resolved = Vec::new();
     for (a, b, overlay, fmt) in segments {
         // A nested / GREP character style sits under the run's own style and overrides.
         let base;
@@ -207,6 +224,24 @@ pub(crate) fn shape_para(
             None => para_chars,
         };
         let props = styles.resolve_char(para_chars, fmt);
+        let family = props.font_family.trim_start_matches("CompositeFont/");
+        if let Some(font) = styles.composite_fonts.iter().find(|f| f.name == family) {
+            let mut start = a;
+            let mut selected = None;
+            for (offset, c) in story.text.get(a..b).unwrap_or("").char_indices() {
+                let entry = font.entry(c);
+                if entry != selected && a + offset > start {
+                    resolved.push((start, a + offset, composite_props(&props, selected), fmt, para_chars.clone()));
+                    start = a + offset;
+                }
+                selected = entry;
+            }
+            resolved.push((start, b, composite_props(&props, selected), fmt, para_chars.clone()));
+        } else {
+            resolved.push((a, b, props, fmt, para_chars.clone()));
+        }
+    }
+    for (a, b, props, fmt, resolved_base) in resolved {
         let style = table.intern(&props);
         let deleted = props.change == designcraft_doc::ChangeMark::Deleted;
         if deleted || (!props.conditions.is_empty() && props.conditions.iter().all(|c| sub.hidden_conditions.contains(c))) {
@@ -236,11 +271,11 @@ pub(crate) fn shape_para(
             rf.style = cs.clone();
         }
         rf.over.position = Some(sub.note_position);
-        let rprops = styles.resolve_char(para_chars, &rf);
+        let rprops = styles.resolve_char(&resolved_base, &rf);
         let rstyle = table.intern(&rprops);
         let mut ef = fmt.clone();
         ef.over.position = Some(designcraft_doc::Position::Superscript);
-        let eprops = styles.resolve_char(para_chars, &ef);
+        let eprops = styles.resolve_char(&resolved_base, &ef);
         let estyle = table.intern(&eprops);
         let mut k = a;
         for (i, m) in story.text[a..b].match_indices(is_ref) {
@@ -285,7 +320,7 @@ pub(crate) fn collapse_tcy(glyphs: &mut [Glyph], vertical: bool) {
         let step = em / run.len() as f64;
         let mut across = -width / 2.0;
         for (k, g) in run.iter_mut().enumerate() {
-            g.tcy = Some([em / 2.0 - k as f64 * step, across + g.dx, em]);
+            g.tcy = Some([em / 2.0 - k as f64 * step + g.tcy_offset[1], across + g.dx + g.tcy_offset[0], em]);
             across += g.adv;
             g.adv = step;
             g.dx = 0.0;
@@ -319,18 +354,108 @@ fn features_for(p: &CharProps) -> Vec<Feature> {
         Position::OtDenominator => v.extend(feature("dnom")),
         _ => {}
     }
+    let form = match p.glyph_form.as_str() {
+        "ExpertForm" => "expt",
+        "TraditionalForm" => "trad",
+        "SimplifiedForm" => "smpl",
+        "JIS78Form" => "jp78",
+        "JIS83Form" => "jp83",
+        "JIS90Form" => "jp90",
+        "JIS04Form" => "jp04",
+        _ => "",
+    };
+    if !form.is_empty() {
+        v.extend(feature(form));
+    }
     for f in &p.otf_features {
         v.extend(feature(f));
+    }
+    let positional = match p.positional_form.as_str() {
+        "Initial" => Some("init"),
+        "Medial" => Some("medi"),
+        "Final" => Some("fina"),
+        "Isolated" => Some("isol"),
+        _ => None,
+    };
+    if let Some(tag) = positional {
+        for form in ["isol", "init", "medi", "fina"] {
+            v.extend(feature(&format!("{}{}", if form == tag { "" } else { "-" }, form)));
+        }
     }
     v
 }
 
 fn is_mark(c: char) -> bool {
-    matches!(c as u32, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F | 0x200D | 0xFE00..=0xFE0F)
+    unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM || matches!(c, '\u{200C}' | '\u{200D}')
+}
+
+fn composite_props(base: &CharProps, entry: Option<&designcraft_doc::cjk::CompositeFontEntry>) -> CharProps {
+    let mut p = base.clone();
+    if let Some(e) = entry {
+        p.font_family.clone_from(&e.family);
+        p.font_style.clone_from(&e.style);
+        p.size *= e.relative_size.clamp(0.01, 100.0);
+        p.h_scale *= e.horizontal_scale.clamp(0.01, 100.0);
+        p.v_scale *= e.vertical_scale.clamp(0.01, 100.0);
+        p.baseline_shift += base.size * e.baseline_shift;
+        if e.scale_option {
+            let face = FontDb::global().face(&p.font_family, &p.font_style);
+            let (asc, desc) = face.vertical_metrics();
+            let center = (asc - desc) / (2.0 * (asc + desc).max(1e-9));
+            p.baseline_shift += (base.size * base.v_scale - p.size * p.v_scale) * center;
+        }
+    }
+    p
 }
 
 #[allow(clippy::too_many_arguments)]
-fn shape_run(
+fn shape_run(db: &FontDb, text: &str, range: std::ops::Range<usize>, p: &CharProps, env: TypeEnv, style: u32, sub: &SubstCtx, out: &mut Vec<Glyph>) {
+    let start = out.len();
+    shape_run_raw(db, text, range, p, env, style, sub, out);
+    let run = &mut out[start..];
+    let em = p.size * p.h_scale;
+    for g in run.iter_mut().filter(|g| g.adv > 0.0 && !g.ch.is_control()) {
+        let (mut left, mut right) = (0.0, 0.0);
+        if p.tsume > 0.0 && !g.ch.is_whitespace() {
+            let outline = db.outline(&g.face, g.gid);
+            if !outline.elements().is_empty() {
+                let bounds = designcraft_geom::Shape::bounding_box(&*outline);
+                left = (g.dx + bounds.x0 * g.sx).clamp(0.0, g.adv);
+                right = (g.adv - g.dx - bounds.x1 * g.sx).clamp(0.0, g.adv - left);
+            }
+        }
+        let tsume = p.tsume.clamp(0.0, 1.0);
+        let before = p.leading_aki.unwrap_or(0.0).clamp(0.0, 100.0) * em;
+        let after = p.trailing_aki.unwrap_or(0.0).clamp(0.0, 100.0) * em;
+        g.dx += before - left * tsume;
+        g.adv += before + after - (left + right) * tsume;
+    }
+    if p.jidori > 0 && !run.is_empty() && !run.iter().any(|g| g.ch.is_control()) {
+        let clusters: Vec<usize> = run.iter().enumerate().filter(|(_, g)| g.len > 0).map(|(i, _)| i).collect();
+        let natural: f64 = run.iter().map(|g| g.adv).sum();
+        let target = f64::from(p.jidori.min(10000)) * em;
+        if clusters.len() == 1 {
+            if let Some(g) = run.first_mut() {
+                g.dx += (target - natural) * 0.5;
+                g.adv += target - natural;
+            }
+        } else if clusters.len() > 1 {
+            let gap = (target - natural) / (clusters.len() - 1) as f64;
+            for &i in clusters.iter().skip(1) {
+                if let Some(g) = run.get_mut(i.saturating_sub(1)) {
+                    g.adv += gap;
+                }
+            }
+        }
+        let end = run.len().saturating_sub(1);
+        for g in run.iter_mut().take(end) {
+            g.break_after = Some(false);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shape_run_raw(
     db: &FontDb,
     text: &str,
     range: std::ops::Range<usize>,
@@ -341,6 +466,12 @@ fn shape_run(
     out: &mut Vec<Glyph>,
 ) {
     let primary = db.face(&p.font_family, &p.font_style);
+    let strong = |c| match unicode_bidi::bidi_class(c) {
+        unicode_bidi::BidiClass::AL => Some(true),
+        unicode_bidi::BidiClass::L | unicode_bidi::BidiClass::R => Some(false),
+        _ => None,
+    };
+    let mut arabic_context = text.get(..range.start).unwrap_or("").chars().rev().take_while(|c| !matches!(c, '\n' | '\r')).find_map(strong);
     // Split into segments: font coverage changes and special characters (markers, tabs, breaks).
     let mut seg_start = range.start;
     let mut seg_face = primary.clone();
@@ -351,14 +482,27 @@ fn shape_run(
     };
     for (i, c) in text[range.clone()].char_indices() {
         let i = range.start + i;
+        if let Some(context) = strong(c) {
+            arabic_context = Some(context);
+        }
         // Digits drawn in another script (World-Ready Digits): each is set as its substitute.
-        if c.is_ascii_digit() && p.digits != designcraft_doc::Digits::Default {
-            let d = p.digits.map(c, &p.language);
+        {
+            use designcraft_doc::Digits;
+            let mode = if p.digits != Digits::Default {
+                p.digits
+            } else {
+                match arabic_context {
+                    Some(false) => Digits::Arabic,
+                    Some(true) if Digits::Native.map('0', &p.language) == '0' => Digits::Hindi,
+                    _ => Digits::Native,
+                }
+            };
+            let d = mode.map(c, &p.language);
             if d != c {
                 flush(seg_start, i, &seg_face, out);
-                seg_start = i + 1;
+                seg_start = i + c.len_utf8();
                 let face = if primary.covers(d) { primary.clone() } else { db.fallback_for(d, primary.id()).unwrap_or_else(|| primary.clone()) };
-                shape_segment(db, text, i..i + 1, Some(d.encode_utf8(&mut [0; 4])), p, &face, auto_leading, style, out, sub.vertical);
+                shape_segment(db, text, i..i + c.len_utf8(), Some(d.encode_utf8(&mut [0; 4])), p, &face, auto_leading, style, out, sub.vertical);
                 continue;
             }
         }
@@ -496,12 +640,12 @@ fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
 /// Shape `src` word by word through a cache (like a browser's word cache): the text is split
 /// after each U+0020 so repeated words are shaped once. Shaping does not cross word spaces in the
 /// scripts we lay out, and clusters stay byte offsets into `src`.
-fn shape_cached(face: &FontFace, src: &str, feats: &[Feature], caps: bool) -> Vec<ShapedGlyph> {
+fn shape_cached(face: &FontFace, src: &str, feats: &[Feature], caps: bool, context: designcraft_fonts::ShapeContext<'_>) -> Vec<ShapedGlyph> {
     let map = |c: char| if caps { c.to_uppercase().next().unwrap_or(c) } else { c };
-    if src.len() < 2 || !src.contains(' ') {
-        return designcraft_fonts::shape(face, src, feats, map);
+    if src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
+        return designcraft_fonts::shape_with_context(face, src, feats, map, context);
     }
-    let words = word_map((face.id(), caps, format!("{feats:?}")));
+    let words = word_map((face.id(), caps, format!("{feats:?}/{}", context.language)));
     let pieces: Vec<&str> = src.split_inclusive(' ').collect();
     let mut found: Vec<Option<Arc<[ShapedGlyph]>>> = {
         let r = words.read().unwrap_or_else(|e| e.into_inner());
@@ -510,7 +654,14 @@ fn shape_cached(face: &FontFace, src: &str, feats: &[Feature], caps: bool) -> Ve
     let mut fresh: Vec<(Box<str>, Arc<[ShapedGlyph]>)> = Vec::new();
     for (k, f) in found.iter_mut().enumerate() {
         if f.is_none() {
-            let g: Arc<[ShapedGlyph]> = designcraft_fonts::shape(face, pieces[k], feats, map).into();
+            let g: Arc<[ShapedGlyph]> = designcraft_fonts::shape_with_context(
+                face,
+                pieces[k],
+                feats,
+                map,
+                designcraft_fonts::ShapeContext { language: context.language, ..Default::default() },
+            )
+            .into();
             fresh.push((pieces[k].into(), g.clone()));
             *f = Some(g);
         }
@@ -581,8 +732,22 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         size,
         style,
         no_break: p.no_break,
+        locked_advance: p.jidori > 0,
         tcy: p.tate_chu_yoko.then_some([0.0; 3]),
+        tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
         space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
+        break_after: None,
+        cjk_hang: 0.0,
+        ideographic_space_elastic: false,
+        character_alignment: p.character_alignment,
+        leading_model: p.leading_model,
+        character_direction: p.character_direction,
+        display_char: ch,
+        bidi_offset: 0,
+        bidi_end: 0,
+        allow_kashidas: p.allow_kashidas,
+        safe_tatweel_before: false,
+        shaping_rtl: false,
     }
 }
 
@@ -607,11 +772,20 @@ fn shape_segment(
     let src = replacement.unwrap_or(&text[range.clone()]);
     let caps = p.capitalization == Capitalization::AllCaps;
     let mut feats = features_for(p);
+    if vertical && designcraft_doc::otf::is_on(&p.otf_features, "hkna") {
+        feats.extend(feature("-hkna"));
+        feats.extend(feature("vkna"));
+    }
     if vertical {
         feats.extend(["vert", "vrt2"].iter().filter_map(|t| designcraft_fonts::feature(t)));
     }
     let space = face.advance(face.glyph_for(' ')) * k * hs;
-    let shaped: Vec<ShapedGlyph> = shape_cached(face, src, &feats, caps);
+    let context = designcraft_fonts::ShapeContext {
+        before: if replacement.is_none() { text.get(..range.start).unwrap_or("") } else { "" },
+        after: if replacement.is_none() { text.get(range.end..).unwrap_or("") } else { "" },
+        language: &p.language,
+    };
+    let shaped: Vec<ShapedGlyph> = shape_cached(face, src, &feats, caps, context);
     let n = shaped.len();
     let fref = FaceRef::of(face);
     for (gi, sg) in shaped.iter().enumerate() {
@@ -631,6 +805,9 @@ fn shape_segment(
         }
         // Only the first glyph of a cluster owns the bytes (so ranges partition the text).
         let first_in_cluster = gi == 0 || shaped[gi - 1].cluster != sg.cluster;
+        let mark = face.glyph_is_mark(sg.gid);
+        let mark_x = if mark { p.diacritic_x_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * hs } else { 0.0 };
+        let mark_y = if mark { p.diacritic_y_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * p.v_scale } else { 0.0 };
         out.push(Glyph {
             face: fref,
             gid: sg.gid,
@@ -638,8 +815,8 @@ fn shape_segment(
             len: if first_in_cluster || replacement.is_some() { len } else { 0 },
             ch,
             adv,
-            dx: sg.x_offset as f64 * k * hs,
-            dy: -(sg.y_offset as f64) * k * p.v_scale,
+            dx: sg.x_offset as f64 * k * hs + mark_x,
+            dy: -(sg.y_offset as f64) * k * p.v_scale - mark_y,
             sx: k * hs,
             sy: k * p.v_scale,
             shift,
@@ -651,8 +828,26 @@ fn shape_segment(
             size,
             style,
             no_break: p.no_break,
+            locked_advance: p.jidori > 0,
             tcy: p.tate_chu_yoko.then_some([0.0; 3]),
+            tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
             space,
+            break_after: None,
+            cjk_hang: 0.0,
+            ideographic_space_elastic: false,
+            character_alignment: p.character_alignment,
+            leading_model: p.leading_model,
+            character_direction: p.character_direction,
+            display_char: if replacement.is_some() && matches!(ch, '0'..='9' | '\u{0660}'..='\u{0669}' | '\u{06F0}'..='\u{06F9}') {
+                src.chars().next().unwrap_or(ch)
+            } else {
+                ch
+            },
+            bidi_offset: 0,
+            bidi_end: 0,
+            allow_kashidas: p.allow_kashidas,
+            safe_tatweel_before: sg.safe_tatweel_before,
+            shaping_rtl: sg.rtl,
         });
     }
 }

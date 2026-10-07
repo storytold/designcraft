@@ -54,6 +54,26 @@ pub fn specs() -> Vec<CommandSpec> {
             st.revision += 1;
             ok()
         }),
+        cmd!(
+            "story.setDirection",
+            "Story Column Direction",
+            ["Type", "Story Column Direction"],
+            None,
+            "{story?, direction: leftToRight|rightToLeft} — column progression, independent of paragraph direction",
+            has_doc,
+            |s, p| {
+                let sid = story_of(s, p).ok_or_else(|| bad("story.setDirection", "no story"))?;
+                let direction: designcraft_doc::TextDirection =
+                    serde_json::from_value(p.get("direction").cloned().ok_or_else(|| bad("story.setDirection", "missing direction"))?)
+                        .map_err(|e| bad("story.setDirection", e.to_string()))?;
+                s.edit(|d, _| {
+                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                    st.direction = direction;
+                    st.rev = st.rev.wrapping_add(1);
+                    ok()
+                })
+            }
+        ),
         cmd!("story.setText", "Set Story Text", [], None, "{story, text} — replace a story's whole text", has_doc, |s, p| {
             let sid = StoryId(p.get("story").and_then(Value::as_u64).ok_or_else(|| bad("story.setText", "missing story"))?);
             let text = str_param(p, "text").unwrap_or("").to_string();
@@ -1321,5 +1341,25 @@ mod bidi_caret_tests {
         // By words too.
         let p = s.execute("text.move", &json!({"dir": "left", "word": true})).unwrap()["pos"].as_u64().unwrap();
         assert!(p >= "سلام".len() as u64, "{p}");
+    }
+}
+
+#[cfg(test)]
+mod arabic_tests {
+    use super::*;
+    #[test]
+    fn arabic_story_direction_command_validates_and_supports_undo() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "abc"})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let before = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        s.execute("story.setDirection", &json!({"story": sid.0, "direction": "rightToLeft"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().direction, designcraft_doc::TextDirection::RightToLeft);
+        let after = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!(!std::sync::Arc::ptr_eq(&before, &after));
+        assert!(s.execute("story.setDirection", &json!({"story": sid.0, "direction": "unknown"})).is_err());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().direction, designcraft_doc::TextDirection::LeftToRight);
     }
 }

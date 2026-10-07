@@ -208,6 +208,8 @@ impl AltFills {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TableOptions {
+    /// Logical column zero is drawn at the right edge for RTL tables.
+    pub direction: crate::TextDirection,
     /// Outer border (overrides the outer cell edges).
     pub border: CellStroke,
     pub space_before: f64,
@@ -224,6 +226,7 @@ pub struct TableOptions {
 impl Default for TableOptions {
     fn default() -> Self {
         TableOptions {
+            direction: crate::TextDirection::LeftToRight,
             border: CellStroke::default(),
             space_before: 4.0,
             space_after: -4.0,

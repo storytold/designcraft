@@ -15,6 +15,7 @@ impl Story {
         let a = crate::story::floor_char_boundary(&self.text, range.start.min(self.len()));
         let b = crate::story::floor_char_boundary(&self.text, range.end.min(self.len())).max(a);
         let mut out = Story::new(StoryId(0));
+        out.direction = self.direction;
         out.text = self.text[a..b].to_string();
         let (p0, p1) = (self.para_at(a), self.para_at(b));
         out.paras = self.paras[p0..=p1].to_vec();

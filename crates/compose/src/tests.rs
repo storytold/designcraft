@@ -1027,3 +1027,377 @@ fn only_english_text_gets_english_hyphenation() {
     st.format_chars(0..n, |f| f.over.language = Some("French".into()));
     assert_eq!(hyphenated(&d2, sid), 0, "French isn't hyphenated with English rules");
 }
+
+#[test]
+fn cjk_aki_adds_space_without_scaling_outlines() {
+    let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    let old = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+        f.over.leading_aki = Some(Some(0.25));
+        f.over.trailing_aki = Some(Some(0.5));
+    });
+    let new = compose_story(&d, sid, &ComposeOptions::default());
+    let a = &old.frames[0].lines[0];
+    let b = &new.frames[0].lines[0];
+    assert!((b.end_x - a.end_x - 18.0).abs() < 1e-6);
+    assert_eq!(a.glyphs[0].sx, b.glyphs[0].sx);
+    assert!((b.glyphs[0].x - a.glyphs[0].x - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn cjk_jidori_sets_group_width_and_survives_narrow_frames() {
+    for composer in [designcraft_doc::Composer::SingleLine, designcraft_doc::Composer::Paragraph] {
+        let (mut d, sid, _) = doc_with(
+            "AB",
+            Rect::new(0.0, 0.0, 30.0, 150.0),
+            ParaAttrs { composer: Some(composer), glyph_scale_desired: Some(1.2), letter_space_desired: Some(0.2), ..Default::default() },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.jidori = Some(4));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 1, "an indivisible jidori group must not be emergency-split");
+        assert!((lines[0].end_x - lines[0].x0 - 48.0).abs() < 1e-6);
+        assert_eq!(lines[0].range, 0..2);
+    }
+}
+
+#[test]
+fn cjk_tsume_removes_sidebearings_without_collapsing_ink() {
+    let (mut d, sid, _) = doc_with("HH", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    let old = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.tsume = Some(1.0));
+    let new = compose_story(&d, sid, &ComposeOptions::default());
+    let a = &old.frames[0].lines[0];
+    let b = &new.frames[0].lines[0];
+    let g = &b.glyphs[0];
+    let outline = designcraft_fonts::FontDb::global().outline(&g.face, g.gid);
+    let ink_width = designcraft_geom::Shape::bounding_box(&*outline).width() * g.sx;
+    assert!(ink_width > 0.0);
+    assert!((b.end_x - b.x0 - 2.0 * ink_width).abs() < 1e-6);
+    assert!(b.end_x < a.end_x);
+    assert_eq!(a.glyphs[0].sx, g.sx);
+}
+
+#[test]
+fn cjk_composite_font_selects_entries_before_shaping() {
+    use designcraft_doc::cjk::{CompositeFont, CompositeFontEntry};
+    let (mut d, sid, _) = doc_with("A1B", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    std::sync::Arc::make_mut(&mut d.styles).composite_fonts.push(CompositeFont {
+        name: "Mixed".into(),
+        entries: vec![
+            CompositeFontEntry { family: "Source Serif 4".into(), ..Default::default() },
+            CompositeFontEntry { characters: "0123456789".into(), family: "Source Sans 3".into(), relative_size: 0.5, ..Default::default() },
+        ],
+    });
+    d.story_mut(sid).unwrap().format_chars(0..3, |f| f.over.font_family = Some("CompositeFont/Mixed".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &cs.frames[0].lines[0];
+    let a = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let n = line.glyphs.iter().find(|g| g.byte == 1).unwrap();
+    assert_ne!(a.face.id(), n.face.id());
+    assert_eq!(cs.styles[a.style as usize].size, 12.0);
+    assert_eq!(cs.styles[n.style as usize].size, 6.0);
+    assert!(!cs.styles.iter().any(|s| s.missing_font));
+}
+
+#[test]
+fn cjk_bunri_does_not_split_double_dash() {
+    for composer in [designcraft_doc::Composer::SingleLine, designcraft_doc::Composer::Paragraph] {
+        let (d, sid, _) =
+            doc_with("--", Rect::new(0.0, 0.0, 5.0, 100.0), ParaAttrs { composer: Some(composer), bunri_kinshi: Some(true), ..Default::default() });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(all_lines(&cs).len(), 1);
+    }
+}
+
+#[test]
+fn cjk_custom_kinsoku_disables_selected_breaks() {
+    let (mut d, sid, _) = doc_with(
+        "甲乙丙丁",
+        Rect::new(0.0, 0.0, 25.0, 200.0),
+        ParaAttrs {
+            composer: Some(designcraft_doc::Composer::SingleLine),
+            kinsoku: Some(Some(designcraft_doc::cjk::Kinsoku { name: "Test".into(), no_start: "乙丙丁".into(), ..Default::default() })),
+            ..Default::default()
+        },
+    );
+    d.story_mut(sid).unwrap().format_chars(0.."甲乙丙丁".len(), |f| f.over.size = Some(12.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1);
+}
+
+#[test]
+fn cjk_center_leading_measures_em_centers_across_different_sizes() {
+    let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..3, |f| {
+        f.over.leading = Some(designcraft_doc::Leading::Points(30.0));
+        f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::Center);
+    });
+    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2);
+    let center = |l: &Line| {
+        let g = &l.glyphs[0];
+        let (a, b) = g.face.vertical_metrics();
+        l.baseline + (b - a) / (2.0 * (a + b)) * g.face.units_per_em() * g.sy
+    };
+    assert!((center(lines[1]) - center(lines[0]) - 30.0).abs() < 1e-6);
+    assert!((lines[1].baseline - lines[0].baseline - 30.0).abs() > 0.1);
+}
+
+#[test]
+fn cjk_em_center_alignment_moves_small_characters() {
+    let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
+    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.character_alignment = Some(designcraft_doc::cjk::CharacterAlignment::EmCenter));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &cs.frames[0].lines[0];
+    let center = |g: &PlacedGlyph| {
+        let (a, b) = g.face.vertical_metrics();
+        g.y + (b - a) / (2.0 * (a + b)) * g.face.units_per_em() * g.sy
+    };
+    assert!((center(&line.glyphs[0]) - center(&line.glyphs[1])).abs() < 1e-6);
+}
+
+#[test]
+fn cjk_hanging_punctuation_uses_frame_edge_without_changing_glyph_size() {
+    let k = designcraft_doc::cjk::Kinsoku { name: "Test".into(), no_start: ",".into(), hanging: ",".into(), ..Default::default() };
+    let (mut d, sid, fid) = doc_with(
+        "AB,",
+        Rect::new(0.0, 0.0, 300.0, 100.0),
+        ParaAttrs {
+            composer: Some(designcraft_doc::Composer::SingleLine),
+            kinsoku: Some(Some(k)),
+            kinsoku_hang: Some(designcraft_doc::cjk::KinsokuHang::Regular),
+            ..Default::default()
+        },
+    );
+    let initial = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &initial.frames[0].lines[0];
+    let text_w = line.glyphs.iter().take(2).map(|g| g.adv).sum::<f64>();
+    // A fresh frame whose measure fits the letters, but not the comma.
+    let frame = d.item_mut(fid).unwrap();
+    frame.path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, text_w + 1.0, 100.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1);
+    assert_eq!(cs.frames[0].lines[0].glyphs.last().unwrap().sx, line.glyphs.last().unwrap().sx);
+}
+
+#[test]
+fn cjk_fullwidth_space_obeys_the_paragraph_spacing_switch() {
+    let text = "A　B";
+    let (mut d, sid, _) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 300.0, 100.0),
+        ParaAttrs { word_space_desired: Some(2.0), treat_ideographic_space_as_space: Some(false), ..Default::default() },
+    );
+    let fixed = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().paras[0].para.treat_ideographic_space_as_space = Some(true);
+    let elastic = compose_story(&d, sid, &ComposeOptions::default());
+    let space = fixed.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 1).unwrap().adv;
+    assert!((elastic.frames[0].lines[0].end_x - fixed.frames[0].lines[0].end_x - space).abs() < 1e-6);
+}
+
+#[test]
+fn arabic_bidi_keeps_paragraph_context_across_forced_lines() {
+    let text = "مرحبا\u{2028}123 - 456";
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 200.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2);
+    let mut gs: Vec<_> = lines[1].glyphs.iter().filter(|g| g.len > 0).collect();
+    gs.sort_by(|a, b| a.x.total_cmp(&b.x));
+    let actual: String = gs.iter().map(|g| text[g.byte..].chars().next().unwrap()).collect();
+    let info = unicode_bidi::BidiInfo::new(text, Some(unicode_bidi::Level::ltr()));
+    let start = text.find('1').unwrap();
+    let expected = info.reorder_line(&info.paragraphs[0], start..text.len()).to_string();
+    assert_eq!(actual, expected);
+    assert_ne!(actual, "123 - 456", "the previous Arabic strong character affects number ordering");
+}
+
+#[test]
+fn arabic_character_direction_override_survives_line_layout() {
+    let text = "abc 123 def";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 200.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(4..7, |f| f.over.character_direction = Some(designcraft_doc::arabic::CharacterDirection::RightToLeft));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let x = |byte| line.glyphs.iter().find(|g| g.byte == byte).unwrap().x;
+    assert!(x(4) > x(5) && x(5) > x(6));
+    assert!(x(0) < x(6) && x(4) < x(8));
+}
+
+#[test]
+fn arabic_fallback_marks_stay_with_bases_and_custom_offsets_move_only_marks() {
+    let db = designcraft_fonts::FontDb::global();
+    let Some(face) = db.fallback_for('ب', db.face(designcraft_fonts::DEFAULT_FAMILY, "Regular").id()) else { return };
+    if !face.covers('ُ') {
+        return;
+    }
+    let text = "بُبَ";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 200.0), ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    assert!(plain.iter().all(|g| g.face.id() == face.id()), "fallback must not split Arabic marks into the Latin face");
+    assert!(plain.iter().all(|g| g.gid != 0));
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.diacritic_x_offset = Some(200.0);
+        f.over.diacritic_y_offset = Some(-100.0);
+    });
+    let shifted = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    let mut marks = 0;
+    for (a, b) in plain.iter().zip(&shifted) {
+        assert_eq!(a.gid, b.gid);
+        assert_eq!(a.adv, b.adv);
+        if face.glyph_is_mark(a.gid) {
+            marks += 1;
+            assert!((b.x - a.x - 2.4).abs() < 1e-6);
+            assert!((b.y - a.y - 1.2).abs() < 1e-6);
+        } else {
+            assert!((a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6);
+        }
+    }
+    assert!(marks > 0);
+}
+
+#[test]
+fn arabic_joining_context_crosses_character_style_boundaries() {
+    let text = "ببب";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 200.0), ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    if plain.iter().any(|g| g.gid == 0) {
+        return;
+    }
+    d.story_mut(sid).unwrap().format_chars(2..4, |f| f.over.fill = Some("Paper".into()));
+    let split = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    assert_eq!(plain.iter().map(|g| (g.byte, g.gid)).collect::<Vec<_>>(), split.iter().map(|g| (g.byte, g.gid)).collect::<Vec<_>>());
+}
+
+#[test]
+fn arabic_character_kashida_switch_prevents_insertion() {
+    let text = "بسم الله الرحمن الرحيم الحمد لله رب العالمين";
+    let (mut d, sid, _) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 160.0, 300.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::RightJustified), ..Default::default() },
+    );
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.allow_kashidas = Some(false));
+    let off = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(all_lines(&off).iter().all(|l| l.glyphs.iter().all(|g| g.len > 0 || g.face.glyph_for('\u{0640}') != g.gid)));
+}
+
+#[test]
+fn arabic_indic_digit_conversion_retains_original_utf8_ranges() {
+    let text = "١٢٣";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.digits = Some(designcraft_doc::Digits::Arabic));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let gs = &cs.frames[0].lines[0].glyphs;
+    assert_eq!(gs.iter().map(|g| (g.byte, g.len)).collect::<Vec<_>>(), [(0, 2), (2, 2), (4, 2)]);
+    for (g, c) in gs.iter().zip("123".chars()) {
+        assert_eq!(g.gid, g.face.glyph_for(c));
+    }
+}
+
+#[test]
+fn arabic_contextual_digits_follow_strong_text_across_style_changes() {
+    let text = "ب 12 A 34";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    let arabic_digits = text.find('1').unwrap();
+    d.story_mut(sid).unwrap().format_chars(arabic_digits..arabic_digits + 2, |f| f.over.fill = Some("Paper".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let gs = &cs.frames[0].lines[0].glyphs;
+    let g = gs.iter().find(|g| g.byte == arabic_digits).unwrap();
+    assert_eq!(g.gid, g.face.glyph_for('١'));
+    let g = gs.iter().find(|g| g.byte == text.find('3').unwrap()).unwrap();
+    assert_eq!(g.gid, g.face.glyph_for('3'));
+}
+
+#[test]
+fn arabic_story_direction_flows_right_column_first() {
+    let text = format!("first{}second", designcraft_doc::story::COLUMN_BREAK);
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().direction = designcraft_doc::TextDirection::RightToLeft;
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].x0 > lines[1].x0);
+    assert!(cs.frames[0].columns[0].x0 > cs.frames[0].columns[1].x0);
+}
+
+#[test]
+fn arabic_rtl_table_keeps_logical_indices_and_merged_cell_hit_testing() {
+    let mut t = designcraft_doc::Table::new(987, 2, 3, 0, 0, 240.0);
+    t.options.direction = designcraft_doc::TextDirection::RightToLeft;
+    t.cell_mut(0, 0).unwrap().text = designcraft_doc::Story::with_text(StoryId(0), "Right", ParaFormat::default());
+    t.cell_mut(0, 2).unwrap().text = designcraft_doc::Story::with_text(StoryId(0), "Left", ParaFormat::default());
+    t.merge(designcraft_doc::CellRange::new(1, 0, 1, 1)).unwrap();
+    let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 400.0), t);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let (_, _, right) = table::find_cell(&cs, 987, 0, 0).unwrap();
+    let (_, _, left) = table::find_cell(&cs, 987, 0, 2).unwrap();
+    assert!(right.rect.x0 > left.rect.x0);
+    let (_, _, merged) = table::find_cell(&cs, 987, 1, 0).unwrap();
+    assert!((merged.rect.width() - 160.0).abs() < 1e-6);
+    assert_eq!(table::hit_cell(&cs, 0, right.rect.center()).map(|(_, r, c, _)| (r, c)), Some((0, 0)));
+}
+
+#[test]
+fn arabic_kashida_moves_marks_with_their_cluster_and_respects_nonjoiners() {
+    let text = "بُسْمِ بُسْمِ";
+    let (mut d, sid, _) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 180.0, 100.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    let with = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    if with.iter().any(|g| g.gid == 0) {
+        return;
+    }
+    assert!(with.iter().any(|g| g.len == 0 && g.gid == g.face.glyph_for('\u{0640}')));
+    d.story_mut(sid).unwrap().paras[0].para.kashidas = Some(false);
+    let without = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    for (a, b) in with.iter().zip(&without) {
+        assert_eq!((a.gid, a.byte), (b.gid, b.byte));
+        let first_a = with.iter().find(|g| g.byte == a.byte).unwrap();
+        let first_b = without.iter().find(|g| g.byte == b.byte).unwrap();
+        assert!(((a.x - first_a.x) - (b.x - first_b.x)).abs() < 1e-6, "marks detached from their cluster");
+    }
+    let text = "ب\u{200C}ب ب\u{200C}ب";
+    let (d, sid, _) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 180.0, 100.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.frames[0].lines[0].glyphs.iter().all(|g| g.gid != g.face.glyph_for('\u{0640}') || g.len > 0));
+}
+
+#[test]
+fn arabic_explicit_isolated_forms_disable_contextual_joining() {
+    let text = "بب";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 180.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.positional_form = Some("Isolated".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let gs = &cs.frames[0].lines[0].glyphs;
+    for g in gs {
+        assert_eq!(g.gid, g.face.glyph_for('ب'));
+    }
+}
+
+#[test]
+fn arabic_character_overrides_mirror_brackets_using_final_levels() {
+    use designcraft_doc::arabic::CharacterDirection as D;
+    for (text, direction, mirrored) in [("(123)", D::RightToLeft, true), ("(ب)", D::LeftToRight, false)] {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.character_direction = Some(direction));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let gs = &cs.frames[0].lines[0].glyphs;
+        for (byte, ch) in [(0, '('), (text.len() - 1, ')')] {
+            let g = gs.iter().find(|g| g.byte == byte).unwrap();
+            let expected = if mirrored { unicode_bidi_mirroring::get_mirrored(ch).unwrap() } else { ch };
+            assert_eq!(g.gid, g.face.glyph_for(expected), "{text:?} {direction:?} byte {byte}");
+        }
+    }
+}

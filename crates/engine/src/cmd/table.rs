@@ -208,7 +208,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Table Options",
             [],
             None,
-            "{border?: {weight?, color?, tint?, type?}, spaceBefore?, spaceAfter?, headerRows?, footerRows?, repeatHeader?, repeatFooter?, altRows?: {first, firstColor, firstTint, next, nextColor, nextTint, skipFirst, skipLast} | null, altCols?: … | null}",
+            "{direction?: leftToRight|rightToLeft, border?: {weight?, color?, tint?, type?}, spaceBefore?, spaceAfter?, headerRows?, footerRows?, repeatHeader?, repeatFooter?, altRows?: {first, firstColor, firstTint, next, nextColor, nextTint, skipFirst, skipLast} | null, altCols?: … | null}",
             in_table,
             options
         ),
@@ -506,8 +506,14 @@ fn shift_selection(s: &mut Session, table: u64, at: usize, n: usize, rows: bool)
 fn insert_col(s: &mut Session, p: &Value, left: Option<bool>) -> Result<Value> {
     let g = target(s, p, "table.insertColumn")?;
     let left = left.unwrap_or(str_param(p, "where") == Some("left"));
+    let rtl = s
+        .doc()?
+        .doc
+        .story(g.story)
+        .and_then(|st| st.tables.get(&g.table))
+        .is_some_and(|t| t.options.direction == designcraft_doc::TextDirection::RightToLeft);
     let n = count(p);
-    let at = if left { g.range.c0 } else { g.range.c1 + 1 };
+    let at = if left != rtl { g.range.c0 } else { g.range.c1 + 1 };
     let width = p.get("width").and_then(Value::as_f64);
     let r = edit_table(s, &g, "table.insertColumn", |t| {
         let w = width.unwrap_or_else(|| t.columns[g.range.c0.min(t.ncols() - 1)].width);
@@ -758,6 +764,9 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let p = p.clone();
     edit_table(s, &g, "table.options", |t| {
         let o = &mut t.options;
+        if let Some(v) = p.get("direction") {
+            o.direction = serde_json::from_value(v.clone()).map_err(|e| bad("table.options", e.to_string()))?;
+        }
         if let Some(b) = p.get("border") {
             o.border = parse_stroke(b, o.border.clone());
         }
@@ -1400,5 +1409,30 @@ mod sort_tests {
         assert_eq!([cell(&s, 0, 0), cell(&s, 1, 0), cell(&s, 2, 0)], ["b", "c", "a"]);
         s.execute("table.moveColumn", &json!({"from": 1, "to": 0})).unwrap();
         assert_eq!((cell(&s, 2, 0), cell(&s, 2, 1)), ("x".to_string(), "a".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod arabic_tests {
+    use super::*;
+    #[test]
+    fn arabic_table_direction_and_physical_left_insertion_support_undo() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 400, 300], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+        s.execute("table.setCell", &json!({"rows": [0, 0], "cols": [0, 0], "text": "Right"})).unwrap();
+        s.execute("table.options", &json!({"direction": "rightToLeft"})).unwrap();
+        s.execute("table.select", &json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
+        s.execute("table.insertColumnLeft", &json!({})).unwrap();
+        let t = s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap();
+        assert_eq!(t.ncols(), 3);
+        assert_eq!(t.cell(0, 0).unwrap().text.text, "Right");
+        assert!(t.cell(0, 1).unwrap().text.text.is_empty());
+        s.execute("edit.undo", &json!({})).unwrap();
+        let t = s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap();
+        assert_eq!(t.ncols(), 2);
+        assert_eq!(t.options.direction, designcraft_doc::TextDirection::RightToLeft);
     }
 }

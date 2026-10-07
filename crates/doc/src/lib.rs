@@ -10,9 +10,11 @@
 #![forbid(unsafe_code)]
 
 pub mod anchored;
+pub mod arabic;
 pub mod arrow;
 pub mod attrs;
 pub mod build;
+pub mod cjk;
 mod edit;
 pub mod endnotes;
 pub mod ids;
@@ -675,6 +677,18 @@ impl Document {
 
     /// Validate structural invariants (ids unique, threads consistent, stories well-formed).
     pub fn check(&self) -> Result<()> {
+        for f in &self.styles.composite_fonts {
+            if f.entries.iter().any(|e| {
+                ![e.relative_size, e.horizontal_scale, e.vertical_scale].iter().all(|v| v.is_finite() && *v > 0.0) || !e.baseline_shift.is_finite()
+            }) {
+                return Err(DocError::Invalid(format!("invalid composite font metrics: {}", f.name)));
+            }
+        }
+        for t in &self.styles.mojikumi_tables {
+            if t.overrides.iter().any(|r| ![r.minimum, r.desired, r.maximum].iter().all(|v| v.is_finite())) {
+                return Err(DocError::Invalid(format!("non-finite mojikumi spacing: {}", t.name)));
+            }
+        }
         let mut ids = std::collections::HashSet::new();
         for sp in self.spreads.iter().chain(self.parents.iter()) {
             for it in &sp.items {

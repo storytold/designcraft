@@ -61,6 +61,9 @@ pub struct ShapedGlyph {
     pub x_advance: i32,
     pub x_offset: i32,
     pub y_offset: i32,
+    pub safe_tatweel_before: bool,
+    /// Direction used for shaping, including Unicode mirroring.
+    pub rtl: bool,
 }
 
 /// An OpenType feature setting: `"liga"`, `"-kern"`, `"ss01"`.
@@ -82,31 +85,51 @@ pub fn is_rtl(c: char) -> bool {
     matches!(unicode_bidi::bidi_class(c), R | AL)
 }
 
-/// Maximal runs of one direction (neutrals join the run they're in): (byte range, right-to-left).
-fn direction_runs(text: &str) -> Vec<(std::ops::Range<usize>, bool)> {
-    let mut runs: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
-    let mut cur: Option<bool> = None;
+/// Resolve directional and script runs before choosing the OpenType shaper.
+fn direction_runs(text: &str) -> Vec<(std::ops::Range<usize>, bool, unicode_script::Script)> {
+    use unicode_script::{Script, UnicodeScript};
+    let info = unicode_bidi::BidiInfo::new(text, None);
+    let mut runs = Vec::new();
+    let mut script =
+        text.chars().map(|c| c.script()).find(|s| !matches!(s, Script::Common | Script::Inherited | Script::Unknown)).unwrap_or(Script::Common);
     let mut start = 0;
+    let mut rtl = info.levels.first().is_some_and(|l| l.is_rtl());
     for (i, c) in text.char_indices() {
-        let strong = if is_rtl(c) {
-            Some(true)
-        } else if unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::L {
-            Some(false)
-        } else {
-            None
+        let next_rtl = info.levels.get(i).is_some_and(|l| l.is_rtl());
+        let next_script = match c.script() {
+            Script::Common | Script::Inherited | Script::Unknown => script,
+            s => s,
         };
-        match (cur, strong) {
-            (None, Some(d)) => cur = Some(d),
-            (Some(a), Some(d)) if a != d => {
-                runs.push((start..i, a));
-                start = i;
-                cur = Some(d);
-            }
-            _ => {}
+        if i > start && (next_rtl != rtl || next_script != script) {
+            runs.push((start..i, rtl, script));
+            start = i;
         }
+        rtl = next_rtl;
+        script = next_script;
     }
-    runs.push((start..text.len(), cur.unwrap_or(false)));
+    if start < text.len() {
+        runs.push((start..text.len(), rtl, script));
+    }
     runs
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ShapeContext<'a> {
+    pub before: &'a str,
+    pub after: &'a str,
+    pub language: &'a str,
+}
+
+/// Normalize the supported application language names while also accepting BCP 47 tags.
+pub fn language_tag(language: &str) -> &str {
+    match language.split(':').next().unwrap_or(language).trim() {
+        "Arabic" => "ar",
+        "Persian" | "Farsi" => "fa",
+        "Urdu" => "ur",
+        "Hebrew" => "he",
+        "English" => "en",
+        _ => language,
+    }
 }
 
 /// Shape `text` with `face`. `chars` lets callers substitute characters (e.g. uppercase for All
@@ -114,12 +137,24 @@ fn direction_runs(text: &str) -> Vec<(std::ops::Range<usize>, bool)> {
 /// order: right-to-left runs are shaped right to left, then their clusters put back in text
 /// order (each cluster's glyphs keep the shaper's order); line layout reorders them visually.
 pub fn shape(face: &FontFace, text: &str, features: &[Feature], map: impl Fn(char) -> char) -> Vec<ShapedGlyph> {
-    if !text.chars().any(is_rtl) {
-        return shape_dir(face, text, features, &map, false);
-    }
+    shape_with_context(face, text, features, map, ShapeContext::default())
+}
+
+pub fn shape_with_context(
+    face: &FontFace,
+    text: &str,
+    features: &[Feature],
+    map: impl Fn(char) -> char,
+    context: ShapeContext<'_>,
+) -> Vec<ShapedGlyph> {
     let mut out = Vec::with_capacity(text.len());
-    for (r, rtl) in direction_runs(text) {
-        let mut g = shape_dir(face, &text[r.clone()], features, &map, rtl);
+    for (r, rtl, script) in direction_runs(text) {
+        let local = ShapeContext {
+            before: if r.start == 0 { context.before } else { &text[..r.start] },
+            after: if r.end == text.len() { context.after } else { &text[r.end..] },
+            language: context.language,
+        };
+        let mut g = shape_dir(face, &text[r.clone()], features, &map, rtl, script, local);
         for x in &mut g {
             x.cluster += r.start;
         }
@@ -140,7 +175,15 @@ pub fn shape(face: &FontFace, text: &str, features: &[Feature], map: impl Fn(cha
     out
 }
 
-fn shape_dir(face: &FontFace, text: &str, features: &[Feature], map: &impl Fn(char) -> char, rtl: bool) -> Vec<ShapedGlyph> {
+fn shape_dir(
+    face: &FontFace,
+    text: &str,
+    features: &[Feature],
+    map: &impl Fn(char) -> char,
+    rtl: bool,
+    script: unicode_script::Script,
+    context: ShapeContext<'_>,
+) -> Vec<ShapedGlyph> {
     let mut out = Vec::with_capacity(text.len());
     let shaped = face.hb().map(|hb| {
         let shaper = face.shaper.shaper(&hb).instance(face.instance.as_ref()).build();
@@ -148,6 +191,15 @@ fn shape_dir(face: &FontFace, text: &str, features: &[Feature], map: &impl Fn(ch
         for (i, c) in text.char_indices() {
             buf.add(map(c), i as u32);
         }
+        buf.set_pre_context(context.before);
+        buf.set_post_context(context.after);
+        if let Ok(script) = script.short_name().parse() {
+            buf.set_script(script);
+        }
+        if let Ok(language) = language_tag(context.language).parse() {
+            buf.set_language(language);
+        }
+        buf.set_flags(harfrust::BufferFlags::PRODUCE_SAFE_TO_INSERT_TATWEEL);
         buf.guess_segment_properties();
         buf.set_direction(if rtl { Direction::RightToLeft } else { Direction::LeftToRight });
         let gb = shaper.shape(buf, ShapeOptions::new().features(features));
@@ -158,6 +210,8 @@ fn shape_dir(face: &FontFace, text: &str, features: &[Feature], map: &impl Fn(ch
                 x_advance: pos.x_advance,
                 x_offset: pos.x_offset,
                 y_offset: pos.y_offset,
+                safe_tatweel_before: info.safe_to_insert_tatweel(),
+                rtl,
             });
         }
     });
@@ -169,7 +223,15 @@ fn shape_dir(face: &FontFace, text: &str, features: &[Feature], map: &impl Fn(ch
         for (i, c) in text.char_indices() {
             let g = cmap.map(map(c)).unwrap_or_default();
             let adv = gm.advance_width(g).unwrap_or(face.upem as f32 * 0.5);
-            out.push(ShapedGlyph { gid: g.to_u32(), cluster: i, x_advance: adv.round() as i32, x_offset: 0, y_offset: 0 });
+            out.push(ShapedGlyph {
+                gid: g.to_u32(),
+                cluster: i,
+                x_advance: adv.round() as i32,
+                x_offset: 0,
+                y_offset: 0,
+                safe_tatweel_before: false,
+                rtl: false,
+            });
         }
     }
     out
@@ -183,6 +245,20 @@ pub fn first_glyph(face: &FontFace, chars: &[char]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arabic_script_runs_do_not_inherit_the_hebrew_shaper() {
+        use unicode_script::Script;
+        let text = "אב بب";
+        let runs = direction_runs(text);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0], (0..5, true, Script::Hebrew));
+        assert_eq!(runs[1], (5..text.len(), true, Script::Arabic));
+        assert_eq!(language_tag("Arabic"), "ar");
+        assert_eq!(language_tag("Farsi"), "fa");
+        assert_eq!(language_tag("Urdu"), "ur");
+        assert_eq!(language_tag("ar-SA"), "ar-SA");
+    }
 
     #[test]
     fn last_resort_face_parses() {

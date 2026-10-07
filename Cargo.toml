@@ -39,6 +39,7 @@ log = "0.4"
 proptest = "1"
 rayon = "1"
 unicode-bidi = "0.3"
+unicode-script = "0.5"
 unicode-bidi-mirroring = "0.4"
 unicode-segmentation = "1"
 regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }

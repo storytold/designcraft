@@ -345,6 +345,7 @@ impl Document {
         Some(serde_json::json!({
             "id": sid.0,
             "length": st.text.len(),
+            "direction": st.direction,
             "paragraphs": st.paras.len(),
             "frames": st.frames.iter().map(|f| f.0).collect::<Vec<_>>(),
             "text": st.text,
