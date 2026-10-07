@@ -22,7 +22,7 @@ pub const SIBLINGS: &[(&str, &str, &str)] = &[
     ("drawcraft", "VectorCraft", "vector illustration"),
     ("filmcraft", "FilmCraft", "video editing, color and sound"),
     ("lightcraft", "LightCraft", "photo library and raw development"),
-    ("printcraft", "PrintCraft", "reading, organizing and protecting PDFs"),
+    ("pdfcraft", "PdfCraft", "reading, organizing and protecting PDFs"),
     ("effectcraft", "EffectCraft", "motion graphics and visual effects"),
 ];
 
