@@ -135,7 +135,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("help.issues", "Report an Issue…", None, "{} — opens the GitHub issue tracker"),
     ("help.website", "ArtCraft Website…", None, "{} — opens https://getartcraft.com"),
     ("help.app", "ArtCraft App Page…", None, "{app} — opens https://getartcraft.com/apps/{app} (e.g. photocraft)"),
-    ("help.about", "About DesignCraft", None, "{open?: true} — the About splash with community links (open: false closes it)"),
+    (
+        "help.about",
+        "About DesignCraft",
+        None,
+        "{open?: true, tab?: \"about\"|\"contributors\"|\"models\"} — the About window: splash with community links, contributor and model credits (open: false closes it)",
+    ),
     ("window.toolsDoubleColumn", "Tools: Double Column", None, "{}"),
     (
         "window.workspace",
@@ -1278,6 +1283,12 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "window.taskBar" => flag(&mut app.ui.task_bar),
         "help.about" => {
+            if let Some(tab) = p.get("tab").and_then(Value::as_str) {
+                let Some(i) = crate::about::ABOUT_TABS.iter().position(|t| t.eq_ignore_ascii_case(tab)) else {
+                    return Some(Err(format!("help.about: unknown tab `{tab}` (about, contributors, models)")));
+                };
+                app.ui.about_tab = u8::try_from(i).unwrap_or(0);
+            }
             app.ui.about = p.get("open").and_then(Value::as_bool).unwrap_or(true);
             Ok(json!(app.ui.about))
         }

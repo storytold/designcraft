@@ -93,4 +93,4 @@ key        {"key": "Escape"}
 
 ## Community links
 
-`app.links` returns the ArtCraft Discord (https://discord.gg/artcraft), the website (https://getartcraft.com), DesignCraft's app page (https://getartcraft.com/apps/designcraft), its GitHub repository (https://github.com/storytold/designcraft) and the issue tracker. In the running app, the UI commands `help.discord`, `help.appPage`, `help.github`, `help.issues`, `help.website`, `help.app {app}` open them in the browser and `help.about` shows the About splash. The server's `serverInfo.websiteUrl` is the app page.
+`app.links` returns the ArtCraft Discord (https://discord.gg/artcraft), the website (https://getartcraft.com), DesignCraft's app page (https://getartcraft.com/apps/designcraft), its GitHub repository (https://github.com/storytold/designcraft) and the issue tracker. In the running app, the UI commands `help.discord`, `help.appPage`, `help.github`, `help.issues`, `help.website`, `help.app {app}` open them in the browser and `help.about {tab?}` shows the About window (tabs `about`, `contributors`, `models`). The server's `serverInfo.websiteUrl` is the app page.

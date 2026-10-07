@@ -1,5 +1,6 @@
-//! Help › About DesignCraft: the splash with the ArtCraft mark, version, and community links
-//! (Discord first and largest), plus the other ArtCraft apps.
+//! Help › About DesignCraft: tabs About · Contributors · Models. About is the splash with the
+//! ArtCraft mark, version, and community links (Discord first and largest), plus the other ArtCraft
+//! apps; Contributors and Models are the compiled-in credits (`crate::credits`).
 
 use designcraft_engine::links;
 use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
@@ -25,6 +26,9 @@ pub const SIBLINGS: &[(&str, &str, &str)] = &[
     ("pdfcraft", "PdfCraft", "reading, organizing and protecting PDFs"),
     ("effectcraft", "EffectCraft", "motion graphics and visual effects"),
 ];
+
+/// The About window's tabs, in `UiState::about_tab` order (`help.about {tab}` names them in lowercase).
+pub const ABOUT_TABS: [&str; 3] = ["About", "Contributors", "Models"];
 
 /// Paint the ArtCraft mark into `rect` (square), rasterised once per size and cached.
 pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
@@ -103,7 +107,34 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let t = Tokens::get(ctx);
     let mut open: Option<&'static str> = None;
     let resp = egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
-        ui.set_width(460.0);
+        ui.set_width(if app.ui.about_tab == 0 { 460.0 } else { 640.0 });
+        ui.horizontal(|ui| {
+            for (i, l) in ABOUT_TABS.iter().enumerate() {
+                let i = i as u8;
+                if ui.selectable_label(app.ui.about_tab == i, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                    app.ui.about_tab = i;
+                }
+            }
+        });
+        ui.separator();
+        if app.ui.about_tab != 0 {
+            let h = 400.0_f32.min(ctx.content_rect().height() * 0.7).max(160.0);
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), h), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_min_height(h);
+                if app.ui.about_tab == 1 {
+                    crate::credits::contributors_ui(ui);
+                } else {
+                    crate::credits::models_ui(ui);
+                }
+            });
+            ui.separator();
+            ui.vertical_centered(|ui| {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "  Close  "))).clicked() {
+                    app.ui.about = false;
+                }
+            });
+            return;
+        }
         ui.vertical_centered(|ui| {
             ui.add_space(8.0);
             let (r, _) = ui.allocate_exact_size(vec2(72.0, 72.0), Sense::hover());

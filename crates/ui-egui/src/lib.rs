@@ -10,6 +10,7 @@ pub mod about;
 pub mod canvas;
 pub mod chrome;
 pub mod control;
+pub mod credits;
 pub mod dialogs;
 pub mod dock;
 pub mod i18n;
@@ -190,6 +191,9 @@ pub struct UiState {
     pub task_bar: bool,
     /// Help › About DesignCraft is open.
     pub about: bool,
+    /// The About window's tab: 0 About, 1 Contributors, 2 Models (`about::ABOUT_TABS`).
+    #[serde(skip)]
+    pub about_tab: u8,
     /// URLs to open in the browser on the next frame (Help links, About, start screen).
     pub pending_urls: Vec<String>,
     #[serde(skip)]
@@ -261,6 +265,7 @@ impl Default for UiState {
             snap_zone: 4.0,
             task_bar: true,
             about: false,
+            about_tab: 0,
             pending_urls: Vec::new(),
             status: String::new(),
             dialog: None,
