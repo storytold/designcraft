@@ -401,6 +401,8 @@ pub struct DesignApp {
     queued_shots: Vec<(u64, f64, u32)>,
     shot_token: u64,
     styled: bool,
+    /// The interface language the UI fonts were installed for (it orders the CJK fallbacks).
+    fonts_lang: String,
     pub restyle: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
@@ -439,6 +441,7 @@ impl DesignApp {
             queued_shots: vec![],
             shot_token: 0,
             styled: false,
+            fonts_lang: String::new(),
             restyle: false,
             fonts_ready: false,
             integrated_titlebar: false,
@@ -583,10 +586,15 @@ impl DesignApp {
             ctx.set_zoom_factor(scale);
         }
         if !self.styled {
-            theme::install_fonts(ctx);
+            theme::install_fonts(ctx, &self.ui.language);
+            self.fonts_lang = self.ui.language.clone();
             self.styled = true;
             self.restyle = true;
         } else {
+            if self.fonts_lang != self.ui.language {
+                theme::install_fonts(ctx, &self.ui.language);
+                self.fonts_lang = self.ui.language.clone();
+            }
             self.fonts_ready = true;
         }
         if self.restyle {

@@ -208,7 +208,7 @@ mod tests {
 
     fn with_fonts(test: impl FnOnce(&egui::Context)) {
         let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx);
+        crate::theme::install_fonts(&ctx, "ar");
         ctx.begin_pass(egui::RawInput { max_texture_side: Some(8192), ..Default::default() });
         test(&ctx);
         let mut output = ctx.end_pass();

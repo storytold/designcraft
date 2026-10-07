@@ -253,14 +253,17 @@ impl Tokens {
     }
 }
 
-pub fn install_fonts(ctx: &egui::Context) {
-    ctx.set_fonts(font_definitions(designcraft_fonts::CRAFT_FONTS));
+/// Install the UI fonts for the interface language `lang` (it orders the CJK fallbacks).
+pub fn install_fonts(ctx: &egui::Context, lang: &str) {
+    ctx.set_fonts(font_definitions(designcraft_fonts::CRAFT_FONTS, lang));
 }
 
-/// The UI fonts: the app's own, then the craft-fonts Japanese faces from `craft` (BIZ UDPGothic
-/// first; empty without `CRAFT_FONTS_DIR`) as a fallback at the end of every family. egui has
-/// no system-font discovery, so without craft-fonts Japanese UI text has no glyphs.
-fn font_definitions(craft: &'static [designcraft_fonts::CraftFont]) -> FontDefinitions {
+/// The UI fonts: the app's own, then the craft-fonts faces from `craft` (empty without
+/// `CRAFT_FONTS_DIR`) as fallbacks at the end of every family: Japanese (BIZ UDPGothic first) and
+/// Simplified Chinese, in the interface language's order, then Arabic. The `arabic` families
+/// put the Arabic face first for right-to-left runs. egui has no system-font discovery, so
+/// without craft-fonts CJK and Arabic UI text has no glyphs.
+fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, data: &'static [u8]| {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(data)));
@@ -271,17 +274,35 @@ fn font_definitions(craft: &'static [designcraft_fonts::CraftFont]) -> FontDefin
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui".into());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["ui-semibold".into(), "ui".into()]);
-    // Bundle a CJK fallback so interface languages work on every platform, including WASM.
-    add(&mut fonts, "cjk", include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf"));
-    add(&mut fonts, "arabic", include_bytes!("../../../assets/fonts/NotoSansArabic.ttf"));
-    // Keep Arabic letters and spaces in the same shaping run.
+    let pick = |script: &str| -> Vec<&designcraft_fonts::CraftFont> { craft.iter().filter(|f| f.scripts.contains(&script)).collect() };
+    let mut japanese = pick("Jpan");
+    // BIZ UDPGothic (the UI face) first, Regular before Bold; the semibold family prefers Bold.
+    japanese.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Regular"));
+    let chinese = pick("Hans");
+    let arabic = pick("Arab");
+    let name = |f: &designcraft_fonts::CraftFont| format!("craft-{}-{}", f.family, f.style);
+    for f in japanese.iter().chain(&chinese).chain(&arabic) {
+        add(&mut fonts, &name(f), f.bytes);
+    }
+    // Han characters take the forms of the interface language: Chinese faces first for zh.
+    let zh = lang.starts_with("zh");
+    for (family, stack) in fonts.families.iter_mut() {
+        let bold = *family == FontFamily::Name("semibold".into());
+        let mut ja = japanese.clone();
+        if bold {
+            ja.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Bold"));
+        }
+        let (first, second) = if zh { (&chinese, &ja) } else { (&ja, &chinese) };
+        stack.extend(first.iter().chain(second).chain(&arabic).map(|f| name(f)));
+    }
+    // Arabic runs (rtl.rs): the Arabic face first, so letters and spaces shape as one run.
     for family in ["arabic", "arabic-semibold"] {
-        fonts.families.insert(FontFamily::Name(family.into()), vec!["arabic".into(), "ui".into(), "cjk".into()]);
+        let ui = if family == "arabic" { "ui" } else { "ui-semibold" };
+        let stack = arabic.iter().map(|f| name(f)).chain([ui.to_string(), "ui".to_string()]).chain(japanese.iter().chain(&chinese).map(|f| name(f)));
+        let mut seen = std::collections::HashSet::new();
+        fonts.families.insert(FontFamily::Name(family.into()), stack.filter(|n| seen.insert(n.clone())).collect());
     }
-    for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("semibold".into())] {
-        fonts.families.entry(family).or_default().extend(["arabic".into(), "cjk".into()]);
-    }
-    ctx.set_fonts(fonts);
+    fonts
 }
 
 pub fn semibold(size: f32) -> FontId {
@@ -357,7 +378,7 @@ mod japanese_font_tests {
 
     fn ctx_with(craft: &'static [designcraft_fonts::CraftFont]) -> egui::Context {
         let ctx = egui::Context::default();
-        ctx.set_fonts(super::font_definitions(craft));
+        ctx.set_fonts(super::font_definitions(craft, "ja"));
         let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
         output.textures_delta.clear();
         ctx
@@ -380,7 +401,7 @@ mod japanese_font_tests {
             }
         });
         // The UI face is BIZ UDPGothic, ahead of the Mincho faces.
-        let defs = super::font_definitions(designcraft_fonts::CRAFT_FONTS);
+        let defs = super::font_definitions(designcraft_fonts::CRAFT_FONTS, "ja");
         let stack = &defs.families[&egui::FontFamily::Proportional];
         assert_eq!(stack.iter().find(|n| n.starts_with("craft-")).map(String::as_str), Some("craft-BIZ UDPGothic-Regular"));
     }
@@ -400,6 +421,6 @@ mod japanese_font_tests {
             }
         });
         // And the real installer works with whatever this build has.
-        super::install_fonts(&egui::Context::default());
+        super::install_fonts(&egui::Context::default(), "ja");
     }
 }
