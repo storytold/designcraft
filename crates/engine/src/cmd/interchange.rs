@@ -56,7 +56,7 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
 
 pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, dir, name) = if let Some(b) = str_param(p, "base64") {
-        (base64_decode(b), None, str_param(p, "name").map(|n| n.trim_end_matches(".idml").to_string()))
+        (base64_decode(b), None, str_param(p, "name").map(|n| n.trim_end_matches(".idml").trim_end_matches(".indd").to_string()))
     } else if let Some(path) = str_param(p, "path") {
         #[cfg(not(target_arch = "wasm32"))]
         let b = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -66,6 +66,13 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
         (b, pp.parent().map(|d| d.to_path_buf()), pp.file_stem().map(|n| n.to_string_lossy().to_string()))
     } else {
         return Err(bad("file.openIdml", "missing `path` or `base64`"));
+    };
+    // InDesign documents are converted to an IDML package first.
+    let bytes = if designcraft_indd::is_indd(&bytes) {
+        let title = name.as_deref().map(|n| format!("{n}.indd")).unwrap_or_else(|| "document.indd".into());
+        designcraft_indd::to_idml_named(&bytes, &title).map_err(|e| EngineError::Other(e.to_string()))?
+    } else {
+        bytes
     };
     let mut d = import(&bytes, dir.as_deref())?;
     if let Some(n) = name {

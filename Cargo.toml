@@ -21,6 +21,7 @@ designcraft-images = { path = "crates/images" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }
+designcraft-indd = { path = "crates/indd" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-textimport = { path = "crates/textimport" }
 designcraft-format = { path = "crates/format" }

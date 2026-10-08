@@ -44,6 +44,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("idml", Class::Layer(3)),
     ("epub", Class::Layer(3)),
     ("textimport", Class::Layer(3)),
+    ("indd", Class::Layer(3)),
     ("format", Class::Layer(3)),
     ("tools", Class::Layer(4)),
     ("engine", Class::Layer(5)),
@@ -171,11 +172,10 @@ pub fn check(crates: &[Crate]) -> Vec<Violation> {
                 match classify(&d.name) {
                     // Unregistered deps are reported on their own entry.
                     None => {}
-                    Some(Class::Testkit) => {
-                        if d.kind != DepKind::Dev {
-                            out.push(Violation::TestkitAsNormalDep { krate: c.name.clone() });
-                        }
+                    Some(Class::Testkit) if d.kind != DepKind::Dev => {
+                        out.push(Violation::TestkitAsNormalDep { krate: c.name.clone() });
                     }
+                    Some(Class::Testkit) => {}
                     Some(dc) => {
                         let to = dc.layer().unwrap_or(u8::MAX);
                         if to >= layer && !(to == layer && intra_layer_allowed(&c.name, &d.name)) {

@@ -143,9 +143,10 @@ fn services() -> Services {
                 .add_filter("Text (Word, RTF, plain, Excel)", &["docx", "rtf", "txt", "md", "xlsx"])
                 .add_filter("Video and sound", &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"])
             } else {
-                d.add_filter("DesignCraft or IDML", &["designcraft", "idml"])
+                d.add_filter("DesignCraft, IDML or InDesign", &["designcraft", "idml", "indd"])
                     .add_filter("DesignCraft", &["designcraft"])
                     .add_filter("InDesign Markup (IDML)", &["idml"])
+                    .add_filter("InDesign document (INDD)", &["indd"])
             };
             d.pick_file().map(|p| p.to_string_lossy().to_string())
         })),

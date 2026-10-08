@@ -561,7 +561,7 @@ impl DesignApp {
             let lower = name.to_ascii_lowercase();
             let r = if lower.ends_with(".ase") {
                 self.run("swatch.load", json!({"base64": b64}))
-            } else if lower.ends_with(".designcraft") || lower.ends_with(".idml") {
+            } else if lower.ends_with(".designcraft") || lower.ends_with(".idml") || lower.ends_with(".indd") {
                 let title = name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem);
                 self.run("file.openBytes", json!({"name": title, "base64": b64}))
             } else {
@@ -642,7 +642,7 @@ impl DesignApp {
                     continue;
                 }
                 let lp = p.to_ascii_lowercase();
-                let cmd = if lp.ends_with(".designcraft") || lp.ends_with(".idml") { "file.open" } else { "file.place" };
+                let cmd = if lp.ends_with(".designcraft") || lp.ends_with(".idml") || lp.ends_with(".indd") { "file.open" } else { "file.place" };
                 let _ = self.run(cmd, json!({"path": p}));
             }
         }

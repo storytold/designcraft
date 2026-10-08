@@ -1,0 +1,19 @@
+[package]
+name = "designcraft-indd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft InDesign document (.indd) import via IDML"
+
+[lints]
+workspace = true
+
+[features]
+# Synthetic documents for tests in other crates.
+synthetic = []
+
+[dependencies]
+thiserror = { workspace = true }
+image = { workspace = true }
+zip = { workspace = true }
+

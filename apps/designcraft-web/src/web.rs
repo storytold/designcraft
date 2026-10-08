@@ -4,7 +4,7 @@ use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["designcraft", "idml"];
+const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
     "jpg",
@@ -24,6 +24,7 @@ const IMAGE_EXTS: &[&str] = &[
     "md",
     "xlsx",
     "idml",
+    "indd",
     "designcraft",
 ];
 const CANVAS_ID: &str = "designcraft_canvas";
@@ -181,6 +182,7 @@ fn mime_for(name: &str) -> &'static str {
         Some("pdf") => "application/pdf",
         Some("designcraft") => "application/json",
         Some("idml") => "application/vnd.adobe.indesign-idml-package",
+        Some("indd") => "application/x-indesign",
         _ => "application/octet-stream",
     }
 }

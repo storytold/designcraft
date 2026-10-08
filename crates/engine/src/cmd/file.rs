@@ -154,7 +154,8 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        if path.to_ascii_lowercase().ends_with(".idml") {
+        let lower = path.to_ascii_lowercase();
+        if lower.ends_with(".idml") || lower.ends_with(".indd") {
             return super::interchange::open_idml(s, p);
         }
         let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -171,8 +172,9 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
-    // IDML packages are recognised by their stored `mimetype` first entry.
-    if designcraft_idml::is_idml(&b) {
+    // IDML packages are recognised by their stored `mimetype` first entry, InDesign documents by
+    // their master page header.
+    if designcraft_idml::is_idml(&b) || designcraft_indd::is_indd(&b) {
         return super::interchange::open_idml(s, p);
     }
     let mut d = from_bytes(&b)?;

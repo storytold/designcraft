@@ -937,6 +937,7 @@ dependencies = [
  "designcraft-geom",
  "designcraft-idml",
  "designcraft-images",
+ "designcraft-indd",
  "designcraft-pdf",
  "designcraft-render",
  "designcraft-textimport",
@@ -1018,6 +1019,15 @@ dependencies = [
  "image",
  "psd",
  "resvg",
+]
+
+[[package]]
+name = "designcraft-indd"
+version = "0.2.1"
+dependencies = [
+ "image",
+ "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]

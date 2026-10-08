@@ -22,6 +22,7 @@ designcraft-textimport = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }
+designcraft-indd = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -30,6 +31,7 @@ regex = { workspace = true }
 quick-xml = { workspace = true }
 
 [dev-dependencies]
+designcraft-indd = { workspace = true, features = ["synthetic"] }
 zip = { workspace = true }
 hayro-syntax = "0.7.2"
 hayro-interpret = { version = "0.7.0", default-features = false, features = ["embed-fonts"] }
