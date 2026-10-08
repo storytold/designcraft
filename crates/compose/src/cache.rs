@@ -247,8 +247,12 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         vec![Arc::as_ptr(story) as usize, story.rev as usize, Arc::as_ptr(&doc.styles) as usize, doc.sections.len(), doc.font_scope as usize];
     let mut keep = Vec::new();
     let mut spreads = Vec::new();
+    // `Document::find` walks the whole document per id, so a threaded story of F frames paid F
+    // full walks on every read — including the cache-hit path, where nothing changed. One walk
+    // resolves them all (`find_many` keeps the cheap id compare for a single-frame story).
+    let locs = doc.find_many(story.frames.iter().copied());
     for f in &story.frames {
-        let Some(loc) = doc.find(*f) else {
+        let Some(loc) = locs.get(f) else {
             sig.push(0);
             continue;
         };

@@ -1,5 +1,6 @@
 //! Locating and editing items, threading, and story management.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use designcraft_geom::{Affine, Point, Rect, shapes};
@@ -46,6 +47,20 @@ fn find_in(items: &[Arc<Item>], id: ItemId, path: &mut ItemPath) -> bool {
     false
 }
 
+fn find_many_in(items: &[Arc<Item>], want: &mut HashSet<ItemId>, spread: SpreadRef, path: &mut ItemPath, out: &mut HashMap<ItemId, ItemLoc>) {
+    for (i, it) in items.iter().enumerate() {
+        if want.is_empty() {
+            return;
+        }
+        path.push(i);
+        if want.remove(&it.id) {
+            out.insert(it.id, ItemLoc { spread, path: path.clone() });
+        }
+        find_many_in(it.children(), want, spread, path, out);
+        path.pop();
+    }
+}
+
 impl Document {
     pub fn spread(&self, r: SpreadRef) -> Option<&Spread> {
         match r {
@@ -74,6 +89,33 @@ impl Document {
             }
         }
         None
+    }
+
+    /// Locate many items in a single document walk. `Document::find` is O(items) per id, so
+    /// resolving a batch of ids one at a time is O(items x ids); this is O(items + ids).
+    /// Ids that do not exist are simply absent from the map.
+    pub fn find_many(&self, ids: impl IntoIterator<Item = ItemId>) -> HashMap<ItemId, ItemLoc> {
+        let mut want: HashSet<ItemId> = ids.into_iter().collect();
+        let mut out = HashMap::with_capacity(want.len());
+        // One id is the common case (every command call that names a single object), and there
+        // the per-item hash lookup below costs more than the walk it saves: `find` compares ids.
+        if want.len() == 1 {
+            if let Some(id) = want.iter().copied().next()
+                && let Some(loc) = self.find(id)
+            {
+                out.insert(id, loc);
+            }
+            return out;
+        }
+        for r in self.spread_refs() {
+            if want.is_empty() {
+                break;
+            }
+            if let Some(sp) = self.spread(r) {
+                find_many_in(&sp.items, &mut want, r, &mut Vec::new(), &mut out);
+            }
+        }
+        out
     }
 
     pub fn item_at(&self, loc: &ItemLoc) -> Option<&Item> {

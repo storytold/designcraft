@@ -164,3 +164,43 @@ fn next_id_near_the_top_is_rejected() {
     d.next_id = crate::MAX_NEXT_ID;
     d.check().unwrap();
 }
+
+#[test]
+fn find_many_agrees_with_find_for_every_id() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    // Items on two spreads, one of them nested inside a group, plus an id that does not exist.
+    let mut ids = Vec::new();
+    for (sp, y) in [(0usize, 10.0), (1, 20.0), (0, 30.0)] {
+        let id = ItemId(d.alloc());
+        let it = Item::new(id, lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, y, 50.0, y + 40.0)));
+        d.insert_item(SpreadRef::Doc(sp), it, None).unwrap();
+        ids.push(id);
+    }
+    // A group holding one more item, so the walk has to descend.
+    let nested = ItemId(d.alloc());
+    let child = Item::new(nested, lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 100.0, 20.0, 120.0)));
+    let group = ItemId(d.alloc());
+    let mut g = Item::new(group, lid, Shape::Group, designcraft_geom::shapes::rectangle(Rect::new(0.0, 100.0, 20.0, 120.0)));
+    g.content = Content::Group { items: vec![Arc::new(child)] };
+    d.insert_item(SpreadRef::Doc(1), g, None).unwrap();
+    ids.push(nested);
+    let absent = ItemId(999_999);
+
+    let mut want = ids.clone();
+    want.push(group);
+    want.push(absent);
+    let found = d.find_many(want.iter().copied());
+
+    // Every existing id resolves to exactly what `find` returns, nested ones included.
+    for id in ids.iter().copied().chain([group]) {
+        assert_eq!(found.get(&id), d.find(id).as_ref(), "find_many disagrees with find for {id:?}");
+    }
+    // …and an id naming nothing is absent rather than wrong.
+    assert!(!found.contains_key(&absent));
+    assert_eq!(found.len(), 5);
+
+    // The single-id fast path takes a different route through the same function.
+    assert_eq!(d.find_many([ids[1]]).get(&ids[1]), d.find(ids[1]).as_ref());
+    assert!(d.find_many([absent]).is_empty());
+}
