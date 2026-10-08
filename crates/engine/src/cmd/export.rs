@@ -25,6 +25,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.exportHtml", "Export HTML…", ["File"], None,
         "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes} (no path: {text, bytes})",
         has_doc, export_html),
+        cmd!(noundo "file.exportPptx", "Export PowerPoint…", ["File"], None,
+        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: DesignCraft's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
+        has_doc, export_pptx),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
         "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
         has_story_target, export_text),
@@ -63,6 +66,43 @@ fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
             Ok(json!({"path": path, "bytes": text.len()}))
         }
         None => Ok(json!({"bytes": text.len(), "text": text})),
+    }
+}
+
+fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "file.exportPptx";
+    let st = s.doc()?;
+    let line_breaks = match str_param(p, "lineBreaks") {
+        None | Some("keep") => designcraft_pptx::LineBreaks::Keep,
+        Some("reflow") => designcraft_pptx::LineBreaks::Reflow,
+        Some(x) => return Err(bad(ID, format!("unknown lineBreaks `{x}` (keep, reflow)"))),
+    };
+    let opts = designcraft_pptx::PptxOptions {
+        pages: pages_param(ID, p, st.doc.page_count())?,
+        line_breaks,
+        title: str_param(p, "title").map(str::to_string),
+        author: str_param(p, "author").map(str::to_string),
+        created: None,
+        embed_fonts: p.get("embedFonts").and_then(Value::as_bool).unwrap_or(true),
+    };
+    // Object Export Options › Rasterize, and what PowerPoint has no objects for (a threaded frame
+    // stays text: a picture of it would drop the rest of its story).
+    let auto = p.get("rasterize").and_then(Value::as_bool).unwrap_or(true);
+    let (raster, rasterized) = rasterize_where(&st.doc, &s.cache, 300.0, |it| {
+        !threaded(&st.doc, it) && (it.export_options.rasterize || (auto && designcraft_pptx::needs_raster(&st.doc, it)))
+    });
+    let doc: &designcraft_doc::Document = raster.as_ref().unwrap_or(&st.doc);
+    let mut r = designcraft_pptx::export_pptx(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    if rasterized > 0 {
+        r.warnings.push(format!("{rasterized} object(s) went in as images"));
+    }
+    match str_param(p, "path") {
+        Some(path) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            std::fs::write(path, &r.bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            Ok(json!({"path": path, "bytes": r.bytes.len(), "slides": r.slides, "warnings": r.warnings}))
+        }
+        None => Ok(json!({"base64": super::file::base64_encode(&r.bytes), "bytes": r.bytes.len(), "slides": r.slides, "warnings": r.warnings})),
     }
 }
 
@@ -167,26 +207,31 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
-    const ID: &str = "file.exportPdf";
-
-    let pages = match p.get("pages") {
+/// The `pages` parameter: a range string ("1-3,5"), a list or a number of 1-based positions.
+fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Option<Vec<usize>>> {
+    Ok(match p.get("pages") {
         None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(designcraft_pdf::parse_page_range(s, page_count).map_err(|e| bad(ID, e.to_string()))?),
+        Some(Value::String(s)) => Some(designcraft_pdf::parse_page_range(s, page_count).map_err(|e| bad(id, e.to_string()))?),
         Some(Value::Array(a)) => {
             let mut v = Vec::new();
             for x in a {
-                let n = x.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(ID, format!("bad page {x}")))?;
+                let n = x.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(id, format!("bad page {x}")))?;
                 v.push(n as usize - 1);
             }
             Some(v)
         }
         Some(Value::Number(n)) => {
-            let n = n.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(ID, format!("bad page {n}")))?;
+            let n = n.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(id, format!("bad page {n}")))?;
             Some(vec![n as usize - 1])
         }
-        Some(v) => return Err(bad(ID, format!("bad `pages`: {v}"))),
-    };
+        Some(v) => return Err(bad(id, format!("bad `pages`: {v}"))),
+    })
+}
+
+pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
+    const ID: &str = "file.exportPdf";
+
+    let pages = pages_param(ID, p, page_count)?;
     let spreads = p.get("spreads").and_then(Value::as_bool).unwrap_or(false);
     let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(false);
     let marks = match p.get("marks") {
@@ -897,5 +942,59 @@ mod print_group_tests {
         s.execute("edit.transparencyBlendSpace", &json!({"space": "rgb"})).unwrap();
         let t = text(&mut s);
         assert!(t.contains("/CS/DeviceRGB") && designcraft_pdf::has_rgb_groups(t.as_bytes()));
+    }
+}
+
+#[cfg(test)]
+mod pptx_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn unzip(b64: &str) -> zip::ZipArchive<std::io::Cursor<Vec<u8>>> {
+        zip::ZipArchive::new(std::io::Cursor::new(super::super::file::base64_decode(b64))).unwrap()
+    }
+
+    fn read(z: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str) -> String {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut z.by_name(name).unwrap(), &mut s).unwrap();
+        s
+    }
+
+    #[test]
+    fn sample_exports_editable_slides() {
+        let mut s = Session::new();
+        s.execute("file.newSample", &json!({})).unwrap();
+        let r = s.execute("file.exportPptx", &json!({})).unwrap();
+        assert_eq!(r["slides"], 4);
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        // The swatch table is a PowerPoint table; the cover picture is embedded; text is text.
+        assert!(read(&mut z, "ppt/slides/slide4.xml").contains("<a:tbl>"));
+        assert!(read(&mut z, "ppt/slides/slide1.xml").contains("<p:pic>"));
+        let text: String = read(&mut z, "ppt/slides/slide2.xml").split("<a:t>").skip(1).filter_map(|t| t.split("</a:t>").next()).collect();
+        assert!(text.contains("Notes on the Grid"), "{text}");
+        assert!(read(&mut z, "ppt/presentation.xml").contains("<p:embeddedFontLst>"));
+
+        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "embedFonts": false, "lineBreaks": "reflow"})).unwrap();
+        assert_eq!(r["slides"], 2);
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("fonts are not embedded")));
+        assert!(s.execute("file.exportPptx", &json!({"lineBreaks": "wrap"})).is_err());
+        assert!(s.execute("file.exportPptx", &json!({"pages": [9]})).is_err());
+    }
+
+    #[test]
+    fn rasterize_option_places_a_picture() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200], "shape": "ellipse"})).unwrap();
+        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [r["id"]]})).unwrap();
+        let shapes = |s: &mut Session| {
+            let r = s.execute("file.exportPptx", &json!({})).unwrap();
+            read(&mut unzip(r["base64"].as_str().unwrap()), "ppt/slides/slide1.xml")
+        };
+        assert!(shapes(&mut s).contains("prst=\"ellipse\""));
+        s.execute("object.exportOptions", &json!({"ids": [r["id"]], "rasterize": true})).unwrap();
+        let x = shapes(&mut s);
+        assert!(x.contains("<p:pic>") && !x.contains("prst=\"ellipse\""), "{x}");
     }
 }

@@ -939,6 +939,7 @@ dependencies = [
  "designcraft-idml",
  "designcraft-images",
  "designcraft-pdf",
+ "designcraft-pptx",
  "designcraft-render",
  "designcraft-textimport",
  "designcraft-tools",
@@ -1056,6 +1057,23 @@ dependencies = [
  "log",
  "thiserror 2.0.21",
  "tiff",
+]
+
+[[package]]
+name = "designcraft-pptx"
+version = "0.4.0"
+dependencies = [
+ "designcraft-color",
+ "designcraft-compose",
+ "designcraft-doc",
+ "designcraft-fonts",
+ "designcraft-geom",
+ "designcraft-images",
+ "image",
+ "quick-xml 0.38.4",
+ "skrifa 0.47.0",
+ "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]

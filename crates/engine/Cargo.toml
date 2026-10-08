@@ -18,6 +18,7 @@ designcraft-compose = { workspace = true }
 designcraft-render = { workspace = true }
 designcraft-format = { workspace = true }
 designcraft-epub = { workspace = true }
+designcraft-pptx = { workspace = true }
 designcraft-textimport = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-tools = { workspace = true }
