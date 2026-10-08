@@ -121,6 +121,18 @@ include it.
 To drive a running app, send JSON lines to `127.0.0.1:7979`. The protocol is described in
 [`docs/control-protocol.md`](docs/control-protocol.md).
 
+Each [GitHub release](https://github.com/storytold/designcraft/releases) has ready-made builds, on Linux
+as an AppImage, a `.deb`, an `.rpm` and a tarball. On Gentoo, the community [::snakebyte
+overlay](https://github.com/switch87/snakebyte-overlay) packages the Linux release as
+`media-gfx/designcraft-bin` (not maintained by the DesignCraft team):
+
+```sh
+eselect repository add snakebyte git https://github.com/switch87/snakebyte-overlay.git
+emaint sync -r snakebyte
+echo 'media-gfx/designcraft-bin ~amd64' >> /etc/portage/package.accept_keywords/designcraft
+emerge --ask media-gfx/designcraft-bin
+```
+
 ### Web
 
 ```sh
