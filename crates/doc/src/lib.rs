@@ -13,6 +13,7 @@ pub mod anchored;
 pub mod arrow;
 pub mod attrs;
 pub mod build;
+pub mod datamerge;
 mod edit;
 pub mod endnotes;
 pub mod ids;
@@ -34,6 +35,10 @@ use std::sync::Arc;
 
 pub use anchored::{AnchorPosition, AnchoredObject, OBJECT_MARK};
 pub use attrs::*;
+pub use datamerge::{
+    DataField, DataFieldKind, DataGrid, DataMerge, DataSource, Delimiter, FilterRule, Fingerprint, MergeOptions, Placeholder, PlaceholderAnchor,
+    PlaceholderRole, SortKey, SourceFilter, SourceStatus,
+};
 pub use designcraft_color as color;
 pub use designcraft_geom as geom;
 pub use edit::{ItemLoc, ItemPath, SpreadRef, item_hit as edit_hit};
@@ -482,6 +487,9 @@ pub struct Document {
     /// Hyperlinks (Window → Interactive → Hyperlinks).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hyperlinks: Vec<Hyperlink>,
+    /// Data merge: the linked table, placeholders, and the last merge options.
+    #[serde(default, skip_serializing_if = "DataMerge::is_empty")]
+    pub data_merge: DataMerge,
     /// PDF bookmarks (Window → Interactive → Bookmarks).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bookmarks: Vec<Bookmark>,

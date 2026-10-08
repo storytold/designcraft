@@ -42,7 +42,10 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"opened": crate::recovery::open(s, &dir)?}))
         }),
         cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .designcraft file", has_doc, |s, _| {
-            let bytes = to_bytes(&s.doc()?.doc);
+            let st = s.doc()?;
+            // Preview fill is session state. Serialize the unfilled template.
+            let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
+            let bytes = to_bytes(doc);
             Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}))
         }),
         cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?}", has_doc, |s, p| {
@@ -158,7 +161,8 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
             return super::interchange::open_idml(s, p);
         }
         let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-        let d = from_bytes(&bytes)?;
+        let mut d = from_bytes(&bytes)?;
+        super::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
         let i = s.add_document(DocState::new(d, Some(path.to_string())));
         Ok(json!({"index": i}))
     }
@@ -176,6 +180,7 @@ fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
         return super::interchange::open_idml(s, p);
     }
     let mut d = from_bytes(&b)?;
+    super::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
         d.title = n.to_string();
     }
@@ -189,6 +194,14 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         .map(str::to_string)
         .or_else(|| st.path.clone())
         .ok_or_else(|| bad("file.save", "missing `path` (document has never been saved)"))?;
+    {
+        let mut d = (*st.doc).clone();
+        super::datamerge::refresh_relative_paths(&mut d, std::path::Path::new(&path));
+        if d.data_merge != st.doc.data_merge {
+            st.doc = Arc::new(d);
+            st.revision = st.revision.saturating_add(1);
+        }
+    }
     let bytes = to_bytes(&st.doc);
     #[cfg(not(target_arch = "wasm32"))]
     std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;

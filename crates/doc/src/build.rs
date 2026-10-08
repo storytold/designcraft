@@ -11,7 +11,7 @@ use crate::ids::{ItemId, LayerId, PageId, SpreadId};
 use crate::item::Item;
 use crate::page::{Columns, Margins, Page, PageSide, ParentInfo, Section, Spread};
 use crate::styles::Styles;
-use crate::{DocError, DocSettings, Document, Intent, LAYER_COLORS, Layer, ParaFormat, Result, SpreadRef};
+use crate::{DataMerge, DocError, DocSettings, Document, Intent, LAYER_COLORS, Layer, ParaFormat, Result, SpreadRef};
 
 /// A New Document preset.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,6 +145,7 @@ impl Document {
             }],
             assets: BTreeMap::new(),
             hyperlinks: vec![],
+            data_merge: DataMerge::default(),
             bookmarks: vec![],
             user_words: vec![],
             hyphenation_exceptions: vec![],

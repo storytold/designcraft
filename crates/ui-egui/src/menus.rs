@@ -653,7 +653,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.panel|Book|{\"panel\": \"book\"}",
             "<",
             ">Utilities",
-            "cmd:data.merge",
+            "ui:window.panel|Data Merge|{\"panel\":\"dataMerge\"}",
             "<",
             ">Output",
             "ui:window.panel|Attributes|{\"panel\": \"attributes\"}",

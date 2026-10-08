@@ -91,6 +91,10 @@ pub struct DocState {
     /// Editing parent spreads (Pages panel double-click on a parent).
     pub editing_parents: bool,
     pub uid: u64,
+    /// Unfilled document while data-merge preview is showing a record. Not saved.
+    pub preview_stash: Option<Arc<Document>>,
+    /// 1-based record currently previewed.
+    pub preview_record: Option<u32>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -111,6 +115,8 @@ impl DocState {
             interaction: None,
             editing_parents: false,
             uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            preview_stash: None,
+            preview_record: None,
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -325,16 +331,29 @@ impl Session {
         self.active_mut().ok_or(EngineError::NoDocument)
     }
     pub fn set_active(&mut self, i: usize) {
-        if i < self.docs.len() {
+        if i < self.docs.len() && self.active != Some(i) {
+            self.stop_data_preview();
             self.active = Some(i);
         }
     }
     pub fn add_document(&mut self, d: DocState) -> usize {
+        self.stop_data_preview();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
         self.docs.len() - 1
     }
+    /// Put the unfilled template back. Preview is session state and must not be saved.
+    pub fn stop_data_preview(&mut self) {
+        let Some(st) = self.active_mut() else { return };
+        st.preview_record = None;
+        let Some(stash) = st.preview_stash.take() else { return };
+        st.doc = stash;
+        st.revision = st.revision.saturating_add(1);
+    }
     pub fn close_document(&mut self, i: usize) {
+        if self.active == Some(i) {
+            self.stop_data_preview();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let (Some(dir), Some(d)) = (&self.recovery_dir, self.docs.get(i)) {
             recovery::discard(dir, d.uid);
@@ -363,6 +382,12 @@ impl Session {
             if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
                 return Err(EngineError::Disabled(id.into(), format!("no object with id {}", gone.0)));
             }
+        }
+        // Preview is temporary. Save, merge, and every other edit restore the template first.
+        // Queries stay read-only so the panel can poll fields during a preview. `data.preview`
+        // itself is the one command that fills the live document.
+        if id != "data.preview" && (spec.undoable || spec.journal) {
+            self.stop_data_preview();
         }
         let before = self.active().map(|d| (d.uid, d.doc.clone()));
         let r = (spec.run)(self, params)?;
@@ -483,6 +508,7 @@ impl Session {
         let mut doc = (*st.doc).clone();
         let mut sel = st.selection.clone();
         let r = f(&mut doc, &mut sel)?;
+        crate::cmd::sync_placeholders(&mut doc);
         doc.sync_endnote_story();
         st.doc = Arc::new(doc);
         st.selection = sel;

@@ -46,7 +46,7 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             continue;
         }
         let (doc, meta) = files(dir, d.uid);
-        let bytes = crate::cmd::to_bytes(&d.doc);
+        let bytes = crate::cmd::to_bytes(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()));
         // Write then rename, so a crash mid-write never leaves a torn file.
         let tmp = doc.with_extension("tmp");
         std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &doc)).map_err(|e| EngineError::Other(format!("{}: {e}", doc.display())))?;

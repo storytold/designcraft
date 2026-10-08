@@ -762,6 +762,14 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
         }
         "format-container" => pen.rect(4.0, 4.0, 16.0, 16.0),
         "format-text" => pen.text(10.0, 10.5, "T", 15.0),
+        "panel-datamerge" => {
+            pen.w = 1.2;
+            pen.rect(3.0, 2.0, 17.0, 18.0);
+            pen.line(&[(3.0, 6.0), (17.0, 6.0)]);
+            pen.line(&[(6.5, 10.0), (8.5, 13.5), (6.5, 13.5)]);
+            pen.line(&[(13.5, 10.0), (11.5, 13.5), (13.5, 13.5)]);
+            pen.line(&[(9.2, 15.0), (11.0, 9.0)]);
+        }
         "screen-mode" => {
             pen.rect(3.0, 4.0, 17.0, 16.0);
             pen.line(&[(3.0, 7.0), (17.0, 7.0)]);

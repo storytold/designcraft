@@ -456,12 +456,13 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
     ui.painter().rect_filled(bar, 0.0, t.tab_strip);
     ui.painter().line_segment([bar.left_bottom(), bar.right_bottom()], Stroke::new(1.0, t.border));
-    let mut x = bar.min.x;
     let active = app.session.active_index();
     let zoom = app.view().map(|v| v.zoom).unwrap_or(1.0);
     let mut activate = None;
     let mut close = None;
     let titles: Vec<(String, bool)> = app.session.documents().iter().map(|d| (d.title(), d.is_dirty())).collect();
+    let mut tabs = Vec::new();
+    let mut total = 0.0_f32;
     for (i, (title, dirty)) in titles.iter().enumerate() {
         let is_active = Some(i) == active;
         // `*` = unsaved; the view-mode suffix only in Preview (InDesign shows its GPU mode there).
@@ -469,6 +470,36 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         let label = format!("{}{} @ {:.0}%{suffix}", if *dirty { "*" } else { "" }, crate::rtl::isolate(title), zoom * 100.0);
         let galley = crate::rtl::plain(ui.ctx(), &label, semibold(11.5), if is_active { t.text_strong } else { t.text_dim });
         let w = (galley.size().x + 44.0).max(if is_active { 210.0 } else { 150.0 });
+        tabs.push((w, galley));
+        total += w;
+    }
+    let scroll_id = ui.id().with("doc_tab_scroll");
+    let mut scroll = ui.ctx().data(|d| d.get_temp::<f32>(scroll_id)).unwrap_or(0.0);
+    let max_scroll = (total - bar.width()).max(0.0);
+    let mut left = 0.0_f32;
+    for (i, (w, _)) in tabs.iter().enumerate() {
+        if Some(i) == active {
+            if left < scroll {
+                scroll = left;
+            }
+            if left + w > scroll + bar.width() {
+                scroll = left + w - bar.width();
+            }
+        }
+        left += w;
+    }
+    scroll = scroll.clamp(0.0, max_scroll);
+    let bar_hover = ui.interact(bar, ui.id().with("doc_tab_bar"), Sense::hover());
+    if bar_hover.hovered() {
+        let wheel = ui.input(|i| i.smooth_scroll_delta);
+        scroll = (scroll - wheel.x - wheel.y).clamp(0.0, max_scroll);
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(scroll_id, scroll));
+    let prev_clip = ui.clip_rect();
+    ui.set_clip_rect(bar.intersect(prev_clip));
+    let mut x = bar.min.x - scroll;
+    for (i, (w, galley)) in tabs.into_iter().enumerate() {
+        let is_active = Some(i) == active;
         let r = egui::Rect::from_min_size(egui::pos2(x, bar.min.y), vec2(w, 28.0));
         let resp = ui.interact(r, ui.id().with(("doctab", i)), Sense::click());
         ui.painter().rect_filled(r, 0.0, if is_active { t.panel } else { t.tab_strip });
@@ -490,6 +521,7 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         x += w;
     }
+    ui.set_clip_rect(prev_clip);
     if let Some(i) = close {
         let _ = app.run("file.close", json!({"index": i}));
     } else if let Some(i) = activate {

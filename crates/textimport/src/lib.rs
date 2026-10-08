@@ -14,6 +14,18 @@ mod rtf;
 pub mod tagged;
 mod xlsx;
 
+/// Data-merge row cap (header not included). More than this is an error.
+pub const DATA_MERGE_MAX_ROWS: usize = 100_000;
+/// Data-merge column cap. More than this is an error.
+pub const DATA_MERGE_MAX_COLS: usize = 200;
+
+/// Worksheet rows for data merge. Empty cells inside the header width are kept.
+/// `sheet` names a worksheet; `None` is the first sheet in workbook order.
+/// Place keeps [`xlsx::import`], which drops empty cells.
+pub fn xlsx_records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, ImportError> {
+    xlsx::records(bytes, sheet)
+}
+
 use designcraft_doc::{CharAttrs, ParaAttrs, Story};
 
 /// A paragraph or character style found in the source.

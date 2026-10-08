@@ -24,7 +24,7 @@ fn visit(doc: &Document, sheets: &[Sheet], mut f: impl FnMut(usize, [f64; 4], &I
         let Some(sp) = doc.spread(SpreadRef::Doc(sh.spread)) else { continue };
         let mut stack: Vec<(Affine, &std::sync::Arc<Item>)> = sp.items.iter().map(|it| (Affine::IDENTITY, it)).collect();
         while let Some((xf, it)) = stack.pop() {
-            stack.extend(it.shown_children().map(|c| (xf * it.xf, c)));
+            stack.extend(it.shown_children().map(|c| (xf * it.child_space(), c)));
             if it.hidden {
                 continue;
             }

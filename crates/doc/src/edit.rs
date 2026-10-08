@@ -116,7 +116,7 @@ impl Document {
             let mut items = &sp.items;
             for &i in &loc.path[..loc.path.len().saturating_sub(1)] {
                 let it = &items[i];
-                xf *= it.xf;
+                xf *= it.child_space();
                 items = match &it.content {
                     Content::Group { items } => items,
                     _ => break,
@@ -376,8 +376,14 @@ impl Document {
 /// Does `p` (in the item's parent space) hit `it`?
 pub fn item_hit(it: &Item, p: Point, tol: f64) -> bool {
     if let Content::Group { items } = &it.content {
-        let inner = it.xf.inverse() * p;
-        return items.iter().any(|c| item_hit(c, inner, tol));
+        // A data grid draws its prototype in the origin cell. Other groups use `xf`.
+        let inner = it.child_space().inverse() * p;
+        if items.iter().any(|c| item_hit(c, inner, tol)) {
+            return true;
+        }
+        // Empty cells stay clickable so frames behind the grid can still be selected.
+        // The frame and the cell lines are the grid.
+        return it.data_grid.is_some() && grid_outline_hit(it, p, tol);
     }
     let inner = it.xf.inverse() * p;
     let bp = it.path.to_bezpath();
@@ -386,4 +392,20 @@ pub fn item_hit(it: &Item, p: Point, tol: f64) -> bool {
         return true;
     }
     designcraft_geom::hit::stroke_contains(&bp, it.stroke.weight.max(1.0), tol, inner)
+}
+
+/// The grid rectangle and its cell lines, not the empty interior.
+fn grid_outline_hit(it: &Item, p: Point, tol: f64) -> bool {
+    let Some(grid) = &it.data_grid else { return false };
+    if it.stroke.is_none() {
+        return false;
+    }
+    let inner = it.xf.inverse() * p;
+    let width = it.stroke.weight.max(1.0);
+    let frame = it.path.to_bezpath();
+    if designcraft_geom::hit::stroke_contains(&frame, width, tol, inner) {
+        return true;
+    }
+    let dividers = grid.divider_path(it.inner_bounds());
+    designcraft_geom::hit::stroke_contains(&dividers, width, tol, inner)
 }

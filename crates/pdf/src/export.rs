@@ -822,9 +822,10 @@ impl Exporter<'_> {
             return;
         }
         if !it.children().is_empty() {
+            let into = parent * it.child_space();
             let pushes = Self::push_group(s, it.opacity, it.blend) + Self::push_isolation(s, it);
             for c in it.shown_children() {
-                self.item(s, c, xf, page_name);
+                self.item(s, c, into, page_name);
             }
             for _ in 0..pushes {
                 s.pop();

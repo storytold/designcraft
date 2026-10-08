@@ -297,5 +297,6 @@ pub fn file_bytes(d: &designcraft_doc::Document) -> Vec<u8> {
 pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
     file::from_bytes(b)
 }
+pub(crate) use datamerge::sync_placeholders;
 pub use file::{base64_decode, base64_encode, from_bytes, to_bytes};
 pub(crate) use place_text::autoflow as place_text_autoflow;

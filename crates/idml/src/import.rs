@@ -2123,6 +2123,7 @@ impl<'r> Importer<'r> {
             sections: std::mem::take(&mut self.sections),
             assets: std::mem::take(&mut self.assets),
             hyperlinks: vec![],
+            data_merge: Default::default(),
             bookmarks: vec![],
             user_words: vec![],
             hyphenation_exceptions: vec![],
