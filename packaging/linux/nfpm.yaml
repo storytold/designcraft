@@ -17,10 +17,10 @@ vendor: Learning Machines LLC
 homepage: https://getartcraft.com/apps/designcraft
 license: MIT OR Apache-2.0
 description: |-
-  Open-source, native image editor that works the way Photoshop users expect.
-  Layers, masks, adjustment layers, layer styles, type and brushes; opens and
-  saves layered PSD/PSB files; 8/16/32-bit documents; GPU compositing (wgpu).
-  Includes designcraft-cli, a headless converter and command runner.
+  Open-source, native page layout and publishing that works the way InDesign users expect.
+  Spreads and parent pages, threaded text frames, paragraph and character styles, swatches,
+  text wrap and a Knuth-Plass paragraph composer; IDML import and export.
+  Includes designcraft-cli, a headless renderer and command runner.
 
 # The binaries link only glibc and libgcc_s directly. Windowing (X11/Wayland, xkbcommon) and the
 # GPU (Vulkan, EGL/GL) are loaded at runtime, so they are dependencies/recommendations here
