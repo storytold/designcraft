@@ -15,10 +15,10 @@ use designcraft_color::{BlendMode, Color, ColorType, Gradient, GradientKind, Gra
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{
     Align, Cap, Capitalization, CharAttrs, CharFormat, Content, Document, Fill, FirstBaseline, Graphic, Intent, Item, Join, LAYER_COLORS, Layer,
-    LayerId, Leading, Margins, NO_CHAR_STYLE, Page, PageId, PageSide, ParaAttrs, Shape, Spread, SpreadId, Story, StoryId, Stroke, StrokeAlign,
-    StrokeType, TextFrame, TextFrameOptions,
+    LayerId, Leading, Margins, NO_CHAR_STYLE, Page, PageId, PageSide, Shape, Spread, SpreadId, Story, StoryId, Stroke, StrokeAlign, StrokeType,
+    TextFrame, TextFrameOptions,
 };
-use designcraft_doc::{AssetId, ItemId};
+use designcraft_doc::{AssetId, Cell, CellStroke, ItemId, Row, RowHeightMode, RowKind, Table, TableOptions, VerticalJustification};
 use designcraft_geom::{Affine, BezPath, PathData, Point, Rect, Unit};
 
 use crate::model::{self, Kind, Node, Pixels};
@@ -49,6 +49,17 @@ struct PageSet<'a> {
     origin: model::Point,
     pages: Vec<model::Rect>,
     nodes: Vec<&'a Node>,
+}
+
+/// A text or table node's transform split into DesignCraft's terms: `to_frame` scales node space
+/// to points, `place` rotates and moves that frame space onto the spread.
+struct Placement {
+    to_frame: Affine,
+    place: Affine,
+    rotated: bool,
+    /// How much font sizes grow (the vertical scale), and the horizontal scale on top of that.
+    size_scale: f64,
+    h_scale: f64,
 }
 
 struct Builder {
@@ -292,20 +303,16 @@ impl Builder {
                 it
             }
             Kind::Text(t) => self.text(t, xf, layer)?,
-            Kind::Image(img) => self.image(img, xf, layer, &node.name)?,
+            Kind::Table(t) => self.table(t, xf, layer)?,
+            Kind::Image(img) => self.image_node(node, img, xf, layer, depth, &[])?,
         };
-        if !matches!(node.kind, Kind::Shape { .. } | Kind::Artboard { .. } | Kind::Layer | Kind::Group | Kind::Unsupported)
-            && !node.children.is_empty()
-        {
-            self.warn("objects inside text or images (left out)");
+        if matches!(node.kind, Kind::Text(_) | Kind::Table(_)) && !node.children.is_empty() {
+            self.warn("objects inside text (left out)");
         }
-        it.name = node.name.clone();
-        it.hidden |= !node.visible;
-        it.locked |= node.locked;
-        it.opacity = (f64::from(it.opacity) * node.opacity.clamp(0.0, 1.0)) as f32;
-        it.blend = self.blend(node.blend);
-        if node.pixel_mask.is_some() {
-            self.warn("pixel masks (imported without them)");
+        self.node_props(node, &mut it);
+        // An image's pixel mask is part of its pixels (see `image_node`).
+        if node.pixel_mask.is_some() && !matches!(node.kind, Kind::Image(_)) {
+            self.warn("pixel masks on objects other than images (imported without them)");
         }
         match &node.mask {
             Some(mask) => {
@@ -319,6 +326,49 @@ impl Builder {
             }
             None => Some(it),
         }
+    }
+
+    /// Name, visibility, lock, opacity and blend mode of `node` onto `it`.
+    fn node_props(&mut self, node: &Node, it: &mut Item) {
+        it.name = node.name.clone();
+        it.hidden |= !node.visible;
+        it.locked |= node.locked;
+        it.opacity = (f64::from(it.opacity) * node.opacity.clamp(0.0, 1.0)) as f32;
+        it.blend = self.blend(node.blend);
+    }
+
+    /// An image node with its pixel mask applied, and the images inside it, which Affinity clips
+    /// to its pixels: each is masked by everything that masks its parent and by the parent's
+    /// own transparency. `inherited` are the masks of the enclosing images.
+    fn image_node(&mut self, node: &Node, img: &model::Image, xf: Affine, layer: LayerId, depth: usize, inherited: &[AlphaMask]) -> Option<Item> {
+        if depth > MAX_DEPTH {
+            self.warn("objects nested too deeply (left out)");
+            return None;
+        }
+        let mut masks = inherited.to_vec();
+        if let Some(m) = &node.pixel_mask {
+            masks.push(AlphaMask { image: m, alpha: false });
+        }
+        let it = self.image(img, xf, layer, &node.name, &masks)?;
+        if node.children.iter().any(|c| !matches!(c.kind, Kind::Image(_))) {
+            self.warn("objects other than images inside pixel layers (left out)");
+        }
+        if !node.children.iter().any(|c| matches!(c.kind, Kind::Image(_))) {
+            return Some(it);
+        }
+        let mut clip = masks;
+        clip.push(AlphaMask { image: img, alpha: true });
+        let mut items = vec![Arc::new(it)];
+        for child in &node.children {
+            let Kind::Image(ci) = &child.kind else { continue };
+            if let Some(mut c) = self.image_node(child, ci, xf, layer, depth + 1, &clip) {
+                self.node_props(child, &mut c);
+                items.push(Arc::new(c));
+            }
+        }
+        let mut g = self.new_item(layer, Shape::Group, PathData::default());
+        g.content = Content::Group { items };
+        Some(g)
     }
 
     fn children(&mut self, node: &Node, xf: Affine, layer: LayerId, depth: usize) -> Option<Vec<Arc<Item>>> {
@@ -597,8 +647,8 @@ impl Builder {
 
     // ---------- text ----------
 
-    fn text(&mut self, t: &model::Text, xf: Affine, layer: LayerId) -> Option<Item> {
-        let m = xf * affine(t.transform);
+    /// How a text or table node sits on the spread: `None` (warned) for an unusable transform.
+    fn placement(&mut self, m: Affine) -> Option<Placement> {
         let [a, b, c, d, e, f] = m.as_coeffs();
         let sx = a.hypot(b);
         let det = a * d - b * c;
@@ -611,32 +661,49 @@ impl Builder {
         if shear.abs() > 1e-3 || sy < 0.0 {
             self.warn("skewed or flipped text (imported without the skew or flip)");
         }
-        if (sx - sy.abs()).abs() > 1e-3 * sx {
-            self.warn("text scaled more in one direction (imported at the average size)");
-        }
-        let size_scale = det.abs().sqrt();
         let angle = b.atan2(a);
-        // Frame space: the node's space scaled to points, without rotation.
-        let to_frame = Affine::scale_non_uniform(sx, sy.abs());
         let rotated = angle.abs() > 1e-9;
-        let place = if rotated { Affine::translate((e, f)) * Affine::rotate(angle) } else { Affine::translate((e, f)) };
+        Some(Placement {
+            to_frame: Affine::scale_non_uniform(sx, sy.abs()),
+            place: if rotated { Affine::translate((e, f)) * Affine::rotate(angle) } else { Affine::translate((e, f)) },
+            rotated,
+            size_scale: sy.abs(),
+            h_scale: sx / sy.abs(),
+        })
+    }
 
-        let (story_id, mut story, max_size) = self.story(t, size_scale);
-        let lines = story.text.split(['\n', '\u{2028}']).collect::<Vec<_>>();
+    /// A text frame for `story` over `rect` (frame space).
+    fn frame(&mut self, rect: Rect, p: &Placement, layer: LayerId, mut story: Story, options: TextFrameOptions) -> Option<Item> {
+        if ![rect.x0, rect.y0, rect.x1, rect.y1].iter().all(|v| v.is_finite()) || rect.width() <= 0.0 || rect.height() <= 0.0 {
+            self.warn("text frames without a size (left out)");
+            return None;
+        }
+        let corners = [Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y0), Point::new(rect.x1, rect.y1), Point::new(rect.x0, rect.y1)];
+        let (path, item_xf) = if p.rotated { (rect_path(&corners), p.place) } else { (rect_path(&corners.map(|q| p.place * q)), Affine::IDENTITY) };
+        let mut it = self.new_item(layer, Shape::Rectangle, path);
+        it.xf = item_xf;
+        story.frames = vec![it.id];
+        it.content = Content::Text(TextFrame { story: story.id, options });
+        self.doc.stories.insert(story.id, Arc::new(story));
+        Some(it)
+    }
+
+    fn text(&mut self, t: &model::Text, xf: Affine, layer: LayerId) -> Option<Item> {
+        let p = self.placement(xf * affine(t.transform))?;
+        let id = StoryId(self.doc.alloc());
+        let (story, max_size) = self.story(id, &t.runs, (p.size_scale, p.h_scale));
         let mut options = TextFrameOptions::default();
         let rect = match t.frame {
-            Some(r) => {
-                let (p0, p1) = (to_frame * Point::new(r.x0, r.y0), to_frame * Point::new(r.x1, r.y1));
-                Rect::from_points(p0, p1)
-            }
+            Some(r) => Rect::from_points(p.to_frame * Point::new(r.x0, r.y0), p.to_frame * Point::new(r.x1, r.y1)),
             None => {
                 // Artistic text: a frame wide enough for its longest line, with the first baseline
                 // exactly at Affinity's anchor.
+                let lines = story.text.split(['\n', '\u{2028}']).collect::<Vec<_>>();
                 let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64;
                 let w = (longest * max_size * 0.75 + max_size).max(1.0);
                 let line = story_leading(&story).unwrap_or(max_size * 1.2).max(max_size * 1.2);
                 let h = (lines.len() as f64 + 1.0) * line;
-                let anchor = to_frame * Point::new(t.anchor.x, t.anchor.y);
+                let anchor = p.to_frame * Point::new(t.anchor.x, t.anchor.y);
                 let x0 = match t.align {
                     model::Align::Center => anchor.x - w / 2.0,
                     model::Align::Right => anchor.x - w,
@@ -647,27 +714,99 @@ impl Builder {
                 Rect::new(x0, anchor.y - max_size, x0 + w, anchor.y - max_size + h)
             }
         };
-        if ![rect.x0, rect.y0, rect.x1, rect.y1].iter().all(|v| v.is_finite()) || rect.width() <= 0.0 || rect.height() <= 0.0 {
-            self.warn("text frames without a size (left out)");
-            return None;
-        }
-        let corners = [Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y0), Point::new(rect.x1, rect.y1), Point::new(rect.x0, rect.y1)];
-        let (path, item_xf) = if rotated { (rect_path(&corners), place) } else { (rect_path(&corners.map(|p| place * p)), Affine::IDENTITY) };
-        let mut it = self.new_item(layer, Shape::Rectangle, path);
-        it.xf = item_xf;
-        story.frames = vec![it.id];
-        it.content = Content::Text(TextFrame { story: story_id, options });
-        self.doc.stories.insert(story_id, Arc::new(story));
-        Some(it)
+        self.frame(rect, &p, layer, story, options)
     }
 
-    /// The story of a text node → (its id, the story, its largest font size in points).
-    fn story(&mut self, t: &model::Text, size_scale: f64) -> (StoryId, Story, f64) {
-        let id = StoryId(self.doc.alloc());
+    /// A table: a text frame over the table's bounds whose story holds just the table.
+    fn table(&mut self, t: &model::Table, xf: Affine, layer: LayerId) -> Option<Item> {
+        let p = self.placement(xf * affine(t.transform))?;
+        let (ncols, nrows) = (t.ncols(), t.nrows());
+        let (&x0, &x1, &y0, &y1) = (t.columns.first()?, t.columns.last()?, t.rows.first()?, t.rows.last()?);
+        let rect = Rect::from_points(p.to_frame * Point::new(x0, y0), p.to_frame * Point::new(x1, y1));
+        let [sx, _, _, sy, _, _] = p.to_frame.as_coeffs();
+        // Scaling a table in Affinity resizes its grid, not its text: a table squeezed to a third
+        // of its height and stretched to twice its width keeps legible type.
+        let text_scale = (xf.determinant().abs().sqrt(), 1.0);
+        let id = self.doc.alloc();
+        let mut table = Table::new(id, nrows, ncols, 0, 0, rect.width());
+        for (col, w) in table.columns.iter_mut().zip(t.columns.windows(2)) {
+            col.width = ((w[1] - w[0]) * sx).max(1.0);
+        }
+        for (row, h) in table.rows.iter_mut().zip(t.rows.windows(2)) {
+            *row = Row { height: ((h[1] - h[0]) * sy).max(1.0), mode: RowHeightMode::AtLeast, kind: RowKind::Body };
+        }
+        let edge = |b: &mut Self, s: Option<&Option<paint::Stroke>>| -> CellStroke {
+            match s {
+                Some(Some(s)) => {
+                    let (stroke, _) = b.stroke(s, xf);
+                    CellStroke { weight: stroke.weight, color: stroke.swatch, tint: 1.0, kind: stroke.kind }
+                }
+                _ => CellStroke::none(),
+            }
+        };
+        for (i, src) in t.cells.iter().enumerate() {
+            if src.merged_left {
+                continue;
+            }
+            let (r, c) = (i / ncols.max(1), i % ncols.max(1));
+            // Cells to the right merged into this one widen it.
+            let span = 1 + t.cells.iter().skip(i + 1).take(ncols - c - 1).take_while(|n| n.merged_left).count();
+            let last = c + span - 1;
+            let (mut text, _) = self.story(StoryId(0), &src.runs, text_scale);
+            let top: Vec<CellStroke> = (c..=last).map(|k| edge(self, t.horizontal.get(r * ncols + k))).collect();
+            let bottom: Vec<CellStroke> = (c..=last).map(|k| edge(self, t.horizontal.get((r + 1) * ncols + k))).collect();
+            let strokes = [
+                widest(top),
+                edge(self, t.vertical.get(r * (ncols + 1) + c)),
+                widest(bottom),
+                edge(self, t.vertical.get(r * (ncols + 1) + last + 1)),
+            ];
+            let [l, tp, rt, bt] = src.inset;
+            let row_height = table.rows.get(r).map_or(0.0, |row| row.height);
+            let (top, bottom) = fit_cell_text(&mut text, row_height, tp * sy, bt * sy);
+            let Some(cell) = table.cell_mut(r, c) else { continue };
+            *cell = Cell {
+                text,
+                col_span: span as u32,
+                insets: [top, l * sx, bottom, rt * sx],
+                vj: match src.valign {
+                    model::VAlign::Top => VerticalJustification::Top,
+                    model::VAlign::Center => VerticalJustification::Center,
+                    model::VAlign::Bottom => VerticalJustification::Bottom,
+                },
+                strokes,
+                border_overrides: [true; 4],
+                ..Cell::default()
+            };
+        }
+        table.options = TableOptions {
+            border: CellStroke::none(),
+            space_before: 0.0,
+            space_after: 0.0,
+            repeat_header: false,
+            repeat_footer: false,
+            ..TableOptions::default()
+        };
+        let mut story = Story::new(StoryId(self.doc.alloc()));
+        story.insert_table(0, table);
+        // The anchor's paragraph is the story's last.
+        if story.text.ends_with('\n') {
+            let n = story.text.len();
+            story.delete(n - 1..n);
+        }
+        // Room below the table, so rows that grow with their text (other fonts) are never cut off.
+        let rect = Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + rect.height() * 0.5);
+        self.frame(rect, &p, layer, story, TextFrameOptions::default())
+    }
+
+    /// A story from runs → (the story, its largest font size in points). Each paragraph takes the
+    /// alignment of the run it starts with.
+    fn story(&mut self, id: StoryId, runs: &[model::TextRun], scale: (f64, f64)) -> (Story, f64) {
         let mut story = Story::new(id);
         let mut max_size: f64 = 0.0;
         let mut first = true;
-        for run in &t.runs {
+        let mut aligns: Vec<(usize, Align)> = Vec::new();
+        for run in runs {
             let text: String = run
                 .text
                 .chars()
@@ -683,7 +822,7 @@ impl Builder {
             if text.is_empty() {
                 continue;
             }
-            let attrs = self.char_attrs(run, size_scale);
+            let attrs = self.char_attrs(run, scale);
             max_size = max_size.max(attrs.size.unwrap_or(12.0));
             let format = CharFormat { style: NO_CHAR_STYLE.into(), over: attrs };
             let at = story.text.len();
@@ -692,6 +831,7 @@ impl Builder {
                 story.chars = vec![designcraft_doc::CharRun { len: 0, format: format.clone() }];
                 first = false;
             }
+            aligns.push((at, align_of(run.align)));
             story.insert_with(at, &text, format);
         }
         // Affinity ends a story with a paragraph mark; DesignCraft's last paragraph has none.
@@ -699,26 +839,33 @@ impl Builder {
             let n = story.text.len();
             story.delete(n - 1..n);
         }
-        let align = match t.align {
-            model::Align::Left => Align::Left,
-            model::Align::Center => Align::Center,
-            model::Align::Right => Align::Right,
-            model::Align::Justify => Align::LeftJustified,
-        };
-        if align != Align::Left {
-            let n = story.text.len();
-            story.format_paras(0..n, |p| p.para = ParaAttrs { align: Some(align), ..p.para.clone() });
+        let ranges = story.para_ranges();
+        for (pi, range) in ranges.iter().enumerate() {
+            let align = aligns.iter().rev().find(|(at, _)| *at <= range.start).map_or(Align::Left, |(_, a)| *a);
+            if align != Align::Left
+                && let Some(p) = story.paras.get_mut(pi)
+            {
+                p.para.align = Some(align);
+            }
         }
-        (id, story, if max_size > 0.0 { max_size } else { 12.0 })
+        (story, if max_size > 0.0 { max_size } else { 12.0 })
     }
 
-    fn char_attrs(&mut self, run: &model::TextRun, size_scale: f64) -> CharAttrs {
+    /// Character attributes; `scale` is the vertical scale to points and the horizontal scale
+    /// relative to it.
+    fn char_attrs(&mut self, run: &model::TextRun, (size_scale, h_scale): (f64, f64)) -> CharAttrs {
         let finite = |v: f64, d: f64| if v.is_finite() { v } else { d };
         let size = finite(run.size * size_scale, 12.0).clamp(0.1, 1296.0);
         let mut a = CharAttrs { size: Some(size), ..CharAttrs::default() };
         if !run.family.trim().is_empty() {
             a.font_family = Some(run.family.trim().to_string());
             a.font_style = Some(style_name(run.weight, run.italic));
+        }
+        // Text squeezed or stretched by its frame's transform keeps that as horizontal scaling, on
+        // top of its own.
+        let h_scale = h_scale * run.h_scale;
+        if h_scale.is_finite() && (h_scale - 1.0).abs() > 1e-3 {
+            a.h_scale = Some(h_scale.clamp(0.01, 10.0));
         }
         if run.tracking != 0.0 {
             a.tracking = Some(finite(run.tracking * 1000.0, 0.0).clamp(-1000.0, 10000.0));
@@ -757,14 +904,24 @@ impl Builder {
 
     // ---------- images ----------
 
-    fn image(&mut self, img: &model::Image, xf: Affine, layer: LayerId, name: &str) -> Option<Item> {
+    fn image(&mut self, img: &model::Image, xf: Affine, layer: LayerId, name: &str, masks: &[AlphaMask]) -> Option<Item> {
         let (w, h) = (f64::from(img.width), f64::from(img.height));
         if img.width == 0 || img.height == 0 {
             return None;
         }
-        let (data, mime) = match &img.pixels {
-            Pixels::Encoded(bytes) => (bytes.clone(), designcraft_images::mime(bytes).to_string()),
-            Pixels::Rgba8(rgba) => match png(img.width, img.height, rgba) {
+        let masked = if masks.is_empty() {
+            None
+        } else {
+            let baked = bake(img, masks).and_then(|px| png(img.width, img.height, &px));
+            if baked.is_none() {
+                self.warn("pixel masks that could not be applied (imported without them)");
+            }
+            baked
+        };
+        let (data, mime) = match (masked, &img.pixels) {
+            (Some(png), _) => (png, "image/png".to_string()),
+            (None, Pixels::Encoded(bytes)) => (bytes.clone(), designcraft_images::mime(bytes).to_string()),
+            (None, Pixels::Rgba8(rgba)) => match png(img.width, img.height, rgba) {
                 Some(png) => (png, "image/png".to_string()),
                 None => {
                     self.warn("pixel layers that could not be stored (left out)");
@@ -805,6 +962,54 @@ fn visible(p: &Paint) -> bool {
         Paint::None => false,
         Paint::Solid(c) => c.alpha() > 0.0,
         Paint::Gradient(g) => g.stops.iter().any(|s| s.color.alpha() > 0.0),
+    }
+}
+
+/// Affinity lets a cell's text run over its top and bottom insets, and even past the row; a
+/// DesignCraft row grows to fit its text instead. Shrink the insets, and if that isn't enough the
+/// line spacing, so the rows stay as close to Affinity's as the fonts allow → the insets.
+fn fit_cell_text(story: &mut Story, row: f64, top: f64, bottom: f64) -> (f64, f64) {
+    let lines = story.text.split(['\n', '\u{2028}']).count().max(1) as f64;
+    let size = story.chars.iter().map(|run| run.format.over.size.unwrap_or(12.0)).fold(0.0f64, f64::max);
+    let line = story
+        .chars
+        .iter()
+        .map(|run| match run.format.over.leading {
+            Some(Leading::Points(l)) => l,
+            _ => run.format.over.size.unwrap_or(12.0) * 1.2,
+        })
+        .fold(0.0f64, f64::max);
+    // A first line takes about its font's ascent and descent; later lines their leading.
+    let first = size * 1.2;
+    let need = first + (lines - 1.0) * line;
+    if !(row > 0.0 && need.is_finite()) || need + top + bottom <= row {
+        return (top, bottom);
+    }
+    if need <= row {
+        let spare = (row - need) / 2.0;
+        return (top.min(spare), bottom.min(spare));
+    }
+    if lines > 1.0 {
+        let fitted = Leading::Points(((row - first) / (lines - 1.0)).max(size * 0.8));
+        for run in &mut story.chars {
+            run.format.over.leading = Some(fitted);
+        }
+        story.rev += 1;
+    }
+    (0.0, 0.0)
+}
+
+/// One stroke for a merged cell's edge made of several: the heaviest.
+fn widest(strokes: Vec<CellStroke>) -> CellStroke {
+    strokes.into_iter().reduce(|a, b| if b.weight > a.weight { b } else { a }).unwrap_or_else(CellStroke::none)
+}
+
+fn align_of(a: model::Align) -> Align {
+    match a {
+        model::Align::Left => Align::Left,
+        model::Align::Center => Align::Center,
+        model::Align::Right => Align::Right,
+        model::Align::Justify => Align::LeftJustified,
     }
 }
 
@@ -912,6 +1117,66 @@ fn story_leading(story: &Story) -> Option<f64> {
     story.chars.iter().filter_map(|r| if let Some(Leading::Points(l)) = r.format.over.leading { Some(l) } else { None }).reduce(f64::max)
 }
 
+/// What hides parts of an image: a grey pixel mask (white shows), or another image's
+/// transparency (`alpha`). Outside the mask the image is hidden.
+#[derive(Clone, Copy)]
+struct AlphaMask<'a> {
+    image: &'a model::Image,
+    alpha: bool,
+}
+
+/// Largest image (pixels) whose masks are worked into its pixels.
+const MAX_BAKE_PIXELS: usize = 100_000_000;
+
+/// An image's straight-alpha RGBA pixels (placed files are decoded).
+fn rgba(img: &model::Image) -> Option<std::borrow::Cow<'_, [u8]>> {
+    let pixels = (img.width as usize).checked_mul(img.height as usize).filter(|n| *n <= MAX_BAKE_PIXELS)?;
+    let len = pixels.checked_mul(4)?;
+    match &img.pixels {
+        Pixels::Rgba8(p) => p.get(..len).map(std::borrow::Cow::Borrowed),
+        Pixels::Encoded(bytes) => {
+            let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
+            (decoded.width() == img.width && decoded.height() == img.height).then(|| std::borrow::Cow::Owned(decoded.into_raw()))
+        }
+    }
+}
+
+/// `img`'s pixels with `masks` multiplied into their alpha, sampling each mask (nearest pixel)
+/// where the image's pixel centres fall in document space.
+fn bake(img: &model::Image, masks: &[AlphaMask]) -> Option<Vec<u8>> {
+    let mut px = rgba(img)?.into_owned();
+    let width = img.width as usize;
+    for mask in masks {
+        let src = rgba(mask.image)?;
+        // Image pixels → document → mask pixels.
+        let to_mask = img.transform.then(invert(mask.image.transform)?);
+        let (mw, mh) = (mask.image.width as usize, mask.image.height as usize);
+        for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = ((i % width.max(1)) as f64 + 0.5, (i / width.max(1)) as f64 + 0.5);
+            let q = to_mask.apply(model::Point { x, y });
+            let inside = q.x >= 0.0 && q.y >= 0.0 && q.x < mw as f64 && q.y < mh as f64;
+            let at = if inside { (q.y as usize).checked_mul(mw).and_then(|r| r.checked_add(q.x as usize)) } else { None };
+            let level = match at.and_then(|k| src.get(k * 4..k * 4 + 4)) {
+                Some([v, _, _, a]) if !mask.alpha => u32::from(*v) * u32::from(*a) / 255,
+                Some([_, _, _, a]) => u32::from(*a),
+                _ => 0,
+            };
+            p[3] = (u32::from(p[3]) * level / 255) as u8;
+        }
+    }
+    Some(px)
+}
+
+fn invert(m: model::Affine) -> Option<model::Affine> {
+    let [a, b, c, d, e, f] = m.0;
+    let det = a * d - b * c;
+    if !(det.is_finite() && det.abs() > 1e-12) {
+        return None;
+    }
+    let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
+    Some(model::Affine([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)]))
+}
+
 fn png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let expected = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
     let pixels = rgba.get(..expected)?.to_vec();
@@ -972,6 +1237,74 @@ mod tests {
         assert!(!on_chord(a, Point::new(10.0, 1.0), b));
         assert!(!on_chord(a, Point::new(-5.0, 0.0), b), "a control point beyond the end makes a curve");
         assert!(on_chord(a, a, a));
+    }
+
+    fn node(kind: Kind, children: Vec<Node>, pixel_mask: Option<model::Image>) -> Node {
+        Node {
+            class: crate::stream::Tag::of(b"Rstr"),
+            name: String::new(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend: model::Blend::Normal,
+            kind,
+            mask: None,
+            pixel_mask,
+            children,
+        }
+    }
+
+    fn rgba(width: u32, height: u32, px: &[[u8; 4]]) -> model::Image {
+        model::Image { width, height, pixels: Pixels::Rgba8(px.concat()), transform: model::Affine::IDENTITY }
+    }
+
+    fn alpha_of(d: &Document, item: &Item) -> Vec<u8> {
+        let Content::Graphic(g) = &item.content else { panic!("not an image") };
+        let png = &d.assets[&g.asset].data;
+        image::load_from_memory(png).unwrap().to_rgba8().pixels().map(|p| p.0[3]).collect()
+    }
+
+    #[test]
+    fn pixel_masks_and_parent_pixels_clip_images() {
+        // A 2 × 2 parent whose right column is transparent, masked to hide its bottom row; a child
+        // image covering it twice as large (each child pixel is half a parent pixel).
+        const O: [u8; 4] = [10, 20, 30, 255];
+        const T: [u8; 4] = [10, 20, 30, 0];
+        let parent = rgba(2, 2, &[O, T, O, T]);
+        let mask = rgba(2, 2, &[[255, 255, 255, 255], [255, 255, 255, 255], [0, 0, 0, 255], [0, 0, 0, 255]]);
+        let mut child = rgba(4, 4, &[O; 16]);
+        child.transform = model::Affine([0.5, 0.0, 0.0, 0.5, 0.0, 0.0]);
+        let tree = node(Kind::Image(parent), vec![node(Kind::Image(child), vec![], None)], Some(mask));
+        let src = model::Document {
+            dpi: 72.0,
+            spreads: vec![model::Spread {
+                bounds: model::Rect { x0: 0.0, y0: 0.0, x1: 100.0, y1: 100.0 },
+                pages: vec![model::Rect { x0: 0.0, y0: 0.0, x1: 100.0, y1: 100.0 }],
+                transparent: false,
+                nodes: vec![tree],
+            }],
+            saved_by: None,
+            warnings: vec![],
+        };
+        let imported = Builder::new(&src).build(&src).unwrap();
+        let d = &imported.document;
+        let group = d.spreads[0].items.first().unwrap();
+        let Content::Group { items } = &group.content else { panic!("parent and child form a group") };
+        assert_eq!(alpha_of(d, &items[0]), [255, 0, 0, 0], "the mask hides the parent's bottom row");
+        let child = alpha_of(d, &items[1]);
+        assert_eq!(child[..4], [255, 255, 0, 0], "top row: shown over the parent's opaque pixel only");
+        assert!(child[8..].iter().all(|a| *a == 0), "bottom rows: masked away with the parent");
+        assert!(imported.warnings.iter().all(|w| !w.contains("pixel mask")), "{:?}", imported.warnings);
+    }
+
+    #[test]
+    fn affine_inverse_round_trips() {
+        let m = model::Affine([2.0, 0.5, -1.0, 3.0, 10.0, -4.0]);
+        let p = model::Point { x: 3.0, y: 7.0 };
+        let q = invert(m).unwrap().apply(m.apply(p));
+        assert!((q.x - p.x).abs() < 1e-9 && (q.y - p.y).abs() < 1e-9);
+        assert!(invert(model::Affine([0.0; 6])).is_none());
+        assert!(invert(model::Affine([f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0])).is_none());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! leading, the paragraph alignment and the first baseline. Layout (line breaks in frames, kerning,
 //! OpenType features) is left to the importing application.
 
-use crate::model::{Affine, Align, Point, Reader, Text, TextRun, rect};
+use crate::model::{Affine, Align, Point, Reader, Table, TableCell, Text, TextRun, VAlign, rect};
 use crate::paint::{self, Color, Paint};
 use crate::stream::{ObjId, Value};
 
@@ -11,92 +11,16 @@ const MAX_CHARS: usize = 1 << 20;
 /// Shared character attributes must not amplify into unbounded font/feature/gradient data.
 const MAX_ATTRIBUTE_BYTES: usize = 16 << 20;
 
+/// Ends a table cell in a table's story (Affinity's break glyph of kind 4).
+pub const CELL_BREAK: char = '\u{1F}';
+
 pub(crate) fn read(r: &mut Reader, id: ObjId, world: Affine) -> Option<Text> {
     let s = r.s;
     let story = s.obj(id, b"StSt")?;
     let frame = s.obj(id, b"TxtH")?;
     let artistic = s.is(frame, b"ArFr");
     let bounds = s.floats::<4>(frame, b"FrmB").map(rect)?;
-    let mut runs = Vec::new();
-    let mut align = None;
-    let mut total = 0usize;
-    let mut placeholders = false;
-    let mut attribute_budget = Some(MAX_ATTRIBUTE_BYTES);
-    for block in s.objs(story, b"Blok") {
-        let Some(glyphs) = s.obj(block, b"Glyp") else {
-            r.warn("a text block without readable characters (left out)");
-            continue;
-        };
-        // Bound collection itself, including placeholders, before allocating the character buffer.
-        let budget = MAX_CHARS - total;
-
-        let mut chars: Vec<char> = match s.str(glyphs, b"Utf8") {
-            Some(t) => t.chars().take(budget + 1).collect(),
-            None => {
-                // Inline objects (page numbers, anchors) each take one index before the segment text.
-                let segments = s.objs(glyphs, b"Mixd");
-                if segments.is_empty() {
-                    r.warn("a text block without readable characters (left out)");
-                    continue;
-                }
-                let mut v = Vec::new();
-                for seg in segments {
-                    let inline = s.objs(seg, b"Glys").len();
-                    v.extend(std::iter::repeat_n('\u{FFFC}', inline.min(budget + 1 - v.len())));
-                    placeholders |= inline > 0;
-                    v.extend(s.str(seg, b"Utf8").unwrap_or_default().chars().take(budget + 1 - v.len()));
-                    if v.len() > budget {
-                        break;
-                    }
-                }
-                v
-            }
-        };
-        let truncated = chars.len() > budget;
-        if truncated {
-            chars.truncate(budget);
-            r.warn("text longer than a million characters (truncated)");
-        }
-        total += chars.len();
-        let mut start = 0usize;
-        for run in s.obj(block, b"GAtt").map(|g| s.objs(g, b"Runs")).unwrap_or_default() {
-            let Some(index) = s.int(run, b"Indx").and_then(|v| usize::try_from(v).ok()) else {
-                r.warn("invalid text attribute range (bounded; unassigned characters use defaults)");
-                continue;
-            };
-            let end = index.min(chars.len());
-            if index > chars.len() || end < start {
-                r.warn("invalid text attribute range (bounded; unassigned characters use defaults)");
-            }
-            if end <= start {
-                continue;
-            }
-            let text = characters(&chars, start, end);
-            start = end;
-            push_run(r, &mut runs, s.obj(run, b"Item"), text, world, &mut attribute_budget);
-        }
-        if start < chars.len() {
-            let text = characters(&chars, start, chars.len());
-            push_run(r, &mut runs, None, text, world, &mut attribute_budget);
-        }
-        for paragraph in s.obj(block, b"PAtt").map(|p| s.objs(p, b"Runs")).unwrap_or_default() {
-            if let Some(attrs) = s.obj(paragraph, b"Item") {
-                let paragraph = paragraph_align(r, attrs);
-                match align {
-                    None => align = Some(paragraph),
-                    Some(first) if first != paragraph => r.warn("mixed paragraph alignments (the first alignment is used)"),
-                    _ => {}
-                }
-            }
-        }
-        if truncated {
-            break;
-        }
-    }
-    if placeholders {
-        r.warn("text fields such as page numbers (left out of the text)");
-    }
-    let align = align.unwrap_or(Align::Left);
+    let (runs, align) = story_runs(r, story, world);
     let first_baseline = bounds.y0 + s.f64(frame, b"ArtV").unwrap_or(0.0);
     let anchor_x = match align {
         Align::Center => (bounds.x0 + bounds.x1) / 2.0,
@@ -114,16 +38,219 @@ pub(crate) fn read(r: &mut Reader, id: ObjId, world: Affine) -> Option<Text> {
     Some(Text { runs, align, anchor: Point { x: anchor_x, y: first_baseline }, frame: if artistic { None } else { Some(bounds) }, transform: world })
 }
 
+/// Rows and columns a table may have.
+const MAX_TABLE_LINES: usize = 4096;
+
+/// A table node (`TxtT`): the grid, the cells' text and the lines on the cell edges.
+pub(crate) fn table(r: &mut Reader, id: ObjId, world: Affine) -> Option<Table> {
+    let s = r.s;
+    let story = s.obj(id, b"StSt")?;
+    let tabl = s.obj(id, b"TxtH").and_then(|h| s.obj(h, b"Tabl"))?;
+    let bounds = |pos: Option<ObjId>| -> Option<Vec<f64>> {
+        let Some(Value::Array(a)) = pos.and_then(|p| s.field(p, b"Posn")) else { return None };
+        let v: Vec<f64> = a.iter().take(MAX_TABLE_LINES + 2).map(float).collect::<Option<_>>()?;
+        (v.len() >= 2 && v.len() <= MAX_TABLE_LINES + 1 && v.windows(2).all(|w| w[1] >= w[0])).then_some(v)
+    };
+    let columns = bounds(s.obj(tabl, b"CPos"))?;
+    let rows = bounds(s.obj(tabl, b"RPos"))?;
+    let (ncols, nrows) = (columns.len() - 1, rows.len() - 1);
+    let count = ncols.checked_mul(nrows)?;
+    let cell_objs = s.obj(tabl, b"Cell").map(|c| s.objs(c, b"Cell")).unwrap_or_default();
+    if cell_objs.len() != count {
+        r.warn("tables whose cells don't match their grid (cell formatting left out)");
+    }
+    let blank = || TableCell { runs: Vec::new(), inset: [0.0; 4], valign: VAlign::Top, merged_left: false };
+    let mut cells: Vec<TableCell> = (0..count).map(|_| blank()).collect();
+    for (i, (cell, obj)) in cells.iter_mut().zip(&cell_objs).enumerate() {
+        if let Some(inset) = s.floats::<4>(*obj, b"Inse").filter(|v| v.iter().all(|x| x.is_finite() && *x >= 0.0)) {
+            cell.inset = inset;
+        }
+        cell.valign = match s.enumeration(*obj, b"AliY").map(|(i, _)| i) {
+            Some(1) => VAlign::Center,
+            Some(2) => VAlign::Bottom,
+            _ => VAlign::Top,
+        };
+        // A cell merged into the one on its left; the first column has nothing to its left.
+        cell.merged_left = i % ncols != 0 && s.bool(*obj, b"BrLf") == Some(true);
+    }
+    // The story holds the text of every cell that isn't merged away, row by row, each ended by a
+    // cell break.
+    let owner_list: Vec<usize> = (0..count).filter(|i| cells.get(*i).is_some_and(|c| !c.merged_left)).collect();
+    let mut owners = owner_list.into_iter();
+    let mut target = owners.next();
+    let mut extra = false;
+    let (runs, _) = story_runs(r, story, world);
+    for run in runs {
+        let mut parts = run.text.split(CELL_BREAK).peekable();
+        while let Some(part) = parts.next() {
+            if !part.is_empty() {
+                match target.and_then(|i| cells.get_mut(i)) {
+                    Some(cell) => cell.runs.push(TextRun { text: part.to_string(), ..run.clone() }),
+                    None => extra = true,
+                }
+            }
+            if parts.peek().is_some() {
+                target = owners.next();
+            }
+        }
+    }
+    if extra {
+        r.warn("table text beyond its last cell (left out)");
+    }
+    let mut edges = |tag: &[u8; 4], expected: usize| -> Vec<Option<crate::paint::Stroke>> {
+        let objs = s.obj(tabl, tag).map(|e| s.objs(e, b"Edge")).unwrap_or_default();
+        if objs.len() != expected {
+            r.warn("tables whose lines don't match their grid (lines left out)");
+            return vec![None; expected];
+        }
+        objs.into_iter()
+            .map(|e| match (s.obj(e, b"Fill"), s.obj(e, b"Line")) {
+                (Some(pen), Some(line)) => paint::stroke(r, pen, line, world, false),
+                _ => None,
+            })
+            .collect()
+    };
+    let vertical = edges(b"CEdg", (ncols + 1) * nrows);
+    let horizontal = edges(b"REdg", ncols * (nrows + 1));
+    if let Some(format) = s.obj(tabl, b"TFmt") {
+        let filled =
+            s.objs(format, b"Clls").into_iter().filter_map(|c| s.obj(c, b"Fill")).any(|f| s.obj(f, b"FDeF").is_some_and(|d| !s.is(d, b"FilN")));
+        if filled {
+            r.warn("table cell fills (left out)");
+        }
+    }
+    Some(Table { columns, rows, cells, vertical, horizontal, transform: world })
+}
+
+/// A story's character runs, each with its paragraph's alignment, and the first paragraph's
+/// alignment. Table cells end with [`CELL_BREAK`].
+pub(crate) fn story_runs(r: &mut Reader, story: ObjId, world: Affine) -> (Vec<TextRun>, Align) {
+    let s = r.s;
+    let mut runs = Vec::new();
+    let mut first_align = None;
+    let mut total = 0usize;
+    let mut placeholders = false;
+    let mut attribute_budget = Some(MAX_ATTRIBUTE_BYTES);
+    for block in s.objs(story, b"Blok") {
+        let Some(glyphs) = s.obj(block, b"Glyp") else {
+            r.warn("a text block without readable characters (left out)");
+            continue;
+        };
+        // Bound collection itself, including placeholders, before allocating the character buffer.
+        let budget = MAX_CHARS - total;
+
+        let mut chars: Vec<char> = match s.str(glyphs, b"Utf8") {
+            Some(t) => t.chars().take(budget + 1).collect(),
+            None => {
+                // Inline objects (page numbers, anchors, cell ends) each take one index before
+                // the segment text.
+                let segments = s.objs(glyphs, b"Mixd");
+                if segments.is_empty() {
+                    r.warn("a text block without readable characters (left out)");
+                    continue;
+                }
+                let mut v = Vec::new();
+                for seg in segments {
+                    for inline in s.objs(seg, b"Glys") {
+                        if v.len() > budget {
+                            break;
+                        }
+                        if s.is(inline, b"BrGl") && s.enumeration(inline, b"HdBk").is_some_and(|(kind, _)| kind == 4) {
+                            v.push(CELL_BREAK);
+                        } else {
+                            v.push('\u{FFFC}');
+                            placeholders = true;
+                        }
+                    }
+                    v.extend(s.str(seg, b"Utf8").unwrap_or_default().chars().take((budget + 1).saturating_sub(v.len())));
+                    if v.len() > budget {
+                        break;
+                    }
+                }
+                v
+            }
+        };
+        let truncated = chars.len() > budget;
+        if truncated {
+            chars.truncate(budget);
+            r.warn("text longer than a million characters (truncated)");
+        }
+        total += chars.len();
+        // Paragraph alignments by end index; a run without an index covers the rest of the block.
+        let mut paragraphs: Vec<(usize, Align)> = Vec::new();
+        let mut open: Option<Align> = None;
+        for paragraph in s.obj(block, b"PAtt").map(|p| s.objs(p, b"Runs")).unwrap_or_default() {
+            let Some(attrs) = s.obj(paragraph, b"Item") else { continue };
+            let a = paragraph_align(r, attrs);
+            first_align.get_or_insert(a);
+            match s.int(paragraph, b"Indx").and_then(|v| usize::try_from(v).ok()) {
+                Some(end) => paragraphs.push((end, a)),
+                None => match open {
+                    None => open = Some(a),
+                    Some(first) if first != a => r.warn("mixed paragraph alignments (the first alignment is used)"),
+                    _ => {}
+                },
+            }
+        }
+        let align_at = |i: usize| paragraphs.iter().find(|(end, _)| i < *end).map(|(_, a)| *a).or(open).unwrap_or(Align::Left);
+        let mut cuts: Vec<usize> = paragraphs.iter().map(|(end, _)| *end).filter(|e| *e < chars.len()).collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let push = |r: &mut Reader, runs: &mut Vec<TextRun>, attrs: Option<ObjId>, from: usize, to: usize, budget: &mut Option<usize>| {
+            // Split at paragraph ends so every run has one alignment.
+            let mut a = from;
+            for &c in cuts.iter().filter(|c| **c > from && **c < to).chain(std::iter::once(&to)) {
+                push_run(r, runs, attrs, characters(&chars, a, c), world, budget, align_at(a));
+                a = c;
+            }
+        };
+        let mut start = 0usize;
+        for run in s.obj(block, b"GAtt").map(|g| s.objs(g, b"Runs")).unwrap_or_default() {
+            let Some(index) = s.int(run, b"Indx").and_then(|v| usize::try_from(v).ok()) else {
+                r.warn("invalid text attribute range (bounded; unassigned characters use defaults)");
+                continue;
+            };
+            let end = index.min(chars.len());
+            if index > chars.len() || end < start {
+                r.warn("invalid text attribute range (bounded; unassigned characters use defaults)");
+            }
+            if end <= start {
+                continue;
+            }
+            push(r, &mut runs, s.obj(run, b"Item"), start, end, &mut attribute_budget);
+            start = end;
+        }
+        if start < chars.len() {
+            push(r, &mut runs, None, start, chars.len(), &mut attribute_budget);
+        }
+        if truncated {
+            break;
+        }
+    }
+    if placeholders {
+        r.warn("text fields such as page numbers (left out of the text)");
+    }
+    (runs, first_align.unwrap_or(Align::Left))
+}
+
 fn characters(chars: &[char], start: usize, end: usize) -> String {
     chars.get(start..end).unwrap_or_default().iter().filter(|c| **c != '\0' && **c != '\u{FFFC}').collect()
 }
 
-fn push_run(r: &mut Reader, runs: &mut Vec<TextRun>, attrs: Option<ObjId>, text: String, world: Affine, attribute_budget: &mut Option<usize>) {
+fn push_run(
+    r: &mut Reader,
+    runs: &mut Vec<TextRun>,
+    attrs: Option<ObjId>,
+    text: String,
+    world: Affine,
+    attribute_budget: &mut Option<usize>,
+    align: Align,
+) {
     if text.is_empty() {
         return;
     }
     let run = match attrs {
-        Some(attrs) if attribute_budget.is_some() => run_attrs(r, attrs, text, world, attribute_budget),
+        Some(attrs) if attribute_budget.is_some() => TextRun { align, ..run_attrs(r, attrs, text, world, attribute_budget) },
         _ => {
             // This is a recovery policy, not an assertion about unspecified Affinity attributes.
             if attrs.is_none() {
@@ -139,8 +266,10 @@ fn push_run(r: &mut Reader, runs: &mut Vec<TextRun>, attrs: Option<ObjId>, text:
                 all_caps: false,
                 size: 12.0 * r.dpi / 72.0,
                 tracking: 0.0,
+                h_scale: 1.0,
                 leading: None,
                 fill: Paint::Solid(Color::Gray { v: 0.0, a: 1.0 }),
+                align,
             }
         }
     };
@@ -199,9 +328,7 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
     {
         r.warn("outlined (stroked) text");
     }
-    if slot(doubles, 10, float).is_some_and(|h| (h - 1.0).abs() > 1e-3) {
-        r.warn("horizontally scaled text");
-    }
+    let h_scale = slot(doubles, 10, float).filter(|h| *h > 0.0 && *h < 100.0).unwrap_or(1.0);
     // A resolved font is populated on the emoji run of the public Affinity 3 text-runs file
     // (Courier New requested, Segoe UI Emoji stored in RFnt). Empty RFnt records are common.
     // Source: https://github.com/SethRobinson/Patchy/tree/de84eab550758b30fa062e479f5778cce7693b73/test-fixtures/af
@@ -240,8 +367,10 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
         all_caps,
         size,
         tracking,
+        h_scale,
         leading,
         fill,
+        align: Align::Left,
     }
 }
 

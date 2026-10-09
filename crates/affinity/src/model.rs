@@ -179,9 +179,13 @@ pub struct TextRun {
     pub size: f64,
     /// Tracking in em.
     pub tracking: f64,
+    /// Horizontal scale of the glyphs (1 = as designed).
+    pub h_scale: f64,
     /// Fixed line pitch in document pixels, when the run overrides automatic leading.
     pub leading: Option<f64>,
     pub fill: Paint,
+    /// Alignment of the run's paragraph.
+    pub align: Align,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +206,50 @@ pub struct Text {
     pub frame: Option<Rect>,
     /// Node space to document pixels.
     pub transform: Affine,
+}
+
+/// Vertical alignment of a table cell's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VAlign {
+    Top,
+    Center,
+    Bottom,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableCell {
+    pub runs: Vec<TextRun>,
+    /// Space between the cell edges and its text, in node space: left, top, right, bottom.
+    pub inset: [f64; 4],
+    pub valign: VAlign,
+    /// Part of the cell to its left (merged): it has no text of its own.
+    pub merged_left: bool,
+}
+
+/// A table: a grid of cells with text, and a line on every cell edge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Table {
+    /// Column boundaries (one more than the columns), increasing, in node space.
+    pub columns: Vec<f64>,
+    /// Row boundaries (one more than the rows), increasing, in node space.
+    pub rows: Vec<f64>,
+    /// Row by row.
+    pub cells: Vec<TableCell>,
+    /// Vertical edges row by row, one more per row than the columns; `None` draws no line.
+    pub vertical: Vec<Option<Stroke>>,
+    /// Horizontal edges boundary by boundary (one more than the rows), one per column.
+    pub horizontal: Vec<Option<Stroke>>,
+    /// Node space to document pixels.
+    pub transform: Affine,
+}
+
+impl Table {
+    pub fn ncols(&self) -> usize {
+        self.columns.len().saturating_sub(1)
+    }
+    pub fn nrows(&self) -> usize {
+        self.rows.len().saturating_sub(1)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,6 +294,7 @@ pub enum Kind {
         even_odd: bool,
     },
     Text(Text),
+    Table(Table),
     Image(Image),
     /// Something this reader does not import; its children are still imported.
     Unsupported,
@@ -458,6 +507,13 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 let (fills, strokes) = paint::node_paint(self, id, world);
                 Kind::Shape { path: local.transformed(world), fills, strokes, even_odd }
             }
+            b"TxtT" => match crate::text::table(self, id, world) {
+                Some(t) => Kind::Table(t),
+                None => {
+                    self.warn("tables that could not be read");
+                    Kind::Unsupported
+                }
+            },
             b"TxtA" | b"TxtF" | b"TxtC" => match crate::text::read(self, id, world) {
                 Some(t) => Kind::Text(t),
                 None => {

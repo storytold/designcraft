@@ -34,16 +34,20 @@ accept the four extensions.
 | Stroke weight, alignment, caps, joins, miter limit, dashes | the same |
 | Artistic text | a text frame whose first baseline sits at Affinity's anchor |
 | Frame text, also rotated | a text frame with one story |
-| Font family, weight, italic, size, tracking, fixed leading, colour, all caps, OpenType features, paragraph alignment | character and paragraph overrides |
+| Font family, weight, italic, size, tracking, horizontal scale, fixed leading, colour, all caps, OpenType features | character overrides |
+| Paragraph alignment, per paragraph | paragraph overrides |
+| Text squeezed or stretched by its frame's transform | horizontal scale on the characters |
+| Tables: grid, cell text, cells merged across columns, vertical alignment, insets, the line on every cell edge | a text frame holding a DesignCraft table (rows grow only where the fonts need it) |
 | Placed images (the embedded original), pixel layers | graphic frames with embedded images |
+| Pixel masks on images, images inside pixel layers (clipped to them) | worked into the image's transparency |
 | Opacity, visibility, lock, names, blend modes DesignCraft has | the same |
 
 Everything that is not imported, or only approximately, is listed in the open result's
-`warnings`, one line per kind with a count. Not yet imported: master pages, tables, text
-threading between frames, paragraph indents and spacing, text fields such as page numbers,
-inline objects in text, layer effects, adjustment layers and live filters, pixel masks, brush
-strokes, embedded documents without a cached picture, Lab colours (converted to RGB) and
-Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
+`warnings`, one line per kind with a count. Not yet imported: master pages, text threading
+between frames, paragraph indents and spacing, text fields such as page numbers, inline objects
+in text, table cell fills, cells merged across rows, layer effects, adjustment layers and live
+filters, pixel masks on objects other than images, brush strokes, embedded documents without a
+cached picture, Lab colours (converted to RGB) and Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
 with that reason.
 
 ## Provenance and clean-room
@@ -59,6 +63,11 @@ description of the format and from public files, never from Affinity itself:
   `04b672334a43e3e37ded6b5ffc57af231d589774`, written for container versions 7–11) and
   re-described in our own words before the Rust code was written; no code was translated. No
   GPL/AGPL code (such as Inkscape's Affinity extension) was read.
+* **Tables, paragraph alignment runs and horizontal text scale** were added in DesignCraft from
+  the structure of documents their owner made earlier (field names, types and counts, read
+  locally): a table's text holds one segment per cell, each ended by a break glyph of kind 4;
+  `BrLf` marks a cell merged into its left neighbour; scaling a table node resizes its grid but
+  not its type. Each was confirmed by comparing a render with the document's thumbnail.
 * **Every structure checked against real files.** Every archive entry carries a CRC-32 that must
   match, and every field in the object stream names its own type, so a misread layout fails
   loudly instead of producing plausible wrong data. Meanings were fitted by comparing a render

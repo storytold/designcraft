@@ -9,7 +9,7 @@ mod text_fixture;
 use designcraft_affinity::synth::{self, F, Method, tag};
 use designcraft_color::Color;
 use designcraft_doc::{Content, Item, Leading, PageSide, Shape};
-use text_fixture::{attrs, block, run, shared_objects, utf8};
+use text_fixture::{array_f64, array_i32, attrs, block, run, shared_objects, utf8};
 
 /// Encode a stream whose shared arrays may list inline objects.
 fn stream(mut root: Vec<(designcraft_affinity::stream::Tag, F)>) -> Vec<u8> {
@@ -94,6 +94,89 @@ fn publisher() -> Vec<u8> {
     synth::container(&[("doc.dat", &data, Method::Zstd)], None)
 }
 
+/// A blue 2 px line on a table edge.
+fn table_edge() -> F {
+    F::Obj(
+        tag(b"TEdg"),
+        vec![
+            (tag(b"Line"), F::Obj(tag(b"LDsc"), vec![(tag(b"LDeL"), F::Obj(tag(b"LSty"), vec![(tag(b"Wght"), F::F64(2.0))]))])),
+            (tag(b"Fill"), F::Obj(tag(b"FDsc"), vec![(tag(b"FDeF"), cmyk(1.0, 0.5, 0.0, 0.0))])),
+        ],
+    )
+}
+
+/// A 3 × 2 table whose cell (1, 1) is merged into (1, 0); cells "A".."E" in reading order, each
+/// ended by a cell break. Cells are 100 × 50 px from (0, 0); `cells` cell records (6 for the grid).
+fn table_node(id: u32, cells: usize, transform: [f64; 6]) -> F {
+    let texts = ["A", "B", "C", "D", "E"];
+    let brk = || F::Obj(tag(b"BrGl"), vec![(tag(b"HdBk"), F::Enum(4, 1))]);
+    let segments: Vec<F> = texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut fields = vec![(tag(b"Utf8"), F::Str((*t).into()))];
+            if i > 0 {
+                fields.insert(0, (tag(b"Glys"), F::Shared(vec![brk()])));
+            }
+            F::Obj(tag(b"GSeg"), fields)
+        })
+        .collect();
+    let len = (texts.len() * 2 - 1) as i32;
+    let glyphs = F::Obj(tag(b"GStr"), vec![(tag(b"Mixd"), F::Shared(segments))]);
+    let story = block(glyphs, vec![run(len, Some(attrs("Inter", "Inter-Regular", 400, false, 40.0)))], &[]);
+    let cell = |merged: bool| {
+        let mut f = vec![(tag(b"AliY"), F::Enum(1, 0)), (tag(b"Inse"), F::F64s(vec![5.0, 6.0, 7.0, 8.0]))];
+        if merged {
+            f.push((tag(b"BrLf"), F::Bool(true)));
+        }
+        F::Obj(tag(b"TCel"), f)
+    };
+    let pos = |values: &[f64]| F::Obj(tag(b"TPos"), vec![(tag(b"Posn"), array_f64(b"Posn", values))]);
+    let edges = |n: usize| F::Obj(tag(b"TEds"), vec![(tag(b"Edge"), F::Shared((0..n).map(|_| table_edge()).collect()))]);
+    let table = F::Obj(
+        tag(b"Tabl"),
+        vec![
+            (tag(b"CPos"), pos(&[0.0, 100.0, 200.0, 300.0])),
+            (tag(b"RPos"), pos(&[0.0, 50.0, 100.0])),
+            (tag(b"CEdg"), edges(8)),
+            (tag(b"REdg"), edges(9)),
+            (tag(b"Cell"), F::Obj(tag(b"TCls"), vec![(tag(b"Cell"), F::Shared((0..cells).map(|i| cell(i == 4)).collect()))])),
+        ],
+    );
+    F::Def(
+        id,
+        vec![tag(b"TxtT")],
+        vec![
+            (tag(b"StSt"), F::Obj(tag(b"Stry"), vec![(tag(b"Blok"), F::Shared(vec![story]))])),
+            (tag(b"TxtH"), F::Obj(tag(b"TbFr"), vec![(tag(b"FrmB"), F::F64s(vec![0.0, 0.0, 300.0, 100.0])), (tag(b"Tabl"), table)])),
+            (tag(b"Xfrm"), F::F64s(transform.to_vec())),
+        ],
+    )
+}
+
+/// One A4 page at 300 dpi holding `node`.
+fn page_with(node: F) -> Vec<u8> {
+    let page = F::Obj(tag(b"PagR"), vec![(tag(b"rctp"), F::F64s(vec![0.0, 0.0, 2480.0, 3508.0]))]);
+    let spread = F::Def(
+        2,
+        vec![tag(b"Sprd")],
+        vec![(tag(b"SpMd"), F::Obj(tag(b"SpMd"), vec![(tag(b"PagR"), F::Shared(vec![page]))])), (tag(b"Chld"), F::Shared(vec![node]))],
+    );
+    let data = stream(vec![
+        (tag(b"UVCn"), F::Obj(tag(b"UVCn"), vec![(tag(b"UPPI"), F::F64(DPI))])),
+        (tag(b"DocR"), F::Def(1, vec![tag(b"DocN")], vec![(tag(b"Chld"), F::Shared(vec![spread]))])),
+    ]);
+    synth::container(&[("doc.dat", &data, Method::Zstd)], None)
+}
+
+fn only_table(d: &designcraft_doc::Document) -> (&Item, designcraft_doc::Table) {
+    let frame = d.spreads[0].items.iter().find(|i| i.is_text_frame()).expect("a table frame");
+    let Content::Text(tf) = &frame.content else { unreachable!() };
+    let story = d.story(tf.story).unwrap();
+    let table = story.tables.values().next().expect("the frame's story holds the table");
+    (frame, (**table).clone())
+}
+
 fn near(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-6
 }
@@ -154,6 +237,82 @@ fn artistic_text_becomes_a_frame_with_its_baseline_at_the_anchor() {
 }
 
 #[test]
+fn tables_keep_their_grid_text_merged_cells_and_lines() {
+    // Stretched to twice its width by its transform: the grid follows, the type doesn't.
+    let imported = designcraft_affinity::import(&page_with(table_node(30, 6, [2.0, 0.0, 400.0, 0.0, 1.0, 600.0]))).unwrap();
+    let d = &imported.document;
+    let (frame, t) = only_table(d);
+    assert_eq!((t.nrows(), t.ncols()), (2, 3));
+    assert!(t.columns.iter().all(|c| near(c.width, 200.0 * PT)), "{:?}", t.columns);
+    assert!(t.rows.iter().all(|r| near(r.height, 50.0 * PT)), "{:?}", t.rows);
+    let text = |r: usize, c: usize| t.cell(r, c).unwrap().text.text.clone();
+    assert_eq!([text(0, 0), text(0, 1), text(0, 2), text(1, 0), text(1, 2)], ["A", "B", "C", "D", "E"]);
+    assert_eq!(t.cell(1, 0).unwrap().col_span, 2, "the merged cell spans two columns");
+    let a = t.cell(0, 0).unwrap();
+    assert_eq!(a.text.chars[0].format.over.size, Some(40.0 * PT), "type keeps its size");
+    assert_eq!(a.text.chars[0].format.over.h_scale, None, "type isn't stretched with the grid");
+    assert_eq!(a.vj, designcraft_doc::VerticalJustification::Center);
+    assert!(near(a.insets[1], 5.0 * 2.0 * PT), "left inset scales with the grid: {:?}", a.insets);
+    let line = &a.strokes[0];
+    assert!(line.is_visible() && line.weight > 0.0);
+    assert_eq!(d.resolve_color(&line.color, 1.0), Some(Color::cmyk(1.0, 0.5, 0.0, 0.0)));
+    let b = frame.bounds();
+    assert!(near(b.x0, 400.0 * PT) && near(b.y0, 600.0 * PT) && near(b.width(), 600.0 * PT), "{b:?}");
+    d.check().unwrap();
+}
+
+#[test]
+fn a_table_whose_cells_do_not_match_its_grid_still_opens() {
+    let imported = designcraft_affinity::import(&page_with(table_node(30, 2, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]))).unwrap();
+    assert!(imported.warnings.iter().any(|w| w.contains("cells don't match their grid")), "{:?}", imported.warnings);
+    let (_, t) = only_table(&imported.document);
+    assert_eq!((t.nrows(), t.ncols()), (2, 3));
+    // Without cell records nothing is merged: the five texts fill the first five cells.
+    assert_eq!(t.cell(1, 1).unwrap().text.text, "E");
+    imported.document.check().unwrap();
+}
+
+#[test]
+fn each_paragraph_keeps_its_own_alignment() {
+    // "Left" then "Right": paragraph runs end at characters 5 and 11.
+    let text = "Left\u{2029}Right\u{2029}";
+    let para = |end: i32, align: i32| {
+        vec![(tag(b"Indx"), F::I32(end)), (tag(b"Item"), F::Obj(tag(b"PAtt"), vec![(tag(b"Ints"), array_i32(b"Ints", &[align]))]))]
+    };
+    let blk = F::Obj(
+        tag(b"StBl"),
+        vec![
+            (tag(b"Glyp"), utf8(text)),
+            (
+                tag(b"GAtt"),
+                F::Obj(
+                    tag(b"GlAS"),
+                    vec![(tag(b"Runs"), F::Objs(tag(b"GlAR"), vec![run(11, Some(attrs("Inter", "Inter-Regular", 400, false, 30.0)))]))],
+                ),
+            ),
+            (tag(b"PAtt"), F::Obj(tag(b"PaAS"), vec![(tag(b"Runs"), F::Objs(tag(b"PaAR"), vec![para(5, 0), para(11, 2)]))])),
+        ],
+    );
+    let node = F::Def(
+        40,
+        vec![tag(b"TxtF")],
+        vec![
+            (tag(b"StSt"), F::Obj(tag(b"Stry"), vec![(tag(b"Blok"), F::Shared(vec![blk]))])),
+            (tag(b"TxtH"), F::Obj(tag(b"FrFr"), vec![(tag(b"FrmB"), F::F64s(vec![0.0, 0.0, 500.0, 300.0]))])),
+        ],
+    );
+    let imported = designcraft_affinity::import(&page_with(node)).unwrap();
+    assert!(!imported.warnings.iter().any(|w| w.contains("mixed paragraph alignments")), "{:?}", imported.warnings);
+    let d = &imported.document;
+    let frame = d.spreads[0].items.iter().find(|i| i.is_text_frame()).unwrap();
+    let Content::Text(tf) = &frame.content else { unreachable!() };
+    let story = d.story(tf.story).unwrap();
+    assert_eq!(story.text, "Left\nRight");
+    let aligns: Vec<_> = story.paras.iter().map(|p| p.para.align).collect();
+    assert_eq!(aligns, [None, Some(designcraft_doc::Align::Right)]);
+}
+
+#[test]
 fn not_an_affinity_file_is_an_error_not_a_crash() {
     assert!(designcraft_affinity::import(b"not affinity").is_err());
     let mut file = publisher();
@@ -170,7 +329,7 @@ proptest::proptest! {
             let page = F::Obj(tag(b"PagR"), vec![(tag(b"rctp"), F::F64s(vec![0.0, 0.0, 2480.0, 3508.0]))]);
             let spread = F::Def(2, vec![tag(b"Sprd")], vec![
                 (tag(b"SpMd"), F::Obj(tag(b"SpMd"), vec![(tag(b"PagR"), F::Shared(vec![page]))])),
-                (tag(b"Chld"), F::Shared(vec![rectangle(10, (1.0, 2.0), (3.0, 4.0)), artistic_text(20, "Hi", 40.0)])),
+                (tag(b"Chld"), F::Shared(vec![rectangle(10, (1.0, 2.0), (3.0, 4.0)), artistic_text(20, "Hi", 40.0), table_node(30, 6, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0])])),
             ]);
             let data = stream(vec![(tag(b"DocR"), F::Def(1, vec![tag(b"DocN")], vec![(tag(b"Chld"), F::Shared(vec![spread]))]))]);
             synth::container(&[("doc.dat", &data, Method::Stored)], None)

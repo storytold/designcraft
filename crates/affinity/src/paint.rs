@@ -283,7 +283,7 @@ pub(crate) fn node_paint(r: &mut Reader, id: ObjId, local: Affine) -> (Vec<Paint
     (fills, stroke.into_iter().collect())
 }
 
-fn stroke(r: &mut Reader, pen: ObjId, ldsc: ObjId, local: Affine, behind: bool) -> Option<Stroke> {
+pub(crate) fn stroke(r: &mut Reader, pen: ObjId, ldsc: ObjId, local: Affine, behind: bool) -> Option<Stroke> {
     let s = r.s;
     let paint = descriptor(r, pen, local)?;
     if paint == Paint::None {
