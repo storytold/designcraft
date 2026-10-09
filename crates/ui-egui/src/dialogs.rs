@@ -2150,6 +2150,105 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     ui.end_row();
                 });
             }
+            "rule" => {
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Rule Above")).font(semibold(12.0)));
+                egui::Grid::new("psr_above").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    let ra = cur(d, "p.rule_above", &pv["rule_above"]);
+                    let on = ra["on"].as_bool().unwrap_or(false);
+                    let mut on = on;
+                    if ui.checkbox(&mut on, crate::i18n::tr(&app.ui.language, "Rule Above")).changed() {
+                        d.fields.insert("p.rule_above".into(), json!({"on": on}));
+                    }
+                    ui.end_row();
+                    if on {
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
+                        if let Some(n) = crate::widgets::number(ui, "psr_above_weight", ra["weight"].as_f64(), " pt", 60.0, 3) {
+                            d.fields.insert("p.rule_above".into(), json!({"on": true, "weight": n}));
+                        }
+                        ui.end_row();
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
+                        let swatches: Vec<String> = st.doc.swatches.iter().map(|s| s.name.clone()).collect();
+                        egui::ComboBox::from_id_salt("psr_above_color").selected_text(ra["color"].as_str().unwrap_or("")).width(150.0).show_ui(ui, |ui| {
+                            for sw in swatches {
+                                if ui.selectable_label(sw == ra["color"].as_str().unwrap_or(""), &sw).clicked() {
+                                    d.fields.insert("p.rule_above".into(), json!({"on": true, "color": sw}));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Offset:"));
+                        if let Some(n) = crate::widgets::number(ui, "psr_above_offset", ra["offset"].as_f64(), " pt", 60.0, 2) {
+                            d.fields.insert("p.rule_above".into(), json!({"on": true, "offset": n}));
+                        }
+                        ui.end_row();
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width:"));
+                        let w = ra["width"].as_str().unwrap_or("Column");
+                        egui::ComboBox::from_id_salt("psr_above_width").selected_text(crate::i18n::tr(&app.ui.language, &w)).show_ui(ui, |ui| {
+                            for v in ["Column", "Text"] {
+                                if ui.selectable_label(w == v, crate::i18n::tr(&app.ui.language, v)).clicked() {
+                                    d.fields.insert("p.rule_above".into(), json!({"on": true, "width": v}));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Overprint:"));
+                        let mut ov = ra["overprint"].as_bool().unwrap_or(false);
+                        if ui.checkbox(&mut ov, crate::i18n::tr(&app.ui.language, "Overprint")).changed() {
+                            d.fields.insert("p.rule_above".into(), json!({"on": true, "overprint": ov}));
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(8.0);
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Rule Below")).font(semibold(12.0)));
+                egui::Grid::new("psr_below").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    let rb = cur(d, "p.rule_below", &pv["rule_below"]);
+                    let on = rb["on"].as_bool().unwrap_or(false);
+                    let mut on = on;
+                    if ui.checkbox(&mut on, crate::i18n::tr(&app.ui.language, "Rule Below")).changed() {
+                        d.fields.insert("p.rule_below".into(), json!({"on": on}));
+                    }
+                    ui.end_row();
+                    if on {
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
+                        if let Some(n) = crate::widgets::number(ui, "psr_below_weight", rb["weight"].as_f64(), " pt", 60.0, 3) {
+                            d.fields.insert("p.rule_below".into(), json!({"on": true, "weight": n}));
+                        }
+                        ui.end_row();
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
+                        let swatches: Vec<String> = st.doc.swatches.iter().map(|s| s.name.clone()).collect();
+                        egui::ComboBox::from_id_salt("psr_below_color").selected_text(rb["color"].as_str().unwrap_or("")).width(150.0).show_ui(ui, |ui| {
+                            for sw in swatches {
+                                if ui.selectable_label(sw == rb["color"].as_str().unwrap_or(""), &sw).clicked() {
+                                    d.fields.insert("p.rule_below".into(), json!({"on": true, "color": sw}));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Offset:"));
+                        if let Some(n) = crate::widgets::number(ui, "psr_below_offset", rb["offset"].as_f64(), " pt", 60.0, 2) {
+                            d.fields.insert("p.rule_below".into(), json!({"on": true, "offset": n}));
+                        }
+                        ui.end_row();
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width:"));
+                        let w = rb["width"].as_str().unwrap_or("Column");
+                        egui::ComboBox::from_id_salt("psr_below_width").selected_text(crate::i18n::tr(&app.ui.language, &w)).show_ui(ui, |ui| {
+                            for v in ["Column", "Text"] {
+                                if ui.selectable_label(w == v, crate::i18n::tr(&app.ui.language, v)).clicked() {
+                                    d.fields.insert("p.rule_below".into(), json!({"on": true, "width": v}));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Overprint:"));
+                        let mut ov = rb["overprint"].as_bool().unwrap_or(false);
+                        if ui.checkbox(&mut ov, crate::i18n::tr(&app.ui.language, "Overprint")).changed() {
+                            d.fields.insert("p.rule_below".into(), json!({"on": true, "overprint": ov}));
+                        }
+                        ui.end_row();
+                    }
+                });
+            }
             "color" => {
                 let cur_fill = cur(d, "c.fill", &cv["fill"]).as_str().unwrap_or("").to_string();
                 let swatches: Vec<String> = st.doc.swatches.iter().map(|s| s.name.clone()).collect();
