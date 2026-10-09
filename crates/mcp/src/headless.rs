@@ -241,6 +241,7 @@ impl Backend for Headless {
             "engine.commands" => Ok(serde_json::to_value(self.session.commands()).unwrap_or_default()),
             "document.inspect" => self.exec("document.inspect", &json!({})),
             "ui.tool.select" => self.exec("tool.select", &json!({"tool": s(p, "tool").unwrap_or("")})),
+            "ui.tool.current" => Ok(json!({"tool": self.session.tool_id()})),
             "ui.tool.list" => Ok(serde_json::to_value(TOOL_GROUPS).unwrap_or_default()),
             "ui.pointer" => self.pointer(p),
             "ui.key" => self.key(p),

@@ -120,6 +120,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.menu.list" => ok(serde_json::to_value(menus::MENUS).unwrap_or_default()),
         "ui.tool.select" => wrap(app.run("tool.select", json!({"tool": s("tool").unwrap_or("")}))),
+        "ui.tool.current" => ok(json!({"tool": app.session.tool_id()})),
         "ui.tool.list" => ok(serde_json::to_value(designcraft_tools::TOOL_GROUPS).unwrap_or_default()),
         "ui.pointer" => {
             let Some(events) = p.get("events").and_then(Value::as_array) else { return err("missing `events`") };
