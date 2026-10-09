@@ -403,6 +403,60 @@ fn frame_type_follows_the_frame_text_scale_not_the_frame_transform() {
     }
 }
 
+/// A document at 72 dpi holding `nodes` on a canvas without pages.
+fn canvas_with(nodes: Vec<F>, embedded: Option<&[u8]>) -> Vec<u8> {
+    let spread = F::Def(2, vec![tag(b"Sprd")], vec![(tag(b"SprB"), F::F64s(vec![0.0, 0.0, 1000.0, 1000.0])), (tag(b"Chld"), F::Shared(nodes))]);
+    let data = stream(vec![(tag(b"DocR"), F::Def(1, vec![tag(b"DocN")], vec![(tag(b"Chld"), F::Shared(vec![spread]))]))]);
+    match embedded {
+        Some(inner) => {
+            let mut entry = b"EmDc\0\0\0\0".to_vec();
+            entry.extend_from_slice(inner);
+            synth::container(&[("doc.dat", &data, Method::Zstd), ("edc/1", &entry, Method::Zstd)], None)
+        }
+        None => synth::container(&[("doc.dat", &data, Method::Zstd)], None),
+    }
+}
+
+/// An instance of the embedded document `edc/1`, scaled 2× with its content's centre at (500, 300).
+fn embedded_node(id: u32) -> F {
+    let content = F::Obj(tag(b"EmbC"), vec![(tag(b"EmbC"), F::Entry("edc/1".into()))]);
+    F::Def(
+        id,
+        vec![tag(b"EmbN")],
+        vec![
+            (tag(b"Bitm"), F::Obj(tag(b"EmbR"), vec![(tag(b"EmCn"), content), (tag(b"PBBx"), F::Enum(2, 0))])),
+            (tag(b"Xfrm"), F::F64s(vec![2.0, 0.0, 500.0, 0.0, 2.0, 300.0])),
+        ],
+    )
+}
+
+#[test]
+fn embedded_affinity_documents_come_in_as_their_content() {
+    let inner = canvas_with(vec![rectangle(10, (0.0, 0.0), (100.0, 50.0))], None);
+    let outer = canvas_with(vec![embedded_node(20)], Some(&inner));
+    let imported = designcraft_affinity::import(&outer).unwrap();
+    let d = &imported.document;
+    let group = d.spreads[0].items.first().expect("the embedded document's group");
+    let Content::Group { items } = &group.content else { panic!("a group: {:?}", group.content) };
+    let rect = items.iter().find(|i| i.name == "Magenta box").expect("the embedded rectangle");
+    // Content bounds (0,0)-(100,50), centre (50,25) → origin, then 2× at (500,300).
+    let b = rect.bounds();
+    assert!(near(b.x0, 400.0) && near(b.y0, 250.0) && near(b.width(), 200.0) && near(b.height(), 100.0), "{b:?}");
+    assert_eq!(d.resolve_color(&rect.fill.swatch, 1.0), Some(Color::cmyk(0.0, 1.0, 0.0, 0.0)));
+    assert!(!imported.warnings.iter().any(|w| w.contains("without a cached picture")), "{:?}", imported.warnings);
+}
+
+#[test]
+fn embedded_documents_nest_only_so_deep() {
+    let mut doc = canvas_with(vec![rectangle(10, (0.0, 0.0), (100.0, 50.0))], None);
+    for _ in 0..6 {
+        doc = canvas_with(vec![embedded_node(20)], Some(&doc));
+    }
+    let imported = designcraft_affinity::import(&doc).unwrap();
+    assert!(imported.warnings.iter().any(|w| w.contains("nested more than four deep")), "{:?}", imported.warnings);
+    imported.document.check().unwrap();
+}
+
 #[test]
 fn not_an_affinity_file_is_an_error_not_a_crash() {
     assert!(designcraft_affinity::import(b"not affinity").is_err());

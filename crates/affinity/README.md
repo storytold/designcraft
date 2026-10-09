@@ -41,14 +41,15 @@ accept the four extensions.
 | Tables: grid, cell text, cells merged across columns, vertical alignment, insets, the line on every cell edge | a text frame holding a DesignCraft table (rows grow only where the fonts need it) |
 | Placed images (the embedded original), pixel layers | graphic frames with embedded images |
 | Pixel masks on images, images inside pixel layers (clipped to them) | worked into the image's transparency |
+| Embedded Affinity documents and symbols (`EmbN`) | their content as editable objects, grouped; nested at most four deep; the cached picture only when the document can't be read |
 | Opacity, visibility, lock, names, blend modes DesignCraft has | the same |
 
 Everything that is not imported, or only approximately, is listed in the open result's
 `warnings`, one line per kind with a count. Not yet imported: master pages, text threading
 between frames, hyphenation settings (imported paragraphs don't hyphenate), text fields such as page numbers, inline objects
 in text, table cell fills, cells merged across rows, layer effects, adjustment layers and live
-filters, pixel masks on objects other than images, brush strokes, embedded documents without a
-cached picture, Lab colours (converted to RGB) and Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
+filters, pixel masks on objects other than images, brush strokes, embedded files other than
+Affinity documents without a cached picture, Lab colours (converted to RGB) and Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
 with that reason.
 
 ## Provenance and clean-room
@@ -64,6 +65,10 @@ description of the format and from public files, never from Affinity itself:
   `04b672334a43e3e37ded6b5ffc57af231d589774`, written for container versions 7–11) and
   re-described in our own words before the Rust code was written; no code was translated. No
   GPL/AGPL code (such as Inkscape's Affinity extension) was read.
+* **Embedded documents**: an `EmbN`'s `EmbC` archive entry holds `EmDc`, four zero bytes and a
+  complete Affinity document, whose pixels are the node's units; with `PBBx` 2 the centre of its
+  content is the node's origin (as for the cached pictures), otherwise its page's. Learned from
+  the structure of documents their owner made earlier, confirmed against their thumbnails.
 * **Paragraph indents and spacing** (`Doub` slots 2–6 of a paragraph's attributes) were identified
   on two public MIT documents, `tiny-text-indent.af` and `tiny-text-para-spacing.af` from
   [SethRobinson/Patchy](https://github.com/SethRobinson/Patchy) at `de84eab`, by measuring their

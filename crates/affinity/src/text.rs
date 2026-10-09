@@ -35,7 +35,7 @@ pub(crate) fn read(r: &mut Reader, id: ObjId, world: Affine) -> Option<Text> {
             r.warn("text frames with a curved outline (imported as rectangular frames)");
         }
     }
-    let text_transform = if artistic { world } else { text_scale(r, id) };
+    let text_transform = if artistic { world } else { text_scale(r, id).then(r.type_base) };
     Some(Text {
         runs,
         align,
@@ -127,7 +127,7 @@ pub(crate) fn table(r: &mut Reader, id: ObjId, world: Affine) -> Option<Table> {
             r.warn("table cell fills (left out)");
         }
     }
-    let text_transform = text_scale(r, id);
+    let text_transform = text_scale(r, id).then(r.type_base);
     Some(Table { columns, rows, cells, vertical, horizontal, transform: world, text_transform })
 }
 

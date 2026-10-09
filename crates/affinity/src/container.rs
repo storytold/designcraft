@@ -263,6 +263,21 @@ impl<'a> Archive<'a> {
     }
 
     /// Extract an entry by name: decompress, undo the byte predictor and verify the CRC.
+    /// What is left of the limits for documents embedded in this one.
+    pub(crate) fn remaining(&self) -> Limits {
+        Limits { max_entry: self.limits.max_entry, max_total: self.limits.max_total.saturating_sub(self.extracted) }
+    }
+
+    /// Count `n` bytes extracted elsewhere (from embedded documents) against this import.
+    pub(crate) fn charge(&mut self, n: usize) -> Result<(), Error> {
+        let total = self.extracted.checked_add(n).ok_or(Error::Limit("document too large"))?;
+        if total > self.limits.max_total {
+            return Err(Error::Limit("document too large"));
+        }
+        self.extracted = total;
+        Ok(())
+    }
+
     pub fn read(&mut self, name: &str) -> Result<Vec<u8>, Error> {
         let e = self.entries.get(name).ok_or(Error::Malformed("missing archive entry"))?.clone();
         let size = usize::try_from(e.size).map_err(|_| Error::Limit("archive entry too large"))?;

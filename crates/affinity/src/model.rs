@@ -368,12 +368,22 @@ const MAX_TREE_DEPTH: usize = 128;
 /// Total layer nodes imported.
 const MAX_NODES: usize = 500_000;
 
+/// Embedded documents inside embedded documents are followed this deep.
+const MAX_EMBED_DEPTH: usize = 4;
+
 /// Read a document: archive, `doc.dat` and the model.
 pub fn read(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
+    read_at(bytes, limits, Affine::IDENTITY, 0).map(|(d, _)| d)
+}
+
+/// Read a document whose spreads are placed by `base` (for embedded documents, nested `depth`
+/// deep) → the document and the bytes its archive extracted.
+fn read_at(bytes: &[u8], limits: Limits, base: Affine, depth: usize) -> Result<(Document, usize), Error> {
     let mut archive = Archive::open(bytes, limits)?;
     let doc = archive.read("doc.dat")?;
     let s = stream::parse(&doc)?;
-    Reader::new(&s, &mut archive).document()
+    let d = Reader::new(&s, &mut archive, base, depth).document()?;
+    Ok((d, archive.extracted()))
 }
 
 pub(crate) struct Reader<'s, 'a, 'b> {
@@ -383,11 +393,31 @@ pub(crate) struct Reader<'s, 'a, 'b> {
     warnings: BTreeMap<String, usize>,
     nodes: usize,
     active: HashSet<ObjId>,
+    /// Where the spreads go: the identity, or an embedding document's placement.
+    base: Affine,
+    /// The linear part of `base`, which also scales frame text.
+    pub(crate) type_base: Affine,
+    /// How deep inside embedded documents this one is.
+    depth: usize,
+    /// An embedded document's content, waiting to become its node's children.
+    pending: Option<Vec<Node>>,
 }
 
 impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
-    fn new(s: &'s Stream, archive: &'b mut Archive<'a>) -> Self {
-        Self { s, archive, dpi: 72.0, warnings: BTreeMap::new(), nodes: 0, active: HashSet::new() }
+    fn new(s: &'s Stream, archive: &'b mut Archive<'a>, base: Affine, depth: usize) -> Self {
+        let [a, b, c, d, ..] = base.0;
+        Self {
+            s,
+            archive,
+            dpi: 72.0,
+            warnings: BTreeMap::new(),
+            nodes: 0,
+            active: HashSet::new(),
+            base,
+            type_base: Affine([a, b, c, d, 0.0, 0.0]),
+            depth,
+            pending: None,
+        }
     }
 
     pub(crate) fn warn(&mut self, what: impl Into<String>) {
@@ -422,7 +452,7 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 y1: 0.0,
             });
             let transparent = s.bool(spread, b"SprT").unwrap_or(false);
-            let (nodes, mask) = self.children(spread, Affine::IDENTITY, 0)?;
+            let (nodes, mask) = self.children(spread, self.base, 0)?;
             if mask.is_some() {
                 self.warn("mask layers directly on a page (imported without them)");
             }
@@ -501,7 +531,10 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             self.kind(id, class, world, parent)?
         };
         // A compound's children are its operands, already merged into its outline.
-        let (children, child_mask) = if class == Tag::of(b"Comp") { (Vec::new(), None) } else { self.children(id, world, depth)? };
+        let (mut children, child_mask) = if class == Tag::of(b"Comp") { (Vec::new(), None) } else { self.children(id, world, depth)? };
+        if let Some(embedded) = self.pending.take() {
+            children.extend(embedded);
+        }
         let (mask, attached_mask) = self.attached_masks(id, world)?;
         let pixel_mask = attached_mask.or(child_mask);
         self.active.remove(&id);
@@ -548,15 +581,22 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 Some(img) => Kind::Image(img),
                 None => Kind::Unsupported,
             },
-            b"EmbN" => match crate::raster::embedded(self, id, world)? {
-                Some(img) => {
-                    self.warn("embedded documents and symbols (imported as pictures of them)");
-                    Kind::Image(img)
+            b"EmbN" => match self.embedded_document(id, world) {
+                // The embedded document itself, as editable content.
+                Some(nodes) => {
+                    self.pending = Some(nodes);
+                    Kind::Group
                 }
-                None => {
-                    self.warn("embedded documents and symbols without a cached picture");
-                    Kind::Unsupported
-                }
+                None => match crate::raster::embedded(self, id, world)? {
+                    Some(img) => {
+                        self.warn("embedded documents and symbols (imported as pictures of them)");
+                        Kind::Image(img)
+                    }
+                    None => {
+                        self.warn("embedded documents and symbols without a cached picture");
+                        Kind::Unsupported
+                    }
+                },
             },
             b"FRst" => {
                 // A fill layer paints its whole bitmap area; its gradient lives in page space.
@@ -612,6 +652,64 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         Ok((mask, pixels))
     }
 
+    /// The content of an Affinity document embedded in this one (`EmbN` whose `EmbC` entry holds
+    /// `EmDc`, four more bytes and a complete Affinity document): its first spread's nodes,
+    /// placed so the centre of its page, first artboard or content is the node's origin.
+    fn embedded_document(&mut self, id: ObjId, world: Affine) -> Option<Vec<Node>> {
+        let s = self.s;
+        let entry = s.obj(id, b"Bitm").and_then(|b| s.obj(b, b"EmCn")).and_then(|c| s.entry(c, b"EmbC"))?.to_string();
+        if entry.is_empty() {
+            return None;
+        }
+        if self.depth >= MAX_EMBED_DEPTH {
+            self.warn("embedded documents nested more than four deep");
+            return None;
+        }
+        let data = self.archive.read(&entry).ok()?;
+        let inner = data.strip_prefix(b"EmDc").and_then(|d| d.get(4..))?;
+        if !crate::is_affinity(inner) {
+            return None;
+        }
+        // A first reading finds its page and resolution, the second places it.
+        let (probe, used) = match read_at(inner, self.archive.remaining(), Affine::IDENTITY, self.depth + 1) {
+            Ok(r) => r,
+            Err(e) => {
+                self.warn(format!("embedded documents that could not be read ({e})"));
+                return None;
+            }
+        };
+        let spread = probe.spreads.first()?;
+        // `PBBx` 2 places the content's own bounds (as with a cached picture); otherwise its page.
+        let content = s.obj(id, b"Bitm").and_then(|b| s.enumeration(b, b"PBBx")).is_some_and(|(k, _)| k == 2);
+        let first_board = spread.nodes.iter().find_map(|n| if let Kind::Artboard { rect, .. } = &n.kind { Some(*rect) } else { None });
+        let page = if content { None } else { spread.pages.first().copied().or(first_board) };
+        let page = page.or_else(|| nodes_bounds(&spread.nodes)).unwrap_or(spread.bounds);
+        // Its document pixels are the node's units, whatever either document's resolution.
+        let k = 1.0;
+        let (cx, cy) = ((page.x0 + page.x1) / 2.0, (page.y0 + page.y1) / 2.0);
+        let base = Affine([k, 0.0, 0.0, k, -cx * k, -cy * k]).then(world);
+        if !base.is_finite() {
+            self.warn("embedded documents with an invalid placement");
+            return None;
+        }
+        if self.archive.charge(used).is_err() {
+            self.warn("embedded documents beyond the size limit (left out)");
+            return None;
+        }
+        let (doc, used) = read_at(inner, self.archive.remaining(), base, self.depth + 1).ok()?;
+        if self.archive.charge(used).is_err() {
+            self.warn("embedded documents beyond the size limit (left out)");
+            return None;
+        }
+        for w in doc.warnings {
+            self.warn(format!("{w} [in embedded documents]"));
+        }
+        if doc.spreads.len() > 1 {
+            self.warn("embedded documents with several pages (the first is used)");
+        }
+        doc.spreads.into_iter().next().map(|s| s.nodes)
+    }
+
     fn artboard(&mut self, id: ObjId, world: Affine) -> Kind {
         let s = self.s;
         let Some(b) = s.floats::<4>(id, b"ShpB").map(rect).filter(|b| b.x1 > b.x0 && b.y1 > b.y0) else {
@@ -644,6 +742,52 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         let (background, strokes) = paint::node_paint(self, id, world);
         Kind::Artboard { rect, path: path.transformed(world), even_odd, background, strokes }
     }
+}
+
+/// The bounds of what visible `nodes` draw (control points of outlines, corners of images, frames
+/// and tables), in document pixels.
+pub(crate) fn nodes_bounds(nodes: &[Node]) -> Option<Rect> {
+    fn walk(nodes: &[Node], depth: usize, out: &mut Option<Rect>) {
+        if depth > MAX_TREE_DEPTH {
+            return;
+        }
+        for n in nodes.iter().filter(|n| n.visible) {
+            let mut add = |p: Point| {
+                if p.x.is_finite() && p.y.is_finite() {
+                    let r = Rect { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+                    *out = Some(out.map_or(r, |o| union(o, r)));
+                }
+            };
+            let corners = |r: Rect, m: Affine| [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].map(|(x, y)| m.apply(Point { x, y }));
+            match &n.kind {
+                Kind::Shape { path, .. } | Kind::Artboard { path, .. } => {
+                    for sp in &path.subpaths {
+                        add(sp.start);
+                        for seg in &sp.segments {
+                            seg.iter().for_each(|p| add(*p));
+                        }
+                    }
+                }
+                Kind::Image(img) => corners(Rect { x0: 0.0, y0: 0.0, x1: f64::from(img.width), y1: f64::from(img.height) }, img.transform)
+                    .into_iter()
+                    .for_each(&mut add),
+                Kind::Text(t) => match t.frame {
+                    Some(f) => corners(f, t.transform).into_iter().for_each(&mut add),
+                    None => add(t.transform.apply(t.anchor)),
+                },
+                Kind::Table(t) => {
+                    if let (Some(&x0), Some(&x1), Some(&y0), Some(&y1)) = (t.columns.first(), t.columns.last(), t.rows.first(), t.rows.last()) {
+                        corners(Rect { x0, y0, x1, y1 }, t.transform).into_iter().for_each(&mut add);
+                    }
+                }
+                Kind::Layer | Kind::Group | Kind::Unsupported => {}
+            }
+            walk(&n.children, depth + 1, out);
+        }
+    }
+    let mut out = None;
+    walk(nodes, 0, &mut out);
+    out
 }
 
 /// Page rectangles: `SpMd.PagR[].rctp` (Publisher 2, Affinity 3) or `SprB` split into `PagC`
