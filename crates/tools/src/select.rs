@@ -714,7 +714,7 @@ impl Tool for SelectionTool {
                     let _ = sr;
                     return vec![
                         Action::SwitchTool("type".into()),
-                        Action::Exec("text.placeCaret".into(), json!({"frame": id.0, "point": [sp.x, sp.y]})),
+                        Action::Exec("text.selectWord".into(), json!({"frame": id.0, "point": [sp.x, sp.y]})),
                     ];
                 }
                 vec![]
