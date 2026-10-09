@@ -156,11 +156,7 @@ fn live_corner_widget_at(cx: &ToolContext, p: Point) -> Option<ItemId> {
     let widget_x = b.x1;
     let widget_y = b.y0 + 11.5;
     let tol = 6.0; // widget is 6x6, so 3px radius + some tolerance
-    if (p.x - widget_x).abs() <= tol && (p.y - widget_y).abs() <= tol {
-        cx.selection.items.first().copied()
-    } else {
-        None
-    }
+    if (p.x - widget_x).abs() <= tol && (p.y - widget_y).abs() <= tol { cx.selection.items.first().copied() } else { None }
 }
 
 /// New rect when dragging `handle` of `from` to `p`.
@@ -703,7 +699,7 @@ impl Tool for SelectionTool {
                 }
                 Drag::LiveCorner { id, start } => {
                     let dy = p.y - start.y;
-                    let radius = (12.0 + dy).max(0.0).min(500.0);
+                    let radius = (12.0 + dy).clamp(0.0, 500.0);
                     vec![Action::Preview("object.cornerOptions".into(), json!({"ids": [id.0], "shape": "rounded", "size": radius}))]
                 }
                 Drag::None => vec![],
@@ -713,7 +709,9 @@ impl Tool for SelectionTool {
                 let release = self.shift_release.take();
                 let d = std::mem::replace(&mut self.drag, Drag::None);
                 match d {
-                    Drag::Move { .. } | Drag::Resize { .. } | Drag::Anchor { .. } | Drag::Rotate { .. } | Drag::LiveCorner { .. } => vec![Action::Commit],
+                    Drag::Move { .. } | Drag::Resize { .. } | Drag::Anchor { .. } | Drag::Rotate { .. } | Drag::LiveCorner { .. } => {
+                        vec![Action::Commit]
+                    }
                     Drag::Pending { .. } => match release {
                         Some(id) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
                         None => vec![],
