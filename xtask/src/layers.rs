@@ -33,6 +33,7 @@ impl Class {
 /// The layering table. Names are package names without the `designcraft-`
 /// prefix.
 pub const TABLE: &[(&str, Class)] = &[
+    ("archive", Class::Standalone),
     ("geom", Class::Layer(0)),
     ("color", Class::Layer(0)),
     ("doc", Class::Layer(1)),

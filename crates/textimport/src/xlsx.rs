@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 
 use designcraft_doc::{CharFormat, ParaFormat, Story, StoryId, Table};
 
-use crate::docx::{El, parse, part};
+use crate::archive::{open, part};
+use crate::budget::{OUTPUT_LIMITS, OutputBudget, OutputLimits};
+use crate::docx::{El, parse};
 use crate::{ImportError, Imported};
 
 /// "B12" → (row 11, column 1).
@@ -64,7 +66,11 @@ fn value(c: &El, shared: &[String]) -> String {
 /// Cells past the header are kept so the caller can warn. Over 200 columns or 100,000
 /// data rows is an error and the grid is not built.
 pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, ImportError> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    records_with_limits(bytes, sheet, OUTPUT_LIMITS)
+}
+
+fn records_with_limits(bytes: &[u8], sheet: Option<&str>, output_limits: OutputLimits) -> Result<Vec<Vec<String>>, ImportError> {
+    let mut zip = open(bytes)?;
     let sheet_part = sheet_target(&mut zip, sheet)?;
     let sheet_xml = parse(&part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
     let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
@@ -72,12 +78,16 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
         .transpose()?
         .map(|sst| sst.els().filter(|e| e.name == "si").map(El::text).collect())
         .unwrap_or_default();
+    let mut budget = OutputBudget::new(output_limits);
     let mut cells: Vec<(usize, usize, String)> = Vec::new();
     if let Some(data) = sheet_xml.child("sheetData") {
         for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
             for (ci, c) in row.els().filter(|e| e.name == "c").enumerate() {
                 let (r, col) = c.attr("r").and_then(cell_ref).unwrap_or((ri, ci));
-                cells.push((r, col, value(c, &shared)));
+                let value = value(c, &shared);
+                budget.add_items(1)?;
+                budget.add_text(value.len())?;
+                cells.push((r, col, value));
             }
         }
     }
@@ -120,28 +130,32 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
     if data_rows > crate::DATA_MERGE_MAX_ROWS {
         return Err(ImportError::Corrupt(format!("the sheet has {data_rows} data rows; the limit is {}", crate::DATA_MERGE_MAX_ROWS)));
     }
+    let output_rows = data_rows.checked_add(1).ok_or_else(|| ImportError::Corrupt("worksheet row count overflow".into()))?;
+    let grid_cells = output_rows.checked_mul(width).ok_or_else(|| ImportError::Corrupt("worksheet cell count overflow".into()))?;
+    let extra_cells = by_row.values().flat_map(|cols| cols.iter()).filter(|(c, value)| (*c < min_c || *c > max_c) && !value.is_empty()).count();
+    budget.ensure_items(grid_cells.checked_add(extra_cells).ok_or_else(|| ImportError::Corrupt("worksheet cell count overflow".into()))?)?;
     let mut out = Vec::with_capacity(data_rows.saturating_add(1));
-    for (r, cols) in &by_row {
+    for (r, cols) in by_row {
         let mut row = vec![String::new(); width];
         let mut extra: Vec<String> = Vec::new();
         for (c, v) in cols {
-            if *c < min_c {
+            if c < min_c {
                 // Outside the header span. Keep one non-empty value so the caller can warn.
                 if !v.is_empty() {
-                    extra.push(v.clone());
+                    extra.push(v);
                 }
                 continue;
             }
             let at = c - min_c;
             if at < width {
                 if let Some(cell) = row.get_mut(at) {
-                    *cell = v.clone();
+                    *cell = v;
                 }
             } else if !v.is_empty() {
-                extra.push(v.clone());
+                extra.push(v);
             }
         }
-        if *r != header_row && row.iter().all(|c| c.is_empty()) && extra.is_empty() {
+        if r != header_row && row.iter().all(|c| c.is_empty()) && extra.is_empty() {
             continue;
         }
         row.extend(extra);
@@ -172,7 +186,11 @@ fn sheet_target(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, wanted: Optio
 }
 
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    import_with_limits(bytes, OUTPUT_LIMITS)
+}
+
+fn import_with_limits(bytes: &[u8], output_limits: OutputLimits) -> Result<Imported, ImportError> {
+    let mut zip = open(bytes)?;
     let sheet_part = first_sheet(&mut zip)?.unwrap_or_else(|| "xl/worksheets/sheet1.xml".into());
     let sheet = parse(&part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
     let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
@@ -180,6 +198,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         .transpose()?
         .map(|sst| sst.els().filter(|e| e.name == "si").map(El::text).collect())
         .unwrap_or_default();
+    let mut budget = OutputBudget::new(output_limits);
     let mut cells: Vec<((usize, usize), String)> = Vec::new();
     if let Some(data) = sheet.child("sheetData") {
         for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
@@ -187,6 +206,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 let at = c.attr("r").and_then(cell_ref).unwrap_or((ri, ci));
                 let v = value(c, &shared);
                 if !v.is_empty() {
+                    budget.add_items(1)?;
+                    budget.add_text(v.len())?;
                     cells.push((at, v));
                 }
             }
@@ -211,6 +232,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     if nrows_kept < nrows {
         warnings.push(format!("only the first {nrows_kept} rows were placed"));
     }
+    let grid_cells = nrows_kept.checked_mul(ncols_kept).ok_or_else(|| ImportError::Corrupt("worksheet cell count overflow".into()))?;
+    budget.ensure_items(grid_cells)?;
     let mut rows: Vec<Vec<String>> = vec![vec![String::new(); ncols_kept]; nrows_kept];
     for ((r, c), v) in cells {
         if let Some(cell) = rows.get_mut(r - r0).and_then(|row| row.get_mut(c - c0)) {
@@ -333,5 +356,33 @@ mod tests {
         assert_eq!(rows[3][0], "");
         assert_eq!(rows[3][1], "1");
         assert!(records(&book, Some("Missing")).is_err());
+    }
+
+    #[test]
+    fn repeated_shared_strings_share_a_cumulative_output_budget() {
+        let workbook = |cells: &str| {
+            sheets(&[
+                (
+                    "xl/workbook.xml",
+                    r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+                ),
+                ("xl/_rels/workbook.xml.rels", r#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>"#),
+                ("xl/sharedStrings.xml", "<sst><si><t>abcdefgh</t></si></sst>"),
+                ("xl/worksheets/sheet1.xml", cells),
+            ])
+        };
+        let one = workbook(r#"<worksheet><sheetData><row><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>"#);
+        let two = workbook(r#"<worksheet><sheetData><row><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>0</v></c></row></sheetData></worksheet>"#);
+        let limits = OutputLimits { text_bytes: 12, items: 10 };
+
+        assert!(import_with_limits(&one, limits).is_ok());
+        assert!(matches!(
+            import_with_limits(&two, limits),
+            Err(ImportError::Corrupt(message)) if message.contains("text exceeds")
+        ));
+        assert!(matches!(
+            records_with_limits(&two, None, limits),
+            Err(ImportError::Corrupt(message)) if message.contains("text exceeds")
+        ));
     }
 }

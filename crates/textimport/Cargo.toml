@@ -9,6 +9,7 @@ description = "DesignCraft text import: plain text, Word (.docx) and RTF into st
 workspace = true
 
 [dependencies]
+designcraft-archive = { workspace = true }
 designcraft-doc = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }

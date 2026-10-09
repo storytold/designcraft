@@ -9,6 +9,7 @@ description = "DesignCraft native file format: zip with document.json and embedd
 workspace = true
 
 [dependencies]
+designcraft-archive = { workspace = true }
 designcraft-doc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

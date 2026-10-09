@@ -12,6 +12,7 @@ repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
 # internal
+designcraft-archive = { path = "crates/archive" }
 designcraft-geom = { path = "crates/geom" }
 designcraft-color = { path = "crates/color" }
 designcraft-doc = { path = "crates/doc" }
@@ -61,7 +62,7 @@ flo_curves = "0.8"
 qrcodegen = "1.8"
 krilla = { version = "0.8", features = ["pdf"] }
 hayro = "0.7"
-quick-xml = "0.38"
+quick-xml = "0.41"
 zip = { version = "3", default-features = false, features = ["deflate"] }
 
 # ui

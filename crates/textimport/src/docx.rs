@@ -1,13 +1,26 @@
 //! Word (.docx, Office Open XML) → story.
 
-use std::collections::HashMap;
-use std::io::Read;
-
-use designcraft_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE};
+use designcraft_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE, TABLE_ANCHOR};
 use designcraft_doc::{CharAttrs, CharFormat, ParaAttrs, ParaFormat, Story, StoryId, Table};
 use quick_xml::events::Event;
+use std::collections::{HashMap, HashSet};
 
+use crate::archive::{open, part};
+use crate::budget::{OUTPUT_LIMITS, OutputBudget, OutputLimits};
 use crate::{ImportError, Imported, ImportedStyle};
+
+const MAX_XML_DEPTH: usize = 256;
+const MAX_XML_EVENTS: usize = 1_000_000;
+const MAX_XML_NODES: usize = 500_000;
+
+#[derive(Clone, Copy)]
+struct XmlLimits {
+    depth: usize,
+    events: usize,
+    nodes: usize,
+}
+
+const XML_LIMITS: XmlLimits = XmlLimits { depth: MAX_XML_DEPTH, events: MAX_XML_EVENTS, nodes: MAX_XML_NODES };
 
 /// A minimal element tree (local names, attributes by local name).
 #[derive(Debug, Default, Clone)]
@@ -57,29 +70,54 @@ fn local(n: &[u8]) -> String {
 }
 
 pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
+    parse_with_limits(xml, XML_LIMITS)
+}
+
+fn parse_with_limits(xml: &str, limits: XmlLimits) -> Result<El, ImportError> {
     let mut r = quick_xml::Reader::from_str(xml);
     let mut stack: Vec<El> = vec![El::default()];
+    let mut events = 0usize;
+    let mut nodes = 0usize;
     loop {
-        match r.read_event().map_err(|e| ImportError::Corrupt(e.to_string()))? {
+        let event = r.read_event().map_err(|e| ImportError::Corrupt(e.to_string()))?;
+        events = events.saturating_add(1);
+        if events > limits.events {
+            return Err(ImportError::Corrupt(format!("XML contains more than {} events", limits.events)));
+        }
+        match event {
             Event::Start(e) => {
+                if stack.len() > limits.depth {
+                    return Err(ImportError::Corrupt(format!("XML nesting exceeds {} elements", limits.depth)));
+                }
+                nodes = nodes.saturating_add(1);
+                if nodes > limits.nodes {
+                    return Err(ImportError::Corrupt(format!("XML contains more than {} nodes", limits.nodes)));
+                }
                 let el = El {
                     name: local(e.name().as_ref()),
                     attrs: e
                         .attributes()
                         .flatten()
-                        .map(|a| (local(a.key.as_ref()), a.unescape_value().map(|v| v.to_string()).unwrap_or_default()))
+                        .map(|a| (local(a.key.as_ref()), a.normalized_value(Default::default()).map(|v| v.to_string()).unwrap_or_default()))
                         .collect(),
                     kids: vec![],
                 };
                 stack.push(el);
             }
             Event::Empty(e) => {
+                if stack.len() > limits.depth {
+                    return Err(ImportError::Corrupt(format!("XML nesting exceeds {} elements", limits.depth)));
+                }
+                nodes = nodes.saturating_add(1);
+                if nodes > limits.nodes {
+                    return Err(ImportError::Corrupt(format!("XML contains more than {} nodes", limits.nodes)));
+                }
                 let el = El {
                     name: local(e.name().as_ref()),
                     attrs: e
                         .attributes()
                         .flatten()
-                        .map(|a| (local(a.key.as_ref()), a.unescape_value().map(|v| v.to_string()).unwrap_or_default()))
+                        .map(|a| (local(a.key.as_ref()), a.normalized_value(Default::default()).map(|v| v.to_string()).unwrap_or_default()))
                         .collect(),
                     kids: vec![],
                 };
@@ -88,6 +126,9 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
                 }
             }
             Event::End(_) => {
+                if stack.len() <= 1 {
+                    return Err(ImportError::Corrupt("XML contains an unexpected closing element".into()));
+                }
                 let el = stack.pop().unwrap_or_default();
                 match stack.last_mut() {
                     Some(p) => p.kids.push(Node::El(el)),
@@ -95,6 +136,10 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
                 }
             }
             Event::Text(t) => {
+                nodes = nodes.saturating_add(1);
+                if nodes > limits.nodes {
+                    return Err(ImportError::Corrupt(format!("XML contains more than {} nodes", limits.nodes)));
+                }
                 let s = t.decode().map(|s| s.to_string()).unwrap_or_default();
                 let s = quick_xml::escape::unescape(&s).map(|s| s.to_string()).unwrap_or(s);
                 if let Some(p) = stack.last_mut() {
@@ -102,6 +147,10 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
                 }
             }
             Event::GeneralRef(e) => {
+                nodes = nodes.saturating_add(1);
+                if nodes > limits.nodes {
+                    return Err(ImportError::Corrupt(format!("XML contains more than {} nodes", limits.nodes)));
+                }
                 let name = String::from_utf8_lossy(&e).to_string();
                 let s = match name.as_str() {
                     "amp" => "&".to_string(),
@@ -121,30 +170,14 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
             _ => {}
         }
     }
+    if stack.len() != 1 {
+        return Err(ImportError::Corrupt("XML ended before all elements were closed".into()));
+    }
     let mut root = stack.pop().unwrap_or_default();
-    Ok(root.kids.drain(..).find_map(|n| if let Node::El(e) = n { Some(e) } else { None }).unwrap_or_default())
-}
-
-/// Largest decompressed zip part read (a small file can inflate to gigabytes).
-pub(crate) const PART_LIMIT: u64 = 64 * 1024 * 1024;
-
-/// A zip part as text. `Ok(None)` when the part is missing or isn't text; an error when it
-/// decompresses to more than [`PART_LIMIT`].
-pub(crate) fn part(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str) -> Result<Option<String>, ImportError> {
-    part_capped(zip, name, PART_LIMIT)
-}
-
-pub(crate) fn part_capped(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str, limit: u64) -> Result<Option<String>, ImportError> {
-    let Ok(f) = zip.by_name(name) else { return Ok(None) };
-    let mut s = String::new();
-    // Read one byte past the limit to tell "exactly at the limit" from "over it".
-    if f.take(limit.saturating_add(1)).read_to_string(&mut s).is_err() {
-        return Ok(None);
-    }
-    if s.len() as u64 > limit {
-        return Err(ImportError::Corrupt(format!("{name} is larger than {} MiB uncompressed", limit / (1024 * 1024))));
-    }
-    Ok(Some(s))
+    root.kids
+        .drain(..)
+        .find_map(|n| if let Node::El(e) = n { Some(e) } else { None })
+        .ok_or_else(|| ImportError::Corrupt("XML has no root element".into()))
 }
 
 /// Character attributes from `<w:rPr>`.
@@ -216,6 +249,7 @@ struct Ctx {
     footnotes: HashMap<String, El>,
     warnings: Vec<String>,
     next_table: u64,
+    budget: OutputBudget,
 }
 
 impl Ctx {
@@ -224,12 +258,14 @@ impl Ctx {
     }
 
     /// Append the paragraphs and tables of `body` to `st`.
-    fn blocks(&mut self, body: &El, st: &mut Story, allow_notes: bool) {
+    fn blocks(&mut self, body: &El, st: &mut Story, allow_notes: bool) -> Result<(), ImportError> {
         let mut first = st.is_empty();
         for e in body.els() {
             match e.name.as_str() {
                 "p" => {
+                    self.budget.add_items(1)?;
                     if !first {
+                        self.budget.add_text(1)?;
                         let len = st.len();
                         st.insert(len, "\n");
                     }
@@ -239,23 +275,26 @@ impl Ctx {
                     let attrs = para_attrs(ppr);
                     let at = st.len();
                     st.format_paras(at..at, |f| *f = ParaFormat { style: style.clone(), para: attrs.clone(), ..Default::default() });
-                    self.inline(e, st, allow_notes);
+                    self.inline(e, st, allow_notes)?;
                 }
                 "tbl" => {
-                    let rows: Vec<Vec<String>> = e
-                        .els()
-                        .filter(|r| r.name == "tr")
-                        .map(|r| {
-                            r.els()
-                                .filter(|c| c.name == "tc")
-                                .map(|c| c.els().filter(|p| p.name == "p").map(|p| p.text()).collect::<Vec<_>>().join("\n"))
-                                .collect()
-                        })
-                        .collect();
+                    let mut rows = Vec::new();
+                    for r in e.els().filter(|r| r.name == "tr") {
+                        let mut row = Vec::new();
+                        for c in r.els().filter(|c| c.name == "tc") {
+                            let text = c.els().filter(|p| p.name == "p").map(El::text).collect::<Vec<_>>().join("\n");
+                            self.budget.add_items(1)?;
+                            self.budget.add_text(text.len())?;
+                            row.push(text);
+                        }
+                        rows.push(row);
+                    }
                     if rows.is_empty() {
                         continue;
                     }
-                    self.next_table += 1;
+                    self.budget.add_items(1)?;
+                    self.budget.add_text(TABLE_ANCHOR.len_utf8())?;
+                    self.next_table = self.next_table.checked_add(1).ok_or_else(|| ImportError::Corrupt("table id overflow".into()))?;
                     let t = Table::from_strings(self.next_table, &rows, 300.0, &ParaFormat::default(), &CharFormat::default());
                     let len = st.len();
                     st.insert_table(len, t);
@@ -263,26 +302,28 @@ impl Ctx {
                 }
                 "sdt" => {
                     if let Some(c) = e.child("sdtContent") {
-                        self.blocks(c, st, allow_notes);
+                        self.blocks(c, st, allow_notes)?;
                     }
                 }
                 _ => {}
             }
         }
+        Ok(())
     }
 
     /// Runs (and hyperlinks, fields' results) of a paragraph.
-    fn inline(&mut self, p: &El, st: &mut Story, allow_notes: bool) {
+    fn inline(&mut self, p: &El, st: &mut Story, allow_notes: bool) -> Result<(), ImportError> {
         for e in p.els() {
             match e.name.as_str() {
-                "r" => self.run(e, st, allow_notes),
-                "hyperlink" | "smartTag" | "ins" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes),
+                "r" => self.run(e, st, allow_notes)?,
+                "hyperlink" | "smartTag" | "ins" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes)?,
                 _ => {}
             }
         }
+        Ok(())
     }
 
-    fn run(&mut self, r: &El, st: &mut Story, allow_notes: bool) {
+    fn run(&mut self, r: &El, st: &mut Story, allow_notes: bool) -> Result<(), ImportError> {
         let rpr = r.child("rPr");
         let style = rpr.and_then(|p| p.val("rStyle")).and_then(|id| self.char_names.get(&id).cloned()).unwrap_or_else(|| NO_CHAR_STYLE.into());
         let fmt = CharFormat { style, over: run_attrs(rpr) };
@@ -299,9 +340,11 @@ impl Ctx {
                 "softHyphen" => "\u{AD}".into(),
                 "footnoteReference" if allow_notes => {
                     if let Some(note) = e.attr("id").and_then(|id| self.footnotes.get(id).cloned()) {
+                        self.budget.add_items(1)?;
                         let mut ns = Story::new(StoryId(0));
-                        self.blocks(&note, &mut ns, false);
+                        self.blocks(&note, &mut ns, false)?;
                         // Word puts the reference mark in the note text: we generate the number.
+                        self.budget.add_text(designcraft_doc::FOOTNOTE_REF.len_utf8())?;
                         let len = st.len();
                         let id = st.insert_note(len, "", ParaFormat::default());
                         if let Some(n) = st.note_mut(id) {
@@ -319,19 +362,77 @@ impl Ctx {
                 _ => continue,
             };
             if !text.is_empty() {
+                self.budget.add_items(1)?;
+                self.budget.add_text(text.len())?;
                 let len = st.len();
                 st.insert_with(len, &text, fmt.clone());
             }
         }
+        Ok(())
     }
 }
 
+fn charge_retained_style(style: &ImportedStyle, budget: &mut OutputBudget) -> Result<(), ImportError> {
+    budget.add_items(1)?;
+    for text in [Some(style.name.as_str()), style.based_on.as_deref(), style.chars.font_family.as_deref(), style.chars.font_style.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        budget.add_text(text.len())?;
+    }
+    Ok(())
+}
+
+/// Keep used styles and their inheritance closure in linear time. A seen set bounds cyclic or
+/// repeated `basedOn` edges, while the name index avoids rescanning every style for each ancestor.
+fn keep_styles(list: Vec<ImportedStyle>, used: &HashSet<String>, budget: &mut OutputBudget) -> Result<Vec<ImportedStyle>, ImportError> {
+    let mut parents: HashMap<&str, Vec<&str>> = HashMap::new();
+    for style in &list {
+        if let Some(parent) = style.based_on.as_deref() {
+            parents.entry(style.name.as_str()).or_default().push(parent);
+        }
+    }
+
+    let mut pending: Vec<&str> = used.iter().map(String::as_str).collect();
+    let mut seen = HashSet::new();
+    while let Some(name) = pending.pop() {
+        if !seen.insert(name) {
+            continue;
+        }
+        if let Some(bases) = parents.get(name) {
+            pending.extend(bases.iter().copied());
+        }
+    }
+
+    let mut retained = vec![false; list.len()];
+    for (index, style) in list.iter().enumerate() {
+        if seen.contains(style.name.as_str()) {
+            charge_retained_style(style, budget)?;
+            retained[index] = true;
+        }
+    }
+    drop(seen);
+    drop(parents);
+    Ok(list.into_iter().zip(retained).filter_map(|(style, keep)| keep.then_some(style)).collect())
+}
+
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    import_with_limits(bytes, OUTPUT_LIMITS)
+}
+
+fn import_with_limits(bytes: &[u8], output_limits: OutputLimits) -> Result<Imported, ImportError> {
+    let mut zip = open(bytes)?;
     let doc = part(&mut zip, "word/document.xml")?.ok_or_else(|| ImportError::Corrupt("no word/document.xml (not a Word document)".into()))?;
     let doc = parse(&doc)?;
     // Styles.
-    let mut ctx = Ctx { para_names: HashMap::new(), char_names: HashMap::new(), footnotes: HashMap::new(), warnings: vec![], next_table: 0 };
+    let mut ctx = Ctx {
+        para_names: HashMap::new(),
+        char_names: HashMap::new(),
+        footnotes: HashMap::new(),
+        warnings: vec![],
+        next_table: 0,
+        budget: OutputBudget::new(output_limits),
+    };
     let mut para_styles = Vec::new();
     let mut char_styles = Vec::new();
     if let Some(styles) = part(&mut zip, "word/styles.xml")?.map(|s| parse(&s)).transpose()? {
@@ -375,23 +476,13 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     }
     let body = doc.child("body").ok_or_else(|| ImportError::Corrupt("no document body".into()))?;
     let mut st = Story::new(StoryId(0));
-    ctx.blocks(body, &mut st, true);
+    ctx.blocks(body, &mut st, true)?;
     // Only styles that are used, plus what they are based on.
-    let used_p: std::collections::HashSet<String> = st.paras.iter().map(|p| p.style.clone()).collect();
-    let used_c: std::collections::HashSet<String> = st.runs().map(|(_, f)| f.style.clone()).collect();
-    let keep = |list: Vec<ImportedStyle>, used: &std::collections::HashSet<String>| {
-        let mut want: std::collections::HashSet<String> = used.clone();
-        loop {
-            let more: Vec<String> =
-                list.iter().filter(|s| want.contains(&s.name)).filter_map(|s| s.based_on.clone()).filter(|b| !want.contains(b)).collect();
-            if more.is_empty() {
-                break;
-            }
-            want.extend(more);
-        }
-        list.into_iter().filter(|s| want.contains(&s.name)).collect::<Vec<_>>()
-    };
-    Ok(Imported { story: st, para_styles: keep(para_styles, &used_p), char_styles: keep(char_styles, &used_c), warnings: ctx.warnings })
+    let used_p: HashSet<String> = st.paras.iter().map(|p| p.style.clone()).collect();
+    let used_c: HashSet<String> = st.runs().map(|(_, f)| f.style.clone()).collect();
+    let para_styles = keep_styles(para_styles, &used_p, &mut ctx.budget)?;
+    let char_styles = keep_styles(char_styles, &used_c, &mut ctx.budget)?;
+    Ok(Imported { story: st, para_styles, char_styles, warnings: ctx.warnings })
 }
 
 #[cfg(test)]
@@ -413,17 +504,6 @@ mod tests {
     }
 
     const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
-
-    #[test]
-    fn oversized_part_is_an_error_not_a_huge_read() {
-        // A highly compressible part: 64 KiB of spaces inflates past a 4 KiB cap.
-        let big = docx(&" ".repeat(64 * 1024), "", "");
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(big.as_slice())).unwrap();
-        assert!(matches!(part_capped(&mut zip, "word/document.xml", 4096), Err(ImportError::Corrupt(_))));
-        // At or under the cap reads fine; a missing part is `None`.
-        assert_eq!(part_capped(&mut zip, "word/document.xml", 64 * 1024).unwrap().map(|s| s.len()), Some(64 * 1024));
-        assert_eq!(part_capped(&mut zip, "word/missing.xml", 4096).unwrap(), None);
-    }
 
     #[test]
     fn imports_styles_runs_footnotes_and_tables() {
@@ -468,5 +548,64 @@ mod tests {
         assert_eq!(i.para_styles[0].chars.size, Some(16.0));
         assert_eq!(i.para_styles[0].para.space_before, Some(12.0));
         assert_eq!(i.char_styles[0].chars.font_style.as_deref(), Some("Italic"));
+    }
+
+    #[test]
+    fn xml_resource_limits_cover_depth_event_and_node_counts() {
+        let limits = |depth, events, nodes| XmlLimits { depth, events, nodes };
+
+        assert!(parse_with_limits("<a><b><c/></b></a>", limits(2, 20, 20)).is_err());
+        assert!(parse_with_limits("<a><b/><c/></a>", limits(10, 3, 20)).is_err());
+        assert!(parse_with_limits("<a>one<b/>two</a>", limits(10, 20, 3)).is_err());
+        assert!(parse_with_limits("<a><b/></a>", limits(2, 4, 2)).is_ok());
+    }
+
+    #[test]
+    fn repeated_footnotes_share_a_cumulative_output_budget() {
+        let note = format!(r#"<w:footnotes {W}><w:footnote w:id="1"><w:p><w:r><w:t>note</w:t></w:r></w:p></w:footnote></w:footnotes>"#);
+        let document = |references: &str| format!(r#"<w:document {W}><w:body><w:p><w:r>{references}</w:r></w:p></w:body></w:document>"#);
+        let reference = r#"<w:footnoteReference w:id="1"/>"#;
+        let limits = OutputLimits { text_bytes: 10, items: 100 };
+
+        assert!(import_with_limits(&docx(&document(reference), "", &note), limits).is_ok());
+        assert!(matches!(
+            import_with_limits(&docx(&document(&format!("{reference}{reference}")), "", &note), limits),
+            Err(ImportError::Corrupt(message)) if message.contains("text exceeds")
+        ));
+    }
+
+    #[test]
+    fn retained_styles_and_their_strings_share_the_output_budget() {
+        let styles = format!(
+            r#"<w:styles {W}>
+              <w:style w:type="paragraph" w:styleId="BaseId"><w:name w:val="Base"/></w:style>
+              <w:style w:type="paragraph" w:styleId="ChildId"><w:name w:val="Child"/><w:basedOn w:val="BaseId"/>
+                <w:rPr><w:rFonts w:ascii="Family"/><w:b/></w:rPr></w:style>
+            </w:styles>"#
+        );
+        let document =
+            format!(r#"<w:document {W}><w:body><w:p><w:pPr><w:pStyle w:val="ChildId"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>"#);
+        let bytes = docx(&document, &styles, "");
+
+        assert!(import_with_limits(&bytes, OutputLimits { text_bytes: 24, items: 4 }).is_ok());
+        assert!(matches!(
+            import_with_limits(&bytes, OutputLimits { text_bytes: 23, items: 4 }),
+            Err(ImportError::Corrupt(message)) if message.contains("text exceeds")
+        ));
+        assert!(matches!(
+            import_with_limits(&bytes, OutputLimits { text_bytes: 24, items: 3 }),
+            Err(ImportError::Corrupt(message)) if message.contains("items")
+        ));
+    }
+
+    #[test]
+    fn style_inheritance_cycles_are_visited_once() {
+        let style = |name: &str, based_on: &str| ImportedStyle { name: name.into(), based_on: Some(based_on.into()), ..Default::default() };
+        let list = vec![style("A", "B"), style("B", "A"), style("unused", "A")];
+        let used = HashSet::from(["A".to_string()]);
+        let mut budget = OutputBudget::new(OutputLimits { text_bytes: 4, items: 2 });
+
+        let kept = keep_styles(list, &used, &mut budget).unwrap();
+        assert_eq!(kept.iter().map(|style| style.name.as_str()).collect::<Vec<_>>(), ["A", "B"]);
     }
 }

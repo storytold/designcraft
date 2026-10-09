@@ -1,0 +1,9 @@
+[package]
+name = "designcraft-archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bounded ZIP structure preflight for DesignCraft file importers"
+
+[lints]
+workspace = true
