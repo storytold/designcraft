@@ -45,11 +45,12 @@ accept the four extensions.
 | Pixel masks on images, images inside pixel layers (clipped to them) | worked into the image's transparency |
 | Embedded Affinity documents and symbols (`EmbN`) | their content as editable objects, grouped; nested at most four deep; the cached picture only when the document can't be read |
 | Opacity, visibility, lock, names, blend modes DesignCraft has | the same |
+| Layer effects: drop shadow, inner shadow, outer glow (an Affinity shadow angle is where the shadow goes; DesignCraft's where the light comes from) | the same effects |
 
 Everything that is not imported, or only approximately, is listed in the open result's
 `warnings`, one line per kind with a count. Not yet imported: masters based on other masters, text threading
 between frames, hyphenation settings (imported paragraphs don't hyphenate), text fields such as page numbers, inline objects
-in text, table cell fills, cells merged across rows, layer effects, adjustment layers and live
+in text, table cell fills, cells merged across rows, outline, bevel, overlay and blur effects, adjustment layers and live
 filters, pixel masks on objects other than images, brush strokes, embedded files other than
 Affinity documents without a cached picture, Lab colours (converted to RGB) and Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
 with that reason.
@@ -71,9 +72,9 @@ description of the format and from public files, never from Affinity itself:
   complete Affinity document, whose pixels are the node's units; with `PBBx` 2 the centre of its
   content is the node's origin (as for the cached pictures), otherwise its page's. Learned from
   the structure of documents their owner made earlier, confirmed against their thumbnails.
-* **Paragraph indents and spacing** (`Doub` slots 2–6 of a paragraph's attributes) and frame
-  text's automatic leading were identified on three public MIT documents, `tiny-text-indent.af`,
-  `tiny-text-para-spacing.af` and `tiny-text-frame.af` from
+* **Paragraph indents and spacing** (`Doub` slots 2–6 of a paragraph's attributes), frame text's
+  automatic leading and the shadow angle were identified on four public MIT documents,
+  `tiny-text-indent.af`, `tiny-text-para-spacing.af`, `tiny-text-frame.af` and `tiny-fx.af` from
   [SethRobinson/Patchy](https://github.com/SethRobinson/Patchy) at `de84eab`, by measuring their
   thumbnails; only their document data was read (sha256 as in VectorCraft's corpus manifest).
 * **Tables, paragraph alignment runs, paragraph leading, artistic text's automatic leading, the

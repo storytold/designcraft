@@ -339,6 +339,15 @@ pub enum Kind {
     Unsupported,
 }
 
+/// A layer effect. Lengths are document pixels; `angle` is the direction the shadow is offset in
+/// (radians, clockwise from +x as y points down: π/2 puts it below).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Effect {
+    DropShadow { color: crate::paint::Color, opacity: f64, radius: f64, distance: f64, angle: f64 },
+    InnerShadow { color: crate::paint::Color, opacity: f64, radius: f64, distance: f64, angle: f64 },
+    OuterGlow { color: crate::paint::Color, opacity: f64, radius: f64 },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub class: Tag,
@@ -352,6 +361,8 @@ pub struct Node {
     pub mask: Option<Path>,
     /// Pixel mask: grey levels (white shows the node, black hides it); outside it the node is hidden.
     pub pixel_mask: Option<Image>,
+    /// Layer effects DesignCraft can show (others are reported).
+    pub effects: Vec<Effect>,
     /// Bottom to top.
     pub children: Vec<Node>,
 }
@@ -577,10 +588,8 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         let (mask, attached_mask) = self.attached_masks(id, world)?;
         let pixel_mask = attached_mask.or(child_mask);
         self.active.remove(&id);
-        if s.objs(id, b"FiEf").iter().any(|e| s.bool(*e, b"Enab") != Some(false)) {
-            self.warn("layer effects (shadows, glows, outlines, bevels…)");
-        }
-        Ok(Some(Node { class, name, visible, locked, opacity, blend, kind, mask, pixel_mask, children }))
+        let effects = self.effects(id, world);
+        Ok(Some(Node { class, name, visible, locked, opacity, blend, kind, mask, pixel_mask, effects, children }))
     }
 
     fn kind(&mut self, id: ObjId, class: Tag, world: Affine, parent: Affine) -> Result<Kind, Error> {
@@ -671,6 +680,36 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 Kind::Unsupported
             }
         })
+    }
+
+    /// The enabled layer effects (`FiEf`) of node `id`. The angle convention was measured on the
+    /// public MIT fx fixture (Patchy): an angle of π/2 with offset 10 shadows 10 below.
+    fn effects(&mut self, id: ObjId, world: Affine) -> Vec<Effect> {
+        let s = self.s;
+        let mut out = Vec::new();
+        for e in s.objs(id, b"FiEf").into_iter().take(64) {
+            if s.bool(e, b"Enab") == Some(false) {
+                continue;
+            }
+            // "Scale with object": lengths follow the node's transform; otherwise they are absolute.
+            let k = if s.bool(e, b"SclO") == Some(true) { world.scale() } else { 1.0 };
+            let len = |t: &[u8; 4]| s.f64(e, t).filter(|v| v.is_finite() && *v >= 0.0 && *v < 1e6).unwrap_or(0.0) * k;
+            let opacity = s.f64(e, b"Opac").filter(|v| v.is_finite()).unwrap_or(1.0).clamp(0.0, 1.0);
+            let angle = s.f64(e, b"Angl").filter(|v| v.is_finite()).unwrap_or(0.0);
+            let color = s.obj(e, b"Colr").and_then(|c| crate::paint::color(self, c));
+            let class = s.class(e).map(|c| c.0.to_be_bytes());
+            match (class.as_ref(), color) {
+                (Some(b"Shad"), Some(color)) => out.push(Effect::DropShadow { color, opacity, radius: len(b"Radi"), distance: len(b"Offs"), angle }),
+                (Some(b"InnS"), Some(color)) => out.push(Effect::InnerShadow { color, opacity, radius: len(b"Radi"), distance: len(b"Offs"), angle }),
+                (Some(b"OutG"), Some(color)) => out.push(Effect::OuterGlow { color, opacity, radius: len(b"Radi") }),
+                (Some(b"Strk"), _) => self.warn("outline effects (left out)"),
+                (Some(b"BevE" | b"EmbE"), _) => self.warn("bevel and emboss effects (left out)"),
+                (Some(b"ColO" | b"GrdO"), _) => self.warn("colour and gradient overlay effects (left out)"),
+                (Some(b"Gaus"), _) => self.warn("blur effects (left out)"),
+                _ => self.warn("layer effects of other kinds (left out)"),
+            }
+        }
+        out
     }
 
     /// Vector shapes attached to a node (`AdCh`) mask it: it shows only inside their outlines;

@@ -508,6 +508,40 @@ fn master_pages_become_parents_showing_the_right_master_page() {
 }
 
 #[test]
+fn shadows_point_where_affinity_puts_them() {
+    // A blue shadow 10 px straight below (angle π/2), blurred 2 px, at half opacity.
+    let shadow = F::Obj(
+        tag(b"Shad"),
+        vec![
+            (tag(b"Enab"), F::Bool(true)),
+            (tag(b"Opac"), F::F64(0.5)),
+            (tag(b"Radi"), F::F64(2.0)),
+            (tag(b"Offs"), F::F64(10.0)),
+            (tag(b"Angl"), F::F64(std::f64::consts::FRAC_PI_2)),
+            (
+                tag(b"Colr"),
+                F::Obj(tag(b"RGBA"), vec![(tag(b"_col"), F::Struct([0.0f32, 0.0, 1.0, 1.0].iter().flat_map(|v| v.to_le_bytes()).collect()))]),
+            ),
+        ],
+    );
+    let bevel = F::Obj(tag(b"BevE"), vec![(tag(b"Enab"), F::Bool(true))]);
+    let mut node = rectangle(10, (0.0, 0.0), (50.0, 50.0));
+    if let F::Def(_, _, fields) = &mut node {
+        fields.push((tag(b"FiEf"), F::Shared(vec![shadow, bevel])));
+    }
+    let imported = designcraft_affinity::import(&canvas_with(vec![node], None)).unwrap();
+    let d = &imported.document;
+    let rect = d.spreads[0].items.iter().find(|i| i.name == "Magenta box").unwrap();
+    let ds = &rect.effects.drop_shadow;
+    assert!(ds.on);
+    // DesignCraft's angle is where the light comes from: light from above (90°) shadows below.
+    assert!((ds.angle - 90.0).abs() < 1e-9, "{}", ds.angle);
+    assert_eq!((ds.distance, ds.size, ds.opacity), (10.0, 2.0, 0.5));
+    assert_eq!(d.resolve_color(&ds.color, 1.0), Some(Color::rgb(0.0, 0.0, 1.0)));
+    assert!(imported.warnings.iter().any(|w| w.contains("bevel")), "{:?}", imported.warnings);
+}
+
+#[test]
 fn not_an_affinity_file_is_an_error_not_a_crash() {
     assert!(designcraft_affinity::import(b"not affinity").is_err());
     let mut file = publisher();

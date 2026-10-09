@@ -410,6 +410,7 @@ impl Builder {
 
     /// Name, visibility, lock, opacity and blend mode of `node` onto `it`.
     fn node_props(&mut self, node: &Node, it: &mut Item) {
+        self.effects(&node.effects, it);
         it.name = node.name.clone();
         it.hidden |= !node.visible;
         it.locked |= node.locked;
@@ -449,6 +450,54 @@ impl Builder {
         let mut g = self.new_item(layer, Shape::Group, PathData::default());
         g.content = Content::Group { items };
         Some(g)
+    }
+
+    /// Shadows and glows. Affinity gives the direction a shadow goes; DesignCraft (like InDesign)
+    /// the direction its light comes from.
+    fn effects(&mut self, effects: &[model::Effect], it: &mut Item) {
+        let k = self.scale;
+        let pt = move |v: f64| (v * k).clamp(0.0, 1000.0);
+        let degrees = |a: f64| (180.0 - a.to_degrees()).rem_euclid(360.0);
+        for e in effects {
+            match e {
+                model::Effect::DropShadow { color, opacity, radius, distance, angle } => {
+                    let (color, alpha) = self.color(color);
+                    it.effects.drop_shadow = designcraft_doc::DropShadow {
+                        on: true,
+                        color: self.swatch(color),
+                        opacity: (opacity * alpha) as f32,
+                        angle: degrees(*angle),
+                        global_light: false,
+                        distance: pt(*distance),
+                        size: pt(*radius),
+                        spread: 0.0,
+                    };
+                }
+                model::Effect::InnerShadow { color, opacity, radius, distance, angle } => {
+                    let (color, alpha) = self.color(color);
+                    it.effects.inner_shadow = designcraft_doc::InnerShadow {
+                        on: true,
+                        color: self.swatch(color),
+                        opacity: (opacity * alpha) as f32,
+                        angle: degrees(*angle),
+                        global_light: false,
+                        distance: pt(*distance),
+                        size: pt(*radius),
+                        choke: 0.0,
+                    };
+                }
+                model::Effect::OuterGlow { color, opacity, radius } => {
+                    let (color, alpha) = self.color(color);
+                    it.effects.outer_glow = designcraft_doc::OuterGlow {
+                        on: true,
+                        color: self.swatch(color),
+                        opacity: (opacity * alpha) as f32,
+                        size: pt(*radius),
+                        spread: 0.0,
+                    };
+                }
+            }
+        }
     }
 
     fn children(&mut self, node: &Node, xf: Affine, layer: LayerId, depth: usize) -> Option<Vec<Arc<Item>>> {
@@ -1464,6 +1513,7 @@ mod tests {
             kind,
             mask: None,
             pixel_mask,
+            effects: vec![],
             children,
         }
     }
