@@ -16,6 +16,7 @@ pub mod dock;
 pub mod i18n;
 pub mod icons;
 pub mod menus;
+mod object_control;
 pub mod panels;
 pub mod render_worker;
 mod rtl;

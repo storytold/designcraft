@@ -381,7 +381,7 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
 // ---------------------------------------------------------------- Objects
 
 /// The 9-point reference-point proxy; returns a newly picked point (0..8, row-major).
-fn ref_point_proxy(ui: &mut Ui, r: Rect, cur: u8) -> Option<u8> {
+pub(crate) fn ref_point_proxy(ui: &mut Ui, r: Rect, cur: u8) -> Option<u8> {
     let t = Tokens::get(ui.ctx());
     let mut out = None;
     let pitch = r.width() / 3.0;
@@ -466,7 +466,7 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
 }
 
 /// A stroke-type preview dropdown (light box with the line style).
-fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32) {
+pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32) {
     const TYPES: &[(&str, &str)] = &[
         ("Solid", "solid"),
         ("Dashed", "dashed"),
@@ -563,6 +563,19 @@ fn paint_corner_shape(p: &egui::Painter, r: Rect, shape: CornerShape) {
     p.add(egui::Shape::line(pts, s));
 }
 
+pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32) {
+    let resp = preview_dropdown(ui, width, |p, r| paint_corner_shape(p, r, shape));
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(140.0);
+        for s in CornerShape::ALL {
+            if ui.selectable_label(s == shape, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, s.label()))).clicked() {
+                let _ = app.run("object.cornerOptions", json!({"shape": s, "size": if size > 0.0 { size } else { 12.0 }}));
+                ui.close();
+            }
+        }
+    });
+}
+
 fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
@@ -623,16 +636,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         let _ = app.run("object.cornerOptions", json!({"shape": sh, "size": v}));
     }
     place(ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), |ui| {
-        let resp = preview_dropdown(ui, 54.0, |p, r| paint_corner_shape(p, r, shape));
-        egui::Popup::menu(&resp).show(|ui| {
-            ui.set_min_width(140.0);
-            for s in CornerShape::ALL {
-                if ui.selectable_label(s == shape, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, s.label()))).clicked() {
-                    let _ = app.run("object.cornerOptions", json!({"shape": s, "size": if size > 0.0 { size } else { 12.0 }}));
-                    ui.close();
-                }
-            }
-        });
+        corner_type_dropdown(app, ui, shape, size, 54.0);
     });
     ui.add_space(4.0);
     // Opacity.
