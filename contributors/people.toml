@@ -21,3 +21,8 @@
 real_name = "Brandon Thomas"
 display_name = "Brandon Thomas"
 sync_github_name = false
+
+[people.kubuntugamer]
+real_name = "Chas. Bigham"
+display_name = "Chas. Bigham"
+sync_github_name = false
