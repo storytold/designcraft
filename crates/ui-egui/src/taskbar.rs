@@ -175,7 +175,7 @@ fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool) {
         }
     });
     if widgets::icon_toggle(ui, "frame-options", false, crate::i18n::tr(&app.ui.language, "Text Frame Options")).clicked() {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", crate::dialogs::text_frame_option_fields(app)));
     }
 }
 

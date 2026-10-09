@@ -1732,16 +1732,16 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
         return;
     }
     if params.is_null() && id == "object.textFrameOptions" {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", crate::dialogs::text_frame_option_fields(app)));
         return;
     }
-    if params.is_null() && id == "file.close" {
-        if let Some(st) = app.session.active()
-            && st.is_dirty()
-        {
-            crate::dialogs::open_close_document(app);
-            return;
-        }
+    if params.is_null()
+        && id == "file.close"
+        && let Some(st) = app.session.active()
+        && st.is_dirty()
+    {
+        crate::dialogs::open_close_document(app);
+        return;
     }
     if params.is_null()
         && ui_label(id).is_none()

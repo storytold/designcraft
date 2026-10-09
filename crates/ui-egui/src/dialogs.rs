@@ -30,7 +30,9 @@ impl Dialog {
             "insertTable" => json!({"bodyRows": 4, "columns": 4, "headerRows": 0, "footerRows": 0}),
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
-            "textFrameOptions" => json!({"columns": 1, "gutter": "1p0", "inset": "0p0", "verticalJustification": "top"}),
+            "textFrameOptions" => {
+                json!({"columns": 1, "gutter": "1p0", "inset": "0p0", "verticalJustification": "top", "columnRule": false, "columnRuleWeight": "0p1", "columnRuleColor": "[Black]"})
+            }
             "documentSetup" => json!({}),
             _ => json!({}),
         };
@@ -94,6 +96,28 @@ impl Dialog {
             _ => None,
         }
     }
+}
+
+/// The Text Frame Options of the first selected text frame, for the dialog's initial values so
+/// confirming it doesn't reset fields the user didn't touch (`{}`, and so the defaults, when
+/// nothing text-frame-ish is selected).
+pub fn text_frame_option_fields(app: &DesignApp) -> Value {
+    let Some(o) = app
+        .session
+        .active()
+        .and_then(|st| st.selection.items.iter().find_map(|id| st.doc.item(*id).and_then(|i| i.text_frame()).map(|t| &t.options)))
+    else {
+        return json!({});
+    };
+    json!({
+        "columns": o.columns,
+        "gutter": format_measure(o.gutter, Unit::Picas),
+        "inset": format_measure(o.inset[0], Unit::Picas),
+        "verticalJustification": serde_json::to_value(o.vertical_justification).unwrap_or_else(|_| json!("top")),
+        "columnRule": o.column_rule,
+        "columnRuleWeight": format_measure(o.column_rule_weight, Unit::Picas),
+        "columnRuleColor": o.column_rule_color,
+    })
 }
 
 fn text_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32) {
@@ -160,10 +184,17 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 egui::Event::Key { key, pressed: true, modifiers, .. } => {
                     // Ignore modifier-only key presses (Ctrl, Alt, Shift, Super/Cmd alone).
                     // We want the actual key that was pressed with modifiers.
-                    if matches!(key, egui::Key::ControlLeft | egui::Key::ControlRight
-                        | egui::Key::AltLeft | egui::Key::AltRight
-                        | egui::Key::ShiftLeft | egui::Key::ShiftRight
-                        | egui::Key::SuperLeft | egui::Key::SuperRight) {
+                    if matches!(
+                        key,
+                        egui::Key::ControlLeft
+                            | egui::Key::ControlRight
+                            | egui::Key::AltLeft
+                            | egui::Key::AltRight
+                            | egui::Key::ShiftLeft
+                            | egui::Key::ShiftRight
+                            | egui::Key::SuperLeft
+                            | egui::Key::SuperRight
+                    ) {
                         None
                     } else {
                         Some((*key, *modifiers))
@@ -233,12 +264,9 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 
 /// File › Close: confirm if the document has unsaved changes.
 pub fn open_close_document(app: &mut DesignApp) {
-    let st = app.session.active().unwrap();
+    let Some(st) = app.session.active() else { return };
     let title = st.title();
-    app.ui.dialog = Some(Dialog::new(
-        "closeDocument",
-        json!({"title": title, "dirty": st.is_dirty()}),
-    ));
+    app.ui.dialog = Some(Dialog::new("closeDocument", json!({"title": title, "dirty": st.is_dirty()})));
 }
 
 /// File › Print, with the printers the system knows.
@@ -1365,6 +1393,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 });
             }
             "textFrameOptions" => {
+                let swatches: Vec<String> =
+                    app.session.active().map(|st| st.doc.swatches.iter().filter(|w| !w.hidden).map(|w| w.name.clone()).collect()).unwrap_or_default();
                 egui::Grid::new("tfo").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Number of columns"));
                     text_field(ui, &mut d, "columns", 80.0);
@@ -1381,6 +1411,22 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         for v in ["top", "center", "bottom", "justify"] {
                             if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, v))).clicked() {
                                 d.fields.insert("verticalJustification".into(), json!(v));
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("");
+                    check(ui, &mut d, "columnRule", crate::i18n::tr(&app.ui.language, "Column Rule"));
+                    ui.end_row();
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Weight"));
+                    text_field(ui, &mut d, "columnRuleWeight", 80.0);
+                    ui.end_row();
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color"));
+                    let cur = d.s("columnRuleColor");
+                    egui::ComboBox::from_id_salt("crcolor").selected_text(cur.as_str()).width(140.0).show_ui(ui, |ui| {
+                        for w in &swatches {
+                            if ui.selectable_label(cur == *w, w).clicked() {
+                                d.fields.insert("columnRuleColor".into(), json!(w));
                             }
                         }
                     });
@@ -1470,7 +1516,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         ),
         "textFrameOptions" => app.run(
             "object.textFrameOptions",
-            json!({"columns": d.n("columns").unwrap_or(1.0) as u64, "gutter": d.m("gutter").unwrap_or(12.0), "inset": d.m("inset").unwrap_or(0.0), "verticalJustification": d.s("verticalJustification")}),
+            json!({"columns": d.n("columns").unwrap_or(1.0) as u64, "gutter": d.m("gutter").unwrap_or(12.0), "inset": d.m("inset").unwrap_or(0.0), "verticalJustification": d.s("verticalJustification"), "columnRule": d.b("columnRule"), "columnRuleWeight": d.m("columnRuleWeight").unwrap_or(1.0), "columnRuleColor": d.s("columnRuleColor")}),
         ),
         "documentSetup" => {
             let edges = |k: &str| json!(["Top", "Bottom", "Inside", "Outside"].map(|e| d.m(&format!("{k}{e}")).unwrap_or(0.0)));
@@ -2168,13 +2214,16 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         ui.end_row();
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
                         let swatches: Vec<String> = st.doc.swatches.iter().map(|s| s.name.clone()).collect();
-                        egui::ComboBox::from_id_salt("psr_above_color").selected_text(ra["color"].as_str().unwrap_or("")).width(150.0).show_ui(ui, |ui| {
-                            for sw in swatches {
-                                if ui.selectable_label(sw == ra["color"].as_str().unwrap_or(""), &sw).clicked() {
-                                    d.fields.insert("p.rule_above".into(), json!({"on": true, "color": sw}));
+                        egui::ComboBox::from_id_salt("psr_above_color").selected_text(ra["color"].as_str().unwrap_or("")).width(150.0).show_ui(
+                            ui,
+                            |ui| {
+                                for sw in swatches {
+                                    if ui.selectable_label(sw == ra["color"].as_str().unwrap_or(""), &sw).clicked() {
+                                        d.fields.insert("p.rule_above".into(), json!({"on": true, "color": sw}));
+                                    }
                                 }
-                            }
-                        });
+                            },
+                        );
                         ui.end_row();
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Offset:"));
                         if let Some(n) = crate::widgets::number(ui, "psr_above_offset", ra["offset"].as_f64(), " pt", 60.0, 2) {
@@ -2183,7 +2232,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         ui.end_row();
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width:"));
                         let w = ra["width"].as_str().unwrap_or("Column");
-                        egui::ComboBox::from_id_salt("psr_above_width").selected_text(crate::i18n::tr(&app.ui.language, &w)).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("psr_above_width").selected_text(crate::i18n::tr(&app.ui.language, w)).show_ui(ui, |ui| {
                             for v in ["Column", "Text"] {
                                 if ui.selectable_label(w == v, crate::i18n::tr(&app.ui.language, v)).clicked() {
                                     d.fields.insert("p.rule_above".into(), json!({"on": true, "width": v}));
@@ -2217,13 +2266,16 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         ui.end_row();
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
                         let swatches: Vec<String> = st.doc.swatches.iter().map(|s| s.name.clone()).collect();
-                        egui::ComboBox::from_id_salt("psr_below_color").selected_text(rb["color"].as_str().unwrap_or("")).width(150.0).show_ui(ui, |ui| {
-                            for sw in swatches {
-                                if ui.selectable_label(sw == rb["color"].as_str().unwrap_or(""), &sw).clicked() {
-                                    d.fields.insert("p.rule_below".into(), json!({"on": true, "color": sw}));
+                        egui::ComboBox::from_id_salt("psr_below_color").selected_text(rb["color"].as_str().unwrap_or("")).width(150.0).show_ui(
+                            ui,
+                            |ui| {
+                                for sw in swatches {
+                                    if ui.selectable_label(sw == rb["color"].as_str().unwrap_or(""), &sw).clicked() {
+                                        d.fields.insert("p.rule_below".into(), json!({"on": true, "color": sw}));
+                                    }
                                 }
-                            }
-                        });
+                            },
+                        );
                         ui.end_row();
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Offset:"));
                         if let Some(n) = crate::widgets::number(ui, "psr_below_offset", rb["offset"].as_f64(), " pt", 60.0, 2) {
@@ -2232,7 +2284,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         ui.end_row();
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width:"));
                         let w = rb["width"].as_str().unwrap_or("Column");
-                        egui::ComboBox::from_id_salt("psr_below_width").selected_text(crate::i18n::tr(&app.ui.language, &w)).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("psr_below_width").selected_text(crate::i18n::tr(&app.ui.language, w)).show_ui(ui, |ui| {
                             for v in ["Column", "Text"] {
                                 if ui.selectable_label(w == v, crate::i18n::tr(&app.ui.language, v)).clicked() {
                                     d.fields.insert("p.rule_below".into(), json!({"on": true, "width": v}));
@@ -2823,5 +2875,24 @@ mod tests {
         for c in designcraft_engine::command_specs() {
             let _ = command_fields(c.params);
         }
+    }
+
+    /// The Text Frame Options dialog opens with the selected frame's own options, so confirming
+    /// it doesn't reset the fields the user didn't touch.
+    #[test]
+    fn text_frame_option_fields_read_the_selection() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let _ = app.run("file.new", json!({}));
+        // Nothing selected: the `{}` falls back to `Dialog::new`'s defaults.
+        assert!(text_frame_option_fields(&app).as_object().is_none_or(|m| m.is_empty()));
+        let _ = app.run("frame.create", json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hi", "caret": false}));
+        let _ = app.run("object.textFrameOptions", json!({"columns": 2, "gutter": 20, "columnRule": true, "columnRuleWeight": 3}));
+        let f = text_frame_option_fields(&app);
+        assert_eq!(f["columns"], json!(2));
+        assert_eq!(f["gutter"], json!("1p8"), "20 pt, as the dialog shows it");
+        assert_eq!(f["verticalJustification"], json!("top"));
+        assert_eq!(f["columnRule"], json!(true));
+        assert_eq!(f["columnRuleWeight"], json!("0p3"));
+        assert_eq!(f["columnRuleColor"], json!("[Black]"));
     }
 }

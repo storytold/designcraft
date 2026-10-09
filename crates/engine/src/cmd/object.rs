@@ -479,7 +479,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns?, gutter?, inset?: number|[t,l,b,r], verticalJustification?: top|center|bottom|justify, firstBaseline?, autoSize?, ignoreWrap?, balanceColumns?, vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
+            "{columns?, gutter?, inset?: number|[t,l,b,r], verticalJustification?: top|center|bottom|justify, firstBaseline?, autoSize?, ignoreWrap?, balanceColumns?, columnRule?, columnRuleWeight?, columnRuleColor?, vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
             has_selection,
             text_frame_options
         ),
@@ -1456,6 +1456,12 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = p.get("columnRule").and_then(Value::as_bool) {
                 o.column_rule = v;
             }
+            if let Some(v) = p.get("columnRuleWeight").and_then(Value::as_f64) {
+                o.column_rule_weight = v.clamp(0.0, 1000.0);
+            }
+            if let Some(v) = p.get("columnRuleColor").and_then(Value::as_str) {
+                o.column_rule_color = v.to_string();
+            }
         }
         // Story direction belongs to the story: every frame of the thread turns.
         if let Some(v) = p.get("vertical").and_then(Value::as_bool) {
@@ -2419,5 +2425,42 @@ mod named_target_tests {
         assert_eq!(columns(&s), Some(2));
         // Commands documented with `ids` honour `id` too.
         assert_eq!(s.execute("conveyor.collect", &json!({"id": r["id"]})).unwrap()["count"], 1);
+    }
+
+    /// The column-rule options are stored, and a hostile weight is capped.
+    #[test]
+    fn text_frame_options_store_column_rules() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        s.execute(
+            "object.textFrameOptions",
+            &json!({"ids": [r["id"]], "columns": 3, "gutter": 14, "columnRule": true, "columnRuleWeight": 2, "columnRuleColor": "[Registration]"}),
+        )
+        .unwrap();
+        let opts = |s: &Session| s.doc().unwrap().doc.item(id).and_then(|i| i.text_frame().map(|t| t.options.clone())).unwrap();
+        let o = opts(&s);
+        assert!(o.column_rule);
+        assert_eq!(o.column_rule_weight, 2.0);
+        assert_eq!(o.column_rule_color, "[Registration]");
+        // `document.inspect` reports the rule so an agent can read back what it set.
+        let reported = |s: &mut Session| {
+            s.execute("document.inspect", &json!({})).unwrap()["spreads"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|sp| sp["items"].as_array())
+                .flatten()
+                .find_map(|i| i.get("columnRule").cloned())
+        };
+        assert_eq!(reported(&mut s), Some(json!({"weight": 2.0, "color": "[Registration]"})));
+        // A hostile weight is capped at 1000 pt.
+        s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columnRuleWeight": 1e9})).unwrap();
+        assert_eq!(opts(&s).column_rule_weight, 1000.0);
+        // The rule turns off again, and is no longer reported.
+        s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columnRule": false})).unwrap();
+        assert!(!opts(&s).column_rule);
+        assert_eq!(reported(&mut s), None);
     }
 }

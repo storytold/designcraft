@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use designcraft_compose::{ComposedStory, FrameText, Line};
+use designcraft_compose::{ComposedStory, FrameText, Line, column_rule_rects};
 use designcraft_doc::ItemId;
 use designcraft_fonts::FontDb;
 use designcraft_geom::{Affine, BezPath, Rect, Shape};
@@ -195,6 +195,19 @@ impl Renderer {
                 ctx.set_transform(m);
                 ctx.set_paint(color_of(&c, 1.0));
                 ctx.fill_rect(&d.rect);
+            }
+        }
+        // Column rules: a bar centred in each gutter between the frame's columns.
+        if let Some(o) = doc.item(ft.frame).and_then(|i| i.text_frame()).map(|t| &t.options)
+            && o.column_rule
+            && let Some(c) = doc.resolve_color(&o.column_rule_color, 1.0)
+        {
+            ctx.set_transform(m);
+            ctx.set_paint(color_of(&c, 1.0));
+            for r in column_rule_rects(&ft.columns, o.column_rule_weight) {
+                if rect_overlaps(r, vis) {
+                    ctx.fill_rect(&r);
+                }
             }
         }
         if !ft.tables.is_empty() {

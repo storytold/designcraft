@@ -41,6 +41,10 @@ fn item_json(it: &Item) -> Value {
         Content::Text(t) => {
             v["story"] = json!(t.story.0);
             v["columns"] = json!(t.options.columns);
+            // The column rule, when on, so an agent can read back what it set.
+            if t.options.column_rule {
+                v["columnRule"] = json!({"weight": t.options.column_rule_weight, "color": t.options.column_rule_color});
+            }
         }
         Content::Graphic(g) => v["asset"] = json!(g.asset.0),
         Content::Group { items } => v["children"] = Value::Array(items.iter().map(|c| item_json(c)).collect()),

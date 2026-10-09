@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use designcraft_compose::{ComposedStory, FrameText, PlacedGlyph};
+use designcraft_compose::{ComposedStory, FrameText, PlacedGlyph, column_rule_rects};
 use designcraft_fonts::{FontDb, FontFace};
 use designcraft_geom::kurbo::Shape as _;
 use designcraft_geom::{Affine, BezPath, Rect};
@@ -102,6 +102,21 @@ impl Exporter<'_> {
             for d in &ft.decos {
                 if let Some(c) = me.swatch_color(&d.color, d.tint) {
                     me.fill_rect(s, d.rect, c);
+                }
+            }
+            // Column rules: a bar centred in each gutter between the frame's columns.
+            let rule = me
+                .doc
+                .item(ft.frame)
+                .and_then(|i| i.text_frame())
+                .map(|t| &t.options)
+                .filter(|o| o.column_rule)
+                .map(|o| (o.column_rule_color.clone(), o.column_rule_weight));
+            if let Some((swatch, weight)) = rule
+                && let Some(c) = me.swatch_color(&swatch, 1.0)
+            {
+                for r in column_rule_rects(&ft.columns, weight) {
+                    me.fill_rect(s, r, c.clone());
                 }
             }
             if !ft.tables.is_empty() {

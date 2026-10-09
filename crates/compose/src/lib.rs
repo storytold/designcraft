@@ -308,6 +308,26 @@ impl FrameSpec {
     }
 }
 
+/// The column-rule bars of a frame: one per gutter between adjacent columns, `weight` points wide
+/// and centred in the gutter, running the full height of the columns. The rectangles are in the
+/// frame's inner space, the space of [`FrameText::columns`]; a single column or a zero (or
+/// non-finite) weight has no rules.
+pub fn column_rule_rects(columns: &[Rect], weight: f64) -> Vec<Rect> {
+    if !weight.is_finite() || weight <= 0.0 {
+        return Vec::new();
+    }
+    let w = weight.min(1000.0);
+    columns
+        .windows(2)
+        .filter_map(|pair| {
+            let a = *pair.first()?;
+            let b = *pair.get(1)?;
+            let x = (a.x1 + b.x0) / 2.0;
+            Some(Rect::new(x - w / 2.0, a.y0.min(b.y0), x + w / 2.0, a.y1.max(b.y1)))
+        })
+        .collect()
+}
+
 /// Composition inputs that are not in the story itself.
 #[derive(Clone, Debug, Default)]
 pub struct ComposeOptions {

@@ -1236,6 +1236,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Close Path", ["Close Path", "Close Path", "Close Path", "Close Path", "闭合路径"]),
     ("Color Group Options", ["Color Group Options", "Color Group Options", "Color Group Options", "Color Group Options", "颜色组选项"]),
+    ("Column Rule", ["Column Rule", "Column Rule", "Column Rule", "Column Rule", "列分隔线"]),
     ("Column Width", ["Column Width", "Column Width", "Column Width", "Column Width", "列宽"]),
     ("Condition Options…", ["Condition Options…", "Condition Options…", "Condition Options…", "Condition Options…", "条件选项…"]),
     (

@@ -1877,3 +1877,18 @@ fn vertical_lines_fit_the_em_box() {
         assert!((l.baseline - col.y0 - ascent).abs() < 1e-9, "{family}: {} {}", l.baseline, col.y0);
     }
 }
+
+#[test]
+fn column_rules_sit_in_the_gutters() {
+    let a = Rect::new(0.0, 10.0, 100.0, 210.0);
+    let b = Rect::new(120.0, 10.0, 220.0, 210.0);
+    let rules = column_rule_rects(&[a, b], 2.0);
+    assert_eq!(rules, vec![Rect::new(109.0, 10.0, 111.0, 210.0)], "centred in the 20 pt gutter, as wide as the weight");
+    // Three columns: a rule in each gutter.
+    let c = Rect::new(240.0, 10.0, 340.0, 210.0);
+    assert_eq!(column_rule_rects(&[a, b, c], 1.0).len(), 2);
+    assert!(column_rule_rects(&[a], 2.0).is_empty(), "a single column has no gutter");
+    assert!(column_rule_rects(&[a, b], 0.0).is_empty(), "no weight, no rule");
+    assert!(column_rule_rects(&[a, b], f64::NAN).is_empty(), "a non-finite weight has no rules");
+    assert_eq!(column_rule_rects(&[a, b], 1e9)[0].width(), 1000.0, "the weight is capped");
+}
