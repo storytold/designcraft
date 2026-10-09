@@ -190,7 +190,7 @@ pub struct TextRun {
 
 /// Paragraph alignment, indents, spacing and leading, in node space (document pixels before the
 /// node's text scale).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Paragraph {
     pub align: Align,
     /// Indent of every line but the first, from the left.
@@ -202,6 +202,14 @@ pub struct Paragraph {
     pub space_after: f64,
     /// Fixed distance between baselines, when the paragraph sets one.
     pub leading: Option<f64>,
+    /// Automatic leading as a multiple of the font's own line height (ascent plus descent).
+    pub auto_leading: f64,
+}
+
+impl Default for Paragraph {
+    fn default() -> Self {
+        Self { align: Align::Left, left: 0.0, right: 0.0, first: 0.0, space_before: 0.0, space_after: 0.0, leading: None, auto_leading: 1.0 }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

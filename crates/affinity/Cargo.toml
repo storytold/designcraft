@@ -18,6 +18,7 @@ designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
 designcraft-images = { workspace = true }
+designcraft-fonts = { workspace = true }
 crc32fast = { workspace = true }
 flate2 = { workspace = true }
 image = { workspace = true }

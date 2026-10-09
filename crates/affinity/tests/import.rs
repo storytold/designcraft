@@ -246,6 +246,8 @@ fn artistic_text_becomes_a_frame_with_its_baseline_at_the_anchor() {
     assert!(near((b.x0 + b.x1) / 2.0, 1200.0 * PT), "{b:?}");
     assert!(near(b.y0 + tf.options.first_baseline_min, 580.0 * PT), "{b:?} {:?}", tf.options);
     assert_eq!(tf.options.first_baseline, designcraft_doc::FirstBaseline::Fixed);
+    // Artistic text spaces its lines by the font size (DesignCraft's default is 120 %).
+    assert!(story.paras.iter().all(|p| p.para.auto_leading == Some(1.0)), "{:?}", story.paras);
 }
 
 #[test]

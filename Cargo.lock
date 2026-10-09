@@ -883,6 +883,7 @@ dependencies = [
  "designcraft-affinity",
  "designcraft-color",
  "designcraft-doc",
+ "designcraft-fonts",
  "designcraft-geom",
  "designcraft-images",
  "flate2",

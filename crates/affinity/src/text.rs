@@ -441,7 +441,8 @@ fn font_features(r: &mut Reader, attrs: Option<ObjId>, attribute_budget: &mut Op
     (features, all_caps)
 }
 
-/// A paragraph's alignment, indents, spacing and leading. The `Doub` slots: 1 fixed leading
+/// A paragraph's alignment, indents, spacing and leading. The `Doub` slots: 0 the automatic
+/// leading as a multiple of the font's line height (1 in every document checked), 1 fixed leading
 /// (when `Ints` slot 1 is 2; in every paragraph checked the two go together), 2 indent of the
 /// lines after the first, 3 right indent, 4 indent of the first line, 5 space before, 6 space
 /// after. Slots 2, 4, 5 and 6 were identified on the public MIT text-indent and text-para-spacing
@@ -469,7 +470,8 @@ fn paragraph(r: &mut Reader, p: ObjId) -> Paragraph {
             None
         }
     };
-    Paragraph { align, left: at(2), right: at(3), first: at(4), space_before: at(5).max(0.0), space_after: at(6).max(0.0), leading }
+    let auto_leading = slot(doubles, 0, float).filter(|v| *v > 0.0 && *v < 100.0).unwrap_or(1.0);
+    Paragraph { align, left: at(2), right: at(3), first: at(4), space_before: at(5).max(0.0), space_after: at(6).max(0.0), leading, auto_leading }
 }
 
 /// The scale a text frame or table gives its type (`FTxS`, stored like `Xfrm`): none unless set.

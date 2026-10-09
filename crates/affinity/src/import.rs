@@ -73,6 +73,8 @@ struct Builder {
     colors: Vec<(Color, String)>,
     warnings: BTreeMap<String, usize>,
     images: usize,
+    /// Fonts' line heights in em, by family and style.
+    line_heights: HashMap<(String, String), f64>,
 }
 
 impl Builder {
@@ -95,7 +97,7 @@ impl Builder {
         };
         let doc = Document::new(&nd);
         let parent = doc.parents.first().map(|p| p.id);
-        Self { doc, scale, parent, layers: HashMap::new(), colors: Vec::new(), warnings: BTreeMap::new(), images: 0 }
+        Self { doc, scale, parent, layers: HashMap::new(), colors: Vec::new(), warnings: BTreeMap::new(), images: 0, line_heights: HashMap::new() }
     }
 
     fn warn(&mut self, what: &str) {
@@ -703,7 +705,7 @@ impl Builder {
     fn text(&mut self, t: &model::Text, xf: Affine, layer: LayerId) -> Option<Item> {
         let p = self.placement(xf * affine(t.transform), xf * affine(t.text_transform))?;
         let id = StoryId(self.doc.alloc());
-        let (story, max_size) = self.story(id, &t.runs, (p.size_scale, p.h_scale));
+        let (story, max_size) = self.story(id, &t.runs, (p.size_scale, p.h_scale), t.frame.is_none());
         let alpha = self.text_alpha(&t.runs);
         let mut options = TextFrameOptions::default();
         let rect = match t.frame {
@@ -780,7 +782,7 @@ impl Builder {
             // Cells to the right merged into this one widen it.
             let span = 1 + t.cells.iter().skip(i + 1).take(ncols - c - 1).take_while(|n| n.merged_left).count();
             let last = c + span - 1;
-            let (mut text, _) = self.story(StoryId(0), &src.runs, (p.size_scale, p.h_scale));
+            let (mut text, _) = self.story(StoryId(0), &src.runs, (p.size_scale, p.h_scale), false);
             if src.runs.iter().any(|r| matches!(&r.fill, Paint::Solid(c) if c.alpha() < 1.0)) {
                 self.warn("semi-transparent text in tables (imported opaque)");
             }
@@ -832,7 +834,7 @@ impl Builder {
 
     /// A story from runs → (the story, its largest font size in points). Each paragraph takes the
     /// alignment of the run it starts with.
-    fn story(&mut self, id: StoryId, runs: &[model::TextRun], scale: (f64, f64)) -> (Story, f64) {
+    fn story(&mut self, id: StoryId, runs: &[model::TextRun], scale: (f64, f64), artistic: bool) -> (Story, f64) {
         let mut story = Story::new(id);
         let mut max_size: f64 = 0.0;
         let mut first = true;
@@ -845,8 +847,9 @@ impl Builder {
                     '\u{2029}' | '\r' | '\n' => Some('\n'),
                     '\u{2028}' | '\t' => Some(c),
                     c if c.is_control() => None,
-                    // DesignCraft's private-use special characters can't come from Affinity text.
-                    '\u{E000}'..='\u{F8FF}' => None,
+                    // DesignCraft's special characters (private use, U+E000 on) can't come from Affinity
+                    // text; icon fonts further up the private use area stay.
+                    '\u{E000}'..='\u{E0FF}' => None,
                     c => Some(c),
                 })
                 .collect();
@@ -871,6 +874,14 @@ impl Builder {
             story.delete(n - 1..n);
         }
         let ranges = story.para_ranges();
+        let fonts: Vec<(String, String)> = ranges
+            .iter()
+            .map(|r| {
+                let f = &story.char_format_at(r.start).over;
+                (f.font_family.clone().unwrap_or_default(), f.font_style.clone().unwrap_or_default())
+            })
+            .collect();
+        let line_heights: HashMap<(String, String), f64> = fonts.iter().map(|f| (f.clone(), self.line_height(&f.0, &f.1))).collect();
         let (v, h) = (scale.0, scale.0 * scale.1);
         let mut previous_after = 0.0;
         let mut para_leading: Vec<(std::ops::Range<usize>, f64)> = Vec::new();
@@ -906,6 +917,14 @@ impl Builder {
             if let Some(l) = f.leading.map(|l| pt(l, v)).filter(|l| *l > 0.0) {
                 para_leading.push((range.clone(), l.min(5000.0)));
             }
+            // Automatic leading, measured on thumbnails: artistic text spaces its lines by the font
+            // size (Bebas Neue Pro and Impact lines exactly 1 em apart), frame text by the font's
+            // own line height (Arial 1.14–1.17 em); DesignCraft uses 120 % of the size.
+            let ratio =
+                if artistic { f.auto_leading } else { fonts.get(pi).and_then(|f| line_heights.get(f)).copied().unwrap_or(1.2) * f.auto_leading };
+            if ratio.is_finite() && (0.5..=3.0).contains(&ratio) && (ratio - 1.2).abs() > 0.005 {
+                p.para.auto_leading = Some(ratio);
+            }
             // Affinity's hyphenation settings aren't read yet; none of the documents checked
             // hyphenates, while DesignCraft's paragraphs do by default.
             p.para.hyphenate = Some(false);
@@ -919,6 +938,23 @@ impl Builder {
             });
         }
         (story, if max_size > 0.0 { max_size } else { 12.0 })
+    }
+
+    /// A font's own line height (ascent plus descent) in em, as DesignCraft will lay it out (an
+    /// installed face, or the fallback DesignCraft uses for a missing one).
+    fn line_height(&mut self, family: &str, style: &str) -> f64 {
+        let key = (family.to_string(), style.to_string());
+        if let Some(h) = self.line_heights.get(&key) {
+            return *h;
+        }
+        let defaults = designcraft_doc::CharProps::default();
+        let family = if family.is_empty() { defaults.font_family.as_str() } else { family };
+        let style = if style.is_empty() { defaults.font_style.as_str() } else { style };
+        let face = designcraft_fonts::FontDb::global().face(family, style);
+        let h = if face.upem > 0.0 { (face.ascent + face.descent) / face.upem } else { 1.2 };
+        let h = if h.is_finite() && h > 0.0 { h } else { 1.2 };
+        self.line_heights.insert(key, h);
+        h
     }
 
     /// Character attributes; `scale` is the vertical scale to points and the horizontal scale
