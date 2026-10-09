@@ -157,7 +157,18 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     if !recording.is_empty() {
         let pressed = ui.input(|i| {
             i.events.iter().find_map(|e| match e {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    // Ignore modifier-only key presses (Ctrl, Alt, Shift, Super/Cmd alone).
+                    // We want the actual key that was pressed with modifiers.
+                    if matches!(key, egui::Key::ControlLeft | egui::Key::ControlRight
+                        | egui::Key::AltLeft | egui::Key::AltRight
+                        | egui::Key::ShiftLeft | egui::Key::ShiftRight
+                        | egui::Key::SuperLeft | egui::Key::SuperRight) {
+                        None
+                    } else {
+                        Some((*key, *modifiers))
+                    }
+                }
                 _ => None,
             })
         });
