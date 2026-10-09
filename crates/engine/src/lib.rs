@@ -459,10 +459,9 @@ impl Session {
         }
         let Some(sid) = st.doc.settings.primary_story else { return };
         let Some(story) = st.doc.story(sid) else { return };
-        // The same document before the command (none: the command made or opened it).
-        let before = before.filter(|(uid, _)| *uid == st.uid).map(|(_, doc)| doc);
-        // The cached layout of the story as it was, asked for before `get` replaces it.
-        let composed_before = before.and_then(|doc| self.cache.composed_for(doc, sid));
+        // The same document before the command (none: the command made or opened it) and the
+        // story's layout in it, composed first so that the cache ends up with the layout as it is.
+        let before = before.filter(|(uid, _)| *uid == st.uid).map(|(_, doc)| (doc, self.cache.get(doc, sid, None)));
         let cs = self.cache.get(&st.doc, sid, None);
         let overset = cs.overset_at.is_some();
         let empty_tail = story.frames.len() > 1 && story.frames.last().is_some_and(|f| cs.frame(*f).is_none_or(|ft| ft.range.is_empty()));
@@ -470,8 +469,8 @@ impl Session {
             return;
         }
         if overset
-            && let Some(old) = before
-            && !reflow_adds_pages(old, &st.doc, sid, composed_before.as_deref())
+            && let Some((old, was)) = &before
+            && !reflow_adds_pages(old, &st.doc, sid, was, &cs)
         {
             return;
         }
@@ -549,31 +548,28 @@ impl Session {
 }
 
 /// Does Smart Text Reflow add pages for the command that turned `old` into `new` and left the
-/// primary story `sid` overset? Not when it removed pages or frames of the story (they would
-/// only come back), and not when the story was overset already and the command didn't edit it.
-fn reflow_adds_pages(old: &Document, new: &Document, sid: StoryId, composed_old: Option<&ComposedStory>) -> bool {
-    let (Some(was), Some(now)) = (old.story(sid), new.story(sid)) else { return true };
+/// primary story `sid` overset (`was`, `now`: its layout in each)? Not when the command removed
+/// pages or frames of the story (they would only come back), and not when the story was overset
+/// already and the command didn't edit it.
+fn reflow_adds_pages(old: &Document, new: &Document, sid: StoryId, was: &ComposedStory, now: &ComposedStory) -> bool {
+    let (Some(a), Some(b)) = (old.story(sid), new.story(sid)) else { return true };
     // A story that just became the primary one is reflowed.
     if old.settings.primary_story != Some(sid) {
         return true;
     }
-    let kept: std::collections::HashSet<_> = now.frames.iter().copied().collect();
-    if new.page_count() < old.page_count() || was.frames.iter().any(|f| !kept.contains(f)) {
+    let kept: std::collections::HashSet<_> = b.frames.iter().copied().collect();
+    if new.page_count() < old.page_count() || a.frames.iter().any(|f| !kept.contains(f)) {
         return false;
     }
-    if story_edited(was, now) {
-        return true;
-    }
-    let was_overset = match composed_old {
-        Some(cs) => cs.overset_at.is_some(),
-        None => designcraft_compose::compose_story(old, sid, &Default::default()).overset_at.is_some(),
-    };
-    !was_overset
+    // It fitted: the command made it overset.
+    was.overset_at.is_none() || story_edited(a, b, was.overset_at != now.overset_at)
 }
 
-/// Did the story change in anything but the frames it flows through? Its revisions don't say:
-/// a style rename bumps them in every story, table cell and footnote, edited or not.
-fn story_edited(was: &Story, now: &Story) -> bool {
+/// Did the command edit the story: change its text (in cells and footnotes too), or anything
+/// else in it so that more or less of it fits (`refit`)? The frames it flows through don't count,
+/// nor do rewrites that change nothing: a style rename touches every story that uses the style
+/// and bumps the revision of every text.
+fn story_edited(was: &Story, now: &Story, refit: bool) -> bool {
     if std::ptr::eq(was, now) {
         return false;
     }
@@ -581,11 +577,15 @@ fn story_edited(was: &Story, now: &Story) -> bool {
         return true;
     }
     let (mut a, mut b) = (was.clone(), now.clone());
-    for st in [&mut a, &mut b] {
+    let mut texts = [Vec::new(), Vec::new()];
+    for (st, texts) in [&mut a, &mut b].into_iter().zip(&mut texts) {
         st.frames.clear();
-        st.for_each_text_mut(&mut |t| t.rev = 0);
+        st.for_each_text_mut(&mut |t| {
+            t.rev = 0;
+            texts.push(t.text.clone());
+        });
     }
-    a != b
+    a != b && (refit || texts[0] != texts[1])
 }
 
 fn push_undo(st: &mut DocState, e: HistoryEntry) {

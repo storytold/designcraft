@@ -142,7 +142,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Guides belong to the active layer: hidden with it (or with its Show Guides off) and locked with it.
 - Pencil tool (N): freehand strokes simplified to smooth paths (Alt closes); Smooth and Erase tools re-fit or remove the stretch you drag along (`path.smooth`, `path.erase`).
 - Edit › Keyboard Shortcuts: every command, click and press the new keys, conflicts shown, per-command and global reset; `window.setShortcut`.
-- Primary Text Frame (New Document) and Smart Text Reflow: pages are added when an edit makes the primary story overset and empty ones at the end removed, in the same undo step; pages and frames you delete stay deleted until the text is edited (Preferences › Type).
+- Primary Text Frame (New Document) and Smart Text Reflow: pages are added when an edit makes the primary story overset and empty ones at the end removed, in the same undo step; pages and frames you delete stay deleted until the story is edited (Preferences › Type).
 - Glyphs panel: every character of any font (rendered by our renderer), search by character or U+code, click to insert, recently used.
 - UI scaling (Preferences › Interface, 50–200%; `window.uiScale`); the window title steps aside when the bar is crowded.
 - Underline / Strikethrough Options: weight, offset, colour and tint (Character panel; screen, PDF and IDML).

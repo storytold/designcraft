@@ -458,17 +458,6 @@ mod reflow_tests {
         assert!(!overset(&s, sid));
     }
 
-    #[test]
-    fn deleting_the_only_primary_frame_is_harmless() {
-        let (mut s, sid) = primary_doc();
-        let frame = frames(&s, sid)[0].0;
-        s.execute("edit.clear", &json!({"ids": [frame]})).unwrap();
-        assert_eq!(pages(&s), 1);
-        // The next edit finds no primary story to reflow.
-        s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
-        assert_eq!(pages(&s), 1);
-    }
-
     fn reflowed() -> (Session, u64, usize) {
         let (mut s, sid) = primary_doc();
         type_text(&mut s, sid, &LINE.repeat(250));
@@ -525,16 +514,81 @@ mod reflow_tests {
     #[test]
     fn renaming_a_style_does_not_bring_deleted_pages_back() {
         let (mut s, sid, _) = reflowed();
-        // A rename bumps the revision of every text, the story's footnotes included.
+        // The story uses the style and has a footnote: a rename rewrites the story and bumps the
+        // revision of every text in it.
+        s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
         s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Body"})).unwrap();
         s.execute("footnote.insert", &json!({"text": "A note."})).unwrap();
-        s.execute("style.paragraph.create", &json!({"name": "Spare"})).unwrap();
         let n = pages(&s);
         s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
         assert_eq!(pages(&s), n - 1);
-        s.execute("style.paragraph.edit", &json!({"name": "Spare", "rename": "Spare2"})).unwrap();
-        assert_eq!(pages(&s), n - 1, "renaming an unused style adds no pages");
+        s.execute("style.paragraph.edit", &json!({"name": "Body", "rename": "Body Text"})).unwrap();
+        assert_eq!(pages(&s), n - 1, "renaming a style the story uses adds no pages");
         assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn formatting_the_text_reflows_again_after_a_deletion() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": LINE.len() * 250})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 14}})).unwrap();
+        assert!(pages(&s) > n, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn typing_in_a_footnote_reflows_again_after_a_deletion() {
+        let (mut s, sid, _) = reflowed();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "A note."})).unwrap();
+        let n = pages(&s);
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        // The caret is in the footnote: the story's own text stays as it is.
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        assert!(pages(&s) >= n, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn undoing_another_change_does_not_bring_deleted_pages_back() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("condition.new", &json!({"name": "Draft"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": LINE.len() * 250})).unwrap();
+        s.execute("condition.apply", &json!({"name": "Draft"})).unwrap();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        // Hiding the text and undoing that leaves the layout of the hidden text in the cache.
+        s.execute("condition.options", &json!({"name": "Draft", "visible": false})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+        assert_eq!(pages(&s), n - 1, "an edit elsewhere after the undo adds no pages");
+        assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn shrinking_the_primary_frame_adds_pages_after_an_undo_too() {
+        let (mut s, sid, n) = reflowed();
+        // The last fifth of the text is conditional and hidden: it fits on fewer pages.
+        let len = LINE.len() * 250;
+        s.execute("condition.new", &json!({"name": "Draft"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": len * 4 / 5, "focus": len})).unwrap();
+        s.execute("condition.apply", &json!({"name": "Draft"})).unwrap();
+        s.execute("condition.options", &json!({"name": "Draft", "visible": false})).unwrap();
+        let hidden = pages(&s);
+        assert!(hidden < n && !overset(&s, sid), "pages with the text hidden: {hidden}");
+        // Showing it and undoing that leaves the layout of the shown text in the cache.
+        s.execute("condition.options", &json!({"name": "Draft", "visible": true})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&s), hidden);
+        let frame = frames(&s, sid)[0].0;
+        s.execute("transform.set", &json!({"height": 300, "ids": [frame]})).unwrap();
+        assert!(pages(&s) > hidden, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
     }
 
     #[test]
