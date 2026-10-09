@@ -134,23 +134,26 @@ fn vsep(ui: &mut egui::Ui) {
 }
 
 /// Two-row context-sensitive Control panel.
-pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
+pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui, show: bool) {
     let t = Tokens::get(ui.ctx());
+    let height = if show { 59.0 } else { 0.0 };
     egui::Panel::top("control_bar")
-        .exact_size(59.0)
+        .exact_size(height)
         .frame(
             egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin { left: 8, right: 8, top: 5, bottom: 3 }).stroke(Stroke::new(1.0, t.divider)),
         )
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let text_mode =
-                    matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
-                if text_mode {
-                    control_text(app, ui);
-                } else {
-                    control_object(app, ui);
-                }
-            });
+            if show {
+                ui.horizontal(|ui| {
+                    let text_mode =
+                        matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
+                    if text_mode {
+                        control_text(app, ui);
+                    } else {
+                        control_object(app, ui);
+                    }
+                });
+            }
         });
 }
 

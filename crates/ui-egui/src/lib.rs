@@ -682,8 +682,10 @@ impl DesignApp {
             if dbg {
                 eprintln!("after app bar {:?}", ui.available_rect_before_wrap());
             }
-            if self.ui.control_bar && self.session.active().is_some() && self.ui.hidden_panels == 0 {
-                chrome::control_bar(self, ui);
+            let show_control = self.ui.control_bar && self.session.active().is_some() && self.ui.hidden_panels == 0;
+            chrome::control_bar(self, ui, show_control);
+            if dbg {
+                eprintln!("after control bar {:?}", ui.available_rect_before_wrap());
             }
             chrome::status_bar(self, ui);
             if dbg {
