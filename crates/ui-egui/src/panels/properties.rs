@@ -571,10 +571,15 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
     widgets::paint_chip(ui.painter(), chip, fc, fg);
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let resp = ui.interact(chip, ui.id().with("fillchip"), Sense::click()).on_hover_text(format!("Fill: {}", i.fill));
+    let resp = ui.interact(chip, ui.id().with("fillchip"), Sense::click_and_drag()).on_hover_text(format!("Fill: {} (double-click: Color Picker)", i.fill));
     swatch_menu(app, &resp, &doc, &i.fill, |app, n| {
         let _ = app.run("object.fill", json!({"swatch": n}));
     });
+    if resp.double_clicked() {
+        let rgb = doc.resolve_color(&i.fill, 1.0).map(|c| c.to_rgb()).unwrap_or([0.0; 3]);
+        let hex = format!("#{:02x}{:02x}{:02x}", (rgb[0] * 255.0).round() as u8, (rgb[1] * 255.0).round() as u8, (rgb[2] * 255.0).round() as u8);
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target": "fill", "hex": hex})));
+    }
     crate::rtl::paint(
         ui.painter(),
         b.min + vec2(34.0, FIELD_H / 2.0),
@@ -590,10 +595,15 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
     widgets::paint_stroke_chip(ui.painter(), chip, sc, egui::Color32::from_gray(20));
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let resp = ui.interact(chip, ui.id().with("strokechip"), Sense::click()).on_hover_text(format!("Stroke: {}", i.stroke));
+    let resp = ui.interact(chip, ui.id().with("strokechip"), Sense::click_and_drag()).on_hover_text(format!("Stroke: {} (double-click: Color Picker)", i.stroke));
     swatch_menu(app, &resp, &doc, &i.stroke, |app, n| {
         let _ = app.run("object.stroke", json!({"swatch": n}));
     });
+    if resp.double_clicked() {
+        let rgb = doc.resolve_color(&i.stroke, 1.0).map(|c| c.to_rgb()).unwrap_or([0.0; 3]);
+        let hex = format!("#{:02x}{:02x}{:02x}", (rgb[0] * 255.0).round() as u8, (rgb[1] * 255.0).round() as u8, (rgb[2] * 255.0).round() as u8);
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target": "stroke", "hex": hex})));
+    }
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
         app.ui.open_panel = Some("stroke".into());
     }
