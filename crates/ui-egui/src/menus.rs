@@ -1846,10 +1846,9 @@ fn parse_shortcut(sc: &str) -> Option<(egui::Modifiers, egui::Key)> {
     let mut key = None;
     for part in sc.split('+').filter(|s| !s.is_empty()) {
         match part {
-            "Cmd" => m.command = true,
+            "Cmd" | "Ctrl" => m.command = true, // Cmd on Mac, Ctrl on Win/Linux
             "Shift" => m.shift = true,
             "Alt" => m.alt = true,
-            "Ctrl" => m.ctrl = true,
             "=" => key = Some(egui::Key::Equals),
             "-" => key = Some(egui::Key::Minus),
             "[" => key = Some(egui::Key::OpenBracket),
