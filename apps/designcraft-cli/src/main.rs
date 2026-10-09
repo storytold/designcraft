@@ -11,6 +11,7 @@
 //! designcraft-cli mcp [--connect PORT] [--sample]  # MCP server over stdio (docs/mcp.md)
 //! designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]  # budgets on a synthetic stress document
 //! designcraft-cli bench FILE [--runs N]  # the same measurements on one document
+//! designcraft-cli validate-pdf FILE.pdf    # run the built-in PDF/X-4 conformance checks
 //! designcraft-cli links                   # Discord, website, app page and GitHub links
 //! designcraft-cli --version               # print the version
 //! ```
@@ -70,6 +71,7 @@ fn main() -> ExitCode {
         Some("mcp") => report(mcp(&args[1..])),
         Some("perf") => report(perf::perf(&args[1..])),
         Some("bench") => report(perf::bench(&args[1..])),
+        Some("validate-pdf") => report(validate_pdf(args.get(1).map(String::as_str))),
         Some("links") => {
             use designcraft_engine::links::*;
             outln!("Discord   {DISCORD}\nWebsite   {WEBSITE}\nApp page  {APP_PAGE}\nGitHub    {GITHUB}\nIssues    {ISSUES}");
@@ -98,6 +100,16 @@ fn report(r: Result<(), String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn validate_pdf(path: Option<&str>) -> Result<(), String> {
+    let path = path.ok_or("usage: designcraft-cli validate-pdf FILE.pdf")?;
+    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let issues = designcraft_pdf::check_pdfx4(&bytes);
+    let valid = issues.is_empty();
+    let report = json!({"path": path, "standard": "PDF/X-4", "valid": valid, "issues": issues});
+    outln!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+    if valid { Ok(()) } else { Err(format!("{path} failed PDF/X-4 validation")) }
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
