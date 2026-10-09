@@ -1783,6 +1783,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                 ("justify", "Justification"),
                 ("nested", "Drop Caps and Nested Styles"),
                 ("grep", "GREP Style"),
+                ("rule", "Paragraph Rules"),
                 ("color", "Character Color"),
                 ("export", "Export Tagging"),
             ] {
