@@ -352,6 +352,13 @@ struct SysFallback {
     chain_tried: std::collections::HashSet<&'static str>,
 }
 
+/// A system-internal family (its name starts with "."; macOS names its UI faces `.SF NS`,
+/// `.Hiragino Kaku Gothic Interface`, …): kept out of the font menus and listings, though a
+/// document that names one still finds it.
+pub fn is_internal_family(family: &str) -> bool {
+    family.starts_with('.')
+}
+
 /// Families tried (when installed) for characters the loaded fonts lack: CJK, symbols, emoji.
 #[cfg(not(target_arch = "wasm32"))]
 const SYSTEM_FALLBACKS: &[&str] = &[
@@ -1191,6 +1198,7 @@ impl ScopedFonts<'_> {
         let mut v: Vec<String> = self.own().iter().chain(self.db.read_faces().iter()).map(|f| f.family.clone()).collect();
         #[cfg(not(target_arch = "wasm32"))]
         v.extend(self.db.read_catalog().iter().map(|c| c.family.clone()));
+        v.retain(|f| !is_internal_family(f));
         v.sort_by_key(|a| a.to_lowercase());
         v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         v
@@ -1202,14 +1210,14 @@ impl ScopedFonts<'_> {
         let mut out: Vec<FamilyInfo> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for f in self.own().iter().chain(self.db.read_faces().iter()) {
-            if seen.insert(f.family.to_lowercase()) {
+            if !is_internal_family(&f.family) && seen.insert(f.family.to_lowercase()) {
                 let (group, native) = f.menu_group();
                 out.push(FamilyInfo { family: f.family.clone(), group, native: native.map(str::to_string) });
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
         for c in self.db.read_catalog().iter() {
-            if seen.insert(c.family.to_lowercase()) {
+            if !is_internal_family(&c.family) && seen.insert(c.family.to_lowercase()) {
                 out.push(FamilyInfo { family: c.family.clone(), group: c.group, native: c.native.clone() });
             }
         }
