@@ -19,8 +19,8 @@ mod tooling;
 
 use std::sync::Arc;
 
-use designcraft_compose::Cache;
-use designcraft_doc::{Document, LayerId, Selection};
+use designcraft_compose::{Cache, ComposedStory};
+use designcraft_doc::{Document, LayerId, Selection, Story, StoryId};
 use serde_json::Value;
 
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
@@ -181,7 +181,8 @@ pub struct Prefs {
     /// English names instead of their native ones. Documents store the English name either way.
     pub show_font_names_in_english: bool,
     /// Preferences › Type › Smart Text Reflow: pages follow the primary text frame's story
-    /// (added while it oversets, empty ones at the end removed).
+    /// (added when an edit makes it overset, empty ones at the end removed; deleted pages and
+    /// frames are not put back).
     pub smart_text_reflow: bool,
     /// Preferences › Autocorrect: typing a space or punctuation after a listed word replaces it.
     pub autocorrect: bool,
@@ -419,7 +420,7 @@ impl Session {
         }
         self.record_transform(id, params);
         if self.prefs.smart_text_reflow && spec.undoable {
-            self.smart_reflow();
+            self.smart_reflow(before.as_ref().map(|(uid, doc)| (*uid, doc)));
         }
         // Live captions follow their sources.
         if spec.undoable
@@ -448,19 +449,30 @@ impl Session {
         Ok(r)
     }
 
-    /// Smart Text Reflow for the primary story: add threaded pages while it oversets; remove
+    /// Smart Text Reflow for the primary story after a command (`before`: the document's uid and
+    /// the document as it was): add threaded pages when [`reflow_adds_pages`] says so; remove
     /// trailing pages whose only object is an empty frame of it.
-    fn smart_reflow(&mut self) {
+    fn smart_reflow(&mut self, before: Option<(u64, &Arc<Document>)>) {
         let Some(st) = self.active() else { return };
         if st.interaction.is_some() {
             return;
         }
         let Some(sid) = st.doc.settings.primary_story else { return };
         let Some(story) = st.doc.story(sid) else { return };
+        // The same document before the command (none: the command made or opened it).
+        let before = before.filter(|(uid, _)| *uid == st.uid).map(|(_, doc)| doc);
+        // The cached layout of the story as it was, asked for before `get` replaces it.
+        let composed_before = before.and_then(|doc| self.cache.composed_for(doc, sid));
         let cs = self.cache.get(&st.doc, sid, None);
         let overset = cs.overset_at.is_some();
         let empty_tail = story.frames.len() > 1 && story.frames.last().is_some_and(|f| cs.frame(*f).is_none_or(|ft| ft.range.is_empty()));
         if !overset && !empty_tail {
+            return;
+        }
+        if overset
+            && let Some(old) = before
+            && !reflow_adds_pages(old, &st.doc, sid, composed_before.as_deref())
+        {
             return;
         }
         let mut d = (*st.doc).clone();
@@ -534,6 +546,46 @@ impl Session {
         st.revision += 1;
         Ok(r)
     }
+}
+
+/// Does Smart Text Reflow add pages for the command that turned `old` into `new` and left the
+/// primary story `sid` overset? Not when it removed pages or frames of the story (they would
+/// only come back), and not when the story was overset already and the command didn't edit it.
+fn reflow_adds_pages(old: &Document, new: &Document, sid: StoryId, composed_old: Option<&ComposedStory>) -> bool {
+    let (Some(was), Some(now)) = (old.story(sid), new.story(sid)) else { return true };
+    // A story that just became the primary one is reflowed.
+    if old.settings.primary_story != Some(sid) {
+        return true;
+    }
+    let kept: std::collections::HashSet<_> = now.frames.iter().copied().collect();
+    if new.page_count() < old.page_count() || was.frames.iter().any(|f| !kept.contains(f)) {
+        return false;
+    }
+    if story_edited(was, now) {
+        return true;
+    }
+    let was_overset = match composed_old {
+        Some(cs) => cs.overset_at.is_some(),
+        None => designcraft_compose::compose_story(old, sid, &Default::default()).overset_at.is_some(),
+    };
+    !was_overset
+}
+
+/// Did the story change in anything but the frames it flows through? Its revisions don't say:
+/// a style rename bumps them in every story, table cell and footnote, edited or not.
+fn story_edited(was: &Story, now: &Story) -> bool {
+    if std::ptr::eq(was, now) {
+        return false;
+    }
+    if was.text != now.text {
+        return true;
+    }
+    let (mut a, mut b) = (was.clone(), now.clone());
+    for st in [&mut a, &mut b] {
+        st.frames.clear();
+        st.for_each_text_mut(&mut |t| t.rev = 0);
+    }
+    a != b
 }
 
 fn push_undo(st: &mut DocState, e: HistoryEntry) {

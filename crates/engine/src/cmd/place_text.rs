@@ -367,6 +367,174 @@ mod reflow_tests {
         s.execute("text.insert", &json!({"text": long})).unwrap();
         assert_eq!(s.doc().unwrap().doc.page_count(), 1);
     }
+
+    const LINE: &str = "Words keep coming and the page fills up quickly with them. ";
+
+    fn primary_doc() -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "primaryTextFrame": true})).unwrap();
+        let sid = s.doc().unwrap().doc.settings.primary_story.expect("primary story").0;
+        (s, sid)
+    }
+
+    fn type_text(s: &mut Session, sid: u64, text: &str) {
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("text.insert", &json!({"text": text})).unwrap();
+    }
+
+    fn pages(s: &Session) -> usize {
+        s.doc().unwrap().doc.page_count()
+    }
+
+    fn frames(s: &Session, sid: u64) -> Vec<designcraft_doc::ItemId> {
+        s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().frames.clone()
+    }
+
+    fn overset(s: &Session, sid: u64) -> bool {
+        designcraft_compose::compose_story(&s.doc().unwrap().doc, designcraft_doc::StoryId(sid), &Default::default()).overset_at.is_some()
+    }
+
+    #[test]
+    fn shrinking_the_primary_frame_until_it_oversets_adds_pages() {
+        let (mut s, sid) = primary_doc();
+        type_text(&mut s, sid, &LINE.repeat(20));
+        assert_eq!(pages(&s), 1, "the text fits on the first page");
+        let frame = frames(&s, sid)[0].0;
+        s.execute("transform.set", &json!({"height": 60, "ids": [frame]})).unwrap();
+        assert!(pages(&s) > 1, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn making_an_overset_story_the_primary_one_adds_pages() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": LINE.repeat(30), "caret": false})).unwrap();
+        let (frame, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        assert!(overset(&s, sid));
+        assert_eq!(pages(&s), 1);
+        s.execute("object.primaryTextFrame", &json!({"ids": [frame]})).unwrap();
+        assert!(pages(&s) > 1, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn showing_a_hidden_condition_adds_the_pages_its_text_needs() {
+        let (mut s, sid) = primary_doc();
+        let text = LINE.repeat(250);
+        type_text(&mut s, sid, &text);
+        let n = pages(&s);
+        assert!(n >= 3, "pages added: {n}");
+        s.execute("condition.new", &json!({"name": "Draft"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        s.execute("condition.apply", &json!({"name": "Draft"})).unwrap();
+        s.execute("condition.options", &json!({"name": "Draft", "visible": false})).unwrap();
+        assert_eq!(pages(&s), 1, "hidden text needs no pages");
+        // An edit elsewhere, so the layout cache holds the story as it is now.
+        s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+        assert_eq!(pages(&s), 1);
+        s.execute("condition.options", &json!({"name": "Draft", "visible": true})).unwrap();
+        assert!(pages(&s) >= n, "the pages are back: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn deleting_the_only_primary_frame_is_harmless() {
+        let (mut s, sid) = primary_doc();
+        let frame = frames(&s, sid)[0].0;
+        s.execute("edit.clear", &json!({"ids": [frame]})).unwrap();
+        assert_eq!(pages(&s), 1);
+        // The next edit finds no primary story to reflow.
+        s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+        assert_eq!(pages(&s), 1);
+    }
+
+    fn reflowed() -> (Session, u64, usize) {
+        let (mut s, sid) = primary_doc();
+        type_text(&mut s, sid, &LINE.repeat(250));
+        let n = pages(&s);
+        assert!(n >= 3, "pages added: {n}");
+        assert_eq!(frames(&s, sid).len(), n);
+        (s, sid, n)
+    }
+
+    #[test]
+    fn a_deleted_page_of_the_primary_story_stays_deleted() {
+        let (mut s, sid, n) = reflowed();
+        let len = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().len();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1, "the page stays deleted");
+        assert_eq!(frames(&s, sid).len(), n - 1);
+        assert!(overset(&s, sid), "its text is overset");
+        assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().len(), len, "no text is lost");
+        s.doc().unwrap().doc.check().unwrap();
+        // One undo brings the page back; redo deletes it again.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&s), n);
+        assert!(!overset(&s, sid));
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+    }
+
+    #[test]
+    fn a_deleted_frame_of_the_primary_story_brings_no_new_page() {
+        let (mut s, sid, n) = reflowed();
+        let last = frames(&s, sid)[n - 1].0;
+        s.execute("edit.clear", &json!({"ids": [last]})).unwrap();
+        assert_eq!(pages(&s), n, "no page is added for the deleted frame");
+        assert_eq!(frames(&s, sid).len(), n - 1);
+        assert!(overset(&s, sid));
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn an_edit_elsewhere_does_not_bring_deleted_pages_back() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        let other = s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(pages(&s), n - 1, "drawing a frame adds no pages");
+        s.execute("transform.move", &json!({"dx": 5, "dy": 5, "ids": [other]})).unwrap();
+        assert_eq!(pages(&s), n - 1, "moving it adds no pages");
+        assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn renaming_a_style_does_not_bring_deleted_pages_back() {
+        let (mut s, sid, _) = reflowed();
+        // A rename bumps the revision of every text, the story's footnotes included.
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "A note."})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Spare"})).unwrap();
+        let n = pages(&s);
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        s.execute("style.paragraph.edit", &json!({"name": "Spare", "rename": "Spare2"})).unwrap();
+        assert_eq!(pages(&s), n - 1, "renaming an unused style adds no pages");
+        assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn an_edit_elsewhere_adds_no_pages_when_the_layout_cache_is_cold() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        // As after reopening the document: nothing remembers that the story was overset.
+        s.cache.clear();
+        s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn editing_the_text_reflows_again_after_a_deletion() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        type_text(&mut s, sid, "More. ");
+        assert!(pages(&s) >= n, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+        s.doc().unwrap().doc.check().unwrap();
+    }
 }
 
 #[cfg(test)]
