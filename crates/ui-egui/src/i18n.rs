@@ -1045,6 +1045,16 @@ const TABLE: &[(&str, [&str; 5])] = &[
         "Object Liquid Settings",
         ["Object Liquid Settings", "Object Liquid Settings", "Object Liquid Settings", "Object Liquid Settings", "对象自适应设置"],
     ),
+    (
+        "Open Affinity Document",
+        [
+            "Affinity-Dokument öffnen",
+            "Ouvrir un document Affinity",
+            "Abrir documento de Affinity",
+            "Affinity ドキュメントを開く",
+            "打开 Affinity 文档",
+        ],
+    ),
     ("Open Book", ["Open Book", "Open Book", "Open Book", "Open Book", "打开书籍"]),
     ("Open Bytes", ["Open Bytes", "Open Bytes", "Open Bytes", "Open Bytes", "打开字节"]),
     ("Open IDML", ["Open IDML", "Open IDML", "Open IDML", "Open IDML", "打开 IDML"]),

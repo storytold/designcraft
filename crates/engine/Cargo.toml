@@ -22,6 +22,7 @@ designcraft-textimport = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }
+designcraft-affinity = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -30,6 +31,8 @@ regex = { workspace = true }
 quick-xml = { workspace = true }
 
 [dev-dependencies]
+# Synthetic Affinity documents for the open tests.
+designcraft-affinity = { workspace = true, features = ["synth"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }
 zip = { workspace = true }
 hayro-syntax = "0.7.2"

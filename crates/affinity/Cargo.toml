@@ -1,0 +1,29 @@
+[package]
+name = "designcraft-affinity"
+description = "Bounded reader for native Affinity documents: archive, object stream and document model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Synthetic-container builders for tests and fuzz seeds; not an Affinity exporter.
+synth = []
+
+[dependencies]
+designcraft-geom = { workspace = true }
+designcraft-color = { workspace = true }
+designcraft-doc = { workspace = true }
+designcraft-images = { workspace = true }
+crc32fast = { workspace = true }
+flate2 = { workspace = true }
+image = { workspace = true }
+ruzstd = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# The synthetic-container builders, for the integration tests.
+designcraft-affinity = { path = ".", features = ["synth"] }

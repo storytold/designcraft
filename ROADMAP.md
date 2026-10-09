@@ -21,6 +21,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Tools: Selection (click, marquee, move, Alt-duplicate, resize handles), Direct Selection, Type (draw frame, click caret, select, type), Rectangle/Ellipse/Polygon (+ frame variants), Line, Hand, Zoom.
 - PDF export (krilla): real selectable text with embedded font subsets, DeviceCMYK/RGB + spot Separations, bleed boxes, crop/bleed marks + page info, pages or spreads, PDF/A-2b (PDF/X-4 output intent pending) — `file.exportPdf`, File › Export PDF…, `designcraft-cli run --export out.pdf`.
 - IDML interchange (`designcraft-idml`): export and import of swatches, styles, fonts, preferences, parent spreads, spreads/pages, frames, groups, images (embedded or linked), formatted threaded stories — opens in InDesign 2026 and round-trips InDesign-exported files (`file.exportIdml`, `file.openIdml`, File → Export IDML…, CLI `--in x.idml` / `--export x.idml`).
+- Affinity import (`designcraft-affinity`, read-only): `.afpub`, `.af`, `.afdesign` and `.afphoto` open as new documents — Publisher spreads and pages, layers, groups, shapes with clipping, CMYK/RGB/grey colours (CMYK kept), gradients, strokes, artistic and frame text with fonts and character attributes, embedded images and pixel layers; everything else is listed in the open warnings (`file.openAffinity`, File › Open, drag and drop, CLI `--in x.afpub`). Not yet: master pages, tables, threading, paragraph spacing, effects. The reader is shared with VectorCraft and PhotoCraft.
 - Tables (M8): tables anchored in stories (header/footer/body rows, merged cells, per-edge strokes, fills + alternating fills, insets, vertical justification, at-least/exact row heights); composed into the text column (columns scale to fit, rows break across columns/frames with repeating headers/footers, overset); rendered, exported to PDF (real text) and IDML (export + import); Table menu, Table panel, Create Table dialog, caret/typing/Tab navigation and cell selection in cells; `table.*` commands.
 - Hyperlinks (text or frames → URL / e-mail / page) and bookmarks, exported as PDF link annotations and outline.
 - EPUB 3 (reflowable) export: stories in reading order, CSS from paragraph/character styles, images, navigation (`file.exportEpub`, CLI `--export x.epub`).
@@ -214,7 +215,7 @@ same references), and from the app's JSON control channel. See [docs/agents.md](
 | M3 | Styles (nested/GREP, bullets, keeps, span columns) | started |
 | M4 | Color & effects | started |
 | M5 | Graphics & links | started |
-| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | in progress (IDML ✅, PDF export) |
+| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | in progress (IDML ✅, PDF export, Affinity import) |
 | M7 | Long documents (sections, TOC, index, footnotes, books) | in progress (sections, TOC, text variables/running heads, hyperlinks, bookmarks, footnotes, cross-references, index) |
 | M8 | Tables | ✅ core (table/cell styles, rotation, diagonal lines pending) |
 | M9 | Performance (MT composition, tiles) | in progress (glyph path cache, bounded RTL label layout cache, culling, parallel compose 6.7× faster, perf harness) |
