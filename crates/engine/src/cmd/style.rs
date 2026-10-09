@@ -102,6 +102,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("style.paragraph.delete", "Delete Paragraph Style", [], None, "{name, replaceWith?}", has_doc, delete_para),
         cmd!("style.character.create", "New Character Style…", [], None, "{name, basedOn?, chars?: {…}}", has_doc, create_char),
         cmd!("style.character.edit", "Character Style Options…", [], None, "{name, rename?, basedOn?, chars?}", has_doc, edit_char),
+        cmd!("style.character.delete", "Delete Character Style", [], None, "{name, replaceWith?}", has_doc, delete_char),
         cmd!(query "style.list", "List Styles", [], None, "{} → paragraph and character style names", has_doc, |s, _| {
             let st = s.doc()?;
             Ok(json!({
@@ -572,6 +573,27 @@ fn delete_para(s: &mut Session, p: &Value) -> Result<Value> {
                 for f in &mut story.paras {
                     if f.style == name {
                         f.style = repl.clone();
+                    }
+                }
+            }
+        }
+        ok()
+    })
+}
+
+fn delete_char(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = str_param(p, "name").unwrap_or("").to_string();
+    let repl = str_param(p, "replaceWith").unwrap_or(designcraft_doc::NO_CHAR_STYLE).to_string();
+    if name.starts_with('[') {
+        return Err(bad("style.character.delete", "built-in styles can't be deleted"));
+    }
+    s.edit(|d, _| {
+        d.styles_mut().character.retain(|x| x.name != name);
+        for sid in d.stories.keys().copied().collect::<Vec<_>>() {
+            if let Some(story) = d.story_mut(sid) {
+                for r in &mut story.chars {
+                    if r.format.style == name {
+                        r.format.style = repl.clone();
                     }
                 }
             }

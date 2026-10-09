@@ -124,6 +124,10 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
             let _ = app.run("style.breakLink", json!({"kind": kind}));
             ui.close();
         }
+        if !n.starts_with('[') && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Style"))).clicked() {
+            let _ = app.run(if para { "style.paragraph.delete" } else { "style.character.delete" }, json!({"name": n}));
+            ui.close();
+        }
         if !n.starts_with('[') {
             ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Move to Group")), |ui| {
                 if n.contains('/') && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "[No Group]"))).clicked() {
