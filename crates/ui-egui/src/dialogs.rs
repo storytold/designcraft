@@ -220,6 +220,16 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
 }
 
+/// File › Close: confirm if the document has unsaved changes.
+pub fn open_close_document(app: &mut DesignApp) {
+    let st = app.session.active().unwrap();
+    let title = st.title();
+    app.ui.dialog = Some(Dialog::new(
+        "closeDocument",
+        json!({"title": title, "dirty": st.is_dirty()}),
+    ));
+}
+
 /// File › Print, with the printers the system knows.
 pub fn open_print(app: &mut DesignApp) {
     let p = app.session.execute("file.printers", &json!({})).unwrap_or_default();
@@ -825,6 +835,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
+        "closeDocument" => crate::i18n::tr(&app.ui.language, "Close Document"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
         "colorSettings" => crate::i18n::tr(&app.ui.language, "Color Settings"),
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
@@ -1366,6 +1377,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 });
             }
             "documentSetup" => document_setup(app, ui, &mut d),
+            "closeDocument" => {
+                let title = d.s("title");
+                crate::rtl::label(ui, format!("{title} has unsaved changes."));
+                crate::rtl::label(ui, "Save changes before closing?");
+            }
             _ => {}
         }
         ui.add_space(12.0);
@@ -1489,6 +1505,13 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         "layerOptions" => {
             let hidden: Vec<Value> = d.fields.get("layers").and_then(Value::as_array).map(|a| a.iter().filter(|l| l["visible"] == false).map(|l| l["name"].clone()).collect()).unwrap_or_default();
             app.run("object.layerOptions", json!({"hidden": hidden}))
+        }
+        "closeDocument" => {
+            if d.b("confirm") {
+                app.run("file.close", json!({}))
+            } else {
+                Ok(Value::Null)
+            }
         }
         "colorSettings" => {
             let r = app.run("color.settings", json!({"rgb": d.s("rgb"), "cmyk": d.s("cmyk"), "intent": d.s("intent"), "bpc": d.b("bpc")}))?;

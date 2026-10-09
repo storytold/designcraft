@@ -1734,6 +1734,14 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
         return;
     }
+    if params.is_null() && id == "file.close" {
+        if let Some(st) = app.session.active()
+            && st.is_dirty()
+        {
+            crate::dialogs::open_close_document(app);
+            return;
+        }
+    }
     if params.is_null()
         && ui_label(id).is_none()
         && let Some(c) = designcraft_engine::find_command(id)
