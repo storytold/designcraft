@@ -34,7 +34,7 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, abs: usize, h: f32) -> Option
         &designcraft_render::RenderOptions { printing_only: true, ..Default::default() },
     )?;
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
-    let tex = ctx.load_texture(format!("thumb{abs}"), ci, egui::TextureOptions::LINEAR);
+    let tex = crate::widgets::load_texture(ctx, format!("thumb{abs}"), ci, egui::TextureOptions::LINEAR);
     // Drop thumbnails of older revisions.
     let (uid, rev) = (st.uid, st.revision);
     map.retain(|k, _| !(k.0 == uid && k.1 != rev));
