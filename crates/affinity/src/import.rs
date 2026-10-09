@@ -363,7 +363,7 @@ impl Builder {
                 g
             }
             Kind::Shape { path, fills, strokes, even_odd } => {
-                let mut it = self.shape(path, *even_odd, fills, strokes, xf, layer)?;
+                let mut it = self.shape(path, *even_odd, fills, strokes, xf, layer, !node.children.is_empty())?;
                 if !node.children.is_empty() {
                     // Children of a shape are clipped by it: DesignCraft's frame with pasted-into items.
                     if let Some(kids) = self.children(node, xf, layer, depth) {
@@ -373,7 +373,7 @@ impl Builder {
                 it
             }
             Kind::Artboard { path, even_odd, background, strokes, .. } => {
-                let mut it = self.shape(path, *even_odd, background, strokes, xf, layer)?;
+                let mut it = self.shape(path, *even_odd, background, strokes, xf, layer, true)?;
                 it.shape = Shape::Rectangle;
                 if let Some(kids) = self.children(node, xf, layer, depth) {
                     it.content = Content::Group { items: kids };
@@ -486,6 +486,47 @@ impl Builder {
                         choke: 0.0,
                     };
                 }
+                model::Effect::Outline { color, opacity, width, align } => {
+                    let (color, alpha) = self.color(color);
+                    let swatch = self.swatch(color);
+                    let weight = pt(*width);
+                    if weight <= 0.0 {
+                        continue;
+                    }
+                    if (opacity * alpha) < 0.999 {
+                        self.warn("semi-transparent outline effects (imported opaque)");
+                    }
+                    let shape = !matches!(it.content, Content::Group { .. } | Content::Graphic(_));
+                    match &it.content {
+                        // Text: an outline on the characters.
+                        Content::Text(tf) => {
+                            let id = tf.story;
+                            if let Some(story) = self.doc.stories.get_mut(&id) {
+                                let story = Arc::make_mut(story);
+                                let n = story.text.len();
+                                story.format_chars(0..n, |f| {
+                                    f.over.stroke = Some(swatch.clone());
+                                    f.over.stroke_weight = Some(weight);
+                                });
+                            }
+                        }
+                        // A shape without a stroke of its own: the outline is its stroke.
+                        _ if it.stroke.is_none() && shape => {
+                            it.stroke = Stroke {
+                                swatch,
+                                weight,
+                                align: match align {
+                                    1 => StrokeAlign::Inside,
+                                    2 => StrokeAlign::Center,
+                                    _ => StrokeAlign::Outside,
+                                },
+                                join: Join::Round,
+                                ..Stroke::default()
+                            };
+                        }
+                        _ => self.warn("outline effects on stroked objects, groups or images (left out)"),
+                    }
+                }
                 model::Effect::OuterGlow { color, opacity, radius } => {
                     let (color, alpha) = self.color(color);
                     it.effects.outer_glow = designcraft_doc::OuterGlow {
@@ -569,7 +610,17 @@ impl Builder {
         PathData::from_bezpath(&all)
     }
 
-    fn shape(&mut self, path: &model::Path, even_odd: bool, fills: &[Paint], strokes: &[paint::Stroke], xf: Affine, layer: LayerId) -> Option<Item> {
+    /// A shape item. `clip` when it clips children (its outline must be closed).
+    fn shape(
+        &mut self,
+        path: &model::Path,
+        even_odd: bool,
+        fills: &[Paint],
+        strokes: &[paint::Stroke],
+        xf: Affine,
+        layer: LayerId,
+        clip: bool,
+    ) -> Option<Item> {
         let data = self.path_data(path, xf, even_odd);
         if data.is_empty() {
             return None;
@@ -598,6 +649,23 @@ impl Builder {
         }
         if alpha < 1.0 {
             it.opacity = alpha.clamp(0.0, 1.0) as f32;
+        }
+        // Affinity fills open curves as if closed; DesignCraft fills closed paths only.
+        if !it.fill.is_none() && !it.path.is_closed() {
+            let mut closed = it.path.clone();
+            closed.subpaths.iter_mut().for_each(|sp| sp.closed = true);
+            if it.stroke.is_none() || clip {
+                it.shape = shape_kind(&closed);
+                it.path = closed;
+            } else {
+                // The fill closed, the stroke still open: a group of the two.
+                let mut filled = self.new_item(layer, shape_kind(&closed), closed);
+                filled.fill = std::mem::replace(&mut it.fill, Fill::none());
+                filled.opacity = it.opacity;
+                let mut g = self.new_item(layer, Shape::Group, PathData::default());
+                g.content = Content::Group { items: vec![Arc::new(filled), Arc::new(it)] };
+                return Some(g);
+            }
         }
         Some(it)
     }
@@ -1130,6 +1198,21 @@ impl Builder {
             }
             Paint::None => a.fill = Some(swatch::NONE.to_string()),
         }
+        if let Some(st) = &run.stroke {
+            let color = match &st.paint {
+                Paint::Solid(c) => Some(self.color(c).0),
+                Paint::Gradient(g) => g.stops.first().map(|stop| self.color(&stop.color).0),
+                Paint::None => None,
+            };
+            let weight = st.width * size_scale;
+            if let Some(color) = color
+                && weight.is_finite()
+                && weight > 0.0
+            {
+                a.stroke = Some(self.swatch(color));
+                a.stroke_weight = Some(weight.min(1000.0));
+            }
+        }
         a
     }
 
@@ -1560,6 +1643,55 @@ mod tests {
         assert_eq!(child[..4], [255, 255, 0, 0], "top row: shown over the parent's opaque pixel only");
         assert!(child[8..].iter().all(|a| *a == 0), "bottom rows: masked away with the parent");
         assert!(imported.warnings.iter().all(|w| !w.contains("pixel mask")), "{:?}", imported.warnings);
+    }
+
+    fn one_page(nodes: Vec<Node>) -> model::Document {
+        model::Document {
+            dpi: 72.0,
+            spreads: vec![model::Spread {
+                bounds: model::Rect { x0: 0.0, y0: 0.0, x1: 100.0, y1: 100.0 },
+                pages: vec![model::Rect { x0: 0.0, y0: 0.0, x1: 100.0, y1: 100.0 }],
+                transparent: false,
+                nodes,
+            }],
+            masters: vec![],
+            saved_by: None,
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn open_curves_are_filled_like_affinity_fills_them() {
+        let p = |x: f64, y: f64| model::Point { x, y };
+        let line = |a: model::Point, b: model::Point| [a, b, b];
+        // An open "V" with a fill: Affinity fills it as if closed.
+        let open = model::Path {
+            subpaths: vec![model::SubPath {
+                start: p(0.0, 0.0),
+                segments: vec![line(p(0.0, 0.0), p(50.0, 50.0)), line(p(50.0, 50.0), p(100.0, 0.0))],
+                closed: false,
+            }],
+        };
+        let blue = Paint::Solid(paint::Color::Rgb { r: 0.0, g: 0.0, b: 1.0, a: 1.0 });
+        let black = paint::Stroke {
+            paint: Paint::Solid(paint::Color::Rgb { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+            width: 2.0,
+            cap: paint::Cap::Butt,
+            join: paint::Join::Miter,
+            miter_limit: 4.0,
+            align: paint::Align::Center,
+            dash: None,
+            behind: false,
+        };
+        let shape =
+            |strokes: Vec<paint::Stroke>| node(Kind::Shape { path: open.clone(), fills: vec![blue.clone()], strokes, even_odd: false }, vec![], None);
+        let src = one_page(vec![shape(vec![]), shape(vec![black])]);
+        let d = Builder::new(&src).build(&src).unwrap().document;
+        let items = &d.spreads[0].items;
+        assert!(items[0].path.is_closed() && !items[0].fill.is_none(), "fill only: the outline is closed");
+        let Content::Group { items: parts } = &items[1].content else { panic!("fill and stroke: a group") };
+        assert!(parts[0].path.is_closed() && !parts[0].fill.is_none() && parts[0].stroke.is_none(), "the closed fill");
+        assert!(!parts[1].path.is_closed() && parts[1].fill.is_none() && !parts[1].stroke.is_none(), "the open stroke");
     }
 
     #[test]

@@ -28,14 +28,14 @@ accept the four extensions.
 | Master spreads and the master page each page shows | a one-page parent per master page in use (A, B, …) with that page's objects, applied to the pages |
 | Top-level layers | document layers, by name |
 | Nested layers, groups | groups |
-| Curves, rectangles, ellipses, polygons, stars, compound shapes | frames with their outline (even-odd outlines keep their holes) |
+| Curves, rectangles, ellipses, polygons, stars, compound shapes | frames with their outline (even-odd outlines keep their holes; filled open curves are filled as if closed, like Affinity does) |
 | A shape with children, a vector mask | a frame with the children pasted into it (clipped) |
 | Solid fills and strokes in RGB, CMYK and grey | unnamed colours in the same space; CMYK stays CMYK |
 | Linear and radial gradients | gradient swatches placed with their vector |
 | Stroke weight, alignment, caps, joins, miter limit, dashes | the same |
 | Artistic text | a text frame whose first baseline sits at Affinity's anchor |
 | Frame text, also rotated | a text frame with one story |
-| Font family, weight, italic, size, tracking, horizontal scale, fixed leading, colour, all caps, OpenType features | character overrides |
+| Font family, weight, italic, size, tracking, horizontal scale, fixed leading, colour, outline (stroked characters), all caps, OpenType features | character overrides |
 | Paragraph alignment, left/right/first-line indents, space before/after (Affinity keeps the larger of two neighbouring spaces), fixed paragraph leading | paragraph overrides (spacing converted so the result matches) |
 | Automatic leading: artistic text 100 % of the size, frame text the font's own line height (ascent + descent) | the paragraph's auto leading |
 | Type size: artistic text scales with its node; frame text and tables only with their text scale (`FTxS`), never with their frame's or groups' transform | font size and horizontal scale on the characters |
@@ -46,11 +46,12 @@ accept the four extensions.
 | Embedded Affinity documents and symbols (`EmbN`) | their content as editable objects, grouped; nested at most four deep; the cached picture only when the document can't be read |
 | Opacity, visibility, lock, names, blend modes DesignCraft has | the same |
 | Layer effects: drop shadow, inner shadow, outer glow (an Affinity shadow angle is where the shadow goes; DesignCraft's where the light comes from) | the same effects |
+| Outline effect | the stroke of a shape without one, or the characters' stroke on text |
 
 Everything that is not imported, or only approximately, is listed in the open result's
 `warnings`, one line per kind with a count. Not yet imported: masters based on other masters, text threading
 between frames, hyphenation settings (imported paragraphs don't hyphenate), text fields such as page numbers, inline objects
-in text, table cell fills, cells merged across rows, outline, bevel, overlay and blur effects, adjustment layers and live
+in text, table cell fills, cells merged across rows, bevel, overlay and blur effects, outlines on stroked objects, groups and images, adjustment layers and live
 filters, pixel masks on objects other than images, brush strokes, embedded files other than
 Affinity documents without a cached picture, Lab colours (converted to RGB) and Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
 with that reason.

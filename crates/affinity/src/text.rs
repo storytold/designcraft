@@ -278,6 +278,7 @@ fn push_run(
                 h_scale: 1.0,
                 leading: None,
                 fill: Paint::Solid(Color::Gray { v: 0.0, a: 1.0 }),
+                stroke: None,
                 paragraph,
             }
         }
@@ -333,10 +334,11 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
             fill = Paint::Solid(Color::Gray { v: 0.0, a: 1.0 });
         }
     }
-    if attribute_budget.is_some() && objects.get(1).copied().flatten().and_then(|f| paint::descriptor(r, f, world)).is_some_and(|p| p != Paint::None)
-    {
-        r.warn("outlined (stroked) text");
-    }
+    // Outlined characters: `Objs` 1 is the outline's paint, 2 its line style (as for shapes).
+    let stroke = match (attribute_budget.is_some(), objects.get(1).copied().flatten(), objects.get(2).copied().flatten()) {
+        (true, Some(pen), Some(style)) => paint::stroke(r, pen, style, Affine::IDENTITY, false),
+        _ => None,
+    };
     let h_scale = slot(doubles, 10, float).filter(|h| *h > 0.0 && *h < 100.0).unwrap_or(1.0);
     // A resolved font is populated on the emoji run of the public Affinity 3 text-runs file
     // (Courier New requested, Segoe UI Emoji stored in RFnt). Empty RFnt records are common.
@@ -379,6 +381,7 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
         h_scale,
         leading,
         fill,
+        stroke,
         paragraph: Paragraph::default(),
     }
 }

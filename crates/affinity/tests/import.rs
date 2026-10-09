@@ -542,6 +542,41 @@ fn shadows_point_where_affinity_puts_them() {
 }
 
 #[test]
+fn outline_effects_become_strokes() {
+    let outline = |align: u16| {
+        F::Obj(
+            tag(b"Strk"),
+            vec![
+                (tag(b"Enab"), F::Bool(true)),
+                (tag(b"Radi"), F::F64(3.0)),
+                (tag(b"Alig"), F::Enum(align, 0)),
+                (
+                    tag(b"Colr"),
+                    F::Obj(tag(b"RGBA"), vec![(tag(b"_col"), F::Struct([1.0f32, 0.0, 0.0, 1.0].iter().flat_map(|v| v.to_le_bytes()).collect()))]),
+                ),
+            ],
+        )
+    };
+    let mut shape = rectangle(10, (0.0, 0.0), (50.0, 50.0));
+    let mut text = artistic_text(20, "Hi", 40.0);
+    for (node, align) in [(&mut shape, 0), (&mut text, 2)] {
+        if let F::Def(_, _, fields) = node {
+            fields.push((tag(b"FiEf"), F::Shared(vec![outline(align)])));
+        }
+    }
+    let imported = designcraft_affinity::import(&canvas_with(vec![shape, text], None)).unwrap();
+    let d = &imported.document;
+    let rect = d.spreads[0].items.iter().find(|i| i.name == "Magenta box").unwrap();
+    assert_eq!((rect.stroke.weight, rect.stroke.align), (3.0, designcraft_doc::StrokeAlign::Outside));
+    assert_eq!(d.resolve_color(&rect.stroke.swatch, 1.0), Some(Color::rgb(1.0, 0.0, 0.0)));
+    let frame = d.spreads[0].items.iter().find(|i| i.is_text_frame()).unwrap();
+    let Content::Text(tf) = &frame.content else { unreachable!() };
+    let f = &d.story(tf.story).unwrap().chars[0].format.over;
+    assert_eq!(f.stroke_weight, Some(3.0));
+    assert_eq!(d.resolve_color(f.stroke.as_deref().unwrap(), 1.0), Some(Color::rgb(1.0, 0.0, 0.0)));
+}
+
+#[test]
 fn not_an_affinity_file_is_an_error_not_a_crash() {
     assert!(designcraft_affinity::import(b"not affinity").is_err());
     let mut file = publisher();

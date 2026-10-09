@@ -184,6 +184,8 @@ pub struct TextRun {
     /// Fixed line pitch in document pixels, when the run overrides automatic leading.
     pub leading: Option<f64>,
     pub fill: Paint,
+    /// Outlined characters: the outline's paint and width (node space).
+    pub stroke: Option<crate::paint::Stroke>,
     /// The run's paragraph: alignment, indents and spacing.
     pub paragraph: Paragraph,
 }
@@ -343,9 +345,32 @@ pub enum Kind {
 /// (radians, clockwise from +x as y points down: π/2 puts it below).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
-    DropShadow { color: crate::paint::Color, opacity: f64, radius: f64, distance: f64, angle: f64 },
-    InnerShadow { color: crate::paint::Color, opacity: f64, radius: f64, distance: f64, angle: f64 },
-    OuterGlow { color: crate::paint::Color, opacity: f64, radius: f64 },
+    DropShadow {
+        color: crate::paint::Color,
+        opacity: f64,
+        radius: f64,
+        distance: f64,
+        angle: f64,
+    },
+    InnerShadow {
+        color: crate::paint::Color,
+        opacity: f64,
+        radius: f64,
+        distance: f64,
+        angle: f64,
+    },
+    OuterGlow {
+        color: crate::paint::Color,
+        opacity: f64,
+        radius: f64,
+    },
+    /// An outline of `width` around the node's shape: `align` 0 outside, 1 inside, 2 centred.
+    Outline {
+        color: crate::paint::Color,
+        opacity: f64,
+        width: f64,
+        align: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -702,7 +727,11 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 (Some(b"Shad"), Some(color)) => out.push(Effect::DropShadow { color, opacity, radius: len(b"Radi"), distance: len(b"Offs"), angle }),
                 (Some(b"InnS"), Some(color)) => out.push(Effect::InnerShadow { color, opacity, radius: len(b"Radi"), distance: len(b"Offs"), angle }),
                 (Some(b"OutG"), Some(color)) => out.push(Effect::OuterGlow { color, opacity, radius: len(b"Radi") }),
-                (Some(b"Strk"), _) => self.warn("outline effects (left out)"),
+                (Some(b"Strk"), Some(color)) if s.enumeration(e, b"Ftyp").is_none_or(|(t, _)| t == 0) => {
+                    let align = s.enumeration(e, b"Alig").map_or(0, |(a, _)| a);
+                    out.push(Effect::Outline { color, opacity, width: len(b"Radi"), align });
+                }
+                (Some(b"Strk"), _) => self.warn("gradient outline effects (left out)"),
                 (Some(b"BevE" | b"EmbE"), _) => self.warn("bevel and emboss effects (left out)"),
                 (Some(b"ColO" | b"GrdO"), _) => self.warn("colour and gradient overlay effects (left out)"),
                 (Some(b"Gaus"), _) => self.warn("blur effects (left out)"),
