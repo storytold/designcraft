@@ -40,6 +40,7 @@ pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
 pub type OpenAsyncFn = Box<dyn FnMut(&str)>;
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8])>;
+pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
 /// Files `(name, bytes)` delivered asynchronously by the host (web file picker, dropped files).
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
 
@@ -61,6 +62,9 @@ pub struct Services {
     /// Files delivered asynchronously, drained every frame: `.designcraft` → `file.openBytes`,
     /// anything else → `file.place`.
     pub inbox: Option<Inbox>,
+    /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
+    /// paste keys, which a native menu bar takes first).
+    pub clipboard_text: Option<ClipboardFn>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +191,9 @@ pub struct UiState {
     pub smart_spacing: bool,
     #[serde(default = "default_zone")]
     pub snap_zone: f64,
+    /// Tools panel: Formatting Affects Text (J): with text frames selected, colour edits go to
+    /// their text instead of the frames.
+    pub formatting_affects_text: bool,
     /// Window > Contextual Task Bar.
     pub task_bar: bool,
     /// Help › About DesignCraft is open.
@@ -263,6 +270,7 @@ impl Default for UiState {
             smart_dimensions: true,
             smart_spacing: true,
             snap_zone: 4.0,
+            formatting_affects_text: false,
             task_bar: true,
             about: false,
             about_tab: 0,
@@ -418,6 +426,11 @@ pub struct DesignApp {
     last_time: f64,
     /// When recovery data was last written (seconds, egui time).
     pub last_recovery: f64,
+    /// The egui context (set by the first frame): copied text goes to the system clipboard through it.
+    egui_ctx: Option<egui::Context>,
+    /// A control-channel request is being handled: commands it runs never read or write the
+    /// user's system clipboard (a control client must not see or replace it).
+    pub(crate) in_control: bool,
 }
 
 impl DesignApp {
@@ -454,6 +467,8 @@ impl DesignApp {
             native_shortcuts: Default::default(),
             last_time: 0.0,
             last_recovery: 0.0,
+            egui_ctx: None,
+            in_control: false,
         }
     }
 
@@ -497,12 +512,37 @@ impl DesignApp {
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }
+        // Only user-initiated runs touch the system clipboard, never the control channel's.
+        let system_clipboard = !self.in_control;
+        let params = if system_clipboard { self.with_system_clipboard(id, params) } else { params };
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
-        if let Err(e) = &r {
-            self.status(e.clone());
+        match &r {
+            Err(e) => self.status(e.clone()),
+            // Copied text goes to the system clipboard too, whichever way Copy was chosen.
+            Ok(v) if system_clipboard && matches!(id, "edit.copy" | "edit.cut") => {
+                if let (Some(t), Some(ctx)) = (v.get("text").and_then(Value::as_str), &self.egui_ctx) {
+                    ctx.copy_text(t.to_string());
+                    ctx.request_repaint();
+                }
+            }
+            Ok(_) => {}
         }
         r
+    }
+
+    /// Paste into text without the clipboard's text (a menu, not the paste keys): read it here.
+    fn with_system_clipboard(&mut self, id: &str, mut params: Value) -> Value {
+        let typing = self.session.active().is_some_and(|d| d.selection.text.is_some());
+        if typing
+            && matches!(id, "edit.paste" | "edit.pasteWithoutFormatting")
+            && params.get("text").is_none()
+            && let Some(text) = self.services.clipboard_text.as_mut().and_then(|f| f())
+            && let Some(o) = params.as_object_mut()
+        {
+            o.insert("text".into(), Value::String(text));
+        }
+        params
     }
 
     /// Handle requests produced by tools/commands (dialogs, view changes, file pickers).
@@ -580,6 +620,9 @@ impl DesignApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        if self.egui_ctx.is_none() {
+            self.egui_ctx = Some(ctx.clone());
+        }
         if !self.color_applied {
             self.color_applied = true;
             if let Some(cs) = self.ui.color_settings.clone() {

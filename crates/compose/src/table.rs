@@ -417,6 +417,7 @@ fn emit(
         spacing: 1.0,
         hj: 0,
         keep_violation: false,
+        drop_cap: None,
     });
     ft.tables.push(TableFrag {
         table: table.id,
@@ -435,6 +436,17 @@ fn emit(
 
 /// The cell under `p` (frame inner space) in frame `fi`: (table, row, col, story byte in the cell).
 pub fn hit_cell(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize, usize, usize)> {
+    hit_cell_with(cs, fi, p, crate::hit)
+}
+
+/// [`hit_cell`] with the hit test for the cell's text: [`crate::hit`] (caret position) or
+/// [`crate::hit_char`] (character under the point).
+pub fn hit_cell_with(
+    cs: &ComposedStory,
+    fi: usize,
+    p: Point,
+    hit: fn(&ComposedStory, usize, Point) -> Option<usize>,
+) -> Option<(u64, usize, usize, usize)> {
     let ft = cs.frames.get(fi)?;
     for t in &ft.tables {
         if !t.rect.contains(p) {
@@ -443,7 +455,7 @@ pub fn hit_cell(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize, 
         for c in &t.cells {
             if c.rect.contains(p) {
                 let local = Point::new(p.x - c.origin.x, p.y - c.origin.y);
-                let b = crate::hit(&c.text, 0, local).unwrap_or(0);
+                let b = hit(&c.text, 0, local).unwrap_or(0);
                 return Some((t.table, c.row, c.col, b));
             }
         }

@@ -11,8 +11,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
-    let text = st.selection.text.is_some();
-    let fill_cur = super::sel_info(app).map(|i| i.fill);
+    let text = super::colors_affect_text(app);
+    let fill_cur = super::color_target(app).map(|t| t.0);
     ui.horizontal(|ui| {
         crate::rtl::label(
             ui,
@@ -25,7 +25,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // colour groups are listed under their folder.
     let grouped: Vec<&str> = doc.color_groups.iter().flat_map(|g| g.swatches.iter().map(String::as_str)).collect();
     for sw in doc.swatches.iter().filter(|w| !w.hidden && !grouped.contains(&w.name.as_str())) {
-        swatch_row(app, ui, &doc, sw, 0.0, fill_cur.as_deref(), text);
+        swatch_row(app, ui, &doc, sw, 0.0, fill_cur.as_deref());
     }
     for g in &doc.color_groups {
         let open_id = egui::Id::new(("color_group_open", &g.name));
@@ -58,7 +58,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         if open {
             for n in &g.swatches {
                 if let Some(sw) = doc.swatches.iter().find(|w| w.name == *n) {
-                    swatch_row(app, ui, &doc, sw, 16.0, fill_cur.as_deref(), text);
+                    swatch_row(app, ui, &doc, sw, 16.0, fill_cur.as_deref());
                 }
             }
         }
@@ -112,8 +112,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
 }
 
-/// One Swatches panel row: chip, name, type; click applies to fill (or text), the context menu
-/// to stroke, colour groups and delete.
+/// One Swatches panel row: chip, name, type; click applies to the fill (of the frames or their
+/// text, see [`super::colors_affect_text`]), the context menu to the stroke, colour groups and delete.
 fn swatch_row(
     app: &mut DesignApp,
     ui: &mut egui::Ui,
@@ -121,7 +121,6 @@ fn swatch_row(
     sw: &designcraft_color::swatch::Swatch,
     indent: f32,
     fill_cur: Option<&str>,
-    text: bool,
 ) {
     let t = Tokens::get(ui.ctx());
     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
@@ -153,12 +152,11 @@ fn swatch_row(
     }
     ui.painter().text(row.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, kind, egui::FontId::proportional(10.5), t.text_dim);
     if resp.clicked() {
-        let r = if text { app.run("type.char", json!({"attrs": {"fill": sw.name}})) } else { app.run("object.fill", json!({"swatch": sw.name})) };
-        let _ = r;
+        let _ = super::apply_swatch(app, false, &sw.name, None);
     }
     resp.context_menu(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply to Stroke"))).clicked() {
-            let _ = app.run("object.stroke", json!({"swatch": sw.name}));
+            let _ = super::apply_swatch(app, true, &sw.name, None);
             ui.close();
         }
         if !sw.locked {
@@ -199,13 +197,14 @@ pub enum ColorMode {
 /// swatch), the spectrum ramp, Add to Swatches. Edits apply unnamed colours (`object.color`).
 pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let Some(i) = super::sel_info(app) else {
+    let Some((fill, fill_tint, stroke_sw, stroke_tint)) = super::color_target(app) else {
         ui.label(crate::rtl::widget(
             ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select an object to color its fill or stroke.")).color(t.text_dim),
+            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select an object or text to color its fill or stroke.")).color(t.text_dim),
         ));
         return;
     };
+    let text = super::colors_affect_text(app);
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
     let stroke_id = egui::Id::new("color_panel_stroke");
     let mode_id = egui::Id::new("color_panel_mode");
@@ -213,11 +212,11 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let default_mode = if doc.settings.intent == designcraft_doc::Intent::Print { ColorMode::Cmyk } else { ColorMode::Rgb };
     let mut mode: ColorMode = ui.data(|d| d.get_temp(mode_id)).unwrap_or(default_mode);
     let target = if stroke { "stroke" } else { "fill" };
-    let name = if stroke { i.stroke.clone() } else { i.fill.clone() };
+    let name = if stroke { stroke_sw.clone() } else { fill.clone() };
     // Proxy: fill (front) and stroke chips; click to choose, double-click for the Color Picker.
     ui.horizontal(|ui| {
         for (k, label) in [(false, "Fill"), (true, "Stroke")] {
-            let n = if k { &i.stroke } else { &i.fill };
+            let n = if k { &stroke_sw } else { &fill };
             let (c, g) = crate::widgets::swatch_colors(&doc, n, 1.0);
             let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
             crate::widgets::paint_chip(ui.painter(), r.shrink(2.0), c, g);
@@ -232,7 +231,8 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let rgb = doc.resolve_color(n, 1.0).map(|c| c.to_rgb()).unwrap_or([0.0; 3]);
                 let hex =
                     format!("#{:02x}{:02x}{:02x}", (rgb[0] * 255.0).round() as u8, (rgb[1] * 255.0).round() as u8, (rgb[2] * 255.0).round() as u8);
-                app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target": if k { "stroke" } else { "fill" }, "hex": hex})));
+                app.ui.dialog =
+                    Some(crate::dialogs::Dialog::new("colorPicker", json!({"target": if k { "stroke" } else { "fill" }, "hex": hex, "text": text})));
             }
         }
         ui.label(egui::RichText::new(&name).size(11.0).color(t.text_dim));
@@ -266,13 +266,12 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     };
     // A named swatch shows its tint; mixing its values makes an unnamed colour.
     if let Some(sw) = sw.as_ref().filter(|w| !w.hidden && !w.locked) {
-        let cur = if stroke { super::sel_tint(app, true) } else { super::sel_tint(app, false) };
+        let cur = if stroke { stroke_tint } else { fill_tint };
         let mut tint = cur * 100.0;
         ui.horizontal(|ui| {
             ui.label("T");
             if ui.add(egui::Slider::new(&mut tint, 0.0..=100.0).suffix("%").integer()).drag_stopped() {
-                let cmd = if stroke { "object.stroke" } else { "object.fill" };
-                let _ = app.run(cmd, json!({"swatch": sw.name, "tint": tint / 100.0}));
+                let _ = super::apply_swatch(app, stroke, &sw.name, Some(tint / 100.0));
             }
         });
     }
@@ -308,13 +307,13 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     if let Some(color) = send {
-        let _ = app.run("object.color", json!({"color": color, "target": target}));
+        let _ = app.run("object.color", json!({"color": color, "target": target, "text": text}));
     }
     spectrum(app, ui, target);
     ui.horizontal(|ui| {
         let unnamed = sw.as_ref().is_some_and(|w| w.hidden);
         if ui.add_enabled(unnamed, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add to Swatches")))).clicked() {
-            let _ = app.run("swatch.addToSwatches", json!({"target": target}));
+            let _ = app.run("swatch.addToSwatches", json!({"swatch": name, "target": target}));
         }
     });
 }
@@ -384,7 +383,11 @@ fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
         && let Some(p) = resp.interact_pointer_pos()
     {
         let c = at(((p.x - r.min.x) / r.width()).clamp(0.0, 1.0), ((p.y - r.min.y) / r.height()).clamp(0.0, 1.0));
-        let _ = app.run("object.color", json!({"color": [(c[0] * 255.0).round(), (c[1] * 255.0).round(), (c[2] * 255.0).round()], "target": target}));
+        let text = super::colors_affect_text(app);
+        let _ = app.run(
+            "object.color",
+            json!({"color": [(c[0] * 255.0).round(), (c[1] * 255.0).round(), (c[2] * 255.0).round()], "target": target, "text": text}),
+        );
     }
 }
 

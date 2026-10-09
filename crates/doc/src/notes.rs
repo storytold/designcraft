@@ -178,7 +178,7 @@ impl Story {
     }
 
     pub(crate) fn next_note_id(&self) -> u64 {
-        self.notes.iter().map(|n| n.id).max().unwrap_or(0) + 1
+        self.notes.iter().map(|n| n.id).max().unwrap_or(0).saturating_add(1)
     }
 
     /// Insert empty footnotes for `n` new reference characters before which `k` references sit.

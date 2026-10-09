@@ -280,8 +280,8 @@ impl Styles {
         self.object.iter().find(|s| s.name == name)
     }
 
-    /// The paragraph style chain from root to `name` (cycle-safe).
-    fn para_chain(&self, name: &str) -> Vec<&ParagraphStyle> {
+    /// The paragraph style chain from root to `name` (cycle-safe): resolution starts at its first.
+    pub fn para_chain(&self, name: &str) -> Vec<&ParagraphStyle> {
         let mut chain = Vec::new();
         let mut cur = self.para(name);
         while let Some(s) = cur {

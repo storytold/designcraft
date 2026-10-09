@@ -5,7 +5,7 @@
 use designcraft_geom::Point;
 use serde_json::json;
 
-use crate::{Action, Cursor, Mods, PointerEvent, PointerKind, Tool, ToolContext, ToolKey, frame::drag_rect, rect_json, spread_json};
+use crate::{Action, Cursor, Mods, Overlay, PointerEvent, PointerKind, Tool, ToolContext, ToolKey, frame::snapped_drag_rect, rect_json, spread_json};
 
 #[derive(Default)]
 pub struct TypeTool {
@@ -17,6 +17,10 @@ pub struct TypeTool {
     /// A press on a table whose whole rows or columns are selected: (frame, press point in
     /// spread space) — a drag moves them, a click places the caret.
     cell_drag: Option<(u64, Point)>,
+    /// Snap guides while drawing a frame.
+    guides: Vec<Overlay>,
+    /// The press selected a word, line, paragraph or story (several clicks): drags keep it.
+    unit_selected: bool,
 }
 
 /// Are whole rows or whole columns of a table selected?
@@ -45,31 +49,39 @@ impl Tool for TypeTool {
                 self.drawing = false;
                 self.selecting = None;
                 self.cell_drag = None;
+                self.unit_selected = false;
                 if let Some((_, id)) = cx.hit(ev.pos)
                     && let Some(it) = cx.doc.item(id)
                     && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
                 {
                     let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+                    let clicks = ev.click_count();
                     // Whole rows/columns selected: wait to see whether this is a drag.
-                    if ev.kind == PointerKind::Down && !ev.mods.shift && whole_rows_or_cols(cx) {
+                    if clicks == 1 && !ev.mods.shift && whole_rows_or_cols(cx) {
                         self.cell_drag = Some((id.0, sp));
                         return vec![];
                     }
                     self.selecting = Some(id.0);
-                    let cmd = if ev.kind == PointerKind::DoubleClick {
-                        "text.selectWord"
-                    } else if ev.mods.shift {
-                        "text.extendTo"
-                    } else {
-                        "text.placeCaret"
-                    };
+                    // Two presses select a word (or a run of spaces), three a line, four a
+                    // paragraph, five the story.
+                    if clicks >= 2 {
+                        self.unit_selected = true;
+                        let unit = match clicks {
+                            2 => "word",
+                            3 => "line",
+                            4 => "paragraph",
+                            _ => "story",
+                        };
+                        return vec![Action::Exec("text.selectAt".into(), json!({"frame": id.0, "point": [sp.x, sp.y], "unit": unit}))];
+                    }
+                    let cmd = if ev.mods.shift { "text.extendTo" } else { "text.placeCaret" };
                     return vec![Action::Exec(cmd.into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))];
                 }
                 vec![]
             }
             PointerKind::Drag => {
                 let Some(a) = self.start else { return vec![] };
-                if self.cell_drag.is_some() {
+                if self.cell_drag.is_some() || self.unit_selected {
                     return vec![];
                 }
                 if let Some(fid) = self.selecting {
@@ -80,7 +92,10 @@ impl Tool for TypeTool {
                     return vec![];
                 }
                 let Some((sr, sa)) = cx.layout.spread_at(a) else { return vec![] };
-                let r = drag_rect(sa, cx.layout.to_spread(sr, ev.pos), ev.mods);
+                // Drawn like the frame tools: the press point and the moving edges snap.
+                let sa = if cx.snap.any() { crate::snap::snap_point(cx, sr, sa).0 } else { sa };
+                let (r, guides) = snapped_drag_rect(cx, sr, sa, cx.layout.to_spread(sr, ev.pos), ev.mods);
+                self.guides = guides;
                 let mut out = vec![];
                 if !self.drawing {
                     self.drawing = true;
@@ -93,6 +108,7 @@ impl Tool for TypeTool {
                 out
             }
             PointerKind::Up => {
+                self.guides.clear();
                 let start = self.start.take();
                 if let Some((fid, from)) = self.cell_drag.take() {
                     let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
@@ -143,6 +159,10 @@ impl Tool for TypeTool {
             ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
             _ => vec![],
         }
+    }
+
+    fn overlays(&self, _cx: &ToolContext) -> Vec<Overlay> {
+        if self.drawing { self.guides.clone() } else { vec![] }
     }
 
     fn cursor(&self, cx: &ToolContext, p: Point, _m: Mods) -> Cursor {

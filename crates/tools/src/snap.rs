@@ -1,6 +1,8 @@
 //! Snapping and smart guides.
 //!
-//! [`snap`] tries each pass on a free axis and keeps the first hit inside the snap zone.
+//! [`snap`] tries each pass on a free axis and keeps the first hit inside the snap zone; the
+//! baseline grid and the guides (ruler guides, margins, columns) count as one pass where the
+//! nearer target wins.
 //! Ruler guides, margins, and columns draw nothing. Alignment draws [`Overlay::Guide`] in
 //! canvas coordinates. Equal spacing draws [`Overlay::Gap`] the same way, through one
 //! spread-to-canvas transform. A rotation match draws [`Overlay::Measure`] at the pointer
@@ -374,11 +376,20 @@ fn format_angle(deg: f64) -> String {
 
 fn first_on_axis(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> Option<AxisHit> {
     pass_grid(cx, req, axis, tol)
-        .or_else(|| pass_baseline(cx, req, axis, tol))
-        .or_else(|| pass_guides(cx, req, axis, tol))
+        .or_else(|| nearer(pass_baseline(cx, req, axis, tol), pass_guides(cx, req, axis, tol)))
         .or_else(|| pass_align(cx, req, axis, tol))
         .or_else(|| pass_spacing(cx, req, axis, tol))
         .or_else(|| pass_dimensions(cx, req, axis, tol))
+}
+
+/// The baseline grid and the guides (ruler guides, margins, columns) compete by distance, so a
+/// margin is reachable between the lines of a fine baseline grid at any zoom. A tie goes to the
+/// guide.
+fn nearer(baseline: Option<AxisHit>, guide: Option<AxisHit>) -> Option<AxisHit> {
+    match (baseline, guide) {
+        (Some(b), Some(g)) => Some(if b.delta.abs() < g.delta.abs() { b } else { g }),
+        (b, g) => g.or(b),
+    }
 }
 
 /// Document grid. No overlay.
@@ -1745,6 +1756,24 @@ mod tests {
         let cx = ctx_on(&dead, &sel, &cache, &layout);
         let hit = snap(&cx, y_req(Rect::new(100.0, 49.0, 140.0, 80.0)));
         assert_eq!(hit.delta.y, 0.0);
+    }
+
+    #[test]
+    fn nearer_of_margin_and_baseline_wins() {
+        // Bottom margin at 792 - 54 = 738, between baseline lines 732 and 744.
+        let doc = Document::new(&NewDocument {
+            margins: designcraft_doc::Margins { top: 54.0, bottom: 54.0, inside: 54.0, outside: 42.0 },
+            ..Default::default()
+        });
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&doc, false);
+        let sel = Selection::default();
+        // At 50% the 4 px zone is 8 pt: both the margin and a baseline line are in reach.
+        let cx = ToolContext { zoom: 0.5, ..ctx_on(&doc, &sel, &cache, &layout) };
+        let bottom = |y1: f64| SnapRequest { y_edges: [false, false, true], gesture: Gesture::Resize, ..y_req(Rect::new(100.0, 600.0, 140.0, y1)) };
+        assert!((snap(&cx, bottom(739.5)).delta.y - -1.5).abs() < 1e-6, "the margin is nearer");
+        assert!((snap(&cx, bottom(742.5)).delta.y - 1.5).abs() < 1e-6, "the baseline line is nearer");
+        assert!((snap(&cx, bottom(741.0)).delta.y - -3.0).abs() < 1e-6, "a tie goes to the margin");
     }
 
     #[test]

@@ -1288,6 +1288,35 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, c["fill"].as_str().unwrap_or(""));
     });
     ui.horizontal(|ui| {
+        // Bold and Italic pick the family's own styles (style linking).
+        let (weight, italic) =
+            designcraft_fonts::FontDb::global().traits_of(c["fontFamily"].as_str().unwrap_or_default(), c["fontStyle"].as_str().unwrap_or_default());
+        let tip = |app: &DesignApp, name: &str, id: &str| {
+            let name = crate::i18n::tr(&app.ui.language, name);
+            match crate::menus::shortcut_of(app, id) {
+                Some(sc) => format!("{name} ({})", crate::menus::shortcut_text(&sc)),
+                None => name.to_string(),
+            }
+        };
+        let (bold_tip, italic_tip) = (tip(app, "Bold", "type.bold"), tip(app, "Italic", "type.italic"));
+        if ui
+            .selectable_label(weight >= 650.0, egui::RichText::new("B").strong())
+            .on_hover_ui(|ui| {
+                crate::rtl::label(ui, bold_tip);
+            })
+            .clicked()
+        {
+            let _ = app.run("type.bold", json!({}));
+        }
+        if ui
+            .selectable_label(italic, egui::RichText::new("I").italics())
+            .on_hover_ui(|ui| {
+                crate::rtl::label(ui, italic_tip);
+            })
+            .clicked()
+        {
+            let _ = app.run("type.italic", json!({}));
+        }
         let caps = c["capitalization"].as_str() == Some("allCaps");
         if ui
             .selectable_label(caps, "TT")
@@ -1453,6 +1482,17 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
             ui.end_row();
         }
+        // Drop cap: number of lines and characters.
+        for (label, key, max, id) in [
+            ("Drop Lines", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES, "ppdl"),
+            ("Drop Chars", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS, "ppdc"),
+        ] {
+            caption(ui, crate::i18n::tr(&app.ui.language, label));
+            if let Some(v) = number(ui, id, p[key].as_f64(), "", 64.0, 0) {
+                let _ = app.run("type.para", json!({"attrs": {key: (v.max(0.0) as u64).min(max as u64)}}));
+            }
+        }
+        ui.end_row();
     });
     ui.horizontal(|ui| {
         let mut h = p["hyphenate"].as_bool().unwrap_or(true);

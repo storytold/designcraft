@@ -50,6 +50,7 @@ mod strokes;
 mod style;
 pub mod table;
 pub mod text;
+mod thread;
 mod toc;
 mod transitions;
 mod variables;
@@ -184,6 +185,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(package::specs());
         v.extend(print::specs());
         v.extend(text::specs());
+        v.extend(thread::specs());
         v.extend(style::specs());
         v.extend(table::specs());
         v.extend(layout::specs());

@@ -202,6 +202,18 @@ fn tables_export_cell_text() {
     }
 }
 
+#[test]
+fn drop_cap_text_extracts_in_order() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let para = designcraft_doc::ParaAttrs { drop_cap_lines: Some(3), drop_cap_chars: Some(2), ..Default::default() };
+    let text = "Drop caps read in order with the rest of the paragraph, which runs on for a few lines beside the enlarged letters.";
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 236.0, 300.0), lid, text, ParaFormat { para, ..Default::default() }).unwrap();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let flat: String = extract_text(&bytes)[0].split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.starts_with("Drop caps read in order"), "{flat}");
+}
+
 /// A 4×2 CMYK TIFF: the left half 100% K (text in a scan), the right half C0 M100 Y100 K0.
 fn cmyk_tiff() -> (Vec<u8>, Vec<u8>) {
     let (k, red) = ([0u8, 0, 0, 255], [0u8, 255, 255, 0]);

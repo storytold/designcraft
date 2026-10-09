@@ -22,15 +22,18 @@ pub fn specs() -> Vec<CommandSpec> {
             release
         ),
         cmd!(noundo "text.extendTo", "Extend Text Selection", [], None, "{frame, point}", has_doc, |s, p| place(s, p, true)),
-        cmd!(noundo "text.selectWord", "Select Word", [], None, "{frame, point}", has_doc, |s, p| {
-            place(s, p, false)?;
-            let st = s.doc_mut()?;
-            let Some(t) = st.selection.text else { return ok() };
-            let text = &st.doc.text_story(t.story, t.cell).map(|x| x.text.clone()).unwrap_or_default();
-            let (a, b) = word_bounds(text, t.focus);
-            st.selection.text = Some(TextSel { anchor: a, focus: b, ..t });
-            ok()
+        cmd!(noundo "text.selectWord", "Select Word", [], None, "{frame, point} — the word (or run of spaces) under the point", has_doc, |s, p| {
+            select_at(s, p, "word")
         }),
+        cmd!(
+            noundo "text.selectAt",
+            "Select Text Unit",
+            [],
+            None,
+            "{frame, point, unit: word|line|paragraph|story} — what a double, triple, quadruple or quintuple click selects: the word (or run of spaces) under the point, its line, paragraph or the whole story",
+            has_doc,
+            |s, p| select_at(s, p, str_param(p, "unit").unwrap_or("word"))
+        ),
         cmd!(noundo "text.select", "Select Text", [], None, "{story, anchor, focus} (UTF-8 byte offsets into the story text, as find.find reports them: á or — counts 2 or 3)", has_doc, |s, p| {
             let sid = StoryId(p.get("story").and_then(Value::as_u64).unwrap_or(0));
             let st = s.doc_mut()?;
@@ -135,7 +138,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, hyphenate?, composer?, tabs?, …}}",
+            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?, composer?, tabs?, …}}",
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
@@ -152,8 +155,24 @@ pub fn specs() -> Vec<CommandSpec> {
             s,
             &json!({"align": "leftJustified"})
         )),
-        cmd!("type.bold", "Bold", [], Some("Cmd+Shift+B"), "{}", has_text_or_frames, |s, _| format_chars(s, &json!({"fontStyle": "Bold"}))),
-        cmd!("type.italic", "Italic", [], Some("Cmd+Shift+I"), "{}", has_text_or_frames, |s, _| format_chars(s, &json!({"fontStyle": "Italic"}))),
+        cmd!(
+            "type.bold",
+            "Bold",
+            [],
+            Some("Cmd+Shift+B"),
+            "{on?: bool} — the family's bold style, keeping italic (style linking); toggles when `on` is left out",
+            has_text_or_frames,
+            |s, p| link_style(s, p, true)
+        ),
+        cmd!(
+            "type.italic",
+            "Italic",
+            [],
+            Some("Cmd+Shift+I"),
+            "{on?: bool} — the family's italic style, keeping the weight (style linking); toggles when `on` is left out",
+            has_text_or_frames,
+            |s, p| link_style(s, p, false)
+        ),
         cmd!("type.underline", "Underline", [], Some("Cmd+Shift+U"), "{}", has_text_or_frames, |s, _| format_chars(s, &json!({"underline": true}))),
         cmd!("type.allCaps", "All Caps", [], Some("Cmd+Shift+K"), "{}", has_text_or_frames, |s, _| format_chars(
             s,
@@ -262,6 +281,17 @@ pub(crate) fn story_of(s: &Session, p: &Value) -> Option<StoryId> {
 
 /// Story byte at spread point `pt` in text frame `frame` (in a table cell's story when the point is in a cell).
 fn hit_byte(s: &Session, frame: ItemId, pt: Point) -> Option<(StoryId, usize, Option<CellAddr>)> {
+    hit_byte_with(s, frame, pt, compose::hit)
+}
+
+/// [`hit_byte`] with the hit test: [`compose::hit`] (caret position) or [`compose::hit_char`]
+/// (the character under the point).
+fn hit_byte_with(
+    s: &Session,
+    frame: ItemId,
+    pt: Point,
+    hit: fn(&compose::ComposedStory, usize, Point) -> Option<usize>,
+) -> Option<(StoryId, usize, Option<CellAddr>)> {
     let st = s.active()?;
     let loc = st.doc.find(frame)?;
     let it = st.doc.item_at(&loc)?;
@@ -270,14 +300,74 @@ fn hit_byte(s: &Session, frame: ItemId, pt: Point) -> Option<(StoryId, usize, Op
     let inner = xf.inverse() * pt;
     let cs = s.cache.get(&st.doc, sid, None);
     let fi = cs.frames.iter().position(|f| f.frame == frame)?;
-    if let Some((table, row, col, b)) = compose::hit_cell(&cs, fi, inner) {
+    if let Some((table, row, col, b)) = compose::hit_cell_with(&cs, fi, inner, hit) {
         return Some((sid, b, Some(CellAddr { table, row, col })));
     }
-    if let Some((id, b)) = compose::hit_note(&cs, fi, inner) {
+    if let Some((id, b)) = compose::hit_note_with(&cs, fi, inner, hit) {
         return Some((sid, b, Some(CellAddr::footnote(id))));
     }
-    let b = compose::hit(&cs, fi, inner).unwrap_or(0);
+    let b = hit(&cs, fi, inner).unwrap_or(0);
     Some((sid, b, None))
+}
+
+/// Select the word, line, paragraph or story at `point` in `frame` (multiple clicks).
+fn select_at(s: &mut Session, p: &Value, unit: &str) -> Result<Value> {
+    const ID: &str = "text.selectAt";
+    let frame = id_param(p, "frame").ok_or_else(|| bad(ID, "missing frame"))?;
+    let pt = point_param(p, "point").unwrap_or(Point::ZERO);
+    let (sid, b, cell) = hit_byte_with(s, frame, pt, compose::hit_char).ok_or_else(|| bad(ID, "not a text frame"))?;
+    let st = s.doc()?;
+    let story = st.doc.text_story(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    let text = story.text.as_str();
+    let b = floor_char_boundary(text, b);
+    let (a, e) = match unit {
+        "word" => word_or_spaces_at(text, b),
+        "line" => {
+            let cs = s.cache.get(&st.doc, sid, None);
+            line_at(&text_composition(cs, cell), b).unwrap_or((b, b))
+        }
+        "paragraph" => story.para_ranges().get(story.para_at(b)).map_or((b, b), |r| (r.start, r.end)),
+        "story" => (0, text.len()),
+        other => return Err(bad(ID, format!("unknown unit `{other}` (word, line, paragraph or story)"))),
+    };
+    s.text_drag = false;
+    let st = s.doc_mut()?;
+    st.selection = Selection::text(TextSel { story: sid, anchor: a, focus: e, frame: Some(frame), cell });
+    st.revision += 1;
+    Ok(json!({"story": sid.0, "anchor": a, "focus": e}))
+}
+
+/// The word at byte `i`; on spaces the run of spaces; on anything else that one character. At
+/// the end of a paragraph, what ends it.
+fn word_or_spaces_at(s: &str, i: usize) -> (usize, usize) {
+    let at = |i: usize| s.get(i..).and_then(|r| r.chars().next()).filter(|c| *c != '\n');
+    let i = if at(i).is_none() && i > 0 { prev_char(s, i) } else { i };
+    let Some(c) = at(i) else { return (i, i) };
+    let space = |c: char| c.is_whitespace() && c != '\n';
+    if is_word(c) {
+        word_bounds(s, i)
+    } else if space(c) {
+        let a = s[..i].char_indices().rev().take_while(|(_, c)| space(*c)).last().map_or(i, |(k, _)| k);
+        let e = s[i..].char_indices().find(|(_, c)| !space(*c)).map_or(s.len(), |(k, _)| i + k);
+        (a, e)
+    } else {
+        (i, i + c.len_utf8())
+    }
+}
+
+/// The composition whose lines hold a story's text: the story's own, a table cell's or a footnote's.
+fn text_composition(cs: std::sync::Arc<compose::ComposedStory>, cell: Option<CellAddr>) -> std::sync::Arc<compose::ComposedStory> {
+    match cell {
+        Some(c) if c.footnote_id().is_some() => compose::find_note(&cs, c.row as u64).map(|(_, n)| n.text.clone()).unwrap_or(cs),
+        Some(c) => compose::find_cell(&cs, c.table, c.row, c.col).map(|(_, _, pc)| pc.text.clone()).unwrap_or(cs),
+        None => cs,
+    }
+}
+
+/// The composed line holding the character at byte `pos`.
+fn line_at(cs: &compose::ComposedStory, pos: usize) -> Option<(usize, usize)> {
+    let lines = || cs.frames.iter().flat_map(|f| f.lines.iter());
+    lines().find(|l| l.range.contains(&pos)).map(|l| (l.range.start, l.range.end)).or_else(|| line_of(cs, pos))
 }
 
 fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
@@ -365,6 +455,8 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = if s.prefs.typographers_quotes && !raw { smart_quotes(s, &text) } else { text };
     let tracking = s.doc()?.doc.settings.track_changes;
     let autocorrect = (s.prefs.autocorrect && !tracking && !raw).then(|| s.prefs.autocorrect_list.clone());
+    let typing = typing_format(s).cloned();
+    s.typing_format = None;
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.insert", "no insertion point"))?;
         let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
@@ -412,6 +504,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
             let at = super::changes::mark_deleted(st, r.clone());
             let mut fmt = st.char_format_at(at).clone();
+            if let Some(f) = &typing {
+                apply_typing_format(&mut fmt, f);
+            }
             fmt.over.change = Some(designcraft_doc::ChangeMark::Inserted);
             st.insert_with(at, &text, fmt);
             let pos = at + text.len() - trail;
@@ -419,6 +514,11 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             return Ok(json!({"pos": pos}));
         }
         st.replace(r.clone(), &text);
+        if let Some(f) = &typing
+            && !text.is_empty()
+        {
+            st.format_chars(r.start..r.start + text.len(), |fmt| apply_typing_format(fmt, f));
+        }
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
         Ok(json!({"pos": pos}))
@@ -628,13 +728,8 @@ fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     let t = st.selection.text.ok_or_else(|| bad("text.move", "no caret"))?;
     let story = st.doc.text_story(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
     let text = story.text.clone();
-    let cs = s.cache.get(&st.doc, t.story, None);
     // In a cell, lines come from the cell's own composition.
-    let cs = match t.cell {
-        Some(c) if c.footnote_id().is_some() => compose::find_note(&cs, c.row as u64).map(|(_, n)| n.text.clone()).unwrap_or(cs),
-        Some(c) => compose::find_cell(&cs, c.table, c.row, c.col).map(|(_, _, pc)| pc.text.clone()).unwrap_or(cs),
-        None => cs,
-    };
+    let cs = text_composition(s.cache.get(&st.doc, t.story, None), t.cell);
     let pos = t.focus.min(text.len());
     // Vertical lines run top to bottom and follow each other right to left: Down and Up move along
     // the line (Right and Left of horizontal text), Left and Right to the next and previous line.
@@ -736,6 +831,23 @@ pub(crate) fn format_targets(s: &Session) -> Vec<Target> {
     v
 }
 
+/// Character formatting chosen at a bare caret in text: applied to what is typed there next.
+#[derive(Clone, Debug)]
+pub(crate) struct TypingFormat {
+    doc: u64,
+    at: TextSel,
+    attrs: CharAttrs,
+    /// Overrides removed (`null` in `type.char`).
+    cleared: Vec<String>,
+}
+
+/// The typing format for the active document's caret, if it was chosen at this caret.
+fn typing_format(s: &Session) -> Option<&TypingFormat> {
+    let st = s.active()?;
+    let t = st.selection.text?;
+    s.typing_format.as_ref().filter(|f| f.doc == st.uid && f.at.story == t.story && f.at.cell == t.cell && f.at.range() == t.range())
+}
+
 pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
     let mut a = CharAttrs::default();
     if let Some(o) = attrs.as_object() {
@@ -745,30 +857,48 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
     }
     let cleared: Vec<String> = attrs.as_object().map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
     let targets = format_targets(s);
+    // A caret in text: the format is for the next typing.
+    if let [t] = targets.as_slice()
+        && t.range.is_empty()
+        && let Some(at) = s.doc()?.selection.text
+        && s.doc()?.doc.text_story(t.story, t.cell).is_some_and(|st| !st.is_empty())
+    {
+        let doc = s.doc()?.uid;
+        let mut f = typing_format(s).cloned().unwrap_or(TypingFormat { doc, at, attrs: CharAttrs::default(), cleared: vec![] });
+        f.attrs.merge(&a);
+        f.cleared.retain(|k| attrs.get(k).is_none_or(|v| v.is_null()) && !cleared.contains(k));
+        f.cleared.extend(cleared);
+        s.typing_format = Some(f);
+        return ok();
+    }
     s.edit(|d, _| {
-        for t in &targets {
-            let r = &t.range;
-            let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
-            if r.is_empty() {
-                // Caret: change the typing format (the empty run at the caret).
-                let pos = r.start;
-                if st.is_empty() {
-                    st.chars[0].format.over.merge(&a);
-                    st.rev += 1;
-                } else {
-                    let _ = pos;
-                }
-                continue;
-            }
-            st.format_chars(r.clone(), |f| {
-                f.over.merge(&a);
-                for k in &cleared {
-                    let _ = f.over.set_json(k, &Value::Null);
-                }
-            });
-        }
+        apply_char_attrs(d, &targets, &a, &cleared);
         ok()
     })
+}
+
+/// Character attributes `a` (and the overrides `cleared` removed) over each target's text.
+pub(crate) fn apply_char_attrs(d: &mut designcraft_doc::Document, targets: &[Target], a: &CharAttrs, cleared: &[String]) {
+    for t in targets {
+        let r = &t.range;
+        let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
+        if r.is_empty() {
+            // An empty story: its one (empty) run is the format typing takes.
+            if st.is_empty()
+                && let Some(run) = st.chars.first_mut()
+            {
+                run.format.over.merge(a);
+                st.rev += 1;
+            }
+            continue;
+        }
+        st.format_chars(r.clone(), |f| {
+            f.over.merge(a);
+            for k in cleared {
+                let _ = f.over.set_json(k, &Value::Null);
+            }
+        });
+    }
 }
 
 pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
@@ -874,10 +1004,70 @@ fn selection_attrs(s: &mut Session, _p: &Value) -> Result<Value> {
     let pi = story.para_at(r.start);
     let pf = &story.paras[pi];
     let (pp, base) = st.doc.styles.resolve_para(pf);
-    let cf = if r.is_empty() { story.char_format_at(r.start) } else { story.format_after(r.start) };
-    let cp = st.doc.styles.resolve_char(&base, cf);
+    let mut cf = if r.is_empty() { story.char_format_at(r.start) } else { story.format_after(r.start) }.clone();
+    if let Some(f) = typing_format(s) {
+        apply_typing_format(&mut cf, f);
+    }
+    let cp = st.doc.styles.resolve_char(&base, &cf);
     Ok(json!({"story": sid.0, "paragraphStyle": pf.style, "characterStyle": cf.style, "para": pp, "chars": cp,
         "paraOverrides": pf.para.count(), "charOverrides": cf.over.count()}))
+}
+
+fn apply_typing_format(cf: &mut designcraft_doc::CharFormat, f: &TypingFormat) {
+    cf.over.merge(&f.attrs);
+    for k in &f.cleared {
+        let _ = cf.over.set_json(k, &Value::Null);
+    }
+}
+
+/// Bold (`bold`) or italic from the font family (style linking), per run of the selection: on or
+/// off as asked, else the opposite of the first selected character.
+fn link_style(s: &mut Session, p: &Value, bold: bool) -> Result<Value> {
+    let id = if bold { "type.bold" } else { "type.italic" };
+    let cur = selection_attrs(s, &json!({}))?;
+    let family = cur["chars"]["fontFamily"].as_str().unwrap_or_default().to_string();
+    let style = cur["chars"]["fontStyle"].as_str().unwrap_or_default().to_string();
+    // The document's own fonts count too.
+    let db = designcraft_fonts::FontDb::global().scoped(s.doc()?.doc.font_scope);
+    let (weight, italic) = db.traits_of(&family, &style);
+    let on = p.get("on").and_then(Value::as_bool).unwrap_or(if bold { weight < 650.0 } else { !italic });
+    let (want_bold, want_italic) = if bold { (Some(on), None) } else { (None, Some(on)) };
+    let targets = format_targets(s);
+    // A caret: the linked style of the format there, for the next typing.
+    if let [t] = targets.as_slice()
+        && t.range.is_empty()
+    {
+        let linked = db.linked_style(&family, &style, want_bold, want_italic).ok_or_else(|| bad(id, format!("{family} has no style for that")))?;
+        format_chars(s, &json!({"fontStyle": linked}))?;
+        return Ok(json!({"on": on, "fontStyle": linked}));
+    }
+    let mut changed = 0;
+    let r = s.edit(|d, _| {
+        let styles = d.styles.clone();
+        for t in &targets {
+            let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
+            for (pi, pr) in st.para_ranges().into_iter().enumerate() {
+                let (a, b) = (pr.start.max(t.range.start), pr.end.min(t.range.end));
+                if a >= b {
+                    continue;
+                }
+                let Some(pf) = st.paras.get(pi) else { continue };
+                let (_, pc) = styles.resolve_para(pf);
+                st.format_chars(a..b, |f| {
+                    let cp = styles.resolve_char(&pc, f);
+                    if let Some(linked) = db.linked_style(&cp.font_family, &cp.font_style, want_bold, want_italic)
+                        && linked != cp.font_style
+                    {
+                        f.over.font_style = Some(linked);
+                        changed += 1;
+                    }
+                });
+            }
+        }
+        ok()
+    });
+    r?;
+    Ok(json!({"on": on, "changed": changed}))
 }
 
 /// Our own filler text (not Adobe's).
@@ -1145,6 +1335,133 @@ mod nested_style_tests {
         assert_eq!(fill_at(text.find("words").unwrap()), "C=100 M=0 Y=0 K=0");
         assert_eq!(fill_at(text.find("then").unwrap()), "[Black]");
         assert_eq!(fill_at(text.find("2026").unwrap()), "C=0 M=100 Y=0 K=0", "GREP: digits");
+    }
+}
+
+#[cfg(test)]
+mod multi_click_tests {
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    #[test]
+    fn clicks_select_words_spaces_lines_paragraphs_and_the_story() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = "Hello  brave world.\nSecond paragraph here.";
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": text})).unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        // Spread point over the right half of the glyph at byte `b`.
+        let at = |s: &Session, b: usize| {
+            let d = &s.doc().unwrap().doc;
+            let cs = designcraft_compose::compose_story(d, designcraft_doc::StoryId(sid), &Default::default());
+            let (l, g) = cs.frames[0].lines.iter().find_map(|l| l.glyphs.iter().find(|g| g.byte == b && g.len > 0).map(|g| (l, g))).unwrap();
+            json!([g.x + g.adv * 0.75, l.baseline - 3.0])
+        };
+        let mut select = |unit: &str, b: usize| {
+            let p = at(&s, b);
+            let r: Value = s.execute("text.selectAt", &json!({"frame": fid, "point": p, "unit": unit})).unwrap();
+            (r["anchor"].as_u64().unwrap() as usize, r["focus"].as_u64().unwrap() as usize)
+        };
+        assert_eq!(select("word", 1), (0, 5), "inside a word");
+        assert_eq!(select("word", 4), (0, 5), "its last letter");
+        assert_eq!(select("word", 5), (5, 7), "the run of spaces after it");
+        assert_eq!(select("word", 18), (18, 19), "punctuation alone");
+        assert_eq!(select("line", 9), (0, 19));
+        assert_eq!(select("paragraph", 9), (0, 19));
+        assert_eq!(select("paragraph", 22), (20, text.len()));
+        assert_eq!(select("story", 9), (0, text.len()));
+        // A second click inside the selected word selects again rather than starting a text drag.
+        s.execute("text.select", &json!({"story": sid, "anchor": 7, "focus": 12})).unwrap();
+        let p = at(&s, 9);
+        s.execute("text.selectAt", &json!({"frame": fid, "point": p, "unit": "line"})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.anchor, t.focus), (0, 19));
+        s.execute("text.release", &json!({"frame": fid, "point": p, "moved": false})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.anchor, t.focus), (0, 19), "releasing keeps it");
+        // The older word command agrees.
+        let p = at(&s, 8);
+        s.execute("text.selectWord", &json!({"frame": fid, "point": p})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.anchor, t.focus), (7, 12));
+        assert!(s.execute("text.selectAt", &json!({"frame": fid, "point": p, "unit": "sentence"})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod style_link_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn bold_and_italic_follow_the_family_and_toggle() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "plain words here"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        let style_at = |s: &mut Session, b: usize| {
+            s.execute("text.select", &json!({"story": sid, "anchor": b, "focus": b + 1})).unwrap();
+            s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fontStyle"].as_str().unwrap().to_string()
+        };
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.italic", &json!({})).unwrap();
+        assert_eq!(style_at(&mut s, 0), "Italic");
+        // Bold over italic and plain text: each run takes its own linked style.
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 11})).unwrap();
+        s.execute("type.bold", &json!({})).unwrap();
+        assert_eq!(style_at(&mut s, 0), "Bold Italic");
+        assert_eq!(style_at(&mut s, 7), "Bold");
+        // Again: off, back to each run's regular weight.
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 11})).unwrap();
+        s.execute("type.bold", &json!({})).unwrap();
+        assert_eq!(style_at(&mut s, 0), "Italic");
+        assert_eq!(style_at(&mut s, 7), "Regular");
+        // At a caret the style is for what is typed next.
+        let end = "plain words here".len();
+        s.execute("text.select", &json!({"story": sid, "anchor": end, "focus": end})).unwrap();
+        s.execute("type.bold", &json!({})).unwrap();
+        assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fontStyle"], "Bold");
+        s.execute("text.insert", &json!({"text": " now"})).unwrap();
+        assert_eq!(style_at(&mut s, end + 1), "Bold");
+        assert_eq!(style_at(&mut s, end - 1), "Regular", "text before the caret is unchanged");
+        // Moving the caret forgets it.
+        s.execute("text.select", &json!({"story": sid, "anchor": 2, "focus": 2})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 30}})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 3, "focus": 3})).unwrap();
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 3, "focus": 4})).unwrap();
+        assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["size"], 12.0);
+    }
+}
+
+#[cfg(test)]
+mod text_color_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn unnamed_colours_go_to_text_when_asked() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "colour me", "caret": false})).unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        s.execute("selection.set", &json!({"ids": [fid]})).unwrap();
+        let fill_of_frame = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(fid)).unwrap().fill.swatch.clone();
+        let before = fill_of_frame(&s);
+        let r = s.execute("object.color", &json!({"color": "#ff0000", "text": true})).unwrap();
+        let red = r["swatch"].as_str().unwrap().to_string();
+        assert_eq!(fill_of_frame(&s), before, "the frame keeps its fill");
+        let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
+        assert_eq!(story.char_format_at(3).over.fill.as_deref(), Some(red.as_str()));
+        // A text selection takes it without asking.
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 3})).unwrap();
+        let r = s.execute("object.color", &json!({"color": "#00ff00", "target": "stroke"})).unwrap();
+        let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
+        assert_eq!(story.format_after(0).over.stroke.as_deref(), r["swatch"].as_str());
+        assert_eq!(s.doc().unwrap().history.undo.len(), 3, "the frame, then one undo step per colour");
     }
 }
 

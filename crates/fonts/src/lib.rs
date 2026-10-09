@@ -348,6 +348,22 @@ mod tests {
     }
 
     #[test]
+    fn style_linking_finds_bold_and_italic_in_the_family() {
+        let db = FontDb::with_font_dirs(vec![]);
+        let link = |cur: &str, bold: Option<bool>, italic: Option<bool>| db.linked_style("Source Serif 4", cur, bold, italic);
+        assert_eq!(link("Regular", Some(true), None).as_deref(), Some("Bold"));
+        assert_eq!(link("Italic", Some(true), None).as_deref(), Some("Bold Italic"), "keeps the italic");
+        assert_eq!(link("Bold", None, Some(true)).as_deref(), Some("Bold Italic"), "keeps the weight");
+        assert_eq!(link("Bold Italic", Some(false), None).as_deref(), Some("Italic"));
+        assert_eq!(link("Bold Italic", None, Some(false)).as_deref(), Some("Bold"));
+        assert_eq!(link("Semibold", Some(false), None).as_deref(), Some("Regular"));
+        assert_eq!(db.traits_of("Source Serif 4", "Bold Italic"), (700.0, true));
+        // Source Sans 3 is bundled without a bold italic.
+        assert_eq!(db.linked_style("Source Sans 3", "Italic", Some(true), None), None);
+        assert_eq!(db.linked_style("No Such Family", "Regular", Some(true), None), None);
+    }
+
+    #[test]
     fn shaping_produces_clusters_and_advances() {
         let face = FontDb::global().face(DEFAULT_FAMILY, "Regular");
         let g = shape(&face, "Hello", &[], |c| c);

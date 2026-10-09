@@ -174,7 +174,9 @@ fn line_box(l: &Line) -> Option<Rect> {
     let x0 = l.glyphs.iter().map(|g| g.x).fold(first.x, f64::min);
     let x1 = l.glyphs.iter().map(|g| g.x + g.adv.max(0.0)).fold(l.end_x, f64::max);
     let pad = l.ascent.max(1.0);
-    Some(Rect::new(x0 - pad, l.baseline - l.ascent - pad, x1 + pad, l.baseline + l.descent.max(0.0) + pad))
+    // A drop cap reaches down past its line.
+    let bottom = l.drop_cap.map_or(l.baseline + l.descent.max(0.0), |dc| dc.rect.y1.max(l.baseline + l.descent.max(0.0)));
+    Some(Rect::new(x0 - pad, l.baseline - l.ascent - pad, x1 + pad, bottom + pad))
 }
 
 impl Renderer {

@@ -705,3 +705,237 @@ fn pen_click_snaps_to_a_guide() {
     let x = p["anchors"][0]["p"][0].as_f64().unwrap();
     assert!((x - 100.0).abs() < 1e-6, "anchor x {x}");
 }
+
+/// A text frame with overset text (selected), an empty frame and a threaded pair x → y, on page 1.
+struct ThreadDoc {
+    d: Document,
+    l: CanvasLayout,
+    s: Selection,
+    c: Cache,
+    /// The selected text frame.
+    a: ItemId,
+    /// An empty (unassigned) frame.
+    e: ItemId,
+    x: ItemId,
+    y: ItemId,
+}
+
+fn thread_doc() -> ThreadDoc {
+    let mut d = Document::new(&NewDocument { pages: 2, ..Default::default() });
+    let lid = d.default_layer();
+    let (a, _) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 250.0, 160.0), lid, &"Words flow on. ".repeat(40), ParaFormat::default())
+        .unwrap();
+    let e = ItemId(d.alloc());
+    d.insert_item(SpreadRef::Doc(0), Item::new(e, lid, Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 400.0, 250.0, 500.0))), None).unwrap();
+    let (x, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 100.0, 450.0, 160.0), lid, "x", ParaFormat::default()).unwrap();
+    let (y, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 450.0, 500.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(x, y).unwrap();
+    let l = CanvasLayout::new(&d, false);
+    ThreadDoc { s: Selection::items(vec![a]), c: Cache::new(), l, d, a, e, x, y }
+}
+
+impl ThreadDoc {
+    fn cx(&self) -> ToolContext<'_> {
+        ctx(&self.d, &self.s, &self.c, &self.l)
+    }
+    /// Canvas point of a spread-0 point.
+    fn at(&self, x: f64, y: f64) -> Point {
+        self.l.to_canvas(SpreadRef::Doc(0), Point::new(x, y))
+    }
+    fn port(&self, id: ItemId, out: bool) -> Point {
+        thread::port_center(&self.d, &self.l, id, out, 1.0).unwrap()
+    }
+}
+
+fn click(t: &mut Box<dyn Tool>, cx: &ToolContext, p: Point, mods: Mods) -> Vec<Action> {
+    let mut v = t.pointer(cx, &PointerEvent::new(PointerKind::Down, p.x, p.y).with_mods(mods));
+    v.extend(t.pointer(cx, &PointerEvent::new(PointerKind::Up, p.x, p.y).with_mods(mods)));
+    v
+}
+
+fn thread_exec(p: serde_json::Value) -> Vec<Action> {
+    vec![Action::Exec("text.thread".into(), p)]
+}
+
+#[test]
+fn out_port_loads_text_and_a_click_threads_an_empty_frame() {
+    let td = thread_doc();
+    let cx = td.cx();
+    let mut t = create("selection");
+    let port = td.port(td.a, true);
+    // The out port sits on the right edge, 12 px above the bottom-right corner.
+    assert!((port - td.at(250.0, 148.0)).hypot() < 1e-9, "{port:?}");
+    // A press just off the port's centre still loads (any zoom: tolerance is in pixels).
+    assert!(click(&mut t, &cx, port + designcraft_geom::Vec2::new(3.0, -3.0), Mods::default()).is_empty());
+    assert_eq!(t.cursor(&cx, td.at(500.0, 700.0), Mods::default()), Cursor::LoadedText);
+    let over_e = td.at(175.0, 450.0);
+    assert_eq!(t.cursor(&cx, over_e, Mods::default()), Cursor::ThreadLink);
+    // A frame something already threads into can't join; neither can the loaded frame itself.
+    assert_eq!(t.cursor(&cx, td.at(375.0, 450.0), Mods::default()), Cursor::NotAllowed);
+    assert_eq!(t.cursor(&cx, td.at(175.0, 130.0), Mods::default()), Cursor::LoadedText);
+    assert_eq!(click(&mut t, &cx, over_e, Mods::default()), thread_exec(serde_json::json!({"from": td.a.0, "to": td.e.0})));
+    // Unloaded again: the cursor and clicks are back to normal.
+    assert_eq!(t.cursor(&cx, over_e, Mods::default()), Cursor::Arrow);
+}
+
+#[test]
+fn ports_hit_at_any_zoom() {
+    let td = thread_doc();
+    let mut cx = td.cx();
+    cx.zoom = 4.0;
+    let port = thread::port_center(&td.d, &td.l, td.a, false, 4.0).unwrap();
+    assert!((port - td.at(100.0, 100.0 + 14.5 / 4.0)).hypot() < 1e-9);
+    assert_eq!(thread::port_at(&cx, port + designcraft_geom::Vec2::new(1.5, 1.5)), Some((td.a, false)));
+    assert_eq!(thread::port_at(&cx, port + designcraft_geom::Vec2::new(4.0, 0.0)), None, "8 screen px away at 4×");
+}
+
+#[test]
+fn loaded_click_on_empty_page_makes_a_column_frame() {
+    let td = thread_doc();
+    let cx = td.cx();
+    let mut t = create("selection");
+    click(&mut t, &cx, td.port(td.a, true), Mods::default());
+    let col = td.d.spreads[0].pages[0].column_rects()[0];
+    let a = click(&mut t, &cx, td.at(200.0, 600.0), Mods::default());
+    assert_eq!(a, thread_exec(serde_json::json!({"from": td.a.0, "rect": [col.x0, 600.0, col.x1, col.y1], "spread": {"kind": "doc", "index": 0}})));
+}
+
+#[test]
+fn loaded_drag_makes_a_frame_of_that_size_and_shift_autoflows() {
+    let td = thread_doc();
+    let cx = td.cx();
+    let mut t = create("selection");
+    click(&mut t, &cx, td.port(td.a, true), Mods::default());
+    let (p0, p1) = (td.at(320.0, 560.0), td.at(470.0, 700.0));
+    let shift = Mods { shift: true, ..Default::default() };
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p0.x, p0.y).with_mods(shift)).is_empty());
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p1.x, p1.y).with_mods(shift)).is_empty());
+    assert_eq!(t.overlays(&cx), vec![Overlay::Marquee(Rect::from_points(p0, p1))]);
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, p1.x, p1.y).with_mods(shift));
+    assert_eq!(
+        a,
+        thread_exec(
+            serde_json::json!({"from": td.a.0, "rect": [320.0, 560.0, 470.0, 700.0], "spread": {"kind": "doc", "index": 0}, "autoflow": true})
+        )
+    );
+    assert_eq!(t.cursor(&cx, td.at(500.0, 700.0), Mods::default()), Cursor::Arrow, "autoflow unloads");
+}
+
+#[test]
+fn alt_click_stays_loaded() {
+    let td = thread_doc();
+    let cx = td.cx();
+    let mut t = create("selection");
+    click(&mut t, &cx, td.port(td.a, true), Mods::default());
+    let alt = Mods { alt: true, ..Default::default() };
+    assert_eq!(click(&mut t, &cx, td.at(175.0, 450.0), alt), thread_exec(serde_json::json!({"from": td.a.0, "to": td.e.0})));
+    assert_eq!(t.cursor(&cx, td.at(500.0, 700.0), Mods::default()), Cursor::LoadedText);
+}
+
+#[test]
+fn escape_unloads_and_keeps_the_selection() {
+    let td = thread_doc();
+    let cx = td.cx();
+    let mut t = create("selection");
+    click(&mut t, &cx, td.port(td.a, true), Mods::default());
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::Cancel]);
+    assert_eq!(t.cursor(&cx, td.at(500.0, 700.0), Mods::default()), Cursor::Arrow);
+    // An ordinary click on empty space deselects again.
+    let p = td.at(500.0, 700.0);
+    assert_eq!(
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y)),
+        vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]
+    );
+}
+
+#[test]
+fn loaded_click_on_the_linked_frame_unthreads() {
+    // x is selected; its out port links to y.
+    let td = thread_doc();
+    let td = ThreadDoc { s: Selection::items(vec![td.x]), ..td };
+    let cx = td.cx();
+    let mut t = create("selection");
+    click(&mut t, &cx, td.port(td.x, true), Mods::default());
+    let over_y = td.at(375.0, 450.0);
+    assert_eq!(t.cursor(&cx, over_y, Mods::default()), Cursor::Unthread);
+    assert_eq!(
+        click(&mut t, &cx, over_y, Mods::default()),
+        vec![Action::Exec("text.unthread".into(), serde_json::json!({"frame": td.x.0, "side": "after"}))]
+    );
+    // From y's in port, x is the frame before.
+    let td = ThreadDoc { s: Selection::items(vec![td.y]), ..td };
+    let cx = td.cx();
+    click(&mut t, &cx, td.port(td.y, false), Mods::default());
+    assert_eq!(
+        click(&mut t, &cx, td.at(375.0, 130.0), Mods::default()),
+        vec![Action::Exec("text.unthread".into(), serde_json::json!({"frame": td.y.0, "side": "before"}))]
+    );
+}
+
+#[test]
+fn in_port_threads_in_front() {
+    let td = thread_doc();
+    let cx = td.cx();
+    let mut t = create("selection");
+    click(&mut t, &cx, td.port(td.a, false), Mods::default());
+    assert_eq!(click(&mut t, &cx, td.at(175.0, 450.0), Mods::default()), thread_exec(serde_json::json!({"from": td.e.0, "to": td.a.0})));
+}
+
+#[test]
+fn double_click_on_a_port_breaks_its_link() {
+    let td = thread_doc();
+    let td = ThreadDoc { s: Selection::items(vec![td.x]), ..td };
+    let cx = td.cx();
+    // A double click sent as such (control channel), and the canvas's second press.
+    let second = |p: Point| [PointerEvent::new(PointerKind::DoubleClick, p.x, p.y), PointerEvent::new(PointerKind::Down, p.x, p.y).with_clicks(2)];
+    let p = td.port(td.x, true);
+    for ev in second(p) {
+        let mut t = create("selection");
+        click(&mut t, &cx, p, Mods::default());
+        let a = t.pointer(&cx, &ev);
+        assert_eq!(a, vec![Action::Exec("text.unthread".into(), serde_json::json!({"frame": td.x.0, "side": "after"}))], "{ev:?}");
+        assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, p.x, p.y)).is_empty());
+        assert_eq!(t.cursor(&cx, td.at(500.0, 700.0), Mods::default()), Cursor::Arrow);
+        // The in port of the first frame has no link: nothing to break.
+        let q = td.port(td.x, false);
+        for ev in second(q) {
+            assert!(t.pointer(&cx, &ev).is_empty(), "{ev:?}");
+        }
+    }
+}
+
+#[test]
+fn clicks_in_a_row_edit_and_select_text() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 300.0, 200.0), lid, "Two words", ParaFormat::default()).unwrap();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let (x, y) = (150.0 + off.x, 110.0 + off.y);
+    let press = |n: u8| PointerEvent::new(PointerKind::Down, x, y).with_clicks(n);
+    // Selection tool: the second press of a double click edits the text there.
+    let mut t = create("selection");
+    let a = t.pointer(&cx, &press(1));
+    assert!(matches!(&a[0], Action::Exec(id, _) if id == "selection.set"), "{a:?}");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x, y));
+    let a = t.pointer(&cx, &press(2));
+    assert_eq!(a.first(), Some(&Action::SwitchTool("type".into())));
+    assert!(matches!(&a[1], Action::Exec(id, p) if id == "text.placeCaret" && p["frame"] == fid.0), "{a:?}");
+    // Type tool: word, line, paragraph, then the story.
+    let mut t = create("type");
+    let unit = |a: Vec<Action>| match a.as_slice() {
+        [Action::Exec(id, p)] if id == "text.selectAt" => p["unit"].as_str().map(str::to_string),
+        [Action::Exec(id, _)] if id == "text.placeCaret" => None,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(unit(t.pointer(&cx, &press(1))), None);
+    for (n, want) in [(2, "word"), (3, "line"), (4, "paragraph"), (5, "story"), (9, "story")] {
+        assert_eq!(unit(t.pointer(&cx, &press(n))).as_deref(), Some(want), "{n} clicks");
+    }
+    // A double click sent as such (control channel) selects a word too.
+    assert_eq!(unit(t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, x, y))).as_deref(), Some("word"));
+    // Moving a little while pressed keeps the unit selected.
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, x + 2.0, y)).is_empty());
+}

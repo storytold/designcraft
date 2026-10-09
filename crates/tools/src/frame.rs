@@ -50,6 +50,46 @@ impl FrameTool {
     }
 }
 
+/// The rectangle a frame-drawing drag from `sa` to `end` (spread space) makes, snapped when
+/// snapping is on, and the snap guides to draw. Shift constrains the shape first; only the
+/// driving edge snaps, then the other follows. Alt draws from the centre.
+pub(crate) fn snapped_drag_rect(cx: &ToolContext, sr: SpreadRef, sa: Point, end: Point, mods: Mods) -> (Rect, Vec<crate::Overlay>) {
+    let r = drag_rect(sa, end, mods);
+    if !cx.snap.any() {
+        return (r, vec![]);
+    }
+    let (mut x_edges, mut y_edges) = moving_edges(sa, end, r, mods.alt);
+    let driver_x = (end.x - sa.x).abs() >= (end.y - sa.y).abs();
+    if mods.shift {
+        if driver_x {
+            y_edges = [false, false, false];
+        } else {
+            x_edges = [false, false, false];
+        }
+    }
+    let hit = crate::snap::snap(
+        cx,
+        SnapRequest {
+            spread: sr,
+            gesture: Gesture::Create,
+            rect: r,
+            x_edges,
+            y_edges,
+            exclude: &[],
+            copying: false,
+            lengths: [length_on(x_edges, r.width()), length_on(y_edges, r.height())],
+            angle: None,
+            radius: 0.0,
+            pointer: end,
+        },
+    );
+    let mut r = crate::snap::nudge_edges(r, x_edges, y_edges, hit.delta);
+    if mods.shift {
+        r = restore_shift_frame(sa, end, r, driver_x, mods.alt);
+    }
+    (r, hit.guides)
+}
+
 pub fn drag_rect(a: Point, b: Point, m: Mods) -> Rect {
     let (mut dx, mut dy) = (b.x - a.x, b.y - a.y);
     if m.shift {
@@ -365,41 +405,9 @@ impl Tool for FrameTool {
                     }
                     out.push(Action::Preview("line.create".into(), json!({"spread": spread_json(sr), "a": [sa.x, sa.y], "b": [b.x, b.y]})));
                 } else {
-                    // Shift constrains the shape first. Only the driving edge snaps, then the other follows.
                     let end = cx.layout.to_spread(sr, ev.pos);
-                    let mut r = drag_rect(sa, end, ev.mods);
-                    if cx.snap.any() {
-                        let (mut x_edges, mut y_edges) = moving_edges(sa, end, r, ev.mods.alt);
-                        let driver_x = (end.x - sa.x).abs() >= (end.y - sa.y).abs();
-                        if ev.mods.shift {
-                            if driver_x {
-                                y_edges = [false, false, false];
-                            } else {
-                                x_edges = [false, false, false];
-                            }
-                        }
-                        let hit = crate::snap::snap(
-                            cx,
-                            SnapRequest {
-                                spread: sr,
-                                gesture: Gesture::Create,
-                                rect: r,
-                                x_edges,
-                                y_edges,
-                                exclude: &[],
-                                copying: false,
-                                lengths: [length_on(x_edges, r.width()), length_on(y_edges, r.height())],
-                                angle: None,
-                                radius: 0.0,
-                                pointer: end,
-                            },
-                        );
-                        r = crate::snap::nudge_edges(r, x_edges, y_edges, hit.delta);
-                        if ev.mods.shift {
-                            r = restore_shift_frame(sa, end, r, driver_x, ev.mods.alt);
-                        }
-                        self.guides = hit.guides;
-                    }
+                    let (r, guides) = snapped_drag_rect(cx, sr, sa, end, ev.mods);
+                    self.guides = guides;
                     self.last = Some((spread_json(sr), r));
                     out.push(self.preview(spread_json(sr), r));
                 }

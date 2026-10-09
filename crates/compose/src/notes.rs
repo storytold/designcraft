@@ -197,10 +197,15 @@ pub fn find_note(cs: &ComposedStory, id: u64) -> Option<(usize, &PlacedNote)> {
 
 /// Footnote text hit at frame-inner point `p`: (footnote id, byte in the footnote's story).
 pub fn hit_note(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize)> {
+    hit_note_with(cs, fi, p, crate::hit)
+}
+
+/// [`hit_note`] with the hit test for the note's text (see [`crate::hit_cell_with`]).
+pub fn hit_note_with(cs: &ComposedStory, fi: usize, p: Point, hit: fn(&ComposedStory, usize, Point) -> Option<usize>) -> Option<(u64, usize)> {
     let ft = cs.frames.get(fi)?;
     let n = ft.notes.iter().find(|n| n.rect.contains(p))?;
     let local = Point::new(p.x - n.origin.x, p.y - n.origin.y);
-    Some((n.id, crate::hit(&n.text, 0, local).unwrap_or(0)))
+    Some((n.id, hit(&n.text, 0, local).unwrap_or(0)))
 }
 
 /// Caret geometry for byte `pos` of a footnote's story, in frame inner space:

@@ -146,6 +146,241 @@ fn wrap_pushes_text_aside() {
     assert!(below.x0 < 1.0);
 }
 
+/// Insert rectangles with wrap, given as (bounds, [top, left, bottom, right] offsets, mode).
+fn add_wrap_objects(d: &mut Document, objects: &[(Rect, [f64; 4], WrapMode)]) {
+    let lid = d.default_layer();
+    for &(r, offsets, mode) in objects {
+        let id = ItemId(d.alloc());
+        let mut it = designcraft_doc::Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+        it.wrap.mode = mode;
+        it.wrap.offsets = offsets;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    }
+}
+
+/// 10 pt on 12 pt text in a 288 × 528 frame at (36, 36), with wrap objects.
+fn wrap_doc(para: ParaAttrs, objects: &[(Rect, [f64; 4], WrapMode)]) -> (Document, StoryId) {
+    let text = [LOREM; 6].join(" ");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 324.0, 564.0), para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.size = Some(10.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(12.0));
+    });
+    add_wrap_objects(&mut d, objects);
+    (d, sid)
+}
+
+/// The first line whose baseline is below the top of `ex`.
+fn first_line_below<'a>(cs: &'a ComposedStory, ex: &Exclusion) -> &'a Line {
+    cs.frames[0].lines.iter().find(|l| l.baseline > ex.rect.y0).unwrap()
+}
+
+/// 14 pt on 18 pt `text` in a frame from y 62.36 to 532.91 with first baseline offset Leading, so lines
+/// sit at 80.36 + n × 18 (the setup measured in InDesign), with Jump Object wraps given as
+/// (bounds, [top, left, bottom, right] offsets).
+fn jump_doc(text: &str, objects: &[(Rect, [f64; 4])]) -> (Document, StoryId, ItemId) {
+    let (mut d, sid, fid) = doc_with(text, Rect::new(36.0, 62.36, 324.0, 532.91), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.size = Some(14.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(18.0));
+    });
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.first_baseline = FirstBaseline::Leading;
+    let objects: Vec<_> = objects.iter().map(|&(r, o)| (r, o, WrapMode::JumpObject)).collect();
+    add_wrap_objects(&mut d, &objects);
+    (d, sid, fid)
+}
+
+/// Baselines of the last line above the top of the first wrap and of the first line below it.
+fn around_wrap(d: &Document, sid: StoryId) -> (Option<f64>, f64) {
+    let specs = frame_specs(d, sid);
+    let ex = &specs[0].exclusions[0];
+    let cs = compose_story(d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    let above = lines.iter().rev().find(|l| l.baseline <= ex.rect.y0 + 1e-6).map(|l| l.baseline);
+    (above, first_line_below(&cs, ex).baseline)
+}
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() < 0.01
+}
+
+#[test]
+fn jump_object_moves_the_next_line_down_by_whole_leadings() {
+    // As measured: last baseline above 386.41, wrap bottom 472.77 → 494.40 (6 leadings). Here the last
+    // line above is at 386.36 and the wrap ends 86.36 below it.
+    let text = [LOREM; 8].join(" ");
+    let (d, sid, _) = jump_doc(&text, &[(Rect::new(36.0, 395.0, 200.0, 472.72), [0.0; 4])]);
+    let (above, below) = around_wrap(&d, sid);
+    assert!(near(above.unwrap(), 386.36), "{above:?}");
+    assert!(near(below, 386.36 + 6.0 * 18.0), "{below}");
+    // The lines after it keep the leading.
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let next = cs.frames[0].lines.iter().find(|l| l.baseline > below + 1.0).unwrap();
+    assert!(near(next.baseline, below + 18.0));
+}
+
+#[test]
+fn jump_object_clears_the_wrap_with_the_leading_not_the_ascent() {
+    // As measured: last 152.38, wrap bottom 246.90 → 278.38. Clearing the wrap with the line's ascent
+    // instead of its leading would put the line one leading higher (here the wrap ends a little higher,
+    // as the test font's ascent is larger).
+    let text = [LOREM; 8].join(" ");
+    let (d, sid, _) = jump_doc(&text, &[(Rect::new(36.0, 160.0, 324.0, 244.0), [0.0; 4])]);
+    let (above, below) = around_wrap(&d, sid);
+    assert!(near(above.unwrap(), 152.36), "{above:?}");
+    assert!(near(below, 152.36 + 7.0 * 18.0), "{below}");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let asc = cs.frames[0].lines[0].ascent;
+    let by_ascent = (1..).map(|k| 152.36 + k as f64 * 18.0).find(|b| b - asc >= 244.0).unwrap();
+    assert!(!near(by_ascent, below), "the case must tell the two rules apart ({asc})");
+}
+
+#[test]
+fn jump_object_adds_space_before_once() {
+    // As measured: a heading at 78.36, then a paragraph with 60 pt space before, wrap bottom 439.71 →
+    // 462.36 = 78.36 + 60 + 18 × 18.
+    let text = format!("Heading\n{}", [LOREM; 6].join(" "));
+    let (mut d, sid, _) = jump_doc(&text, &[(Rect::new(36.0, 90.0, 324.0, 439.71), [0.0; 4])]);
+    d.story_mut(sid).unwrap().format_paras(10..10, |p| p.para.space_before = Some(60.0));
+    let (above, below) = around_wrap(&d, sid);
+    assert!(near(above.unwrap(), 80.36), "{above:?}");
+    assert!(near(below, 80.36 + 60.0 + 18.0 * 18.0), "{below}");
+}
+
+#[test]
+fn jump_object_at_the_frame_top_starts_text_like_a_frame_top() {
+    // As measured: wrap bottom 266.83 → first baseline 284.835 (Leading offset: one leading below).
+    let text = [LOREM; 8].join(" ");
+    let (mut d, sid, fid) = jump_doc(&text, &[(Rect::new(36.0, 50.0, 324.0, 266.83), [0.0; 4])]);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!(near(lines[0].baseline, 266.83 + 18.0), "{}", lines[0].baseline);
+    assert!(near(lines[1].baseline, 266.83 + 36.0), "{}", lines[1].baseline);
+    // Ascent offset: the line's ascent below the wrap.
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.first_baseline = FirstBaseline::Ascent;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    assert!(near(l.baseline, 266.83 + l.ascent), "{} vs {}", l.baseline, l.ascent);
+}
+
+#[test]
+fn line_above_jump_object_stays_while_its_baseline_is_above_the_wrap() {
+    let text = [LOREM; 8].join(" ");
+    // The line at 386.36 hangs its descenders into the object and stays.
+    let (d, sid, _) = jump_doc(&text, &[(Rect::new(36.0, 386.36, 324.0, 420.0), [0.0; 4])]);
+    let (above, below) = around_wrap(&d, sid);
+    assert!(near(above.unwrap(), 386.36), "{above:?}");
+    assert!(near(below, 440.36), "{below}");
+    // A wrap starting just above its baseline makes it jump.
+    let (d, sid, _) = jump_doc(&text, &[(Rect::new(36.0, 386.3, 324.0, 420.0), [0.0; 4])]);
+    let (above, below) = around_wrap(&d, sid);
+    assert!(near(above.unwrap(), 368.36), "{above:?}");
+    assert!(near(below, 440.36), "{below}");
+}
+
+#[test]
+fn negative_jump_offsets_shrink_the_wrap() {
+    let text = [LOREM; 8].join(" ");
+    let (d, sid, _) = jump_doc(&text, &[(Rect::new(36.0, 300.0, 324.0, 500.0), [-20.0, 0.0, -30.0, 0.0])]);
+    let specs = frame_specs(&d, sid);
+    let r = specs[0].exclusions[0].rect;
+    assert!(near(r.y0, 320.0) && near(r.y1, 470.0), "{r:?}");
+    let (above, below) = around_wrap(&d, sid);
+    assert!(near(above.unwrap(), 314.36), "{above:?}");
+    assert!(near(below, 494.36), "{below}");
+}
+
+#[test]
+fn jump_object_down_to_the_frame_bottom_sends_text_to_the_next_frame() {
+    let text = [LOREM; 8].join(" ");
+    let (mut d, sid, a) = jump_doc(&text, &[(Rect::new(36.0, 300.0, 324.0, 540.0), [0.0; 4])]);
+    let lid = d.default_layer();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(350.0, 62.36, 550.0, 532.91), lid, "", ParaFormat::default()).unwrap();
+    d.item_mut(b).unwrap().text_frame_mut().unwrap().options.first_baseline = FirstBaseline::Leading;
+    d.thread(a, b).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let last = cs.frames[0].lines.last().unwrap();
+    assert!(near(last.baseline, 296.36), "{}", last.baseline);
+    assert!(near(cs.frames[1].lines[0].baseline, 62.36 + 18.0), "{}", cs.frames[1].lines[0].baseline);
+    assert_eq!(cs.frames[0].range.end, cs.frames[1].range.start);
+}
+
+#[test]
+fn full_width_bounding_box_wrap_resumes_exactly_below() {
+    // A bounding-box wrap across the whole column leaves no slot: the line jumps it like Jump Object.
+    let (d, sid) = wrap_doc(ParaAttrs::default(), &[(Rect::new(20.0, 100.0, 340.0, 150.25), [0.0; 4], WrapMode::BoundingBox)]);
+    let specs = frame_specs(&d, sid);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ex = &specs[0].exclusions[0];
+    let l = first_line_below(&cs, ex);
+    assert!((l.baseline - l.ascent - ex.rect.y1).abs() < 0.01, "{} vs {}", l.baseline - l.ascent, ex.rect.y1);
+    // A slot narrower than 1.5 × the size is no slot either.
+    let (d, sid) = wrap_doc(ParaAttrs::default(), &[(Rect::new(50.0, 100.0, 340.0, 150.25), [0.0; 4], WrapMode::BoundingBox)]);
+    let specs = frame_specs(&d, sid);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ex = &specs[0].exclusions[0];
+    let l = first_line_below(&cs, ex);
+    assert!((l.baseline - l.ascent - ex.rect.y1).abs() < 0.01, "{} vs {}", l.baseline - l.ascent, ex.rect.y1);
+}
+
+#[test]
+fn jump_object_keeps_grid_aligned_lines_on_the_grid() {
+    // The wrap ends at 166.5, off the 12 pt grid; a second object blocks the grid line the line jumps
+    // to, so the line moves on to the grid line after that object.
+    let objects = [
+        (Rect::new(36.0, 100.0, 200.0, 160.5), [0.0, 0.0, 6.0, 0.0], WrapMode::JumpObject),
+        (Rect::new(250.0, 178.0, 324.0, 190.0), [0.0; 4], WrapMode::JumpObject),
+    ];
+    let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &objects);
+    let specs = frame_specs(&d, sid);
+    let (g0, inc) = specs[0].grid.unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let on_grid = |b: f64| (((b - g0) / inc).round() * inc + g0 - b).abs() < 1e-6;
+    let lines = &cs.frames[0].lines;
+    assert!(lines.iter().all(|l| on_grid(l.baseline)), "{:?}", lines.iter().map(|l| l.baseline).collect::<Vec<_>>());
+    let exs = &specs[0].exclusions;
+    let l = first_line_below(&cs, &exs[0]);
+    // Naive oracle: the first grid line whose leading band clears the objects.
+    let clear = |b: f64, exs: &[Exclusion]| exs.iter().all(|e| b <= e.rect.y0 || b - l.leading >= e.rect.y1);
+    let want = |exs: &[Exclusion]| (0..).map(|n| g0 + n as f64 * inc).find(|&b| b > exs[0].rect.y0 && clear(b, exs)).unwrap();
+    assert!((l.baseline - want(exs)).abs() < 1e-6, "baseline {} should be on grid line {}", l.baseline, want(exs));
+    assert!(want(&exs[..1]) < want(exs), "the second object pushed the line again");
+
+    // First line only: a later line of the paragraph jumps by whole leadings from the line above.
+    let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::FirstLineOnly), ..Default::default() }, &objects[..1]);
+    let specs = frame_specs(&d, sid);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ex = &specs[0].exclusions[0];
+    let l = first_line_below(&cs, ex);
+    assert!(!l.first_in_para);
+    let above = cs.frames[0].lines.iter().rev().find(|a| a.baseline <= ex.rect.y0).unwrap().baseline;
+    let want = (1..).map(|k| above + k as f64 * 12.0).find(|b| b - 12.0 >= ex.rect.y1).unwrap();
+    assert!((l.baseline - want).abs() < 1e-6, "{} vs {want}", l.baseline);
+}
+
+#[test]
+fn hostile_wrap_geometry_terminates() {
+    let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &[]);
+    let mut specs = frame_specs(&d, sid);
+    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion { rect: Rect::new(x0, y0, x1, y1), mode };
+    let f = &mut specs[0];
+    f.exclusions.push(ex(f64::NAN, f64::NAN, f64::NAN, f64::NAN, WrapMode::JumpObject));
+    f.exclusions.push(ex(-1e308, 300.0, 1e308, f64::INFINITY, WrapMode::JumpObject));
+    f.exclusions.push(ex(0.0, f64::NEG_INFINITY, 400.0, 40.0, WrapMode::BoundingBox));
+    // A wall of overlapping strips, each ending 0.25 pt below the previous.
+    for i in 0..3000 {
+        let y = 60.0 + i as f64 * 0.25;
+        f.exclusions.push(ex(0.0, y, 400.0, y + 1.0, if i % 2 == 0 { WrapMode::JumpObject } else { WrapMode::BoundingBox }));
+    }
+    f.grid = Some((0.0, 1e-300));
+    let story = d.story(sid).unwrap();
+    let cs = compose(&d, story, &specs, &ComposeOptions::default());
+    assert!(cs.is_overset());
+    for l in &cs.frames[0].lines {
+        assert!(l.baseline.is_finite() && l.baseline - l.ascent >= 40.0 && l.baseline + l.descent <= 300.0, "{}", l.baseline);
+    }
+}
+
 #[test]
 fn paragraph_composer_is_no_worse_than_greedy() {
     // Sum of squared slack over lines (excluding last) should not exceed the greedy result.
@@ -357,7 +592,11 @@ fn keep_lines_together_moves_the_paragraph() {
     let (mut d, sid, _) = keep_doc(n - 3, &[&long], h);
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert!(column_of_para(&cs, n - 3).contains(&0));
-    d.story_mut(sid).unwrap().paras[n - 3].para.keep_lines_together = Some(true);
+    {
+        let p = &mut d.story_mut(sid).unwrap().paras[n - 3].para;
+        p.keep_lines_together = Some(true);
+        p.keep_all_lines = Some(true);
+    }
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert!(column_of_para(&cs, n - 3).iter().all(|&c| c == 1));
 }
@@ -1067,6 +1306,785 @@ fn only_english_text_gets_english_hyphenation() {
     let n = st.len();
     st.format_chars(0..n, |f| f.over.language = Some("French".into()));
     assert_eq!(hyphenated(&d2, sid), 0, "French isn't hyphenated with English rules");
+}
+
+// A text frame's bottom inset constrains its last baseline. The full font descent
+// still belongs to the line metrics, caret geometry and measured content height.
+fn baseline_fit_doc(text: &str, height: f64) -> (Document, StoryId, ItemId) {
+    let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 200.0, height), ParaAttrs::default());
+    let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+    tf.options.first_baseline = FirstBaseline::Fixed;
+    tf.options.first_baseline_min = 10.0;
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("Source Serif 4".into());
+        f.over.size = Some(8.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(11.0));
+    });
+    (d, sid, fid)
+}
+
+#[test]
+fn horizontal_text_fits_its_baseline_at_the_bottom_inset() {
+    // Include spaces, a nonprinting anchor and real descenders, rather than only capitals.
+    let text = format!("{}Map gaps ", designcraft_doc::ANCHOR_MARK);
+    let (d, sid, _) = baseline_fit_doc(&text, 10.0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let line = &cs.frames[0].lines[0];
+    assert_eq!(line.baseline, 10.0);
+    assert!(line.descent > 0.0);
+    assert!(cs.frames[0].content_height > 10.0, "measured content must retain descenders");
+    assert!(line.glyphs.iter().any(|g| g.visible && text[g.byte..].starts_with('g')));
+}
+
+#[test]
+fn bottom_baseline_fit_preserves_leading_and_paragraph_spacing() {
+    let text = "Heading\nFirst line\u{2028}Second line\u{2028}Last line.";
+    let (mut d, sid, fid) = baseline_fit_doc(text, 65.5);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.inset = [9.0; 4];
+    d.story_mut(sid).unwrap().paras[0].para.space_after = Some(4.5);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].lines.iter().map(|l| l.baseline).collect::<Vec<_>>(), [19.0, 34.5, 45.5, 56.5]);
+    assert_eq!(cs.frames[0].columns[0].y1, 56.5);
+    assert_eq!(cs.frames[0].range.end, text.len());
+}
+
+#[test]
+fn baseline_beyond_bottom_still_oversets_and_threads() {
+    let text = "First\u{2028}Second";
+    let (mut d, sid, f1) = baseline_fit_doc(text, 20.75);
+    let before = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(before.line_count(), 1);
+    assert_eq!(before.overset_at, Some("First\u{2028}".len()));
+    let lid = d.default_layer();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 50.0, 200.0, 60.0), lid, "", ParaFormat::default()).unwrap();
+    let options = d.item(f1).unwrap().text_frame().unwrap().options.clone();
+    d.item_mut(f2).unwrap().text_frame_mut().unwrap().options = options;
+    d.thread(f1, f2).unwrap();
+    let after = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!after.is_overset());
+    assert_eq!(after.frames.iter().map(|f| f.lines.len()).collect::<Vec<_>>(), [1, 1]);
+    assert_eq!(after.frames[0].lines[0].baseline, before.frames[0].lines[0].baseline);
+}
+
+#[test]
+fn vertical_text_keeps_its_full_cross_line_extent() {
+    let (mut d, sid, fid) = baseline_fit_doc("Map", 200.0);
+    let it = d.item_mut(fid).unwrap();
+    it.path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 200.0));
+    d.story_mut(sid).unwrap().vertical = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.is_overset());
+    assert_eq!(cs.line_count(), 0);
+}
+
+#[test]
+fn inline_objects_still_clear_the_bottom_edge() {
+    let (mut d, sid, _) = baseline_fit_doc("Text", 10.0);
+    let it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 6.0, 6.0)),
+    );
+    d.story_mut(sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, designcraft_doc::AnchorPosition::Inline { y_offset: -3.0 }));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.is_overset());
+    assert_eq!(cs.line_count(), 0);
+}
+
+#[test]
+fn custom_anchors_do_not_change_bottom_baseline_fitting() {
+    let (mut d, sid, _) = baseline_fit_doc("Text", 10.0);
+    let it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 6.0, 6.0)),
+    );
+    let pos = designcraft_doc::AnchorPosition::Custom {
+        x_relative: Default::default(),
+        y_relative: Default::default(),
+        x_offset: 0.0,
+        y_offset: 0.0,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: false,
+    };
+    d.story_mut(sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, pos));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.line_count(), 1);
+    assert_eq!(cs.frames[0].objects.len(), 1);
+}
+
+#[test]
+fn baseline_shift_keeps_its_metrics_and_glyph_offset_at_bottom() {
+    let (mut d, sid, _) = baseline_fit_doc("Map", 10.0);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().format_chars(0..3, |f| f.over.baseline_shift = Some(-3.0));
+    let shifted = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!plain.is_overset() && !shifted.is_overset());
+    let (p, s) = (&plain.frames[0].lines[0], &shifted.frames[0].lines[0]);
+    assert_eq!(p.baseline, s.baseline);
+    assert!((s.descent - p.descent - 3.0).abs() < 1e-6);
+    assert!((s.glyphs[0].y - p.glyphs[0].y - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn path_text_keeps_the_original_vertical_fit_limit() {
+    // A path's synthetic layout area is not an ordinary text frame: admitting a
+    // second line would paint both lines on the same path, regardless of leading.
+    for separator in ['\n', designcraft_doc::story::FORCED_LINE_BREAK] {
+        for leading in [8.0, 10.0] {
+            let text = format!("HELLO{separator}WORLD");
+            let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+            let it = d.item_mut(fid).unwrap();
+            it.shape = designcraft_doc::Shape::Path;
+            it.path = designcraft_geom::shapes::line(Point::ZERO, Point::new(200.0, 0.0));
+            it.text_frame_mut().unwrap().options.path =
+                Some(designcraft_doc::PathType { start: 0.0, flip: false, align: designcraft_doc::PathAlign::Baseline });
+            d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+                f.over.font_family = Some("Source Serif 4".into());
+                f.over.size = Some(20.0);
+                f.over.leading = Some(designcraft_doc::Leading::Points(leading));
+            });
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert_eq!(cs.line_count(), 1, "{separator:?}, leading {leading}");
+            assert_eq!(cs.overset_at, Some("HELLO".len() + separator.len_utf8()));
+        }
+    }
+}
+
+fn two_keep_frames(text: &str) -> (Document, StoryId, ItemId, ItemId) {
+    let (mut d, sid, first) = baseline_fit_doc(text, 48.0);
+    d.item_mut(first).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 75.0, 48.0));
+    let lid = d.default_layer();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 0.0, 210.0, 69.0), lid, "", ParaFormat::default()).unwrap();
+    let options = d.item(first).unwrap().text_frame().unwrap().options.clone();
+    d.item_mut(second).unwrap().text_frame_mut().unwrap().options = options;
+    d.thread(first, second).unwrap();
+    (d, sid, first, second)
+}
+
+#[test]
+fn keep_chain_spanning_frames_does_not_empty_its_top_column() {
+    let a = "One\u{2028}Two\u{2028}Three\u{2028}Four\u{2028}Five\u{2028}Six";
+    let b = "Seven\u{2028}Eight\u{2028}Nine\u{2028}Ten";
+    let text = format!("{a}\n{b}\nEnd");
+    let (mut d, sid, first, second) = two_keep_frames(&text);
+    let paras = &mut d.story_mut(sid).unwrap().paras;
+    paras[0].para.keep_with_next = Some(2);
+    paras[0].para.space_after = Some(2.0);
+    paras[1].para.keep_with_next = Some(2);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // The keep chain cannot fit in either column. Fall back to flowing it, rather
+    // than moving a paragraph already at a column top and throwing that column away.
+    assert_eq!(cs.frame(first).unwrap().lines.len(), 4);
+    assert_eq!(cs.frame(second).unwrap().lines.len(), 6);
+    assert_eq!(cs.overset_at, Some(a.len() + b.len() + 2));
+}
+
+#[test]
+fn satisfiable_keep_chain_still_moves_together_to_the_next_frame() {
+    let text = "One\u{2028}Two\nHeading\nSubheading\nBody";
+    let (mut d, sid, first, second) = two_keep_frames(text);
+    let paras = &mut d.story_mut(sid).unwrap().paras;
+    paras[1].para.keep_with_next = Some(1);
+    paras[2].para.keep_with_next = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frame(first).unwrap().lines.len(), 2);
+    assert_eq!(cs.frame(second).unwrap().lines.iter().map(|l| l.para).collect::<Vec<_>>(), [1, 2, 3]);
+}
+
+/// OS/2 field offsets: sTypoAscender, sxHeight, sCapHeight.
+const TYPO_ASCENDER: usize = 68;
+const X_HEIGHT: usize = 86;
+const CAP_HEIGHT: usize = 88;
+
+/// Source Sans 3 Regular (1000 units per em; OS/2 typo ascender = hhea ascender = 1000, cap height
+/// 660, x height 486) renamed to `family` (13 characters, the length of "Source Sans 3"), with the
+/// OS/2 fields at the given offsets set, or without an OS/2 table for `None`.
+fn test_font(family: &str, os2_fields: Option<&[(usize, i16)]>) -> Vec<u8> {
+    let mut b = designcraft_fonts::bundled()[0].to_vec();
+    assert_eq!(family.len(), "Source Sans 3".len());
+    let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>();
+    for (from, to) in [(utf16("Source Sans 3"), utf16(family)), (b"Source Sans 3".to_vec(), family.as_bytes().to_vec())] {
+        let mut i = 0;
+        while let Some(p) = b[i..].windows(from.len()).position(|w| w == from.as_slice()) {
+            b[i + p..i + p + to.len()].copy_from_slice(&to);
+            i += p + to.len();
+        }
+    }
+    let tables = u16::from_be_bytes([b[4], b[5]]) as usize;
+    let rec = (0..tables).map(|t| 12 + 16 * t).find(|&r| &b[r..r + 4] == b"OS/2").unwrap();
+    match os2_fields {
+        Some(fields) => {
+            let os2 = u32::from_be_bytes(b[rec + 8..rec + 12].try_into().unwrap()) as usize;
+            for &(at, v) in fields {
+                b[os2 + at..os2 + at + 2].copy_from_slice(&v.to_be_bytes());
+            }
+        }
+        // Still sorted between its neighbours, so the table directory stays valid.
+        None => b[rec..rec + 4].copy_from_slice(b"OS/1"),
+    }
+    b
+}
+
+/// [`test_font`] with OS/2 `sTypoAscender` set to `typo_ascender`, or without OS/2 for `None`.
+fn typo_test_font(family: &str, typo_ascender: Option<i16>) -> Vec<u8> {
+    test_font(family, typo_ascender.map(|v| [(TYPO_ASCENDER, v)]).as_ref().map(|f| f.as_slice()))
+}
+
+/// First baseline (frame space) of a 20 pt line in `family` in a frame at y = 36 with a 4 pt top
+/// inset, set up by `opts`.
+fn first_baseline_in(family: &str, opts: impl Fn(&mut designcraft_doc::TextFrameOptions)) -> f64 {
+    first_baseline_in_dir(family, false, opts)
+}
+
+/// [`first_baseline_in`] in a vertical story when `vertical`.
+fn first_baseline_in_dir(family: &str, vertical: bool, opts: impl Fn(&mut designcraft_doc::TextFrameOptions)) -> f64 {
+    let (mut d, sid, fid) = doc_with("Hxg Hxg", Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..7, |f| {
+        f.over.font_family = Some(family.into());
+        f.over.font_style = Some("Regular".into());
+        f.over.size = Some(20.0);
+    });
+    d.story_mut(sid).unwrap().vertical = vertical;
+    let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+    tf.options.inset = [4.0, 0.0, 0.0, 0.0];
+    opts(&mut tf.options);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    cs.frames[0].lines[0].baseline
+}
+
+#[test]
+fn ascent_first_baseline_uses_the_typographic_ascender() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(typo_test_font("TypoAscent 07", Some(700)));
+    let face = db.face("TypoAscent 07", "Regular");
+    assert_eq!(face.family, "TypoAscent 07");
+    assert_eq!((face.ascent, face.typo_ascent), (1000.0, 700.0), "hhea 1 em, typo 0.7 em");
+    let top = 36.0 + 4.0;
+    let at = |kind: FirstBaseline, min: f64| {
+        first_baseline_in("TypoAscent 07", |o| {
+            o.first_baseline = kind;
+            o.first_baseline_min = min;
+        })
+    };
+    let close = |a: f64, b: f64| (a - b).abs() < 0.01;
+    // Ascent: top + typo ascender (0.7 em of 20 pt), not the hhea ascender (1 em).
+    assert!(close(at(FirstBaseline::Ascent, 0.0), top + 14.0), "{}", at(FirstBaseline::Ascent, 0.0));
+    // The minimum offset still wins when it is larger.
+    assert!(close(at(FirstBaseline::Ascent, 18.0), top + 18.0));
+    assert!(close(at(FirstBaseline::Ascent, 10.0), top + 14.0));
+    // The other kinds don't use it.
+    assert!(close(at(FirstBaseline::CapHeight, 0.0), top + 0.660 * 20.0));
+    assert!(close(at(FirstBaseline::XHeight, 0.0), top + 0.486 * 20.0));
+    assert!(close(at(FirstBaseline::Leading, 0.0), top + 24.0));
+    assert!(close(at(FirstBaseline::Fixed, 0.0), top));
+    // Vertical scale scales it like the ascent.
+    let (mut d, sid, fid) = doc_with("Hxg", Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..3, |f| {
+        f.over.font_family = Some("TypoAscent 07".into());
+        f.over.size = Some(20.0);
+        f.over.v_scale = Some(1.5);
+    });
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.inset = [4.0, 0.0, 0.0, 0.0];
+    let l = &compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0];
+    assert!(close(l.baseline, top + 21.0), "{}", l.baseline);
+    // The line box keeps the font's ascent.
+    assert!(close(l.ascent, 30.0), "{}", l.ascent);
+    // A mixed first line takes its tallest typographic ascender: 0.7 × 20 pt beats 1 em × 10 pt …
+    let (mut d, sid, fid) = doc_with("Hxg Hxg", Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    st.format_chars(0..3, |f| {
+        f.over.font_family = Some("TypoAscent 07".into());
+        f.over.size = Some(20.0);
+    });
+    st.format_chars(3..7, |f| {
+        f.over.font_family = Some("Source Sans 3".into());
+        f.over.size = Some(10.0);
+    });
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.inset = [4.0, 0.0, 0.0, 0.0];
+    let first = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].baseline;
+    assert!(close(first(&d), top + 14.0), "{}", first(&d));
+    // … and 1 em × 16 pt beats it.
+    d.story_mut(sid).unwrap().format_chars(3..7, |f| f.over.size = Some(16.0));
+    assert!(close(first(&d), top + 16.0), "{}", first(&d));
+}
+
+#[test]
+fn ascent_first_baseline_falls_back_to_the_ascent_without_a_usable_typo_ascender() {
+    let db = designcraft_fonts::FontDb::global();
+    // No OS/2 table, a negative and an absurd typo ascender: the (hhea) ascent, 1 em.
+    for (family, typo) in [("TypoAscentNoO", None), ("TypoAscentNeg", Some(-300)), ("TypoAscentBig", Some(i16::MAX))] {
+        db.add_font(typo_test_font(family, typo));
+        let face = db.face(family, "Regular");
+        assert_eq!(face.family, family);
+        assert_eq!(face.typo_ascent, face.ascent, "{family}");
+        let b = first_baseline_in(family, |_| {});
+        assert!((b - (36.0 + 4.0 + 20.0)).abs() < 0.01, "{family}: {b}");
+    }
+}
+
+#[test]
+fn vertical_frames_keep_the_ascent_first_baseline() {
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(typo_test_font("TypoAscentVrt", Some(700)));
+    let b = first_baseline_in_dir("TypoAscentVrt", true, |o| {
+        o.inset = [0.0; 4];
+    });
+    // Composed in the turned box (no inset): the hhea ascent, 1 em of 20 pt.
+    assert!((b - 20.0).abs() < 0.01, "{b}");
+}
+
+#[test]
+fn cap_height_and_x_height_first_baselines_use_the_fonts_cap_and_x_heights() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(test_font("CapXHeight 01", Some(&[(CAP_HEIGHT, 500), (X_HEIGHT, 300)])));
+    let face = db.face("CapXHeight 01", "Regular");
+    assert_eq!(face.family, "CapXHeight 01");
+    assert_eq!((face.ascent, face.cap_height, face.x_height), (1000.0, 500.0, 300.0));
+    let top = 36.0 + 4.0;
+    let at = |kind: FirstBaseline, min: f64| {
+        first_baseline_in("CapXHeight 01", |o| {
+            o.first_baseline = kind;
+            o.first_baseline_min = min;
+        })
+    };
+    let close = |a: f64, b: f64| (a - b).abs() < 0.01;
+    // Cap height 0.5 em and x height 0.3 em of 20 pt, not 0.72 / 0.5 of the 1 em ascent.
+    assert!(close(at(FirstBaseline::CapHeight, 0.0), top + 10.0), "{}", at(FirstBaseline::CapHeight, 0.0));
+    assert!(close(at(FirstBaseline::XHeight, 0.0), top + 6.0), "{}", at(FirstBaseline::XHeight, 0.0));
+    // The minimum offset still wins when it is larger.
+    assert!(close(at(FirstBaseline::CapHeight, 12.0), top + 12.0));
+    assert!(close(at(FirstBaseline::XHeight, 5.0), top + 6.0));
+    // Vertical scale and a raised baseline count, as for the ascent.
+    let (mut d, sid, fid) = doc_with("Hxg Hxg", Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    st.format_chars(0..7, |f| {
+        f.over.font_family = Some("CapXHeight 01".into());
+        f.over.size = Some(20.0);
+        f.over.v_scale = Some(1.5);
+    });
+    st.format_chars(4..5, |f| f.over.baseline_shift = Some(1.0));
+    let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+    tf.options.inset = [4.0, 0.0, 0.0, 0.0];
+    tf.options.first_baseline = FirstBaseline::CapHeight;
+    let first = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].baseline;
+    assert!(close(first(&d), top + 15.0 + 1.0), "{}", first(&d));
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.first_baseline = FirstBaseline::XHeight;
+    assert!(close(first(&d), top + 9.0 + 1.0), "{}", first(&d));
+}
+
+#[test]
+fn cap_height_and_x_height_fall_back_without_usable_os2_values() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    // No OS/2 table, zero / negative and absurd values: the top of the H (0.656 em) and 0.5 of the
+    // (1 em) ascent.
+    let zero: &[(usize, i16)] = &[(CAP_HEIGHT, 0), (X_HEIGHT, -40)];
+    let big: &[(usize, i16)] = &[(CAP_HEIGHT, i16::MAX), (X_HEIGHT, i16::MAX)];
+    for (family, fields) in [("CapXHeightNoO", None), ("CapXHeightNeg", Some(zero)), ("CapXHeightBig", Some(big))] {
+        db.add_font(test_font(family, fields));
+        let face = db.face(family, "Regular");
+        assert_eq!(face.family, family);
+        assert_eq!((face.cap_height, face.x_height), (656.0, face.ascent * 0.5), "{family}");
+        let cap = first_baseline_in(family, |o| o.first_baseline = FirstBaseline::CapHeight);
+        let x = first_baseline_in(family, |o| o.first_baseline = FirstBaseline::XHeight);
+        assert!((cap - (40.0 + 13.12)).abs() < 0.01 && (x - (40.0 + 10.0)).abs() < 0.01, "{family}: {cap} {x}");
+    }
+}
+
+#[test]
+fn vertical_frames_keep_the_cap_height_and_x_height_first_baselines() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(test_font("CapXHeightVrt", Some(&[(CAP_HEIGHT, 500), (X_HEIGHT, 300)])));
+    let at = |kind: FirstBaseline| {
+        first_baseline_in_dir("CapXHeightVrt", true, |o| {
+            o.first_baseline = kind;
+            o.inset = [0.0; 4];
+        })
+    };
+    // 0.72 and 0.5 of the 1 em ascent of 20 pt.
+    assert!((at(FirstBaseline::CapHeight) - 14.4).abs() < 0.01, "{}", at(FirstBaseline::CapHeight));
+    assert!((at(FirstBaseline::XHeight) - 10.0).abs() < 0.01, "{}", at(FirstBaseline::XHeight));
+}
+
+// ---------- drop caps ----------
+
+/// `text` set 10 pt on 12 pt leading in a 300 pt measure, with `para` on top.
+fn drop_doc(text: &str, para: ParaAttrs) -> (Document, StoryId, ItemId) {
+    drop_doc_in(text, Rect::new(0.0, 0.0, 300.0, 1000.0), para)
+}
+
+fn drop_doc_in(text: &str, rect: Rect, para: ParaAttrs) -> (Document, StoryId, ItemId) {
+    let (mut d, sid, fid) = doc_with(text, rect, para);
+    for p in &mut d.story_mut(sid).unwrap().paras {
+        p.chars = designcraft_doc::CharAttrs { size: Some(10.0), leading: Some(designcraft_doc::Leading::Points(12.0)), ..Default::default() };
+    }
+    (d, sid, fid)
+}
+
+fn drop_cap(lines: u32, chars: u32) -> ParaAttrs {
+    ParaAttrs { drop_cap_lines: Some(lines), drop_cap_chars: Some(chars), ..Default::default() }
+}
+
+/// Cap height of a placed glyph, in points.
+fn cap_of(g: &PlacedGlyph) -> f64 {
+    g.face.cap_height * g.sy
+}
+
+/// x of the first glyph of `l` set from story byte `from` on.
+fn text_x(l: &Line, from: usize) -> f64 {
+    l.glyphs.iter().find(|g| g.len > 0 && g.byte >= from).map(|g| g.x).unwrap()
+}
+
+#[test]
+fn drop_cap_spans_lines_and_indents_them() {
+    let text = [LOREM; 2].join(" ");
+    let (plain, psid, _) = drop_doc(&text, ParaAttrs::default());
+    let plain = compose_story(&plain, psid, &ComposeOptions::default());
+    let (d, sid, _) = drop_doc(&text, drop_cap(3, 1));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let pl = all_lines(&plain);
+    assert!(lines.len() > 4);
+    // Baselines don't move.
+    for (k, l) in lines.iter().enumerate() {
+        assert!((l.baseline - (pl[0].baseline + 12.0 * k as f64)).abs() < 1e-6, "line {k} at {}", l.baseline);
+    }
+    // The drop cap: the first glyph, on line 1, its baseline on line 3's and its cap top on line 1's.
+    let dc = &lines[0].glyphs[0];
+    assert_eq!((dc.byte, dc.len), (0, 1));
+    assert!((lines[0].baseline + dc.y - lines[2].baseline).abs() < 1e-6, "drop cap baseline {}", lines[0].baseline + dc.y);
+    let body = lines[0].glyphs.iter().find(|g| g.byte == 1).unwrap();
+    let top = lines[2].baseline - cap_of(dc);
+    assert!((top - (lines[0].baseline - cap_of(body))).abs() < 0.01, "cap top {top}");
+    assert!(dc.sy > body.sy * 3.0);
+    // Lines 1–3 start after it, line 4 at the frame edge.
+    let right = dc.x + dc.adv;
+    assert!(right > 20.0);
+    for l in &lines[..3] {
+        assert!(text_x(l, 1) >= right - 1e-6, "{} < {right}", text_x(l, 1));
+        assert!(l.end_x <= l.x1 + 0.5);
+    }
+    assert!(text_x(lines[3], 1) < 0.5);
+    // The text stays in order: the drop cap starts line 1 (exports and caret read it there).
+    assert_eq!(lines[0].range.start, 0);
+}
+
+#[test]
+fn drop_cap_of_two_characters_as_a_local_override() {
+    let (d, sid, _) = drop_doc(LOREM, drop_cap(2, 2));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let (a, b) = (&lines[0].glyphs[0], &lines[0].glyphs[1]);
+    assert_eq!((a.byte, b.byte), (0, 1));
+    let body = lines[0].glyphs.iter().find(|g| g.byte == 2).unwrap();
+    for g in [a, b] {
+        assert!((lines[0].baseline + g.y - lines[1].baseline).abs() < 1e-6);
+        assert!(g.sy > body.sy * 1.5);
+    }
+    assert!((b.x - (a.x + a.adv)).abs() < 1e-6, "the drop cap characters sit side by side");
+    let right = b.x + b.adv;
+    assert!(text_x(lines[0], 2) >= right - 1e-6 && text_x(lines[1], 2) >= right - 1e-6);
+    assert!(text_x(lines[2], 2) < 0.5);
+}
+
+#[test]
+fn short_paragraph_keeps_its_drop_cap_and_the_next_paragraph_is_not_indented() {
+    let (mut d, sid, _) = drop_doc(&format!("Short.\n{LOREM}"), drop_cap(3, 1));
+    d.story_mut(sid).unwrap().paras[1].para = ParaAttrs::default();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.iter().filter(|l| l.para == 0).count(), 1);
+    let dc = &lines[0].glyphs[0];
+    // Still three lines tall (it may overlap the next paragraph, which isn't indented).
+    assert!((dc.y - 24.0).abs() < 1e-6, "{}", dc.y);
+    assert!(text_x(lines[1], 7) < 0.5);
+}
+
+#[test]
+fn drop_cap_counts_code_points_without_splitting_clusters_and_clamps_to_the_paragraph() {
+    // Four characters: a letter, its combining mark, another letter and a no-break space.
+    let (d, sid, _) = drop_doc("A\u{301}B\u{a0}rest of the words", drop_cap(2, 4));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let big: Vec<usize> = l.glyphs.iter().filter(|g| g.len > 0 && g.y > 1.0).map(|g| g.byte).collect();
+    assert!(big.contains(&0) && big.contains(&3), "{big:?}");
+    assert!(big.iter().all(|b| *b < 6), "the r isn't part of it: {big:?}");
+    // One character that has a combining mark after it takes the mark too.
+    let (d, sid, _) = drop_doc("e\u{301}tude and more words", drop_cap(2, 1));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let big: Vec<usize> = l.glyphs.iter().filter(|g| g.y > 1.0).map(|g| g.byte).collect();
+    assert!(!big.is_empty() && big.iter().all(|b| *b < 3), "{big:?}");
+    assert!(l.glyphs.iter().any(|g| g.byte == 0 && g.y > 1.0));
+    // More characters than the paragraph has: all of them, and nothing of the next paragraph.
+    let (mut d, sid, _) = drop_doc("Hi\nNext", drop_cap(2, 50));
+    d.story_mut(sid).unwrap().paras[1].para = ParaAttrs::default();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines[0].glyphs.iter().filter(|g| g.len > 0).all(|g| g.y > 1.0));
+    assert!(lines[1].glyphs.iter().all(|g| g.y.abs() < 1e-6));
+}
+
+#[test]
+fn hostile_drop_cap_values_do_not_panic() {
+    for (lines, chars) in [(u32::MAX, u32::MAX), (1_000_000, 1), (2, 0), (0, 3)] {
+        let (d, sid, _) = drop_doc(LOREM, drop_cap(lines, chars));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let g = &cs.frames[0].lines[0].glyphs[0];
+        assert!(g.y.is_finite() && g.sy.is_finite() && g.y <= 12.0 * 25.0, "{lines}/{chars}: {}", g.y);
+    }
+    // No lines or no characters: no drop cap.
+    let (d, sid, _) = drop_doc(LOREM, drop_cap(0, 3));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.frames[0].lines[0].glyphs[0].y.abs() < 1e-6);
+}
+
+#[test]
+fn one_line_drop_cap_is_not_enlarged() {
+    let (d, sid, _) = drop_doc(LOREM, drop_cap(1, 1));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let (dc, body) = (&l.glyphs[0], l.glyphs.iter().find(|g| g.byte == 1).unwrap());
+    assert!((cap_of(dc) - cap_of(body)).abs() < 0.01 && dc.y.abs() < 1e-6);
+}
+
+#[test]
+fn drop_cap_stays_with_the_first_line_across_a_column_break() {
+    // Two lines fit a column: line 3 starts the second column, at its edge.
+    let (mut d, sid, fid) = drop_doc_in(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 400.0, 30.0), drop_cap(3, 1));
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let col1: Vec<&Line> = ft.lines.iter().filter(|l| l.column == 1).collect();
+    assert_eq!(ft.lines.iter().filter(|l| l.column == 0).count(), 2, "{:?}", ft.lines.iter().map(|l| l.column).collect::<Vec<_>>());
+    let dc = &ft.lines[0].glyphs[0];
+    assert!((dc.y - 24.0).abs() < 1e-6, "{}", dc.y);
+    assert!(text_x(&ft.lines[1], 1) >= dc.x + dc.adv - 1e-6);
+    assert!((text_x(col1[0], 1) - ft.columns[1].x0).abs() < 0.5);
+}
+
+#[test]
+fn drop_cap_in_right_to_left_paragraphs_is_on_the_right() {
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 1) };
+    let (d, sid, _) = drop_doc(LOREM, para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let dc = lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!((dc.x + dc.adv - 300.0).abs() < 0.5, "{}", dc.x + dc.adv);
+    for l in &lines[..2] {
+        assert!(l.glyphs.iter().filter(|g| g.byte > 0 && g.visible).all(|g| g.x + g.adv <= dc.x + 0.5));
+    }
+    assert!(lines[2].end_x > 299.0 || lines[2].glyphs.iter().any(|g| g.x + g.adv > 299.0));
+}
+
+#[test]
+fn vertical_frames_set_no_drop_cap() {
+    let (mut d, sid, _) = drop_doc(LOREM, drop_cap(3, 1));
+    d.story_mut(sid).unwrap().vertical = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.frames[0].lines[0].glyphs[0].y.abs() < 1e-6);
+}
+
+#[test]
+fn drop_cap_takes_its_character_style_and_nested_styles_count_it() {
+    let (mut d, sid, _) = drop_doc(LOREM, ParaAttrs { drop_cap_style: Some("Initial".into()), ..drop_cap(2, 3) });
+    for (name, fill) in [("Initial", "Initial Red"), ("Lead", "Lead Blue")] {
+        std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+            name: name.into(),
+            based_on: None,
+            chars: designcraft_doc::CharAttrs { fill: Some(fill.into()), ..Default::default() },
+            shortcut: String::new(),
+        });
+    }
+    let fill = |cs: &ComposedStory, g: &PlacedGlyph| cs.styles[g.style as usize].fill.clone();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let at = |b: usize| l.glyphs.iter().find(|g| g.byte == b).unwrap();
+    assert_eq!(fill(&cs, at(0)), "Initial Red");
+    assert_eq!(fill(&cs, at(2)), "Initial Red");
+    assert_eq!(fill(&cs, at(3)), "[Black]");
+    // A nested style "through 1 drop cap" covers the drop cap; the next one starts after it.
+    let ns = |style: &str, until: designcraft_doc::NestedUntil| designcraft_doc::NestedStyle { style: style.into(), through: true, count: 1, until };
+    d.story_mut(sid).unwrap().paras[0].para = ParaAttrs {
+        nested_styles: Some(vec![ns("Lead", designcraft_doc::NestedUntil::Dropcap), ns("Initial", designcraft_doc::NestedUntil::Words)]),
+        ..drop_cap(2, 3)
+    };
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let at = |b: usize| l.glyphs.iter().find(|g| g.byte == b).unwrap();
+    assert_eq!(fill(&cs, at(0)), "Lead Blue");
+    assert_eq!(fill(&cs, at(2)), "Lead Blue");
+    assert_eq!(fill(&cs, at(3)), "Initial Red", "the second nested style starts after the drop cap");
+    let first_space = LOREM.find(' ').unwrap();
+    assert_eq!(fill(&cs, at(first_space + 1)), "[Black]");
+}
+
+#[test]
+fn drop_cap_caret_and_hit_testing() {
+    let (d, sid, _) = drop_doc(LOREM, drop_cap(3, 1));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let dc = lines[0].glyphs[0].clone();
+    let drop_box = lines[0].drop_cap.unwrap().rect;
+    assert!(drop_box.y1 > lines[2].baseline - 0.01 && drop_box.y0 < lines[0].baseline - 5.0, "{drop_box:?}");
+    // A click on the lower half of the big letter (beside line 3) is at the drop cap.
+    let y = lines[2].baseline - 2.0;
+    assert_eq!(hit(&cs, 0, Point::new(dc.x + dc.adv * 0.25, y)), Some(0));
+    assert_eq!(hit(&cs, 0, Point::new(dc.x + dc.adv * 0.75, y)), Some(1));
+    // A double click there is on the drop cap's character, not on line 3's text.
+    assert_eq!(hit_char(&cs, 0, Point::new(dc.x + dc.adv * 0.5, y)), Some(0));
+    // The caret before the drop cap is as tall as it; after it, beside line 1's text.
+    let (_, x, bl, asc, _) = caret(&cs, 0).unwrap();
+    assert!((x - dc.x).abs() < 1e-6 && (bl - lines[2].baseline).abs() < 1e-6 && asc > 24.0, "{x} {bl} {asc}");
+    let (_, x, bl, _, _) = caret(&cs, 1).unwrap();
+    assert!(x >= dc.x + dc.adv - 1e-6 && (bl - lines[0].baseline).abs() < 1e-6);
+}
+
+#[test]
+fn drop_cap_sits_on_its_line_as_set() {
+    // Lines on a 15 pt baseline grid (not the 12 pt leading): the drop cap follows line 3.
+    let (mut d, sid, _) = drop_doc(LOREM, ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), ..drop_cap(3, 1) });
+    d.settings.baseline_grid.increment = 15.0;
+    d.settings.baseline_grid.start = 0.0;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!((lines[1].baseline - lines[0].baseline - 15.0).abs() < 1e-6);
+    let dc = &lines[0].glyphs[0];
+    assert!((lines[0].baseline + dc.y - lines[2].baseline).abs() < 1e-6);
+    let b = lines[0].drop_cap.unwrap();
+    assert!((b.baseline - lines[2].baseline).abs() < 1e-6 && b.rect.y1 > lines[2].baseline);
+    // Scaled to the grid's line pitch: its cap top is still line 1's.
+    let body = lines[0].glyphs.iter().find(|g| g.byte == 1).unwrap();
+    assert!((lines[2].baseline - cap_of(dc) - (lines[0].baseline - cap_of(body))).abs() < 0.01);
+}
+
+/// A rule in Text Color takes the colour of the paragraph's text: the first character's for the
+/// rule above, the last character's for the rule below. A swatch colour is used as is.
+#[test]
+fn text_color_rules_follow_the_text() {
+    use designcraft_doc::{CharAttrs, CharFormat, Rule, TEXT_COLOR};
+    let rule = Rule { on: true, weight: 2.0, ..Default::default() };
+    let para = ParaAttrs { rule_above: Some(rule.clone()), rule_below: Some(rule.clone()), ..Default::default() };
+    let (mut d, sid, fid) = doc_with("Red then blue", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+    {
+        let s = d.story_mut(sid).unwrap();
+        s.format_chars(0..3, |f: &mut CharFormat| f.over.merge(&CharAttrs { fill: Some("Red".into()), fill_tint: Some(0.5), ..Default::default() }));
+        s.format_chars(9..13, |f: &mut CharFormat| f.over.fill = Some("Blue".into()));
+    }
+    let decos = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        let mut v: Vec<(f64, String, f32)> = cs.frame(fid).unwrap().decos.iter().map(|dc| (dc.rect.y0, dc.color.clone(), dc.tint)).collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        v.into_iter().map(|(_, c, t)| (c, t)).collect::<Vec<_>>()
+    };
+    assert_eq!(rule.color, TEXT_COLOR);
+    assert_eq!(decos(&d), vec![("Red".to_string(), 0.5), ("Blue".to_string(), 1.0)]);
+    let swatch = Rule { color: "[Black]".into(), tint: 0.3, ..rule };
+    d.story_mut(sid).unwrap().paras[0].para.rule_above = Some(swatch);
+    assert_eq!(decos(&d)[0], ("[Black]".to_string(), 0.3));
+}
+
+/// Align Left Edge (InDesign's default): the drop cap's origin moves left by its first letter's
+/// left side bearing so its ink starts at the indent, and the lines beside it start where its
+/// advance ends. Measured case: 14/18 text, two lines, one character.
+#[test]
+fn drop_cap_aligns_its_left_edge() {
+    let text = format!("Once {LOREM}");
+    let compose = |align: Option<bool>| {
+        let para = ParaAttrs { left_indent: Some(10.0), drop_cap_align_left: align, ..drop_cap(2, 1) };
+        let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 1000.0), para);
+        d.story_mut(sid).unwrap().paras[0].chars =
+            designcraft_doc::CharAttrs { size: Some(14.0), leading: Some(designcraft_doc::Leading::Points(18.0)), ..Default::default() };
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    use designcraft_geom::Shape as _;
+    let ink_left = |g: &PlacedGlyph| g.x + designcraft_fonts::FontDb::global().outline(g.face.get(), g.gid).bounding_box().x0 * g.sx;
+    for align in [None, Some(true), Some(false)] {
+        let cs = compose(align);
+        let lines = all_lines(&cs);
+        let dc = &lines[0].glyphs[0];
+        assert_eq!(dc.byte, 0);
+        let lsb = ink_left(dc) - dc.x;
+        assert!(lsb > 0.5, "the O has a visible side bearing at this size: {lsb}");
+        if align != Some(false) {
+            assert!((ink_left(dc) - 10.0).abs() < 1e-6, "{align:?}: ink at {}", ink_left(dc));
+        } else {
+            assert!((dc.x - 10.0).abs() < 1e-6, "origin at {}", dc.x);
+        }
+        for l in &lines[..2] {
+            assert!((text_x(l, 1) - (dc.x + dc.adv)).abs() < 1e-6, "{align:?}: {} vs {}", text_x(l, 1), dc.x + dc.adv);
+        }
+        assert!((text_x(lines[2], 1) - 10.0).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn caret_follows_spaces_typed_at_the_end() {
+    let x_at_end = |text: &str| {
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let end_x = cs.frames[0].lines[0].end_x;
+        (caret(&cs, text.len()).unwrap().1, end_x)
+    };
+    let (word, word_end) = x_at_end("Word");
+    let (one, one_end) = x_at_end("Word ");
+    let (two, _) = x_at_end("Word  ");
+    assert!(one > word + 1.0 && two > one + 1.0, "{word} {one} {two}");
+    // The spaces don't count for the line's own length (alignment, justification).
+    assert!((one_end - word_end).abs() < 1e-9);
+    // Wrapped lines keep their spaces too: a caret between two spaces at a line end sits after
+    // the first one.
+    let text = "Lorem ipsum dolor sit amet  consectetur";
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 140.0, 100.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l0 = &cs.frames[0].lines[0];
+    if l0.range.end == text.find("consectetur").unwrap() {
+        let mid = text.find("  ").unwrap() + 1;
+        assert!(caret(&cs, mid).unwrap().1 > l0.end_x, "between the trailing spaces");
+    }
+}
+
+#[test]
+fn colour_change_keeps_kerning_and_ligatures_keep_colour() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 200.0), lid, "ayay", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.font_style = Some("Bold".into()));
+    let line = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].clone();
+    let xs = |l: &Line| l.glyphs.iter().map(|g| (g.x, g.adv)).collect::<Vec<_>>();
+    let kerned = line(&d);
+    // The font kerns "ay" (otherwise this test proves nothing).
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::None));
+    assert_ne!(xs(&line(&d)), xs(&kerned), "Source Serif 4 Bold kerns a–y");
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::Metrics));
+    // Colour the first "a": positions are unchanged, only its style differs.
+    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.fill = Some("Cyan".into()));
+    let coloured = line(&d);
+    assert_eq!(xs(&coloured), xs(&kerned), "a colour change must not change spacing");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let fill = |l: &Line, i: usize| cs.styles[l.glyphs[i].style as usize].fill.clone();
+    assert_eq!(fill(&coloured, 0), "Cyan");
+    assert_ne!(fill(&coloured, 1), "Cyan");
+
+    // A ligature never swallows a differently coloured letter: the "i" of "fi" keeps its colour.
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 300.0, 400.0, 400.0), lid, "fifi", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.fill = Some("Cyan".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let at = |b: usize| l.glyphs.iter().find(|g| g.len > 0 && g.byte <= b && b < g.byte + g.len).map(|g| cs.styles[g.style as usize].fill.clone());
+    assert_eq!(at(1).as_deref(), Some("Cyan"));
+    assert_ne!(at(2).as_deref(), Some("Cyan"));
 }
 
 #[test]
