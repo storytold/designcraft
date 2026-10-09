@@ -803,8 +803,10 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
     let rect = Rect::new(rect.x0, rect.y0, rect.x1.max(rect.x0 + 0.5), rect.y1.max(rect.y0 + 0.5));
     // A frame grid: the document's defaults with the given fields, in whole cells.
     let grid = match p.get("grid") {
-        Some(Value::Bool(true)) => Some(s.doc()?.doc.settings.frame_grid.sanitized()),
-        Some(g @ Value::Object(_)) => Some(super::grids::grid_with(&s.doc()?.doc.settings.frame_grid, g, "frame.create")?),
+        Some(Value::Bool(true)) => Some(super::grids::with_installed_font(s.doc()?.doc.settings.frame_grid.sanitized())),
+        Some(g @ Value::Object(_)) => {
+            Some(super::grids::grid_with(&super::grids::with_installed_font(s.doc()?.doc.settings.frame_grid.clone()), g, "frame.create")?)
+        }
         _ => None,
     }
     .filter(|_| content == "text");

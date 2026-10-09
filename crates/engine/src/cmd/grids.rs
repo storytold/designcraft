@@ -138,6 +138,22 @@ pub(crate) fn grid_with(base: &FrameGrid, p: &Value, id: &str) -> Result<FrameGr
     Ok(g.sanitized())
 }
 
+/// `g` for a new frame grid: the default grid font, where it isn't installed, becomes the first
+/// installed Mincho of [`designcraft_doc::framegrid::GRID_FONT_FALLBACKS`] (else it stays, and
+/// shows as a missing font).
+pub(crate) fn with_installed_font(mut g: FrameGrid) -> FrameGrid {
+    use designcraft_doc::framegrid::{DEFAULT_GRID_FONT, GRID_FONT_FALLBACKS};
+    let db = designcraft_fonts::FontDb::global();
+    if g.font_family == DEFAULT_GRID_FONT.0
+        && !db.has_family(&g.font_family)
+        && let Some((family, style)) = GRID_FONT_FALLBACKS.iter().find(|(f, _)| db.has_family(f))
+    {
+        g.font_family = (*family).into();
+        g.font_style = (*style).into();
+    }
+    g
+}
+
 /// The character attributes Apply Grid Format gives text in grid `g`.
 pub(crate) fn grid_format(g: &FrameGrid) -> CharAttrs {
     CharAttrs {
@@ -230,7 +246,7 @@ fn frame_grid_options(s: &mut Session, p: &Value) -> Result<Value> {
             }
             let vertical = d.frame_vertical(it);
             let had = tf.options.frame_grid.clone();
-            let old = had.clone().unwrap_or_else(|| d.settings.frame_grid.clone());
+            let old = had.clone().unwrap_or_else(|| with_installed_font(d.settings.frame_grid.clone()));
             let g = grid_with(&old, &p, ID)?;
             let (c0, l0) = counts(d, it, if had.is_some() { &old } else { &g });
             let columns = p.get("columns").and_then(Value::as_u64).map_or(tf.options.columns, |v| v.clamp(1, 40) as u32);
@@ -525,6 +541,27 @@ mod tests {
         s.execute("transform.resize", &json!({"ids": [id], "from": [b.x0, b.y0, b.x1, b.y1], "to": [b.x0, b.y0, b.x0 + 1.0, b.y0 + 1.0]})).unwrap();
         let b = bounds(&s);
         assert!((b.width() - 10.0).abs() < 1e-6 && (b.height() - 10.0).abs() < 1e-6, "{b:?}");
+    }
+
+    /// New frame grids are set in Hiragino Mincho ProN W3 (a Mincho installed instead where it
+    /// isn't), and their text takes it.
+    #[test]
+    fn new_frame_grids_use_the_mincho_grid_font() {
+        let mut s = session();
+        assert_eq!(s.active().unwrap().doc.settings.frame_grid.font_family, "Hiragino Mincho ProN");
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "grid": true})).unwrap();
+        let g = grid_of(&s, r["id"].as_u64().unwrap());
+        let db = designcraft_fonts::FontDb::global();
+        if db.has_family("Hiragino Mincho ProN") {
+            assert_eq!((g.font_family.as_str(), g.font_style.as_str()), ("Hiragino Mincho ProN", "W3"));
+        } else {
+            let fallback = designcraft_doc::framegrid::GRID_FONT_FALLBACKS.iter().find(|(f, _)| db.has_family(f));
+            assert_eq!(Some(g.font_family.as_str()), fallback.map(|f| f.0).or(Some("Hiragino Mincho ProN")));
+        }
+        let d = &s.active().unwrap().doc;
+        let st = d.story(designcraft_doc::StoryId(r["story"].as_u64().unwrap())).unwrap();
+        let f = d.styles.resolve_char(&d.styles.resolve_para(&st.paras[0]).1, st.char_format_at(0));
+        assert_eq!(f.font_family, g.font_family, "the text takes the grid font");
     }
 
     #[test]

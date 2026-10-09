@@ -155,7 +155,8 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
 - Model: `TextFrameOptions.frame_grid: Option<FrameGrid>` (font, size, horizontal/vertical scale,
   character aki, line aki, line alignment override, grid alignment, character alignment, character
   count position and size, view, mojikumi set); `DocSettings.frame_grid` is the grid new frame
-  grids get. Character and line counts are not stored: they follow from the frame size (columns
+  grids get (font Hiragino Mincho ProN W3 in new documents; where it isn't installed, new grids
+  take the first installed of Yu Mincho, MS Mincho, Noto Serif CJK JP, …). Character and line counts are not stored: they follow from the frame size (columns
   divide the line direction, as in text frames). Hostile numbers are sanitized before use.
 - Composition: full-width characters of the grid's size take exactly one cell (character pitch =
   cell + character aki); Western text keeps its widths. Every line snaps to the grid's rows from

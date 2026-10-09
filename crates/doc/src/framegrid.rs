@@ -127,11 +127,27 @@ pub struct FrameGrid {
     pub mojikumi: String,
 }
 
+/// The grid font new documents give their frame grids (a Mincho, as Japanese body text is set in).
+pub const DEFAULT_GRID_FONT: (&str, &str) = ("Hiragino Mincho ProN", "W3");
+
+/// Mincho faces that stand in for [`DEFAULT_GRID_FONT`] where it isn't installed (Windows,
+/// Linux): (family, style), in order of preference.
+pub const GRID_FONT_FALLBACKS: &[(&str, &str)] = &[
+    ("Hiragino Mincho ProN", "W3"),
+    ("Yu Mincho", "Regular"),
+    ("YuMincho", "Regular"),
+    ("MS Mincho", "Regular"),
+    ("Noto Serif CJK JP", "Regular"),
+    ("Source Han Serif JP", "Regular"),
+    ("Noto Serif JP", "Regular"),
+    ("IPAexMincho", "Regular"),
+];
+
 impl Default for FrameGrid {
     fn default() -> Self {
         FrameGrid {
-            font_family: String::new(),
-            font_style: String::new(),
+            font_family: DEFAULT_GRID_FONT.0.into(),
+            font_style: DEFAULT_GRID_FONT.1.into(),
             size: 12.0,
             h_scale: 1.0,
             v_scale: 1.0,
