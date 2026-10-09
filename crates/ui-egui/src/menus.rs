@@ -1359,11 +1359,12 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 return Some(Ok(Value::Null));
             }
             // Workspaces choose which bars and panels are visible.
-            app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book");
+            app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book" | "Interactive for PDF");
             app.ui.dock_tab = if name == "Typography" { "properties".into() } else { app.ui.dock_tab.clone() };
             app.ui.open_panel = match name {
                 "Typography" => Some("paragraphStyles".into()),
                 "Printing and Proofing" => Some("swatches".into()),
+                "Interactive for PDF" => Some("buttons".into()),
                 _ => None,
             };
             app.ui.workspace = name.to_string();
