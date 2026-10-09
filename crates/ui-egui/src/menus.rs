@@ -1871,15 +1871,21 @@ fn parse_shortcut(sc: &str) -> Option<(egui::Modifiers, egui::Key)> {
 
 /// Global keyboard shortcuts: menu commands and single-key tool shortcuts.
 pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
-    // Only a focused text field takes the keys: the canvas (or a button) having focus after a click
-    // must not swallow tool shortcuts until Esc clears it.
-    if ctx.text_edit_focused() || app.ui.dialog.is_some() || app.ui.palette.is_some() {
-        return;
-    }
     let typing = app.session.wants_text();
     let events = ctx.input(|i| i.events.clone());
     for e in events {
         let egui::Event::Key { key, pressed: true, modifiers, repeat: false, .. } = e else { continue };
+        // If a text edit field is focused, let it handle its own shortcuts (Cmd+A, Cmd+C, etc.)
+        // except we still want to handle tool shortcuts and some global ones.
+        let text_edit_focused = ctx.text_edit_focused();
+        // Don't intercept Cmd+A (select all) in text fields - let egui handle it natively
+        let is_select_all = key == egui::Key::A && modifiers.command && !modifiers.shift && !modifiers.alt;
+        if text_edit_focused && is_select_all {
+            continue; // Let the text field handle select all
+        }
+        if text_edit_focused || app.ui.dialog.is_some() || app.ui.palette.is_some() {
+            return;
+        }
         // Command shortcuts.
         let mut fired: Option<String> = None;
         let all = effective_shortcuts(app);
