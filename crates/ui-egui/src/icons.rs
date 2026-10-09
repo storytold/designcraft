@@ -109,6 +109,22 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(6.0, 3.0), (14.0, 3.0)]);
             pen.line(&[(10.0, 3.0), (10.0, 10.0)]);
         }
+        "tool-grid-h" | "tool-grid-v" => {
+            // A frame grid: 3 × 3 cells, with an arrow along the line direction.
+            for k in 0..3 {
+                for j in 0..3 {
+                    let (x, y) = (3.0 + k as f32 * 4.5, 3.0 + j as f32 * 4.5);
+                    pen.rect(x, y, x + 3.5, y + 3.5);
+                }
+            }
+            if name == "tool-grid-h" {
+                pen.line(&[(3.0, 17.5), (16.0, 17.5)]);
+                pen.line(&[(14.0, 16.0), (16.0, 17.5), (14.0, 19.0)]);
+            } else {
+                pen.line(&[(17.5, 3.0), (17.5, 16.0)]);
+                pen.line(&[(16.0, 14.0), (17.5, 16.0), (19.0, 14.0)]);
+            }
+        }
         "tool-line" => pen.line(&[(4.0, 16.0), (16.0, 4.0)]),
         "tool-pen" | "tool-pen-add" | "tool-pen-delete" | "tool-anchor" => {
             pen.closed(&[(10.0, 2.5), (14.5, 11.0), (12.0, 15.0), (8.0, 15.0), (5.5, 11.0)]);

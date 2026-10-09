@@ -332,6 +332,9 @@ pub struct TextFrameOptions {
     /// Type on a Path: the text runs along the item's path instead of filling it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathType>,
+    /// A frame grid: the text is set in this grid of character cells.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_grid: Option<crate::framegrid::FrameGrid>,
 }
 
 /// Type on a Path Options.
@@ -377,6 +380,7 @@ impl Default for TextFrameOptions {
             column_rule_color: designcraft_color::swatch::BLACK.into(),
             baseline_grid: None,
             path: None,
+            frame_grid: None,
         }
     }
 }

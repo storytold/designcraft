@@ -31,12 +31,14 @@ invalidation. Font listing, replacement and preflight resolve component fonts.
 | Em alignment / leading | Em top/center/bottom alignment and baseline reference offsets; mixed-size regressions |
 | Kenten / glyph forms | Preserve emphasis character, shape it with font fallback; map supported OpenType forms |
 | Tate-chu-yoko offsets | Carry horizontal/vertical offsets through the existing vertical group placement |
+| Mojikumi (built-in sets) | JLREQ classes, punctuation aki, consecutive punctuation, wa-ō aki, line-edge drop/keep, justification priorities; `compose::tests_jlreq` |
+| Frame grids | One full-width character per cell, character aki, rows with gyōdori, grid/character alignment, line alignment override, grid mojikumi; vertical frames; `compose::tests_jlreq`, `engine::cmd::grids` |
 
 ## Unfinished behavior
 
-- **Mojikumi**: definitions, base-set names, all override rows and paragraph references
-  survive import/export. The numeric character-class spacing tables and their
-  compression priorities are **not executed**. Preflight reports this explicitly.
+- **Mojikumi**: the built-in JLREQ sets are executed. Imported definitions, base-set
+  names, override rows and paragraph references survive import/export, but imported
+  numeric tables are **not executed**. Preflight reports this explicitly.
 - **Kinsoku push-in/push-out priorities**: retained, but not used in candidate
   selection. Preflight reports this explicitly. Boundary prohibition alone is not
   equivalent to implementing this priority policy.
@@ -47,7 +49,8 @@ invalidation. Font listing, replacement and preflight resolve component fonts.
   center leading reference. These require separate compatibility work.
 - Jidori groups are scoped to resolved shaping runs. Mixed component-font or style
   changes inside one intended group need a group model above shaping.
-- Frame-grid composition and detailed ruby/warichu controls are outside this change.
+- Detailed ruby/warichu controls, the layout grid, named grids and IDML frame-grid
+  attributes are outside this change.
 
 Preserving a parameter is not evidence that its visual rule has been implemented.
 Missing fonts, missing links and overset remain separate preflight findings;

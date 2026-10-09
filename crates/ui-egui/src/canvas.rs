@@ -304,6 +304,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             painter.line_segment([a, b], Stroke::new(1.0, col));
         }
         draw_frames(app, &painter, &xf, &doc, &layout);
+        if app.ui.frame_grids && !preview {
+            draw_frame_grids(app, &painter, &xf, &doc, &layout);
+        }
         if app.ui.hidden_characters {
             draw_hidden_characters(app, &painter, &xf, &doc, &layout);
         }
@@ -1488,6 +1491,92 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
 }
 
 /// View → Show Hidden Characters: ¶ paragraph ends, » tabs, · spaces, ¬ forced line breaks, # end of story.
+/// Frame grids: their cells (or the N/Z view) and character counts, in the frame's layer colour
+/// (screen only).
+fn draw_frame_grids(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
+    const MAX_CELLS: usize = 20_000;
+    for slot in &layout.slots {
+        let Some(sp) = doc.spread(slot.spread) else { continue };
+        let mut frames: Vec<&Item> = Vec::new();
+        for top in &sp.items {
+            top.walk(&mut |it: &Item| {
+                if it.text_frame().is_some_and(|t| t.options.frame_grid.is_some() && t.options.path.is_none()) && !it.hidden {
+                    frames.push(it);
+                }
+            });
+        }
+        for it in frames {
+            if doc.layer(it.layer).is_some_and(|l| !l.visible) {
+                continue;
+            }
+            let (Some((a, _)), Some(tf)) = (item_canvas_xf(doc, layout, it.id), it.text_frame()) else { continue };
+            let Some(g) = tf.options.frame_grid.as_ref().map(designcraft_doc::FrameGrid::sanitized) else { continue };
+            let vertical = doc.frame_vertical(it);
+            let m = a * doc.text_xf(it);
+            let col = layer_color(doc, it).gamma_multiply(0.55);
+            let stroke = Stroke::new(hair(painter), col);
+            let area = it.text_area();
+            let area = if vertical { DRect::new(0.0, 0.0, area.height(), area.width()) } else { area };
+            let spec_cols = {
+                let o = &tf.options;
+                designcraft_doc::page::column_rects(area, o.columns.max(1), o.gutter)
+            };
+            let quad = |r: DRect| -> Vec<Pos2> {
+                [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].iter().map(|&(x, y)| xf.to_screen(m * Point::new(x, y))).collect()
+            };
+            // Cells too small to see are drawn as the outline view.
+            let cell_px = g.cell(vertical).0.min(g.cell(vertical).1) * xf.zoom;
+            let view = if cell_px < 3.0 { designcraft_doc::GridView::Outline } else { g.view };
+            let (chars, lines) = g.counts_in(area, tf.options.columns, tf.options.gutter, vertical);
+            for c in &spec_cols {
+                match view {
+                    designcraft_doc::GridView::Grid => {
+                        for r in g.cells(*c, vertical, MAX_CELLS) {
+                            painter.add(egui::Shape::closed_line(quad(r), stroke));
+                        }
+                    }
+                    designcraft_doc::GridView::Outline => {
+                        let cells = g.cells(*c, vertical, MAX_CELLS);
+                        let n = chars as usize;
+                        for (i, r) in cells.iter().enumerate() {
+                            let row = i.checked_div(n).unwrap_or(0);
+                            let k = i.checked_rem(n).unwrap_or(0);
+                            if row == 0 || row + 1 == lines as usize || k == 0 || k + 1 == n {
+                                painter.add(egui::Shape::closed_line(quad(*r), stroke));
+                            }
+                        }
+                    }
+                    designcraft_doc::GridView::NZ => {
+                        // N (horizontal) or Z (vertical): the frame's diagonal from the line start.
+                        let (p0, p1) = (xf.to_screen(m * Point::new(c.x0, c.y0)), xf.to_screen(m * Point::new(c.x1, c.y1)));
+                        painter.line_segment([p0, p1], stroke);
+                    }
+                }
+            }
+            // Character count: "chars W × lines L = cells (characters in the frame)".
+            if g.count != designcraft_doc::GridCount::None {
+                let cs = app.session.cache.get(doc, tf.story, None);
+                let shown = cs.frame(it.id).map_or(0, |f| f.lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.visible && g.len > 0).count());
+                let cells = u64::from(chars) * u64::from(lines) * u64::from(tf.options.columns.max(1));
+                let label = format!("{chars}W × {lines}L = {cells} ({shown})");
+                let b = xf.rect(a.transform_rect_bbox(it.xf.transform_rect_bbox(it.inner_bounds())));
+                let size = ((g.count_size * xf.zoom) as f32).clamp(7.0, 18.0);
+                let font = egui::FontId::proportional(size);
+                let (pos, align) = match g.count {
+                    designcraft_doc::GridCount::Top => (b.left_top() - egui::vec2(0.0, 2.0), egui::Align2::LEFT_BOTTOM),
+                    designcraft_doc::GridCount::Left => (b.left_top() - egui::vec2(2.0, 0.0), egui::Align2::RIGHT_TOP),
+                    designcraft_doc::GridCount::Right => (b.right_top() + egui::vec2(2.0, 0.0), egui::Align2::LEFT_TOP),
+                    _ => (b.left_bottom() + egui::vec2(0.0, 2.0), egui::Align2::LEFT_TOP),
+                };
+                let galley = painter.layout_no_wrap(label, font, layer_color(doc, it));
+                let r = align.anchor_size(pos, galley.size());
+                painter.rect_filled(r.expand(1.0), 1.0, layer_color(doc, it).gamma_multiply(0.18));
+                painter.galley(r.min, galley, layer_color(doc, it));
+            }
+        }
+    }
+}
+
 fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
     for story in doc.stories.values() {
         let cs = app.session.cache.get(doc, story.id, None);

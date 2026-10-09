@@ -92,6 +92,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{alignEdges?, alignCenters?, smartDimensions?, smartSpacing?: bool, zone?: px} — what smart guides snap to and how close; returns the current values",
     ),
     ("view.baselineGrid", "Show/Hide Baseline Grid", Some("Cmd+Alt+'"), "{}"),
+    ("view.frameGrids", "Show/Hide Frame Grids", Some("Cmd+Shift+E"), "{}"),
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
     ("view.hiddenCharacters", "Show/Hide Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
@@ -213,6 +214,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.findChange",
             "cmd:find.next",
             "ui:app.storyEditor",
+            "cmd:type.applyGridFormat",
             "-",
             ">Spelling",
             "cmd:spelling.check",
@@ -473,6 +475,11 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:object.showAll",
             "-",
             "cmd:object.textFrameOptions",
+            "cmd:object.frameGridOptions",
+            ">Frame Type",
+            "cmd:object.frameType|Text Frame|{\"type\": \"text\"}",
+            "cmd:object.frameType|Frame Grid|{\"type\": \"grid\"}",
+            "<",
             "ui:app.layerOptions",
             "cmd:object.exportOptions",
             "cmd:object.primaryTextFrame",
@@ -610,6 +617,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:view.snapToDocumentGrid",
             "ui:view.smartGuides",
             "ui:view.baselineGrid",
+            "ui:view.frameGrids",
             "-",
             "ui:app.deleteAllGuides",
             "<",
@@ -1077,6 +1085,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "view.snapToDocumentGrid" => flag(&mut app.ui.snap_to_document_grid),
         "view.smartGuides" => flag(&mut app.ui.smart_guides),
         "view.baselineGrid" => flag(&mut app.ui.baseline_grid),
+        "view.frameGrids" => flag(&mut app.ui.frame_grids),
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
@@ -1668,6 +1677,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.snapToDocumentGrid" => app.ui.snap_to_document_grid,
         "view.smartGuides" => app.ui.smart_guides,
         "view.baselineGrid" => app.ui.baseline_grid,
+        "view.frameGrids" => app.ui.frame_grids,
         "view.textThreads" => app.ui.text_threads,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
@@ -1724,6 +1734,13 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
     }
     if params.is_null() && id == "file.print" {
         crate::dialogs::open_print(app);
+        return;
+    }
+    // Text Frame Options (⌘B) on a frame grid is Frame Grid Options, as in InDesign.
+    let mut on_grid =
+        || app.session.execute("object.frameGridInfo", &json!({})).ok().is_some_and(|v| v["grids"].as_array().is_some_and(|a| !a.is_empty()));
+    if params.is_null() && (id == "object.frameGridOptions" || (id == "object.textFrameOptions" && on_grid())) {
+        crate::dialogs::open_frame_grid_options(app);
         return;
     }
     if params.is_null() && id == "object.textFrameOptions" {

@@ -1474,6 +1474,52 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("type.para", json!({"attrs": {"composer": "singleLine"}}));
         }
     });
+    // Japanese composition: the kinsoku and mojikumi sets (JLREQ).
+    let kinsoku = match &p["kinsoku"] {
+        Value::Null => "default",
+        k => match k["name"].as_str().unwrap_or("") {
+            "HardKinsoku" => "hard",
+            "SoftKinsoku" => "soft",
+            _ if k["noStart"].as_str().unwrap_or("").is_empty() && k["noEnd"].as_str().unwrap_or("").is_empty() => "none",
+            _ => "custom",
+        },
+    };
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Kinsoku Set"));
+        let options = [("default", "Default"), ("hard", "Hard Kinsoku"), ("soft", "Soft Kinsoku"), ("none", "No Kinsoku")];
+        let shown = options.iter().find(|o| o.0 == kinsoku).map_or("Custom", |o| o.1);
+        egui::ComboBox::from_id_salt("para_kinsoku")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, shown)))
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                for (v, l) in options {
+                    if ui.selectable_label(kinsoku == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                        let _ = app.run("type.kinsoku", json!({"set": v}));
+                    }
+                }
+            });
+    });
+    let mojikumi = p["mojikumi"].as_str().unwrap_or("").to_string();
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Mojikumi Set"));
+        let sets = designcraft_compose::jlreq::MOJIKUMI_SETS;
+        let shown = match designcraft_compose::jlreq::mojikumi_set(&mojikumi) {
+            Some(m) => crate::i18n::tr(&app.ui.language, m.label).to_string(),
+            None if matches!(mojikumi.as_str(), "" | "None" | "Nothing") => crate::i18n::tr(&app.ui.language, "None (Solid)").to_string(),
+            // An imported table this composer doesn't run (Preflight lists it).
+            None => mojikumi.clone(),
+        };
+        egui::ComboBox::from_id_salt("para_mojikumi").selected_text(crate::rtl::widget(ui, shown)).width(150.0).show_ui(ui, |ui| {
+            if ui.selectable_label(mojikumi.is_empty(), crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "None (Solid)"))).clicked() {
+                let _ = app.run("type.mojikumi", json!({"set": ""}));
+            }
+            for m in sets {
+                if ui.selectable_label(mojikumi == m.id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, m.label))).clicked() {
+                    let _ = app.run("type.mojikumi", json!({"set": m.id}));
+                }
+            }
+        });
+    });
     // Paragraph Border and Shading.
     let swatches: Vec<String> =
         app.session.active().map(|d| d.doc.swatches.iter().filter(|w| !w.hidden).map(|w| w.name.clone()).collect()).unwrap_or_default();

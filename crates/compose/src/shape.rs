@@ -49,6 +49,11 @@ pub struct Glyph {
     /// Resolved CJK boundary constraint, independent of glyph outlines.
     pub break_after: Option<bool>,
     pub cjk_hang: f64,
+    /// Mojikumi aki before and after the glyph (included in `adv`; see [`crate::jlreq`]).
+    pub aki_before: crate::jlreq::Aki,
+    pub aki_after: crate::jlreq::Aki,
+    /// Space justification may add after the glyph between Japanese characters (JLREQ §3.8.2).
+    pub jl_expand: f64,
     pub ideographic_space_elastic: bool,
     pub character_alignment: designcraft_doc::cjk::CharacterAlignment,
     pub leading_model: designcraft_doc::cjk::LeadingModel,
@@ -775,6 +780,9 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
         break_after: None,
         cjk_hang: 0.0,
+        aki_before: Default::default(),
+        aki_after: Default::default(),
+        jl_expand: 0.0,
         ideographic_space_elastic: false,
         character_alignment: p.character_alignment,
         leading_model: p.leading_model,
@@ -893,6 +901,9 @@ fn shape_segment(
             space,
             break_after: None,
             cjk_hang: 0.0,
+            aki_before: Default::default(),
+            aki_after: Default::default(),
+            jl_expand: 0.0,
             ideographic_space_elastic: false,
             character_alignment: p.character_alignment,
             leading_model: p.leading_model,
@@ -939,5 +950,8 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.byte = g.byte + g.len;
     h.len = 0;
     h.ch = '-';
+    h.aki_before = Default::default();
+    h.aki_after = Default::default();
+    h.jl_expand = 0.0;
     h
 }

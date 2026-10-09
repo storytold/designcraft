@@ -106,7 +106,8 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
                         .insert("Paragraph Kashida width preset is preserved; automatic elongation uses the engine's bounded allocation".into());
                 }
             }
-            if !matches!(para.mojikumi.as_str(), "" | "Nothing" | "None") {
+            // The built-in sets are applied; other (imported) tables are kept but not executed.
+            if !matches!(para.mojikumi.as_str(), "" | "Nothing" | "None") && designcraft_compose::jlreq::mojikumi_set(&para.mojikumi).is_none() {
                 unsupported_typography.insert(format!("Mojikumi `{}` is preserved, but its spacing table is not applied", para.mojikumi));
             }
             if !para.kinsoku_type.is_empty() {

@@ -142,6 +142,29 @@ pub fn with_vmtx(font: &[u8], default: (u16, i16), overrides: &[(u16, u16, i16)]
     with_tables(font, vec![(*b"vhea", vhea), (*b"vmtx", vmtx)])
 }
 
+/// `font` with every glyph `advance` units wide (a full-width font when that is the em), except
+/// the glyphs `overrides` lists (glyph id, advance). Side bearings are kept. `None` if `font`
+/// can't be read.
+pub fn with_advances(font: &[u8], advance: u16, overrides: &[(u16, u16)]) -> Option<Vec<u8>> {
+    use skrifa::raw::TableProvider;
+    let f = skrifa::FontRef::new(font).ok()?;
+    let glyphs = f.maxp().ok()?.num_glyphs();
+    let hmtx = f.hmtx().ok()?;
+    let mut table = Vec::with_capacity(usize::from(glyphs) * 4);
+    let mut max = 0u16;
+    for gid in 0..glyphs {
+        let adv = overrides.iter().find(|o| o.0 == gid).map_or(advance, |o| o.1);
+        max = max.max(adv);
+        let lsb = hmtx.side_bearing(skrifa::GlyphId::new(u32::from(gid))).unwrap_or(0);
+        table.extend_from_slice(&adv.to_be_bytes());
+        table.extend_from_slice(&lsb.to_be_bytes());
+    }
+    let mut hhea = f.table_data(skrifa::raw::types::Tag::new(b"hhea"))?.as_bytes().to_vec();
+    hhea.get_mut(10..12)?.copy_from_slice(&max.to_be_bytes());
+    hhea.get_mut(34..36)?.copy_from_slice(&glyphs.to_be_bytes());
+    with_tables(font, vec![(*b"hmtx", table), (*b"hhea", hhea)])
+}
+
 /// `font` with a `VORG` table: every glyph's vertical origin is `default` above its baseline,
 /// except the glyphs `overrides` lists (glyph id, origin). `None` if `font` can't be read.
 pub fn with_vorg(font: &[u8], default: i16, overrides: &[(u16, i16)]) -> Option<Vec<u8>> {

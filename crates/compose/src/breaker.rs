@@ -77,15 +77,30 @@ impl Default for Spacing {
 
 impl Spacing {
     /// Per-tier (word, letter, glyph) stretch and shrink of glyph `g` as a box.
+    /// Mojikumi aki stretches and shrinks with the word spaces (JLREQ §3.8: punctuation and
+    /// wa-ō aki first), the space justification may add between Japanese characters with the
+    /// letter spacing.
     fn box_elastic(&self, g: &Glyph) -> ([f64; 3], [f64; 3]) {
         if !self.justify || g.locked_advance {
             return ([0.0; 3], [0.0; 3]);
         }
-        let natural = g.adv / self.glyph_desired.max(0.01);
+        let natural = (g.adv - g.aki_before.w - g.aki_after.w).max(0.0) / self.glyph_desired.max(0.01);
         (
-            [0.0, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
-            [0.0, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
+            [
+                g.aki_before.stretch + g.aki_after.stretch,
+                g.space * (self.letter_max - self.letter_desired).max(0.0) + g.jl_expand,
+                natural * (self.glyph_max - self.glyph_desired).max(0.0),
+            ],
+            [
+                g.aki_before.shrink + g.aki_after.shrink,
+                g.space * (self.letter_desired - self.letter_min).max(0.0),
+                natural * (self.glyph_desired - self.glyph_min).max(0.0),
+            ],
         )
+    }
+    /// Aki elastic in the word tier (justified text only).
+    fn aki_elastic(&self, a: &crate::jlreq::Aki) -> (f64, f64) {
+        if self.justify { (a.stretch, a.shrink) } else { (0.0, 0.0) }
     }
     /// Word-space stretch and shrink of space glyph `g` (only U+0020 is elastic).
     fn space_elastic(&self, g: &Glyph) -> (f64, f64) {
@@ -274,25 +289,36 @@ fn push_inword(it: &mut Vec<Item>, ig: &mut Vec<usize>, p: Item, g: usize, sp: &
 }
 
 /// Build Knuth items. `item_glyph[k]` = glyph index of item k (penalties: the glyph *before* which the break happens).
+///
+/// Mojikumi aki next to a break goes into items a break discards: `box penalty(w = aki kept at a
+/// line end) glue(aki after) glue(dropped aki before the next glyph) box`, so a line ending or
+/// starting there loses it and a line running through keeps it with its stretch and shrink.
 fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec<usize>) {
     let mut it: Vec<Item> = Vec::with_capacity(glyphs.len() * 2 + 2);
     let mut ig = Vec::with_capacity(glyphs.len() * 2 + 2);
     let n = glyphs.len();
     let mut hy_cache = Vec::new();
     let mut last_space = NONE;
+    // The previous glyph ended at a CJK break: this glyph's droppable aki before is in a glue.
+    let mut split_before = false;
+    // Aki the previous glyph keeps at a line end (width of the next forced break).
+    let mut end_edge = 0.0;
     for (i, g) in glyphs.iter().enumerate() {
         let prev_hang = if i > 0 { right_hang(&glyphs[i - 1], sp) } else { 0.0 };
         if is_forced(g.ch) {
             it.push(Item::glue(0.0, INF, 0.0));
             ig.push(i);
-            let mut p = Item::penalty(0.0, -INF, false);
+            let mut p = Item::penalty(std::mem::take(&mut end_edge), -INF, false);
             p.hang = prev_hang;
             it.push(p);
             ig.push(i + 1);
             last_space = NONE;
+            split_before = false;
             continue;
         }
+        end_edge = 0.0;
         if g.is_space() && !g.no_break && g.break_after != Some(false) {
+            split_before = false;
             let w = g.adv;
             if sp.justify {
                 let (st, sh) = sp.space_elastic(g);
@@ -316,6 +342,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
             continue;
         }
         if g.ch == SOFT_HYPHEN {
+            split_before = false;
             let hw = glyphs[..i].iter().rev().find(|g| g.ch != SOFT_HYPHEN).map_or(g.size * 0.33, |p| hyphen_width(p, &mut hy_cache));
             let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
             p.auto = true;
@@ -326,39 +353,76 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
             push_inword(&mut it, &mut ig, p, i + 1, sp);
             continue;
         }
-        let (st, sh) = sp.box_elastic(g);
-        let mut bx = Item::boxed(g.adv, st, sh);
+        let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
+        let breakable = i + 1 < n && !next_is_space && !g.no_break && g.break_after != Some(false);
+        let hyphen_char = breakable && matches!(g.ch, '-' | '\u{2010}');
+        let plain = breakable
+            && !hyphen_char
+            && (matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp)));
+        // A plain break, a forced break or the paragraph end after this glyph: its aki after
+        // leaves the box.
+        let split_after = plain || glyphs.get(i + 1).is_none_or(|n| is_forced(n.ch));
+        let (mut st, mut sh) = sp.box_elastic(g);
+        let mut w = g.adv;
+        if split_before {
+            let (a, b) = sp.aki_elastic(&g.aki_before);
+            w -= g.aki_before.drop();
+            st[0] -= a;
+            sh[0] -= b;
+        }
+        if split_after {
+            let (a, b) = sp.aki_elastic(&g.aki_after);
+            w -= g.aki_after.w;
+            st[0] -= a;
+            sh[0] -= b;
+            end_edge = g.aki_after.edge;
+        }
+        let mut bx = Item::boxed(w, st.map(|v| v.max(0.0)), sh.map(|v| v.max(0.0)));
         if sp.optical {
             bx.hang = hang_left(g);
         }
         it.push(bx);
         ig.push(i);
-        let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
-        if i + 1 < n && !next_is_space && !g.no_break && g.break_after != Some(false) {
-            if matches!(g.ch, '-' | '\u{2010}') {
-                let mut p = Item::penalty(0.0, 50.0, true);
-                p.hang = right_hang(g, sp);
-                push_inword(&mut it, &mut ig, p, i + 1, sp);
-            } else if matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp)) {
-                let mut p = Item::penalty(0.0, 0.0, false);
-                p.hang = right_hang(g, sp);
-                push_inword(&mut it, &mut ig, p, i + 1, sp);
-            } else if hyph_after[i] {
-                let hw = hyphen_width(g, &mut hy_cache);
-                let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
-                p.auto = true;
-                p.zone_from = last_space;
-                if sp.optical {
-                    p.hang = hw * hang('-').1;
-                }
-                push_inword(&mut it, &mut ig, p, i + 1, sp);
+        split_before = false;
+        if hyphen_char {
+            let mut p = Item::penalty(0.0, 50.0, true);
+            p.hang = right_hang(g, sp);
+            push_inword(&mut it, &mut ig, p, i + 1, sp);
+        } else if plain {
+            let mut p = Item::penalty(g.aki_after.edge, 0.0, false);
+            p.hang = right_hang(g, sp);
+            push_inword(&mut it, &mut ig, p, i + 1, sp);
+            let (a, b) = sp.aki_elastic(&g.aki_after);
+            if g.aki_after.w > 0.0 || a > 0.0 || b > 0.0 {
+                it.push(Item::glue(g.aki_after.w, a, b));
+                ig.push(i + 1);
             }
+            if let Some(next) = glyphs.get(i + 1) {
+                let (a, b) = sp.aki_elastic(&next.aki_before);
+                if next.aki_before.drop() > 0.0 || a > 0.0 || b > 0.0 {
+                    it.push(Item::glue(next.aki_before.drop(), a, b));
+                    ig.push(i + 1);
+                }
+            }
+            end_edge = 0.0;
+            split_before = true;
+        } else if breakable && hyph_after[i] {
+            let hw = hyphen_width(g, &mut hy_cache);
+            let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
+            p.auto = true;
+            p.zone_from = last_space;
+            if sp.optical {
+                p.hang = hw * hang('-').1;
+            }
+            push_inword(&mut it, &mut ig, p, i + 1, sp);
+        } else if !split_after {
+            end_edge = 0.0;
         }
     }
     // Paragraph end: fill glue + forced break.
     it.push(Item::glue(0.0, INF, 0.0));
     ig.push(n);
-    let mut p = Item::penalty(0.0, -INF, false);
+    let mut p = Item::penalty(end_edge, -INF, false);
     p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
     it.push(p);
     ig.push(n);
@@ -642,6 +706,10 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
     while start < n {
         let w = width(line).max(1.0);
         let mut x = if sp.optical { -hang_left(&glyphs[start]) } else { 0.0 };
+        // Mojikumi: a line doesn't start with the aki a line start drops.
+        if start > 0 {
+            x -= glyphs[start].aki_before.drop();
+        }
         let mut shrink = 0.0;
         let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
         let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
@@ -663,7 +731,7 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 i += 1;
                 continue;
             }
-            let hang_r = right_hang(g, sp);
+            let hang_r = right_hang(g, sp) + g.aki_after.drop();
             if x + g.adv - hang_r > w + shrink
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))

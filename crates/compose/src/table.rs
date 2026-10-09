@@ -100,6 +100,7 @@ fn compose_cell(doc: &Document, story: &Story, w: f64, opts: &ComposeOptions, le
         grid: None,
         left_page,
         page_rect: None,
+        frame_grid: None,
     };
     let cs = crate::compose(doc, story, std::slice::from_ref(&spec), opts);
     let content_h = cs.frames.first().map(|f| if f.lines.is_empty() { 0.0 } else { f.content_height }).unwrap_or(0.0);
