@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode, View, theme::Tokens};
 
+#[cfg(all(feature = "clipboard", not(target_arch = "wasm32")))]
+use arboard::Clipboard;
+
 pub const RULER: f32 = 15.0;
 
 /// Canvas ↔ screen transform.
@@ -1458,7 +1461,16 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                 // Shift (⇧⌘V) pastes without formatting.
                 let plain = ui.input(|i| i.modifiers.shift);
                 let id = if plain { "edit.pasteWithoutFormatting" } else { "edit.paste" };
-                let _ = app.run(id, json!({"text": t}));
+                let result = app.run(id, json!({"text": t}));
+                if let Err(err) = &result {
+                    // Paste failed (e.g., "clipboard is empty"). Try reading directly from system clipboard.
+                    log::warn!("Paste from event failed: {err}, trying system clipboard fallback");
+                    if let Some(clipboard_text) = read_system_clipboard() {
+                        let _ = app.run(id, json!({"text": clipboard_text}));
+                    } else {
+                        app.status(format!("Paste failed: {err}"));
+                    }
+                }
             }
             egui::Event::Copy | egui::Event::Cut if wants_text => {
                 let id = if matches!(e, egui::Event::Cut) { "edit.cut" } else { "edit.copy" };
@@ -1805,4 +1817,18 @@ mod tests {
         right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
         assert!(h.query_by_label("   Points").is_none());
     }
+}
+
+/// Read text from the system clipboard using arboard.
+/// Only available on native platforms (not WASM) with the "clipboard" feature.
+#[cfg(all(feature = "clipboard", not(target_arch = "wasm32")))]
+fn read_system_clipboard() -> Option<String> {
+    let mut clipboard = Clipboard::new().ok()?;
+    clipboard.get_text().ok()
+}
+
+/// Stub for WASM or when clipboard feature is disabled.
+#[cfg(not(all(feature = "clipboard", not(target_arch = "wasm32"))))]
+fn read_system_clipboard() -> Option<String> {
+    None
 }
