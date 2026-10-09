@@ -66,7 +66,8 @@ struct Builder {
     doc: Document,
     /// Document pixels → points.
     scale: f64,
-    parent: Option<SpreadId>,
+    /// DesignCraft parents made from Affinity master pages, by (master spread, its page).
+    parents: HashMap<(usize, usize), Option<SpreadId>>,
     /// Top-level Affinity layers by name.
     layers: HashMap<String, LayerId>,
     /// Swatch names by colour, for reuse.
@@ -95,9 +96,19 @@ impl Builder {
             units: Unit::Millimeters,
             ..NewDocument::default()
         };
-        let doc = Document::new(&nd);
-        let parent = doc.parents.first().map(|p| p.id);
-        Self { doc, scale, parent, layers: HashMap::new(), colors: Vec::new(), warnings: BTreeMap::new(), images: 0, line_heights: HashMap::new() }
+        let mut doc = Document::new(&nd);
+        // Parents come from the Affinity masters the pages use (see `parent_for`).
+        doc.parents.clear();
+        Self {
+            doc,
+            scale,
+            parents: HashMap::new(),
+            layers: HashMap::new(),
+            colors: Vec::new(),
+            warnings: BTreeMap::new(),
+            images: 0,
+            line_heights: HashMap::new(),
+        }
     }
 
     fn warn(&mut self, what: &str) {
@@ -113,7 +124,13 @@ impl Builder {
             let to_spread = Affine::scale(self.scale) * Affine::translate((-set.origin.x, -set.origin.y));
             let mut pages = Vec::new();
             let count = set.pages.len();
+            let instances = master_instances(set.nodes.iter().copied());
             for (pi, r) in set.pages.iter().enumerate() {
+                // The master page Affinity shows on this page, as a DesignCraft parent.
+                let parent = instances
+                    .iter()
+                    .find(|(_, page, _, n)| pi >= *page && pi < page.saturating_add(*n))
+                    .and_then(|(master, page, master_page, _)| self.parent_for(src, *master, master_page + (pi - page), default_layer));
                 let (w, h) = ((r.x1 - r.x0) * self.scale, (r.y1 - r.y0) * self.scale);
                 if !valid_size(w) || !valid_size(h) {
                     self.warn("pages larger than 216 in or without a size (left out)");
@@ -137,7 +154,7 @@ impl Builder {
                     x: (r.x0 - set.origin.x) * self.scale,
                     margins: Margins::uniform(0.0),
                     columns: Default::default(),
-                    parent: self.parent,
+                    parent,
                     side,
                     overridden: vec![],
                     guides: vec![],
@@ -220,6 +237,65 @@ impl Builder {
             }
         }
         sets
+    }
+
+    /// The DesignCraft parent showing page `page` of Affinity master spread `master`, made the
+    /// first time a page uses it: one page, with the master's objects on that page.
+    fn parent_for(&mut self, src: &model::Document, master: usize, page: usize, default_layer: LayerId) -> Option<SpreadId> {
+        if let Some(id) = self.parents.get(&(master, page)) {
+            return *id;
+        }
+        self.parents.insert((master, page), None);
+        let page_index = page;
+        let m = src.masters.get(master)?;
+        let r = m.pages.get(page).or_else(|| m.pages.last()).copied().unwrap_or(m.bounds);
+        let (w, h) = ((r.x1 - r.x0) * self.scale, (r.y1 - r.y0) * self.scale);
+        if !valid_size(w) || !valid_size(h) {
+            return None;
+        }
+        if !master_instances(&m.nodes).is_empty() {
+            self.warn("master pages based on other master pages (only their own objects are used)");
+        }
+        let to_spread = Affine::scale(self.scale) * Affine::translate((-r.x0, -r.y0));
+        let mut items = Vec::new();
+        for node in &m.nodes {
+            self.top_level(node, to_spread, default_layer, &mut items);
+        }
+        // A master spread's other page draws its own objects.
+        let area = Rect::new(0.0, 0.0, w, h);
+        items.retain(|it| {
+            let b = it.bounds();
+            b.x1 > area.x0 && b.x0 < area.x1 && b.y1 > area.y0 && b.y0 < area.y1
+        });
+        let index = self.doc.parents.len();
+        let prefix = parent_prefix(index);
+        let id = SpreadId(self.doc.alloc());
+        let page = Page {
+            id: PageId(self.doc.alloc()),
+            width: w,
+            height: h,
+            x: 0.0,
+            margins: Margins::uniform(0.0),
+            columns: Default::default(),
+            parent: None,
+            side: PageSide::Single,
+            overridden: vec![],
+            guides: vec![],
+            show_parent_items: true,
+            liquid: Default::default(),
+            transition: None,
+            view_rotation: 0,
+        };
+        let name = if m.pages.len() > 1 { format!("Master {} page {}", master + 1, page_index + 1) } else { format!("Master {}", master + 1) };
+        self.doc.parents.push(Arc::new(Spread {
+            id,
+            pages: vec![page],
+            items: items.into_iter().map(Arc::new).collect(),
+            parent: Some(designcraft_doc::ParentInfo { prefix, name, based_on: None }),
+            allow_shuffle: true,
+        }));
+        self.parents.insert((master, page_index), Some(id));
+        Some(id)
     }
 
     /// A node directly on a spread: Affinity layers become document layers, their content items.
@@ -307,6 +383,8 @@ impl Builder {
             Kind::Text(t) => self.text(t, xf, layer)?,
             Kind::Table(t) => self.table(t, xf, layer)?,
             Kind::Image(img) => self.image_node(node, img, xf, layer, depth, &[])?,
+            // Shown through the page's parent (see `parent_for`).
+            Kind::MasterInstance { .. } => return None,
         };
         if matches!(node.kind, Kind::Text(_) | Kind::Table(_)) && !node.children.is_empty() {
             self.warn("objects inside text (left out)");
@@ -1113,6 +1191,33 @@ fn xf_scale(m: Affine) -> f64 {
     m.determinant().abs().sqrt()
 }
 
+/// The master page instances among `nodes` (also inside layers and groups): (master, first page,
+/// first master page, page count).
+fn master_instances<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Vec<(usize, usize, usize, usize)> {
+    fn visit(n: &Node, depth: usize, out: &mut Vec<(usize, usize, usize, usize)>) {
+        if depth > MAX_DEPTH || !n.visible {
+            return;
+        }
+        match n.kind {
+            Kind::MasterInstance { master, page, master_page, count } => out.push((master, page, master_page, count)),
+            Kind::Layer | Kind::Group => n.children.iter().for_each(|c| visit(c, depth + 1, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    nodes.into_iter().for_each(|n| visit(n, 0, &mut out));
+    out
+}
+
+/// Parent prefixes: A, B … Z, then A1, B1 ….
+fn parent_prefix(index: usize) -> String {
+    let letter = char::from(b'A' + (index % 26) as u8);
+    match index / 26 {
+        0 => letter.to_string(),
+        n => format!("{letter}{n}"),
+    }
+}
+
 fn align_of(a: model::Align) -> Align {
     match a {
         model::Align::Left => Align::Left,
@@ -1392,6 +1497,7 @@ mod tests {
                 transparent: false,
                 nodes: vec![tree],
             }],
+            masters: vec![],
             saved_by: None,
             warnings: vec![],
         };

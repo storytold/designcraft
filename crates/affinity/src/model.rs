@@ -327,6 +327,14 @@ pub enum Kind {
     Text(Text),
     Table(Table),
     Image(Image),
+    /// A master page shown on this spread's pages: pages `page..page + count` show the master
+    /// spread [`Document::masters`]`[master]`'s pages from `master_page` on.
+    MasterInstance {
+        master: usize,
+        page: usize,
+        master_page: usize,
+        count: usize,
+    },
     /// Something this reader does not import; its children are still imported.
     Unsupported,
 }
@@ -365,6 +373,8 @@ pub struct Document {
     /// Pixels per inch: all geometry is in document pixels at this resolution.
     pub dpi: f64,
     pub spreads: Vec<Spread>,
+    /// Master spreads, which [`Kind::MasterInstance`] nodes show on pages.
+    pub masters: Vec<Spread>,
     /// Application that last saved the file, as stored (`Affinity 3.0.2`), when present.
     pub saved_by: Option<String>,
     /// Content that was not imported or was approximated, one line per kind, deduplicated.
@@ -409,6 +419,8 @@ pub(crate) struct Reader<'s, 'a, 'b> {
     depth: usize,
     /// An embedded document's content, waiting to become its node's children.
     pending: Option<Vec<Node>>,
+    /// The master spreads, in the order of [`Document::masters`].
+    master_ids: Vec<ObjId>,
 }
 
 impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
@@ -425,6 +437,7 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             type_base: Affine([a, b, c, d, 0.0, 0.0]),
             depth,
             pending: None,
+            master_ids: Vec::new(),
         }
     }
 
@@ -444,36 +457,54 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             }
         });
         let doc = s.obj(root, b"DocR").ok_or(Error::Malformed("document has no root node"))?;
+        self.master_ids = s.objs(doc, b"MpCh").into_iter().filter(|m| s.is(*m, b"Sprd")).collect();
         let mut spreads = Vec::new();
         for spread in s.objs(doc, b"Chld") {
-            if !s.is(spread, b"Sprd") {
-                self.warn("an unknown kind of page");
-                continue;
+            if let Some(sp) = self.spread(doc, spread)? {
+                spreads.push(sp);
             }
-            let pages = pages(s, spread);
-            let default_size =
-                s.floats::<2>(doc, b"DfSz").filter(|[w, h]| *w > 0.0 && *h > 0.0).map(|[w, h]| Rect { x0: 0.0, y0: 0.0, x1: w, y1: h });
-            let bounds = s.floats::<4>(spread, b"SprB").map(rect).or_else(|| pages.iter().copied().reduce(union)).or(default_size).unwrap_or(Rect {
-                x0: 0.0,
-                y0: 0.0,
-                x1: 0.0,
-                y1: 0.0,
-            });
-            let transparent = s.bool(spread, b"SprT").unwrap_or(false);
-            let (nodes, mask) = self.children(spread, self.base, 0)?;
-            if mask.is_some() {
-                self.warn("mask layers directly on a page (imported without them)");
-            }
-            spreads.push(Spread { bounds, pages, transparent, nodes });
         }
         if spreads.is_empty() {
             return Err(Error::Malformed("document has no pages"));
         }
-        if !s.objs(doc, b"MpCh").is_empty() {
-            self.warn("master pages (their content is not placed on the pages that use them)");
+        let mut masters = Vec::new();
+        for master in self.master_ids.clone() {
+            match self.spread(doc, master)? {
+                Some(sp) => masters.push(sp),
+                // Keep the indices of `MasterInstance::master` valid.
+                None => masters.push(Spread {
+                    bounds: Rect { x0: 0.0, y0: 0.0, x1: 0.0, y1: 0.0 },
+                    pages: Vec::new(),
+                    transparent: true,
+                    nodes: Vec::new(),
+                }),
+            }
         }
         let warnings = self.warnings.into_iter().map(|(w, n)| if n > 1 { format!("{w} ({n}×)") } else { w }).collect();
-        Ok(Document { dpi: self.dpi, spreads, saved_by, warnings })
+        Ok(Document { dpi: self.dpi, spreads, masters, saved_by, warnings })
+    }
+
+    /// A spread (`Sprd`) of the document `doc`, or of its master spreads.
+    fn spread(&mut self, doc: ObjId, spread: ObjId) -> Result<Option<Spread>, Error> {
+        let s = self.s;
+        if !s.is(spread, b"Sprd") {
+            self.warn("an unknown kind of page");
+            return Ok(None);
+        }
+        let pages = pages(s, spread);
+        let default_size = s.floats::<2>(doc, b"DfSz").filter(|[w, h]| *w > 0.0 && *h > 0.0).map(|[w, h]| Rect { x0: 0.0, y0: 0.0, x1: w, y1: h });
+        let bounds = s.floats::<4>(spread, b"SprB").map(rect).or_else(|| pages.iter().copied().reduce(union)).or(default_size).unwrap_or(Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 0.0,
+            y1: 0.0,
+        });
+        let transparent = s.bool(spread, b"SprT").unwrap_or(false);
+        let (nodes, mask) = self.children(spread, self.base, 0)?;
+        if mask.is_some() {
+            self.warn("mask layers directly on a page (imported without them)");
+        }
+        Ok(Some(Spread { bounds, pages, transparent, nodes }))
     }
 
     /// The children of `parent`, and the pixel mask a mask layer among them puts on the parent.
@@ -589,6 +620,19 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 Some(img) => Kind::Image(img),
                 None => Kind::Unsupported,
             },
+            b"MPIN" => {
+                // `SLnk` links the instance with the master spread it shows.
+                let linked = s.obj(id, b"SLnk").map(|l| s.objs(l, b"ILOb")).unwrap_or_default();
+                let master = linked.iter().find_map(|o| self.master_ids.iter().position(|m| m == o));
+                let at = |t: &[u8; 4], default: usize| s.int(id, t).and_then(|v| usize::try_from(v).ok()).unwrap_or(default).min(4096);
+                match master {
+                    Some(master) => Kind::MasterInstance { master, page: at(b"PgOf", 0), master_page: at(b"MPOf", 0), count: at(b"PgCt", 1) },
+                    None => {
+                        self.warn("master page instances without their master");
+                        Kind::Unsupported
+                    }
+                }
+            }
             b"EmbN" => match self.embedded_document(id, world) {
                 // The embedded document itself, as editable content.
                 Some(nodes) => {
@@ -788,7 +832,7 @@ pub(crate) fn nodes_bounds(nodes: &[Node]) -> Option<Rect> {
                         corners(Rect { x0, y0, x1, y1 }, t.transform).into_iter().for_each(&mut add);
                     }
                 }
-                Kind::Layer | Kind::Group | Kind::Unsupported => {}
+                Kind::Layer | Kind::Group | Kind::Unsupported | Kind::MasterInstance { .. } => {}
             }
             walk(&n.children, depth + 1, out);
         }

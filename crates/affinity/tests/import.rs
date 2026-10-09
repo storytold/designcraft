@@ -460,6 +460,54 @@ fn embedded_documents_nest_only_so_deep() {
 }
 
 #[test]
+fn master_pages_become_parents_showing_the_right_master_page() {
+    // A two-page master spread (pages 0–100 and 100–200 wide) with a box on each page; the
+    // document's one page shows its second page, as Affinity's instance says (MPOf 1).
+    let master_page = |x0: f64| F::Obj(tag(b"PagR"), vec![(tag(b"rctp"), F::F64s(vec![x0, 0.0, x0 + 100.0, 150.0]))]);
+    let master = F::Def(
+        7,
+        vec![tag(b"Sprd")],
+        vec![
+            (tag(b"SpMd"), F::Obj(tag(b"SpMd"), vec![(tag(b"PagR"), F::Shared(vec![master_page(0.0), master_page(100.0)]))])),
+            (tag(b"Chld"), F::Shared(vec![rectangle(30, (10.0, 10.0), (20.0, 20.0)), rectangle(31, (110.0, 10.0), (30.0, 40.0))])),
+        ],
+    );
+    let instance = F::Def(
+        5,
+        vec![tag(b"MPIN")],
+        vec![
+            (tag(b"SLnk"), F::Obj(tag(b"ILSN"), vec![(tag(b"ILOb"), F::Shared(vec![master, F::Ref(5)]))])),
+            (tag(b"PgOf"), F::U32(0)),
+            (tag(b"MPOf"), F::U32(1)),
+            (tag(b"PgCt"), F::U32(1)),
+        ],
+    );
+    let page = F::Obj(tag(b"PagR"), vec![(tag(b"rctp"), F::F64s(vec![0.0, 0.0, 100.0, 150.0]))]);
+    let spread = F::Def(
+        2,
+        vec![tag(b"Sprd")],
+        vec![(tag(b"SpMd"), F::Obj(tag(b"SpMd"), vec![(tag(b"PagR"), F::Shared(vec![page]))])), (tag(b"Chld"), F::Shared(vec![instance]))],
+    );
+    let data = stream(vec![(
+        tag(b"DocR"),
+        F::Def(1, vec![tag(b"DocN")], vec![(tag(b"Chld"), F::Shared(vec![spread])), (tag(b"MpCh"), F::Shared(vec![F::Ref(7)]))]),
+    )]);
+    let imported = designcraft_affinity::import(&synth::container(&[("doc.dat", &data, Method::Zstd)], None)).unwrap();
+    let d = &imported.document;
+    assert!(!imported.warnings.iter().any(|w| w.contains("master")), "{:?}", imported.warnings);
+    let parent_id = d.spreads[0].pages[0].parent.expect("the page has a parent");
+    let parent = d.parents.iter().find(|p| p.id == parent_id).unwrap();
+    assert_eq!(parent.pages.len(), 1);
+    assert_eq!(parent.parent.as_ref().map(|p| p.prefix.as_str()), Some("A"));
+    // Only the second master page's box, at its place on that page.
+    assert_eq!(parent.items.len(), 1, "{:?}", parent.items.iter().map(|i| i.bounds()).collect::<Vec<_>>());
+    let b = parent.items[0].bounds();
+    assert!(near(b.x0, 10.0) && near(b.y0, 10.0) && near(b.width(), 30.0) && near(b.height(), 40.0), "{b:?}");
+    assert_eq!(d.parent_page_for(0), Some((0, 0)));
+    d.check().unwrap();
+}
+
+#[test]
 fn not_an_affinity_file_is_an_error_not_a_crash() {
     assert!(designcraft_affinity::import(b"not affinity").is_err());
     let mut file = publisher();

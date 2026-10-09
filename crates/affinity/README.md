@@ -25,6 +25,7 @@ accept the four extensions.
 |---|---|
 | Publisher spreads (one or two pages) | spreads with left/right pages, in points |
 | Documents without pages (Designer, Photo) | a page per artboard, or one page for the canvas |
+| Master spreads and the master page each page shows | a one-page parent per master page in use (A, B, …) with that page's objects, applied to the pages |
 | Top-level layers | document layers, by name |
 | Nested layers, groups | groups |
 | Curves, rectangles, ellipses, polygons, stars, compound shapes | frames with their outline (even-odd outlines keep their holes) |
@@ -46,7 +47,7 @@ accept the four extensions.
 | Opacity, visibility, lock, names, blend modes DesignCraft has | the same |
 
 Everything that is not imported, or only approximately, is listed in the open result's
-`warnings`, one line per kind with a count. Not yet imported: master pages, text threading
+`warnings`, one line per kind with a count. Not yet imported: masters based on other masters, text threading
 between frames, hyphenation settings (imported paragraphs don't hyphenate), text fields such as page numbers, inline objects
 in text, table cell fills, cells merged across rows, layer effects, adjustment layers and live
 filters, pixel masks on objects other than images, brush strokes, embedded files other than
