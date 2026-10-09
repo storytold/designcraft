@@ -336,8 +336,9 @@ pub(crate) fn baseline_tweak(face: &[u8], index: u32) -> egui::FontTweak {
     egui::FontTweak { y_offset_factor: if shift.is_finite() { shift.clamp(-0.5, 0.5) } else { 0.0 }, ..Default::default() }
 }
 
-/// Append installed faces `system` at the end of every family, in the interface language's order
-/// (Chinese before Japanese for zh).
+/// Add installed faces `system` to every family in the interface language's order: the faces of
+/// its script (`i18n::cjk_script`) go before the built-in CJK faces, so Han characters take that
+/// language's forms (Traditional Chinese, Korean); the others go at the end.
 pub(crate) fn add_system_fallbacks(fonts: &mut FontDefinitions, system: &[SystemFont], lang: &str) {
     let name = |f: &SystemFont| format!("system-{}", f.family);
     for f in system {
@@ -346,10 +347,20 @@ pub(crate) fn add_system_fallbacks(fonts: &mut FontDefinitions, system: &[System
             Arc::new(FontData { index: f.index, tweak: baseline_tweak(&f.bytes, f.index), ..FontData::from_owned(f.bytes.clone()) }),
         );
     }
-    let (first, second) = if lang.starts_with("zh") { ("Hans", "Jpan") } else { ("Jpan", "Hans") };
-    let order: Vec<String> = [first, second, "Hant", "Kore"].iter().flat_map(|s| system.iter().filter(move |f| f.script == *s)).map(name).collect();
-    for stack in fonts.families.values_mut() {
-        stack.extend(order.iter().cloned());
+    let first = crate::i18n::cjk_script(lang);
+    let preferred: Vec<String> = system.iter().filter(|f| f.script == first).map(name).collect();
+    let rest: Vec<String> = ["Jpan", "Hans", "Hant", "Kore"]
+        .iter()
+        .filter(|s| **s != first)
+        .flat_map(|s| system.iter().filter(move |f| f.script == *s))
+        .map(name)
+        .collect();
+    for (family, stack) in fonts.families.iter_mut() {
+        // The Arabic families keep their own order (see `font_definitions`).
+        let arabic = matches!(family, FontFamily::Name(n) if n.starts_with("arabic"));
+        let at = if arabic { stack.len() } else { stack.iter().position(|n| n.starts_with("craft-")).unwrap_or(stack.len()) };
+        stack.splice(at..at, preferred.iter().cloned());
+        stack.extend(rest.iter().cloned());
     }
 }
 
@@ -383,8 +394,8 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
     for f in &arabic {
         add(&mut fonts, &name(f), f.bytes);
     }
-    // Han characters take the forms of the interface language: Chinese faces first for zh.
-    let zh = lang.starts_with("zh");
+    // Han characters take the forms of the interface language: Chinese faces first for Chinese.
+    let zh = matches!(crate::i18n::cjk_script(lang), "Hans" | "Hant");
     for (family, stack) in fonts.families.iter_mut() {
         let bold = *family == FontFamily::Name("semibold".into());
         let mut ja = japanese.clone();
@@ -572,6 +583,32 @@ mod japanese_font_tests {
             let font = egui::FontId::new(13.0, egui::FontFamily::Proportional);
             assert!(fonts.has_glyph(&font, '한') && fonts.has_glyph(&font, '글'));
         });
+    }
+
+    /// Han characters take the interface language's forms: its script's installed face comes
+    /// before the built-in CJK faces and the other scripts' faces.
+    #[test]
+    fn interface_language_orders_the_cjk_faces() {
+        let face = |family: &str, script| super::SystemFont {
+            script,
+            family: family.into(),
+            bytes: designcraft_fonts::testing::font_with(family, &['日']).unwrap(),
+            index: 0,
+        };
+        let system = [face("DC Ja", "Jpan"), face("DC Hans", "Hans"), face("DC Hant", "Hant"), face("DC Ko", "Kore")];
+        for (lang, first) in [("ja", "DC Ja"), ("zh", "DC Hans"), ("zh-hant", "DC Hant"), ("ko", "DC Ko"), ("", "DC Ja")] {
+            let mut defs = super::font_definitions(&[], lang);
+            // Stand-in for a built-in CJK face (craft-fonts may be absent in this build).
+            defs.families.entry(egui::FontFamily::Proportional).or_default().push("craft-Stand-in".into());
+            super::add_system_fallbacks(&mut defs, &system, lang);
+            let stack = &defs.families[&egui::FontFamily::Proportional];
+            let at = |n: &str| stack.iter().position(|x| x == n).unwrap();
+            let first_at = at(&format!("system-{first}"));
+            assert!(first_at < at("craft-Stand-in"), "{lang}: {stack:?}");
+            for f in &system {
+                assert!(first_at <= at(&format!("system-{}", f.family)), "{lang}: {stack:?}");
+            }
+        }
     }
 
     #[test]

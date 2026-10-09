@@ -195,7 +195,7 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label.trim_end_matches('…')))
                     .on_hover_text(format!("{id}{}", if menu.is_empty() { String::new() } else { format!("  ({menu})") }));
                 let cur = crate::menus::shortcut_of(app, id).map(|s| crate::menus::shortcut_text(&s)).unwrap_or_else(|| "—".into());
-                let text = if recording == *id { "Press keys…".to_string() } else { cur };
+                let text = if recording == *id { crate::i18n::tr(&app.ui.language, "Press keys…").to_string() } else { cur };
                 if ui.add(egui::Button::new(text).min_size(egui::vec2(110.0, 0.0))).clicked() {
                     d.fields.insert("recording".into(), json!(id));
                     d.fields.insert("message".into(), json!(""));
@@ -1214,7 +1214,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                 });
                 if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-                    ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+                    ui.label(egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
                 }
                 }
             }
@@ -2631,7 +2631,7 @@ fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         }
     });
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        ui.label(egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 

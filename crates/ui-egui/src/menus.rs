@@ -1978,7 +1978,7 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
                 if let Some(sc) = &it.shortcut {
                     b = b.shortcut_text(shortcut_text(sc));
                 } else if !it.kind.is_empty() {
-                    b = b.shortcut_text(it.kind);
+                    b = b.shortcut_text(crate::i18n::tr(&app.ui.language, it.kind));
                 }
                 if ui.add_sized([460.0, 22.0], b).clicked() || (i == 0 && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                     run = Some((it.id.clone(), it.params.clone()));
@@ -2278,6 +2278,42 @@ mod tests {
         assert_eq!(*board.borrow(), "他のアプリの文章");
     }
 
+    /// Every menu, command, panel and tool name has a Japanese, Chinese (Simplified and
+    /// Traditional) and Korean entry, so those interfaces never fall back to English.
+    #[test]
+    fn cjk_interfaces_translate_every_menu_command_panel_and_tool() {
+        fn walk(items: &[Item], out: &mut Vec<String>) {
+            for it in items {
+                match it {
+                    Item::Sep => {}
+                    Item::Sub(name, children) => {
+                        out.push(name.clone());
+                        walk(children, out);
+                    }
+                    Item::Cmd { label, .. } => out.push(label.clone()),
+                }
+            }
+        }
+        let mut names = Vec::new();
+        for (title, items) in menu_tree() {
+            names.push(title.to_string());
+            walk(&items, &mut names);
+        }
+        for c in designcraft_engine::Session::new().commands() {
+            names.push(c.label.to_string());
+            names.extend(c.menu.iter().map(|m| m.to_string()));
+        }
+        names.extend(UI_COMMANDS.iter().map(|c| c.1.to_string()));
+        names.extend(crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS).map(|p| p.1.to_string()));
+        names.extend(designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).map(|t| t.label.to_string()));
+        // Interface language names are shown in their own language.
+        let own: Vec<&str> = crate::i18n::LANGUAGES.iter().map(|l| l.1).collect();
+        for lang in ["ja", "zh", "zh-hant", "ko"] {
+            let missing: Vec<&String> = names.iter().filter(|n| !own.contains(&n.as_str()) && !crate::i18n::has_entry(lang, n)).collect();
+            assert!(missing.is_empty(), "{lang}: untranslated {missing:?}");
+        }
+    }
+
     #[test]
     fn interface_language_switches_and_validates() {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -2300,9 +2336,11 @@ mod tests {
         for (title, _) in menu_tree() {
             assert_ne!(crate::i18n::tr("ar", title), title, "{title}");
         }
-        // Every menu title has a translation (Japanese never matches the English).
-        for (title, _) in menu_tree() {
-            assert_ne!(crate::i18n::tr("ja", title), title, "{title}");
+        // Every menu title has a translation (the CJK ones never match the English).
+        for lang in ["ja", "zh", "zh-hant", "ko"] {
+            for (title, _) in menu_tree() {
+                assert_ne!(crate::i18n::tr(lang, title), title, "{lang}: {title}");
+            }
         }
 
         run_ui(&mut app, "app.language", &json!({"lang": "pt-br"})).unwrap().unwrap();
