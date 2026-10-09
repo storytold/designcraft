@@ -263,7 +263,7 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) {
 
 /// An installed font the UI falls back to for a script the built-in faces lack.
 pub(crate) struct SystemFont {
-    /// "Jpan" or "Hans".
+    /// "Jpan", "Hans", "Hant" or "Kore".
     script: &'static str,
     family: String,
     bytes: Vec<u8>,
@@ -290,10 +290,14 @@ const SYSTEM_UI_FONTS: &[(&str, &[&str])] = &[
         ],
     ),
     ("Hans", &["PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei"]),
+    // Traditional Chinese and Korean: font menus list those families under their native names.
+    ("Hant", &["PingFang TC", "Microsoft JhengHei", "Noto Sans CJK TC", "Source Han Sans TC"]),
+    ("Kore", &["Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans CJK KR", "Noto Sans KR", "Source Han Sans K", "NanumGothic", "UnDotum"]),
 ];
 
 /// The installed faces for the CJK scripts `craft` (the built-in craft-fonts) doesn't cover, so
-/// the interface shows Japanese and Chinese without the craft-fonts build input. egui can't
+/// the interface shows Japanese and Chinese without the craft-fonts build input, and Korean and
+/// Traditional Chinese (font names in the font menus) in any build. egui can't
 /// find system fonts itself; the document font scan (not on the web) does.
 fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont]) -> Vec<SystemFont> {
     let db = designcraft_fonts::FontDb::global();
@@ -343,7 +347,7 @@ pub(crate) fn add_system_fallbacks(fonts: &mut FontDefinitions, system: &[System
         );
     }
     let (first, second) = if lang.starts_with("zh") { ("Hans", "Jpan") } else { ("Jpan", "Hans") };
-    let order: Vec<String> = [first, second].iter().flat_map(|s| system.iter().filter(move |f| f.script == *s)).map(name).collect();
+    let order: Vec<String> = [first, second, "Hant", "Kore"].iter().flat_map(|s| system.iter().filter(move |f| f.script == *s)).map(name).collect();
     for stack in fonts.families.values_mut() {
         stack.extend(order.iter().cloned());
     }
@@ -542,6 +546,32 @@ mod japanese_font_tests {
         assert!(tweak.y_offset_factor.abs() > 0.01, "the synthetic face needs a shift: {}", tweak.y_offset_factor);
         // The UI face itself needs no shift.
         assert!(super::baseline_tweak(super::UI_FONT, 0).y_offset_factor.abs() < 1e-6);
+    }
+
+    /// Korean font names (the font menus show Korean families by their Hangul names) get glyphs
+    /// from an installed Korean face, after the Japanese and Chinese ones.
+    #[test]
+    fn installed_korean_faces_give_hangul_glyphs() {
+        let face = |family: &str, chars: &[char], script| super::SystemFont {
+            script,
+            family: family.into(),
+            bytes: designcraft_fonts::testing::font_with(family, chars).unwrap(),
+            index: 0,
+        };
+        let system = [face("DC UI Korean", &['한', '글'], "Kore"), face("DC UI Japanese", &['日'], "Jpan")];
+        let mut defs = super::font_definitions(&[], "ja");
+        super::add_system_fallbacks(&mut defs, &system, "ja");
+        let stack = &defs.families[&egui::FontFamily::Proportional];
+        let at = |n: &str| stack.iter().position(|x| x == n).unwrap();
+        assert!(at("system-DC UI Japanese") < at("system-DC UI Korean"));
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx.fonts_mut(|fonts| {
+            let font = egui::FontId::new(13.0, egui::FontFamily::Proportional);
+            assert!(fonts.has_glyph(&font, '한') && fonts.has_glyph(&font, '글'));
+        });
     }
 
     #[test]
