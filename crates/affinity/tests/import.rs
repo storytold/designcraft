@@ -177,6 +177,18 @@ fn only_table(d: &designcraft_doc::Document) -> (&Item, designcraft_doc::Table) 
     (frame, (**table).clone())
 }
 
+/// Character attributes without their own fixed leading.
+fn auto_leading(mut attrs: F) -> F {
+    if let F::Obj(_, fields) = &mut attrs {
+        for (t, v) in fields.iter_mut() {
+            if *t == tag(b"Ints") {
+                *v = array_i32(b"Ints", &[0, 0, 0, 0, 0]);
+            }
+        }
+    }
+    attrs
+}
+
 fn near(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-6
 }
@@ -310,6 +322,85 @@ fn each_paragraph_keeps_its_own_alignment() {
     assert_eq!(story.text, "Left\nRight");
     let aligns: Vec<_> = story.paras.iter().map(|p| p.para.align).collect();
     assert_eq!(aligns, [None, Some(designcraft_doc::Align::Right)]);
+}
+
+#[test]
+fn paragraph_indents_and_spacing_follow_affinity() {
+    // Doub slots: 1 leading (Ints slot 1 = 2), 2 left, 3 right, 4 first line, 5 space before, 6 after.
+    let text = "One\u{2029}Two\u{2029}";
+    let para = |end: i32| {
+        vec![
+            (tag(b"Indx"), F::I32(end)),
+            (
+                tag(b"Item"),
+                F::Obj(
+                    tag(b"PAtt"),
+                    vec![(tag(b"Doub"), array_f64(b"Doub", &[1.0, 5.0, 40.0, 3.0, 25.0, 9.0, 17.0])), (tag(b"Ints"), array_i32(b"Ints", &[0, 2]))],
+                ),
+            ),
+        ]
+    };
+    let blk = F::Obj(
+        tag(b"StBl"),
+        vec![
+            (tag(b"Glyp"), utf8(text)),
+            (
+                tag(b"GAtt"),
+                F::Obj(
+                    tag(b"GlAS"),
+                    vec![(tag(b"Runs"), F::Objs(tag(b"GlAR"), vec![run(8, Some(auto_leading(attrs("Inter", "Inter-Regular", 400, false, 30.0))))]))],
+                ),
+            ),
+            (tag(b"PAtt"), F::Obj(tag(b"PaAS"), vec![(tag(b"Runs"), F::Objs(tag(b"PaAR"), vec![para(4), para(8)]))])),
+        ],
+    );
+    let node = F::Def(
+        40,
+        vec![tag(b"TxtF")],
+        vec![
+            (tag(b"StSt"), F::Obj(tag(b"Stry"), vec![(tag(b"Blok"), F::Shared(vec![blk]))])),
+            (tag(b"TxtH"), F::Obj(tag(b"FrFr"), vec![(tag(b"FrmB"), F::F64s(vec![0.0, 0.0, 500.0, 300.0]))])),
+        ],
+    );
+    let imported = designcraft_affinity::import(&page_with(node)).unwrap();
+    assert!(!imported.warnings.iter().any(|w| w.contains("indents or spacing")), "{:?}", imported.warnings);
+    let d = &imported.document;
+    let frame = d.spreads[0].items.iter().find(|i| i.is_text_frame()).unwrap();
+    let Content::Text(tf) = &frame.content else { unreachable!() };
+    let story = d.story(tf.story).unwrap();
+    let p = |i: usize| story.paras[i].para.clone();
+    let pt = |v: f64| Some(v * PT);
+    assert_eq!((p(0).left_indent, p(0).first_line_indent, p(0).right_indent), (pt(40.0), pt(-15.0), pt(3.0)));
+    assert_eq!(story.chars[0].format.over.leading, Some(designcraft_doc::Leading::Points(5.0 * PT)), "the paragraph's fixed leading");
+    assert_eq!((p(0).space_before, p(0).space_after), (pt(9.0), pt(17.0)));
+    // The larger of 17 after "One" and 9 before "Two": nothing more before "Two".
+    assert_eq!((p(1).space_before, p(1).space_after), (None, pt(17.0)));
+    assert_eq!(p(0).hyphenate, Some(false));
+}
+
+#[test]
+fn frame_type_follows_the_frame_text_scale_not_the_frame_transform() {
+    // The same frame scaled 3× by its transform, without and with a text scale (FTxS) of 3.
+    let frame = |id: u32, ftxs: bool| {
+        let story = block(utf8("Hi"), vec![run(2, Some(attrs("Inter", "Inter-Regular", 400, false, 10.0)))], &[]);
+        let mut fields = vec![
+            (tag(b"StSt"), F::Obj(tag(b"Stry"), vec![(tag(b"Blok"), F::Shared(vec![story]))])),
+            (tag(b"TxtH"), F::Obj(tag(b"FrFr"), vec![(tag(b"FrmB"), F::F64s(vec![0.0, 0.0, 100.0, 50.0]))])),
+            (tag(b"Xfrm"), F::F64s(vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0])),
+        ];
+        if ftxs {
+            fields.push((tag(b"FTxS"), F::F64s(vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0])));
+        }
+        F::Def(id, vec![tag(b"TxtF")], fields)
+    };
+    for (ftxs, size) in [(false, 10.0), (true, 30.0)] {
+        let imported = designcraft_affinity::import(&page_with(frame(40, ftxs))).unwrap();
+        let d = &imported.document;
+        let item = d.spreads[0].items.iter().find(|i| i.is_text_frame()).unwrap();
+        assert!(near(item.bounds().width(), 300.0 * PT), "the frame scales either way");
+        let Content::Text(tf) = &item.content else { unreachable!() };
+        assert_eq!(d.story(tf.story).unwrap().chars[0].format.over.size, Some(size * PT), "FTxS {ftxs}");
+    }
 }
 
 #[test]

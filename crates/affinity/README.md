@@ -35,8 +35,9 @@ accept the four extensions.
 | Artistic text | a text frame whose first baseline sits at Affinity's anchor |
 | Frame text, also rotated | a text frame with one story |
 | Font family, weight, italic, size, tracking, horizontal scale, fixed leading, colour, all caps, OpenType features | character overrides |
-| Paragraph alignment, per paragraph | paragraph overrides |
-| Text squeezed or stretched by its frame's transform | horizontal scale on the characters |
+| Paragraph alignment, left/right/first-line indents, space before/after (Affinity keeps the larger of two neighbouring spaces), fixed paragraph leading | paragraph overrides (spacing converted so the result matches) |
+| Type size: artistic text scales with its node; frame text and tables only with their text scale (`FTxS`), never with their frame's or groups' transform | font size and horizontal scale on the characters |
+| Text whose characters share one transparency | a text frame with that opacity |
 | Tables: grid, cell text, cells merged across columns, vertical alignment, insets, the line on every cell edge | a text frame holding a DesignCraft table (rows grow only where the fonts need it) |
 | Placed images (the embedded original), pixel layers | graphic frames with embedded images |
 | Pixel masks on images, images inside pixel layers (clipped to them) | worked into the image's transparency |
@@ -44,7 +45,7 @@ accept the four extensions.
 
 Everything that is not imported, or only approximately, is listed in the open result's
 `warnings`, one line per kind with a count. Not yet imported: master pages, text threading
-between frames, paragraph indents and spacing, text fields such as page numbers, inline objects
+between frames, hyphenation settings (imported paragraphs don't hyphenate), text fields such as page numbers, inline objects
 in text, table cell fills, cells merged across rows, layer effects, adjustment layers and live
 filters, pixel masks on objects other than images, brush strokes, embedded documents without a
 cached picture, Lab colours (converted to RGB) and Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
@@ -63,7 +64,12 @@ description of the format and from public files, never from Affinity itself:
   `04b672334a43e3e37ded6b5ffc57af231d589774`, written for container versions 7–11) and
   re-described in our own words before the Rust code was written; no code was translated. No
   GPL/AGPL code (such as Inkscape's Affinity extension) was read.
-* **Tables, paragraph alignment runs and horizontal text scale** were added in DesignCraft from
+* **Paragraph indents and spacing** (`Doub` slots 2–6 of a paragraph's attributes) were identified
+  on two public MIT documents, `tiny-text-indent.af` and `tiny-text-para-spacing.af` from
+  [SethRobinson/Patchy](https://github.com/SethRobinson/Patchy) at `de84eab`, by measuring their
+  thumbnails; only their document data was read (sha256 as in VectorCraft's corpus manifest).
+* **Tables, paragraph alignment runs, paragraph leading, the text scale `FTxS` and horizontal
+  text scale** were added in DesignCraft from
   the structure of documents their owner made earlier (field names, types and counts, read
   locally): a table's text holds one segment per cell, each ended by a break glyph of kind 4;
   `BrLf` marks a cell merged into its left neighbour; scaling a table node resizes its grid but

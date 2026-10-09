@@ -107,7 +107,7 @@ fn mixed_paragraph_alignments_are_explicitly_reported() {
     let d = read(vec![block(utf8("one\u{2029}"), vec![run(4, None)], &[2]), block(utf8("two"), vec![run(3, None)], &[0, 1])]);
     assert_eq!(content(text(&d)), "one\u{2029}two");
     assert_eq!(text(&d).align, Align::Right);
-    assert!(warning(&d, "mixed paragraph alignments"));
+    assert!(warning(&d, "mixed paragraph formats"));
 }
 
 #[test]

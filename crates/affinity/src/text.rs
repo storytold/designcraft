@@ -2,7 +2,7 @@
 //! leading, the paragraph alignment and the first baseline. Layout (line breaks in frames, kerning,
 //! OpenType features) is left to the importing application.
 
-use crate::model::{Affine, Align, Point, Reader, Table, TableCell, Text, TextRun, VAlign, rect};
+use crate::model::{Affine, Align, Paragraph, Point, Reader, Table, TableCell, Text, TextRun, VAlign, rect};
 use crate::paint::{self, Color, Paint};
 use crate::stream::{ObjId, Value};
 
@@ -35,7 +35,15 @@ pub(crate) fn read(r: &mut Reader, id: ObjId, world: Affine) -> Option<Text> {
             r.warn("text frames with a curved outline (imported as rectangular frames)");
         }
     }
-    Some(Text { runs, align, anchor: Point { x: anchor_x, y: first_baseline }, frame: if artistic { None } else { Some(bounds) }, transform: world })
+    let text_transform = if artistic { world } else { text_scale(r, id) };
+    Some(Text {
+        runs,
+        align,
+        anchor: Point { x: anchor_x, y: first_baseline },
+        frame: if artistic { None } else { Some(bounds) },
+        transform: world,
+        text_transform,
+    })
 }
 
 /// Rows and columns a table may have.
@@ -119,10 +127,11 @@ pub(crate) fn table(r: &mut Reader, id: ObjId, world: Affine) -> Option<Table> {
             r.warn("table cell fills (left out)");
         }
     }
-    Some(Table { columns, rows, cells, vertical, horizontal, transform: world })
+    let text_transform = text_scale(r, id);
+    Some(Table { columns, rows, cells, vertical, horizontal, transform: world, text_transform })
 }
 
-/// A story's character runs, each with its paragraph's alignment, and the first paragraph's
+/// A story's character runs, each with its paragraph's format, and the first paragraph's
 /// alignment. Table cells end with [`CELL_BREAK`].
 pub(crate) fn story_runs(r: &mut Reader, story: ObjId, world: Affine) -> (Vec<TextRun>, Align) {
     let s = r.s;
@@ -176,28 +185,28 @@ pub(crate) fn story_runs(r: &mut Reader, story: ObjId, world: Affine) -> (Vec<Te
             r.warn("text longer than a million characters (truncated)");
         }
         total += chars.len();
-        // Paragraph alignments by end index; a run without an index covers the rest of the block.
-        let mut paragraphs: Vec<(usize, Align)> = Vec::new();
-        let mut open: Option<Align> = None;
-        for paragraph in s.obj(block, b"PAtt").map(|p| s.objs(p, b"Runs")).unwrap_or_default() {
-            let Some(attrs) = s.obj(paragraph, b"Item") else { continue };
-            let a = paragraph_align(r, attrs);
-            first_align.get_or_insert(a);
-            match s.int(paragraph, b"Indx").and_then(|v| usize::try_from(v).ok()) {
+        // Paragraph formats by end index; a run without an index covers the rest of the block.
+        let mut paragraphs: Vec<(usize, Paragraph)> = Vec::new();
+        let mut open: Option<Paragraph> = None;
+        for run in s.obj(block, b"PAtt").map(|p| s.objs(p, b"Runs")).unwrap_or_default() {
+            let Some(attrs) = s.obj(run, b"Item") else { continue };
+            let a = paragraph(r, attrs);
+            first_align.get_or_insert(a.align);
+            match s.int(run, b"Indx").and_then(|v| usize::try_from(v).ok()) {
                 Some(end) => paragraphs.push((end, a)),
                 None => match open {
                     None => open = Some(a),
-                    Some(first) if first != a => r.warn("mixed paragraph alignments (the first alignment is used)"),
+                    Some(first) if first != a => r.warn("mixed paragraph formats in one block (the first is used)"),
                     _ => {}
                 },
             }
         }
-        let align_at = |i: usize| paragraphs.iter().find(|(end, _)| i < *end).map(|(_, a)| *a).or(open).unwrap_or(Align::Left);
+        let align_at = |i: usize| paragraphs.iter().find(|(end, _)| i < *end).map(|(_, a)| *a).or(open).unwrap_or_default();
         let mut cuts: Vec<usize> = paragraphs.iter().map(|(end, _)| *end).filter(|e| *e < chars.len()).collect();
         cuts.sort_unstable();
         cuts.dedup();
         let push = |r: &mut Reader, runs: &mut Vec<TextRun>, attrs: Option<ObjId>, from: usize, to: usize, budget: &mut Option<usize>| {
-            // Split at paragraph ends so every run has one alignment.
+            // Split at paragraph ends so every run has one paragraph format.
             let mut a = from;
             for &c in cuts.iter().filter(|c| **c > from && **c < to).chain(std::iter::once(&to)) {
                 push_run(r, runs, attrs, characters(&chars, a, c), world, budget, align_at(a));
@@ -244,13 +253,13 @@ fn push_run(
     text: String,
     world: Affine,
     attribute_budget: &mut Option<usize>,
-    align: Align,
+    paragraph: Paragraph,
 ) {
     if text.is_empty() {
         return;
     }
     let run = match attrs {
-        Some(attrs) if attribute_budget.is_some() => TextRun { align, ..run_attrs(r, attrs, text, world, attribute_budget) },
+        Some(attrs) if attribute_budget.is_some() => TextRun { paragraph, ..run_attrs(r, attrs, text, world, attribute_budget) },
         _ => {
             // This is a recovery policy, not an assertion about unspecified Affinity attributes.
             if attrs.is_none() {
@@ -269,7 +278,7 @@ fn push_run(
                 h_scale: 1.0,
                 leading: None,
                 fill: Paint::Solid(Color::Gray { v: 0.0, a: 1.0 }),
-                align,
+                paragraph,
             }
         }
     };
@@ -370,7 +379,7 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
         h_scale,
         leading,
         fill,
-        align: Align::Left,
+        paragraph: Paragraph::default(),
     }
 }
 
@@ -432,13 +441,17 @@ fn font_features(r: &mut Reader, attrs: Option<ObjId>, attribute_budget: &mut Op
     (features, all_caps)
 }
 
-fn paragraph_align(r: &mut Reader, p: ObjId) -> Align {
-    // Nonzero offsets in these slots are present in the public text-indent and text-para-spacing
-    // fixtures. Their layout is not represented by this importer; retain text and report the gap.
-    if (1..=6).any(|i| slot(r.s.field(p, b"Doub"), i, float).is_some_and(|v| v.abs() > 1e-9)) {
-        r.warn("paragraph indents or spacing (imported with defaults)");
-    }
-    match slot(r.s.field(p, b"Ints"), 0, int) {
+/// A paragraph's alignment, indents, spacing and leading. The `Doub` slots: 1 fixed leading
+/// (when `Ints` slot 1 is 2; in every paragraph checked the two go together), 2 indent of the
+/// lines after the first, 3 right indent, 4 indent of the first line, 5 space before, 6 space
+/// after. Slots 2, 4, 5 and 6 were identified on the public MIT text-indent and text-para-spacing
+/// fixtures (Patchy) by measuring their thumbnails, slot 1 by measuring the baseline pitch in the
+/// thumbnail of a document whose owner made it earlier.
+fn paragraph(r: &mut Reader, p: ObjId) -> Paragraph {
+    let doubles = r.s.field(p, b"Doub");
+    let ints = r.s.field(p, b"Ints");
+    let at = |i: usize| slot(doubles, i, float).filter(|v| v.abs() < 1e6).unwrap_or(0.0);
+    let align = match slot(ints, 0, int) {
         Some(1) => Align::Center,
         Some(2) => Align::Right,
         Some(3) => Align::Justify,
@@ -447,5 +460,28 @@ fn paragraph_align(r: &mut Reader, p: ObjId) -> Align {
             r.warn("an unknown paragraph alignment (imported as left)");
             Align::Left
         }
+    };
+    let leading = match slot(ints, 1, int) {
+        Some(2) => Some(at(1)).filter(|l| *l > 0.0),
+        Some(0) | None => None,
+        Some(_) => {
+            r.warn("paragraph leading of an unknown kind (imported as automatic)");
+            None
+        }
+    };
+    Paragraph { align, left: at(2), right: at(3), first: at(4), space_before: at(5).max(0.0), space_after: at(6).max(0.0), leading }
+}
+
+/// The scale a text frame or table gives its type (`FTxS`, stored like `Xfrm`): none unless set.
+/// Neither the frame's own transform nor its groups' scale its type (checked against the
+/// thumbnails of tables and frames inside scaled groups).
+fn text_scale(r: &mut Reader, id: ObjId) -> Affine {
+    match r.s.floats::<6>(id, b"FTxS").map(Affine::from_xfrm) {
+        Some(m) if m.is_finite() && m.scale() > 1e-9 => Affine([m.0[0], m.0[1], m.0[2], m.0[3], 0.0, 0.0]),
+        Some(_) => {
+            r.warn("text frames with an invalid text scale (imported unscaled)");
+            Affine::IDENTITY
+        }
+        None => Affine::IDENTITY,
     }
 }

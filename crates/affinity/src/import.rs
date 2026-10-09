@@ -648,7 +648,8 @@ impl Builder {
     // ---------- text ----------
 
     /// How a text or table node sits on the spread: `None` (warned) for an unusable transform.
-    fn placement(&mut self, m: Affine) -> Option<Placement> {
+    /// `m` places the node, `type_m` scales its type (see [`model::Text::text_transform`]).
+    fn placement(&mut self, m: Affine, type_m: Affine) -> Option<Placement> {
         let [a, b, c, d, e, f] = m.as_coeffs();
         let sx = a.hypot(b);
         let det = a * d - b * c;
@@ -663,12 +664,23 @@ impl Builder {
         }
         let angle = b.atan2(a);
         let rotated = angle.abs() > 1e-9;
+        // The type's vertical scale gives the font size, its horizontal scale relative to that the
+        // characters' width.
+        let [ta, tb, tc, td, ..] = type_m.as_coeffs();
+        let (tsx, tdet) = (ta.hypot(tb), ta * td - tb * tc);
+        let type_scale = if tsx > 1e-9 && tdet.is_finite() && tdet.abs() > 1e-12 {
+            let tsy = (tdet / tsx).abs();
+            (tsy, tsx / tsy)
+        } else {
+            self.warn("text with an invalid text scale (imported unscaled)");
+            (xf_scale(m), 1.0)
+        };
         Some(Placement {
             to_frame: Affine::scale_non_uniform(sx, sy.abs()),
             place: if rotated { Affine::translate((e, f)) * Affine::rotate(angle) } else { Affine::translate((e, f)) },
             rotated,
-            size_scale: sy.abs(),
-            h_scale: sx / sy.abs(),
+            size_scale: type_scale.0,
+            h_scale: type_scale.1,
         })
     }
 
@@ -689,9 +701,10 @@ impl Builder {
     }
 
     fn text(&mut self, t: &model::Text, xf: Affine, layer: LayerId) -> Option<Item> {
-        let p = self.placement(xf * affine(t.transform))?;
+        let p = self.placement(xf * affine(t.transform), xf * affine(t.text_transform))?;
         let id = StoryId(self.doc.alloc());
         let (story, max_size) = self.story(id, &t.runs, (p.size_scale, p.h_scale));
+        let alpha = self.text_alpha(&t.runs);
         let mut options = TextFrameOptions::default();
         let rect = match t.frame {
             Some(r) => Rect::from_points(p.to_frame * Point::new(r.x0, r.y0), p.to_frame * Point::new(r.x1, r.y1)),
@@ -714,19 +727,34 @@ impl Builder {
                 Rect::new(x0, anchor.y - max_size, x0 + w, anchor.y - max_size + h)
             }
         };
-        self.frame(rect, &p, layer, story, options)
+        let mut it = self.frame(rect, &p, layer, story, options)?;
+        it.opacity = alpha as f32;
+        Some(it)
+    }
+
+    /// The opacity a text frame takes from its characters' colour: DesignCraft has no per-character
+    /// opacity, so text whose characters share one becomes a frame with that opacity.
+    fn text_alpha(&mut self, runs: &[model::TextRun]) -> f64 {
+        let alphas: Vec<f64> =
+            runs.iter().filter_map(|r| if let Paint::Solid(c) = &r.fill { Some(c.alpha()) } else { None }).filter(|a| a.is_finite()).collect();
+        let (lo, hi) = alphas.iter().fold((1.0f64, 0.0f64), |(lo, hi), a| (lo.min(*a), hi.max(*a)));
+        if alphas.is_empty() || lo >= 1.0 {
+            return 1.0;
+        }
+        if hi - lo > 0.01 {
+            self.warn("text with characters of different transparency (imported opaque)");
+            return 1.0;
+        }
+        lo.clamp(0.0, 1.0)
     }
 
     /// A table: a text frame over the table's bounds whose story holds just the table.
     fn table(&mut self, t: &model::Table, xf: Affine, layer: LayerId) -> Option<Item> {
-        let p = self.placement(xf * affine(t.transform))?;
+        let p = self.placement(xf * affine(t.transform), xf * affine(t.text_transform))?;
         let (ncols, nrows) = (t.ncols(), t.nrows());
         let (&x0, &x1, &y0, &y1) = (t.columns.first()?, t.columns.last()?, t.rows.first()?, t.rows.last()?);
         let rect = Rect::from_points(p.to_frame * Point::new(x0, y0), p.to_frame * Point::new(x1, y1));
         let [sx, _, _, sy, _, _] = p.to_frame.as_coeffs();
-        // Scaling a table in Affinity resizes its grid, not its text: a table squeezed to a third
-        // of its height and stretched to twice its width keeps legible type.
-        let text_scale = (xf.determinant().abs().sqrt(), 1.0);
         let id = self.doc.alloc();
         let mut table = Table::new(id, nrows, ncols, 0, 0, rect.width());
         for (col, w) in table.columns.iter_mut().zip(t.columns.windows(2)) {
@@ -752,7 +780,10 @@ impl Builder {
             // Cells to the right merged into this one widen it.
             let span = 1 + t.cells.iter().skip(i + 1).take(ncols - c - 1).take_while(|n| n.merged_left).count();
             let last = c + span - 1;
-            let (mut text, _) = self.story(StoryId(0), &src.runs, text_scale);
+            let (mut text, _) = self.story(StoryId(0), &src.runs, (p.size_scale, p.h_scale));
+            if src.runs.iter().any(|r| matches!(&r.fill, Paint::Solid(c) if c.alpha() < 1.0)) {
+                self.warn("semi-transparent text in tables (imported opaque)");
+            }
             let top: Vec<CellStroke> = (c..=last).map(|k| edge(self, t.horizontal.get(r * ncols + k))).collect();
             let bottom: Vec<CellStroke> = (c..=last).map(|k| edge(self, t.horizontal.get((r + 1) * ncols + k))).collect();
             let strokes = [
@@ -805,7 +836,7 @@ impl Builder {
         let mut story = Story::new(id);
         let mut max_size: f64 = 0.0;
         let mut first = true;
-        let mut aligns: Vec<(usize, Align)> = Vec::new();
+        let mut formats: Vec<(usize, model::Paragraph)> = Vec::new();
         for run in runs {
             let text: String = run
                 .text
@@ -831,7 +862,7 @@ impl Builder {
                 story.chars = vec![designcraft_doc::CharRun { len: 0, format: format.clone() }];
                 first = false;
             }
-            aligns.push((at, align_of(run.align)));
+            formats.push((at, run.paragraph));
             story.insert_with(at, &text, format);
         }
         // Affinity ends a story with a paragraph mark; DesignCraft's last paragraph has none.
@@ -840,13 +871,52 @@ impl Builder {
             story.delete(n - 1..n);
         }
         let ranges = story.para_ranges();
+        let (v, h) = (scale.0, scale.0 * scale.1);
+        let mut previous_after = 0.0;
+        let mut para_leading: Vec<(std::ops::Range<usize>, f64)> = Vec::new();
         for (pi, range) in ranges.iter().enumerate() {
-            let align = aligns.iter().rev().find(|(at, _)| *at <= range.start).map_or(Align::Left, |(_, a)| *a);
-            if align != Align::Left
-                && let Some(p) = story.paras.get_mut(pi)
-            {
+            let f = formats.iter().rev().find(|(at, _)| *at <= range.start).map(|(_, f)| *f).unwrap_or_default();
+            let Some(p) = story.paras.get_mut(pi) else { continue };
+            let pt = |x: f64, k: f64| if (x * k).is_finite() { x * k } else { 0.0 };
+            let align = align_of(f.align);
+            if align != Align::Left {
                 p.para.align = Some(align);
             }
+            // Affinity places the first line and the others from the left edge; DesignCraft's
+            // first-line indent is relative to its left indent.
+            let left = pt(f.left, h);
+            let first = pt(f.first - f.left, h);
+            let right = pt(f.right, h);
+            for (value, field) in [(left, &mut p.para.left_indent), (first, &mut p.para.first_line_indent), (right, &mut p.para.right_indent)] {
+                if value.abs() > 1e-9 {
+                    *field = Some(value.clamp(-5000.0, 5000.0));
+                }
+            }
+            // Between two paragraphs Affinity keeps the larger of the space after the first and
+            // before the second; DesignCraft adds them.
+            let (before, after) = (pt(f.space_before, v).clamp(0.0, 5000.0), pt(f.space_after, v).clamp(0.0, 5000.0));
+            let before = if pi == 0 { before } else { (before - previous_after).max(0.0) };
+            if before > 1e-9 {
+                p.para.space_before = Some(before);
+            }
+            if after > 1e-9 {
+                p.para.space_after = Some(after);
+            }
+            previous_after = after;
+            if let Some(l) = f.leading.map(|l| pt(l, v)).filter(|l| *l > 0.0) {
+                para_leading.push((range.clone(), l.min(5000.0)));
+            }
+            // Affinity's hyphenation settings aren't read yet; none of the documents checked
+            // hyphenates, while DesignCraft's paragraphs do by default.
+            p.para.hyphenate = Some(false);
+        }
+        // A paragraph's fixed leading, where its characters don't set their own.
+        for (range, l) in para_leading {
+            story.format_chars(range, |f| {
+                if f.over.leading.is_none() {
+                    f.over.leading = Some(Leading::Points(l));
+                }
+            });
         }
         (story, if max_size > 0.0 { max_size } else { 12.0 })
     }
@@ -884,10 +954,8 @@ impl Builder {
         }
         match &run.fill {
             Paint::Solid(c) => {
-                let (color, alpha) = self.color(c);
-                if alpha < 1.0 {
-                    self.warn("semi-transparent text (imported opaque)");
-                }
+                // Transparency is the frame's (see `text_alpha`).
+                let (color, _) = self.color(c);
                 a.fill = Some(self.swatch(color));
             }
             Paint::Gradient(g) => {
@@ -1002,6 +1070,11 @@ fn fit_cell_text(story: &mut Story, row: f64, top: f64, bottom: f64) -> (f64, f6
 /// One stroke for a merged cell's edge made of several: the heaviest.
 fn widest(strokes: Vec<CellStroke>) -> CellStroke {
     strokes.into_iter().reduce(|a, b| if b.weight > a.weight { b } else { a }).unwrap_or_else(CellStroke::none)
+}
+
+/// How much a transform scales (the average of its axes).
+fn xf_scale(m: Affine) -> f64 {
+    m.determinant().abs().sqrt()
 }
 
 fn align_of(a: model::Align) -> Align {

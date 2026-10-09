@@ -184,12 +184,29 @@ pub struct TextRun {
     /// Fixed line pitch in document pixels, when the run overrides automatic leading.
     pub leading: Option<f64>,
     pub fill: Paint,
-    /// Alignment of the run's paragraph.
-    pub align: Align,
+    /// The run's paragraph: alignment, indents and spacing.
+    pub paragraph: Paragraph,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Paragraph alignment, indents, spacing and leading, in node space (document pixels before the
+/// node's text scale).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Paragraph {
+    pub align: Align,
+    /// Indent of every line but the first, from the left.
+    pub left: f64,
+    pub right: f64,
+    /// Indent of the first line, from the left.
+    pub first: f64,
+    pub space_before: f64,
+    pub space_after: f64,
+    /// Fixed distance between baselines, when the paragraph sets one.
+    pub leading: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Align {
+    #[default]
     Left,
     Center,
     Right,
@@ -206,6 +223,9 @@ pub struct Text {
     pub frame: Option<Rect>,
     /// Node space to document pixels.
     pub transform: Affine,
+    /// Node space to document pixels for the type (its linear part matters): artistic text scales
+    /// with its node, frame text only with its frame's text scale.
+    pub text_transform: Affine,
 }
 
 /// Vertical alignment of a table cell's text.
@@ -241,6 +261,9 @@ pub struct Table {
     pub horizontal: Vec<Option<Stroke>>,
     /// Node space to document pixels.
     pub transform: Affine,
+    /// Node space to document pixels for the cells' type: resizing a table moves its grid, not
+    /// its type.
+    pub text_transform: Affine,
 }
 
 impl Table {
