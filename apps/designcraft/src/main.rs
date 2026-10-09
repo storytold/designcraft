@@ -261,6 +261,7 @@ fn main() -> eframe::Result {
             .with_title("DesignCraft")
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 560.0])
+            .with_decorations(!cfg!(target_os = "windows"))
             .with_drag_and_drop(true)
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
@@ -316,6 +317,7 @@ fn main() -> eframe::Result {
             }
             load_prefs(&mut app);
             app.integrated_titlebar = cfg!(target_os = "macos");
+            app.custom_titlebar = cfg!(target_os = "windows");
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
