@@ -19,8 +19,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         .resizable(false)
         .frame(egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.divider)))
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 1.0;
-            ui.add_space(3.0);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.add_space(3.0);
             // Collapse chevrons.
             ui.horizontal(|ui| {
                 ui.add_space(width / 2.0 - 8.0);
@@ -169,6 +172,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.add_space(8.0);
             fill_stroke_proxy(app, ui, width);
         });
+    });
     if std::env::var_os("DESIGNCRAFT_DEBUG_LAYOUT").is_some() {
         eprintln!("tools panel rect {:?} (wanted width {width}); remaining {:?}", r.response.rect, ui.available_rect_before_wrap());
     }
