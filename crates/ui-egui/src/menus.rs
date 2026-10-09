@@ -945,7 +945,14 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.open_panel = if app.ui.open_panel.as_deref() == Some("table") { None } else { Some("table".into()) };
             Ok(Value::Null)
         }
-        "app.exportPdf" => export_pdf(app, p),
+        "app.exportPdf" => {
+            if p.is_null() || p.as_object().is_none_or(|m| m.is_empty()) {
+                crate::dialogs::open_pdf_export(app);
+                Ok(Value::Null)
+            } else {
+                export_pdf(app, p)
+            }
+        }
         "app.palette" => {
             app.ui.palette = Some(String::new());
             Ok(Value::Null)
@@ -1471,7 +1478,7 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
 
 /// File › Export PDF…: ask for a path, export through `file.exportPdf` and write the bytes with the
 /// platform writer (a download on the web).
-fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
@@ -2026,6 +2033,18 @@ mod tests {
             let dialog = app.ui.dialog.as_ref().map(|d| d.id.clone());
             assert_eq!(dialog.as_deref(), Some(format!("cmd:{id}").as_str()), "{id} opens its dialog");
         }
+    }
+
+    #[test]
+    fn pdf_export_menu_item_opens_the_dialog_or_exports() {
+        // No params: the menu item opens the options dialog.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        activate(&mut app, "app.exportPdf", &Value::Null);
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfExport"));
+        // Explicit options: programmatic callers still export directly, opening no dialog.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        activate(&mut app, "app.exportPdf", &json!({"path": "/tmp/x.pdf"}));
+        assert!(app.ui.dialog.is_none());
     }
 
     #[test]
