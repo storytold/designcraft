@@ -1756,6 +1756,30 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
         app.ui.dialog = Some(crate::dialogs::Dialog::new(&format!("cmd:{id}"), json!({})));
         return;
     }
+    // Edit › Copy / Cut / Paste chosen from a native menu while typing: the menu's key equivalents
+    // (⌘C ⌘X ⌘V) never reach the canvas as clipboard events, so bridge the system clipboard here.
+    if params.is_null() && app.session.wants_text() {
+        match id {
+            "edit.copy" | "edit.cut" => {
+                if let Ok(r) = app.run(id, json!({}))
+                    && let Some(t) = r.get("text").and_then(Value::as_str)
+                    && let Some(set) = app.services.clipboard_set.as_mut()
+                {
+                    set(t);
+                }
+                return;
+            }
+            "edit.paste" | "edit.pasteWithoutFormatting" => {
+                let text = app.services.clipboard_get.as_mut().and_then(|get| get());
+                let p = text.map_or_else(|| json!({}), |t| json!({ "text": t }));
+                if let Err(e) = app.run(id, p) {
+                    app.status(format!("Paste: {e}"));
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
     let p = if params.is_null() { json!({}) } else { params.clone() };
     let _ = app.run(id, p);
 }
@@ -2117,6 +2141,141 @@ mod tests {
         assert_eq!(run_ui(&mut app, "window.split", &json!({})).unwrap().unwrap(), json!(false));
         assert_eq!(app.pane, 0);
         frame(&mut app);
+    }
+
+    /// A frame of the whole window with `events`; returns the platform output.
+    fn window_frame(ctx: &egui::Context, app: &mut crate::DesignApp, events: Vec<egui::Event>) -> egui::PlatformOutput {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        out.platform_output
+    }
+
+    /// The story of the frame with the text caret.
+    fn caret_story_text(app: &crate::DesignApp) -> String {
+        let st = app.session.active().unwrap();
+        let t = st.selection.text.unwrap();
+        st.doc.story(t.story).unwrap().text.to_string()
+    }
+
+    /// Japanese (any input method) typed into a text frame: the input method is on at the caret,
+    /// its composition shows there without entering the story, and the committed text is typed.
+    #[test]
+    fn input_methods_type_into_text_frames() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        window_frame(&ctx, &mut app, vec![]);
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "grid": true})).unwrap();
+        assert!(r["story"].as_u64().is_some());
+        app.run("tool.select", json!({"tool": "type"})).unwrap();
+        window_frame(&ctx, &mut app, vec![]);
+        // Focus the canvas (a click on the pasteboard keeps the caret).
+        let c = app.canvas_rect.unwrap().left_top() + egui::vec2(8.0, 8.0);
+        let press = |pressed| egui::Event::PointerButton { pos: c, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        window_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(c), press(true)]);
+        window_frame(&ctx, &mut app, vec![press(false)]);
+        if app.session.active().unwrap().selection.text.is_none() {
+            // The click left text editing: put the caret back in the new frame.
+            let id = r["id"].as_u64().unwrap();
+            app.run("text.placeCaret", json!({"frame": id, "point": [80, 80]})).unwrap();
+        }
+        window_frame(&ctx, &mut app, vec![]);
+        let out = window_frame(&ctx, &mut app, vec![egui::Event::Ime(egui::ImeEvent::Preedit { text: "にほんご".into(), active_range_chars: None })]);
+        assert!(out.ime.is_some(), "the input method is on while there is a caret");
+        assert_eq!(app.preedit, "にほんご");
+        assert_eq!(caret_story_text(&app), "", "composition isn't in the story yet");
+        // The canvas shows it composed in the story: the grid's format, one character per cell.
+        let shown = crate::canvas::display_doc(&app).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        assert_eq!(shown.story(sid).unwrap().text, "にほんご");
+        let grid = shown.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().options.frame_grid.clone().unwrap();
+        let cs = app.session.cache.get(&shown, sid, None);
+        let line = &cs.frames[0].lines[0];
+        let glyphs: Vec<_> = line.glyphs.iter().filter(|g| g.len > 0).collect();
+        assert_eq!(glyphs.len(), 4);
+        let pitch = grid.char_pitch(false);
+        // (Each glyph is centred in its cell: successive characters are one cell apart.)
+        for w in glyphs.windows(2) {
+            assert!(((w[1].x - w[0].x) - pitch).abs() < 1e-6, "{} vs pitch {pitch}", w[1].x - w[0].x);
+        }
+        assert!(glyphs[0].x - line.x0 < pitch, "the composition starts in the first cell");
+        for g in &glyphs {
+            assert!((cs.styles[g.style as usize].size - grid.size).abs() < 1e-6, "in the grid's size");
+        }
+        window_frame(&ctx, &mut app, vec![egui::Event::Ime(egui::ImeEvent::Commit("日本語".into()))]);
+        assert!(app.preedit.is_empty());
+        assert_eq!(caret_story_text(&app), "日本語");
+        // Plain typing still works beside it.
+        window_frame(&ctx, &mut app, vec![egui::Event::Text("ABC".into())]);
+        assert_eq!(caret_story_text(&app), "日本語ABC");
+    }
+
+    /// Two presses on a frame grid with the Selection tool (a real double-click, as egui reports
+    /// it: on the second release) go into its text with the Type tool.
+    #[test]
+    fn double_clicking_a_frame_grid_enters_its_text() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        window_frame(&ctx, &mut app, vec![]);
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "grid": true, "caret": false})).unwrap();
+        app.run("tool.select", json!({"tool": "selection"})).unwrap();
+        app.run("edit.deselectAll", json!({})).unwrap();
+        window_frame(&ctx, &mut app, vec![]);
+        let doc = app.session.active().unwrap().doc.clone();
+        let layout = designcraft_tools::CanvasLayout::new(&doc, false);
+        let p = layout.xf(designcraft_doc::SpreadRef::Doc(0)) * designcraft_geom::Point::new(150.0, 120.0);
+        let at = crate::canvas::Xf::new(app.canvas_rect.unwrap(), app.view().unwrap()).to_screen(p);
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        window_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at), press(true)]);
+        window_frame(&ctx, &mut app, vec![press(false)]);
+        window_frame(&ctx, &mut app, vec![press(true)]);
+        window_frame(&ctx, &mut app, vec![press(false)]);
+        assert_eq!(app.session.tool_id(), "type");
+        let st = app.session.active().unwrap();
+        assert_eq!(st.selection.text.map(|t| t.story.0), r["story"].as_u64(), "the caret is in the frame grid's story");
+        // ⌘-click on the frame: back to the Selection tool, the frame selected.
+        let cmd = egui::Modifiers { command: true, mac_cmd: cfg!(target_os = "macos"), ..Default::default() };
+        let cpress = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: cmd };
+        window_frame(&ctx, &mut app, vec![egui::Event::ModifiersChanged(cmd), cpress(true)]);
+        window_frame(&ctx, &mut app, vec![cpress(false)]);
+        assert_eq!(app.session.tool_id(), "selection");
+        let st = app.session.active().unwrap();
+        assert_eq!(st.selection.items.iter().map(|i| i.0).collect::<Vec<_>>(), vec![r["id"].as_u64().unwrap()]);
+        assert!(st.selection.text.is_none());
+    }
+
+    /// Edit › Copy and Paste from the native menu while typing go through the system clipboard,
+    /// so text moves between DesignCraft and other applications.
+    #[test]
+    fn menu_copy_and_paste_use_the_system_clipboard() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let board = Rc::new(RefCell::new(String::from("他のアプリの文章")));
+        let (get, set) = (board.clone(), board.clone());
+        let services = crate::Services {
+            clipboard_get: Some(Box::new(move || Some(get.borrow().clone()))),
+            clipboard_set: Some(Box::new(move |t: &str| *set.borrow_mut() = t.to_string())),
+            ..Default::default()
+        };
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), services);
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text"})).unwrap();
+        app.run("tool.select", json!({"tool": "type"})).unwrap();
+        activate(&mut app, "edit.paste", &Value::Null);
+        assert_eq!(caret_story_text(&app), "他のアプリの文章");
+        app.run("edit.selectAll", json!({})).unwrap();
+        *board.borrow_mut() = String::new();
+        activate(&mut app, "edit.copy", &Value::Null);
+        assert_eq!(*board.borrow(), "他のアプリの文章");
     }
 
     #[test]

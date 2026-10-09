@@ -23,6 +23,8 @@ winresource = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
+# The system clipboard for Edit › Copy / Cut / Paste from the native menu (see Services).
+arboard = { workspace = true }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 # The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
