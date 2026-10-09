@@ -49,6 +49,10 @@ enum Drag {
         /// previous preview, so the snap must not read the anchor from it again.
         at: Option<(SpreadRef, Point)>,
     },
+    LiveCorner {
+        id: ItemId,
+        start: Point,
+    },
 }
 
 /// Anchor or handle of a selected item under `p` (canvas): (item, subpath, anchor, handle).
@@ -142,6 +146,21 @@ fn rotate_zone(cx: &ToolContext, p: Point) -> Option<Point> {
         }
     }
     None
+}
+
+/// Check if pointer is over the live-corner widget (yellow box at top-right of rectangle).
+/// Returns the selected item ID if the pointer is over the live-corner widget.
+fn live_corner_widget_at(cx: &ToolContext, p: Point) -> Option<ItemId> {
+    let b = cx.selection_bounds()?;
+    // Live-corner widget is at top-right: x = b.x1, y = b.y0 + 11.5, size 6x6
+    let widget_x = b.x1;
+    let widget_y = b.y0 + 11.5;
+    let tol = 6.0; // widget is 6x6, so 3px radius + some tolerance
+    if (p.x - widget_x).abs() <= tol && (p.y - widget_y).abs() <= tol {
+        cx.selection.items.first().copied()
+    } else {
+        None
+    }
 }
 
 /// New rect when dragging `handle` of `from` to `p`.
@@ -391,6 +410,13 @@ impl Tool for SelectionTool {
                 {
                     self.drag = Drag::Rotate { center, start_angle: (p - center).atan2(), start_rotation: crate::snap::reference_rotation(cx) };
                     return vec![Action::Begin("Rotate".into())];
+                }
+                // Live-corner widget (yellow box at top-right of rectangle).
+                if !self.direct
+                    && let Some(id) = live_corner_widget_at(cx, p)
+                {
+                    self.drag = Drag::LiveCorner { id, start: p };
+                    return vec![Action::Begin("Live Corner".into())];
                 }
                 if let Some(h) = handle_at(cx, p).filter(|_| !self.direct)
                     && let (Some(b), Some(first)) = (cx.selection_bounds(), cx.selection.items.first())
@@ -675,6 +701,11 @@ impl Tool for SelectionTool {
                     }
                     vec![Action::Preview("path.moveAnchors".into(), params)]
                 }
+                Drag::LiveCorner { id, start } => {
+                    let dy = p.y - start.y;
+                    let radius = (12.0 + dy).max(0.0).min(500.0);
+                    vec![Action::Preview("object.cornerOptions".into(), json!({"ids": [id.0], "shape": "rounded", "size": radius}))]
+                }
                 Drag::None => vec![],
             },
             PointerKind::Up => {
@@ -682,7 +713,7 @@ impl Tool for SelectionTool {
                 let release = self.shift_release.take();
                 let d = std::mem::replace(&mut self.drag, Drag::None);
                 match d {
-                    Drag::Move { .. } | Drag::Resize { .. } | Drag::Anchor { .. } | Drag::Rotate { .. } => vec![Action::Commit],
+                    Drag::Move { .. } | Drag::Resize { .. } | Drag::Anchor { .. } | Drag::Rotate { .. } | Drag::LiveCorner { .. } => vec![Action::Commit],
                     Drag::Pending { .. } => match release {
                         Some(id) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
                         None => vec![],
@@ -755,11 +786,13 @@ impl Tool for SelectionTool {
             Drag::Move { .. } => return Cursor::Move,
             Drag::Resize { handle, .. } => return handle_cursor(handle),
             Drag::Rotate { .. } => return Cursor::Rotate,
+            Drag::LiveCorner { .. } => return Cursor::ResizeNwSe,
             _ => {}
         }
         match handle_at(cx, p) {
             Some(h) => handle_cursor(h),
             None if rotate_zone(cx, p).is_some() => Cursor::Rotate,
+            None if live_corner_widget_at(cx, p).is_some() => Cursor::ResizeNwSe,
             None => Cursor::Arrow,
         }
     }
