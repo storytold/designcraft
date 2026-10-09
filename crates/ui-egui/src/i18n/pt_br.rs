@@ -749,7 +749,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Ruby", "Ruby"),
     ("Show Note Anchors in Layout View", "Mostrar âncoras de notas na exibição de layout"),
     ("Spreads", "Páginas duplas"),
-    ("Export Adobe PDF", "Exportar Adobe PDF"),
+    ("Export PDF", "Exportar PDF"),
     ("Standard", "Padrão"),
     ("Standard:", "Padrão:"),
     ("Compress images", "Compactar imagens"),

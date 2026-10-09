@@ -745,7 +745,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Ruby", "روبي"),
     ("Show Note Anchors in Layout View", "إظهار مراسي الملاحظات في عرض التخطيط"),
     ("Spreads", "صفحات متقابلة"),
-    ("Export Adobe PDF", "تصدير Adobe PDF"),
+    ("Export PDF", "تصدير PDF"),
     ("Standard", "معيار"),
     ("Standard:", "المعيار:"),
     ("Compress images", "ضغط الصور"),

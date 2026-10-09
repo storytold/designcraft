@@ -270,7 +270,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Duplicate Spread", ["Duplicate Spread", "Duplicate Spread", "Duplicate Spread", "Duplicate Spread", "复制跨页"]),
     ("Email", ["Email", "Email", "Email", "Email", "电子邮件"]),
     ("Embed", ["Embed", "Embed", "Embed", "Embed", "嵌入"]),
-    ("Export Adobe PDF", ["Adobe PDF exportieren", "Exporter au format Adobe PDF", "Exportar Adobe PDF", "Adobe PDF を書き出し", "导出 Adobe PDF"]),
+    ("Export PDF", ["PDF exportieren", "Exporter en PDF", "Exportar PDF", "PDF を書き出し", "导出PDF"]),
     ("Export XML…", ["Export XML…", "Export XML…", "Export XML…", "Export XML…", "导出XML…"]),
     ("Fast", ["Fast", "Fast", "Fast", "Fast", "快速"]),
     (
@@ -2870,7 +2870,7 @@ mod tests {
         assert_ne!(tr("ar", "Include document bleed"), "Include document bleed");
         assert_ne!(tr("pt-br", "Compress images"), "Compress images");
         // English returns the key unchanged.
-        assert_eq!(tr("", "Export Adobe PDF"), "Export Adobe PDF");
+        assert_eq!(tr("", "Export PDF"), "Export PDF");
         // An unknown string still falls through unchanged.
         assert_eq!(tr("de", "Low Quality Print"), "Low Quality Print");
         // Fixed standard names stay identical in every language.

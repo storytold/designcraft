@@ -246,7 +246,7 @@ pub fn open_print(app: &mut DesignApp) {
     ));
 }
 
-/// File › Export PDF…: the "Export Adobe PDF" options dialog, seeded from the persisted settings
+/// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
 /// (`UiState.pdf_export`) and the active document. `pages` is per-job (not persisted); `flatten`
 /// falls back to the global flattener preset when the persisted value is empty.
 pub fn open_pdf_export(app: &mut DesignApp) {
@@ -311,7 +311,7 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
-/// The presets offered by the Export Adobe PDF dialog, in display order. The stored value is the
+/// The presets offered by the Export PDF dialog, in display order. The stored value is the
 /// English name; the caption is translated.
 const PDF_EXPORT_PRESETS: &[&str] = &["High Quality Print", "Press Quality", "Smallest File Size", "PDF/X-4", "PDF/A-2b", "Custom"];
 
@@ -336,7 +336,7 @@ fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
     }
 }
 
-/// File › Export PDF: the "Export Adobe PDF" options (General / Compression / Marks and Bleeds /
+/// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
 /// Advanced). Selecting a preset fills the dependent fields; editing any other control flips the
 /// preset back to "Custom".
 fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
@@ -951,7 +951,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
-        "pdfExport" => crate::i18n::tr(&app.ui.language, "Export Adobe PDF"),
+        "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
         "colorSettings" => crate::i18n::tr(&app.ui.language, "Color Settings"),
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
         "keyboardShortcuts" => crate::i18n::tr(&app.ui.language, "Keyboard Shortcuts"),
