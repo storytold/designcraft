@@ -255,7 +255,98 @@ impl Tokens {
 
 /// Install the UI fonts for the interface language `lang` (it orders the CJK fallbacks).
 pub fn install_fonts(ctx: &egui::Context, lang: &str) {
-    ctx.set_fonts(font_definitions(designcraft_fonts::CRAFT_FONTS, lang));
+    let craft = designcraft_fonts::CRAFT_FONTS;
+    let mut defs = font_definitions(craft, lang);
+    add_system_fallbacks(&mut defs, &system_ui_fonts(craft), lang);
+    ctx.set_fonts(defs);
+}
+
+/// An installed font the UI falls back to for a script the built-in faces lack.
+pub(crate) struct SystemFont {
+    /// "Jpan" or "Hans".
+    script: &'static str,
+    family: String,
+    bytes: Vec<u8>,
+    index: u32,
+}
+
+/// Installed UI faces (sans serif) per script, the first one found of each list: macOS, then
+/// Windows, then Linux families.
+const SYSTEM_UI_FONTS: &[(&str, &[&str])] = &[
+    (
+        "Jpan",
+        &[
+            "Hiragino Sans",
+            "Hiragino Kaku Gothic ProN",
+            "Yu Gothic UI",
+            "Yu Gothic",
+            "Meiryo",
+            "MS Gothic",
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Source Han Sans JP",
+            "IPAexGothic",
+            "Droid Sans Fallback",
+        ],
+    ),
+    ("Hans", &["PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei"]),
+];
+
+/// The installed faces for the CJK scripts `craft` (the built-in craft-fonts) doesn't cover, so
+/// the interface shows Japanese and Chinese without the craft-fonts build input. egui can't
+/// find system fonts itself; the document font scan (not on the web) does.
+fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont]) -> Vec<SystemFont> {
+    let db = designcraft_fonts::FontDb::global();
+    SYSTEM_UI_FONTS
+        .iter()
+        .filter(|(script, _)| !craft.iter().any(|f| f.scripts.contains(script)))
+        .filter_map(|(script, families)| {
+            let family = families.iter().find(|f| db.has_family(f))?;
+            let face = db.face(family, "Regular");
+            // `face` falls back to another family when this one can't be read: keep only the real one.
+            (face.family.eq_ignore_ascii_case(family) && !face.data().is_empty()).then(|| SystemFont {
+                script,
+                family: (*family).to_string(),
+                bytes: face.data().to_vec(),
+                index: face.index(),
+            })
+        })
+        .collect()
+}
+
+/// The UI face every family starts with (Source Sans 3; the semibold shares its line metrics).
+const UI_FONT: &[u8] = include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf");
+
+/// The tweak that puts a fallback face's baseline on the UI face's. egui centres a fallback's
+/// line height in the primary's instead (`pos.y = ascent + (line height − its line height) / 2`),
+/// so a CJK face with a taller ascent or a larger line gap would sit above or below the Latin
+/// text beside it. Shifts are in ems of the font size.
+pub(crate) fn baseline_tweak(face: &[u8], index: u32) -> egui::FontTweak {
+    let metrics = |data: &[u8], i: u32| {
+        designcraft_fonts::line_metrics(data, i).map(|(upem, ascent, descent, gap)| (ascent / upem, (ascent - descent + gap) / upem))
+    };
+    let shift = match (metrics(UI_FONT, 0), metrics(face, index)) {
+        (Some((ap, hp)), Some((af, hf))) => ap - (af + 0.5 * (hp - hf)),
+        _ => 0.0,
+    };
+    egui::FontTweak { y_offset_factor: if shift.is_finite() { shift.clamp(-0.5, 0.5) } else { 0.0 }, ..Default::default() }
+}
+
+/// Append installed faces `system` at the end of every family, in the interface language's order
+/// (Chinese before Japanese for zh).
+pub(crate) fn add_system_fallbacks(fonts: &mut FontDefinitions, system: &[SystemFont], lang: &str) {
+    let name = |f: &SystemFont| format!("system-{}", f.family);
+    for f in system {
+        fonts.font_data.insert(
+            name(f),
+            Arc::new(FontData { index: f.index, tweak: baseline_tweak(&f.bytes, f.index), ..FontData::from_owned(f.bytes.clone()) }),
+        );
+    }
+    let (first, second) = if lang.starts_with("zh") { ("Hans", "Jpan") } else { ("Jpan", "Hans") };
+    let order: Vec<String> = [first, second].iter().flat_map(|s| system.iter().filter(move |f| f.script == *s)).map(name).collect();
+    for stack in fonts.families.values_mut() {
+        stack.extend(order.iter().cloned());
+    }
 }
 
 /// The UI fonts: the app's own, then the craft-fonts faces from `craft` (empty without
@@ -263,7 +354,7 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) {
 /// Simplified Chinese, in the interface language's order, then Arabic. The `arabic` families
 /// put the Arabic face first for right-to-left runs. egui has no system-font discovery, so
 /// without craft-fonts CJK and Arabic UI text has no glyphs.
-fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) -> FontDefinitions {
+pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, data: &'static [u8]| {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(data)));
@@ -281,7 +372,11 @@ fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) 
     let chinese = pick("Hans");
     let arabic = pick("Arab");
     let name = |f: &designcraft_fonts::CraftFont| format!("craft-{}-{}", f.family, f.style);
-    for f in japanese.iter().chain(&chinese).chain(&arabic) {
+    for f in japanese.iter().chain(&chinese) {
+        // CJK faces sit on the Latin baseline (see `baseline_tweak`).
+        fonts.font_data.insert(name(f), Arc::new(FontData { tweak: baseline_tweak(f.bytes, 0), ..FontData::from_static(f.bytes) }));
+    }
+    for f in &arabic {
         add(&mut fonts, &name(f), f.bytes);
     }
     // Han characters take the forms of the interface language: Chinese faces first for zh.
@@ -404,6 +499,49 @@ mod japanese_font_tests {
         let defs = super::font_definitions(designcraft_fonts::CRAFT_FONTS, "ja");
         let stack = &defs.families[&egui::FontFamily::Proportional];
         assert_eq!(stack.iter().find(|n| n.starts_with("craft-")).map(String::as_str), Some("craft-BIZ UDPGothic-Regular"));
+    }
+
+    /// Without craft-fonts, an installed Japanese face gives the interface its glyphs (here a
+    /// synthetic stand-in, so the test doesn't depend on the machine's fonts).
+    #[test]
+    fn installed_fonts_give_japanese_glyphs_without_craft_fonts() {
+        let bytes = designcraft_fonts::testing::font_with("DC UI Japanese", &['日', '本', '語']).unwrap();
+        let system = [super::SystemFont { script: "Jpan", family: "DC UI Japanese".into(), bytes, index: 0 }];
+        let mut defs = super::font_definitions(&[], "ja");
+        super::add_system_fallbacks(&mut defs, &system, "ja");
+        for family in families() {
+            assert_eq!(defs.families[&family].last().map(String::as_str), Some("system-DC UI Japanese"), "{family:?}");
+        }
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx.fonts_mut(|fonts| {
+            let font = egui::FontId::new(13.0, egui::FontFamily::Proportional);
+            for ch in "日本語".chars() {
+                assert!(fonts.has_glyph(&font, ch), "missing {ch}");
+            }
+        });
+    }
+
+    /// A fallback face with other line metrics lands on the UI face's baseline: egui puts a glyph
+    /// at `ascent + (primary line height − its line height) / 2`, plus the tweak.
+    #[test]
+    fn fallback_faces_share_the_ui_baseline() {
+        let ui = designcraft_fonts::line_metrics(super::UI_FONT, 0).unwrap();
+        // A synthetic face with a taller ascent and a line gap (Hiragino-like proportions).
+        let base = designcraft_fonts::testing::font_with("DC Tall", &['日']).unwrap();
+        let tall = designcraft_fonts::testing::with_table_u16(base, b"hhea", 4, 1200u16).unwrap();
+        let tall = designcraft_fonts::testing::with_table_u16(tall, b"hhea", 8, 500u16).unwrap();
+        let face = designcraft_fonts::line_metrics(&tall, 0).unwrap();
+        let tweak = super::baseline_tweak(&tall, 0);
+        let em = |m: (f32, f32, f32, f32)| (m.1 / m.0, (m.1 - m.2 + m.3) / m.0);
+        let ((ap, hp), (af, hf)) = (em(ui), em(face));
+        let baseline = af + 0.5 * (hp - hf) + tweak.y_offset_factor;
+        assert!((baseline - ap).abs() < 1e-4, "{baseline} vs {ap}");
+        assert!(tweak.y_offset_factor.abs() > 0.01, "the synthetic face needs a shift: {}", tweak.y_offset_factor);
+        // The UI face itself needs no shift.
+        assert!(super::baseline_tweak(super::UI_FONT, 0).y_offset_factor.abs() < 1e-6);
     }
 
     #[test]

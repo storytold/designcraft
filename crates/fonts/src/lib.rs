@@ -81,6 +81,16 @@ pub struct ShapedGlyph {
 }
 
 /// An OpenType feature setting: `"liga"`, `"-kern"`, `"ss01"`.
+/// Line metrics of the font at `index` of `data`, in font units: (units per em, ascent, descent
+/// (negative below the baseline), line gap) — what text layouts such as egui's build lines from.
+/// `None` if the font can't be read.
+pub fn line_metrics(data: &[u8], index: u32) -> Option<(f32, f32, f32, f32)> {
+    use skrifa::MetadataProvider;
+    let f = skrifa::FontRef::from_index(data, index).ok()?;
+    let m = f.metrics(skrifa::instance::Size::unscaled(), skrifa::instance::LocationRef::default());
+    Some((f32::from(m.units_per_em.max(1)), m.ascent, m.descent, m.leading))
+}
+
 pub fn feature(tag: &str) -> Option<Feature> {
     let (on, t) = match tag.strip_prefix('-') {
         Some(r) => (false, r),
