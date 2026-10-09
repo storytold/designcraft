@@ -243,6 +243,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let rect = view_rect(screen, rot);
     app.canvas_rect = Some(rect);
     let resp = ui.allocate_rect(full, Sense::click_and_drag());
+    // Right-click context menu for the canvas.
+    resp.context_menu(|ui| {
+        canvas_context_menu(app, ui);
+    });
     if !app.view().is_some_and(|v| v.fitted) {
         fit(app, rect, "spread");
     }
@@ -1739,7 +1743,103 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
     true
 }
 
-/// Read text from the system clipboard using arboard.
+/// Right-click context menu for the canvas.
+fn canvas_context_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let lang = app.ui.language.clone();
+    let Some(st) = app.session.active() else { return };
+    let has_selection = !st.selection.items.is_empty();
+    let has_text = st.selection.text.is_some();
+    let tool = app.session.tool_id();
+
+    if has_selection {
+        ui.separator();
+        if ui.button(crate::i18n::tr(&lang, "Cut")).clicked() {
+            let _ = app.run("edit.cut", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Copy")).clicked() {
+            let _ = app.run("edit.copy", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Paste")).clicked() {
+            let _ = app.run("edit.paste", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Duplicate")).clicked() {
+            let _ = app.run("edit.duplicate", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Delete")).clicked() {
+            let _ = app.run("edit.clear", json!({}));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(crate::i18n::tr(&lang, "Select All")).clicked() {
+            let _ = app.run("edit.selectAll", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Deselect All")).clicked() {
+            let _ = app.run("edit.deselectAll", json!({}));
+            ui.close();
+        }
+    } else if has_text {
+        ui.separator();
+        if ui.button(crate::i18n::tr(&lang, "Cut")).clicked() {
+            let _ = app.run("edit.cut", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Copy")).clicked() {
+            let _ = app.run("edit.copy", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Paste")).clicked() {
+            let _ = app.run("edit.paste", json!({}));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(crate::i18n::tr(&lang, "Select All")).clicked() {
+            let _ = app.run("edit.selectAll", json!({}));
+            ui.close();
+        }
+    } else {
+        // No selection: show view options
+        if ui.button(crate::i18n::tr(&lang, "Paste")).clicked() {
+            let _ = app.run("edit.paste", json!({}));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(crate::i18n::tr(&lang, "Select All")).clicked() {
+            let _ = app.run("edit.selectAll", json!({}));
+            ui.close();
+        }
+        ui.separator();
+        // View options
+        if ui.button(crate::i18n::tr(&lang, "Fit Page in Window")).clicked() {
+            let _ = app.run("view.fitPage", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Fit Spread in Window")).clicked() {
+            let _ = app.run("view.fitSpread", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Actual Size")).clicked() {
+            let _ = app.run("view.actualSize", json!({}));
+            ui.close();
+        }
+    }
+    // Tool-specific actions
+    if tool == "selection" || tool == "directSelection" {
+        ui.separator();
+        if ui.button(crate::i18n::tr(&lang, "Group")).clicked() {
+            let _ = app.run("object.group", json!({}));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr(&lang, "Ungroup")).clicked() {
+            let _ = app.run("object.ungroup", json!({}));
+            ui.close();
+        }
+    }
+}
 /// Only available on native platforms (not WASM) with the "clipboard" feature.
 #[cfg(all(feature = "clipboard", not(target_arch = "wasm32")))]
 fn read_system_clipboard() -> Option<String> {
