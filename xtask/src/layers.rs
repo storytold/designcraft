@@ -50,6 +50,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("ui-egui", Class::Layer(6)),
     ("mcp", Class::Layer(6)),
     ("testkit", Class::Testkit),
+    // macOS Finder/Dock open-documents events; empty on other platforms.
+    ("macos-open", Class::Standalone),
     // L7 apps and tooling
     ("designcraft", Class::Exempt),
     ("cli", Class::Exempt),
