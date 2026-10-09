@@ -51,6 +51,15 @@ impl Tool for TypeTool {
 
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
+            PointerKind::Down | PointerKind::DoubleClick if ev.mods.cmd => {
+                // ⌘-click: back to the Selection tool, selecting the item clicked (or nothing).
+                self.start = None;
+                self.drawing = false;
+                self.selecting = None;
+                self.cell_drag = None;
+                let ids: Vec<u64> = cx.hit(ev.pos).map(|(_, id)| id.0).into_iter().collect();
+                vec![Action::SwitchTool("selection".into()), Action::Exec("selection.set".into(), json!({ "ids": ids }))]
+            }
             PointerKind::Down | PointerKind::DoubleClick => {
                 self.start = Some(ev.pos);
                 self.drawing = false;
