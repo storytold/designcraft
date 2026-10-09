@@ -407,6 +407,25 @@ mod reflow_tests {
     }
 
     #[test]
+    fn shrinking_the_primary_frame_by_drag_adds_pages_when_the_drag_ends() {
+        let (mut s, sid) = primary_doc();
+        type_text(&mut s, sid, &LINE.repeat(20));
+        let frame = frames(&s, sid)[0].0;
+        s.begin_interaction("Resize").unwrap();
+        s.preview("transform.set", json!({"height": 300, "ids": [frame]})).unwrap();
+        s.preview("transform.set", json!({"height": 60, "ids": [frame]})).unwrap();
+        assert_eq!(pages(&s), 1, "nothing reflows during the drag");
+        s.commit_interaction().unwrap();
+        assert!(pages(&s) > 1, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+        s.doc().unwrap().doc.check().unwrap();
+        // The drag and its pages are one undo step.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&s), 1);
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
     fn making_an_overset_story_the_primary_one_adds_pages() {
         let mut s = Session::new();
         s.execute("file.new", &json!({"pages": 1})).unwrap();
@@ -496,6 +515,10 @@ mod reflow_tests {
         assert_eq!(pages(&s), n - 1, "drawing a frame adds no pages");
         s.execute("transform.move", &json!({"dx": 5, "dy": 5, "ids": [other]})).unwrap();
         assert_eq!(pages(&s), n - 1, "moving it adds no pages");
+        s.begin_interaction("Move").unwrap();
+        s.preview("transform.move", json!({"dx": 20, "dy": 20, "ids": [other]})).unwrap();
+        s.commit_interaction().unwrap();
+        assert_eq!(pages(&s), n - 1, "dragging it adds no pages");
         assert!(overset(&s, sid));
     }
 
