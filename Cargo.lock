@@ -1101,6 +1101,7 @@ dependencies = [
 name = "designcraft-ui-egui"
 version = "0.4.0"
 dependencies = [
+ "arboard",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
