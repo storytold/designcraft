@@ -1070,6 +1070,27 @@ fn only_english_text_gets_english_hyphenation() {
 }
 
 #[test]
+fn spanish_text_gets_spanish_hyphenation() {
+    let text = "La transición democrática fue una construcción colectiva extraordinariamente compleja y desesperadamente necesaria.";
+    let narrow = Rect::new(36.0, 36.0, 120.0, 700.0);
+    let (mut d, sid, _) = doc_with(text, narrow, ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    let n = st.len();
+    st.format_chars(0..n, |f| f.over.language = Some("Spanish".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let hy: Vec<&str> = lines.iter().filter(|l| l.hyphenated).map(|l| text[l.range.clone()].trim_end()).collect();
+    assert!(!hy.is_empty(), "Spanish hyphenates");
+    for l in &hy {
+        let last: String = l.chars().rev().take_while(|c| c.is_alphabetic()).collect::<Vec<_>>().into_iter().rev().collect();
+        let whole = text[text.find(l).unwrap() + l.len() - last.len()..].split(|c: char| !c.is_alphabetic()).next().unwrap();
+        let es = hyphen::Lang::for_language("Spanish").unwrap();
+        let pts = hyphen::hyphen_points_in(whole, &hyphen::Limits::default(), es);
+        assert!(pts.contains(&last.chars().count()), "break {last}- in {whole} is a Bezos point");
+    }
+}
+
+#[test]
 fn cjk_aki_adds_space_without_scaling_outlines() {
     let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
     let old = compose_story(&d, sid, &ComposeOptions::default());

@@ -2025,9 +2025,14 @@ pub fn is_english(language: &str) -> bool {
     language.starts_with("English") || designcraft_doc::language_tag(language).is_some_and(|t| designcraft_doc::language_subtag(t) == "en")
 }
 
-/// Byte ranges of paragraph `prange` set in a language other than English (no English
-/// hyphenation there).
-fn foreign_ranges(doc: &Document, story: &designcraft_doc::Story, prange: Range<usize>, base: &designcraft_doc::CharProps) -> Vec<Range<usize>> {
+/// Byte ranges of paragraph `prange` set in a language other than English, with the hyphenator
+/// for that language (None: not hyphenated).
+fn foreign_ranges(
+    doc: &Document,
+    story: &designcraft_doc::Story,
+    prange: Range<usize>,
+    base: &designcraft_doc::CharProps,
+) -> Vec<(Range<usize>, Option<hyphen::Lang>)> {
     if is_english(&base.language)
         && story.runs().all(|(_, f)| f.over.language.as_deref().is_none_or(is_english) && f.style == designcraft_doc::story::NO_CHAR_STYLE)
     {
@@ -2036,12 +2041,19 @@ fn foreign_ranges(doc: &Document, story: &designcraft_doc::Story, prange: Range<
     story
         .runs()
         .filter(|(r, _)| r.start < prange.end && r.end > prange.start)
-        .filter(|(_, f)| !is_english(&doc.styles.resolve_char(base, f).language))
-        .map(|(r, _)| r)
+        .map(|(r, f)| (r, doc.styles.resolve_char(base, f).language.clone()))
+        .filter(|(_, l)| !is_english(l))
+        .map(|(r, l)| (r, hyphen::Lang::for_language(&l)))
         .collect()
 }
 
-fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: &HashMap<String, Vec<usize>>, foreign: &[Range<usize>]) -> Vec<bool> {
+fn hyphenation_points(
+    text: &str,
+    glyphs: &[Glyph],
+    pp: &ParaProps,
+    exceptions: &HashMap<String, Vec<usize>>,
+    foreign: &[(Range<usize>, Option<hyphen::Lang>)],
+) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
         return out;
@@ -2053,7 +2065,7 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
         capitalized: pp.hyph_capitalized,
     };
     // Words repeat a lot: remember their points per set of limits.
-    static CACHE: Mutex<Vec<(LimitsKey, HashMap<Box<str>, Box<[usize]>>)>> = Mutex::new(Vec::new());
+    static CACHE: Mutex<Vec<(LimitsKey, HashMap<(hyphen::Lang, Box<str>), Box<[usize]>>)>> = Mutex::new(Vec::new());
     let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let idx = match guard.iter().position(|e| e.0 == key) {
@@ -2087,13 +2099,13 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
             let word = &text[a..b];
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
-            let in_foreign = foreign.iter().any(|r| r.contains(&a));
-            if !is_last_word && !in_foreign {
+            let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
+            if !is_last_word && let Some(lang) = lang {
                 let user = (!exceptions.is_empty()).then(|| exceptions.get(&word.to_lowercase())).flatten();
                 let pts: &[usize] = match user {
                     // User dictionary exceptions win over the patterns and the built-in list.
                     Some(v) => v,
-                    None => cache.entry(word.into()).or_insert_with(|| hyphen::hyphen_points(word, &lim).into_boxed_slice()),
+                    None => cache.entry((lang, word.into())).or_insert_with(|| hyphen::hyphen_points_in(word, &lim, lang).into_boxed_slice()),
                 };
                 for &p in pts.iter() {
                     // char index p → byte → glyph whose cluster ends at that byte.
