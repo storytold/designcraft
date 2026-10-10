@@ -144,6 +144,11 @@ fn user_dictionary(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
+fn is_modifier_key(key: egui::Key) -> bool {
+    use egui::Key::*;
+    matches!(key, ShiftLeft | ShiftRight | ControlLeft | ControlRight | AltLeft | AltRight | SuperLeft | SuperRight)
+}
+
 fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let mut q = d.s("query");
     ui.add(
@@ -153,11 +158,12 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     );
     d.fields.insert("query".into(), json!(q));
     let recording = d.s("recording");
-    // Capture the next key press for the command being recorded.
+    // Capture the next key press for the command being recorded. Pressing a modifier
+    // reports the modifier itself as a key; skip it and wait for the key it modifies.
     if !recording.is_empty() {
         let pressed = ui.input(|i| {
             i.events.iter().find_map(|e| match e {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                egui::Event::Key { key, pressed: true, modifiers, .. } if !is_modifier_key(*key) => Some((*key, *modifiers)),
                 _ => None,
             })
         });
@@ -803,7 +809,9 @@ fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.dialog.clone() else { return };
     let mut result: Option<bool> = None;
+    let alert_title = d.s("title");
     let title = match d.id.as_str() {
+        "alert" => crate::i18n::tr(&app.ui.language, &alert_title),
         "ruby" => crate::i18n::tr(&app.ui.language, "Ruby"),
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
@@ -837,7 +845,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     };
     egui::Modal::new(egui::Id::new("dialog")).show(ctx, |ui| {
         ui.set_min_width(380.0);
-        ui.set_max_width(if d.id == "newDocument" && crate::i18n::is_rtl(&app.ui.language) { 380.0 } else { 640.0 });
+        ui.set_max_width(match d.id.as_str() {
+            "alert" => 440.0,
+            "newDocument" if crate::i18n::is_rtl(&app.ui.language) => 380.0,
+            _ => 640.0,
+        });
         if crate::i18n::is_rtl(&app.ui.language) {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1366,6 +1378,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 });
             }
             "documentSetup" => document_setup(app, ui, &mut d),
+            "alert" => {
+                let file = d.s("file");
+                if !file.is_empty() {
+                    crate::rtl::label(ui, egui::RichText::new(crate::rtl::isolate(&file)).font(semibold(13.0)));
+                    ui.add_space(4.0);
+                }
+                crate::rtl::label(ui, d.s("message"));
+            }
             _ => {}
         }
         ui.add_space(12.0);
@@ -1381,7 +1401,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 {
                     result = Some(true);
                 }
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                // An alert only has OK.
+                let cancel = d.id != "alert" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked();
+                if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     result = Some(false);
                 }
             });
@@ -1498,7 +1520,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         }
         "pdfImport" => {
             let crop = d.s("crop");
-            app.run("file.place", json!({"path": d.s("path"), "pdfPage": d.n("page").unwrap_or(1.0).max(1.0) as u64, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
+            app.open_file("file.place", json!({"path": d.s("path"), "pdfPage": d.n("page").unwrap_or(1.0).max(1.0) as u64, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
         }
         "print" => {
             let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };
@@ -1601,7 +1623,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             app.run("document.preferences", doc)
         }
         "newWorkspace" => app.run("window.newWorkspace", json!({"name": d.s("name")})),
-        "importOptions" => app.run(
+        "importOptions" => app.open_file(
             "file.place",
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
@@ -1669,6 +1691,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
             app.run("footnote.options", p)
         }
+        "alert" => Ok(Value::Null),
         "findChange" if d.b("objectMode") => Ok(Value::Null),
         "findChange" => app.run("find.change", json!({"find": d.s("find"), "change": d.s("change"), "grep": d.b("grep"), "caseSensitive": d.b("caseSensitive"), "wholeWord": d.b("wholeWord"), "scope": d.s("scope")})),
         id if id.starts_with("cmd:") => {
@@ -1683,10 +1706,12 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                         let parsed = serde_json::from_str::<Value>(v).ok().filter(|x| !x.is_string());
                         p.insert(f.key, parsed.unwrap_or_else(|| json!(v)));
                     }
-                    Some(Value::Bool(b)) => {
-                        p.insert(f.key, json!(b));
+                    Some(Value::String(_)) | None => {}
+                    Some(value) => {
+                        // Control/MCP callers can supply JSON directly. Preserve its type,
+                        // including explicit null, for the command to interpret.
+                        p.insert(f.key, value.clone());
                     }
-                    _ => {}
                 }
             }
             let r = app.run(cid, Value::Object(p));
@@ -2678,6 +2703,73 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 mod tests {
     use super::*;
 
+    fn command_app(id: &str, fields: Value) -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.dialog = Some(Dialog::new(&format!("cmd:{id}"), fields));
+        app
+    }
+
+    #[test]
+    fn generic_new_document_preserves_typed_values_and_text_entry() {
+        for pages in [json!(2), json!(" 2 ")] {
+            let mut app = command_app(
+                "file.new",
+                json!({
+                    "preset": "A4", "pages": pages, "facingPages": false, "gutter": 0,
+                    "margins": {"top": 10, "bottom": 20, "inside": 30, "outside": 40},
+                    "title": "  ", "status": "internal", "primaryTextFrame": true
+                }),
+            );
+            confirm(&mut app).unwrap();
+            let doc = &app.session.active().unwrap().doc;
+            assert_eq!(doc.page_count(), 2);
+            assert!(!doc.settings.facing_pages);
+            assert!(doc.title.starts_with("Untitled-"));
+            for page in doc.spreads.iter().flat_map(|s| &s.pages) {
+                assert!((page.width - 595.2755905511812).abs() < 0.01);
+                assert!((page.height - 841.8897637795277).abs() < 0.01);
+                assert_eq!(page.columns.gutter, 0.0);
+                assert_eq!(page.margins.top, 10.0);
+                assert_eq!(page.margins.outside, 40.0);
+            }
+            assert!(doc.spreads.iter().all(|s| s.items.is_empty()), "undocumented fields stay excluded");
+            assert!(app.ui.dialog.is_none());
+        }
+    }
+
+    #[test]
+    fn generic_command_preserves_array_geometry() {
+        let mut app = command_app("file.new", json!({}));
+        confirm(&mut app).unwrap();
+        app.ui.dialog = Some(Dialog::new("cmd:frame.create", json!({"rect": [10, 20, 110, 220]})));
+        confirm(&mut app).unwrap();
+        let doc = &app.session.active().unwrap().doc;
+        let item = doc.spreads.iter().flat_map(|s| &s.items).next().unwrap();
+        assert_eq!(item.bounds(), designcraft_geom::Rect::new(10.0, 20.0, 110.0, 220.0));
+    }
+
+    #[test]
+    fn generic_explicit_null_uses_the_commands_existing_semantics() {
+        // file.new accepts null width by using the selected preset's width.
+        for width in [Value::Null, json!("null")] {
+            let mut app = command_app("file.new", json!({"preset": "A4", "width": width, "title": "  Sample layout  "}));
+            confirm(&mut app).unwrap();
+            let doc = &app.session.active().unwrap().doc;
+            assert_eq!(doc.title, "Sample layout");
+            assert!((doc.settings.page_width - 595.2755905511812).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn generic_invalid_number_retains_dialog_without_creating_document() {
+        let mut app = command_app("file.new", json!({"width": 0}));
+        assert!(confirm(&mut app).is_err());
+        assert!(app.session.active().is_none());
+        let dialog = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(dialog.fields["width"], 0);
+        assert!(dialog.fields["status"].as_str().unwrap().contains("page size out of range"));
+    }
+
     #[test]
     fn parses_command_params() {
         let f = command_fields("{name, type: custom|lastPageNumber|chapterNumber, text?, rule?: {on, weight}, flag?: bool} — creates");
@@ -2704,5 +2796,20 @@ mod tests {
         for c in designcraft_engine::command_specs() {
             let _ = command_fields(c.params);
         }
+    }
+
+    #[test]
+    fn shortcut_recorder_waits_for_the_key_after_its_modifiers() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut d = Dialog::new("keyboardShortcuts", json!({"query": "", "recording": "app.palette"}));
+        let ctx = egui::Context::default();
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        // Holding Ctrl reports Ctrl itself as a key press, then Ctrl+K arrives.
+        for event in [key(egui::Key::ControlLeft, egui::Modifiers::COMMAND), key(egui::Key::K, egui::Modifiers::COMMAND)] {
+            let input = egui::RawInput { events: vec![event], ..Default::default() };
+            ctx.run_ui(input, |ui| keyboard_shortcuts(&mut app, ui, &mut d)).textures_delta.clear();
+        }
+        assert_eq!(crate::menus::shortcut_of(&app, "app.palette").as_deref(), Some("Cmd+K"));
+        assert_eq!(d.s("recording"), "", "recording ends with the recorded shortcut");
     }
 }

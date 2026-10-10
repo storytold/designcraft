@@ -191,6 +191,16 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     });
     divider(ui);
+    // Column order: right to left puts the first column on the right.
+    let rtl = info["options"]["direction"] == "rightToLeft";
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Direction"));
+        for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+            if ui.selectable_label(on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() && !on {
+                run(app, "table.options", json!({"direction": dir}));
+            }
+        }
+    });
     let mut alt = !info["options"]["altRows"].is_null();
     if ui.checkbox(&mut alt, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Alternating Row Fills"))).changed() {
         let v = if alt { json!({"first": 1, "firstColor": "[Black]", "firstTint": 0.1, "next": 1, "nextColor": "[None]"}) } else { Value::Null };
