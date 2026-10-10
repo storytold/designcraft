@@ -714,7 +714,8 @@ fn relative_path_and_reopen() {
     std::fs::create_dir_all(&b).unwrap();
     let csv = b.join("data.csv");
     write(&csv, "Name\nAda\n");
-    assert_eq!(relative_between(&a, &csv), "../b/data.csv");
+    let relative = Path::new("..").join("b").join("data.csv").to_string_lossy().into_owned();
+    assert_eq!(relative_between(&a, &csv), relative);
     assert_eq!(relative_between(&b, &csv), "data.csv");
 
     let mut doc = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
@@ -743,7 +744,7 @@ fn relative_path_and_reopen() {
     let mut s2 = Session::new();
     exec(&mut s2, "file.open", json!({"path": saved}));
     let src = &s2.documents()[s2.active_index().unwrap()].doc.data_merge.sources[0];
-    assert_eq!(src.relative_path.as_deref(), Some("../b/data.csv"));
+    assert_eq!(src.relative_path.as_deref(), Some(relative.as_str()));
     assert_eq!(src.rows[0][0], "Ada");
 }
 
@@ -807,4 +808,67 @@ fn oversized_data_file_is_refused_before_reading() {
     let msg = read_path_capped(&path, 1024).unwrap_err();
     assert!(msg.contains("larger than"), "{msg}");
     assert_eq!(read_path_capped(&path, 4096).unwrap().len(), 2048);
+}
+
+/// #198: with facing pages on, one record per page must not stack the copies at identical
+/// coordinates on one spread (leaving a later page empty).
+#[test]
+fn facing_pages_merge_puts_each_record_on_its_own_page() {
+    let mut s = Session::new();
+    exec(&mut s, "file.new", json!({"facingPages": true, "pages": 1, "width": 612, "height": 792}));
+    select_csv(&mut s, "Title,Clue\nCase 1,Cellar\nCase 2,Attic\nCase 3,Garden\n");
+    // A block taller than the page's usable height, so only one record fits per page.
+    text_frame(&mut s, [72.0, 72.0, 540.0, 700.0], "<<Title>> - <<Clue>>", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 3);
+
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(doc.page_count(), 3, "one page per record");
+
+    // Which absolute page each merged frame sits on.
+    let mut pages_seen = std::collections::BTreeSet::new();
+    let mut origins = Vec::new();
+    for sp in &doc.spreads {
+        for it in &sp.items {
+            if !matches!(it.content, Content::Text(_)) {
+                continue;
+            }
+            let abs = doc.page_of_item(it.id);
+            let b = it.bounds();
+            origins.push((abs, b.x0.round() as i32, b.y0.round() as i32));
+            if let Some(a) = abs {
+                pages_seen.insert(a);
+            }
+        }
+    }
+    assert_eq!(origins.len(), 3, "one text frame per record");
+    assert_eq!(pages_seen, [0usize, 1, 2].into_iter().collect(), "each record on its own page, none stacked and none left empty: {origins:?}");
+}
+
+/// #198's actual repro shape: a short block that tiles several records down one page. With
+/// facing pages on they must still land at distinct positions, not on top of each other.
+#[test]
+fn facing_pages_merge_tiles_short_blocks_without_stacking() {
+    let mut s = Session::new();
+    exec(&mut s, "file.new", json!({"facingPages": true, "pages": 1, "width": 612, "height": 792}));
+    select_csv(&mut s, "Title,Clue\nCase 1,Cellar\nCase 2,Attic\nCase 3,Garden\n");
+    text_frame(&mut s, [72.0, 72.0, 540.0, 200.0], "<<Title>> - <<Clue>>", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 3);
+
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let mut origins = Vec::new();
+    for sp in &doc.spreads {
+        for it in &sp.items {
+            if matches!(it.content, Content::Text(_)) {
+                let abs = doc.page_of_item(it.id);
+                let b = it.bounds();
+                origins.push((abs, b.x0.round() as i32, b.y0.round() as i32));
+            }
+        }
+    }
+    origins.sort();
+    assert_eq!(origins.len(), 3, "one text frame per record");
+    let unique: std::collections::BTreeSet<_> = origins.iter().collect();
+    assert_eq!(unique.len(), 3, "no two records may share a page and coordinates: {origins:?}");
 }

@@ -135,7 +135,7 @@ pub fn articles(app: &mut DesignApp, ui: &mut egui::Ui) {
             crate::rtl::label(ui, egui::RichText::new(&name).strong());
             crate::rtl::label(
                 ui,
-                egui::RichText::new(format!("{} {}", a["items"].as_array().map_or(0, Vec::len), crate::i18n::tr(&app.ui.language, "objects")))
+                egui::RichText::new(crate::i18n::count_label(&app.ui.language, "objects", a["items"].as_array().map_or(0, Vec::len)))
                     .size(10.5)
                     .color(t.text_dim),
             );
