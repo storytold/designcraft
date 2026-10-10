@@ -396,7 +396,9 @@ pub fn caption(ui: &mut Ui, s: &str) {
 /// A right-aligned caption of a fixed width (`W:` before a spinner).
 pub fn caption_w(ui: &mut Ui, s: &str, w: f32) {
     let t = Tokens::get(ui.ctx());
-    let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
+    let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
+    // Painted, so tell screen readers (and UI tests) what it says.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, s));
     crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, egui::FontId::proportional(11.5), t.text);
 }
 

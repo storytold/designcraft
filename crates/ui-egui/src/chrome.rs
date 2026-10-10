@@ -572,7 +572,7 @@ mod tests {
     use crate::test_window::{self, wheel};
 
     /// The Control panel's last control with nothing selected.
-    const LAST_CONTROL: &str = "Jump to Next Column";
+    const LAST_CONTROL: &str = "Align bottom edges";
     const FIRST_CONTROL: &str = "Rotate 90° Counterclockwise";
 
     fn app() -> crate::DesignApp {
@@ -600,7 +600,7 @@ mod tests {
         assert_eq!(test_window::panel_rect(&h, "control_bar").height(), bar.height(), "the bar keeps its height");
         // A popup opened from a scrolled control opens at that control.
         let fill = h.get_by_label("Fill").rect();
-        let chip = pos2(fill.max.x + 15.0, fill.center().y);
+        let chip = fill.center();
         h.hover_at(chip);
         h.drag_at(chip);
         h.drop_at(chip);

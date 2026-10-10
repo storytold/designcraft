@@ -1,7 +1,7 @@
 //! The object Control panel: fixed, compact two-row groups, independent of widget layout growth.
 
 use designcraft_geom::{Unit, corners::CornerShape};
-use egui::{Rect, Sense, Ui, vec2};
+use egui::{Color32, Rect, Sense, Ui, vec2};
 use serde_json::{Value, json};
 
 use crate::panels::{self, properties};
@@ -32,7 +32,9 @@ fn cell<R>(ui: &mut Ui, group: Rect, x: f32, row: usize, width: f32, enabled: bo
 fn icon(ui: &mut Ui, group: Rect, x: f32, row: usize, name: &str, tip: &str) {
     let rect = Rect::from_min_size(group.min + vec2(x, row as f32 * ROW_PITCH + 2.5), vec2(16.0, 16.0));
     icons::paint(ui.painter(), rect, name, Tokens::get(ui.ctx()).icon);
-    ui.interact(rect, ui.id().with(("caption", name, row)), Sense::hover()).on_hover_ui(|ui| {
+    let resp = ui.interact(rect, ui.id().with(("caption", name, row)), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, tip));
+    resp.on_hover_ui(|ui| {
         crate::rtl::label(ui, tip);
     });
 }
@@ -149,8 +151,9 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
     separator(ui);
     group(ui, "appearance", 224.0, |ui, rect| {
         for (row, stroke) in [(0, false), (1, true)] {
-            cell(ui, rect, 0.0, row, 30.0, selected, |ui| {
-                panels::swatch_picker(
+            // The chips open with nothing selected too, as they always have.
+            cell(ui, rect, 0.0, row, 30.0, true, |ui| {
+                let chip_resp = panels::swatch_picker(
                     app,
                     ui,
                     if stroke { "ctlstroke" } else { "ctlfill" },
@@ -161,7 +164,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
                 );
                 let chip = Rect::from_min_size(rect.min + vec2(0.0, row as f32 * ROW_PITCH + 1.5), vec2(18.0, 18.0));
                 if stroke && let Some(doc) = app.session.active().map(|st| &st.doc) {
-                    let (color, gradient) = info.as_ref().map_or((Some(egui::Color32::GRAY), None), |i| widgets::swatch_colors(doc, &i.stroke, 1.0));
+                    let (color, gradient) = info.as_ref().map_or((Some(Color32::GRAY), None), |i| widgets::swatch_colors(doc, &i.stroke, 1.0));
                     let inner = Tokens::get(ui.ctx()).panel;
                     if gradient.is_some() {
                         widgets::paint_chip(ui.painter(), chip, color, gradient);
@@ -170,7 +173,11 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
                         widgets::paint_stroke_chip(ui.painter(), chip, color, inner);
                     }
                 }
-                ui.interact(chip, ui.id().with("swatch_tip"), Sense::hover()).on_hover_text(tr(if stroke { "Stroke" } else { "Fill" }));
+                if let Some(resp) = chip_resp {
+                    let label = tr(if stroke { "Stroke" } else { "Fill" });
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+                    resp.on_hover_text(label);
+                }
             });
         }
         icon(ui, rect, 36.0, 0, "panel-stroke", &tr("Stroke Weight"));
@@ -282,8 +289,10 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
     });
     if let Some(columns) = info.as_ref().and_then(|i| i.columns) {
         separator(ui);
-        group(ui, "columns", 48.0, |ui, rect| {
-            icon(ui, rect, 0.0, 0, "text-columns", &tr("Columns"));
+        let caption = tr("Columns");
+        let caption_w = ui.painter().layout_no_wrap(caption.clone(), egui::FontId::proportional(widgets::LABEL_SIZE), Color32::PLACEHOLDER).size().x;
+        group(ui, "columns", (caption_w + 2.0).ceil().max(48.0), |ui, rect| {
+            cell(ui, rect, 0.0, 0, rect.width(), true, |ui| widgets::caption(ui, &caption));
             if let Some(v) = cell(ui, rect, 0.0, 1, 48.0, true, |ui| {
                 NumField::number("ccols", Some(columns as f64), "", 0).width(48.0).spinner().range(1.0, 100.0).show(ui)
             }) {
