@@ -2099,6 +2099,7 @@ impl<'r> Importer<'r> {
                 mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
                 invert: w.get("Inverse") == Some("true"),
                 side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
+                contour: names::contour_type_in(w.find("ContourOption").and_then(|c| c.get("ContourType")).unwrap_or("SameAsClipping")),
                 ..TextWrap::default()
             };
             if let Some(o) = w.prop_el("TextWrapOffset") {

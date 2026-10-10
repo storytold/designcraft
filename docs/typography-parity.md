@@ -56,7 +56,7 @@ Fidelity: **unmeasured** unless stated.
 | Paragraph rules, borders, shading | ✓ | ✓ | ✓ | |
 | Balance ragged lines | ✓ | ✓ | ✓ | |
 | Optical margin alignment | ✓ | ✓ (hang table of our own) | ~ | hang amounts are ours, InDesign's unknown |
-| Text wrap | bounding box, shape, jump object/column, contour options | ✓ | ✓ | |
+| Text wrap | bounding box, shape, jump object/column, wrap sides (text on both sides of an object), contour options | ✓ | ~ | Detect Edges, Alpha Channel and Photoshop Path contours follow the frame's path (composition doesn't read the image) |
 | Anchored objects | inline, above line, custom | ✓ | ~ | anchored objects in table cells not drawn (#163) |
 | Footnotes, endnotes | ✓ | ✓ | ~ | footnotes don't split across columns yet |
 | Type on a path | ✓ | ✓ | ✓ | |
@@ -88,3 +88,4 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
+| 2026-10-10 | minor | Text wrap: wrap sides and contour types |

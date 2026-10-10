@@ -735,8 +735,9 @@ fn vertical(cs: &compose::ComposedStory, pos: usize, up: bool) -> Option<usize> 
     {
         return Some(p);
     }
-    let target = if up { cur.checked_sub(1)? } else { cur + 1 };
-    let (tf, tl) = lines.get(target)?;
+    // The next row: segments of the same line (beside a wrap object) share its baseline.
+    let other_row = |(i, t): &&(usize, &compose::Line)| *i != fi || (t.baseline - l.baseline).abs() > 1e-6;
+    let (tf, tl) = if up { lines.get(..cur)?.iter().rfind(other_row)? } else { lines.get(cur + 1..)?.iter().find(other_row)? };
     compose::hit(cs, *tf, Point::new(x, tl.baseline - 1.0))
 }
 

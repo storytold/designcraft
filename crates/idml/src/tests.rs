@@ -1399,3 +1399,33 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     check(&d);
     check(&import_idml(&export_idml(&d)).unwrap());
 }
+
+#[test]
+fn imports_and_round_trips_text_wrap_side_and_contour_type() {
+    let wrap = r#"<TextWrapPreference TextWrapMode="Contour" TextWrapSide="LeftSide"><ContourOption ContourType="BoundingBox" IncludeInsideEdges="false"/></TextWrapPreference><Image Self="im""#;
+    let spread = SPREAD.replace(r#"<Image Self="im""#, wrap);
+    assert_ne!(spread, SPREAD);
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let mut d = import_idml(&bytes).unwrap();
+    let id = d.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().id;
+    let w = d.item(id).unwrap().wrap;
+    assert_eq!(
+        (w.mode, w.side, w.contour),
+        (designcraft_doc::WrapMode::Contour, designcraft_doc::WrapSide::LeftSide, designcraft_doc::ContourType::BoundingBox)
+    );
+    // Every side and contour type survives export and import (detected edges included, which
+    // composition follows as the frame's path).
+    d.item_mut(id).unwrap().wrap.side = designcraft_doc::WrapSide::AwayFromSpine;
+    d.item_mut(id).unwrap().wrap.contour = designcraft_doc::ContourType::DetectEdges;
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let w = back.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().wrap;
+    assert_eq!((w.side, w.contour), (designcraft_doc::WrapSide::AwayFromSpine, designcraft_doc::ContourType::DetectEdges));
+}

@@ -511,6 +511,16 @@ fn object_set_flags_and_wrap_invert() {
     s.execute("selection.set", &json!({"ids": [id]})).unwrap();
     s.execute("object.textWrap", &json!({"mode": "boundingBox", "invert": true})).unwrap();
     assert!(item(&s).wrap.invert);
+    // Side and contour type keep the mode; contour types that need the image aren't accepted.
+    s.execute("object.textWrap", &json!({"mode": "contour"})).unwrap();
+    s.execute("object.textWrap", &json!({"side": "largestArea", "contour": "graphicFrame"})).unwrap();
+    let w = item(&s).wrap;
+    assert_eq!(
+        (w.mode, w.side, w.contour),
+        (designcraft_doc::WrapMode::Contour, designcraft_doc::WrapSide::LargestArea, designcraft_doc::ContourType::GraphicFrame)
+    );
+    assert!(s.execute("object.textWrap", &json!({"contour": "detectEdges"})).is_err());
+    assert!(s.execute("object.textWrap", &json!({"side": "middle"})).is_err());
 }
 
 #[test]

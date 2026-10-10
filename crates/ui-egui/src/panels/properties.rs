@@ -1722,6 +1722,51 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("object.textWrap", json!({"mode": info.as_ref().map(|i| i.wrap).unwrap_or("boundingBox"), "offset": v}));
         }
     });
+    let Some(i) = info.as_ref().filter(|i| i.wrap == "boundingBox" || i.wrap == "contour") else { return };
+    let sides = [
+        ("bothSides", "Both Right & Left Sides"),
+        ("rightSide", "Right Side"),
+        ("leftSide", "Left Side"),
+        ("towardsSpine", "Side Towards Spine"),
+        ("awayFromSpine", "Side Away from Spine"),
+        ("largestArea", "Largest Area"),
+    ];
+    wrap_combo(app, ui, "wrap_side", "Wrap To", &sides, &[], &i.wrap_side, "side");
+    if i.wrap == "contour" && i.is_graphic {
+        // Detected edges, alpha channels and image paths aren't offered: composition doesn't read
+        // the image. An imported one shows by name and wraps around the frame.
+        let types = [("boundingBox", "Bounding Box"), ("graphicFrame", "Graphic Frame"), ("sameAsClipping", "Same as Clipping")];
+        let shown_only = [("detectEdges", "Detect Edges"), ("alphaChannel", "Alpha Channel"), ("photoshopPath", "Photoshop Path")];
+        wrap_combo(app, ui, "wrap_contour", "Contour Type", &types, &shown_only, &i.wrap_contour, "contour");
+    }
+}
+
+/// A Text Wrap panel choice: `opts` are offered, `shown_only` only name the current value.
+#[allow(clippy::too_many_arguments)]
+fn wrap_combo(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    salt: &str,
+    caption_text: &str,
+    opts: &[(&str, &str)],
+    shown_only: &[(&str, &str)],
+    cur: &str,
+    key: &str,
+) {
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, caption_text));
+        let shown = opts.iter().chain(shown_only).find(|o| o.0 == cur).map_or(cur, |o| o.1).to_string();
+        egui::ComboBox::from_id_salt(salt).selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &shown))).width(170.0).show_ui(
+            ui,
+            |ui| {
+                for (k, l) in opts {
+                    if ui.selectable_label(*k == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                        let _ = app.run("object.textWrap", json!({ key: k }));
+                    }
+                }
+            },
+        );
+    });
 }
 
 /// Pathfinder panel: combine the selected shapes; make or release compound paths.

@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use designcraft_doc::{
     Align, Composer, Document, FirstBaseline, GridAlign, ItemId, ParaProps, SpanColumns, StartParagraph, Story, StoryId, TabAlign, TextFrameOptions,
-    VerticalJustification, WrapMode, story,
+    VerticalJustification, WrapMode, WrapSide, story,
 };
 use designcraft_fonts::{FontDb, ScopedFonts};
 use designcraft_geom::{Point, Rect};
@@ -287,8 +287,128 @@ impl ComposedStory {
 /// A text-wrap exclusion in a frame's inner space.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Exclusion {
+    /// Bounding box, offsets included.
     pub rect: Rect,
     pub mode: WrapMode,
+    /// Where text may go beside the object. Spine sides are resolved to `LeftSide`/`RightSide`.
+    pub side: WrapSide,
+    /// Contour wrap: the outline the text follows (None wraps around `rect`).
+    pub contour: Option<Contour>,
+}
+
+/// An object outline for contour wrap: closed polylines in the frame's inner space and the
+/// distance text keeps from them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Contour {
+    pub rings: Vec<Vec<Point>>,
+    pub offset: f64,
+}
+
+/// Points a contour outline may have; a larger outline wraps around its bounding box.
+const MAX_CONTOUR_POINTS: usize = 8192;
+
+impl Contour {
+    /// The outline of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
+    fn of(path: &designcraft_geom::BezPath, to_inner: designcraft_geom::Affine, offset: f64) -> Option<Contour> {
+        let mut rings: Vec<Vec<Point>> = Vec::new();
+        let mut n = 0usize;
+        let mut too_many = false;
+        designcraft_geom::kurbo::flatten(to_inner * path.clone(), 0.25, |el| {
+            n += 1;
+            too_many |= n > MAX_CONTOUR_POINTS;
+            match el {
+                designcraft_geom::PathEl::MoveTo(p) => rings.push(vec![p]),
+                designcraft_geom::PathEl::LineTo(p) => match rings.last_mut() {
+                    Some(r) => r.push(p),
+                    None => rings.push(vec![p]),
+                },
+                _ => {}
+            }
+        });
+        rings.retain(|r| r.len() >= 2 && r.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
+        (!too_many && !rings.is_empty() && offset.is_finite()).then_some(Contour { rings, offset: offset.max(0.0) })
+    }
+
+    fn bounds(&self) -> Rect {
+        let mut pts = self.rings.iter().flatten();
+        let Some(&p0) = pts.next() else { return Rect::ZERO };
+        let r = pts.fold(Rect::from_points(p0, p0), |r, &p| r.union_pt(p));
+        r.inflate(self.offset, self.offset)
+    }
+
+    /// Horizontal extent of the outline (offset included) within the band `y0..y1`: the band is
+    /// widened by the offset, and the outline's x-range there is widened by it too.
+    fn band_extent(&self, y0: f64, y1: f64) -> Option<(f64, f64)> {
+        let (y0, y1) = (y0 - self.offset, y1 + self.offset);
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for ring in &self.rings {
+            let Some(&last) = ring.last() else { continue };
+            let mut p = last;
+            for &q in ring {
+                let (a, b) = (p, q);
+                p = q;
+                if a.y.max(b.y) < y0 || a.y.min(b.y) > y1 {
+                    continue;
+                }
+                let dy = b.y - a.y;
+                let (t0, t1) = if dy.abs() < 1e-12 {
+                    (0.0, 1.0)
+                } else {
+                    let (ta, tb) = ((y0 - a.y) / dy, (y1 - a.y) / dy);
+                    (ta.min(tb).clamp(0.0, 1.0), ta.max(tb).clamp(0.0, 1.0))
+                };
+                for t in [t0, t1] {
+                    let x = a.x + t * (b.x - a.x);
+                    lo = lo.min(x);
+                    hi = hi.max(x);
+                }
+            }
+        }
+        (lo <= hi).then_some((lo - self.offset, hi + self.offset))
+    }
+}
+
+/// The wrap exclusion of `other` (an item whose inner space maps to the spread by `xf`) for a
+/// frame whose inner space is reached from the spread by `inv`. `left_page` places the object on
+/// a left page (for the spine sides).
+pub fn exclusion(other: &designcraft_doc::Item, xf: designcraft_geom::Affine, inv: designcraft_geom::Affine, left_page: bool) -> Exclusion {
+    let o = other.wrap.offsets;
+    let b = if other.shape == designcraft_doc::Shape::Group {
+        (xf * other.xf.inverse()).transform_rect_bbox(other.bounds())
+    } else {
+        other.path.transformed(xf).bounds().unwrap_or(Rect::ZERO)
+    };
+    let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
+    let side = match other.wrap.side {
+        WrapSide::TowardsSpine if left_page => WrapSide::RightSide,
+        WrapSide::TowardsSpine => WrapSide::LeftSide,
+        WrapSide::AwayFromSpine if left_page => WrapSide::LeftSide,
+        WrapSide::AwayFromSpine => WrapSide::RightSide,
+        s => s,
+    };
+    let contour = (other.wrap.mode == WrapMode::Contour && other.shape != designcraft_doc::Shape::Group)
+        .then(|| contour_path(other))
+        .and_then(|path| Contour::of(&path, inv * xf, other.wrap.offsets[0]));
+    let rect = contour.as_ref().map_or_else(|| inv.transform_rect_bbox(r), Contour::bounds);
+    Exclusion { rect, mode: other.wrap.mode, side, contour }
+}
+
+/// The outline a contour wrap follows, in the item's inner space. Graphic frames follow their contour type; detected edges, alpha channels and image paths need
+/// the image, so they follow the frame's path (as other frames do).
+fn contour_path(it: &designcraft_doc::Item) -> designcraft_geom::BezPath {
+    let frame = designcraft_geom::corners::apply(&it.path, &it.corners);
+    if it.wrap.contour == designcraft_doc::ContourType::BoundingBox
+        && let Some(g) = it.graphic()
+        && let Some(fb) = it.path.bounds()
+    {
+        let gb = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1));
+        let r = gb.intersect(fb);
+        if r.width() > 0.0 && r.height() > 0.0 {
+            return designcraft_geom::kurbo::Shape::to_path(&r, 0.1);
+        }
+    }
+    frame
 }
 
 /// One frame of the thread, ready for composition.
@@ -366,11 +486,11 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
                 if doc.layer(other.layer).is_some_and(|l| !l.visible) {
                     continue;
                 }
-                let o = other.wrap.offsets;
-                let b = other.bounds();
-                let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
-                let inner = inv.transform_rect_bbox(r);
-                exclusions.push(Exclusion { rect: inner, mode: other.wrap.mode });
+                let left = sp
+                    .page_at_x(other.bounds().center().x)
+                    .and_then(|pi| sp.pages.get(pi))
+                    .is_some_and(|p| p.side == designcraft_doc::PageSide::Left);
+                exclusions.push(exclusion(other, other.xf, inv, left));
             }
         }
         let (page_name, page, left_page) = match (loc.spread, spread) {
@@ -425,7 +545,14 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
         let vertical = doc.frame_vertical(item);
         let (area, exclusions, grid, page_rect) = if vertical {
             let v = designcraft_doc::vertical_text_xf(area).inverse();
-            let ex = exclusions.into_iter().map(|e| Exclusion { rect: v.transform_rect_bbox(e.rect), ..e }).collect();
+            let ex = exclusions
+                .into_iter()
+                .map(|e| Exclusion {
+                    rect: v.transform_rect_bbox(e.rect),
+                    contour: e.contour.map(|c| Contour { rings: c.rings.iter().map(|r| r.iter().map(|&p| v * p).collect()).collect(), ..c }),
+                    ..e
+                })
+                .collect();
             let pr = page_rect.map(|(a, b)| (v.transform_rect_bbox(a), v.transform_rect_bbox(b)));
             (Rect::new(0.0, 0.0, area.height(), area.width()), ex, None, pr)
         } else {
@@ -867,6 +994,13 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let mut col_first_line = 0usize;
         let has_tabs = glyphs.iter().any(|g| g.ch == '\t');
         let mut first_line_rect: Option<(usize, f64, f64, f64)> = None; // frame, baseline, ascent, x-span
+        let rtl = pp.direction == designcraft_doc::TextDirection::RightToLeft;
+        // Segments of a line already placed (beside an object with text on both sides) that the
+        // next lines of the paragraph fill before a new line starts, and that line's baseline.
+        let mut carry: Vec<(f64, f64)> = Vec::new();
+        let mut carry_baseline = 0.0;
+        // Re-breaks after a line's segment turned out other than the breaker assumed.
+        let mut rebreaks = 0usize;
         loop {
             if cur.fi >= frames.len() {
                 if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
@@ -887,8 +1021,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let col = if spanning { span_rect(&cols[cur.fi], Rect::new(col.x0, col.y0, col.x1, base.y1), pp.span_columns) } else { col };
             let col = cur.split_rect(col);
             // Estimate slots for the breaker with the paragraph's base leading.
-            let est_first = cur.next_baseline(f, col, base_leading, base_chars.size * 0.75, &pp);
-            let slots = estimate_slots(f, col, est_first, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
+            let est_first =
+                if carry.is_empty() { cur.next_baseline(f, col, base_leading, base_chars.size * 0.75, &pp) } else { carry_baseline + base_leading };
+            let slots = estimate_slots(f, col, est_first, base_leading, base_chars.size, &glyphs[g0..], rtl, &carry);
             let width = |j: usize| -> f64 {
                 let (x0, x1) = slots.get(j).copied().unwrap_or((col.x0, col.x1));
                 let ind = pp.left_indent + pp.right_indent + if line_no + j == 0 { pp.first_line_indent } else { 0.0 };
@@ -915,38 +1050,59 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let line_glyphs = &glyphs[s..e.max(s)];
                 let (asc, desc, lead) = line_metrics(line_glyphs, &glyphs, s, base_leading, base_chars.size, db, &base_chars);
                 let reference = cjk_line_reference(line_glyphs);
-                let mut baseline = cur.next_baseline(f, col, lead, asc, &pp);
-                if cur.last_baseline.is_some() {
-                    baseline += cur.last_reference - reference;
-                }
-                // Baseline grid.
-                if let Some((g_start, inc)) = f.grid
-                    && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
-                    && inc > 0.0
-                {
-                    let n = ((baseline - g_start) / inc - 1e-6).ceil();
-                    baseline = g_start + n * inc;
-                }
-                // Wrap: push the line down until a slot exists.
                 let (mut x0, mut x1) = (col.x0, col.x1);
-                if !f.exclusions.is_empty() {
-                    let mut tries = 0;
-                    loop {
-                        match free_slot(f, col, baseline - asc, baseline + desc, base_size) {
-                            Some((a, b)) => {
-                                x0 = a;
-                                x1 = b;
+                let continues = !carry.is_empty();
+                let mut baseline;
+                if continues {
+                    // The next segment of a line already placed.
+                    baseline = carry_baseline;
+                    (x0, x1) = carry.remove(0);
+                } else {
+                    carry.clear();
+                    baseline = cur.next_baseline(f, col, lead, asc, &pp);
+                    if cur.last_baseline.is_some() {
+                        baseline += cur.last_reference - reference;
+                    }
+                    // Baseline grid.
+                    if let Some((g_start, inc)) = f.grid
+                        && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
+                        && inc > 0.0
+                    {
+                        let n = ((baseline - g_start) / inc - 1e-6).ceil();
+                        baseline = g_start + n * inc;
+                    }
+                    // Wrap: push the line down until a slot exists.
+                    if !f.exclusions.is_empty() {
+                        let mut tries = 0;
+                        loop {
+                            let segs = free_slots(f, col, baseline - asc, baseline + desc, base_size, rtl);
+                            if let Some((&first, rest)) = segs.split_first() {
+                                (x0, x1) = first;
+                                carry = rest.to_vec();
+                                carry_baseline = baseline;
                                 break;
                             }
-                            None => {
-                                baseline += 1.0;
-                                tries += 1;
-                                if baseline > col.y1 || tries > 4000 {
-                                    break;
-                                }
+                            baseline += 1.0;
+                            tries += 1;
+                            if baseline > col.y1 || tries > 4000 {
+                                break;
                             }
                         }
                     }
+                }
+                // The breaker set this line for another segment width: re-break the rest of the
+                // paragraph from here, starting with this line's segments as they are. A pass
+                // re-breaks at its first line only for a new line, whose segments it carries, so
+                // every re-break makes progress; their number is capped too.
+                if (k > 0 || !continues) && rebreaks < 256 && slots.get(k).is_some_and(|&(a, b)| ((b - a) - (x1 - x0)).abs() > 0.5) {
+                    rebreaks += 1;
+                    carry.insert(0, (x0, x1));
+                    if !continues {
+                        carry_baseline = baseline;
+                    }
+                    g0 = s;
+                    moved = true;
+                    break;
                 }
                 let capped = cur.split.is_none() && line_cap[pi] == Some(line_no) && line_no > col_first_line;
                 // Footnotes referenced on this line need room at the bottom of the column too
@@ -961,6 +1117,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         g0 = s;
                         cur.next_sub();
                         col_first_line = line_no;
+                        carry.clear();
                         moved = true;
                         break;
                     }
@@ -1018,6 +1175,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     g0 = s;
                     next_column(&mut cur);
                     col_first_line = line_no;
+                    carry.clear();
                     moved = true;
                     break;
                 }
@@ -1100,6 +1258,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     begin_at(&mut cur, start);
                     col_first_line = line_no;
                     g0 += b.next;
+                    carry.clear();
                     moved = true;
                     break;
                 }
@@ -2071,61 +2230,87 @@ fn line_metrics(
     (asc, desc, lead)
 }
 
-/// Widest free horizontal interval of `col` in the band, or None if blocked.
-fn free_slot(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64) -> Option<(f64, f64)> {
+/// Free segments of `col` in the band `y0..y1`, in the order text fills them (left to right, or
+/// right to left for right-to-left paragraphs); empty if the band is blocked. A line beside an
+/// object that lets text through on both sides has a segment on each side. Segments narrower than
+/// 1.5 em of `size` are skipped (the model has no minimum segment width).
+fn free_slots(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64, rtl: bool) -> Vec<(f64, f64)> {
     let mut free = vec![(col.x0, col.x1)];
     for ex in &f.exclusions {
         let r = ex.rect;
         let overlaps_band = r.y0 < y1 && r.y1 > y0;
-        match ex.mode {
-            WrapMode::JumpToNextColumn if y1 > r.y0 && r.x0 < col.x1 && r.x1 > col.x0 => return None,
-            WrapMode::JumpObject if overlaps_band && r.x0 < col.x1 && r.x1 > col.x0 => return None,
-            WrapMode::BoundingBox | WrapMode::Contour if overlaps_band => {
-                let mut next = Vec::new();
-                for (a, b) in free {
-                    if r.x1 <= a || r.x0 >= b {
-                        next.push((a, b));
-                        continue;
-                    }
-                    if r.x0 > a {
-                        next.push((a, r.x0));
-                    }
-                    if r.x1 < b {
-                        next.push((r.x1, b));
-                    }
-                }
-                free = next;
+        let blocked = match ex.mode {
+            WrapMode::JumpToNextColumn if y1 > r.y0 && r.x0 < col.x1 && r.x1 > col.x0 => return vec![],
+            WrapMode::JumpObject if overlaps_band && r.x0 < col.x1 && r.x1 > col.x0 => return vec![],
+            WrapMode::BoundingBox if overlaps_band => Some((r.x0, r.x1)),
+            WrapMode::Contour if overlaps_band => match &ex.contour {
+                Some(c) => c.band_extent(y0, y1),
+                None => Some((r.x0, r.x1)),
+            },
+            _ => None,
+        };
+        let Some((a, b)) = blocked.filter(|&(a, b)| a < col.x1 && b > col.x0) else { continue };
+        // One-sided wraps also block the column on the other side of the object.
+        let text_left = match ex.side {
+            WrapSide::LeftSide => Some(true),
+            WrapSide::RightSide => Some(false),
+            WrapSide::LargestArea => Some(r.x0 - col.x0 >= col.x1 - r.x1),
+            WrapSide::BothSides | WrapSide::TowardsSpine | WrapSide::AwayFromSpine => None,
+        };
+        let (a, b) = match text_left {
+            Some(true) => (a, b.max(col.x1)),
+            Some(false) => (a.min(col.x0), b),
+            None => (a, b),
+        };
+        let mut next = Vec::with_capacity(free.len() + 1);
+        for (fa, fb) in free {
+            if b <= fa || a >= fb {
+                next.push((fa, fb));
+                continue;
             }
-            _ => {}
+            if a > fa {
+                next.push((fa, a));
+            }
+            if b < fb {
+                next.push((b, fb));
+            }
         }
+        free = next;
     }
-    free.into_iter().filter(|(a, b)| b - a >= size * 1.5).max_by(|x, y| (x.1 - x.0).total_cmp(&(y.1 - y.0)))
+    free.retain(|(a, b)| b - a >= size * 1.5);
+    if rtl {
+        free.reverse();
+    }
+    free
 }
 
+/// Line slots for the breaker: the free segments of each line from baseline `first` down, `lead`
+/// apart; `carry` holds segments left on the line above (they come first).
 #[allow(clippy::too_many_arguments)]
-fn estimate_slots(f: &FrameSpec, col: Rect, first: f64, lead: f64, size: f64, glyphs: &[Glyph], pp: &ParaProps, line_no: usize) -> Vec<(f64, f64)> {
-    let _ = (pp, line_no);
+fn estimate_slots(f: &FrameSpec, col: Rect, first: f64, lead: f64, size: f64, glyphs: &[Glyph], rtl: bool, carry: &[(f64, f64)]) -> Vec<(f64, f64)> {
     if f.exclusions.is_empty() {
         return vec![];
     }
     // Rough upper bound on lines: total advance / column width × 2.
     let total: f64 = glyphs.iter().map(|g| g.adv).sum();
     let n = ((total / (col.width().max(10.0) * 0.5)).ceil() as usize + 2).min(2000);
-    let mut v = Vec::with_capacity(n);
+    let mut v = Vec::with_capacity(n + carry.len());
+    v.extend_from_slice(carry);
     let mut b = first;
-    for _ in 0..n {
+    while v.len() < n + carry.len() {
         let mut tries = 0;
-        let slot = loop {
-            if let Some(s) = free_slot(f, col, b - size * 0.8, b + size * 0.25, size) {
+        let slots = loop {
+            let s = free_slots(f, col, b - size * 0.8, b + size * 0.25, size, rtl);
+            if !s.is_empty() {
                 break s;
             }
             b += 1.0;
             tries += 1;
             if b > col.y1 || tries > 4000 {
-                break (col.x0, col.x1);
+                break vec![(col.x0, col.x1)];
             }
         };
-        v.push(slot);
+        v.extend(slots);
         b += lead;
     }
     v
@@ -2802,10 +2987,25 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool) {
         match f.opts.vertical_justification {
             VerticalJustification::Center => idx.iter().for_each(|&i| ft.lines[i].baseline += space / 2.0),
             VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += space),
-            VerticalJustification::Justify if idx.len() > 1 => {
-                let per = space / (idx.len() - 1) as f64;
-                for (k, &i) in idx.iter().enumerate() {
-                    ft.lines[i].baseline += per * k as f64;
+            VerticalJustification::Justify => {
+                // Segments of one line (beside an object) share a row and move together.
+                let rows: Vec<usize> = idx
+                    .iter()
+                    .scan((0usize, f64::NAN), |(row, prev), &i| {
+                        let b = ft.lines[i].baseline;
+                        if !prev.is_nan() && (b - *prev).abs() > 1e-9 {
+                            *row += 1;
+                        }
+                        *prev = b;
+                        Some(*row)
+                    })
+                    .collect();
+                let n = rows.last().copied().unwrap_or(0);
+                if n > 0 {
+                    let per = space / n as f64;
+                    for (&i, &k) in idx.iter().zip(&rows) {
+                        ft.lines[i].baseline += per * k as f64;
+                    }
                 }
             }
             _ => {}
@@ -3019,12 +3219,14 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
     if ft.lines.is_empty() {
         return Some(ft.range.start);
     }
-    // Closest line vertically (within its column).
+    // Closest line vertically (within its column), then horizontally (segments of a line beside
+    // an object share its baseline).
+    let x_dist = |l: &Line| (l.x0 - p.x).max(p.x - l.x1).max(0.0);
     let l = ft
         .lines
         .iter()
         .filter(|l| p.x >= l.x0 - 20.0 && p.x <= l.x1 + 20.0 || ft.columns.len() <= 1)
-        .min_by(|a, b| line_dist(a, p.y).total_cmp(&line_dist(b, p.y)))
+        .min_by(|a, b| line_dist(a, p.y).total_cmp(&line_dist(b, p.y)).then(x_dist(a).total_cmp(&x_dist(b))))
         .or_else(|| ft.lines.first())?;
     if l.glyphs.iter().any(|g| g.rtl) {
         // Bidi: the caret position drawn nearest the point.

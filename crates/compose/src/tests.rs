@@ -146,6 +146,84 @@ fn wrap_pushes_text_aside() {
     assert!(below.x0 < 1.0);
 }
 
+/// A text frame (0,0)-(300,800) with an ellipse (110,100)-(190,200) wrapped as `mode`/`side`.
+fn doc_with_ellipse(mode: WrapMode, side: WrapSide) -> (Document, StoryId) {
+    let (mut d, sid, _) = doc_with(&[LOREM; 4].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let mut it =
+        designcraft_doc::Item::new(id, lid, designcraft_doc::Shape::Oval, designcraft_geom::shapes::ellipse(Rect::new(110.0, 100.0, 190.0, 200.0)));
+    it.wrap.mode = mode;
+    it.wrap.side = side;
+    it.wrap.offsets = [4.0; 4];
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    (d, sid)
+}
+
+#[test]
+fn wrap_on_both_sides_sets_text_left_then_right_of_the_object() {
+    let (d, sid) = doc_with_ellipse(WrapMode::Contour, WrapSide::BothSides);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    let pairs: Vec<(&Line, &Line)> = lines.windows(2).filter(|w| w[0].baseline == w[1].baseline).map(|w| (&w[0], &w[1])).collect();
+    assert!(pairs.len() >= 4, "{} lines share a baseline", pairs.len());
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    for (l, r) in &pairs {
+        // Left segment, then the right one; the text runs on from one to the other.
+        assert!(l.x1 < 150.0 && r.x0 > 150.0, "{} {}", l.x1, r.x0);
+        assert_eq!(l.range.end, r.range.start);
+        // No glyph inside the wrapped outline at its line.
+        let (a, b) = ex.contour.as_ref().unwrap().band_extent(l.baseline - l.ascent, l.baseline + l.descent).unwrap();
+        let n = l.glyphs.len().saturating_sub(1);
+        // The left segment's last glyph may be the space the line breaks at.
+        for g in l.glyphs.iter().take(n).chain(&r.glyphs).filter(|g| g.visible) {
+            assert!(g.x + g.adv <= a + 0.5 || g.x >= b - 0.5, "glyph at {}..{} in {a}..{b}", g.x, g.x + g.adv);
+        }
+    }
+    // Lines beside the narrow top of the ellipse reach closer to its centre than those at its middle.
+    let mid = pairs.iter().map(|(l, _)| l.x1).fold(f64::INFINITY, f64::min);
+    let top = pairs.first().unwrap().0.x1;
+    assert!(top > mid + 5.0, "top {top}, middle {mid}");
+    assert!(!cs.is_overset());
+}
+
+#[test]
+fn one_sided_wrap_leaves_the_other_side_empty() {
+    for (side, right) in [(WrapSide::RightSide, true), (WrapSide::LeftSide, false), (WrapSide::LargestArea, false)] {
+        let (d, sid) = doc_with_ellipse(WrapMode::BoundingBox, side);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let beside: Vec<&Line> = cs.frames[0].lines.iter().filter(|l| l.baseline - l.ascent < 200.0 && l.baseline + l.descent > 100.0).collect();
+        assert!(!beside.is_empty());
+        let mut rows: Vec<f64> = beside.iter().map(|l| l.baseline).collect();
+        rows.dedup();
+        assert_eq!(rows.len(), beside.len(), "{side:?}: one segment per line");
+        for l in beside {
+            assert!(if right { l.x0 >= 194.0 - 1e-6 } else { l.x1 <= 106.0 + 1e-6 }, "{side:?}: {}..{}", l.x0, l.x1);
+        }
+    }
+}
+
+#[test]
+fn contour_wrap_follows_the_outline_band_by_band() {
+    let (d, sid) = doc_with_ellipse(WrapMode::Contour, WrapSide::BothSides);
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    let c = ex.contour.as_ref().unwrap();
+    let width = |y0: f64, y1: f64| c.band_extent(y0, y1).map_or(0.0, |(a, b)| b - a);
+    let (top, mid, bottom) = (width(100.0, 104.0), width(146.0, 154.0), width(196.0, 200.0));
+    // 80 wide plus the 4 pt offset each side at the middle; much narrower at the ends.
+    assert!((mid - 88.0).abs() < 0.5, "{mid}");
+    assert!(top < mid - 20.0 && bottom < mid - 20.0, "{top} {mid} {bottom}");
+    // The band is the line's height, not its baseline: a band reaching the middle is full width.
+    assert!((width(120.0, 150.0) - 88.0).abs() < 0.5);
+    // Outside the outline and its offset: no block.
+    assert!(c.band_extent(205.0, 210.0).is_none());
+    // A bounding-box wrap blocks the rectangle at every band.
+    let (d, sid) = doc_with_ellipse(WrapMode::BoundingBox, WrapSide::BothSides);
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    assert!(ex.contour.is_none());
+    assert_eq!(ex.rect, Rect::new(106.0, 96.0, 194.0, 204.0));
+}
+
 #[test]
 fn paragraph_composer_is_no_worse_than_greedy() {
     // Sum of squared slack over lines (excluding last) should not exceed the greedy result.

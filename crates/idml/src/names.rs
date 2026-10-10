@@ -2,8 +2,8 @@
 
 use designcraft_color::BlendMode;
 use designcraft_doc::{
-    Align, Arrowhead, AutoSize, Cap, Capitalization, FirstBaseline, Join, Leading, NumberStyle, Position, StartParagraph, StrokeAlign, StrokeType,
-    TabAlign, VerticalJustification, WrapMode, WrapSide,
+    Align, Arrowhead, AutoSize, Cap, Capitalization, ContourType, FirstBaseline, Join, Leading, NumberStyle, Position, StartParagraph, StrokeAlign,
+    StrokeType, TabAlign, VerticalJustification, WrapMode, WrapSide,
 };
 use designcraft_geom::Unit;
 use designcraft_geom::corners::CornerShape;
@@ -383,6 +383,22 @@ pub fn wrap_mode_in(s: &str) -> WrapMode {
         .into_iter()
         .find(|m| wrap_mode_out(*m) == s)
         .unwrap_or(WrapMode::None)
+}
+pub fn contour_type_out(c: ContourType) -> &'static str {
+    match c {
+        ContourType::BoundingBox => "BoundingBox",
+        ContourType::DetectEdges => "DetectEdges",
+        ContourType::AlphaChannel => "AlphaChannel",
+        ContourType::PhotoshopPath => "PhotoshopPath",
+        ContourType::GraphicFrame => "GraphicFrame",
+        ContourType::SameAsClipping => "SameAsClipping",
+    }
+}
+pub fn contour_type_in(s: &str) -> ContourType {
+    [ContourType::BoundingBox, ContourType::DetectEdges, ContourType::AlphaChannel, ContourType::PhotoshopPath, ContourType::GraphicFrame]
+        .into_iter()
+        .find(|c| contour_type_out(*c) == s)
+        .unwrap_or(ContourType::SameAsClipping)
 }
 pub fn wrap_side_out(s: WrapSide) -> &'static str {
     match s {
