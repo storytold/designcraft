@@ -5,11 +5,12 @@ use std::io::{BufRead, Write};
 use serde_json::{Value, json};
 
 use crate::backend::Backend;
-use crate::tools::{call_tool, tool_definitions};
+use crate::tools::{call_tool, tool_definitions, unknown_argument};
 
 /// The MCP revision we implement.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
-const SUPPORTED_VERSIONS: &[&str] = &[PROTOCOL_VERSION, "2025-03-26", "2024-11-05"];
+const MODERN_VERSION: &str = "2026-07-28";
+const SUPPORTED_VERSIONS: &[&str] = &[MODERN_VERSION, PROTOCOL_VERSION, "2025-03-26", "2024-11-05"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -20,7 +21,8 @@ const RESOURCE_NOT_FOUND: i64 = -32002;
 
 const INSTRUCTIONS: &str = "DesignCraft is a page-layout app (an InDesign clone). Coordinates are points in spread \
 space (y down; on a single-page spread the page's top-left is (0,0); a default Letter page is 612×792). Every action \
-is a command: find ids and parameters with list_commands and run them with execute (or several with batch). Typical \
+is a command: command_list discovers ids and parameters, command_run executes them, command_batch runs several, \
+doc_inspect shows the document and render_preview returns a PNG. Existing tools remain available. Typical \
 flow: new_document → execute frame.create {rect:[x0,y0,x1,y1], content:\"text\", text:\"…\"} → set_story_text / \
 execute type.char / style.paragraph.apply → render_page to look at the result. inspect_document lists pages, items \
 (ids, bounds), stories (overset) and styles. place_image puts a picture on the page.";
@@ -33,6 +35,7 @@ pub const COMMANDS_URI: &str = "designcraft://commands";
 pub struct Server {
     backend: Box<dyn Backend>,
     initialized: bool,
+    modern: bool,
 }
 
 fn response(id: Value, result: Value) -> Value {
@@ -45,7 +48,7 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
 
 impl Server {
     pub fn new(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false }
+        Self { backend, initialized: false, modern: false }
     }
 
     pub fn backend(&mut self) -> &mut dyn Backend {
@@ -113,7 +116,22 @@ impl Server {
             return Some(error(Value::Null, INVALID_REQUEST, "`id` must be a string or number"));
         }
         Some(match self.request(method, &params) {
-            Ok(r) => response(id, r),
+            Ok(mut r) => {
+                let modern = params
+                    .get("_meta")
+                    .and_then(|m| m.get("io.modelcontextprotocol/protocolVersion"))
+                    .and_then(Value::as_str)
+                    .map_or(self.modern, |v| v == MODERN_VERSION);
+                if modern
+                    && matches!(method, "tools/list" | "resources/list" | "resources/templates/list" | "resources/read")
+                    && let Some(result) = r.as_object_mut()
+                {
+                    result.insert("resultType".into(), json!("complete"));
+                    result.insert("ttlMs".into(), json!(if method == "resources/read" { 0 } else { 600_000 }));
+                    result.insert("cacheScope".into(), json!("private"));
+                }
+                response(id, r)
+            }
             Err((code, m)) => error(id, code, m),
         })
     }
@@ -131,6 +149,7 @@ impl Server {
             "initialize" => {
                 let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL_VERSION);
                 let version = if SUPPORTED_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSION };
+                self.modern = version == MODERN_VERSION;
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {}, "resources": {}},
@@ -149,6 +168,9 @@ impl Server {
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "missing tool `name`".to_string()))?;
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+                if let Some(message) = unknown_argument(name, &args) {
+                    return Err((INVALID_PARAMS, message));
+                }
                 Ok(call_tool(self.backend.as_mut(), name, &args).to_value())
             }
             "resources/list" => Ok(json!({"resources": [

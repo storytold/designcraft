@@ -94,3 +94,33 @@ key        {"key": "Escape"}
 ## Community links
 
 `app.links` returns the ArtCraft Discord (https://discord.gg/artcraft), the website (https://getartcraft.com), DesignCraft's app page (https://getartcraft.com/apps/designcraft), its GitHub repository (https://github.com/storytold/designcraft) and the issue tracker. In the running app, the UI commands `help.discord`, `help.appPage`, `help.github`, `help.issues`, `help.website`, `help.app {app}` open them in the browser and `help.about {tab?}` shows the About window (tabs `about`, `contributors`, `models`). The server's `serverInfo.websiteUrl` is the app page.
+
+## Core conventions
+
+As in FilmCraft's MCP server, these tools provide a common entry point:
+
+| Tool | Arguments / result |
+|---|---|
+| `command_list` | `filter?`, `enabled_only?`; returns the command catalog as an array |
+| `command_run` | `id`, `params?`; runs one command |
+| `command_batch` | `steps: [{id, params?}]`, `stop_on_error?` (default true); returns `completed`, `failed`, and `results: [{ok, result? , error?}]` |
+| `doc_inspect` | No arguments; same document as `inspect_document` and `designcraft://document` |
+| `render_preview` | `page?`, `max_side?` (default 1024, 1–4096); bounded PNG without saving a file |
+| `ui_screenshot` | No arguments; capture the connected app window using a temporary file |
+
+The existing tools above remain listed with their existing arguments, including `batch`'s script and
+result-reference support. There are no hidden aliases. Every tool has a title and all four MCP hints.
+Tools that can save to a path are annotated as file writers even when the path is optional.
+
+Unknown top-level tool arguments return JSON-RPC `-32602`, naming the unknown key and the accepted
+keys. Engine command `params` remain unchanged: the registry describes parameters in prose, so the
+server does not infer accepted keys or warnings from it. Command failures and escaped backend panics
+return `isError: true`; subsequent requests still work. Malformed JSON returns `-32700` with a null id.
+
+Exports complete synchronously. A `progressToken` on a call and `notifications/cancelled` are
+harmlessly ignored; this server does not provide background export progress or cancellation.
+
+Clients using MCP 2026-07-28 (in `initialize` or per-request `_meta`) receive `resultType: "complete"`,
+`ttlMs`, and `cacheScope: "private"` on tool/resource lists and resource reads. Document and command
+reads use a zero TTL because their state can change; catalogs use ten minutes. Older clients keep
+the original response shape.

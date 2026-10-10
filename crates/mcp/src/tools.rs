@@ -61,19 +61,21 @@ fn mods_schema() -> Value {
     })
 }
 fn obj(props: Value, required: &[&str]) -> Value {
-    let mut o = json!({"type": "object", "properties": props});
+    let mut o = json!({"type": "object", "properties": props, "additionalProperties": false});
     if !required.is_empty() {
         o["required"] = json!(required);
     }
     o
 }
 fn tool(name: &str, title: &str, desc: &str, schema: Value, read_only: bool) -> Value {
+    let writes_file = matches!(name, "save_document" | "export_png" | "render_page" | "screenshot");
+    let read_only = read_only && !writes_file;
     json!({
         "name": name,
         "title": title,
         "description": desc,
         "inputSchema": schema,
-        "annotations": {"title": title, "readOnlyHint": read_only, "openWorldHint": false},
+        "annotations": {"title": title, "readOnlyHint": read_only, "destructiveHint": !read_only && !writes_file, "idempotentHint": read_only || writes_file, "openWorldHint": false},
     })
 }
 
@@ -84,6 +86,40 @@ pub fn tool_definitions() -> Vec<Value> {
     let empty = || obj(json!({}), &[]);
     let app_only = |d: &str| format!("{d}{APP_ONLY}");
     vec![
+        tool(
+            "command_list",
+            "List commands",
+            "Command catalog as an array; optionally filter by text or enabled state.",
+            obj(json!({"filter": string("Substring in id, label or menu"), "enabled_only": boolean("Only enabled commands")}), &[]),
+            true,
+        ),
+        tool(
+            "command_run",
+            "Run a command",
+            "Run a command by id with JSON params. Discover ids and params with command_list.",
+            obj(json!({"id": string("Command id"), "params": params_schema()}), &["id"]),
+            false,
+        ),
+        tool(
+            "command_batch",
+            "Run several commands",
+            "Run steps in order; return completed/failed counts and per-step ok/result/error. Each edit is its own undo step.",
+            obj(
+                json!({"steps": {"type":"array", "items":obj(json!({"id":string("Command id"),"params":params_schema()}), &["id"])},
+                       "stop_on_error":boolean("Stop at the first failure (default true)")}),
+                &["steps"],
+            ),
+            false,
+        ),
+        tool("doc_inspect", "Inspect the document", "Active document, pages, items, stories and selection, as inspect_document.", empty(), true),
+        tool(
+            "render_preview",
+            "Render a preview",
+            "Render a page as a PNG bounded by max_side (default 1024, 1–4096). Does not write files or change the document.",
+            obj(json!({"page":int("Page index (default 0)"),"max_side":{"type":"integer","minimum":1,"maximum":4096}}), &[]),
+            true,
+        ),
+        tool("ui_screenshot", "Capture the app window", &app_only("Capture the app window as a PNG, using a temporary file."), empty(), true),
         // ----- commands -----
         tool(
             "list_commands",
@@ -512,6 +548,19 @@ fn pointer(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
 fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<ToolResult, String> {
     let j = |v: Value| Ok(ToolResult::json(&v));
     match name {
+        "command_list" => {
+            let all = b.call("engine.commands", json!({}))?;
+            let mut filters = a.clone();
+            if let Some(enabled) = filters.remove("enabled_only") {
+                filters.insert("enabledOnly".into(), enabled);
+            }
+            j(filter_commands(all, &filters))
+        }
+        "command_run" => j(exec(b, req_str(a, "id")?, command_params(a.get("params"))?)?),
+        "command_batch" => command_batch(b, a),
+        "doc_inspect" => j(b.call("document.inspect", json!({}))?),
+        "render_preview" => render_preview(b, a),
+        "ui_screenshot" => screenshot(b, a),
         "list_commands" => {
             let all = b.call("engine.commands", json!({}))?;
             let list = filter_commands(all, a);
@@ -602,8 +651,63 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> ToolResult {
         Value::Null => &empty,
         _ => return ToolResult::error("tool arguments must be a JSON object"),
     };
-    match dispatch(b, name, a) {
-        Ok(r) => r,
-        Err(e) => ToolResult::error(format!("{name}: {e}")),
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(b, name, a))) {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => ToolResult::error(format!("{name}: {e}")),
+        Err(p) => ToolResult::error(format!("internal error: {}", designcraft_engine::guard::panic_message(p.as_ref()))),
     }
+}
+
+/// Validate unknown top-level keys against the same schema used by tools/list.
+pub(crate) fn unknown_argument(name: &str, args: &Value) -> Option<String> {
+    let def = tool_definitions().into_iter().find(|t| t.get("name").and_then(Value::as_str) == Some(name))?;
+    let props = def.get("inputSchema")?.get("properties")?.as_object()?;
+    let bad = args.as_object()?.keys().find(|k| !props.contains_key(*k))?;
+    let accepted = props.keys().map(String::as_str).collect::<Vec<_>>().join(", ");
+    Some(format!("unknown argument \"{bad}\" for {name}; expected: {}", if accepted.is_empty() { "no arguments" } else { &accepted }))
+}
+
+fn command_batch(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
+    let steps = a.get("steps").and_then(Value::as_array).ok_or("`steps` must be an array")?;
+    // Validate the envelope before applying any edits.
+    let steps = steps
+        .iter()
+        .map(|step| {
+            let step = step.as_object().ok_or("each step must be an object")?;
+            Ok((req_str(step, "id")?.to_string(), command_params(step.get("params"))?))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let stop = a.get("stop_on_error").and_then(Value::as_bool).unwrap_or(true);
+    let (mut completed, mut failed, mut results) = (0usize, 0usize, Vec::new());
+    for (id, params) in steps {
+        match exec(b, &id, params) {
+            Ok(result) => {
+                completed += 1;
+                results.push(json!({"ok":true,"result":result}));
+            }
+            Err(error) => {
+                failed += 1;
+                results.push(json!({"ok":false,"error":error}));
+                if stop {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(ToolResult { is_error: failed > 0, ..ToolResult::json(&json!({"completed":completed,"failed":failed,"results":results})) })
+}
+
+fn render_preview(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
+    let max = match a.get("max_side") {
+        None => 1024,
+        Some(v) => v.as_u64().filter(|n| (1..=4096).contains(n)).ok_or("`max_side` must be an integer from 1 to 4096")? as u32,
+    };
+    let r = b.call("ui.render", pick(a, &["page"]))?;
+    let encoded = r.get("pngBase64").and_then(Value::as_str).ok_or("renderer returned no image")?;
+    let png = designcraft_engine::cmd::base64_decode(encoded);
+    let img = image::load_from_memory(&png).map_err(|e| format!("preview: {e}"))?;
+    let img = if img.width().max(img.height()) > max { img.thumbnail(max, max) } else { img };
+    let rgba = img.to_rgba8();
+    let rendered = designcraft_render::Rendered { width: rgba.width(), height: rgba.height(), pixels: rgba.into_raw() };
+    Ok(ToolResult::image(designcraft_engine::cmd::base64_encode(&rendered.to_png()), &json!({"width":rendered.width,"height":rendered.height})))
 }
