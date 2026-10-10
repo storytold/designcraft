@@ -385,7 +385,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Numbering & Section Options…",
             ["Layout"],
             None,
-            "{page (1-based; starts a section there), startNumber?: n|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters, prefix?, includePrefix?, marker?, remove?: bool}",
+            "{page (1-based; starts a section there), startNumber?: n|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits, prefix? (up to 8 characters; no + or comma), includePrefix?, marker?, remove?: bool}",
             has_doc,
             |s, p| {
                 let page = p.get("page").and_then(Value::as_u64).ok_or_else(|| bad("layout.section", "missing page"))? as usize;
@@ -394,6 +394,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("layout.section", format!("no page {page}")));
                 }
                 let start = page - 1;
+                if let Some(prefix) = p.get("prefix").and_then(Value::as_str)
+                    && (prefix.chars().count() > 8 || prefix.contains(['+', ',']))
+                {
+                    return Err(bad("layout.section", "section prefix: up to 8 characters, without + or ,"));
+                }
                 let p = p.clone();
                 s.edit(|d, _| {
                     d.sections.retain(|x| x.start != start || start == 0);
@@ -414,7 +419,11 @@ pub fn specs() -> Vec<CommandSpec> {
                         None => {}
                     }
                     if let Some(v) = p.get("style") {
-                        sec.style = serde_json::from_value(v.clone()).map_err(|e| bad("layout.section", e.to_string()))?;
+                        sec.style = match serde_json::from_value(v.clone()) {
+                            Ok(designcraft_doc::NumberStyle::Symbols) => return Err(bad("layout.section", "symbols don't number pages")),
+                            Ok(style) => style,
+                            Err(e) => return Err(bad("layout.section", e.to_string())),
+                        };
                     }
                     if let Some(v) = p.get("prefix").and_then(Value::as_str) {
                         sec.prefix = v.into();
@@ -985,6 +994,20 @@ mod page_numbering_view_tests {
         assert_eq!((0..4).map(|i| s.page_label(i)).collect::<Vec<_>>(), ["1", "2", "3", "4"]);
         assert_eq!(s.resolve_page("1"), Some(0));
         assert_eq!(s.resolve_page("9"), None);
+    }
+
+    #[test]
+    fn section_prefixes_are_short_and_avoid_plus_and_comma() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        for prefix in ["A-", "Appendix", "§ 1"] {
+            s.execute("layout.section", &json!({"page": 2, "prefix": prefix})).unwrap();
+        }
+        for prefix in ["Appendix1", "A+", "1,2"] {
+            assert!(s.execute("layout.section", &json!({"page": 2, "prefix": prefix})).is_err(), "{prefix}");
+        }
+        assert!(s.execute("layout.section", &json!({"page": 2, "style": "symbols"})).is_err());
+        assert_eq!(s.doc().unwrap().doc.sections.iter().find(|x| x.start == 1).unwrap().prefix, "§ 1", "a refused prefix changes nothing");
     }
 }
 
