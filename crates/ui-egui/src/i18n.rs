@@ -2675,6 +2675,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "以英文显示字体名称",
         ],
     ),
+    ("Show CJK Features", ["CJK-Funktionen anzeigen", "Afficher les fonctions CJK", "Mostrar funciones CJK", "CJK 機能を表示", "显示中日韩功能"]),
     ("Missing Glyphs", ["Fehlende Glyphen", "Glyphes manquants", "Glifos que faltan", "欠落グリフ", "缺失字形"]),
     (
         "Draw Missing Glyphs from Fallback Fonts",
@@ -2816,6 +2817,12 @@ const TABLE: &[(&str, [&str; 5])] = &[
 /// Interface direction; independent of document binding and paragraph direction.
 pub fn is_rtl(lang: &str) -> bool {
     lang == "ar"
+}
+
+/// A Japanese, Chinese or Korean interface language (`zh-tw` included): CJK features are shown by
+/// default (see [`crate::cjk_features`]).
+pub fn is_cjk(lang: &str) -> bool {
+    matches!(lang.split('-').next(), Some("ja" | "zh" | "ko"))
 }
 
 fn column(lang: &str) -> Option<usize> {

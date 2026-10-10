@@ -1007,6 +1007,18 @@ impl DesignApp {
     }
 }
 
+/// Whether CJK-only interface is shown (Preferences › Type › Show CJK Features): the explicit
+/// preference, else on for a Japanese, Chinese or Korean interface language.
+///
+/// Every menu item, dialog section and panel field that only CJK typesetting uses goes behind
+/// this check, as in InDesign, whose Roman edition leaves those features out. It hides interface
+/// only: the commands behind it run whatever it says (from scripts, the control channel and MCP).
+/// Story Direction, the vertical type tools, frame grids, Language, Digits and font naming are
+/// in both editions and stay outside it.
+pub fn cjk_features(app: &DesignApp) -> bool {
+    app.session.prefs.cjk_features.unwrap_or_else(|| i18n::is_cjk(&app.ui.language))
+}
+
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft
 /// and IDML.
 pub fn opens_as_document(name: &str) -> bool {

@@ -1351,6 +1351,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Advanced Type", "高度な書式"),
     ("Composition", "組版"),
     ("Show Font Names in English", "フォント名を英語で表示"),
+    ("Show CJK Features", "CJK 機能を表示"),
     ("Missing Glyphs", "欠落グリフ"),
     ("Draw Missing Glyphs from Fallback Fonts", "欠落グリフを代替フォントで表示"),
     ("Units & Increments", "単位と増分"),

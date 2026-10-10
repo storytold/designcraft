@@ -1352,6 +1352,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Advanced Type", "Додаткові параметри тексту"),
     ("Composition", "Компонування"),
     ("Show Font Names in English", "Показувати назви шрифтів англійською"),
+    ("Show CJK Features", "Показувати функції CJK"),
     ("Missing Glyphs", "Відсутні гліфи"),
     ("Draw Missing Glyphs from Fallback Fonts", "Відображати відсутні гліфи резервними шрифтами"),
     ("Units & Increments", "Одиниці та кроки"),
