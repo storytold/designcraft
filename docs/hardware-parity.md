@@ -31,7 +31,7 @@ graphics driver loses the user entirely. Overall numbers: [target-app-parity.md]
 | macOS (Apple silicon, Intel) | ✓ | ✓ primary development platform | Intel GPU start failure (#334); window controls misaligned (#333); font managers (#327) |
 | Windows x64 | ✓ | ~ builds and installers ship | copy/paste and context menus (#351, #312), installer confusion (#64), launch failures (#273, #167) |
 | Windows ARM64 | ✓ | ~ build (CI workflow) | not exercised at runtime |
-| Linux (x86_64, aarch64) | ✗ | ~ deb, AppImage, Flatpak | clipboard (#164), panels don't scroll (#267), CJK UI font (#332) |
+| Linux (x86_64, aarch64; riscv64 tar.gz) | ✗ | ~ deb, AppImage, Flatpak | clipboard (#164), panels don't scroll (#267), CJK UI font (#332) |
 | FreeBSD | ✗ | ~ build | |
 | Web (WASM) | ✗ (InDesign on the web is not shipped) | ~ same UI, file picker, downloads; no control channel | |
 

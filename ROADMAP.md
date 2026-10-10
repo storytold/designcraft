@@ -129,6 +129,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-10** · Version 0.6.0; releases add a Linux riscv64 tar.gz (cross-compiled, CLI
+  smoke-tested under QEMU).
 - **2026-10-10** · Readiness per audience: full ~47% (method aligned with the standard, was
   42%), mainstream practitioner ~42%, essentials user ~54%, each with hours to ~95%.
 - **2026-10-10** · Stage re-normalized to **pre-alpha** under craftrules' core-workflow gate: text
