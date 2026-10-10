@@ -267,6 +267,7 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
                 auto_fit: Default::default(),
                 fit_align: 4,
                 crop: [0.0; 4],
+                wrap: Default::default(),
             });
             it.stroke.weight = 0.0;
             it
@@ -432,6 +433,7 @@ fn rasterize_where(
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
         img_item.stroke.weight = 0.0;
         img_item.alt_text = it.alt_text.clone();

@@ -148,7 +148,7 @@ fn item_area(it: &Item) -> Option<Rect> {
     let mut ok = true;
     it.walk(&mut |i| {
         // Effects spill outside; text wrap reflows other frames.
-        if i.effects.any() || i.wrap.mode != designcraft_doc::WrapMode::None {
+        if i.effects.any() || i.has_wrap() {
             ok = false;
         }
     });
