@@ -29,6 +29,9 @@ log = { workspace = true }
 regex = { workspace = true }
 quick-xml = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 designcraft-fonts = { workspace = true, features = ["testing"] }
 zip = { workspace = true }

@@ -28,6 +28,38 @@ fn zip_files_plain() -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
+fn eocd_offset(bytes: &[u8]) -> usize {
+    bytes.windows(4).rposition(|window| window == b"PK\x05\x06").unwrap()
+}
+
+fn as_zip64(mut bytes: Vec<u8>) -> Vec<u8> {
+    let eocd = eocd_offset(&bytes);
+    let entries = u16::from_le_bytes(bytes[eocd + 10..eocd + 12].try_into().unwrap()) as u64;
+    let directory_size = u32::from_le_bytes(bytes[eocd + 12..eocd + 16].try_into().unwrap()) as u64;
+    let directory_offset = u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as u64;
+    let end = bytes.split_off(eocd);
+    let zip64_offset = bytes.len() as u64;
+    bytes.extend_from_slice(b"PK\x06\x06");
+    bytes.extend_from_slice(&44u64.to_le_bytes());
+    bytes.extend_from_slice(&45u16.to_le_bytes());
+    bytes.extend_from_slice(&45u16.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&entries.to_le_bytes());
+    bytes.extend_from_slice(&entries.to_le_bytes());
+    bytes.extend_from_slice(&directory_size.to_le_bytes());
+    bytes.extend_from_slice(&directory_offset.to_le_bytes());
+    bytes.extend_from_slice(b"PK\x06\x07");
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&zip64_offset.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    let mut end = end;
+    end[8..12].fill(0xff);
+    end[12..20].fill(0xff);
+    bytes.extend_from_slice(&end);
+    bytes
+}
+
 /// A hand-written, minimal IDML document: one facing-pages spread with a right page, a
 /// threaded story across two frames, a tint and a grouped paragraph style.
 const DESIGNMAP: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -259,11 +291,12 @@ fn imports_hand_written_fixture() {
     let oval = &g.children()[0];
     assert_eq!(oval.fill.swatch, "Fade");
     assert_eq!((oval.stroke.swatch.as_str(), oval.stroke.weight), ("Brand", 2.0));
-    // Linked image with a missing file: link recorded, no data; stroke from the object style.
+    // An author-machine path is retained only as a package-local lookup hint; the stroke still
+    // comes from the object style.
     let img = sp.items.iter().find(|i| i.graphic().is_some()).unwrap();
     assert_eq!(img.stroke.swatch, "[Black]");
     let a = &d.assets[&img.graphic().unwrap().asset];
-    assert_eq!(a.link.as_deref(), Some("/definitely/missing dir/photo.jpg"));
+    assert_eq!(a.link.as_deref(), Some("photo.jpg"));
     assert!(a.data.is_empty());
     assert_eq!(a.mime, "image/jpeg");
     assert_eq!(a.name, "photo.jpg");
@@ -454,11 +487,108 @@ fn round_trips_small_document() {
 
 #[test]
 fn uri_and_base64_helpers() {
-    assert_eq!(import::uri_to_path("file:/a%20b/c.png"), "/a b/c.png");
-    assert_eq!(import::uri_to_path("file:///C:/x/y.jpg"), "C:/x/y.jpg");
+    assert_eq!(import::uri_to_path("file:Links/a%20b/c.png").as_deref(), Some("Links/a b/c.png"));
+    assert_eq!(import::uri_to_path("images/photo.jpg").as_deref(), Some("images/photo.jpg"));
+    assert_eq!(import::uri_to_path("file:/original/a.png").as_deref(), Some("a.png"));
+    assert_eq!(import::uri_to_path("file:///C:/project/Links/sub/x.jpg").as_deref(), Some("Links/sub/x.jpg"));
+    for invalid in ["file:../x.jpg", "file:a/%2e%2e/x.jpg", "file:a//x.jpg", "file:a/%GG/x.jpg", "https://example.test/x.jpg"] {
+        assert_eq!(import::uri_to_path(invalid), None, "{invalid}");
+    }
     assert_eq!(export::path_to_uri("/a b/c.png"), "file:/a%20b/c.png");
     let data: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
     assert_eq!(base64_decode(&base64_encode(&data)), data);
+    assert!(base64_decode_bounded("YWJjZGU=", 4).is_none());
+}
+
+#[test]
+fn linked_resource_reader_receives_only_supported_relative_paths() {
+    use std::cell::RefCell;
+
+    let spread = SPREAD.replace("file:/definitely/missing%20dir/photo.jpg", "file:///C:/old/Links/photo%20one.jpg");
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let paths = RefCell::new(Vec::new());
+    let d = import_idml_with(&bytes, &|path| {
+        paths.borrow_mut().push(path.to_string());
+        Some(vec![0xff, 0xd8, 0xff, 0xd9])
+    })
+    .unwrap();
+    assert_eq!(paths.into_inner(), ["Links/photo one.jpg"]);
+    let asset = d.assets.values().next().unwrap();
+    assert_eq!(asset.link.as_deref(), Some("Links/photo one.jpg"));
+    assert_eq!(asset.mime, "image/jpeg");
+    assert_eq!(asset.data.as_slice(), &[0xff, 0xd8, 0xff, 0xd9]);
+}
+
+#[test]
+fn archive_entry_count_is_bounded() {
+    use zip::write::SimpleFileOptions;
+
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for i in 0..=import::MAX_ARCHIVE_ENTRIES {
+        w.start_file(format!("Resources/Part{i}.xml"), SimpleFileOptions::default()).unwrap();
+    }
+    let bytes = w.finish().unwrap().into_inner();
+    assert!(import_idml(&bytes).is_err_and(|e| e.to_string().contains("entries")));
+}
+
+#[test]
+fn archive_entry_paths_are_validated() {
+    let bytes = zip_files(&[("../designmap.xml", "<Document/>")]);
+    assert!(import_idml(&bytes).is_err_and(|e| e.to_string().contains("entry name")));
+}
+
+#[test]
+fn zip_directory_preflight_handles_comments_zip64_and_disk_fields() {
+    use zip::write::SimpleFileOptions;
+
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer.set_comment("ordinary archive comment");
+    writer.start_file("designmap.xml", SimpleFileOptions::default()).unwrap();
+    writer.write_all(b"<Document/>").unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+    assert_eq!(import::preflight_zip(&bytes).unwrap(), 1);
+
+    let zip64 = as_zip64(bytes.clone());
+    assert_eq!(import::preflight_zip(&zip64).unwrap(), 1);
+    assert!(zip::ZipArchive::new(std::io::Cursor::new(&zip64)).is_ok());
+
+    let mut missing_locator = bytes.clone();
+    let eocd = eocd_offset(&missing_locator);
+    missing_locator[eocd + 8..eocd + 12].fill(0xff);
+    assert!(import::preflight_zip(&missing_locator).is_err_and(|e| e.to_string().contains("locator")));
+
+    let mut multi_disk = bytes;
+    let eocd = eocd_offset(&multi_disk);
+    multi_disk[eocd + 4..eocd + 6].copy_from_slice(&1u16.to_le_bytes());
+    assert!(import::preflight_zip(&multi_disk).is_err_and(|e| e.to_string().contains("multi-disk")));
+
+    let mut oversized_directory = zip_files_plain();
+    let eocd = eocd_offset(&oversized_directory);
+    oversized_directory[eocd + 12..eocd + 16].copy_from_slice(&(16u32 * 1024 * 1024 + 1).to_le_bytes());
+    assert!(import::preflight_zip(&oversized_directory).is_err_and(|e| e.to_string().contains("central directory exceeds")));
+}
+
+#[test]
+fn repeated_and_excessive_designmap_includes_are_rejected() {
+    let duplicate = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+        <idPkg:Story src="Stories/Story_s.xml"/>
+        <idPkg:Story src="Stories/Story_s.xml"/>
+    </Document>"#;
+    let bytes = zip_files(&[("designmap.xml", duplicate), ("Stories/Story_s.xml", "<idPkg:Story/>")]);
+    assert!(import_idml(&bytes).is_err_and(|e| e.to_string().contains("duplicate included part")));
+
+    let includes = (0..=import::MAX_IDML_INCLUDES).map(|index| format!(r#"<idPkg:Story src="Stories/Story_{index}.xml"/>"#)).collect::<String>();
+    let designmap = format!(r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">{includes}</Document>"#);
+    let bytes = zip_files(&[("designmap.xml", &designmap)]);
+    assert!(import_idml(&bytes).is_err_and(|e| e.to_string().contains("include count")));
 }
 
 #[test]

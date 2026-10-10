@@ -955,6 +955,7 @@ dependencies = [
  "log",
  "quick-xml 0.38.4",
  "regex",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

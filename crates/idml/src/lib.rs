@@ -48,12 +48,14 @@ mod xml;
 mod tests;
 
 pub use export::{ExportOptions, export_idml, export_idml_with};
-pub use import::{import_idml, import_idml_with};
+pub use import::{MAX_ARCHIVE_BYTES, import_idml, import_idml_with};
 
 /// The IDML package mimetype (content of the first, stored `mimetype` entry).
 pub const MIMETYPE: &str = "application/vnd.adobe.indesign-idml-package";
 /// The DOM version written to every part.
 pub const DOM_VERSION: &str = "16.0";
+/// Largest linked or embedded resource accepted during import.
+pub const MAX_LINKED_RESOURCE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdmlError {
@@ -94,8 +96,15 @@ pub(crate) fn base64_encode(data: &[u8]) -> String {
 }
 
 /// Lenient base64 decoding (whitespace and unknown characters are skipped).
+#[cfg(test)]
 pub(crate) fn base64_decode(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    base64_decode_bounded(s, usize::MAX).unwrap_or_default()
+}
+
+/// Lenient base64 decoding with an output budget.
+pub(crate) fn base64_decode_bounded(s: &str, max_bytes: usize) -> Option<Vec<u8>> {
+    let capacity = s.len().saturating_mul(3).saturating_div(4).min(max_bytes);
+    let mut out = Vec::with_capacity(capacity);
     let mut buf = 0u32;
     let mut bits = 0;
     for b in s.bytes() {
@@ -111,10 +120,13 @@ pub(crate) fn base64_decode(s: &str) -> Vec<u8> {
         bits += 6;
         if bits >= 8 {
             bits -= 8;
+            if out.len() >= max_bytes {
+                return None;
+            }
             out.push((buf >> bits) as u8);
         }
     }
-    out
+    Some(out)
 }
 
 /// Sniff an image's MIME type and pixel size from its header (PNG, JPEG, GIF, WebP, TIFF).

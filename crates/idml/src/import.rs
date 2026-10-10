@@ -17,61 +17,131 @@ use designcraft_geom::corners::{Corner, CornerOptions};
 use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
 
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, unescape_id};
-use crate::xml::{El, Node, parse};
-use crate::{IdmlError, MIMETYPE, Result, base64_decode, sniff_image};
+use crate::xml::{El, Node, XmlBudget, parse_with_budget};
+use crate::{IdmlError, MAX_LINKED_RESOURCE_BYTES, MIMETYPE, Result, base64_decode_bounded, sniff_image};
 
-/// Import an IDML package. Linked images are read from disk when available (not on wasm).
+/// Largest compressed IDML package accepted by the importer.
+pub const MAX_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_ARCHIVE_ENTRIES: usize = 4_096;
+const MAX_ARCHIVE_PART_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ARCHIVE_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_CENTRAL_DIRECTORY_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ARCHIVE_NAME_BYTES: usize = 1_024;
+pub(crate) const MAX_IDML_INCLUDES: usize = 2_048;
+const MAX_LINKED_RESOURCE_REFERENCES: usize = 4_096;
+const MAX_EXTERNAL_RESOURCE_READS: usize = 1_024;
+const MAX_RESOURCE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_TABLE_CELLS: usize = 65_536;
+
+/// Import an IDML package without resolving external linked resources.
+///
+/// Call [`import_idml_with`] when a trusted caller can resolve the normalized relative paths
+/// emitted by the importer against the package's location.
 pub fn import_idml(bytes: &[u8]) -> Result<Document> {
     import_idml_with(bytes, &default_reader)
 }
 
-fn default_reader(path: &str) -> Option<Vec<u8>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::fs::read(path).ok()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = path;
-        None
-    }
+fn default_reader(_path: &str) -> Option<Vec<u8>> {
+    None
 }
 
-/// Import with a custom reader for linked files (`path` → bytes).
+/// Import with a custom reader for linked files (normalized relative `path` → bytes).
+///
+/// Absolute paths, parent components, non-file URIs, and unsupported resource types are never
+/// passed to the reader. Returned resources larger than [`MAX_LINKED_RESOURCE_BYTES`] are ignored.
 pub fn import_idml_with(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Document> {
+    if bytes.len() > MAX_ARCHIVE_BYTES {
+        return Err(IdmlError::NotIdml(format!("archive exceeds {MAX_ARCHIVE_BYTES} bytes")));
+    }
+    // This archive-only preflight is the integration seam for the shared archive parser. IDML
+    // entry-name and expected-part checks intentionally remain below, after archive inspection.
+    let expected_entries = preflight_archive(bytes)?.entries;
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
-    let mut files: HashMap<String, Vec<u8>> = HashMap::new();
+    if zip.len() != expected_entries {
+        return Err(IdmlError::NotIdml("archive directory entry count changed after preflight".into()));
+    }
+    let mut entry_indices = HashMap::new();
+    let mut seen_names = HashSet::with_capacity(expected_entries);
+    let mut declared_expanded_bytes = 0u64;
     for i in 0..zip.len() {
-        let mut f = zip.by_index(i).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
+        let f = zip.by_index(i).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
+        let name = f.name().to_string();
+        if !safe_archive_name(&name, f.is_dir()) {
+            return Err(IdmlError::NotIdml(format!("invalid archive entry name `{name}`")));
+        }
+        if f.size() > MAX_ARCHIVE_PART_BYTES {
+            return Err(IdmlError::Part { part: name, msg: format!("part exceeds {MAX_ARCHIVE_PART_BYTES} bytes") });
+        }
+        declared_expanded_bytes =
+            declared_expanded_bytes.checked_add(f.size()).ok_or_else(|| IdmlError::NotIdml("expanded archive size overflow".into()))?;
+        if declared_expanded_bytes > MAX_ARCHIVE_EXPANDED_BYTES {
+            return Err(IdmlError::NotIdml(format!("expanded archive exceeds {MAX_ARCHIVE_EXPANDED_BYTES} bytes")));
+        }
         if f.is_dir() {
             continue;
         }
-        let name = f.name().to_string();
-        // The size is what the archive claims: don't reserve more than a sane part up front.
-        let mut buf = Vec::with_capacity((f.size() as usize).min(1 << 24));
-        f.read_to_end(&mut buf).map_err(|e| IdmlError::Part { part: name.clone(), msg: e.to_string() })?;
-        files.insert(name, buf);
+        if !seen_names.insert(name.clone()) {
+            return Err(IdmlError::NotIdml(format!("duplicate archive entry `{name}`")));
+        }
+        if should_load_archive_entry(&name) {
+            entry_indices.insert(name, i);
+        }
     }
-    if let Some(m) = files.get("mimetype")
-        && String::from_utf8_lossy(m).trim() != MIMETYPE
-    {
-        return Err(IdmlError::NotIdml(format!("unexpected mimetype `{}`", String::from_utf8_lossy(m).trim())));
+
+    let mut loaded_expanded_bytes = 0u64;
+    if let Some(index) = entry_indices.get("mimetype").copied() {
+        let m = read_zip_part(&mut zip, index, "mimetype", &mut loaded_expanded_bytes)?;
+        if String::from_utf8_lossy(&m).trim() != MIMETYPE {
+            return Err(IdmlError::NotIdml(format!("unexpected mimetype `{}`", String::from_utf8_lossy(&m).trim())));
+        }
     }
-    let dm = files.get("designmap.xml").ok_or_else(|| IdmlError::NotIdml("missing designmap.xml".into()))?;
-    let root = parse(dm).map_err(|msg| IdmlError::Part { part: "designmap.xml".into(), msg })?;
+    let designmap_index = entry_indices.get("designmap.xml").copied().ok_or_else(|| IdmlError::NotIdml("missing designmap.xml".into()))?;
+    let dm = read_zip_part(&mut zip, designmap_index, "designmap.xml", &mut loaded_expanded_bytes)?;
+    let mut xml_budget = XmlBudget::default();
+    let root = parse_with_budget(&dm, &mut xml_budget).map_err(|msg| IdmlError::Part { part: "designmap.xml".into(), msg })?;
+    drop(dm);
     if root.local() != "Document" {
         return Err(IdmlError::NotIdml(format!("designmap root is <{}>", root.name)));
     }
-    // Flatten includes: every `idPkg:*` child is replaced by the children of its part's root.
-    let mut top: Vec<El> = Vec::new();
+
+    let mut include_sources = Vec::new();
+    let mut seen_includes = HashSet::new();
     for c in root.elements() {
         if c.name.starts_with("idPkg:") {
             let Some(src) = c.get("src") else { continue };
-            let Some(data) = files.get(src) else { continue };
-            let part = parse(data).map_err(|msg| IdmlError::Part { part: src.into(), msg })?;
-            top.extend(part.elements().cloned());
+            if !expected_xml_part(src) {
+                return Err(IdmlError::Part { part: "designmap.xml".into(), msg: format!("invalid included part `{src}`") });
+            }
+            if include_sources.len() >= MAX_IDML_INCLUDES {
+                return Err(IdmlError::Part { part: "designmap.xml".into(), msg: format!("include count exceeds {MAX_IDML_INCLUDES}") });
+            }
+            if !seen_includes.insert(src.to_string()) {
+                return Err(IdmlError::Part { part: "designmap.xml".into(), msg: format!("duplicate included part `{src}`") });
+            }
+            include_sources.push(src.to_string());
+        }
+    }
+
+    // Parse only referenced XML parts, dropping their expanded bytes before the next part. The
+    // parsed DOMs remain live because the importer makes several ordered passes over top-level
+    // resources, but their nodes and strings share one import-wide budget.
+    let mut parsed_parts = HashMap::with_capacity(include_sources.len());
+    for src in include_sources {
+        let Some(index) = entry_indices.get(&src).copied() else { continue };
+        let data = read_zip_part(&mut zip, index, &src, &mut loaded_expanded_bytes)?;
+        let part = parse_with_budget(&data, &mut xml_budget).map_err(|msg| IdmlError::Part { part: src.clone(), msg })?;
+        parsed_parts.insert(src, part);
+    }
+
+    // Flatten includes as references rather than cloning every parsed subtree.
+    let mut top: Vec<&El> = Vec::new();
+    for c in root.elements() {
+        if c.name.starts_with("idPkg:") {
+            let Some(src) = c.get("src") else { continue };
+            let Some(part) = parsed_parts.get(src) else { continue };
+            top.extend(part.elements());
         } else {
-            top.push(c.clone());
+            top.push(c);
         }
     }
     let mut im = Importer::new(read_link);
@@ -81,13 +151,361 @@ pub fn import_idml_with(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>
     Ok(d)
 }
 
+fn read_zip_part<R: Read + std::io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    index: usize,
+    name: &str,
+    loaded_expanded_bytes: &mut u64,
+) -> Result<Vec<u8>> {
+    let f = zip.by_index(index).map_err(|e| IdmlError::Part { part: name.into(), msg: e.to_string() })?;
+    let size = f.size();
+    let data = read_bounded(f, size, MAX_ARCHIVE_PART_BYTES).map_err(|msg| IdmlError::Part { part: name.into(), msg })?;
+    *loaded_expanded_bytes =
+        loaded_expanded_bytes.checked_add(data.len() as u64).ok_or_else(|| IdmlError::NotIdml("expanded archive size overflow".into()))?;
+    if *loaded_expanded_bytes > MAX_ARCHIVE_EXPANDED_BYTES {
+        return Err(IdmlError::NotIdml(format!("expanded archive exceeds {MAX_ARCHIVE_EXPANDED_BYTES} bytes")));
+    }
+    Ok(data)
+}
+
+fn zip_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let end = offset.checked_add(2)?;
+    let value = bytes.get(offset..end)?;
+    Some(u16::from_le_bytes([value[0], value[1]]))
+}
+
+fn zip_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    let value = bytes.get(offset..end)?;
+    Some(u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
+}
+
+fn zip_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    let end = offset.checked_add(8)?;
+    let value = bytes.get(offset..end)?;
+    Some(u64::from_le_bytes([value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7]]))
+}
+
+fn zip_signature(bytes: &[u8], offset: usize, signature: &[u8; 4]) -> bool {
+    offset.checked_add(signature.len()).and_then(|end| bytes.get(offset..end)).is_some_and(|value| value == signature)
+}
+
+struct ArchivePreflight {
+    entries: usize,
+}
+
+/// Bound the ZIP parser's directory work before `ZipArchive` allocates from archive metadata.
+///
+/// Supported ZIP64 archives must be single-disk, use the standard locator immediately before the
+/// EOCD, and place the ZIP64 EOCD at the locator's checked offset. Split archives and ambiguous
+/// EOCD records are rejected. The central directory may end with one standard digital-signature
+/// record; other trailing directory structures are rejected. This function is deliberately free
+/// of IDML path/type policy so it can be replaced by `designcraft-archive` without weakening the
+/// `safe_archive_name` and `expected_xml_part` checks at the import boundary.
+fn preflight_archive(bytes: &[u8]) -> Result<ArchivePreflight> {
+    const EOCD_SIZE: usize = 22;
+    const MAX_COMMENT: usize = u16::MAX as usize;
+    const ZIP64_LOCATOR_SIZE: usize = 20;
+    const CENTRAL_HEADER_SIZE: usize = 46;
+
+    if bytes.len() > MAX_ARCHIVE_BYTES {
+        return Err(IdmlError::NotIdml(format!("archive exceeds {MAX_ARCHIVE_BYTES} bytes")));
+    }
+    let max_eocd = bytes.len().checked_sub(EOCD_SIZE).ok_or_else(|| IdmlError::NotIdml("missing ZIP end record".into()))?;
+    let search_start = bytes.len().saturating_sub(EOCD_SIZE.saturating_add(MAX_COMMENT));
+    let mut eocd = None;
+    for offset in (search_start..=max_eocd).rev() {
+        if !zip_signature(bytes, offset, b"PK\x05\x06") {
+            continue;
+        }
+        let Some(comment_len) = zip_u16(bytes, offset + 20).map(usize::from) else { continue };
+        let Some(end) = offset.checked_add(EOCD_SIZE).and_then(|value| value.checked_add(comment_len)) else { continue };
+        if end != bytes.len() {
+            continue;
+        }
+        if eocd.replace(offset).is_some() {
+            return Err(IdmlError::NotIdml("ambiguous ZIP end records".into()));
+        }
+    }
+    let eocd = eocd.ok_or_else(|| IdmlError::NotIdml("missing ZIP end record".into()))?;
+    let disk = zip_u16(bytes, eocd + 4).ok_or_else(|| IdmlError::NotIdml("truncated ZIP end record".into()))?;
+    let directory_disk = zip_u16(bytes, eocd + 6).ok_or_else(|| IdmlError::NotIdml("truncated ZIP end record".into()))?;
+    let disk_entries = zip_u16(bytes, eocd + 8).ok_or_else(|| IdmlError::NotIdml("truncated ZIP end record".into()))?;
+    let total_entries = zip_u16(bytes, eocd + 10).ok_or_else(|| IdmlError::NotIdml("truncated ZIP end record".into()))?;
+    let directory_size = zip_u32(bytes, eocd + 12).ok_or_else(|| IdmlError::NotIdml("truncated ZIP end record".into()))?;
+    let directory_offset = zip_u32(bytes, eocd + 16).ok_or_else(|| IdmlError::NotIdml("truncated ZIP end record".into()))?;
+    let sentinel = disk == u16::MAX
+        || directory_disk == u16::MAX
+        || disk_entries == u16::MAX
+        || total_entries == u16::MAX
+        || directory_size == u32::MAX
+        || directory_offset == u32::MAX;
+
+    let locator = eocd.checked_sub(ZIP64_LOCATOR_SIZE).filter(|offset| zip_signature(bytes, *offset, b"PK\x06\x07"));
+    let (entries, directory_size, directory_offset, directory_boundary) = if let Some(locator) = locator {
+        let locator_disk = zip_u32(bytes, locator + 4).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 locator".into()))?;
+        let record_offset = zip_u64(bytes, locator + 8).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 locator".into()))?;
+        let disks = zip_u32(bytes, locator + 16).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 locator".into()))?;
+        if locator_disk != 0 || disks != 1 {
+            return Err(IdmlError::NotIdml("multi-disk ZIP archives are unsupported".into()));
+        }
+        let record_offset = usize::try_from(record_offset).map_err(|_| IdmlError::NotIdml("ZIP64 end record offset is too large".into()))?;
+        if !zip_signature(bytes, record_offset, b"PK\x06\x06") {
+            return Err(IdmlError::NotIdml("missing ZIP64 end record".into()));
+        }
+        let record_size = zip_u64(bytes, record_offset + 4).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 end record".into()))?;
+        if record_size < 44 {
+            return Err(IdmlError::NotIdml("invalid ZIP64 end record size".into()));
+        }
+        let record_size = usize::try_from(record_size).map_err(|_| IdmlError::NotIdml("ZIP64 end record is too large".into()))?;
+        let record_end = record_offset
+            .checked_add(12)
+            .and_then(|value| value.checked_add(record_size))
+            .ok_or_else(|| IdmlError::NotIdml("ZIP64 end record size overflow".into()))?;
+        if record_end != locator {
+            return Err(IdmlError::NotIdml("ZIP64 locator is not adjacent to its end record".into()));
+        }
+        let zip64_disk = zip_u32(bytes, record_offset + 16).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 end record".into()))?;
+        let zip64_directory_disk = zip_u32(bytes, record_offset + 20).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 end record".into()))?;
+        let zip64_disk_entries = zip_u64(bytes, record_offset + 24).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 end record".into()))?;
+        let zip64_entries = zip_u64(bytes, record_offset + 32).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 end record".into()))?;
+        let zip64_directory_size = zip_u64(bytes, record_offset + 40).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 end record".into()))?;
+        let zip64_directory_offset = zip_u64(bytes, record_offset + 48).ok_or_else(|| IdmlError::NotIdml("truncated ZIP64 end record".into()))?;
+        if zip64_disk != 0 || zip64_directory_disk != 0 || zip64_disk_entries != zip64_entries {
+            return Err(IdmlError::NotIdml("multi-disk ZIP archives are unsupported".into()));
+        }
+        if disk != u16::MAX && disk != 0
+            || directory_disk != u16::MAX && directory_disk != 0
+            || disk_entries != u16::MAX && u64::from(disk_entries) != zip64_entries
+            || total_entries != u16::MAX && u64::from(total_entries) != zip64_entries
+            || directory_size != u32::MAX && u64::from(directory_size) != zip64_directory_size
+            || directory_offset != u32::MAX && u64::from(directory_offset) != zip64_directory_offset
+        {
+            return Err(IdmlError::NotIdml("inconsistent ZIP64 end records".into()));
+        }
+        (zip64_entries, zip64_directory_size, zip64_directory_offset, record_offset)
+    } else {
+        if sentinel {
+            return Err(IdmlError::NotIdml("ZIP64 sentinels require a locator and end record".into()));
+        }
+        if disk != 0 || directory_disk != 0 || disk_entries != total_entries {
+            return Err(IdmlError::NotIdml("multi-disk ZIP archives are unsupported".into()));
+        }
+        (u64::from(total_entries), u64::from(directory_size), u64::from(directory_offset), eocd)
+    };
+
+    if entries > MAX_ARCHIVE_ENTRIES as u64 {
+        return Err(IdmlError::NotIdml(format!("archive has more than {MAX_ARCHIVE_ENTRIES} entries")));
+    }
+    if directory_size > MAX_CENTRAL_DIRECTORY_BYTES {
+        return Err(IdmlError::NotIdml(format!("central directory exceeds {MAX_CENTRAL_DIRECTORY_BYTES} bytes")));
+    }
+    let entries = usize::try_from(entries).map_err(|_| IdmlError::NotIdml("archive entry count is too large".into()))?;
+    let directory_offset = usize::try_from(directory_offset).map_err(|_| IdmlError::NotIdml("central directory offset is too large".into()))?;
+    let directory_size = usize::try_from(directory_size).map_err(|_| IdmlError::NotIdml("central directory size is too large".into()))?;
+    let directory_end = directory_offset.checked_add(directory_size).ok_or_else(|| IdmlError::NotIdml("central directory size overflow".into()))?;
+    if directory_end > directory_boundary || directory_end > bytes.len() {
+        return Err(IdmlError::NotIdml("central directory lies outside the archive".into()));
+    }
+
+    let mut cursor = directory_offset;
+    for _ in 0..entries {
+        let fixed_end = cursor.checked_add(CENTRAL_HEADER_SIZE).ok_or_else(|| IdmlError::NotIdml("central directory entry size overflow".into()))?;
+        if fixed_end > directory_end || !zip_signature(bytes, cursor, b"PK\x01\x02") {
+            return Err(IdmlError::NotIdml("invalid central directory entry".into()));
+        }
+        let name_len = usize::from(zip_u16(bytes, cursor + 28).ok_or_else(|| IdmlError::NotIdml("truncated central directory entry".into()))?);
+        let extra_len = usize::from(zip_u16(bytes, cursor + 30).ok_or_else(|| IdmlError::NotIdml("truncated central directory entry".into()))?);
+        let comment_len = usize::from(zip_u16(bytes, cursor + 32).ok_or_else(|| IdmlError::NotIdml("truncated central directory entry".into()))?);
+        let entry_disk = zip_u16(bytes, cursor + 34).ok_or_else(|| IdmlError::NotIdml("truncated central directory entry".into()))?;
+        if entry_disk != 0 {
+            return Err(IdmlError::NotIdml("multi-disk ZIP entries are unsupported".into()));
+        }
+        if name_len == 0 || name_len > MAX_ARCHIVE_NAME_BYTES {
+            return Err(IdmlError::NotIdml(format!("archive entry name exceeds {MAX_ARCHIVE_NAME_BYTES} bytes")));
+        }
+        let variable_len = name_len
+            .checked_add(extra_len)
+            .and_then(|value| value.checked_add(comment_len))
+            .ok_or_else(|| IdmlError::NotIdml("central directory entry size overflow".into()))?;
+        cursor = fixed_end.checked_add(variable_len).ok_or_else(|| IdmlError::NotIdml("central directory entry size overflow".into()))?;
+        if cursor > directory_end {
+            return Err(IdmlError::NotIdml("central directory entry exceeds its declared size".into()));
+        }
+    }
+    if cursor < directory_end {
+        if !zip_signature(bytes, cursor, b"PK\x05\x05") {
+            return Err(IdmlError::NotIdml("unexpected data in central directory".into()));
+        }
+        let signature_len = usize::from(zip_u16(bytes, cursor + 4).ok_or_else(|| IdmlError::NotIdml("truncated directory signature".into()))?);
+        cursor = cursor
+            .checked_add(6)
+            .and_then(|value| value.checked_add(signature_len))
+            .ok_or_else(|| IdmlError::NotIdml("directory signature size overflow".into()))?;
+    }
+    if cursor != directory_end {
+        return Err(IdmlError::NotIdml("central directory size does not match its entries".into()));
+    }
+    Ok(ArchivePreflight { entries })
+}
+
+#[cfg(test)]
+pub(crate) fn preflight_zip(bytes: &[u8]) -> Result<usize> {
+    preflight_archive(bytes).map(|preflight| preflight.entries)
+}
+
+fn read_bounded<R: Read>(reader: R, expected: u64, limit: u64) -> std::result::Result<Vec<u8>, String> {
+    if expected > limit {
+        return Err(format!("part exceeds {limit} bytes"));
+    }
+    let capacity = usize::try_from(expected.min(limit)).map_err(|_| "part is too large for this platform")?;
+    let mut buf = Vec::with_capacity(capacity);
+    let mut limited = reader.take(limit.saturating_add(1));
+    limited.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    if buf.len() as u64 > limit {
+        return Err(format!("part exceeds {limit} bytes"));
+    }
+    Ok(buf)
+}
+
+fn safe_archive_name(name: &str, is_dir: bool) -> bool {
+    if name.is_empty() || name.len() > MAX_ARCHIVE_NAME_BYTES || name.contains(['\\', '\0']) || name.starts_with('/') {
+        return false;
+    }
+    let name = if is_dir { name.trim_end_matches('/') } else { name };
+    !name.is_empty() && name.split('/').all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains(':'))
+}
+
+fn expected_xml_part(name: &str) -> bool {
+    safe_archive_name(name, false)
+        && name.ends_with(".xml")
+        && (name == "designmap.xml" || ["Resources/", "MasterSpreads/", "Spreads/", "Stories/", "XML/"].iter().any(|prefix| name.starts_with(prefix)))
+}
+
+fn should_load_archive_entry(name: &str) -> bool {
+    name == "mimetype" || expected_xml_part(name)
+}
+
 struct ItemCtx {
     /// Self → (story self, prev self, next self)
     threads: Vec<(ItemId, String, String, String)>,
 }
 
+#[derive(Clone, Copy)]
+struct LinkedResourceLimits {
+    references: usize,
+    external_reads: usize,
+    bytes: usize,
+}
+
+const IMPORT_RESOURCE_LIMITS: LinkedResourceLimits =
+    LinkedResourceLimits { references: MAX_LINKED_RESOURCE_REFERENCES, external_reads: MAX_EXTERNAL_RESOURCE_READS, bytes: MAX_RESOURCE_BYTES };
+
+/// Import-wide accounting and caching for graphic data.
+///
+/// Every graphic, embedded or external, consumes one reference. Embedded bytes are charged for
+/// every decoded occurrence because each occurrence is separately allocated. External reads and
+/// bytes are charged once per normalized path; both successes and misses are cached so repeated
+/// graphics cannot repeat I/O. Successful cached data is shared by `Arc`.
+struct LinkedResources<'r> {
+    read: &'r dyn Fn(&str) -> Option<Vec<u8>>,
+    limits: LinkedResourceLimits,
+    references: usize,
+    external_reads: usize,
+    bytes: usize,
+    cache: HashMap<String, Option<Arc<Vec<u8>>>>,
+    error: Option<String>,
+}
+
+impl<'r> LinkedResources<'r> {
+    fn new(read: &'r dyn Fn(&str) -> Option<Vec<u8>>) -> Self {
+        Self::with_limits(read, IMPORT_RESOURCE_LIMITS)
+    }
+
+    fn with_limits(read: &'r dyn Fn(&str) -> Option<Vec<u8>>, limits: LinkedResourceLimits) -> Self {
+        Self { read, limits, references: 0, external_reads: 0, bytes: 0, cache: HashMap::new(), error: None }
+    }
+
+    fn fail(&mut self, message: String) {
+        if self.error.is_none() {
+            self.error = Some(message);
+        }
+    }
+
+    fn begin_reference(&mut self) -> bool {
+        if self.error.is_some() {
+            return false;
+        }
+        let Some(references) = self.references.checked_add(1) else {
+            self.fail("linked resource reference count overflow".into());
+            return false;
+        };
+        if references > self.limits.references {
+            self.fail(format!("linked resource reference limit exceeded ({})", self.limits.references));
+            return false;
+        }
+        self.references = references;
+        true
+    }
+
+    fn charge_bytes(&mut self, amount: usize) -> bool {
+        let Some(bytes) = self.bytes.checked_add(amount) else {
+            self.fail("linked resource byte count overflow".into());
+            return false;
+        };
+        if bytes > self.limits.bytes {
+            self.fail(format!("linked resource byte limit exceeded ({})", self.limits.bytes));
+            return false;
+        }
+        self.bytes = bytes;
+        true
+    }
+
+    fn remaining_bytes(&self) -> usize {
+        self.limits.bytes.saturating_sub(self.bytes)
+    }
+
+    fn embedded(&mut self, data: Vec<u8>) -> Option<Arc<Vec<u8>>> {
+        if data.len() as u64 > MAX_LINKED_RESOURCE_BYTES {
+            self.fail(format!("embedded resource exceeds {MAX_LINKED_RESOURCE_BYTES} bytes"));
+            return None;
+        }
+        self.charge_bytes(data.len()).then(|| Arc::new(data))
+    }
+
+    fn external(&mut self, path: &str) -> Option<Arc<Vec<u8>>> {
+        if let Some(cached) = self.cache.get(path) {
+            return cached.clone();
+        }
+        if self.error.is_some() {
+            return None;
+        }
+        let Some(reads) = self.external_reads.checked_add(1) else {
+            self.fail("external resource read count overflow".into());
+            return None;
+        };
+        if reads > self.limits.external_reads {
+            self.fail(format!("external resource read limit exceeded ({})", self.limits.external_reads));
+            return None;
+        }
+        self.external_reads = reads;
+        let data = (self.read)(path).and_then(|data| {
+            if data.len() as u64 > MAX_LINKED_RESOURCE_BYTES {
+                self.fail(format!("external resource exceeds {MAX_LINKED_RESOURCE_BYTES} bytes"));
+                return None;
+            }
+            self.charge_bytes(data.len()).then(|| Arc::new(data))
+        });
+        self.cache.insert(path.to_string(), data.clone());
+        data
+    }
+}
+
 struct Importer<'r> {
-    read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
+    resources: LinkedResources<'r>,
+    error: Option<String>,
+    table_cells: usize,
+    table_cell_limit: usize,
     next_id: u64,
     settings: DocSettings,
     default_margins: Option<(Margins, Columns)>,
@@ -145,6 +563,25 @@ fn nums(s: &str) -> Vec<f64> {
     s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
 }
 
+fn charge_table_cells(total: &mut usize, rows: usize, columns: usize, limit: usize) -> std::result::Result<usize, String> {
+    let cells = rows.checked_mul(columns).ok_or_else(|| "table cell count overflow".to_string())?;
+    let charged = total.checked_add(cells).ok_or_else(|| "cumulative table cell count overflow".to_string())?;
+    if charged > limit {
+        return Err(format!("cumulative table cell limit exceeded ({limit})"));
+    }
+    *total = charged;
+    Ok(cells)
+}
+
+fn clamped_span_end(start: usize, span: usize, dimension: usize) -> Option<usize> {
+    let remaining = dimension.checked_sub(start)?;
+    if remaining == 0 {
+        return None;
+    }
+    let offset = span.max(1).min(remaining).checked_sub(1)?;
+    start.checked_add(offset)
+}
+
 fn parse_affine(s: Option<&str>) -> Affine {
     match s.map(nums) {
         Some(v) if v.len() == 6 => Affine::new([v[0], v[1], v[2], v[3], v[4], v[5]]),
@@ -174,7 +611,10 @@ impl<'r> Importer<'r> {
         // Built-ins are replaced by the file's definitions when present.
         styles.paragraph.iter_mut().for_each(|s| s.based_on = None);
         Importer {
-            read_link,
+            resources: LinkedResources::new(read_link),
+            error: None,
+            table_cells: 0,
+            table_cell_limit: MAX_TABLE_CELLS,
             next_id: 0,
             settings: DocSettings::default(),
             default_margins: None,
@@ -221,7 +661,7 @@ impl<'r> Importer<'r> {
         self.next_id
     }
 
-    fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
+    fn run(&mut self, _root: &El, top: &[&El]) -> Result<()> {
         // Preferences first (page size, facing pages).
         for e in top {
             match e.local() {
@@ -402,7 +842,7 @@ impl<'r> Importer<'r> {
             }
         }
         // Parent spreads: ids first (pages reference other parents).
-        let masters: Vec<&El> = top.iter().filter(|e| e.local() == "MasterSpread").collect();
+        let masters: Vec<&El> = top.iter().copied().filter(|e| e.local() == "MasterSpread").collect();
         let mut master_ids = Vec::new();
         for m in &masters {
             let id = SpreadId(self.alloc());
@@ -449,6 +889,9 @@ impl<'r> Importer<'r> {
             );
         }
         self.link_threads();
+        if let Some(message) = self.error.take().or_else(|| self.resources.error.take()) {
+            return Err(IdmlError::Invalid(message));
+        }
         Ok(())
     }
 
@@ -538,7 +981,7 @@ impl<'r> Importer<'r> {
         Some((c, ty))
     }
 
-    fn graphics(&mut self, top: &[El]) {
+    fn graphics(&mut self, top: &[&El]) {
         let mut order: Vec<(String, Swatch)> = Vec::new();
         // Colours.
         for e in top.iter().filter(|e| e.local() == "Color") {
@@ -723,7 +1166,7 @@ impl<'r> Importer<'r> {
 
     // ---------- styles ----------
 
-    fn styles(&mut self, top: &[El]) {
+    fn styles(&mut self, top: &[&El]) {
         for e in top.iter().filter(|e| e.local() == "Condition") {
             let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
             // Indicator colours: "r g b" (0–255) or a UI colour name (kept as the default blue).
@@ -1442,12 +1885,18 @@ impl<'r> Importer<'r> {
     }
 
     /// `<Table>`: rows, columns and cells (cell `Name` is `column:row`).
-    fn table(&mut self, e: &El) -> Table {
+    fn table(&mut self, e: &El) -> Option<Table> {
         let id = self.alloc();
         let rows: Vec<&El> = e.find_all("Row").collect();
         let cols: Vec<&El> = e.find_all("Column").collect();
         let nr = rows.len().max(1);
         let nc = cols.len().max(1);
+        if let Err(message) = charge_table_cells(&mut self.table_cells, nr, nc, self.table_cell_limit) {
+            if self.error.is_none() {
+                self.error = Some(message);
+            }
+            return None;
+        }
         let mut t = Table::new(id, nr, nc, 0, 0, 0.0);
         t.options.direction = if e.get("TableDirection") == Some("RightToLeftDirection") {
             designcraft_doc::TextDirection::RightToLeft
@@ -1555,14 +2004,16 @@ impl<'r> Importer<'r> {
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
             }
-            if rs > 1 || cs > 1 {
-                regions.push(CellRange { r0: r, c0: c, r1: (r + rs - 1).min(nr - 1), c1: (c + cs - 1).min(nc - 1) });
+            if (rs > 1 || cs > 1)
+                && let (Some(r1), Some(c1)) = (clamped_span_end(r, rs, nr), clamped_span_end(c, cs, nc))
+            {
+                regions.push(CellRange { r0: r, c0: c, r1, c1 });
             }
         }
         for rg in regions {
             let _ = t.merge(rg);
         }
-        t
+        Some(t)
     }
 
     fn walk_story(&mut self, e: &El, b: &mut StoryBuilder, pf: &ParaFormat, pchars: &CharAttrs, cf: &CharFormat, brk: Option<&str>) {
@@ -1626,8 +2077,9 @@ impl<'r> Importer<'r> {
                         }
                     },
                     "Table" => {
-                        let t = self.table(c);
-                        b.push_table(t, pf, cf);
+                        if let Some(t) = self.table(c) {
+                            b.push_table(t, pf, cf);
+                        }
                     }
                     "HyperlinkTextDestination" | "ParagraphDestination" => {
                         b.anchors.push((c.get("Self").unwrap_or("").to_string(), c.get("Name").unwrap_or("Anchor").to_string()));
@@ -2108,22 +2560,37 @@ impl<'r> Importer<'r> {
         };
         let size = ((r - l).abs(), (b - t).abs());
         let link = g.find("Link");
-        let uri = link.and_then(|k| k.get("LinkResourceURI")).map(uri_to_path);
-        let mut data = g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default();
-        if data.is_empty()
-            && let Some(p) = &uri
-            && let Some(d) = (self.read_link)(p)
-        {
-            data = d;
+        let uri = link.and_then(|k| k.get("LinkResourceURI")).and_then(uri_to_path);
+        let expected_mime = linked_resource_mime(g, link, uri.as_deref());
+        let allowed = self.resources.begin_reference();
+        let contents = allowed.then(|| g.prop_el("Contents").map(El::text_content)).flatten().filter(|value| !value.trim().is_empty());
+        let mut data = if let Some(contents) = contents {
+            let per_resource_limit = MAX_LINKED_RESOURCE_BYTES as usize;
+            let decode_limit = per_resource_limit.min(self.resources.remaining_bytes());
+            match base64_decode_bounded(&contents, decode_limit) {
+                Some(decoded) => self.resources.embedded(decoded),
+                None => {
+                    if decode_limit < per_resource_limit {
+                        self.resources.fail(format!("linked resource byte limit exceeded ({})", self.resources.limits.bytes));
+                    } else {
+                        self.resources.fail(format!("embedded resource exceeds {MAX_LINKED_RESOURCE_BYTES} bytes"));
+                    }
+                    None
+                }
+            }
+        } else if allowed && expected_mime.is_some() {
+            uri.as_deref().and_then(|path| self.resources.external(path))
+        } else {
+            None
         }
-        let (mime, px) = sniff_image(&data);
-        let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {
-            f if f.contains("JPEG") => "image/jpeg".into(),
-            f if f.contains("TIFF") => "image/tiff".into(),
-            f if f.contains("PDF") || g.local() == "PDF" => "application/pdf".into(),
-            f if f.contains("GIF") => "image/gif".into(),
-            _ => "image/png".into(),
-        });
+        .unwrap_or_else(|| Arc::new(Vec::new()));
+        let (mut mime, mut px) = sniff_image(&data);
+        if !data.is_empty() && (mime.is_none() || expected_mime.is_some_and(|expected| mime != Some(expected))) {
+            data = Arc::new(Vec::new());
+            mime = None;
+            px = None;
+        }
+        let mime = mime.or(expected_mime).unwrap_or("image/png").to_string();
         let pixels = px.or_else(|| {
             let ppi = nums(g.get("ActualPpi").unwrap_or(""));
             (ppi.len() == 2 && size.0 > 0.0).then(|| ((size.0 * ppi[0] / 72.0).round() as u32, (size.1 * ppi[1] / 72.0).round() as u32))
@@ -2131,8 +2598,8 @@ impl<'r> Importer<'r> {
         let name =
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
         let id = AssetId(self.alloc());
-        let link_path = uri.filter(|p| p.contains('/') || p.contains('\\'));
-        self.assets.insert(id, Arc::new(Asset { page: 0, id, name, mime, link: link_path, data: Arc::new(data), pixels }));
+        let link_path = uri;
+        self.assets.insert(id, Arc::new(Asset { page: 0, id, name, mime, link: link_path, data, pixels }));
         Content::Graphic(designcraft_doc::Graphic {
             asset: id,
             size,
@@ -2425,25 +2892,188 @@ fn path_of(pg: &El) -> PathData {
     PathData::new(subs)
 }
 
-/// IDML link URI → file system path (`file:/a%20b` → `/a b`, `file:///C:/x` → `C:/x`).
-pub(crate) fn uri_to_path(uri: &str) -> String {
-    let rest = uri.strip_prefix("file://").or_else(|| uri.strip_prefix("file:")).unwrap_or(uri);
-    // `file:///C:/…` → `/C:/…` → `C:/…`
-    let rest = if rest.len() > 3 && rest.starts_with('/') && rest.as_bytes()[2] == b':' { &rest[1..] } else { rest };
+fn linked_resource_mime(g: &El, link: Option<&El>, path: Option<&str>) -> Option<&'static str> {
+    let format = link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("").to_ascii_uppercase();
+    if format.contains("JPEG") {
+        return Some("image/jpeg");
+    }
+    if format.contains("TIFF") {
+        return Some("image/tiff");
+    }
+    if format.contains("PDF") || g.local() == "PDF" {
+        return Some("application/pdf");
+    }
+    if format.contains("GIF") {
+        return Some("image/gif");
+    }
+    if format.contains("PNG") || format.contains("PORTABLE NETWORK GRAPHICS") {
+        return Some("image/png");
+    }
+    if format.contains("WEBP") {
+        return Some("image/webp");
+    }
+    let extension = path?.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase())?;
+    match extension.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "tif" | "tiff" => Some("image/tiff"),
+        "pdf" => Some("application/pdf"),
+        "gif" => Some("image/gif"),
+        "png" => Some("image/png"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// Turn an IDML file URI into a normalized package-relative resource path.
+///
+/// IDML often retains an absolute path from the author's computer. Such paths are reduced to
+/// their `Links` suffix, when present, or their basename. Absolute paths are therefore never
+/// passed to the linked-resource reader, while relocated packages still find packaged assets.
+pub(crate) fn uri_to_path(uri: &str) -> Option<String> {
+    let rest = if let Some(rest) = uri.strip_prefix("file:") {
+        rest
+    } else if uri.contains(':') {
+        return None;
+    } else {
+        uri
+    };
     let mut out = Vec::with_capacity(rest.len());
     let b = rest.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%'
-            && i + 2 < b.len()
-            && let Ok(v) = u8::from_str_radix(&rest[i + 1..i + 3], 16)
-        {
+        if b[i] == b'%' {
+            let encoded = rest.get(i + 1..i + 3)?;
+            let v = u8::from_str_radix(encoded, 16).ok()?;
             out.push(v);
             i += 3;
-            continue;
+        } else {
+            out.push(b[i]);
+            i += 1;
         }
-        out.push(b[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).to_string()
+    let decoded = String::from_utf8(out).ok()?.replace('\\', "/");
+    if decoded.is_empty() || decoded.contains('\0') {
+        return None;
+    }
+    let absolute = decoded.starts_with('/') || decoded.as_bytes().get(1) == Some(&b':');
+    let mut parts = Vec::new();
+    for part in decoded.split('/') {
+        if part.is_empty() {
+            if absolute && parts.is_empty() {
+                continue;
+            }
+            return None;
+        }
+        if part == "." || part == ".." {
+            return None;
+        }
+        if part.contains(':') {
+            if absolute && parts.is_empty() && part.len() == 2 && part.as_bytes()[0].is_ascii_alphabetic() && part.ends_with(':') {
+                continue;
+            }
+            return None;
+        }
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    if absolute {
+        if let Some(index) = parts.iter().rposition(|part| part.eq_ignore_ascii_case("Links"))
+            && index + 1 < parts.len()
+        {
+            return Some(format!("Links/{}", parts[index + 1..].join("/")));
+        }
+        return parts.last().map(|part| (*part).to_string());
+    }
+    Some(parts.join("/"))
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn external_resources_are_cached_and_charged_once() {
+        let reads = Cell::new(0);
+        let reader = |_path: &str| {
+            reads.set(reads.get() + 1);
+            Some(vec![1, 2, 3])
+        };
+        let limits = LinkedResourceLimits { references: 3, external_reads: 1, bytes: 3 };
+        let mut resources = LinkedResources::with_limits(&reader, limits);
+
+        assert!(resources.begin_reference());
+        let first = resources.external("Links/image.png");
+        assert!(resources.begin_reference());
+        let second = resources.external("Links/image.png");
+        assert!(matches!((&first, &second), (Some(first), Some(second)) if Arc::ptr_eq(first, second)));
+        assert_eq!(reads.get(), 1);
+        assert_eq!(resources.external_reads, 1);
+        assert_eq!(resources.bytes, 3);
+
+        assert!(resources.begin_reference());
+        assert!(resources.external("Links/other.png").is_none());
+        assert_eq!(reads.get(), 1);
+        assert!(resources.error.as_deref().is_some_and(|message| message.contains("read limit")));
+    }
+
+    #[test]
+    fn embedded_resources_charge_each_decoded_occurrence() {
+        let reader = |_path: &str| None;
+        let limits = LinkedResourceLimits { references: 2, external_reads: 0, bytes: 3 };
+        let mut resources = LinkedResources::with_limits(&reader, limits);
+
+        assert!(resources.begin_reference());
+        assert!(resources.embedded(vec![1, 2]).is_some());
+        assert!(resources.begin_reference());
+        assert!(resources.embedded(vec![3, 4]).is_none());
+        assert!(resources.error.as_deref().is_some_and(|message| message.contains("byte limit")));
+    }
+
+    #[test]
+    fn resource_reference_count_is_import_wide() {
+        let reader = |_path: &str| None;
+        let limits = LinkedResourceLimits { references: 1, external_reads: 0, bytes: 0 };
+        let mut resources = LinkedResources::with_limits(&reader, limits);
+
+        assert!(resources.begin_reference());
+        assert!(!resources.begin_reference());
+        assert!(resources.error.as_deref().is_some_and(|message| message.contains("reference limit")));
+    }
+
+    #[test]
+    fn table_cell_count_is_cumulative_and_checked_before_allocation() {
+        let mut total = 0;
+        assert_eq!(charge_table_cells(&mut total, 8, 8, 100), Ok(64));
+        assert_eq!(charge_table_cells(&mut total, 6, 6, 100), Ok(36));
+        assert_eq!(total, 100);
+        assert!(charge_table_cells(&mut total, 1, 1, 100).is_err_and(|message| message.contains("cumulative")));
+
+        let mut total = 0;
+        assert!(charge_table_cells(&mut total, usize::MAX, 2, usize::MAX).is_err_and(|message| message.contains("overflow")));
+    }
+
+    #[test]
+    fn repeated_small_tables_share_the_import_budget() {
+        let reader = |_path: &str| None;
+        let mut importer = Importer::new(&reader);
+        importer.table_cell_limit = 4;
+        let table = El::new("Table").child(El::new("Row")).child(El::new("Column")).child(El::new("Column"));
+
+        assert!(importer.table(&table).is_some());
+        assert!(importer.table(&table).is_some());
+        assert!(importer.table(&table).is_none());
+        assert_eq!(importer.table_cells, 4);
+        assert!(importer.error.as_deref().is_some_and(|message| message.contains("cumulative")));
+    }
+
+    #[test]
+    fn table_spans_are_checked_and_clamped_to_remaining_cells() {
+        assert_eq!(clamped_span_end(1, usize::MAX, 4), Some(3));
+        assert_eq!(clamped_span_end(usize::MAX - 1, usize::MAX, usize::MAX), Some(usize::MAX - 1));
+        assert_eq!(clamped_span_end(4, usize::MAX, 4), None);
+    }
 }
