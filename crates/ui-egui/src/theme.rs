@@ -39,6 +39,101 @@ impl Brightness {
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|b| b.id().eq_ignore_ascii_case(s) || b.label().eq_ignore_ascii_case(s))
     }
+    /// The dark family (Dark, Medium Dark, High Contrast) or the light one (Medium Light, Light).
+    pub fn is_dark(self) -> bool {
+        !matches!(self, Brightness::MediumLight | Brightness::Light)
+    }
+}
+
+/// Which family the interface uses: the system's, or a fixed dark or light one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AppearanceMode {
+    Auto,
+    #[default]
+    Dark,
+    Light,
+}
+
+impl AppearanceMode {
+    pub const ALL: [AppearanceMode; 3] = [AppearanceMode::Auto, AppearanceMode::Dark, AppearanceMode::Light];
+    pub fn id(self) -> &'static str {
+        match self {
+            AppearanceMode::Auto => "auto",
+            AppearanceMode::Dark => "dark",
+            AppearanceMode::Light => "light",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            AppearanceMode::Auto => "Auto",
+            AppearanceMode::Dark => "Dark",
+            AppearanceMode::Light => "Light",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.id().eq_ignore_ascii_case(s))
+    }
+    /// The header button's order: Auto, Light, Dark, then Auto again.
+    pub fn next(self) -> Self {
+        match self {
+            AppearanceMode::Auto => AppearanceMode::Light,
+            AppearanceMode::Light => AppearanceMode::Dark,
+            AppearanceMode::Dark => AppearanceMode::Auto,
+        }
+    }
+}
+
+/// The theme used when the interface is dark.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DarkTheme {
+    Dark,
+    #[default]
+    MediumDark,
+    HighContrast,
+}
+
+impl DarkTheme {
+    pub const ALL: [DarkTheme; 3] = [DarkTheme::MediumDark, DarkTheme::Dark, DarkTheme::HighContrast];
+    pub fn brightness(self) -> Brightness {
+        match self {
+            DarkTheme::Dark => Brightness::Dark,
+            DarkTheme::MediumDark => Brightness::MediumDark,
+            DarkTheme::HighContrast => Brightness::HighContrast,
+        }
+    }
+    pub fn of(b: Brightness) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.brightness() == b)
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        Brightness::parse(s).and_then(Self::of)
+    }
+}
+
+/// The theme used when the interface is light.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LightTheme {
+    MediumLight,
+    #[default]
+    Light,
+}
+
+impl LightTheme {
+    pub const ALL: [LightTheme; 2] = [LightTheme::Light, LightTheme::MediumLight];
+    pub fn brightness(self) -> Brightness {
+        match self {
+            LightTheme::MediumLight => Brightness::MediumLight,
+            LightTheme::Light => Brightness::Light,
+        }
+    }
+    pub fn of(b: Brightness) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.brightness() == b)
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        Brightness::parse(s).and_then(Self::of)
+    }
 }
 
 /// Every colour the UI uses. Widgets never hard-code colours.
@@ -319,6 +414,9 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
         (TextStyle::Monospace, FontId::monospace(11.5)),
     ]
     .into();
+    // Fix egui's own theme to the one these tokens belong to, so a change of the system theme
+    // never swaps in egui's unstyled default (DesignCraft follows the system itself).
+    ctx.set_theme(if t.dark { egui::Theme::Dark } else { egui::Theme::Light });
     let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };
     let r = CornerRadius::same(t.radius);
     v.panel_fill = t.panel;

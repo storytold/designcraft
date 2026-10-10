@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod about;
+pub mod appearance;
 pub mod canvas;
 pub mod chrome;
 pub mod control;
@@ -43,6 +44,10 @@ pub type DownloadFn = Box<dyn FnMut(&str, &[u8])>;
 /// Files `(name, bytes)` delivered asynchronously by the host (web file picker, dropped files).
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
 
+/// The system's light or dark appearance when egui can't report it (for example on Linux, where
+/// winit has no theme for many desktops). `None` means no answer.
+pub type SystemThemeFn = Box<dyn Fn(&egui::Context) -> Option<egui::Theme>>;
+
 /// Platform services injected by the host (desktop or web).
 #[derive(Default)]
 pub struct Services {
@@ -61,6 +66,8 @@ pub struct Services {
     /// Files delivered asynchronously, drained every frame: `.designcraft` → `file.openBytes`,
     /// anything else → `file.place`.
     pub inbox: Option<Inbox>,
+    /// The system appearance, asked every frame (cheap: the desktop app reads a cached value).
+    pub system_theme: Option<SystemThemeFn>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +109,14 @@ fn default_zone() -> f64 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiState {
+    /// The interface theme on screen, resolved from the appearance mode and the system (kept as
+    /// the single-theme setting older versions saved).
     pub brightness: theme::Brightness,
+    /// Preferences › Interface › Appearance Mode: Auto follows the system.
+    pub appearance_mode: theme::AppearanceMode,
+    /// The theme used when the interface is dark, and when it is light.
+    pub dark_theme: theme::DarkTheme,
+    pub light_theme: theme::LightTheme,
     pub screen_mode: ScreenMode,
     pub frame_edges: bool,
     pub rulers: bool,
@@ -210,6 +224,9 @@ impl Default for UiState {
     fn default() -> Self {
         UiState {
             brightness: theme::Brightness::MediumDark,
+            appearance_mode: theme::AppearanceMode::Dark,
+            dark_theme: theme::DarkTheme::MediumDark,
+            light_theme: theme::LightTheme::Light,
             screen_mode: ScreenMode::Normal,
             frame_edges: true,
             rulers: true,
@@ -418,6 +435,8 @@ pub struct DesignApp {
     last_time: f64,
     /// When recovery data was last written (seconds, egui time).
     pub last_recovery: f64,
+    /// The system appearance as of the last frame (`None`: unknown), for Auto.
+    pub system_theme: Option<egui::Theme>,
 }
 
 impl DesignApp {
@@ -454,6 +473,7 @@ impl DesignApp {
             native_shortcuts: Default::default(),
             last_time: 0.0,
             last_recovery: 0.0,
+            system_theme: None,
         }
     }
 
@@ -602,6 +622,10 @@ impl DesignApp {
             }
             self.fonts_ready = true;
         }
+        // Appearance: Auto follows the system (no polling: the host's reader wakes the UI when the
+        // system changes).
+        self.system_theme = self.services.system_theme.as_ref().and_then(|read| read(ctx)).or_else(|| ctx.system_theme());
+        appearance::resolve(self);
         if self.restyle {
             theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness));
             self.restyle = false;

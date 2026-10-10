@@ -8,6 +8,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod appearance;
 mod control_server;
 #[cfg(target_os = "macos")]
 mod native_menu;
@@ -61,7 +62,7 @@ fn load_prefs(app: &mut DesignApp) {
     }
     if let Some(p) = prefs_path()
         && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(ui) = serde_json::from_slice::<designcraft_ui_egui::UiState>(&bytes)
+        && let Ok(ui) = designcraft_ui_egui::UiState::from_saved_json(&bytes)
     {
         app.ui = ui;
     }
@@ -165,6 +166,7 @@ fn services() -> Services {
         pick_save: Some(Box::new(|name: &str| rfd::FileDialog::new().set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string()))),
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string()))),
+        system_theme: appearance::service(),
         ..Default::default()
     }
 }

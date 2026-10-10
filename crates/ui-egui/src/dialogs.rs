@@ -620,13 +620,17 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     }
                 }
                 "interface" => {
-                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "UI Scaling")).font(semibold(12.0)));
-                    ui.horizontal(|ui| {
-                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "UI Size:"));
-                        let mut v = d.n("uiScale").unwrap_or(100.0);
-                        if ui.add(egui::Slider::new(&mut v, 50.0..=200.0).step_by(5.0).suffix("%")).changed() {
-                            d.fields.insert("uiScale".into(), json!(v));
-                        }
+                    // Allow the full appearance cards and scaling controls to fit beside the section list.
+                    egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
+                        crate::appearance::preferences_rows(&app.ui.language, app.system_theme, ui, d);
+                        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "UI Scaling")).font(semibold(12.0)));
+                        ui.horizontal(|ui| {
+                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "UI Size:"));
+                            let mut v = d.n("uiScale").unwrap_or(100.0);
+                            if ui.add(egui::Slider::new(&mut v, 50.0..=200.0).step_by(5.0).suffix("%")).changed() {
+                                d.fields.insert("uiScale".into(), json!(v));
+                            }
+                        });
                     });
                 }
                 "grids" => {
@@ -1540,6 +1544,12 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             app.run("window.richBlack", json!({"on": d.b("richBlack")}))?;
             if let Some(v) = d.n("uiScale") {
                 app.run("window.uiScale", json!({"scale": v / 100.0}))?;
+            }
+            if d.fields.contains_key("appearanceMode") {
+                app.run(
+                    "window.appearanceMode",
+                    json!({"mode": d.fields.get("appearanceMode"), "darkTheme": d.fields.get("darkTheme"), "lightTheme": d.fields.get("lightTheme")}),
+                )?;
             }
             if d.fields.contains_key("snap.alignEdges") {
                 let mut snap = json!({
