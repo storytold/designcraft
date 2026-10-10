@@ -4,6 +4,8 @@
 pub(super) const TABLE: &[(&str, &str)] = &[
     ("File", "Файл"),
     ("Edit", "Редагування"),
+    ("Can't Open the File", "Не вдалося відкрити файл"),
+    ("Can't Place the File", "Не вдалося розмістити файл"),
     ("Layout", "Макет"),
     ("Type", "Текст"),
     ("Object", "Об’єкт"),
