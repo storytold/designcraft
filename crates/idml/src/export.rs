@@ -859,7 +859,8 @@ impl<'a> Ex<'a> {
                 }
                 (ps.para.clone(), ps.chars.clone())
             };
-            self.para_attrs(&mut el, &mut props, &pa);
+            let parent = (ps.name != designcraft_doc::NO_PARA_STYLE).then(|| ps.based_on.as_deref().unwrap_or(designcraft_doc::NO_PARA_STYLE));
+            self.para_attrs(&mut el, &mut props, &pa, parent);
             self.char_attrs(&mut el, &mut props, &ca);
             pg.insert(&ps.name, with_props(el, props));
         }
@@ -1237,7 +1238,9 @@ impl<'a> Ex<'a> {
         }
     }
 
-    fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
+    /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
+    /// root style).
+    fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
         if let Some(v) = &a.mojikumi {
             props.push(p("Mojikumi", if v.starts_with("MojikumiTable/") { "object" } else { "enumeration" }, v));
         }
@@ -1285,8 +1288,31 @@ impl<'a> Ex<'a> {
                 None => el.set("NumberingContinue", "true"),
             }
         }
-        // Nested and GREP styles: property lists of records.
-        if let Some(list) = &a.nested_styles {
+        // Nested and GREP styles: property lists of records. The drop cap's character style is the
+        // nested style list's leading "through 1 Dropcap" entry (IDML has no attribute for it): a
+        // drop cap style set here (`[None]` included) restyles that entry, and a real one is
+        // inserted where there is none. Without a list of its own, the inherited list is written
+        // when that is what carries the drop cap style, since any list replaces the inherited one.
+        let real = |s: &str| !s.is_empty() && s != st::NO_CHAR_STYLE;
+        let cap = a.drop_cap_style.as_deref().filter(|s| !s.is_empty());
+        let mut list = a.nested_styles.clone();
+        if let (Some(cap), None) = (cap, &list) {
+            let inherited = parent.map(|n| self.d.styles.resolve_para_style(n).0);
+            let inherited_cap = inherited
+                .as_ref()
+                .is_some_and(|pp| real(&pp.drop_cap_style) || pp.nested_styles.first().is_some_and(|ns| ns.is_drop_cap() && real(&ns.style)));
+            if real(cap) || inherited_cap {
+                list = Some(inherited.map(|pp| pp.nested_styles).unwrap_or_default());
+            }
+        }
+        if let (Some(cap), Some(list)) = (cap, list.as_mut()) {
+            match list.first_mut() {
+                Some(ns) if ns.is_drop_cap() => ns.style = cap.to_string(),
+                _ if real(cap) => list.insert(0, designcraft_doc::NestedStyle::drop_cap(cap)),
+                _ => {}
+            }
+        }
+        if let Some(list) = &list {
             let mut l = El::new("AllNestedStyles").attr("type", "list");
             for ns in list {
                 let (ty, delim) = names::nested_until_out(&ns.until);
@@ -1370,6 +1396,12 @@ impl<'a> Ex<'a> {
         n!(space_after, "SpaceAfter");
         n!(drop_cap_lines, "DropCapLines");
         n!(drop_cap_chars, "DropCapCharacters");
+        if a.drop_cap_align_left.is_some() || a.drop_cap_scale_descenders.is_some() {
+            let d = designcraft_doc::ParaProps::default();
+            let bits = u32::from(a.drop_cap_align_left.unwrap_or(d.drop_cap_align_left))
+                | u32::from(a.drop_cap_scale_descenders.unwrap_or(d.drop_cap_scale_descenders)) << 1;
+            el.set("DropcapDetail", bits);
+        }
         if let Some(g) = a.grid_align {
             match g {
                 designcraft_doc::GridAlign::None => el.set("GridAlignment", "None"),
@@ -1521,7 +1553,11 @@ impl<'a> Ex<'a> {
         el.set(&format!("{k}Offset"), num(r.offset));
         el.set(&format!("{k}LeftIndent"), num(r.left_indent));
         el.set(&format!("{k}RightIndent"), num(r.right_indent));
-        props.push(p(&format!("{k}Color"), "object", self.sw(&r.color)));
+        props.push(if r.color == designcraft_doc::TEXT_COLOR {
+            p(&format!("{k}Color"), "string", designcraft_doc::TEXT_COLOR)
+        } else {
+            p(&format!("{k}Color"), "object", self.sw(&r.color))
+        });
     }
 
     fn stroke_attrs(&self, el: &mut El, s: &designcraft_doc::Stroke) {
@@ -2395,7 +2431,7 @@ impl<'a> Ex<'a> {
     fn psr_el(&mut self, pf: &ParaFormat) -> El {
         let mut el = El::new("ParagraphStyleRange").attr("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, &pf.style));
         let mut props = Vec::new();
-        self.para_attrs(&mut el, &mut props, &pf.para);
+        self.para_attrs(&mut el, &mut props, &pf.para, Some(&pf.style));
         self.char_attrs(&mut el, &mut props, &pf.chars);
         with_props(el, props)
     }

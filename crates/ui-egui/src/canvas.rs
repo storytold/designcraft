@@ -988,6 +988,15 @@ fn draw_text_selection(
             }
             let past = e == l.range.end && range.end > l.range.end;
             quads.extend(compose::highlight_quads(l, s, e, past));
+            // A selected drop cap is highlighted down to its baseline.
+            if let Some(dc) = l.drop_cap {
+                let sel = l.glyphs.iter().filter(|g| g.len > 0 && g.byte < dc.end && g.byte >= s && g.byte < e);
+                let (a, b) = sel.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), g| (a.min(g.x), b.max(g.x + g.adv)));
+                if a < b {
+                    let r = dc.rect;
+                    quads.push([Point::new(a, r.y0), Point::new(b, r.y0), Point::new(b, r.y1), Point::new(a, r.y1)]);
+                }
+            }
             for (gi, g) in l.glyphs.iter().enumerate() {
                 if g.visible && g.len > 0 && g.byte >= s && g.byte < e {
                     glyphs.push((li, gi));

@@ -1467,6 +1467,17 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
             ui.end_row();
         }
+        // Drop cap: number of lines and characters.
+        for (label, key, max, id) in [
+            ("Drop Lines", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES, "ppdl"),
+            ("Drop Chars", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS, "ppdc"),
+        ] {
+            caption(ui, crate::i18n::tr(&app.ui.language, label));
+            if let Some(v) = number(ui, id, p[key].as_f64(), "", 64.0, 0) {
+                let _ = app.run("type.para", json!({"attrs": {key: (v.max(0.0) as u64).min(max as u64)}}));
+            }
+        }
+        ui.end_row();
     });
     ui.horizontal(|ui| {
         let mut h = p["hyphenate"].as_bool().unwrap_or(true);

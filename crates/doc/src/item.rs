@@ -321,7 +321,7 @@ pub struct TextFrameOptions {
     pub first_baseline_min: f64,
     pub ignore_wrap: bool,
     pub auto_size: AutoSize,
-    /// Reference point (0..9) that stays fixed when auto-sizing.
+    /// Reference point (0..9, row-major from the top left) that stays fixed when auto-sizing.
     pub auto_size_ref: u8,
     pub column_rule: bool,
     pub column_rule_weight: f64,
@@ -378,7 +378,7 @@ impl Default for TextFrameOptions {
             first_baseline_min: 0.0,
             ignore_wrap: false,
             auto_size: AutoSize::Off,
-            auto_size_ref: 1,
+            auto_size_ref: 4,
             column_rule: false,
             column_rule_weight: 1.0,
             column_rule_color: designcraft_color::swatch::BLACK.into(),
@@ -1152,11 +1152,27 @@ impl Item {
         b.inflate(w, w)
     }
 
-    /// The frame's text area (inner space) after inset.
+    /// The text frame's text area (inner space): inside the part of a visible stroke that lies
+    /// within the frame, then the inset, on each edge.
     pub fn text_area(&self) -> Rect {
         let r = self.inner_bounds();
-        let inset = self.text_frame().map(|t| t.options.inset).unwrap_or([0.0; 4]);
+        let s = self.stroke_inside();
+        let inset = self.text_frame().map(|t| t.options.inset).unwrap_or([0.0; 4]).map(|v| v + s);
         Rect::new(r.x0 + inset[1], r.y0 + inset[0], (r.x1 - inset[3]).max(r.x0 + inset[1]), (r.y1 - inset[2]).max(r.y0 + inset[0]))
+    }
+
+    /// How far a visible stroke reaches inside the path: half its weight centred, all of it inside,
+    /// none outside.
+    fn stroke_inside(&self) -> f64 {
+        let w = self.stroke.weight;
+        if self.stroke.is_none() || !w.is_finite() {
+            return 0.0;
+        }
+        match self.stroke.align {
+            StrokeAlign::Center => w / 2.0,
+            StrokeAlign::Inside => w,
+            StrokeAlign::Outside => 0.0,
+        }
     }
 
     /// Spread-space centre.
@@ -1201,6 +1217,32 @@ mod tests {
         assert_eq!(it.text_area(), Rect::new(6.0, 5.0, 92.0, 43.0));
         it.stroke = Stroke { weight: 4.0, ..Stroke::default() };
         assert_eq!(it.visible_bounds(), Rect::new(8.0, 18.0, 112.0, 72.0));
+    }
+
+    #[test]
+    fn text_area_starts_inside_the_stroke() {
+        let mut it = Item::new(ItemId(1), LayerId(1), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 50.0)));
+        it.content = Content::Text(TextFrame { story: StoryId(2), options: TextFrameOptions { inset: [5.0, 6.0, 7.0, 8.0], ..Default::default() } });
+        let unstroked = Rect::new(6.0, 5.0, 92.0, 43.0);
+        let stroked = |align: StrokeAlign, swatch: &str| {
+            let mut it = it.clone();
+            it.stroke = Stroke { weight: 4.0, align, swatch: swatch.into(), ..Stroke::default() };
+            it.text_area()
+        };
+        let black = designcraft_color::swatch::BLACK;
+        // The part of the stroke inside the frame, on every edge, then the inset.
+        assert_eq!(stroked(StrokeAlign::Center, black), Rect::new(8.0, 7.0, 90.0, 41.0));
+        assert_eq!(stroked(StrokeAlign::Inside, black), Rect::new(10.0, 9.0, 88.0, 39.0));
+        assert_eq!(stroked(StrokeAlign::Outside, black), unstroked);
+        // A stroke without a colour doesn't count.
+        assert_eq!(stroked(StrokeAlign::Inside, designcraft_color::swatch::NONE), unstroked);
+        // Nor does a weight that isn't a number.
+        it.stroke = Stroke { weight: f64::NAN, ..Stroke::default() };
+        assert_eq!(it.text_area(), unstroked);
+        // A stroke wider than the frame leaves no room for text.
+        it.stroke = Stroke { weight: 200.0, align: StrokeAlign::Inside, ..Stroke::default() };
+        let a = it.text_area();
+        assert!(a.width() == 0.0 && a.height() == 0.0, "{a:?}");
     }
 
     #[test]

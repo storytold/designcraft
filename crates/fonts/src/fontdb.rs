@@ -103,10 +103,14 @@ pub struct FontFace {
     pub upem: f64,
     /// Ascender in font units (positive = up).
     pub ascent: f64,
+    /// OS/2 typographic ascender in font units (the ascent when the font has no usable one): the
+    /// Ascent first baseline offset.
+    pub typo_ascent: f64,
     /// Descender in font units (positive = down).
     pub descent: f64,
-    /// Cap height and x height in font units (estimated from the ascent when the font has no OS/2
-    /// values).
+    /// Cap height and x height in font units (without plausible OS/2 values, the cap height is the
+    /// top of the H, and either is estimated from the ascent): the Cap Height and x Height first
+    /// baseline offsets.
     pub cap_height: f64,
     pub x_height: f64,
     pub shaper: harfrust::ShaperData,
@@ -677,6 +681,7 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
     let settings: Vec<(skrifa::Tag, f32)> = coords.iter().map(|(t, v)| (skrifa::Tag::new(t), *v)).collect();
     let location = if coords.is_empty() { Location::default() } else { f.axes().location(settings.iter().copied()) };
     let m = f.metrics(Size::unscaled(), &location);
+    let upem = m.units_per_em.max(1) as f64;
     let a = f.attributes();
     let hb = harfrust::FontRef::from_index(data, index).ok()?;
     let shaper = harfrust::ShaperData::new(&hb);
@@ -694,11 +699,19 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         style,
         weight,
         italic,
-        upem: m.units_per_em.max(1) as f64,
+        upem,
         ascent: m.ascent as f64,
+        typo_ascent: typo_ascent(&f, &location, upem).unwrap_or(m.ascent as f64),
         descent: -(m.descent as f64),
-        cap_height: m.cap_height.map(|v| v as f64).filter(|v| *v > 0.0).unwrap_or(m.ascent as f64 * 0.72),
-        x_height: m.x_height.map(|v| v as f64).filter(|v| *v > 0.0).unwrap_or(m.ascent as f64 * 0.5),
+        // Fonts with an OS/2 table older than version 2 don't declare these: measure them from
+        // flat-topped letters before falling back to a share of the ascent, which can be far off
+        // (drop caps are sized from the cap height).
+        cap_height: plausible(m.cap_height.map(f64::from), upem)
+            .or_else(|| measured_top(&f, &location, &['H', 'I', 'E', 'T'], upem))
+            .unwrap_or(m.ascent as f64 * 0.72),
+        x_height: plausible(m.x_height.map(f64::from), upem)
+            .or_else(|| measured_top(&f, &location, &['x', 'z', 'v'], upem))
+            .unwrap_or(m.ascent as f64 * 0.5),
         shaper,
         coords,
         location,
@@ -710,6 +723,54 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         em: std::sync::OnceLock::new(),
         group: std::sync::OnceLock::new(),
     })
+}
+
+/// A font's height above the baseline (font units) if it is plausible: above 0 and at most 4 em.
+fn plausible(v: Option<f64>, upem: f64) -> Option<f64> {
+    v.filter(|v| *v > 0.0 && *v <= 4.0 * upem)
+}
+
+/// The top of the first of `chars` the font has a non-empty outline for, in font units: the
+/// highest point of its unhinted outline at `location`, if [`plausible`]. For flat-topped letters
+/// that is the cap height (`H`) or x-height (`x`).
+fn measured_top(f: &skrifa::FontRef<'_>, location: &Location, chars: &[char], upem: f64) -> Option<f64> {
+    struct Top(f32);
+    impl OutlinePen for Top {
+        fn move_to(&mut self, _x: f32, y: f32) {
+            self.0 = self.0.max(y);
+        }
+        fn line_to(&mut self, _x: f32, y: f32) {
+            self.0 = self.0.max(y);
+        }
+        fn quad_to(&mut self, _cx: f32, _cy: f32, _x: f32, y: f32) {
+            self.0 = self.0.max(y);
+        }
+        fn curve_to(&mut self, _cx0: f32, _cy0: f32, _cx1: f32, _cy1: f32, _x: f32, y: f32) {
+            self.0 = self.0.max(y);
+        }
+        fn close(&mut self) {}
+    }
+    let cmap = f.charmap();
+    let glyphs = f.outline_glyphs();
+    chars.iter().find_map(|&c| {
+        let g = glyphs.get(cmap.map(c)?)?;
+        let mut pen = Top(f32::NEG_INFINITY);
+        g.draw(DrawSettings::unhinted(Size::unscaled(), location), &mut pen).ok()?;
+        plausible(Some(f64::from(pen.0)), upem)
+    })
+}
+
+/// The OS/2 typographic ascender in font units at `location`, if the font has an OS/2 table and
+/// the value is [`plausible`].
+fn typo_ascent(f: &skrifa::FontRef<'_>, location: &Location, upem: f64) -> Option<f64> {
+    use skrifa::raw::TableProvider;
+    let mut v = f.os2().ok()?.s_typo_ascender() as f64;
+    if !location.coords().is_empty()
+        && let Ok(mvar) = f.mvar()
+    {
+        v += mvar.metric_delta(skrifa::raw::tables::mvar::tags::HASC, location.coords()).map_or(0.0, |d| d.to_f64());
+    }
+    plausible(Some(v), upem)
 }
 
 /// `family` without the font-format suffix layout apps append when a family is installed in
@@ -1481,3 +1542,54 @@ mod tests_docfonts;
 #[cfg(test)]
 #[path = "tests_vertical.rs"]
 mod tests_vertical;
+
+#[cfg(test)]
+mod tests_heights {
+    use super::*;
+    use crate::testing::{font_mapping, with_table_u16};
+
+    fn face_of(bytes: Vec<u8>) -> FontFace {
+        make_face(FontBytes::Owned(Arc::new(bytes)), FontSource::Memory, 0, "Test".into(), "Regular".into(), Vec::new()).unwrap()
+    }
+
+    /// `font` with OS/2 sxHeight and sCapHeight set to 0 (undeclared).
+    fn undeclared(font: Vec<u8>) -> Vec<u8> {
+        with_table_u16(with_table_u16(font, b"OS/2", 86, 0).unwrap(), b"OS/2", 88, 0).unwrap()
+    }
+
+    /// The top of Source Sans 3's glyph for `c` from its bounding box (font units).
+    fn bbox_top(c: char) -> f64 {
+        let f = skrifa::FontRef::new(BUNDLED[0]).unwrap();
+        f.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(f.charmap().map(c).unwrap()).unwrap().y_max as f64
+    }
+
+    /// A font that doesn't declare its cap height and x-height gets them measured from its
+    /// flat-topped letters, also when it lacks the first choices `H` and `x`; a font that
+    /// declares them keeps them.
+    #[test]
+    fn undeclared_heights_are_measured_from_outlines() {
+        let glyphs = [('H', 'H'), ('x', 'x'), ('E', 'E'), ('z', 'z')];
+        for (glyphs, cap, x) in [(&glyphs[..], 'H', 'x'), (&glyphs[2..], 'E', 'z')] {
+            let face = face_of(undeclared(font_mapping("Heights", glyphs).unwrap()));
+            let (cap, x) = (bbox_top(cap), bbox_top(x));
+            assert!(cap > x && x > 0.0);
+            assert!((face.cap_height - cap).abs() <= 1.0, "{glyphs:?}: cap height {} vs {cap}", face.cap_height);
+            assert!((face.x_height - x).abs() <= 1.0, "{glyphs:?}: x-height {} vs {x}", face.x_height);
+        }
+        let declared = face_of(font_mapping("Heights", &glyphs).unwrap());
+        assert_eq!((declared.cap_height, declared.x_height), (660.0, 486.0), "Source Sans 3 Regular's OS/2 values");
+        // Declared values win over the outlines: `H` drawn as `x` doesn't lower the cap height.
+        let face = face_of(font_mapping("Heights", &[('H', 'x'), ('x', 'H')]).unwrap());
+        assert_eq!((face.cap_height, face.x_height), (declared.cap_height, declared.x_height));
+    }
+
+    /// Without any of the letters, or with only empty outlines, the heights fall back to a share
+    /// of the ascent.
+    #[test]
+    fn heights_without_measurable_letters_fall_back_to_the_ascent() {
+        for glyphs in [&[('a', 'a')][..], &[('H', ' '), ('x', ' ')]] {
+            let face = face_of(undeclared(font_mapping("Heights", glyphs).unwrap()));
+            assert_eq!((face.cap_height, face.x_height), (face.ascent * 0.72, face.ascent * 0.5), "{glyphs:?}");
+        }
+    }
+}
