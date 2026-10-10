@@ -187,10 +187,12 @@ impl Startup {
     }
 
     /// The backends wgpu may use: the chosen one, with OpenGL as the in-process fallback when it
-    /// has no adapter (unless OpenGL itself has failed).
+    /// has no adapter (unless OpenGL itself has failed). Not on Windows: some OpenGL drivers
+    /// (AMD's) crash while the instance is created (#167), before any fallback could help, so
+    /// there OpenGL is only ever tried as its own candidate.
     pub fn backends(&self) -> wgpu::Backends {
         let mut backends = self.backend.bit();
-        if !self.record.failed.contains(&Backend::Gl) {
+        if !cfg!(windows) && !self.record.failed.contains(&Backend::Gl) {
             backends |= wgpu::Backends::GL;
         }
         backends
@@ -349,7 +351,8 @@ mod tests {
         assert_eq!(s.backend, first);
         assert_eq!(read(&path).trying, Some(first));
         assert!(s.backends().contains(first.bit()));
-        assert!(s.backends().contains(wgpu::Backends::GL), "OpenGL is the in-process fallback");
+        // OpenGL is the in-process fallback, except on Windows where it is only its own candidate.
+        assert_eq!(s.backends().contains(wgpu::Backends::GL), !cfg!(windows) || first == Backend::Gl);
         assert_eq!(s.status_line(), None);
 
         // wgpu actually picked OpenGL (the chosen backend had no adapter): blame that one.
