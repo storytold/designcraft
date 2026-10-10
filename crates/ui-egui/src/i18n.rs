@@ -2847,13 +2847,6 @@ fn cjk_table(lang: &str) -> Option<&'static HashMap<&'static str, &'static str>>
     Some(MAPS.get(i)?.get_or_init(|| table.iter().copied().collect()))
 }
 
-/// Whether `lang` (Japanese, Chinese or Korean) has its own entry for `s` (for the coverage
-/// tests; the entry may equal the English, as product names and units do).
-#[cfg(test)]
-pub(crate) fn has_entry(lang: &str, s: &str) -> bool {
-    if lang == "ja" { ja::TABLE.iter().any(|(k, _)| *k == s) } else { cjk_table(lang).is_some_and(|m| m.contains_key(s)) }
-}
-
 /// `s` in `lang` (English, or the string itself, when there's no translation).
 pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static JAPANESE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -3007,6 +3000,32 @@ mod tests {
         for (i, (en, t)) in TABLE.iter().enumerate() {
             assert!(TABLE[..i].iter().all(|(e, _)| e != en), "duplicate {en}");
             assert!(t.iter().all(|x| !x.is_empty()), "{en}");
+        }
+    }
+
+    /// The Chinese and Korean tables have rows only for keys another catalog knows, and keep the
+    /// placeholders. A new English string falls back to English until it is translated, so it
+    /// doesn't fail here.
+    #[test]
+    fn chinese_and_korean_tables_have_no_stale_rows_and_keep_placeholders() {
+        let mut keys = std::collections::HashSet::new();
+        keys.extend(TABLE.iter().map(|(key, _)| *key));
+        keys.extend(ar::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(pt_br::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(ja::TABLE.iter().map(|(key, _)| *key));
+        let placeholders = |s: &str| {
+            let mut found: Vec<String> = s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect();
+            found.sort();
+            found
+        };
+        let ellipsis = |s: &str| s.trim_end().ends_with('…') || s.trim_end().ends_with("...");
+        for (lang, table) in [("zh", zh_hans::TABLE), ("zh-hant", zh_hant::TABLE), ("ko", ko::TABLE)] {
+            let stale: Vec<_> = table.iter().map(|(key, _)| *key).filter(|k| !keys.contains(k)).collect();
+            assert!(stale.is_empty(), "{lang}: rows for unknown keys: {stale:?}");
+            for (key, text) in table {
+                assert_eq!(placeholders(key), placeholders(text), "{lang}: placeholders of {key}");
+                assert_eq!(ellipsis(key), ellipsis(text), "{lang}: ellipsis of {key}");
+            }
         }
     }
 

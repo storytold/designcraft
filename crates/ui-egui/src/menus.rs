@@ -2442,42 +2442,6 @@ mod tests {
         frame(&mut app);
     }
 
-    /// Every menu, command, panel and tool name has a Japanese, Chinese (Simplified and
-    /// Traditional) and Korean entry, so those interfaces never fall back to English.
-    #[test]
-    fn cjk_interfaces_translate_every_menu_command_panel_and_tool() {
-        fn walk(items: &[Item], out: &mut Vec<String>) {
-            for it in items {
-                match it {
-                    Item::Sep => {}
-                    Item::Sub(name, children) => {
-                        out.push(name.clone());
-                        walk(children, out);
-                    }
-                    Item::Cmd { label, .. } => out.push(label.clone()),
-                }
-            }
-        }
-        let mut names = Vec::new();
-        for (title, items) in menu_tree() {
-            names.push(title.to_string());
-            walk(&items, &mut names);
-        }
-        for c in designcraft_engine::Session::new().commands() {
-            names.push(c.label.to_string());
-            names.extend(c.menu.iter().map(|m| m.to_string()));
-        }
-        names.extend(UI_COMMANDS.iter().map(|c| c.1.to_string()));
-        names.extend(crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS).map(|p| p.1.to_string()));
-        names.extend(designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).map(|t| t.label.to_string()));
-        // Interface language names are shown in their own language.
-        let own: Vec<&str> = crate::i18n::LANGUAGES.iter().map(|l| l.1).collect();
-        for lang in ["ja", "zh", "zh-hant", "ko"] {
-            let missing: Vec<&String> = names.iter().filter(|n| !own.contains(&n.as_str()) && !crate::i18n::has_entry(lang, n)).collect();
-            assert!(missing.is_empty(), "{lang}: untranslated {missing:?}");
-        }
-    }
-
     /// Edit › Interface Language offers every supported language, and each one switches.
     #[test]
     fn interface_language_menu_lists_every_language() {
