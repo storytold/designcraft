@@ -56,15 +56,20 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             discard(dir, d.uid);
             continue;
         }
-        let (doc, meta) = files(dir, d.uid);
-        let bytes = crate::cmd::to_bytes(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()));
-        // Write then rename, so a crash mid-write never leaves a torn file.
-        write_recovery_file(&doc, &bytes)?;
-        let m = json!({"path": d.path, "title": d.title(), "saved": designcraft_doc::vars::now()});
-        write_recovery_file(&meta, m.to_string().as_bytes())?;
+        write_entry(dir, d)?;
         n += 1;
     }
     Ok(n)
+}
+
+/// Write `d`'s recovery entry: the document, then its metadata.
+fn write_entry(dir: &Path, d: &DocState) -> Result<()> {
+    let (doc, meta) = files(dir, d.uid);
+    let bytes = crate::cmd::to_bytes(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()));
+    // Write then rename, so a crash mid-write never leaves a torn file.
+    write_recovery_file(&doc, &bytes)?;
+    let m = json!({"path": d.path, "title": d.title(), "saved": designcraft_doc::vars::now()});
+    write_recovery_file(&meta, m.to_string().as_bytes())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -207,8 +212,10 @@ pub fn list(dir: &Path) -> Vec<(u64, Value)> {
     out
 }
 
-/// Reopen every recovery entry as an unsaved document (and remove the entries: the new session
-/// writes its own). Returns the opened documents' indices.
+/// Reopen every recovery entry as an unsaved document. Each one's entry moves to the new
+/// document's uid (written before the old one is removed), so a recovered document stays on disk
+/// until it is saved or closed, even when this session ends before its first recovery save.
+/// Returns the opened documents' indices.
 pub fn open(s: &mut Session, dir: &Path) -> Result<Vec<usize>> {
     #[cfg(not(target_arch = "wasm32"))]
     validate_recovery_dir(dir)?;
@@ -230,8 +237,15 @@ pub fn open(s: &mut Session, dir: &Path) -> Result<Vec<usize>> {
         // Unsaved: the copy on disk (if any) is older than what was recovered.
         st.saved_doc = std::sync::Arc::new((*st.doc).clone());
         st.revision += 1;
-        opened.push(s.add_document(st));
-        discard(dir, uid);
+        let index = s.add_document(st);
+        opened.push(index);
+        // An entry that can't be rewritten stays under its old uid: a duplicate on the next
+        // recovery is better than a lost document.
+        match s.docs.get(index).map(|d| write_entry(dir, d)) {
+            Some(Ok(())) => discard(dir, uid),
+            Some(Err(e)) => log::warn!("recovery entry {uid} kept: {e}"),
+            None => {}
+        }
     }
     Ok(opened)
 }
@@ -265,7 +279,16 @@ mod tests {
         let st = s2.doc().unwrap();
         assert!(st.is_dirty());
         assert_eq!(st.doc.spreads[0].items.len(), 1);
-        assert!(list(&dir).is_empty(), "entries are consumed");
+        // The entry moved to the reopened document: a session that ends before its first
+        // recovery save (a restart, another crash) still leaves it to recover.
+        let entries = list(&dir);
+        assert_eq!(entries.iter().map(|e| e.0).collect::<Vec<_>>(), [st.uid]);
+        let mut s3 = Session::new();
+        assert_eq!(open(&mut s3, &dir).unwrap().len(), 1);
+        assert_eq!(s3.doc().unwrap().doc.spreads[0].items.len(), 1);
+        assert!(s3.doc().unwrap().is_dirty());
+        assert_eq!(list(&dir).len(), 1, "recovering twice never duplicates an entry");
+        discard(&dir, s3.doc().unwrap().uid);
         // Saving a document drops its entry.
         s.recovery_dir = Some(dir.clone());
         assert_eq!(save(&s, &dir).unwrap(), 1);

@@ -68,7 +68,9 @@ lines with positioned glyph runs, decorations, anchors and overset. The canvas r
 background worker with vello_cpu into tiles; after an edit only frames whose composition changed
 are re-rendered and patched (damage regions, pixel-identical to a full render). The GPU (wgpu:
 Metal, DirectX 12, Vulkan, OpenGL; WebGPU/WebGL2 on the web) only presents; the backend is chosen
-before the window exists, with a start-up fallback list in `gpu.json`.
+before the window exists, with a start-up fallback list in `gpu.json`, and the adapter (the GPU
+that drives the display first) by the app, which starts again on the next one when an adapter
+fails or hangs at start-up (`apps/designcraft/src/gpu.rs`).
 
 ## File I/O
 

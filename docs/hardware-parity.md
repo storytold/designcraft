@@ -15,6 +15,7 @@ graphics driver loses the user entirely. Overall numbers: [target-app-parity.md]
 | GPU display (canvas) | GPU Performance: GPU preview, animated zoom (Metal on macOS; Windows with supported GPUs) | canvas rasterized on the CPU (vello_cpu, SIMD, multithreaded), presented by wgpu (Metal) | wgpu DirectX 12 (since #297), Vulkan/OpenGL fallback | Vulkan, OpenGL fallback | WebGPU, WebGL2 fallback |
 | Start-up on any GPU | robust | Metal device lost on Intel Macs (#334) | AMD OpenGL crash (#167), launch failures (#273) | some reports (#192, #220) | |
 | Backend fallback | n/a | `gpu.json` skips a backend whose start never showed a frame (#297) | same | same | |
+| Adapter choice and restart | n/a | power saving; a GPU that fails or hangs at start-up is left out and the app starts again on the other one; indirect-call check off (#334) | the GPU that drives the primary display (`EnumDisplayDevices`); DirectX 12 adapters, then OpenGL, then Vulkan | the GPU that drives the panel or a monitor (sysfs), then the system's order | |
 | Animated / scrubby zoom | ✓ (GPU) | ✓ (CPU tiles, damage regions) | ✓ | ✓ | ✓ |
 | HiDPI / Retina | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UI scaling | ✓ | ✓ (menus and dialogs usable at larger scales, #281) | ✓ | ✓ | ✓ |

@@ -141,7 +141,8 @@ Newest first.
   split columns (#295), PDF export options dialog (#196), column rules (#274), Paragraph Rules
   dialog (#263), Character Style Options (#144), PDF/X-4 RGB handling (#223), Spanish
   hyphenation (#222), Japanese (#272), Italian (#218) and Ukrainian (#236) interfaces, relocated packages relink (#244), graphics backend chosen
-  before the window (#297), IDML table styles (#288), warichu (#280), list numbering from IDML
+  before the window (#297), graphics adapter chosen by the display it drives with a restart on
+  the next adapter or backend when one fails at start-up and the reason logged (#273, #334), IDML table styles (#288), warichu (#280), list numbering from IDML
   (#298), security hardening (#153, #155), many text-composition fixes (#282–#293).
 - **2026-10-09** · Version 0.5.0; many user reports triaged into issues (#160–#265).
 - **2026-10-08** · Version 0.4.0.

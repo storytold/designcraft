@@ -83,7 +83,11 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   AMD OpenGL driver crash on Windows (#167), launch failures (#273, #220, #192, #166), blank or
   frozen canvas after graphics loss (#90).
 - **Evidence:** a backend fallback landed 2026-10-10 (#297: DirectX 12 on Windows, `gpu.json`
-  skip list); not yet confirmed by the reporters.
+  skip list); then VectorCraft's adapter choice (the GPU that drives the display), restart on the
+  next adapter or backend when one fails or hangs at start-up, the indirect-call check off (the
+  first Metal error of #334) and a logged reason when the app stops (#273). Not yet confirmed by
+  the reporters. Still open for #334: wgpu asks an old macOS's Metal compiler for a language
+  version it doesn't have (`-std=metal3.2`).
 - **Estimate:** 15–30 h.
 - **Doc:** [hardware-parity.md](hardware-parity.md)
 

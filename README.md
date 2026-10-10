@@ -129,8 +129,9 @@ The desktop app writes its `log` records to standard error and to `logs/designcr
 settings directory, beside `ui.json` and `prefs.json` (Linux `~/.config/designcraft/logs/`, or
 `$XDG_CONFIG_HOME/designcraft/logs/`; macOS `~/Library/Application Support/DesignCraft/logs/`;
 Windows `%APPDATA%\DesignCraft\logs\`). A start launched from a desktop menu or the Dock has no
-terminal, so this file is what to attach to a bug report: the crash guard's panic report and a
-failed crash-recovery save land there. Each launch moves the previous log to `designcraft.1.log`
+terminal, so this file is what to attach to a bug report: the graphics adapters found and the
+one drawing, why the app stopped (also when its window never opened), the crash guard's panic
+report and a failed crash-recovery save land there. Each launch moves the previous log to `designcraft.1.log`
 (and that one to `designcraft.2.log`), so the log of a run that crashed survives the next start.
 The file stops growing at 16 MiB. `--version` writes no file.
 
@@ -138,22 +139,71 @@ The file stops growing at 16 MiB. `--version` writes no file.
 |---|---|
 | `RUST_LOG` | Log levels for standard error and the log file. Default: `info` for DesignCraft's own crates, `warn` for everything else. env_logger-style directives replace that, e.g. `RUST_LOG=debug`, `RUST_LOG=warn,designcraft_render=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`designcraft*=debug`). |
 | `WGPU_BACKEND` | The graphics backend that composites the window: `dx12`, `vulkan`, `gl` or `metal` (a comma-separated list lets wgpu choose among them). Default: DirectX 12 on Windows, Vulkan on Linux, Metal on macOS, with OpenGL as the fallback. Setting it also turns off the start-up fallback described below. |
+| `WGPU_POWER_PREF` | The kind of GPU that draws the window: `low` (integrated), `high` (discrete) or `none` (the system's order). Default: the GPU that drives the primary display, then `low` on Windows and macOS and `none` elsewhere. |
+| `WGPU_ADAPTER_NAME` | The graphics adapter by (part of) its name, any case (`nvidia`, `radv`, `intel`); the log lists the names. |
+| `WGPU_VALIDATION_INDIRECT_CALL` | `1` turns wgpu's check of indirect draw arguments back on. DesignCraft draws nothing indirectly and turns it off: the compute shader it needs failed to compile on an Intel Mac and lost the graphics device (#334). |
 
 The logger is `apps/designcraft/src/logging.rs`; the web build logs to the browser console instead.
 
-### Graphics backend
+### Graphics backend and processor
 
-The canvas is rendered on the CPU; the GPU only composites the interface, through wgpu. A
-graphics driver that faults takes the process down before any Rust code can catch it, so the
-backend is chosen before the window exists, and a start that never showed a frame is remembered:
-`gpu.json` in the settings directory records the backend being tried until the first frame has
-been presented. A record left behind means that backend crashed (or the app was killed) at
-start-up, so the next start tries the next one (DirectX 12, Vulkan, then OpenGL on Windows;
-Vulkan, then OpenGL on Linux) and says so in the status bar. The list starts over once every
-backend has failed, or with a new DesignCraft version; delete the file or set `WGPU_BACKEND` to
-start afresh. Seen in the wild: on an AMD hybrid-graphics laptop (a Radeon RX 6800M beside an
-integrated Radeon) the AMD Vulkan driver faulted at the first present, which is why DirectX 12 is
-the Windows default. The code is `apps/designcraft/src/gpu.rs`.
+The canvas is rendered on the CPU; the GPU only composites the interface, through wgpu, so any
+adapter that can show the window will do. The code is `apps/designcraft/src/gpu.rs` (the adapter)
+and `apps/designcraft/src/gpu/backend.rs` (the backend).
+
+- **Backend.** A graphics driver that faults takes the process down before any Rust code can
+  catch it, so each start creates its wgpu instance with one backend, chosen before the window
+  exists: on Windows DirectX 12, then OpenGL, then Vulkan, each on its own (creating an OpenGL
+  instance crashed inside AMD's `atio6axx.dll`, #167, and creating a Vulkan instance loads every
+  installed Vulkan driver, of which a faulty one can crash the app); on Linux Vulkan with OpenGL
+  beside it, then OpenGL alone; on macOS Metal. Seen in the wild: on an AMD hybrid-graphics laptop
+  (a Radeon RX 6800M beside an integrated Radeon) the AMD Vulkan driver faulted at the first
+  present, which is why DirectX 12 is the Windows default.
+- **A start that never showed a frame is remembered:** `gpu.json` in the settings directory
+  records the backend being tried until the first frame has been presented. A record left behind
+  means that backend crashed (or the app was killed) at start-up, so the next start tries the next
+  backend and says so in the status bar. The list starts over once every backend has failed, or
+  with a new DesignCraft version; delete the file or set `WGPU_BACKEND` to start afresh.
+- **Adapter.** Among the adapters of those backends, the app picks the one that draws the window
+  (eframe's `native_adapter_selector`): adapters that report they can't present to the window are
+  never tried; then the one `WGPU_ADAPTER_NAME` names; hardware before software (llvmpipe, WARP);
+  the native backends before OpenGL; the GPU that drives a display, and among those the one that
+  drives the primary display; then the power preference; then a GPU's DirectX 12 adapter before its
+  Vulkan one. A GPU without a monitor is the wrong one even when it can present: Windows has to
+  copy every frame to the GPU that shows it, and an integrated GPU's driver reset under that,
+  losing the graphics device or blanking every monitor for minutes. Windows says which GPU drives
+  which display (`EnumDisplayDevices`), Linux through `/sys/class/drm` (a built-in `eDP`, `LVDS` or
+  `DSI` panel counts as the primary display); on macOS, or when nothing matches, the power
+  preference decides: power saving on Windows and macOS, the system's order elsewhere (Mesa puts
+  the GPU the desktop runs on first, and a Wayland compositor may refuse frames from another GPU).
+  `WGPU_POWER_PREF` replaces this with the user's choice of kind.
+- **If the window fails on its adapter while starting up** (an error from wgpu, such as a lost
+  device, or a panic inside wgpu, egui-wgpu or naga during the first frames), the app starts
+  again without that adapter and tries the next one, telling which in the status bar; the run that
+  failed keeps its log as `designcraft.1.log`. When no adapter of the start's backends is left, it
+  starts again with the next backend. Software renderers (WARP, llvmpipe) come last: they are
+  passed over while another backend is left to try, and allowed once no graphics processor could
+  show the window. On Unix the new app replaces the process (an AppImage stays mounted); on
+  Windows it starts beside it. Adapters are told apart by backend and PCI ids, or by name where the
+  backend reports no ids (Metal lists every GPU of a dual-GPU Mac as `0000:0000`). What was left
+  out travels in the restarted app's `--gpu-skip=` argument (`Vulkan:1002:164e`, `Metal:Intel
+  Iris Pro Graphics`, or a whole backend such as `Dx12`), one more on each restart, so the
+  restarts end. When nothing is left, the app logs why and exits with an error. Documents
+  recovered after a crash stay in the recovery folder until they are saved or closed, so a restart
+  never loses them.
+- **If the window's first frame is late** (20 seconds after the app was created and the files
+  named at the start opened), the log and the status bar say so. The adapter counts as hanging,
+  and the app starts again without it, only when the UI thread has been stuck in the graphics
+  stack, outside DesignCraft's own code, for 60 seconds while the window wasn't known to be
+  minimized, covered or in the background. A large document composing on a slow machine never
+  counts.
+- **The log** lists the GPUs that drive a display (`display GPUs (PCI vendor:device): 10de:2204
+  (primary)`), every adapter with whether it drives a display, the one drawn on and why (`drawing
+  on NVIDIA GeForce RTX 3090 (Dx12, DiscreteGpu): it drives the primary display`), and the driver
+  version. That is the first thing to look for in a report of a window that stays black or never
+  opens.
+- On Linux with Mesa, `MESA_VK_DEVICE_SELECT=10de:2f04!` (vendor:device as `vulkaninfo --summary`
+  or `lspci -nn` show it) leaves only that GPU to Vulkan, and `DRI_PRIME=1` picks the other GPU.
 
 ### Web
 

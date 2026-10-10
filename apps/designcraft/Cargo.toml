@@ -29,5 +29,11 @@ rfd = { workspace = true }
 # The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
 winit = { version = "0.30", default-features = false, features = ["x11"] }
 
+[target.'cfg(windows)'.dependencies]
+# EnumDisplayDevices (src/gpu.rs): which GPU drives the display, so the window draws on the GPU
+# that shows it; drawing on a GPU without a monitor reset the display driver. Safe wrappers over
+# Win32 (MIT); the `user` feature is User32.dll only.
+winsafe = { version = "0.0.29", default-features = false, features = ["user"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
