@@ -1928,9 +1928,15 @@ fn clipped_submenu<'a, R>(
 /// ⌘A, ⌘C, ⌘X, ⌘V, ⌘Z and ⇧⌘Z before the window sees them, so while a text field has keyboard
 /// focus, Select All, Copy, Cut, Paste, Undo and Redo act on that field, as in any Mac app.
 pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, params: &Value) {
-    if !(ctx.text_edit_focused() && params.is_null() && forward_to_text_field(app, ctx, id)) {
-        activate(app, id, params);
+    if params.is_null() && ctx.text_edit_focused() && forward_to_text_edit(app, ctx, id) {
+        return;
     }
+    // The canvas text editor is not an egui TextEdit, so its clipboard events must pass through
+    // egui for the desktop integration to read/write the macOS clipboard.
+    if params.is_null() && app.session.wants_text() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") && forward_to_text_edit(app, ctx, id) {
+        return;
+    }
+    activate(app, id, params);
 }
 
 /// Whether a native menu bar item can be chosen: as in the in-window menus, but the editing
@@ -1944,7 +1950,7 @@ const TEXT_FIELD_COMMANDS: [&str; 6] = ["edit.selectAll", "edit.copy", "edit.cut
 
 /// Hand a standard editing command to the focused text field as next frame's input; false when
 /// `id` isn't one of them.
-fn forward_to_text_field(app: &mut DesignApp, ctx: &egui::Context, id: &str) -> bool {
+fn forward_to_text_edit(app: &mut DesignApp, ctx: &egui::Context, id: &str) -> bool {
     let key = |key: egui::Key, modifiers: egui::Modifiers| {
         [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers })
     };
@@ -2955,6 +2961,31 @@ mod tests {
         native_frame(&mut app, &ctx, vec![egui::Event::Paste("text".into())], None);
         assert_eq!(app.ui.palette.as_deref(), Some("text"));
         assert_eq!(document_items(&app), (2, 0), "nothing was pasted into the document");
+    }
+
+    #[test]
+    fn native_copy_and_paste_use_the_system_clipboard_for_canvas_text() {
+        let ctx = egui::Context::default();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.session.execute("frame.create", &json!({"rect": [36, 36, 200, 200], "content": "text", "text": "hello"})).unwrap();
+        let story = *app.session.active().unwrap().doc.stories.keys().next().unwrap();
+        app.select_tool("type");
+        app.run("text.select", json!({"story": story.0, "anchor": 0, "focus": 5})).unwrap();
+        for _ in 0..3 {
+            native_frame(&mut app, &ctx, vec![], None);
+        }
+        assert!(app.session.wants_text());
+
+        native_frame(&mut app, &ctx, vec![], Some("edit.copy"));
+        let copied = native_frame(&mut app, &ctx, vec![], None);
+        assert!(copied.platform_output.commands.contains(&egui::OutputCommand::CopyText("hello".into())));
+
+        let paste = native_frame(&mut app, &ctx, vec![], Some("edit.paste"));
+        let commands = &paste.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::RequestPaste), "{commands:?}");
+        native_frame(&mut app, &ctx, vec![egui::Event::Paste("world".into())], None);
+        assert_eq!(app.session.active().unwrap().doc.story(story).unwrap().text, "world");
     }
 
     #[test]
