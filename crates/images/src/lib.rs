@@ -1,7 +1,7 @@
 //! Placed graphics: format sniffing, sizes and decoding for the renderer and PDF export.
 //! Rasters go through `image` (PNG, JPEG, GIF, WebP, TIFF, BMP) or [`psd`] (Photoshop's merged
-//! composite); SVG is parsed with usvg (text set in the bundled fonts) and rasterised with resvg
-//! for the screen — PDF export draws the same tree as vectors.
+//! composite); SVG is parsed with usvg (text set in the bundled fonts, then the shared ones) and
+//! rasterised with resvg for the screen — PDF export draws the same tree as vectors.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use std::sync::{Arc, OnceLock};
@@ -67,8 +67,65 @@ fn svg_options() -> &'static usvg::Options<'static> {
         db.set_serif_family("Source Serif 4");
         db.set_sans_serif_family("Source Sans 3");
         db.set_monospace_family("JetBrains Mono");
-        usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), ..Default::default() }
+        let font_resolver = usvg::FontResolver { select_font: select_font(), select_fallback: select_fallback() };
+        usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), font_resolver, ..Default::default() }
     })
+}
+
+/// A family the SVG names that isn't bundled comes from the shared fonts (installed ones too),
+/// as it would in a text frame.
+fn select_font() -> usvg::FontSelectionFn<'static> {
+    let bundled = usvg::FontResolver::default_font_selector();
+    Box::new(move |font, db| {
+        let fonts = designcraft_fonts::FontDb::global();
+        for family in font.families() {
+            if let usvg::FontFamily::Named(name) = family
+                && !db.faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
+                && fonts.has_family(name)
+            {
+                for style in fonts.styles(name) {
+                    add_face(db, fonts.face(name, &style));
+                }
+            }
+        }
+        bundled(font, db)
+    })
+}
+
+/// Characters the chosen fonts lack (Korean, Arabic…) fall back to a shared face that has them.
+fn select_fallback() -> usvg::FallbackSelectionFn<'static> {
+    let loaded = usvg::FontResolver::default_fallback_selector();
+    Box::new(move |c, exclude, db| {
+        loaded(c, exclude, db).or_else(|| {
+            let id = add_face(db, designcraft_fonts::FontDb::global().fallback_for(c, 0, None)?)?;
+            // usvg asks again until we run out: a face it already tried ends the search.
+            (!exclude.contains(&id)).then_some(id)
+        })
+    })
+}
+
+/// A shared face's bytes, handed to usvg without a copy.
+struct FaceBytes(Arc<designcraft_fonts::FontFace>);
+
+impl AsRef<[u8]> for FaceBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.0.data()
+    }
+}
+
+/// Add `face` to the SVG's font database (once) and return its id there.
+fn add_face(db: &mut Arc<usvg::fontdb::Database>, face: Arc<designcraft_fonts::FontFace>) -> Option<usvg::fontdb::ID> {
+    let same = |f: &usvg::fontdb::FaceInfo| {
+        f.index == face.index()
+            && matches!(&f.source, usvg::fontdb::Source::Binary(b) if std::ptr::eq(b.as_ref().as_ref().as_ptr(), face.data().as_ptr()))
+    };
+    if let Some(f) = db.faces().find(|f| same(f)) {
+        return Some(f.id);
+    }
+    let index = face.index();
+    let ids = Arc::make_mut(db).load_font_source(usvg::fontdb::Source::Binary(Arc::new(FaceBytes(face))));
+    // A collection loads all its faces (skipping any it can't read): pick ours by its index.
+    ids.into_iter().find(|id| db.face(*id).is_some_and(|f| f.index == index))
 }
 
 /// The parsed SVG.
@@ -209,6 +266,43 @@ mod tests {
         assert_eq!(&px[(100 * 400 + 100) * 4..][..4], &[255, 0, 0, 255]);
         assert!(px.chunks(4).skip(220).step_by(7).any(|p| p[3] > 128 && p[0] < 100), "text pixels");
         assert!(!is_svg(b"\x89PNG"));
+    }
+
+    /// The family of the font that sets each text glyph of `svg`, and the glyph's id.
+    fn glyph_families(svg: &str) -> Vec<(String, u16)> {
+        fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u16)>) {
+            for n in g.children() {
+                match n {
+                    usvg::Node::Group(g) => walk(g, tree, out),
+                    usvg::Node::Text(t) => {
+                        for g in t.layouted().iter().flat_map(|s| &s.positioned_glyphs) {
+                            out.extend(tree.fontdb().face(g.font).map(|f| (f.families[0].0.clone(), g.id.0)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let tree = svg_tree(svg.as_bytes()).unwrap();
+        let mut out = Vec::new();
+        walk(tree.root(), &tree, &mut out);
+        out
+    }
+
+    #[test]
+    fn svg_text_uses_the_shared_fonts() {
+        let font = designcraft_fonts::testing::font_with("DC Test SVG Hangul", &['한', '글']).unwrap();
+        designcraft_fonts::FontDb::global().add_font(font);
+        let text = |attrs: &str, body: &str| {
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20"{attrs}>{body}</text></svg>"#)
+        };
+        let named = r#" font-family="DC Test SVG Hangul""#;
+        // A family named in the SVG.
+        let set = glyph_families(&text(named, "한글"));
+        assert!(set.len() == 2 && set.iter().all(|(f, gid)| f == "DC Test SVG Hangul" && *gid != 0), "{set:?}");
+        // Characters the bundled default lacks: a shared face that has them, not the default.
+        let set = glyph_families(&text("", "한글"));
+        assert!(set.len() == 2 && set.iter().all(|(f, gid)| f != "Source Sans 3" && *gid != 0), "{set:?}");
     }
 
     /// A minimal Photoshop file: 2×1 RGB, no layers, raw merged image.

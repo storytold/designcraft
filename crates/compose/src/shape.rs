@@ -552,6 +552,8 @@ fn shape_run_raw(
                 | story::COLUMN_BREAK
                 | story::FRAME_BREAK
                 | story::PAGE_BREAK
+                | story::ODD_PAGE_BREAK
+                | story::EVEN_PAGE_BREAK
                 | story::INDENT_HERE
                 | story::RIGHT_INDENT_TAB
                 | story::TABLE_ANCHOR

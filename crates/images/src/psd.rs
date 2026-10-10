@@ -144,8 +144,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let byte = |v: f32| v.round().clamp(0.0, 255.0) as u8;
     let white = mode.white();
-    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
-        let Ok(px) = <&mut [u8; 4]>::try_from(px) else { continue };
+    for (i, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let a = alpha.get(i).copied().unwrap_or(255);
         let mut v = px.map(f32::from);
         // The composite is matted against white where it's partly transparent: un-matte it.
@@ -314,7 +313,7 @@ fn fill(dst: &mut [u8], slot: usize, step: usize, src: &[u8], depth: u16) {
     match depth {
         1 => dst.zip(src.iter().flat_map(|&b| (0..8).rev().map(move |i| if (b >> i) & 1 == 1 { 0 } else { 255 }))).for_each(|(d, s)| *d = s),
         16 => dst
-            .zip(src.chunks_exact(2).map(|c| c.iter().fold(0u32, |n, &b| n << 8 | u32::from(b))))
+            .zip(src.as_chunks::<2>().0.iter().map(|c| c.iter().fold(0u32, |n, &b| n << 8 | u32::from(b))))
             .for_each(|(d, s)| *d = ((s * 255 + 32_767) / 65_535) as u8),
         _ => dst.zip(src).for_each(|(d, &s)| *d = s),
     }

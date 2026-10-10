@@ -7,6 +7,8 @@ use designcraft_geom::{Rect, shapes};
 
 use super::*;
 
+mod decorations;
+
 fn zip_files(files: &[(&str, &str)]) -> Vec<u8> {
     use zip::write::SimpleFileOptions;
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -194,6 +196,49 @@ fn fixture_with_story(story: &str) -> Vec<u8> {
     ])
 }
 
+/// InDesign: a break character ends its paragraph (`<Br/>` with a ParagraphBreakType closes the
+/// range); the text after it is a paragraph with its own style, set on the next page of the
+/// break's parity.
+const ODD_PAGE_BREAK_STORY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Body</Content></CharacterStyleRange>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" ParagraphBreakType="NextOddPage"><Br/></CharacterStyleRange>
+    </ParagraphStyleRange>
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle" Justification="CenterAlign">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>1</Content></CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+
+#[test]
+fn odd_page_break_ends_its_paragraph_and_keeps_its_parity() {
+    let mut d = import_idml_with(&fixture_with_story(ODD_PAGE_BREAK_STORY), &|_| None).unwrap();
+    let sid = *d.stories.keys().next().unwrap();
+    let story = &d.stories[&sid];
+    assert_eq!(story.text, format!("Body{}\n1", st::ODD_PAGE_BREAK));
+    assert_eq!(story.paras.len(), 2);
+    assert_eq!(story.paras[0].style, "Text/Body");
+    assert_eq!(story.paras[1].style, st::BASIC_PARAGRAPH);
+    assert_eq!(story.paras[1].para.align, Some(designcraft_doc::Align::Center));
+    // Export writes the break as the paragraph's one `Br`; importing that gives the same story.
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let again = back.stories.values().next().unwrap();
+    assert_eq!(again.text, story.text);
+    assert_eq!(again.paras, story.paras);
+    // The fixture's frames are on pages v and vi: the next odd page after v has no frame.
+    let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+    assert_eq!(cs.frames[0].lines.len(), 1, "no empty line after the break");
+    assert!(cs.frames[1].lines.is_empty());
+    assert_eq!(cs.overset_at, Some(story.text.len() - 1));
+    // Numbered from 4, the second frame is on page 5: "1" starts there.
+    d.sections[0].start_number = Some(4);
+    let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+    assert_eq!(cs.overset_at, None);
+    assert_eq!(cs.frames[1].lines.iter().map(|l| l.para).collect::<Vec<_>>(), vec![1]);
+}
+
 #[test]
 fn imports_hand_written_fixture() {
     let d = import_idml_with(&fixture(), &|_| None).unwrap();
@@ -238,8 +283,8 @@ fn imports_hand_written_fixture() {
     assert_eq!(d.styles.char_style("Strong").unwrap().chars.font_style.as_deref(), Some("Bold"));
     // Frames, threads, text.
     let story = d.stories.values().next().unwrap();
-    assert_eq!(story.text, format!("Hello & bold\nPage {}\tend{}after", st::PAGE_NUMBER, st::FRAME_BREAK));
-    assert_eq!(story.paras.len(), 2);
+    assert_eq!(story.text, format!("Hello & bold\nPage {}\tend{}\nafter", st::PAGE_NUMBER, st::FRAME_BREAK));
+    assert_eq!(story.paras.len(), 3);
     assert_eq!(story.paras[0].style, "Text/Body");
     assert_eq!(story.paras[1].style, st::BASIC_PARAGRAPH);
     assert_eq!(story.paras[1].para.align, Some(designcraft_doc::Align::Center));
@@ -406,7 +451,7 @@ fn small_doc() -> Document {
     if let Some(s) = d.story_mut(sid) {
         s.format_chars(0..3, |f| f.over = CharAttrs { size: Some(20.0), fill: Some("Brand".into()), ..Default::default() });
         let end = s.len();
-        s.insert(end, &format!(" {}", st::COLUMN_BREAK));
+        s.insert(end, &format!(" {}\n", st::COLUMN_BREAK));
     }
     let id = designcraft_doc::ItemId(d.alloc());
     let mut it = designcraft_doc::Item::new(id, lid, Shape::Oval, shapes::ellipse(Rect::new(650.0, 300.0, 750.0, 380.0)));
@@ -882,4 +927,85 @@ fn arabic_story_and_table_directions_survive_idml_export() {
     let st = back.stories.values().find(|st| !st.tables.is_empty()).unwrap();
     assert_eq!(st.direction, designcraft_doc::TextDirection::RightToLeft);
     assert_eq!(st.tables.values().next().unwrap().options.direction, designcraft_doc::TextDirection::RightToLeft);
+}
+
+#[test]
+fn imports_column_rules_from_frames_and_object_styles() {
+    let rule = r#"ColumnRuleOverride="true" ColumnRuleStrokeWidth="2.5" ColumnRuleStrokeColor="Color/Black" ColumnRuleStrokeTint="40"
+        ColumnRuleStrokeType="StrokeStyle/$ID/Solid" ColumnRuleOverprintOverride="false" ColumnRuleOffset="-3" ColumnRuleTopInset="6"
+        ColumnRuleBottomInset="9" ColumnRuleInsetChainOverride="false""#;
+    let styles = format!(
+        r#"<ObjectStyle Self="ObjectStyle/Padded" Name="Padded" EnableTextFrameGeneralOptions="true"><TextFramePreference TextColumnCount="2" {rule}/></ObjectStyle>"#
+    );
+    let d = inset_fixture(&format!(r#"<TextFramePreference TextColumnCount="3" {rule}/>"#), &styles);
+    let style = d.styles.object.iter().find(|s| s.name == "Padded").unwrap().text_frame.clone().unwrap();
+    for o in [d.spreads[0].items[0].text_frame().unwrap().options.clone(), style] {
+        assert!(o.column_rule, "{o:?}");
+        assert_eq!(o.column_rule_weight, 2.5);
+        assert_eq!(o.column_rule_color, designcraft_color::swatch::BLACK);
+        assert!((o.column_rule_tint - 0.4).abs() < 1e-6);
+        assert_eq!((o.column_rule_offset, o.column_rule_top_inset, o.column_rule_bottom_inset), (-3.0, 6.0, 9.0));
+    }
+    // Absent attributes: no rule, InDesign's defaults.
+    let d = inset_fixture(r#"<TextFramePreference TextColumnCount="3"/>"#, "");
+    assert_eq!(d.spreads[0].items[0].text_frame().unwrap().options, designcraft_doc::TextFrameOptions { columns: 3, ..Default::default() });
+}
+
+#[test]
+fn column_rules_round_trip() {
+    let mut d = small_doc();
+    let fid = d.spreads[0].items[0].id;
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = 2;
+    o.column_rule = true;
+    o.column_rule_weight = 0.75;
+    o.column_rule_color = "Brand".into();
+    o.column_rule_tint = 0.5;
+    o.column_rule_offset = 1.5;
+    o.column_rule_top_inset = 4.0;
+    o.column_rule_bottom_inset = 2.0;
+    let want = o.clone();
+    let bytes = export_idml(&d);
+    let back = import_idml(&bytes).unwrap();
+    let got = back.spreads[0].items.iter().find_map(|i| i.text_frame().filter(|t| t.options.column_rule)).unwrap().options.clone();
+    assert_eq!(got, want);
+    // Frames without a rule stay without one.
+    let plain = export_idml(&small_doc());
+    let back = import_idml(&plain).unwrap();
+    assert!(back.spreads.iter().flat_map(|s| &s.items).filter_map(|i| i.text_frame()).all(|t| !t.options.column_rule));
+}
+
+/// InDesign's designmap lists layers back to front; `Document::layers[0]` is the front layer.
+#[test]
+fn layers_import_and_export_in_stacking_order() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <Layer Self="L1" Name="Background"/>
+      <Layer Self="L2" Name="Content"/>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Spread Self="s">
+        <Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/>
+        <Rectangle Self="r" ItemLayer="L1">
+          <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+            <PathPointType Anchor="0 0"/><PathPointType Anchor="0 100"/>
+            <PathPointType Anchor="100 100"/><PathPointType Anchor="100 0"/>
+          </PathPointArray></GeometryPathType></PathGeometry></Properties>
+        </Rectangle>
+      </Spread>
+    </idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", spread)])).unwrap();
+    let names = |d: &Document| d.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&d), ["Content", "Background"]);
+    assert_eq!(d.spreads[0].items[0].layer, d.layers[1].id, "the rectangle stays on Background");
+
+    let bytes = export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut map = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("designmap.xml").unwrap(), &mut map).unwrap();
+    let (bg, content) = (map.find(r#"Name="Background""#).unwrap(), map.find(r#"Name="Content""#).unwrap());
+    assert!(bg < content, "designmap lists the back layer first");
+    let back = import_idml(&bytes).unwrap();
+    assert_eq!(names(&back), ["Content", "Background"]);
+    assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
 }

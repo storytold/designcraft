@@ -1,7 +1,8 @@
 //! Headless DesignCraft.
 //!
 //! ```text
-//! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub] [--pdf-options JSON] [--all-pages DIR]
+//! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub] [--all-pages DIR]
+//!                                      # --page, --scale and --pdf-options apply to the exports that follow them
 //! designcraft-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
 //! designcraft-cli describe ID          # one command: label, menu, shortcut, parameters
 //! designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -11,6 +12,7 @@
 //! designcraft-cli mcp [--connect PORT] [--sample]  # MCP server over stdio (docs/mcp.md)
 //! designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]  # budgets on a synthetic stress document
 //! designcraft-cli bench FILE [--runs N]  # the same measurements on one document
+//! designcraft-cli validate-pdf FILE.pdf    # run the built-in PDF/X-4 conformance checks
 //! designcraft-cli links                   # Discord, website, app page and GitHub links
 //! designcraft-cli --version               # print the version
 //! ```
@@ -32,6 +34,19 @@ mod perf;
 
 use designcraft_engine::Session;
 use serde_json::{Value, json};
+
+/// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample]\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli links\n       designcraft-cli --version";
+
+/// The links line under the usage block.
+fn usage_footer() -> String {
+    format!(
+        "\nCommunity: {}  ·  {}  ·  {}",
+        designcraft_engine::links::DISCORD,
+        designcraft_engine::links::APP_PAGE,
+        designcraft_engine::links::GITHUB
+    )
+}
 
 /// stdout went away. A reader that stopped early (a closed pipe) ends the program quietly, as
 /// ripgrep does; any other write error is reported.
@@ -70,21 +85,22 @@ fn main() -> ExitCode {
         Some("mcp") => report(mcp(&args[1..])),
         Some("perf") => report(perf::perf(&args[1..])),
         Some("bench") => report(perf::bench(&args[1..])),
+        Some("validate-pdf") => report(validate_pdf(args.get(1).map(String::as_str))),
         Some("links") => {
             use designcraft_engine::links::*;
             outln!("Discord   {DISCORD}\nWebsite   {WEBSITE}\nApp page  {APP_PAGE}\nGitHub    {GITHUB}\nIssues    {ISSUES}");
             ExitCode::SUCCESS
         }
+        // Asking for help is not an error: it goes to stdout and succeeds. An unknown command
+        // still prints the same usage to stderr and fails.
+        Some("--help" | "-h" | "help") => {
+            outln!("{USAGE}");
+            outln!("{}", usage_footer());
+            ExitCode::SUCCESS
+        }
         _ => {
-            eprintln!(
-                "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample]\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli links\n       designcraft-cli --version"
-            );
-            eprintln!(
-                "\nCommunity: {}  ·  {}  ·  {}",
-                designcraft_engine::links::DISCORD,
-                designcraft_engine::links::APP_PAGE,
-                designcraft_engine::links::GITHUB
-            );
+            eprintln!("{USAGE}");
+            eprintln!("{}", usage_footer());
             ExitCode::FAILURE
         }
     }
@@ -98,6 +114,16 @@ fn report(r: Result<(), String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn validate_pdf(path: Option<&str>) -> Result<(), String> {
+    let path = path.ok_or("usage: designcraft-cli validate-pdf FILE.pdf")?;
+    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let issues = designcraft_pdf::check_pdfx4(&bytes);
+    let valid = issues.is_empty();
+    let report = json!({"path": path, "standard": "PDF/X-4", "valid": valid, "issues": issues});
+    outln!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+    if valid { Ok(()) } else { Err(format!("{path} failed PDF/X-4 validation")) }
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
@@ -136,7 +162,36 @@ fn mcp(args: &[String]) -> Result<(), String> {
     Server::new(backend).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
 }
 
+/// The first `--page`, `--scale` or `--pdf-options` with no `--export` or `--all-pages` after it.
+/// They apply to the exports that follow them, so one after the last export would do nothing.
+fn option_after_last_export(args: &[String]) -> Option<&str> {
+    let mut unused = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--page" | "--scale" | "--pdf-options" => {
+                unused = unused.or(Some(a.as_str()));
+                it.next();
+            }
+            "--export" | "--all-pages" => {
+                unused = None;
+                it.next();
+            }
+            "--in" | "--cmd" => {
+                it.next();
+            }
+            _ => {}
+        }
+    }
+    unused
+}
+
 fn run(args: &[String]) -> Result<(), String> {
+    if let Some(opt) = option_after_last_export(args) {
+        return Err(format!(
+            "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
+        ));
+    }
     let mut s = Session::new();
     let mut page = 0usize;
     let mut scale = 1.0f64;

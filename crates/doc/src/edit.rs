@@ -171,11 +171,18 @@ impl Document {
         Ok(removed)
     }
 
+    /// The column direction a new story starts with: right to left in a document whose binding is
+    /// right to left (Document Setup), else left to right. Stories already made keep theirs.
+    pub fn new_story_direction(&self) -> crate::TextDirection {
+        if self.settings.right_to_left_binding { crate::TextDirection::RightToLeft } else { crate::TextDirection::LeftToRight }
+    }
+
     /// Create a text frame with a new (or given) story at `rect` on spread `r`.
     pub fn add_text_frame(&mut self, r: SpreadRef, rect: Rect, layer: LayerId, text: &str, para: ParaFormat) -> Result<(ItemId, StoryId)> {
         let id = ItemId(self.alloc());
         let sid = StoryId(self.alloc());
         let mut story = Story::with_text(sid, text, para);
+        story.direction = self.new_story_direction();
         story.frames.push(id);
         self.stories.insert(sid, Arc::new(story));
         let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));

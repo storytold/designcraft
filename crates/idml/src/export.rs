@@ -346,7 +346,8 @@ impl<'a> Ex<'a> {
             let n = format!("<?AID 001b?>TV {name}");
             root.push(El::new("TextVariable").attr("Self", format!("dTextVariablen{n}")).attr("Name", &n).attr("VariableType", ty));
         }
-        for l in &d.layers {
+        // IDML lists layers back to front.
+        for l in d.layers.iter().rev() {
             let color = match names::layer_color_out(l.color) {
                 Some(n) => p("LayerColor", "enumeration", n),
                 None => {
@@ -991,7 +992,7 @@ impl<'a> Ex<'a> {
             }
             let mut el = with_props(el, props);
             if let Some(tf) = &os.text_frame {
-                el.push(text_frame_pref(tf));
+                el.push(text_frame_pref(tf, &self.sw(&tf.column_rule_color)));
             }
             og.insert(&os.name, el);
         }
@@ -1098,8 +1099,8 @@ impl<'a> Ex<'a> {
             if let Some(o) = o {
                 el.set(&format!("{k}Offset"), num(o.unwrap_or(-9999.0)));
             }
-            if let Some(c) = c.as_ref().filter(|c| !c.is_empty()) {
-                el.set(&format!("{k}Color"), self.sw(c));
+            if let Some(c) = c {
+                el.set(&format!("{k}Color"), if c.is_empty() { "Text Color".into() } else { self.sw(c) });
             }
             if let Some(t) = t {
                 el.set(&format!("{k}Tint"), num(t as f64 * 100.0));
@@ -1647,7 +1648,7 @@ impl<'a> Ex<'a> {
             el.push(t);
         }
         if let Content::Text(t) = &it.content {
-            el.push(text_frame_pref(&t.options));
+            el.push(text_frame_pref(&t.options, &self.sw(&t.options.column_rule_color)));
             if let Some((start, inc)) = t.options.baseline_grid {
                 el.push(
                     El::new("BaselineFrameGridOption")
@@ -1885,6 +1886,7 @@ impl<'a> Ex<'a> {
             let pf = s.paras.get(pi).cloned().unwrap_or_default();
             let mut psr = self.psr_el(&pf);
             let last = pi + 1 == n;
+            let ends_with_break = s.text.get(r.clone()).and_then(|t| t.chars().next_back()).is_some_and(st::is_break_char);
             // Character runs intersecting the paragraph.
             let mut segs: Vec<(std::ops::Range<usize>, CharFormat)> = Vec::new();
             for (rr, f) in s.runs() {
@@ -1931,6 +1933,8 @@ impl<'a> Ex<'a> {
                         st::COLUMN_BREAK => Some("NextColumn"),
                         st::FRAME_BREAK => Some("NextFrame"),
                         st::PAGE_BREAK => Some("NextPage"),
+                        st::ODD_PAGE_BREAK => Some("NextOddPage"),
+                        st::EVEN_PAGE_BREAK => Some("NextEvenPage"),
                         _ => None,
                     };
                     if let Some(code) = ace {
@@ -2108,7 +2112,8 @@ impl<'a> Ex<'a> {
                 flush_text(&mut cur, &mut pending);
                 flush_content(&mut pending, &mut out);
                 let is_last_seg = k + 1 == nseg;
-                if is_last_seg && !last {
+                // A break character that ends the paragraph was written as its `Br`.
+                if is_last_seg && !last && !ends_with_break {
                     out.push(Node::El(El::new("Br")));
                 }
                 if !out.is_empty() || csrs.is_empty() {
@@ -2307,7 +2312,8 @@ fn margin_el(pg: &designcraft_doc::Page) -> El {
         .attr("ColumnsPositions", pos.join(" "))
 }
 
-fn text_frame_pref(o: &TextFrameOptions) -> El {
+/// `rule_color` is the IDML reference of the column rule's swatch.
+fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
     let mut inset = El::new("InsetSpacing").attr("type", "list");
     for v in o.inset {
         inset.push(p("ListItem", "unit", num(v)));
@@ -2326,6 +2332,26 @@ fn text_frame_pref(o: &TextFrameOptions) -> El {
         .attr("AutoSizingType", names::auto_size_out(o.auto_size))
         .attr("AutoSizingReferencePoint", names::REF_POINTS[(o.auto_size_ref as usize).min(8)]);
     let el = if o.column_width > 0.0 { el.attr("TextColumnFixedWidth", num(o.column_width)) } else { el };
+    let d = TextFrameOptions::default();
+    let rule_set = o.column_rule
+        || o.column_rule_weight != d.column_rule_weight
+        || o.column_rule_color != d.column_rule_color
+        || o.column_rule_tint != d.column_rule_tint
+        || o.column_rule_offset != d.column_rule_offset
+        || o.column_rule_top_inset != d.column_rule_top_inset
+        || o.column_rule_bottom_inset != d.column_rule_bottom_inset;
+    let el = if rule_set {
+        el.attr("ColumnRuleOverride", bool_s(o.column_rule))
+            .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
+            .attr("ColumnRuleStrokeColor", rule_color)
+            .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
+            .attr("ColumnRuleOffset", num(o.column_rule_offset))
+            .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
+            .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
+            .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset))
+    } else {
+        el
+    };
     with_props(el, vec![inset])
 }
 
