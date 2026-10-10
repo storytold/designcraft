@@ -38,9 +38,9 @@ use designcraft_geom::{Point, Rect};
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::Cache;
 use crate::notes::Notes;
-pub use crate::notes::{find_note, hit_note, note_caret};
+pub use crate::notes::{find_note, hit_note, hit_note_with, note_caret};
 use crate::shape::{Glyph, StyleTable, SubstCtx};
-pub use crate::table::{PlacedCell, StrokeSeg, TableFrag, cell_caret, find_cell, hit_cell};
+pub use crate::table::{PlacedCell, StrokeSeg, TableFrag, cell_caret, find_cell, hit_cell, hit_cell_with};
 
 /// Character appearance shared by many glyphs (indexed from [`PlacedGlyph::style`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -197,6 +197,20 @@ pub struct Line {
     pub hj: u8,
     /// The paragraph's Keep Options couldn't be honoured here (Highlight Keep Violations).
     pub keep_violation: bool,
+    /// The drop cap a paragraph's first line starts with (its first glyphs, set down to a later
+    /// line's baseline).
+    pub drop_cap: Option<DropCapBox>,
+}
+
+/// Where a drop cap sits (frame inner space).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DropCapBox {
+    /// Story bytes from its line's start up to here are the drop cap's.
+    pub end: usize,
+    /// Its baseline.
+    pub baseline: f64,
+    /// The area it covers: from its line's top down to the text below its baseline.
+    pub rect: Rect,
 }
 
 /// A paragraph rule or shading rectangle in frame inner space.
@@ -651,6 +665,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             notes.number_refs(doc, prange.clone(), cur_frame.and_then(|f| f.page), &mut sub);
         }
         let sub_objects = sub.objects.clone();
+        let drop_end = drop_cap_end(&story.text, prange.clone(), &pp, sub.vertical);
         let mut table = StyleTable { styles: &mut styles_tab, missing: &mut missing_fonts };
         let env = shape::TypeEnv { auto_leading: pp.auto_leading, adv: doc.settings.advanced_type, glyph_fallback: doc.settings.glyph_fallback };
         let mut sp = shape::shape_para(
@@ -666,7 +681,20 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             &pp.nested_styles,
             &pp.grep_styles,
             &[],
+            (drop_end, &pp.drop_cap_style),
         );
+        // Drop cap: the size and indent come from the text beside it (`base_*` when there's none).
+        let base_leading = match base_chars.leading {
+            designcraft_doc::Leading::Auto => base_chars.size * pp.auto_leading,
+            designcraft_doc::Leading::Points(v) => v,
+        };
+        let base_cap = {
+            let face = db.face(&base_chars.font_family, &base_chars.font_style);
+            face.cap_height * base_chars.size / face.upem * base_chars.v_scale
+        };
+        let drop_grid = cur_frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
+        // Align Left Edge (left-to-right paragraphs).
+        let drop_align = pp.drop_cap_align_left && pp.direction == designcraft_doc::TextDirection::LeftToRight;
         if !pp.nested_line_styles.is_empty() && cur.fi < frames.len() {
             // Nested line styles: find where the first lines end in this column, restyle them, and
             // look again (the style changes the widths) until the lines settle.
@@ -676,9 +704,17 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let spacing = spacing_for(&pp, base_chars.size);
             let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
             for _ in 0..3 {
-                let width = |j: usize| (col.width() - pp.left_indent - pp.right_indent - if j == 0 { pp.first_line_indent } else { 0.0 }).max(1.0);
-                // The same spacing, hyphenation and breaker as the layout below.
+                // The same drop cap, spacing, hyphenation and breaker as the layout below.
                 let mut gl = sp.glyphs.clone();
+                let dc = split_drop_cap(db, &mut gl, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align);
+                let width = |j: usize| {
+                    let ind = match &dc {
+                        Some(dc) if j < dc.lines => dc.indent(),
+                        _ if j == 0 => pp.first_line_indent,
+                        _ => 0.0,
+                    };
+                    (col.width() - pp.left_indent - pp.right_indent - ind).max(1.0)
+                };
                 apply_desired_spacing(&mut gl, &pp);
                 let hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
                 let breaks = if pp.composer == Composer::SingleLine || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
@@ -724,30 +760,46 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     &pp.nested_styles,
                     &pp.grep_styles,
                     &lines,
+                    (drop_end, &pp.drop_cap_style),
                 );
             }
         }
+        // Rules in Text Color: the colour of the paragraph's first character (rule above) and last
+        // character (rule below).
+        let text_color = |g: Option<&Glyph>| {
+            g.and_then(|g| table.styles.get(g.style as usize))
+                .map_or((base_chars.fill.clone(), base_chars.fill_tint), |s| (s.fill.clone(), s.fill_tint))
+        };
+        let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
+        let rule_color = |r: &designcraft_doc::Rule, text: &(String, f32)| {
+            if r.color == designcraft_doc::TEXT_COLOR { text.clone() } else { (r.color.clone(), r.tint) }
+        };
+        let drop_cap = split_drop_cap(db, &mut sp.glyphs, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align);
         // List labels take the default super/subscript settings.
         let label_env = shape::TypeEnv { adv: Default::default(), ..env };
-        match pp.list_type {
+        let list_label = match pp.list_type {
             // An empty paragraph has no bullet or number, and the numbering carries on past it.
-            designcraft_doc::ListType::Numbers | designcraft_doc::ListType::Bullets if prange.is_empty() => {}
+            designcraft_doc::ListType::Numbers | designcraft_doc::ListType::Bullets if prange.is_empty() => None,
             designcraft_doc::ListType::Numbers if !pp.list_name.is_empty() => {
                 // A named list: carries on past other paragraphs (and from earlier stories).
                 let n = named_numbers.get(pi).copied().flatten().unwrap_or(1);
-                let label = pp.number_label(n);
-                prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
+                Some(pp.number_label(n))
             }
             designcraft_doc::ListType::Numbers => {
                 list_counter = pp.start_at.map_or(list_counter.saturating_add(1), |s| s.max(1));
-                let label = pp.number_label(list_counter);
-                prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
+                Some(pp.number_label(list_counter))
             }
-            designcraft_doc::ListType::Bullets => {
-                let label = pp.bullet_label();
-                prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
+            designcraft_doc::ListType::Bullets => Some(pp.bullet_label()),
+            designcraft_doc::ListType::None => {
+                list_counter = 0;
+                None
             }
-            designcraft_doc::ListType::None => list_counter = 0,
+        };
+        if let Some(label) = list_label {
+            let n = prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
+            for g in sp.glyphs.iter_mut().take(n) {
+                g.list_label = true;
+            }
         }
         if pi == 0
             && let Some(label) = &opts.label
@@ -764,10 +816,6 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         apply_desired_spacing(&mut glyphs, &pp);
         let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
         let base_size = base_chars.size;
-        let base_leading = match base_chars.leading {
-            designcraft_doc::Leading::Auto => base_size * pp.auto_leading,
-            designcraft_doc::Leading::Points(v) => v,
-        };
         let spacing = spacing_for(&pp, base_size);
         // A paragraph set across the columns moves on to the next frame where others move on to
         // the next column.
@@ -867,6 +915,10 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let mut col_first_line = 0usize;
         let has_tabs = glyphs.iter().any(|g| g.ch == '\t');
         let mut first_line_rect: Option<(usize, f64, f64, f64)> = None; // frame, baseline, ascent, x-span
+        let rtl = pp.direction == designcraft_doc::TextDirection::RightToLeft;
+        // The drop cap's line (frame, index) and the baseline it sits on, once that line is set.
+        let mut drop_line: Option<(usize, usize)> = None;
+        let mut drop_baseline: Option<f64> = None;
         loop {
             if cur.fi >= frames.len() {
                 if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
@@ -887,11 +939,22 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let col = if spanning { span_rect(&cols[cur.fi], Rect::new(col.x0, col.y0, col.x1, base.y1), pp.span_columns) } else { col };
             let col = cur.split_rect(col);
             // Estimate slots for the breaker with the paragraph's base leading.
-            let est_first = cur.next_baseline(f, col, base_leading, base_chars.size * 0.75, &pp);
-            let slots = estimate_slots(f, col, est_first, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
+            let est_asc = base_chars.size * 0.75;
+            let est_tops = Tops { typo_ascent: est_asc, cap: est_asc * 0.72, xh: est_asc * 0.5 };
+            let est_first = cur.next_baseline(f, col, base_leading, est_asc, est_tops, &pp);
+            let est_jump = cur.jump(f, base_leading, est_asc, est_tops);
+            let slots = estimate_slots(f, col, est_first, est_jump, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
             let width = |j: usize| -> f64 {
                 let (x0, x1) = slots.get(j).copied().unwrap_or((col.x0, col.x1));
-                let ind = pp.left_indent + pp.right_indent + if line_no + j == 0 { pp.first_line_indent } else { 0.0 };
+                // Beside the drop cap (in the column the paragraph starts in), its width; else the
+                // first-line indent.
+                let ind = pp.left_indent
+                    + pp.right_indent
+                    + match &drop_cap {
+                        Some(dc) if line_no + j < dc.lines && col_first_line == 0 => dc.indent(),
+                        _ if line_no + j == 0 => pp.first_line_indent,
+                        _ => 0.0,
+                    };
                 (x1 - x0 - ind).max(1.0)
             };
             let rest = &glyphs[g0..];
@@ -913,39 +976,36 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             for (k, b) in breaks.iter().enumerate() {
                 let (s, e) = (g0 + b.start, g0 + b.end);
                 let line_glyphs = &glyphs[s..e.max(s)];
-                let (asc, desc, lead) = line_metrics(line_glyphs, &glyphs, s, base_leading, base_chars.size, db, &base_chars);
+                let (asc, tops, desc, lead) = line_metrics(line_glyphs, &glyphs, s, base_leading, base_chars.size, db, &base_chars);
                 let reference = cjk_line_reference(line_glyphs);
-                let mut baseline = cur.next_baseline(f, col, lead, asc, &pp);
+                // Baseline grid: the next grid line at or below.
+                let grid = f.grid.filter(|&(_, inc)| {
+                    inc > 0.0 && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
+                });
+                let snap = |y: f64| grid.map_or(y, |(g_start, inc)| g_start + ((y - g_start) / inc - 1e-6).ceil() * inc);
+                let mut baseline = cur.next_baseline(f, col, lead, asc, tops, &pp);
                 if cur.last_baseline.is_some() {
                     baseline += cur.last_reference - reference;
                 }
-                // Baseline grid.
-                if let Some((g_start, inc)) = f.grid
-                    && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
-                    && inc > 0.0
-                {
-                    let n = ((baseline - g_start) / inc - 1e-6).ceil();
-                    baseline = g_start + n * inc;
-                }
-                // Wrap: push the line down until a slot exists.
+                baseline = snap(baseline);
+                // Wrap: push the line down to the first position with a slot (back on the grid).
                 let (mut x0, mut x1) = (col.x0, col.x1);
                 if !f.exclusions.is_empty() {
+                    let jump = cur.jump(f, lead, asc, tops);
                     let mut tries = 0;
                     loop {
-                        match free_slot(f, col, baseline - asc, baseline + desc, base_size) {
-                            Some((a, b)) => {
-                                x0 = a;
-                                x1 = b;
-                                break;
-                            }
-                            None => {
-                                baseline += 1.0;
-                                tries += 1;
-                                if baseline > col.y1 || tries > 4000 {
-                                    break;
-                                }
-                            }
+                        let Some((nb, (a, z))) = wrap_slot(f, col, baseline, asc, desc, jump, base_size) else {
+                            // No room in this column.
+                            baseline = baseline.max(col.y1) + 1.0;
+                            break;
+                        };
+                        let pushed = nb > baseline;
+                        (baseline, x0, x1) = (nb, a, z);
+                        tries += 1;
+                        if !pushed || grid.is_none() || tries > 4000 {
+                            break;
                         }
+                        baseline = snap(baseline);
                     }
                 }
                 let capped = cur.split.is_none() && line_cap[pi] == Some(line_no) && line_no > col_first_line;
@@ -1021,9 +1081,15 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     moved = true;
                     break;
                 }
-                let ind_l = pp.left_indent + if line_no == 0 { pp.first_line_indent } else { 0.0 };
+                // A drop cap sits at the start-side indent; the first-line indent doesn't move it.
+                let beside = drop_cap.as_ref().filter(|dc| line_no < dc.lines && col_first_line == 0).map(DropCap::indent);
+                let (ind_l, ind_r) = match beside {
+                    Some(w) if rtl => (pp.left_indent, pp.right_indent + w),
+                    Some(w) => (pp.left_indent + w, pp.right_indent),
+                    None => (pp.left_indent + if line_no == 0 { pp.first_line_indent } else { 0.0 }, pp.right_indent),
+                };
                 let lx0 = x0 + ind_l;
-                let lx1 = x1 - pp.right_indent;
+                let lx1 = x1 - ind_r;
                 let last = k + 1 == breaks.len();
                 // The break character that ends this line, if any (it is the line's last glyph).
                 let brk = if b.forced && e > s {
@@ -1037,8 +1103,30 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let forced_mid = brk == Some(story::FORCED_LINE_BREAK) && !last;
                 let (mut placed, end_x, ratio) =
                     layout_line(&glyphs, s, e, b.hyphen, lx0, lx1, col.x0, &pp, &spacing, ends_para, forced_mid, f.left_page, &bidi_info);
-                // Warichu runs before ruby so a reading is placed over the stacked note.
+                // Warichu runs before ruby so a reading is placed over the stacked note, and before
+                // the trimmed spaces and the drop cap join the line, so neither is stacked.
                 let end_x = end_x + warichu::place(&styles_tab, &mut placed);
+                // The spaces the break trimmed off the end follow the line undrawn, so the caret
+                // and the selection reach them; alignment and justification ignore them.
+                if pp.direction != designcraft_doc::TextDirection::RightToLeft && !placed.iter().any(|g| g.rtl) {
+                    let mut x = end_x;
+                    for g in glyphs.get(e..(g0 + b.next).min(glyphs.len())).unwrap_or(&[]).iter().filter(|g| g.is_space()) {
+                        placed.push(PlacedGlyph { visible: false, ..place(g, x) });
+                        x += g.adv;
+                    }
+                }
+                let mut drop_box = None;
+                if line_no == 0
+                    && let Some(dc) = &drop_cap
+                {
+                    let at = if rtl { x1 - pp.right_indent - dc.width } else { x0 + pp.left_indent - dc.lsb };
+                    placed.splice(0..0, place_drop_cap(dc, at, rtl));
+                    drop_box = Some(DropCapBox {
+                        end: dc.end,
+                        baseline: baseline + dc.drop,
+                        rect: Rect::new(at, baseline - asc, at + dc.width, baseline + dc.drop + desc),
+                    });
+                }
                 ruby::annotate(db, &styles_tab, &mut placed, doc.settings.glyph_fallback);
                 let range_end = if last { prange.end } else { glyphs.get(g0 + b.next).map(|g| g.byte).unwrap_or(prange.end) };
                 let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
@@ -1070,7 +1158,17 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     spacing: ratio,
                     hj: hj_severity(ratio, pp.word_space_min, pp.word_space_max),
                     keep_violation: false,
+                    drop_cap: drop_box,
                 });
+                if drop_box.is_some() {
+                    drop_line = Some((cur.fi, ft.lines.len() - 1));
+                }
+                if let Some(dc) = &drop_cap
+                    && line_no + 1 == dc.lines
+                    && col_first_line == 0
+                {
+                    drop_baseline = Some(baseline);
+                }
                 for k in line_notes {
                     notes.place(doc, k, cur.fi, cur.col, col_w, f, opts);
                 }
@@ -1106,6 +1204,19 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             }
             if !moved {
                 break;
+            }
+        }
+        // The drop cap sits on its last line's baseline as set (it was placed at the leading's).
+        if let (Some((fi, li)), Some(b), Some(n)) = (drop_line, drop_baseline, drop_cap.as_ref().map(|dc| dc.glyphs.len()))
+            && let Some(l) = out.frames.get_mut(fi).and_then(|f| f.lines.get_mut(li))
+            && let Some(dc) = l.drop_cap.as_mut()
+        {
+            let d = b - dc.baseline;
+            dc.baseline = b;
+            dc.rect.y1 += d;
+            // Its glyphs start the line.
+            for g in l.glyphs.iter_mut().take(n) {
+                g.y += d;
             }
         }
         info.push(ParaInfo {
@@ -1146,11 +1257,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     .find(|l| l.para == pi && l.first_in_para)
                     .map(|l| if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) })
                     .unwrap_or((0.0, 0.0));
-                ft.decos.push(Deco {
-                    rect: Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y),
-                    color: r.color.clone(),
-                    tint: r.tint,
-                });
+                let (color, tint) = rule_color(r, &above);
+                ft.decos.push(Deco { rect: Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y), color, tint });
             }
         }
         para_box_decos(&mut out, pi, &pp);
@@ -1161,7 +1269,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let r = &pp.rule_below;
             let y = l.baseline + r.offset;
             let (x0, x1) = if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) };
-            ft.decos.push(Deco { rect: Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), color: r.color.clone(), tint: r.tint });
+            let (color, tint) = rule_color(r, &below);
+            ft.decos.push(Deco { rect: Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), color, tint });
         }
         // The end of a split block: text after it continues below its deepest sub-column, which
         // are balanced first. A block that ends the story fills its sub-columns in turn.
@@ -1993,22 +2102,48 @@ impl Cursor {
         self.next_frame();
         self.fi = fi;
     }
-    /// Baseline for the next line with leading `lead` and ascent `asc`.
-    fn next_baseline(&self, f: &FrameSpec, col: Rect, lead: f64, asc: f64, _pp: &ParaProps) -> f64 {
+    /// Baseline for the next line with leading `lead`, ascent `asc` and first baseline heights
+    /// `tops`.
+    fn next_baseline(&self, f: &FrameSpec, col: Rect, lead: f64, asc: f64, tops: Tops, _pp: &ParaProps) -> f64 {
         match self.last_baseline {
             Some(b) => b + lead + self.pending,
-            None => {
-                let off = match f.opts.first_baseline {
-                    FirstBaseline::Ascent => asc,
-                    FirstBaseline::CapHeight => asc * 0.72,
-                    FirstBaseline::XHeight => asc * 0.5,
-                    FirstBaseline::Leading => lead,
-                    FirstBaseline::Fixed => 0.0,
-                };
-                col.y0 + off.max(f.opts.first_baseline_min)
-            }
+            None => col.y0 + first_baseline_offset(f, lead, asc, tops),
         }
     }
+    /// How the next line clears a Jump Object wrap: by whole leadings below the line above, or, first
+    /// in its column, as at the top of a frame whose top is the wrap bottom.
+    fn jump(&self, f: &FrameSpec, lead: f64, asc: f64, tops: Tops) -> Jump {
+        match self.last_baseline {
+            Some(_) => Jump { top: lead, step: lead },
+            None => Jump { top: first_baseline_offset(f, lead, asc, tops), step: 0.0 },
+        }
+    }
+}
+
+/// The frame's first baseline offset below the top of a column, for a line with leading `lead`,
+/// ascent `asc` and first baseline heights `tops`.
+fn first_baseline_offset(f: &FrameSpec, lead: f64, asc: f64, tops: Tops) -> f64 {
+    let off = match f.opts.first_baseline {
+        // Vertical frames measure from the ascent.
+        FirstBaseline::Ascent if f.vertical => asc,
+        FirstBaseline::CapHeight if f.vertical => asc * 0.72,
+        FirstBaseline::XHeight if f.vertical => asc * 0.5,
+        FirstBaseline::Ascent => tops.typo_ascent,
+        FirstBaseline::CapHeight => tops.cap,
+        FirstBaseline::XHeight => tops.xh,
+        FirstBaseline::Leading => lead,
+        FirstBaseline::Fixed => 0.0,
+    };
+    off.max(f.opts.first_baseline_min)
+}
+
+/// A line's tallest typographic ascender, cap height and x height above its baseline: the
+/// first baseline offsets.
+#[derive(Clone, Copy, Default)]
+struct Tops {
+    typo_ascent: f64,
+    cap: f64,
+    xh: f64,
 }
 
 /// Em box relative to the baseline. Font ascender/descender proportions locate it;
@@ -2051,24 +2186,99 @@ fn line_metrics(
     base_size: f64,
     db: &ScopedFonts<'_>,
     base: &designcraft_doc::CharProps,
-) -> (f64, f64, f64) {
+) -> (f64, Tops, f64, f64) {
     let src: &[Glyph] = if line.is_empty() { all.get(s..(s + 1).min(all.len())).unwrap_or(&[]) } else { line };
+    let face = || db.face(&base.font_family, &base.font_style);
     if src.is_empty() {
-        let face = db.face(&base.font_family, &base.font_style);
+        let face = face();
         let k = base_size / face.upem;
-        return (face.ascent * k, face.descent * k, base_leading);
+        let tops = Tops { typo_ascent: face.typo_ascent * k, cap: face.cap_height * k, xh: face.x_height * k };
+        return (face.ascent * k, tops, face.descent * k, base_leading);
     }
     let mut asc: f64 = 0.0;
+    let mut tops = Tops::default();
     let mut desc: f64 = 0.0;
     let mut lead: f64 = 0.0;
     let reference = src.iter().max_by(|a, b| a.size.total_cmp(&b.size));
+    let mut own_text = false;
     for g in src {
         let shift = g.shift + reference.map_or(0.0, |r| cjk_alignment_shift(g, r));
-        asc = asc.max(g.ascent + shift.max(0.0));
+        let up = shift.max(0.0);
+        asc = asc.max(g.ascent + up);
+        // A list's bullet or number doesn't raise the Ascent offset: only the line's own text does.
+        if !g.list_label {
+            own_text = true;
+            tops.typo_ascent = tops.typo_ascent.max(g.typo_ascent + up);
+        }
+        tops.cap = tops.cap.max(g.cap + up);
+        tops.xh = tops.xh.max(g.xh + up);
         desc = desc.max(g.descent - shift.min(0.0));
         lead = lead.max(g.leading);
     }
-    (asc, desc, lead)
+    if !own_text {
+        // Only a label (an empty list paragraph): as an empty paragraph.
+        let face = face();
+        tops.typo_ascent = face.typo_ascent * base_size / face.upem;
+    }
+    (asc, tops, desc, lead)
+}
+
+/// How a line clears Jump Object wraps. The line occupies `[baseline − top, baseline]` (its leading,
+/// or its first baseline offset at the top of a column) and must not overlap the wrap; it may hang its
+/// descenders into the wrap. Below a wrap it moves down from its place in whole `step`s until it clears
+/// the wrap bottom (`step` 0: its top lands on the wrap bottom).
+#[derive(Clone, Copy, Debug)]
+struct Jump {
+    top: f64,
+    step: f64,
+}
+
+/// Slack for float error when a line is tested against a Jump Object wrap's edges.
+const JUMP_EPS: f64 = 1e-6;
+
+/// The first baseline at or below `baseline` where a line with ascent `asc` and descent `desc` has a
+/// free slot in `col`, and that slot; None if there is none above the column bottom.
+///
+/// A line under a Jump Object wrap moves below it as `jump` says. Other wraps are rectangles, so the
+/// free space only grows where one in the line's band ends: the search jumps from one such bottom
+/// edge to the next, and a line that clears a wrap has its top exactly on the wrap's bottom.
+fn wrap_slot(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump: Jump, size: f64) -> Option<(f64, (f64, f64))> {
+    let top = jump.top.max(0.0);
+    let mut b = baseline;
+    // Each step passes at least one wrap; the cap bounds hostile geometry.
+    for _ in 0..4000 {
+        let jumped = f
+            .exclusions
+            .iter()
+            .filter(|e| e.mode == WrapMode::JumpObject)
+            .map(|e| e.rect)
+            .filter(|r| r.x0 < col.x1 && r.x1 > col.x0 && b > r.y0 + JUMP_EPS && b - top < r.y1 - JUMP_EPS)
+            .fold(f64::NEG_INFINITY, |m, r| m.max(r.y1));
+        b = if jumped > f64::NEG_INFINITY {
+            if jump.step > 0.0 {
+                // Whole steps from the line's own place (at least one step past the line above).
+                baseline + ((jumped + top - baseline - JUMP_EPS / 2.0) / jump.step).ceil().max(0.0) * jump.step
+            } else {
+                jumped + top
+            }
+        } else if let Some(slot) = free_slot(f, col, b - asc, b + desc, size) {
+            return Some((b, slot));
+        } else {
+            let (y0, y1) = (b - asc, b + desc);
+            let edge = f
+                .exclusions
+                .iter()
+                .filter(|e| e.mode != WrapMode::JumpObject)
+                .map(|e| e.rect)
+                .filter(|r| r.y0 < y1 && r.y1 > y0)
+                .fold(f64::INFINITY, |m, r| m.min(r.y1));
+            edge + asc
+        };
+        if b.is_nan() || b > col.y1 {
+            return None;
+        }
+    }
+    None
 }
 
 /// Widest free horizontal interval of `col` in the band, or None if blocked.
@@ -2079,7 +2289,6 @@ fn free_slot(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64) -> Option<(f
         let overlaps_band = r.y0 < y1 && r.y1 > y0;
         match ex.mode {
             WrapMode::JumpToNextColumn if y1 > r.y0 && r.x0 < col.x1 && r.x1 > col.x0 => return None,
-            WrapMode::JumpObject if overlaps_band && r.x0 < col.x1 && r.x1 > col.x0 => return None,
             WrapMode::BoundingBox | WrapMode::Contour if overlaps_band => {
                 let mut next = Vec::new();
                 for (a, b) in free {
@@ -2103,7 +2312,17 @@ fn free_slot(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64) -> Option<(f
 }
 
 #[allow(clippy::too_many_arguments)]
-fn estimate_slots(f: &FrameSpec, col: Rect, first: f64, lead: f64, size: f64, glyphs: &[Glyph], pp: &ParaProps, line_no: usize) -> Vec<(f64, f64)> {
+fn estimate_slots(
+    f: &FrameSpec,
+    col: Rect,
+    first: f64,
+    jump: Jump,
+    lead: f64,
+    size: f64,
+    glyphs: &[Glyph],
+    pp: &ParaProps,
+    line_no: usize,
+) -> Vec<(f64, f64)> {
     let _ = (pp, line_no);
     if f.exclusions.is_empty() {
         return vec![];
@@ -2113,20 +2332,21 @@ fn estimate_slots(f: &FrameSpec, col: Rect, first: f64, lead: f64, size: f64, gl
     let n = ((total / (col.width().max(10.0) * 0.5)).ceil() as usize + 2).min(2000);
     let mut v = Vec::with_capacity(n);
     let mut b = first;
+    let mut jump = jump;
     for _ in 0..n {
-        let mut tries = 0;
-        let slot = loop {
-            if let Some(s) = free_slot(f, col, b - size * 0.8, b + size * 0.25, size) {
-                break s;
+        let slot = match wrap_slot(f, col, b, size * 0.8, size * 0.25, jump, size) {
+            Some((nb, s)) => {
+                b = nb;
+                s
             }
-            b += 1.0;
-            tries += 1;
-            if b > col.y1 || tries > 4000 {
-                break (col.x0, col.x1);
+            None => {
+                b = b.max(col.y1);
+                (col.x0, col.x1)
             }
         };
         v.push(slot);
         b += lead;
+        jump = Jump { top: lead, step: lead };
     }
     v
 }
@@ -2641,6 +2861,123 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
     }
 }
 
+/// Drop caps are at most this many lines and characters (larger values are capped).
+pub const MAX_DROP_CAP_LINES: u32 = 25;
+pub const MAX_DROP_CAP_CHARS: u32 = 150;
+
+/// Byte where paragraph `prange`'s drop cap ends: after its first `drop_cap_chars` characters
+/// (code points, as InDesign counts them, spaces included), extended to the end of the grapheme
+/// cluster they end in so a letter keeps its combining marks; all of them in a shorter paragraph.
+/// `prange.start` when it has none: no lines or characters, or vertical text (which sets no drop
+/// caps).
+fn drop_cap_end(text: &str, prange: Range<usize>, pp: &ParaProps, vertical: bool) -> usize {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    if vertical || pp.drop_cap_lines == 0 || pp.drop_cap_chars == 0 {
+        return prange.start;
+    }
+    let Some(para) = text.get(prange.clone()) else { return prange.start };
+    let para = para.trim_end_matches('\n');
+    let n = pp.drop_cap_chars.min(MAX_DROP_CAP_CHARS) as usize;
+    let end = para.char_indices().nth(n).map_or(para.len(), |(i, _)| i);
+    prange.start + para.grapheme_indices(true).map(|(i, _)| i).find(|i| *i >= end).unwrap_or(para.len())
+}
+
+/// A paragraph's drop cap: its first glyphs, enlarged to reach down `lines` lines.
+struct DropCap {
+    glyphs: Vec<Glyph>,
+    /// Story byte it ends at.
+    end: usize,
+    lines: usize,
+    /// Its advance.
+    width: f64,
+    /// How far its origin sits left of the indent: its first letter's left side bearing with
+    /// Align Left Edge, else 0.
+    lsb: f64,
+    /// Its baseline below the first line's, at the paragraph's leading.
+    drop: f64,
+}
+
+/// Take the drop cap (the glyphs before byte `end`) off the front of a paragraph's glyphs and scale
+/// it so its cap height reaches from the first line's cap height down to line `lines`' baseline,
+/// measured in the leading and cap height of the text after it.
+/// On a baseline grid of increment `grid`, lines are that many grid steps apart. With
+/// `align_left` its ink starts at the indent (see [`DropCap::lsb`]).
+#[allow(clippy::too_many_arguments)]
+fn split_drop_cap(
+    db: &ScopedFonts<'_>,
+    glyphs: &mut Vec<Glyph>,
+    end: usize,
+    lines: u32,
+    base_leading: f64,
+    base_cap: f64,
+    grid: Option<f64>,
+    align_left: bool,
+) -> Option<DropCap> {
+    let n = glyphs.iter().take_while(|g| g.byte < end).count();
+    if n == 0 {
+        return None;
+    }
+    let lines = lines.clamp(1, MAX_DROP_CAP_LINES) as usize;
+    let mut dc: Vec<Glyph> = glyphs.drain(..n).collect();
+    let body = glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0);
+    let (lead, cap) = body.map_or((base_leading, base_cap), |g| (g.leading, g.cap));
+    let lead = match grid.map(|inc| (lead / inc - 1e-6).ceil().max(1.0) * inc) {
+        Some(pitch) if pitch.is_finite() && pitch > 0.0 => pitch,
+        _ => lead,
+    };
+    let drop = (lines - 1) as f64 * lead;
+    let own = dc.iter().map(|g| g.cap).fold(0.0, f64::max);
+    let k = if own > 0.0 { (drop + cap) / own } else { 1.0 };
+    let k = if k.is_finite() && k > 0.0 { k.min(1000.0) } else { 1.0 };
+    for g in &mut dc {
+        g.adv *= k;
+        g.dx *= k;
+        g.dy *= k;
+        g.sx *= k;
+        g.sy *= k;
+        g.ascent *= k;
+        g.typo_ascent *= k;
+        g.descent *= k;
+        g.cap *= k;
+        g.xh *= k;
+        g.size *= k;
+        g.space *= k;
+    }
+    let width = dc.iter().map(|g| g.adv).sum();
+    let lsb = match dc.first() {
+        Some(g) if align_left => {
+            let ink = designcraft_geom::Shape::bounding_box(&*db.outline(g.face.get(), g.gid));
+            let lsb = g.dx + ink.x0 * g.sx;
+            if ink.width() > 0.0 && lsb.is_finite() { lsb } else { 0.0 }
+        }
+        _ => 0.0,
+    };
+    Some(DropCap { glyphs: dc, end, lines, width, drop, lsb })
+}
+
+impl DropCap {
+    /// How far the lines beside it are indented: to the end of its advance.
+    fn indent(&self) -> f64 {
+        self.width - self.lsb
+    }
+}
+
+/// The drop cap's glyphs set from `at` (right to left: mirrored, its first character on the right).
+fn place_drop_cap(dc: &DropCap, at: f64, rtl: bool) -> Vec<PlacedGlyph> {
+    let mut x = at;
+    let mut out = Vec::with_capacity(dc.glyphs.len());
+    for g in &dc.glyphs {
+        let pen = if rtl { at + at + dc.width - x - g.adv } else { x };
+        let mut p = place(g, pen);
+        p.y += dc.drop;
+        p.rtl = rtl;
+        out.push(p);
+        x += g.adv;
+    }
+    out
+}
+
+/// Put generated `label` text before the paragraph's glyphs; returns how many glyphs it added.
 fn prepend_label(
     db: &ScopedFonts<'_>,
     glyphs: &mut Vec<Glyph>,
@@ -2649,12 +2986,12 @@ fn prepend_label(
     base: &designcraft_doc::CharProps,
     env: shape::TypeEnv,
     table: &mut StyleTable<'_>,
-) {
+) -> usize {
     // Shape the label as a tiny standalone story so it uses the paragraph's base character style.
     let mut tmp = Story::new(StoryId(0));
     tmp.insert(0, label);
     let styles = designcraft_doc::Styles::default();
-    let shaped = shape::shape_para(db, &styles, &tmp, 0, 0..label.len(), base, env, &SubstCtx::default(), table, &[], &[], &[]);
+    let shaped = shape::shape_para(db, &styles, &tmp, 0, 0..label.len(), base, env, &SubstCtx::default(), table, &[], &[], &[], (0, ""));
     let mut pre: Vec<Glyph> = shaped
         .glyphs
         .into_iter()
@@ -2664,8 +3001,10 @@ fn prepend_label(
             g
         })
         .collect();
+    let n = pre.len();
     pre.append(glyphs);
     *glyphs = pre;
+    n
 }
 
 type LimitsKey = (usize, usize, usize, bool);
@@ -2933,6 +3272,12 @@ pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Poi
 /// A stacked warichu row reports that row's baseline and em, not the parent line's.
 pub fn caret(cs: &ComposedStory, pos: usize) -> Option<(usize, f64, f64, f64, f64)> {
     let (fi, l) = caret_line(cs, pos)?;
+    // In the drop cap the caret is as tall as it.
+    if let Some(dc) = l.drop_cap
+        && pos < dc.end
+    {
+        return Some((fi, caret_x(l, pos), dc.baseline, dc.baseline - dc.rect.y0, l.descent));
+    }
     let x = caret_x(l, pos);
     let glyphs = line_glyphs(l);
     let metrics = caret_anchor(l, pos).filter(|g| on_stacked_row(&glyphs, g)).map(|g| {
@@ -2980,6 +3325,8 @@ pub fn caret_x(l: &Line, pos: usize) -> f64 {
     }
     match l.glyphs.iter().rev().find(|g| g.len > 0) {
         Some(g) if g.rtl => g.x,
+        // After the spaces that end the line.
+        Some(g) if !g.visible && g.x >= l.end_x - 1e-9 => g.x + g.adv,
         _ => l.end_x,
     }
 }
@@ -3013,19 +3360,57 @@ pub fn line_rtl(cs: &ComposedStory, pos: usize) -> bool {
     caret_line(cs, pos).and_then(|(_, l)| l.glyphs.iter().find(|g| g.len > 0)).is_some_and(|g| g.rtl)
 }
 
+/// The line of frame `ft` closest to point `p` vertically (within its column).
+fn hit_line(ft: &FrameText, p: Point) -> Option<&Line> {
+    ft.lines
+        .iter()
+        .filter(|l| p.x >= l.x0 - 20.0 && p.x <= l.x1 + 20.0 || ft.columns.len() <= 1)
+        .min_by(|a, b| line_dist(a, p.y).total_cmp(&line_dist(b, p.y)))
+        .or_else(|| ft.lines.first())
+}
+
+/// Story byte of the character drawn under point `p` (frame inner space) in frame `fi`: the
+/// glyph whose advance spans `p.x` on the closest line, else the one nearest it. For selecting
+/// the word (or the spaces) under a double click; [`hit`] finds a caret position instead.
+pub fn hit_char(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
+    let ft = cs.frames.get(fi)?;
+    let Some(l) = hit_line(ft, p) else { return Some(ft.range.start) };
+    let dist = |g: &&PlacedGlyph| {
+        let (a, b) = (g.x.min(g.x + g.adv), g.x.max(g.x + g.adv));
+        if p.x < a {
+            a - p.x
+        } else if p.x >= b {
+            p.x - b
+        } else {
+            0.0
+        }
+    };
+    // On a drop cap (it reaches down beside the lines after its own): its character under `p`.
+    for dl in &ft.lines {
+        let Some(dc) = dl.drop_cap.filter(|dc| dc.rect.contains(p)) else { continue };
+        return dl.glyphs.iter().filter(|g| g.len > 0 && g.byte < dc.end).min_by(|a, b| dist(a).total_cmp(&dist(b))).map(|g| g.byte);
+    }
+    let under = l.glyphs.iter().filter(|g| g.len > 0).min_by(|a, b| dist(a).total_cmp(&dist(b)));
+    Some(under.map_or(l.range.start, |g| g.byte))
+}
+
 /// Story byte nearest to point `p` (frame inner space) in frame `fi`.
 pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
     let ft = cs.frames.get(fi)?;
     if ft.lines.is_empty() {
         return Some(ft.range.start);
     }
-    // Closest line vertically (within its column).
-    let l = ft
-        .lines
-        .iter()
-        .filter(|l| p.x >= l.x0 - 20.0 && p.x <= l.x1 + 20.0 || ft.columns.len() <= 1)
-        .min_by(|a, b| line_dist(a, p.y).total_cmp(&line_dist(b, p.y)))
-        .or_else(|| ft.lines.first())?;
+    // On a drop cap (it reaches down beside the lines after its own): the nearest caret position in it.
+    for l in &ft.lines {
+        let Some(dc) = l.drop_cap.filter(|dc| dc.rect.contains(p)) else { continue };
+        return l
+            .glyphs
+            .iter()
+            .filter(|g| g.len > 0 && g.byte < dc.end)
+            .flat_map(|g| [g.byte, g.byte + g.len])
+            .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()));
+    }
+    let l = hit_line(ft, p)?;
     if l.glyphs.iter().any(|g| g.rtl) {
         // Bidi: the caret position drawn nearest the point.
         return caret_stops(l).into_iter().min_by(|a, b| (a.1 - p.x).abs().total_cmp(&(b.1 - p.x).abs())).map(|s| s.0);

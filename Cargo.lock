@@ -872,6 +872,7 @@ dependencies = [
 name = "designcraft"
 version = "0.5.0"
 dependencies = [
+ "arboard",
  "designcraft-engine",
  "designcraft-ui-egui",
  "eframe",
@@ -928,6 +929,7 @@ dependencies = [
  "regex",
  "unicode-bidi",
  "unicode-bidi-mirroring",
+ "unicode-segmentation",
 ]
 
 [[package]]

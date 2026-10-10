@@ -185,6 +185,32 @@ mod tests {
         assert!((a - std::f64::consts::PI * 100.0).abs() < 1.0, "{a}");
     }
 
+    /// InDesign draws a 28.35 pt radius on a 51.02 pt tall frame as 25.51 (half the shorter side),
+    /// as a circular arc (handles 0.5523 × the radius).
+    #[test]
+    fn radius_is_clamped_to_half_the_shorter_side() {
+        let r = rectangle(Rect::new(0.0, 0.0, 200.0, 51.02));
+        let bp = apply(&r, &CornerOptions::uniform(CornerShape::Rounded, 28.35));
+        let half = 51.02 / 2.0;
+        let mut arcs = 0;
+        let mut last = Point::ZERO;
+        for el in bp.elements() {
+            match *el {
+                kurbo::PathEl::MoveTo(p) | kurbo::PathEl::LineTo(p) => last = p,
+                kurbo::PathEl::CurveTo(c1, c2, p) => {
+                    assert!(((p - last).x.abs() - half).abs() < 1e-9 && ((p - last).y.abs() - half).abs() < 1e-9, "{last:?} → {p:?}");
+                    assert!(((c1 - last).hypot() - half * crate::shapes::KAPPA).abs() < 1e-9);
+                    assert!(((c2 - p).hypot() - half * crate::shapes::KAPPA).abs() < 1e-9);
+                    arcs += 1;
+                    last = p;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(arcs, 4);
+        assert!((crate::shapes::KAPPA - 0.5523).abs() < 1e-4);
+    }
+
     #[test]
     fn size_is_clamped_to_half_edge() {
         let r = rectangle(Rect::new(0.0, 0.0, 10.0, 10.0));

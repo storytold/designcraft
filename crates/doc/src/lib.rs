@@ -141,18 +141,12 @@ impl Default for DocumentGrid {
 }
 
 /// A named numbered list.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NumberedList {
     pub name: String,
     /// Numbering continues from story to story (in page order).
     pub continue_across_stories: bool,
-}
-
-impl Default for NumberedList {
-    fn default() -> Self {
-        NumberedList { name: String::new(), continue_across_stories: true }
-    }
 }
 
 /// A conditional-text condition: its indicator colour (screen only) and whether text with it shows.

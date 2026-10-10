@@ -123,7 +123,8 @@ impl Headless {
             let x = e.get("x").and_then(Value::as_f64).ok_or("pointer event needs numeric `x`")?;
             let y = e.get("y").and_then(Value::as_f64).ok_or("pointer event needs numeric `y`")?;
             let mods = e.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or(base);
-            self.session.pointer(&PointerEvent { kind, pos: Point::new(x, y), mods }, VIEW).map_err(|e| e.to_string())?;
+            let clicks = e.get("clicks").and_then(Value::as_u64).map_or(1, |n| n.clamp(1, 255) as u8);
+            self.session.pointer(&PointerEvent { kind, pos: Point::new(x, y), mods, clicks }, VIEW).map_err(|e| e.to_string())?;
         }
         let requests: Vec<Value> = self.session.ui_requests.drain(..).map(|r| serde_json::to_value(r).unwrap_or_default()).collect();
         Ok(json!({"selection": self.selection(), "tool": self.session.tool_id(), "requests": requests}))

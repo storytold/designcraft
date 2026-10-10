@@ -168,9 +168,12 @@ fn parse_point(s: Option<&str>) -> Option<Point> {
     (v.len() >= 2).then(|| Point::new(v[0], v[1]))
 }
 
-/// IDML tint (percent, `-1` = default) → 0..1.
+/// InDesign's corner size where a file gives a corner shape without one.
+const INDESIGN_CORNER_SIZE: f64 = 12.0;
+
+/// IDML tint (percent; `-1` = the colour's own tint, 100 %) → 0..1.
 fn tint(v: Option<f64>) -> Option<f32> {
-    v.map(|t| if t < 0.0 { 1.0 } else { (t / 100.0) as f32 })
+    v.map(|t| if t < 0.0 || t.is_nan() { 1.0 } else { (t / 100.0).min(1.0) as f32 })
 }
 
 impl<'r> Importer<'r> {
@@ -702,9 +705,9 @@ impl<'r> Importer<'r> {
 
     /// A swatch reference (Self id) → our swatch name; unnamed colours become value-named swatches.
     /// A `TextFramePreference`, with its column rule colour resolved to a swatch.
-    fn frame_options(&mut self, e: &El) -> TextFrameOptions {
-        let mut o = text_frame_options(e);
-        if let Some(r) = e.get("ColumnRuleStrokeColor") {
+    fn frame_options(&mut self, prefs: &[&El]) -> TextFrameOptions {
+        let mut o = text_frame_options(prefs);
+        if let Some(r) = Prefs(prefs).get("ColumnRuleStrokeColor") {
             o.column_rule_color = self.swatch_ref(r);
         }
         o
@@ -766,7 +769,7 @@ impl<'r> Importer<'r> {
             let name = e.get("Name").unwrap_or("").to_string();
             if !name.is_empty() && !name.starts_with("$ID/") && !self.lists.iter().any(|l| l.name == name) {
                 self.lists
-                    .push(designcraft_doc::NumberedList { name, continue_across_stories: e.get("ContinueNumbersAcrossStories") != Some("false") });
+                    .push(designcraft_doc::NumberedList { name, continue_across_stories: e.get("ContinueNumbersAcrossStories") == Some("true") });
             }
         }
         let mut paras: Vec<(String, El)> = Vec::new();
@@ -914,7 +917,7 @@ impl<'r> Importer<'r> {
                 .then(|| e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)))
                 .flatten();
             let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
-                e.find("TextFramePreference").map(|t| self.frame_options(t))
+                e.find("TextFramePreference").map(|t| self.frame_options(&[t]))
             } else {
                 None
             };
@@ -1034,7 +1037,7 @@ impl<'r> Importer<'r> {
         o.span_columns = e.boolean("EnableStraddling").unwrap_or(false);
         o.rule.on = e.boolean("RuleOn").unwrap_or(true);
         o.rule.weight = e.num("RuleLineWeight").unwrap_or(1.0);
-        o.rule.tint = (e.num("RuleTint").unwrap_or(100.0) / 100.0).clamp(0.0, 1.0) as f32;
+        o.rule.tint = tint(e.num("RuleTint")).unwrap_or(1.0);
         o.rule.left_indent = e.num("RuleLeftIndent").unwrap_or(0.0);
         o.rule.width = e.num("RuleWidth").unwrap_or(72.0);
         o.rule.offset = e.num("RuleOffset").unwrap_or(0.0);
@@ -1118,7 +1121,7 @@ impl<'r> Importer<'r> {
             // An explicit Text Color resets an inherited swatch; absence still inherits.
             // Resolve the sentinel before swatch_ref, which maps unknown names to [None].
             let color = e.prop(&format!("{k}Color")).map(|r| if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
-            let tint = e.num(&format!("{k}Tint")).filter(|v| *v >= 0.0).map(|v| (v / 100.0) as f32);
+            let tint = tint(e.num(&format!("{k}Tint")));
             if k == "Underline" {
                 a.underline_weight = num("Weight").map(Some);
                 a.underline_offset = num("Offset").map(Some);
@@ -1280,6 +1283,13 @@ impl<'r> Importer<'r> {
         a.space_after = e.num("SpaceAfter");
         a.drop_cap_lines = u("DropCapLines");
         a.drop_cap_chars = u("DropCapCharacters");
+        a.drop_cap_style = e.prop("DropCapStyle").map(|r| self.char_style_ref(r.trim()));
+        // DropcapDetail bits: 1 = Align Left Edge, 2 = Scale for Descenders.
+        if let Some(v) = e.num("DropcapDetail").filter(|v| v.is_finite() && *v >= 0.0) {
+            let bits = v as u32;
+            a.drop_cap_align_left = Some(bits & 1 != 0);
+            a.drop_cap_scale_descenders = Some(bits & 2 != 0);
+        }
         if let Some(g) = e.prop("GridAlignment") {
             a.grid_align = Some(if g == "None" {
                 GridAlign::None
@@ -1391,7 +1401,9 @@ impl<'r> Importer<'r> {
         }
         if let Some(c) = e.prop(&format!("{k}Color")) {
             let c = c.trim();
-            if c.contains('/') {
+            if c == designcraft_doc::TEXT_COLOR {
+                r.color = c.to_string();
+            } else if c.contains('/') {
                 r.color = self.swatch_ref(c);
             }
         }
@@ -1922,25 +1934,33 @@ impl<'r> Importer<'r> {
         })
     }
 
-    /// Resolve an item attribute, falling back to its object style chain.
-    fn attr_or_style(&self, e: &El, k: &str) -> Option<String> {
-        if let Some(v) = e.get(k) {
-            return Some(v.to_string());
-        }
+    /// An item's object style chain: its applied style, the styles that one is based on, then
+    /// `[None]` (cycle-safe).
+    fn object_style_chain(&self, e: &El) -> Vec<&El> {
+        let mut chain: Vec<&El> = Vec::new();
         let mut os = e.get("AppliedObjectStyle").map(str::to_string);
-        let mut depth = 0;
         while let Some(id) = os {
-            depth += 1;
-            if depth > 16 {
+            let Some(s) = self.object_els.get(&id) else { break };
+            if chain.len() >= 16 || chain.iter().any(|c| std::ptr::eq(*c, s)) {
                 break;
             }
-            let Some(s) = self.object_els.get(&id) else { break };
-            if let Some(v) = s.get(k) {
-                return Some(v.to_string());
-            }
-            os = s.prop("BasedOn").map(|b| if b.starts_with("ObjectStyle/") { b } else { format!("ObjectStyle/{}", names::escape_id(&b)) });
+            chain.push(s);
+            os = s.prop("BasedOn").map(|b| {
+                let b = b.trim();
+                if b.starts_with("ObjectStyle/") { b.to_string() } else { format!("ObjectStyle/{}", names::escape_id(b)) }
+            });
         }
-        None
+        if let Some(none) = self.object_els.get("ObjectStyle/$ID/[None]")
+            && !chain.iter().any(|c| std::ptr::eq(*c, none))
+        {
+            chain.push(none);
+        }
+        chain
+    }
+
+    /// Resolve an item attribute, falling back to its object style chain.
+    fn attr_or_style(&self, e: &El, k: &str) -> Option<String> {
+        e.get(k).or_else(|| self.object_style_chain(e).into_iter().find_map(|s| s.get(k))).map(str::to_string)
     }
 
     fn stroke_from(&mut self, e: &El, item: Option<&El>) -> Stroke {
@@ -2046,19 +2066,21 @@ impl<'r> Importer<'r> {
                 it.stroke.weight = 1.0;
             }
         }
-        // Corners.
-        let cn = crate::export::corner_names(&it.path);
-        // The legacy all-corners attributes apply only when no per-corner attribute is present.
-        let per_corner = cn.iter().any(|n| e.get(&format!("{n}CornerOption")).is_some());
-        let legacy = if per_corner { (None, None) } else { (e.get("CornerOption"), e.num("CornerRadius")) };
-        let mut corners = CornerOptions::default();
-        for (i, n) in cn.iter().enumerate() {
-            let shape = e.get(&format!("{n}CornerOption")).or(legacy.0).map(names::corner_in).unwrap_or_default();
-            let size = e.num(&format!("{n}CornerRadius")).or(legacy.1).unwrap_or(0.0);
-            corners.corners[i] = Corner { shape, size };
-        }
-        if !corners.is_none() {
-            it.corners = corners;
+        // Corners: each corner's shape and radius come from the item, then its object style chain;
+        // at each level a per-corner attribute wins over the legacy all-corners one.
+        if tag != "Group" {
+            let levels: Vec<&El> = std::iter::once(e).chain(self.object_style_chain(e)).collect();
+            let corner =
+                |n: &str, what: &str| levels.iter().find_map(|s| s.get(&format!("{n}Corner{what}")).or_else(|| s.get(&format!("Corner{what}"))));
+            let mut corners = CornerOptions::default();
+            for (i, n) in crate::export::corner_names(&it.path).iter().enumerate() {
+                let shape = corner(n, "Option").map(names::corner_in).unwrap_or_default();
+                let size = corner(n, "Radius").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(INDESIGN_CORNER_SIZE);
+                corners.corners[i] = Corner { shape, size };
+            }
+            if !corners.is_none() {
+                it.corners = corners;
+            }
         }
         // Transparency.
         if let Some(t) = e.find("TransparencySetting") {
@@ -2138,7 +2160,13 @@ impl<'r> Importer<'r> {
                         sid
                     }
                 };
-                let mut options = e.find("TextFramePreference").map(|t| self.frame_options(t)).unwrap_or_default();
+                // Options the frame doesn't set come from its object style chain.
+                let prefs: Vec<&El> = std::iter::once(e).chain(self.object_style_chain(e)).filter_map(|s| s.find("TextFramePreference")).collect();
+                let mut options = text_frame_options(&prefs);
+                // `prefs` borrows the object styles, so the rule colour's swatch is resolved after it.
+                if let Some(r) = Prefs(&prefs).get("ColumnRuleStrokeColor").map(str::to_string) {
+                    options.column_rule_color = self.swatch_ref(&r);
+                }
                 if let Some(g) = e.find("BaselineFrameGridOption")
                     && g.get("UseCustomBaselineFrameGrid") == Some("true")
                 {
@@ -2429,7 +2457,9 @@ fn margins_of(m: &El) -> (Margins, Columns) {
     )
 }
 
-fn text_frame_options(e: &El) -> TextFrameOptions {
+/// Text Frame Options from `TextFramePreference` elements: each attribute from the first that sets it.
+fn text_frame_options(prefs: &[&El]) -> TextFrameOptions {
+    let e = Prefs(prefs);
     let mut o = TextFrameOptions::default();
     if let Some(v) = e.num("TextColumnCount") {
         o.columns = v.max(1.0) as u32;
@@ -2450,7 +2480,9 @@ fn text_frame_options(e: &El) -> TextFrameOptions {
         o.column_width = v;
     }
     o.balance_columns = e.get("VerticalBalanceColumns") == Some("true");
-    if let Some(inset) = inset_spacing(e) {
+    if let Some(p) = prefs.iter().find(|p| p.prop("InsetSpacing").is_some())
+        && let Some(inset) = inset_spacing(p)
+    {
         o.inset = inset;
     }
     if let Some(v) = e.get("VerticalJustification") {
@@ -2491,6 +2523,18 @@ fn text_frame_options(e: &El) -> TextFrameOptions {
         }
     }
     o
+}
+
+/// Attribute lookup over several elements: the first that has it.
+struct Prefs<'a>(&'a [&'a El]);
+
+impl Prefs<'_> {
+    fn get(&self, k: &str) -> Option<&str> {
+        self.0.iter().find_map(|e| e.get(k))
+    }
+    fn num(&self, k: &str) -> Option<f64> {
+        self.get(k).and_then(|v| v.trim().parse().ok())
+    }
 }
 
 /// A scalar applies to every edge; a list is top, left, bottom, right. Keep the
