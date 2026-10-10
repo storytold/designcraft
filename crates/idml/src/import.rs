@@ -1342,7 +1342,7 @@ impl<'r> Importer<'r> {
                     align_on: get("AlignmentCharacter").filter(|c| c != ".").unwrap_or_default(),
                 });
             }
-            a.tabs = Some(tabs);
+            a.tabs = Some(TabStop::sanitized_list(tabs));
         }
         a.list_type = e.prop("BulletsAndNumberingListType").map(|v| match v.trim() {
             "BulletList" => ListType::Bullets,

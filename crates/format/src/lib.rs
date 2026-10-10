@@ -287,6 +287,27 @@ mod tests {
         assert!(load(&serde_json::to_vec(&v).unwrap()).unwrap().settings.glyph_fallback);
     }
 
+    /// A saved tab list over the limits loads repaired, as an imported one does: a non-finite
+    /// position (saved as `null`) dropped, positions clamped, leaders cut, the count capped.
+    #[test]
+    fn saved_tab_lists_load_sanitized() {
+        use designcraft_doc::{MAX_TAB_LEADER, MAX_TAB_POSITION, MAX_TAB_STOPS, TabAlign, TabStop};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 300.0), lid, "a\tb", ParaFormat::default()).unwrap();
+        let stop = |position: f64| TabStop { position, align: TabAlign::Right, leader: "0123456789".into(), align_on: String::new() };
+        let mut tabs: Vec<TabStop> = (0..500).rev().map(|i| stop(i as f64 * 40.0)).collect();
+        tabs.push(stop(f64::NAN));
+        d.story_mut(sid).unwrap().paras[0].para.tabs = Some(tabs);
+        let bytes = save(&d).unwrap();
+        let back = load(&bytes).unwrap();
+        let tabs = back.stories[&sid].paras[0].para.tabs.clone().unwrap();
+        assert_eq!(tabs.len(), MAX_TAB_STOPS);
+        assert!(tabs.windows(2).all(|w| w[0].position < w[1].position), "sorted");
+        assert!(tabs.iter().all(|t| t.position.is_finite() && t.position <= MAX_TAB_POSITION && t.leader.chars().count() <= MAX_TAB_LEADER));
+        assert_eq!(tabs.last().map(|t| t.position), Some(3960.0), "the first stops by position");
+    }
+
     #[test]
     fn rejects_garbage_and_newer_versions() {
         assert!(load(b"nope").is_err());

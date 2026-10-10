@@ -1399,3 +1399,30 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     check(&d);
     check(&import_idml(&export_idml(&d)).unwrap());
 }
+
+/// A file's tab list is sanitized as the Tabs commands check theirs: a hostile one imports
+/// within the limits instead of failing the import.
+#[test]
+fn hostile_tab_lists_import_within_the_limits() {
+    let item = |position: &str, leader: &str| {
+        format!(
+            r#"<ListItem type="record"><Alignment type="enumeration">LeftAlign</Alignment><AlignmentCharacter type="string">.</AlignmentCharacter><Leader type="string">{leader}</Leader><Position type="unit">{position}</Position></ListItem>"#
+        )
+    };
+    let mut items: String = (0..500).rev().map(|i| item(&(i * 3).to_string(), "")).collect();
+    items.push_str(&item("NaN", ""));
+    items.push_str(&item("1e300", "0123456789"));
+    let story = format!(
+        r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
+        <Properties><TabList type="list">{items}</TabList></Properties>
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Many tabs</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#
+    );
+    let doc = import_idml(&fixture_with_story(&story)).unwrap();
+    let tabs = doc.stories.values().find(|s| s.text.contains("Many tabs")).unwrap().paras[0].para.tabs.clone().unwrap();
+    assert_eq!(tabs.len(), designcraft_doc::MAX_TAB_STOPS);
+    assert!(tabs.iter().all(|t| t.position.is_finite() && t.leader.chars().count() <= designcraft_doc::MAX_TAB_LEADER));
+    assert!(tabs.windows(2).all(|w| w[0].position < w[1].position), "sorted");
+    assert_eq!((tabs[0].position, tabs[99].position), (0.0, 297.0), "the first stops by position");
+}
