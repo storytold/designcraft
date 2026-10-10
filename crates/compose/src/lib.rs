@@ -75,7 +75,8 @@ pub struct RunStyle {
     pub warichu_lines: u32,
     /// Percentage of the parent size.
     pub warichu_size: f64,
-    /// Extra points between warichu baselines. 0 keeps baselines one small em apart.
+    /// Extra points between warichu baselines. 0 keeps baselines one small em apart. A negative
+    /// value tightens that em, down to a shared baseline.
     pub warichu_line_spacing: f64,
     pub warichu_align: designcraft_doc::cjk::WarichuAlignment,
     pub warichu_chars_before: u32,
@@ -2153,10 +2154,132 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec) {
 
 // ---------- caret and hit testing (Type tool) ----------
 
+/// Two stacked glyphs this far apart in `y` sit on different rows (warichu).
+const ROW_Y: f64 = 0.25;
+
+/// (ascent, descent) of `g` in points, both positive.
+fn glyph_extents(g: &PlacedGlyph) -> (f64, f64) {
+    let (asc, desc) = g.face.vertical_metrics();
+    let sy = g.sy.abs();
+    (asc * sy, desc * sy)
+}
+
+fn x_span(g: &PlacedGlyph) -> (f64, f64) {
+    (g.x.min(g.x + g.adv), g.x.max(g.x + g.adv))
+}
+
+fn x_ranges_overlap(a: &PlacedGlyph, b: &PlacedGlyph) -> bool {
+    let (a0, a1) = x_span(a);
+    let (b0, b1) = x_span(b);
+    a0 < b1 - 0.2 && b0 < a1 - 0.2
+}
+
+fn line_glyphs(l: &Line) -> Vec<&PlacedGlyph> {
+    l.glyphs.iter().filter(|g| g.len > 0).collect()
+}
+
+/// `g` shares its x with another glyph on a different baseline (a stacked warichu row).
+fn on_stacked_row(glyphs: &[&PlacedGlyph], g: &PlacedGlyph) -> bool {
+    glyphs.iter().any(|o| (o.y - g.y).abs() > ROW_Y && x_ranges_overlap(o, g))
+}
+
+fn line_has_stacked_rows(l: &Line) -> bool {
+    let glyphs = line_glyphs(l);
+    glyphs.iter().any(|g| on_stacked_row(&glyphs, g))
+}
+
+/// The glyph `caret_x` anchors `pos` to, if the caret is not the line end.
+fn caret_anchor(l: &Line, pos: usize) -> Option<&PlacedGlyph> {
+    for g in l.glyphs.iter().filter(|g| g.len > 0) {
+        if pos >= g.byte && pos < g.byte + g.len {
+            return Some(g);
+        }
+        if g.byte >= pos {
+            return Some(g);
+        }
+    }
+    None
+}
+
+/// Baseline an underline or strikethrough uses. Warichu follows the small line; everything else
+/// stays on the parent baseline (a baseline shift does not move the rule).
+pub fn rule_baseline(style: &RunStyle, line: &Line, g: &PlacedGlyph) -> f64 {
+    if style.warichu { line.baseline + g.y } else { line.baseline }
+}
+
+fn band_quad(x0: f64, x1: f64, top: f64, bot: f64) -> [Point; 4] {
+    [Point::new(x0, top), Point::new(x1, top), Point::new(x1, bot), Point::new(x0, bot)]
+}
+
+/// Highlight rectangles for bytes `s..e` on `l`. `past_end` extends the line-end caret when the
+/// selection continues onto the next line. Stacked rows (warichu) each get their own band.
+pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Point; 4]> {
+    let selected: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= s && g.byte < e).collect();
+    let stacked = selected.iter().any(|g| on_stacked_row(&selected, g));
+    if stacked {
+        let mut items: Vec<(f64, f64, f64, f64, f64)> = selected
+            .iter()
+            .map(|g| {
+                let (asc, desc) = glyph_extents(g);
+                let (x0, x1) = x_span(g);
+                let y = l.baseline + g.y;
+                (g.y, x0, x1, y - asc, y + desc)
+            })
+            .collect();
+        items.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let mut quads = Vec::new();
+        let mut cur: Option<(f64, f64, f64, f64, f64)> = None;
+        for (y, x0, x1, top, bot) in items {
+            match cur {
+                Some(c) if (c.0 - y).abs() <= ROW_Y && x0 <= c.2 + 0.5 => {
+                    cur = Some((c.0, c.1, c.2.max(x1), c.3.min(top), c.4.max(bot)));
+                }
+                Some(c) => {
+                    quads.push(band_quad(c.1, c.2, c.3, c.4));
+                    cur = Some((y, x0, x1, top, bot));
+                }
+                None => cur = Some((y, x0, x1, top, bot)),
+            }
+        }
+        if let Some(c) = cur {
+            quads.push(band_quad(c.1, c.2, c.3, c.4));
+        }
+        if past_end {
+            quads.push(band_quad(l.end_x, l.end_x + 3.0, l.baseline - l.ascent, l.baseline + l.descent));
+        }
+        return quads;
+    }
+    let top = l.baseline - l.ascent;
+    let bot = l.baseline + l.descent;
+    if l.glyphs.iter().any(|g| g.rtl) {
+        let mut spans: Vec<(f64, f64)> = selected.iter().map(|g| (g.x, g.x + g.adv)).collect();
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for (a, b) in spans {
+            match merged.last_mut() {
+                Some(m) if a <= m.1 + 0.5 => m.1 = m.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        return merged.into_iter().map(|(a, b)| band_quad(a, b, top, bot)).collect();
+    }
+    let x0 = caret_x(l, s);
+    let x1 = if past_end { l.end_x.max(x0 + 3.0) } else { caret_x(l, e) };
+    vec![band_quad(x0, x1, top, bot)]
+}
+
 /// Caret geometry for story byte `pos`: (frame index, x, baseline, ascent, descent).
+/// A stacked warichu row reports that row's baseline and em, not the parent line's.
 pub fn caret(cs: &ComposedStory, pos: usize) -> Option<(usize, f64, f64, f64, f64)> {
     let (fi, l) = caret_line(cs, pos)?;
-    Some((fi, caret_x(l, pos), l.baseline, l.ascent, l.descent))
+    let x = caret_x(l, pos);
+    let glyphs = line_glyphs(l);
+    let metrics = caret_anchor(l, pos).filter(|g| on_stacked_row(&glyphs, g)).map(|g| {
+        let (asc, desc) = glyph_extents(g);
+        (l.baseline + g.y, asc, desc)
+    });
+    let (bl, asc, desc) = metrics.unwrap_or((l.baseline, l.ascent, l.descent));
+    Some((fi, x, bl, asc, desc))
 }
 
 /// The line the caret at `pos` is drawn on (and its frame index).
@@ -2246,6 +2369,9 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
         // Bidi: the caret position drawn nearest the point.
         return caret_stops(l).into_iter().min_by(|a, b| (a.1 - p.x).abs().total_cmp(&(b.1 - p.x).abs())).map(|s| s.0);
     }
+    if line_has_stacked_rows(l) {
+        return Some(hit_stacked(l, p));
+    }
     let mut best = l.range.start;
     let mut prev_mid = f64::NEG_INFINITY;
     for g in l.glyphs.iter().filter(|g| g.len > 0) {
@@ -2270,6 +2396,109 @@ fn line_dist(l: &Line, y: f64) -> f64 {
     } else {
         0.0
     }
+}
+
+fn glyph_contains(l: &Line, g: &PlacedGlyph, p: Point) -> bool {
+    let (x0, x1) = x_span(g);
+    if p.x < x0 - 0.01 || p.x > x1 + 0.01 {
+        return false;
+    }
+    let (asc, desc) = glyph_extents(g);
+    let y = l.baseline + g.y;
+    p.y >= y - asc && p.y <= y + desc
+}
+
+/// Midpoint walk over `glyphs` (visual order). Past the last glyph yields the byte after it, or
+/// the line end when that glyph closes the line.
+fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
+    glyphs.sort_by(|a, b| a.x.total_cmp(&b.x));
+    let last_byte = l.glyphs.iter().rev().find(|g| g.len > 0).map(|g| g.byte);
+    let mut best = l.range.start;
+    let mut prev_mid = f64::NEG_INFINITY;
+    let mut saw_last = false;
+    for g in &glyphs {
+        if last_byte == Some(g.byte) {
+            saw_last = true;
+        }
+        let mid = g.x + g.adv / 2.0;
+        if p_x < mid && p_x >= prev_mid {
+            return g.byte;
+        }
+        if mid > prev_mid {
+            prev_mid = mid;
+        }
+        best = g.byte + g.len;
+    }
+    if glyphs.is_empty() {
+        return if l.last_in_para { l.range.end } else { l.range.start };
+    }
+    if saw_last && l.last_in_para { l.range.end } else { best.min(l.range.end) }
+}
+
+fn hit_stacked(l: &Line, p: Point) -> usize {
+    let glyphs = line_glyphs(l);
+    let stacked = |g: &PlacedGlyph| on_stacked_row(&glyphs, g);
+    let mut containing: Vec<&PlacedGlyph> = glyphs.iter().copied().filter(|g| glyph_contains(l, g, p)).collect();
+    containing.sort_by(|a, b| {
+        let da = (l.baseline + a.y - p.y).abs();
+        let db = (l.baseline + b.y - p.y).abs();
+        da.total_cmp(&db).then(b.x.total_cmp(&a.x))
+    });
+    if let Some(g) = containing.first() {
+        let y = g.y;
+        let row: Vec<&PlacedGlyph> = if stacked(g) {
+            glyphs.iter().copied().filter(|o| (o.y - y).abs() <= ROW_Y).collect()
+        } else {
+            glyphs.iter().copied().filter(|o| !stacked(o)).collect()
+        };
+        return hit_sorted(l, row, p.x);
+    }
+    // Between the rows, or in the line box beside them: the nearest row under this x, else the
+    // glyphs that are not part of the stack (the text after the note).
+    let mut best: Option<(f64, f64)> = None;
+    for g in glyphs.iter().copied().filter(|g| stacked(g)) {
+        let (x0, x1) = glyphs.iter().copied().filter(|o| (o.y - g.y).abs() <= ROW_Y).fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), o| {
+            let (u, v) = x_span(o);
+            (a.min(u), b.max(v))
+        });
+        if p.x < x0 - 1.0 || p.x > x1 + 1.0 {
+            continue;
+        }
+        let dist = (l.baseline + g.y - p.y).abs();
+        if best.is_none_or(|(d, _)| dist < d) {
+            best = Some((dist, g.y));
+        }
+    }
+    if let Some((_, y)) = best {
+        let row = glyphs.iter().copied().filter(|o| (o.y - y).abs() <= ROW_Y).collect();
+        return hit_sorted(l, row, p.x);
+    }
+    let rest = glyphs.iter().copied().filter(|g| !on_stacked_row(&glyphs, g)).collect();
+    hit_sorted(l, rest, p.x)
+}
+
+/// Baseline of the stacked row above (`up`) or below the caret at `(x, caret_y)` on `l`.
+/// `None` when the caret is not over a stack, or that side has no further row.
+pub fn adjacent_row(l: &Line, x: f64, caret_y: f64, up: bool) -> Option<f64> {
+    let glyphs = line_glyphs(l);
+    let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+    for g in glyphs.iter().copied().filter(|g| on_stacked_row(&glyphs, g)) {
+        let y = l.baseline + g.y;
+        if rows.iter().any(|r| (r.0 - y).abs() <= ROW_Y) {
+            continue;
+        }
+        let (x0, x1) =
+            glyphs.iter().copied().filter(|o| (l.baseline + o.y - y).abs() <= ROW_Y).fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), o| {
+                let (u, v) = x_span(o);
+                (a.min(u), b.max(v))
+            });
+        rows.push((y, x0, x1));
+    }
+    // The right edge belongs to the following character, so a caret parked there does not
+    // count as still inside the note.
+    let over = |r: &(f64, f64, f64)| x >= r.1 - 0.01 && x < r.2 - 0.01;
+    let candidates = rows.iter().filter(|r| over(r)).filter(|r| if up { r.0 < caret_y - ROW_Y } else { r.0 > caret_y + ROW_Y });
+    if up { candidates.map(|r| r.0).max_by(|a, b| a.total_cmp(b)) } else { candidates.map(|r| r.0).min_by(|a, b| a.total_cmp(b)) }
 }
 
 #[cfg(test)]

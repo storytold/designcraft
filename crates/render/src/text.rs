@@ -123,7 +123,7 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
             continue;
         }
         let style = &cs.styles[g.style as usize];
-        for (rule, r) in style.rules(g.x, g.x + g.adv, l.baseline) {
+        for (rule, r) in style.rules(g.x, g.x + g.adv, designcraft_compose::rule_baseline(style, l, g)) {
             decos.push((rule.color.clone(), rule.tint, r));
         }
         let outline = db.outline(&g.face, g.gid);

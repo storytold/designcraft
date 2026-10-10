@@ -695,9 +695,18 @@ fn line_of(cs: &compose::ComposedStory, pos: usize) -> Option<(usize, usize)> {
 }
 
 fn vertical(cs: &compose::ComposedStory, pos: usize, up: bool) -> Option<usize> {
-    let (fi, x, baseline, _, _) = compose::caret(cs, pos)?;
+    let (fi, x, caret_y, _, _) = compose::caret(cs, pos)?;
     let lines: Vec<(usize, &compose::Line)> = cs.frames.iter().enumerate().flat_map(|(i, f)| f.lines.iter().map(move |l| (i, l))).collect();
-    let cur = lines.iter().position(|(i, l)| *i == fi && (l.baseline - baseline).abs() < 0.01 && pos >= l.range.start && pos <= l.range.end)?;
+    // Match the line by the bytes it owns. A warichu caret sits on a small-line baseline, so it
+    // does not equal the parent line's baseline.
+    let cur = lines.iter().position(|(i, l)| *i == fi && pos >= l.range.start && pos <= l.range.end && (pos < l.range.end || l.last_in_para))?;
+    let (_, l) = lines.get(cur)?;
+    if let Some(y) = compose::adjacent_row(l, x, caret_y, up)
+        && let Some(p) = compose::hit(cs, fi, Point::new(x, y))
+        && p != pos
+    {
+        return Some(p);
+    }
     let target = if up { cur.checked_sub(1)? } else { cur + 1 };
     let (tf, tl) = lines.get(target)?;
     compose::hit(cs, *tf, Point::new(x, tl.baseline - 1.0))
@@ -767,7 +776,7 @@ fn warichu_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             body.insert("warichuSize".into(), json!(v.clamp(1.0, 1000.0)));
         }
         if let Some(v) = p.get("lineSpacing").and_then(Value::as_f64).filter(|v| v.is_finite()) {
-            body.insert("warichuLineSpacing".into(), json!(v));
+            body.insert("warichuLineSpacing".into(), json!(v.clamp(-10_000.0, 10_000.0)));
         }
         if let Some(v) = p.get("align").and_then(Value::as_str) {
             body.insert("warichuAlignment".into(), json!(v));
@@ -1511,6 +1520,24 @@ mod tcy_tests {
         assert_eq!(f(&s).warichu, Some(true));
         s.execute("type.warichu", &json!({})).unwrap();
         assert_eq!(f(&s).warichu, Some(false));
+    }
+
+    #[test]
+    fn warichu_up_and_down_move_between_the_rows() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "ABCDEFGHZ"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 8})).unwrap();
+        s.execute("type.warichu", &json!({"lines": 2, "align": "left"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        let down = s.execute("text.move", &json!({"dir": "down"})).unwrap()["pos"].as_u64().unwrap() as usize;
+        assert!((4..8).contains(&down), "down enters the second row: {down}");
+        let up = s.execute("text.move", &json!({"dir": "up"})).unwrap()["pos"].as_u64().unwrap() as usize;
+        assert!(up < 4, "up returns to the first row: {up}");
+        s.execute("text.select", &json!({"story": sid, "anchor": 8, "focus": 8})).unwrap();
+        let stayed = s.execute("text.move", &json!({"dir": "down"})).unwrap()["pos"].as_u64().unwrap() as usize;
+        assert_eq!(stayed, 8, "down from the character after the note does not fall back into a row");
     }
 }
 

@@ -138,7 +138,7 @@ impl Exporter<'_> {
             // Underline / strikethrough, merged per style along the line.
             for g in gs.iter().filter(|g| g.visible) {
                 let st = &cs.styles[g.style as usize];
-                for (rule, r) in st.rules(g.x, g.x + g.adv, l.baseline) {
+                for (rule, r) in st.rules(g.x, g.x + g.adv, designcraft_compose::rule_baseline(st, l, g)) {
                     match deco.last_mut() {
                         Some((last_rule, last)) if *last_rule == *rule && (last.y0 - r.y0).abs() < 1e-6 && (r.x0 - last.x1).abs() < 0.5 => {
                             last.x1 = r.x1
