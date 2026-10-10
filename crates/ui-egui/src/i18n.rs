@@ -8,6 +8,7 @@ mod it;
 mod ja;
 mod pt_br;
 mod uk;
+mod zh;
 
 /// Supported interface languages: (code, name in that language).
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -2832,6 +2833,7 @@ fn column(lang: &str) -> Option<usize> {
 /// `s` in `lang` (English, or the string itself, when there's no translation).
 pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static JAPANESE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static CHINESE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static TRANSLATIONS: OnceLock<HashMap<&'static str, [&'static str; 5]>> = OnceLock::new();
     static ARABIC: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static UKRAINIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -2844,6 +2846,13 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     // for keys added there after it.
     if lang == "ja"
         && let Some(text) = JAPANESE.get_or_init(|| ja::TABLE.iter().copied().collect()).get(s).copied()
+    {
+        return text;
+    }
+    // The Simplified Chinese table covers the whole interface; the shared table's Chinese column
+    // is the fallback for keys added there after it.
+    if lang == "zh"
+        && let Some(text) = CHINESE.get_or_init(|| zh::TABLE.iter().copied().collect()).get(s).copied()
     {
         return text;
     }
@@ -2903,8 +2912,9 @@ mod tests {
     fn cached_lookup_preserves_every_translation_across_language_switches() {
         for (key, translations) in TABLE {
             for (lang, expected) in ["de", "fr", "es", "ja", "zh"].into_iter().zip(translations) {
-                // `ja::TABLE` translates the whole interface and wins over the shared Japanese column.
-                if lang != "ja" {
+                // `ja::TABLE` and `zh::TABLE` translate the whole interface and win over the
+                // shared Japanese/Chinese columns.
+                if lang != "ja" && lang != "zh" {
                     assert_eq!(tr(lang, key), *expected, "{lang}: {key}");
                 }
             }
@@ -2921,6 +2931,9 @@ mod tests {
         }
         for (key, expected) in uk::TABLE {
             assert_eq!(tr("uk", key), *expected, "uk: {key}");
+        }
+        for (key, expected) in zh::TABLE {
+            assert_eq!(tr("zh", key), *expected, "zh: {key}");
         }
         let unknown = String::from("A user-defined untranslated label");
         for lang in ["uk", "ar", "pt-br", "it", "zh", "ja", "de", "fr", "es", "", "unknown"] {

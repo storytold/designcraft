@@ -1674,7 +1674,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Page layout for print and screen — fast, open and scriptable.", "用于打印和屏幕的页面布局——快速、开放且可编写脚本。"),
     ("Select a placed video or sound (File › Place a .mp4, .mov, .mp3, .wav …).", "选择已置入的视频或声音 (文件 › 置入 .mp4, .mov, .mp3, .wav …)。"),
     ("Select two or more objects (or a group) to make a multi-state object.", "选择两个或多个对象 (或一个组) 以制作多状态对象。"),
-    ("Type a word with ~ at each allowed break (ex~am~ple); without ~ the word is never hyphenated.", "在每个允许的断字处用 ~ 键入一个单词 (例如 ex~am~ple)；如果没有 ~，该单词将永远不会断字。"),
+    (
+        "Type a word with ~ at each allowed break (ex~am~ple); without ~ the word is never hyphenated.",
+        "在每个允许的断字处用 ~ 键入一个单词 (例如 ex~am~ple)；如果没有 ~，该单词将永远不会断字。",
+    ),
     ("Character Style Options", "字符样式选项"),
     ("Advanced Character Formats", "高级字符格式"),
     ("OpenType Features", "OpenType 功能"),
@@ -1704,9 +1707,9 @@ pub(super) const TABLE: &[(&str, &str)] = &[
 ];
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use super::TABLE;
     use crate::i18n::tr;
+    use std::collections::HashSet;
     fn placeholders(text: &str) -> Vec<&str> {
         let mut found = Vec::new();
         let mut rest = text;
