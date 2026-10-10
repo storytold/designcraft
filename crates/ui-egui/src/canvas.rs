@@ -1461,16 +1461,7 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                 // Shift (⇧⌘V) pastes without formatting.
                 let plain = ui.input(|i| i.modifiers.shift);
                 let id = if plain { "edit.pasteWithoutFormatting" } else { "edit.paste" };
-                let result = app.run(id, json!({"text": t}));
-                if let Err(err) = &result {
-                    // Paste failed (e.g., "clipboard is empty"). Try reading directly from system clipboard.
-                    log::warn!("Paste from event failed: {err}, trying system clipboard fallback");
-                    if let Some(clipboard_text) = read_system_clipboard() {
-                        let _ = app.run(id, json!({"text": clipboard_text}));
-                    } else {
-                        app.status(format!("Paste failed: {err}"));
-                    }
-                }
+                paste_with_fallback(app, id, &t, read_system_clipboard);
             }
             egui::Event::Copy | egui::Event::Cut if wants_text => {
                 let id = if matches!(e, egui::Event::Cut) { "edit.cut" } else { "edit.copy" };
@@ -1750,6 +1741,43 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
     true
 }
 
+/// Paste `text` with the Paste command `id`, falling back to the system clipboard.
+///
+/// An empty Paste event inserts nothing without failing — on macOS it arrives for text copied
+/// in another app — and a paste can also fail outright; either way the system clipboard (via
+/// `system_text`, the seam the tests use) is the source left to try.
+fn paste_with_fallback(app: &mut DesignApp, id: &str, text: &str, system_text: impl FnOnce() -> Option<String>) {
+    let mut err = None;
+    if !text.is_empty() {
+        match app.run(id, json!({ "text": text })) {
+            Ok(_) => return,
+            Err(e) => {
+                log::warn!("Paste from event failed: {e}, trying the system clipboard");
+                err = Some(e);
+            }
+        }
+    }
+    if let Some(t) = system_text().filter(|t| !t.is_empty()) {
+        let _ = app.run(id, json!({ "text": t }));
+    } else if let Some(e) = err {
+        app.status(format!("Paste failed: {e}"));
+    }
+}
+
+/// Read text from the system clipboard using arboard.
+/// Only available on native platforms (not WASM) with the "clipboard" feature.
+#[cfg(all(feature = "clipboard", not(target_arch = "wasm32")))]
+fn read_system_clipboard() -> Option<String> {
+    let mut clipboard = Clipboard::new().ok()?;
+    clipboard.get_text().ok()
+}
+
+/// Stub for WASM or when clipboard feature is disabled.
+#[cfg(not(all(feature = "clipboard", not(target_arch = "wasm32"))))]
+fn read_system_clipboard() -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use designcraft_geom::Unit;
@@ -1817,18 +1845,51 @@ mod tests {
         right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
         assert!(h.query_by_label("   Points").is_none());
     }
-}
 
-/// Read text from the system clipboard using arboard.
-/// Only available on native platforms (not WASM) with the "clipboard" feature.
-#[cfg(all(feature = "clipboard", not(target_arch = "wasm32")))]
-fn read_system_clipboard() -> Option<String> {
-    let mut clipboard = Clipboard::new().ok()?;
-    clipboard.get_text().ok()
-}
+    /// A document with `text` in a frame and an insertion point at its end.
+    fn editing_app(text: &str) -> (DesignApp, designcraft_doc::StoryId) {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": text})).unwrap();
+        let story = *app.session.active().unwrap().doc.stories.keys().next().unwrap();
+        let end = text.chars().count();
+        app.run("text.select", json!({"story": story.0, "anchor": end, "focus": end})).unwrap();
+        (app, story)
+    }
 
-/// Stub for WASM or when clipboard feature is disabled.
-#[cfg(not(all(feature = "clipboard", not(target_arch = "wasm32"))))]
-fn read_system_clipboard() -> Option<String> {
-    None
+    fn story_text(app: &DesignApp, story: designcraft_doc::StoryId) -> String {
+        app.session.active().unwrap().doc.story(story).unwrap().text.clone()
+    }
+
+    /// #201: on macOS the Paste event can carry no text (copied in another app) and the paste
+    /// can fail; either way the system clipboard must be pasted instead of doing nothing.
+    #[test]
+    fn paste_falls_back_to_the_system_clipboard_when_the_event_has_no_text() {
+        let (mut app, story) = editing_app("hello");
+        paste_with_fallback(&mut app, "edit.paste", "", || Some(" from TextEdit".into()));
+        assert_eq!(story_text(&app, story), "hello from TextEdit");
+    }
+
+    #[test]
+    fn paste_falls_back_to_the_system_clipboard_when_the_paste_fails() {
+        let (mut app, story) = editing_app("hello");
+        // Without an insertion point edit.paste errors ("clipboard is empty" / "no insertion
+        // point"); the fallback still pastes the system clipboard's text.
+        app.run("edit.deselectAll", json!({})).unwrap();
+        paste_with_fallback(&mut app, "edit.paste", "", || Some("!".into()));
+        // Nothing was pasted — there was nowhere to paste — and no panic or status crash.
+        assert_eq!(story_text(&app, story), "hello");
+        // With a caret again the fallback text arrives.
+        app.run("text.select", json!({"story": story.0, "anchor": 5, "focus": 5})).unwrap();
+        paste_with_fallback(&mut app, "edit.paste", "", || Some("!".into()));
+        assert_eq!(story_text(&app, story), "hello!");
+    }
+
+    /// The event's own text pastes as before and the system clipboard is not consulted.
+    #[test]
+    fn paste_uses_the_events_text_without_touching_the_system_clipboard() {
+        let (mut app, story) = editing_app("hello");
+        paste_with_fallback(&mut app, "edit.paste", " world", || panic!("the system clipboard must not be read"));
+        assert_eq!(story_text(&app, story), "hello world");
+    }
 }
