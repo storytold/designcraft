@@ -135,6 +135,8 @@ pub struct UiState {
     /// Preferences › Story Editor Display: text size (points).
     pub story_editor_size: f32,
     /// Edit › Interface Language: supported codes are listed in `i18n::LANGUAGES`.
+    /// An empty or missing value resolves to the macOS system preferred language on load.
+    #[serde(default = "crate::i18n::system_language_string", deserialize_with = "crate::i18n::deserialize_language")]
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
     pub flattener: String,
@@ -233,7 +235,7 @@ impl Default for UiState {
             proof_colors: false,
             proof_setup: Default::default(),
             dynamic_spelling: false,
-            language: String::new(),
+            language: crate::i18n::system_language_string(),
             flattener: String::new(),
             separation: None,
             ink_limit: None,

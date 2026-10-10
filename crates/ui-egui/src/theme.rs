@@ -261,8 +261,8 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) {
 /// The UI fonts: the app's own, then the craft-fonts faces from `craft` (empty without
 /// `CRAFT_FONTS_DIR`) as fallbacks at the end of every family: Japanese (BIZ UDPGothic first) and
 /// Simplified Chinese, in the interface language's order, then Arabic. The `arabic` families
-/// put the Arabic face first for right-to-left runs. egui has no system-font discovery, so
-/// without craft-fonts CJK and Arabic UI text has no glyphs.
+/// put the Arabic face first for right-to-left runs. A system CJK face is appended as the final
+/// fallback so builds without craft-fonts can still render Chinese, Japanese and Korean text.
 fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, data: &'static [u8]| {
@@ -284,6 +284,12 @@ fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) 
     for f in japanese.iter().chain(&chinese).chain(&arabic) {
         add(&mut fonts, &name(f), f.bytes);
     }
+    // System CJK fallback (PingFang / Heiti / Noto…) when craft-fonts are absent.
+    let system_cjk = system_cjk_font();
+    if let Some((sname, sdata)) = &system_cjk {
+        fonts.font_data.insert(sname.clone(), Arc::new(sdata.clone()));
+    }
+    let system_name = system_cjk.as_ref().map(|(n, _)| n.clone());
     // Han characters take the forms of the interface language: Chinese faces first for zh.
     let zh = lang.starts_with("zh");
     for (family, stack) in fonts.families.iter_mut() {
@@ -294,15 +300,56 @@ fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) 
         }
         let (first, second) = if zh { (&chinese, &ja) } else { (&ja, &chinese) };
         stack.extend(first.iter().chain(second).chain(&arabic).map(|f| name(f)));
+        if let Some(n) = &system_name {
+            stack.push(n.clone());
+        }
     }
     // Arabic runs (rtl.rs): the Arabic face first, so letters and spaces shape as one run.
     for family in ["arabic", "arabic-semibold"] {
         let ui = if family == "arabic" { "ui" } else { "ui-semibold" };
-        let stack = arabic.iter().map(|f| name(f)).chain([ui.to_string(), "ui".to_string()]).chain(japanese.iter().chain(&chinese).map(|f| name(f)));
+        let stack = arabic.iter().map(|f| name(f)).chain([ui.to_string(), "ui".to_string()]).chain(japanese.iter().chain(&chinese).map(|f| name(f))).chain(system_name.clone());
         let mut seen = std::collections::HashSet::new();
         fonts.families.insert(FontFamily::Name(family.into()), stack.filter(|n| seen.insert(n.clone())).collect());
     }
     fonts
+}
+
+/// A CJK font already installed on the system, as a last-resort fallback. Tries well-known macOS
+/// paths first (PingFang, Heiti, Hiragino Sans GB), then the Linux/Windows common locations.
+fn system_cjk_font() -> Option<(String, FontData)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let paths: &[&str] = if cfg!(target_os = "macos") {
+            &[
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/STHeiti Medium.ttc",
+                "/System/Library/Fonts/STHeiti Light.ttc",
+                "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                "/System/Library/Fonts/Supplemental/Songti.ttc",
+                "/Library/Fonts/Arial Unicode.ttf",
+            ]
+        } else if cfg!(target_os = "windows") {
+            &[r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simhei.ttf", r"C:\Windows\Fonts\simsun.ttc"]
+        } else {
+            &[
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            ]
+        };
+        for path in paths {
+            if let Ok(bytes) = std::fs::read(path) {
+                let mut data = FontData::from_owned(bytes);
+                data.index = 0;
+                return Some(("system-cjk".to_string(), data));
+            }
+        }
+        None
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
 }
 
 pub fn semibold(size: f32) -> FontId {

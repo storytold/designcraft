@@ -704,12 +704,12 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                         ui.end_row();
                     });
                     ui.add_space(6.0);
-                    check(ui, d, "snap.alignEdges", "Align to Object Edges");
-                    check(ui, d, "snap.alignCenters", "Align to Object Centers");
-                    check(ui, d, "snap.dimensions", "Smart Dimensions");
-                    check(ui, d, "snap.spacing", "Smart Spacing");
+                    check(ui, d, "snap.alignEdges", crate::i18n::tr(&app.ui.language, "Align to Object Edges"));
+                    check(ui, d, "snap.alignCenters", crate::i18n::tr(&app.ui.language, "Align to Object Centers"));
+                    check(ui, d, "snap.dimensions", crate::i18n::tr(&app.ui.language, "Smart Dimensions"));
+                    check(ui, d, "snap.spacing", crate::i18n::tr(&app.ui.language, "Smart Spacing"));
                     ui.horizontal(|ui| {
-                        ui.label("Snap to Zone");
+                        ui.label(crate::i18n::tr(&app.ui.language, "Snap to Zone"));
                         let mut zone = d.n("snap.zone").filter(|z| z.is_finite()).unwrap_or(4.0);
                         if ui.add(egui::DragValue::new(&mut zone).speed(0.1)).changed() {
                             d.fields.insert("snap.zone".into(), json!(zone));

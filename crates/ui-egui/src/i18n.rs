@@ -3,6 +3,8 @@
 
 use std::{collections::HashMap, sync::OnceLock};
 
+use serde::Deserialize;
+
 mod ar;
 mod pt_br;
 
@@ -2710,6 +2712,15 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "请通过控制通道传入 csv、rows 或 bytes。",
         ],
     ),
+    ("Reverse the order", ["Reihenfolge umkehren", "Inverser l'ordre", "Invertir el orden", "順序を反転", "倒序排列"]),
+    ("Grab bag", ["Gemischte Tüte", "Sac fourre-tout", "Bolsa surtida", "ごちゃまぜ", "混合列表"]),
+    ("No contributor data was built into this copy.", ["In diese Kopie wurden keine Beitragszahlerdaten eingebaut.", "Aucune donnée de contributeur n'a été intégrée à cette copie.", "No se incorporaron datos de colaboradores en esta copia.", "このコピーには貢献者データが組み込まれていません。", "此副本中未内置贡献者数据。"]),
+    ("No model credits were built into this copy.", ["In diese Kopie wurden keine Modellnennungen eingebaut.", "Aucun crédit de modèle n'a été intégré à cette copie.", "No se incorporaron créditos de modelos en esta copia.", "このコピーにはモデルクレジットが組み込まれていません。", "此副本中未内置模型署名。"]),
+    ("Company", ["Firma", "Société", "Empresa", "会社", "公司"]),
+    ("Model", ["Modell", "Modèle", "Modelo", "モデル", "模型"]),
+    ("Commits", ["Commits", "Commits", "Commits", "コミット", "提交"]),
+    ("% of all commits", ["% aller Commits", "% de tous les commits", "% de todos los commits", "全コミットの %", "占全部提交的百分比"]),
+    ("Lines +/−", ["Zeilen +/−", "Lignes +/−", "Líneas +/−", "行 +/−", "行数 +/−"]),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.
@@ -2741,6 +2752,59 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     }
     let Some(c) = column(lang) else { return s };
     TRANSLATIONS.get_or_init(|| TABLE.iter().copied().collect()).get(s).and_then(|row| row.get(c)).copied().unwrap_or(s)
+}
+
+/// The macOS preferred-languages list mapped to a supported catalog code (or "en" when none match),
+/// as an owned `String` for use as the default persisted language preference.
+pub(crate) fn system_language_string() -> String {
+    system_language().to_string()
+}
+
+/// Deserialize the language preference: an empty string resolves to the system language.
+pub(crate) fn deserialize_language<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.is_empty() {
+        Ok(system_language_string())
+    } else {
+        Ok(value)
+    }
+}
+
+/// The macOS preferred-languages list mapped to a supported catalog code (or "en" when none match).
+#[cfg(target_os = "macos")]
+fn system_language() -> &'static str {
+    static LANG: OnceLock<&'static str> = OnceLock::new();
+    LANG.get_or_init(|| {
+        let out = std::process::Command::new("/usr/bin/defaults")
+            .args(["read", "-g", "AppleLanguages"])
+            .output()
+            .ok();
+        let Some(out) = out.filter(|o| o.status.success()) else { return "en" };
+        String::from_utf8_lossy(&out.stdout)
+            .split(['(', ')', ',', '"', '\n'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .find_map(|tag| {
+                let primary = tag.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+                match primary.as_str() {
+                    "de" => Some("de"),
+                    "fr" => Some("fr"),
+                    "es" => Some("es"),
+                    "ja" => Some("ja"),
+                    "zh" => Some("zh"),
+                    _ => None,
+                }
+            })
+            .unwrap_or("en")
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_language() -> &'static str {
+    "en"
 }
 
 /// Localize reserved built-in style names only; user-defined names are document data.
