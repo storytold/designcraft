@@ -5,15 +5,18 @@ edition.workspace = true
 license.workspace = true
 description = "DesignCraft: receive files opened from Finder or the Dock on macOS"
 
-# Not `workspace = true`: the workspace forbids unsafe code, and calling into AppKit needs it.
-# The unsafe is confined to this crate; the rest of the workspace lints are repeated here.
+# Not `workspace = true`: the workspace forbids unsafe code (`forbid` can't be relaxed anywhere),
+# and receiving Finder's open-documents event needs calls into AppKit. Here it is denied instead,
+# and allowed only on the macOS module that makes those calls (`src/lib.rs`); every unsafe block
+# there must say why it is sound.
 [lints.rust]
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 
 [lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
-undocumented_unsafe_blocks = "warn"
+undocumented_unsafe_blocks = "deny"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
