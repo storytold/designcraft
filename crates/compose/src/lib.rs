@@ -1210,7 +1210,11 @@ impl DropCap {
 /// The cap is measured against the body text after it, not the paragraph style: its leading
 /// (local size and leading overrides included) sets how far the lines below sit, and its cap
 /// height is where the cap's top lines up. `leading` is the fallback when no body text follows.
-/// The cap's own size and font only decide its shape: it is scaled up or down to fit.
+///
+/// As in InDesign, a cap set at the body's size spans exactly from the first line's cap height to
+/// the last dropped line's baseline; a cap set larger (or smaller) than the body is scaled by that
+/// ratio from there, keeping its baseline, so it rises above the first line (or falls short of it).
+/// The cap's font only decides its shape (its own cap height is what is fitted).
 fn drop_cap(glyphs: &mut [Glyph], pp: &ParaProps, text: &str, prange: Range<usize>, leading: f64, vertical: bool) -> Option<DropCap> {
     let lines = pp.drop_cap_lines.min(DROP_CAP_MAX_LINES) as usize;
     let chars = pp.drop_cap_chars.min(DROP_CAP_MAX_CHARS) as usize;
@@ -1229,13 +1233,16 @@ fn drop_cap(glyphs: &mut [Glyph], pp: &ParaProps, text: &str, prange: Range<usiz
         Some(b) => (b.cap, b.ascent, b.descent, b.leading, b.size),
         None => (own_cap, cap_glyph.ascent, cap_glyph.descent, leading, cap_glyph.size),
     };
+    let cap_size = cap_glyph.size;
     let finite_pos = |v: f64| v.is_finite() && v > 0.0;
-    if n == 0 || !finite_pos(own_cap) || !finite_pos(cap) || !finite_pos(leading) {
+    if n == 0 || !finite_pos(own_cap) || !finite_pos(cap) || !finite_pos(leading) || !finite_pos(cap_size) || !finite_pos(size) {
         return None;
     }
     let drop = (lines - 1) as f64 * leading;
-    // The cap's cap height becomes the drop plus the body's cap height.
-    let k = (drop + cap) / own_cap;
+    // At the body's size the cap's cap height is the drop plus the body's cap height; its own
+    // point size relative to the body's scales that. `own_cap` is already at `cap_size`, so the
+    // two size factors cancel into: target × (cap_size / size) / own_cap.
+    let k = (drop + cap) / own_cap * (cap_size / size);
     if !finite_pos(k) {
         return None;
     }
