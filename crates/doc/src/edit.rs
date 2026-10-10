@@ -200,85 +200,144 @@ impl Document {
         Ok((id, sid))
     }
 
-    /// Thread `from` → `to`: `to` joins `from`'s story right after `from`. If `to` held its own text,
-    /// that text is appended to the story (as a new paragraph) and its old story is removed.
+    /// Thread `from` → `to`: `to` joins `from`'s story right after `from` (between `from` and the
+    /// frame that followed it, if any). If `to` held its own text, that text is appended to the
+    /// story (as new paragraphs) and its old story is removed; frames that followed `to` come
+    /// along, frames before it keep an empty story of their own. An empty (unassigned) `from` or
+    /// `to` becomes a text frame. `from`'s story keeps its id.
     pub fn thread(&mut self, from: ItemId, to: ItemId) -> Result<()> {
         if from == to {
             return Err(DocError::Invalid("cannot thread a frame to itself".into()));
         }
-        let fs = self.item(from).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(from))?;
-        // Convert unassigned/graphic-less frames into text frames.
-        let ts = match self.item(to).ok_or(DocError::NoItem(to))?.content.clone() {
-            Content::Text(t) => Some(t.story),
-            Content::Unassigned => None,
-            _ => return Err(DocError::Invalid("can only thread to text or empty frames".into())),
+        let ts = self.frame_story(to)?;
+        let fs = match self.frame_story(from)? {
+            Some(s) => s,
+            None => self.give_empty_story(from)?,
         };
         if ts == Some(fs) {
             return Err(DocError::Invalid("frames are already in the same story".into()));
         }
-        if let Some(ts) = ts {
-            let other = self.stories.remove(&ts).ok_or(DocError::NoStory(ts))?;
-            let other = Arc::unwrap_or_clone(other);
-            // Frames of the other story after `to` follow along; frames before it are left as empty new stories.
-            let pos_to = other.frames.iter().position(|f| *f == to).unwrap_or(0);
-            let before: Vec<ItemId> = other.frames[..pos_to].to_vec();
-            let after: Vec<ItemId> = other.frames[pos_to..].to_vec();
-            {
-                let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
-                if !other.text.is_empty() {
-                    st.text.push('\n');
-                    st.text.push_str(&other.text);
-                    st.paras.extend(other.paras.iter().cloned());
-                    // Char runs: '\n' takes the last run's format, then the other story's runs.
-                    if let Some(last) = st.chars.last_mut() {
-                        last.len += 1;
-                    }
-                    st.chars.extend(other.chars.iter().filter(|r| r.len > 0).cloned());
-                    st.tables.extend(other.tables.iter().map(|(k, v)| (*k, v.clone())));
-                    for n in &other.notes {
-                        let id = st.next_note_id();
-                        st.notes.push(Arc::new(crate::Footnote { id, text: n.text.clone() }));
-                    }
-                    st.anchors.extend(other.anchors.iter().cloned());
-                    st.xrefs.extend(other.xrefs.iter().cloned());
-                    st.index_refs.extend(other.index_refs.iter().cloned());
-                    st.objects.extend(other.objects.iter().cloned());
-                    st.rev += 1;
-                }
-                let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
-                for (k, f) in after.iter().enumerate() {
-                    st.frames.insert(at + k, *f);
-                }
-            }
-            for f in &after {
-                if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
-                    t.story = fs;
-                }
-            }
-            if !before.is_empty() {
-                let nid = StoryId(self.alloc());
-                let mut ns = Story::new(nid);
-                ns.frames = before.clone();
-                ns.vertical = other.vertical;
-                ns.direction = other.direction;
-                for f in &before {
-                    if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
-                        t.story = nid;
-                    }
-                }
-                self.stories.insert(nid, Arc::new(ns));
-            }
-        } else {
+        let Some(ts) = ts else {
             let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
             let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
             st.frames.insert(at, to);
+            st.rev += 1;
             let it = self.item_mut(to).ok_or(DocError::NoItem(to))?;
             it.content = Content::Text(TextFrame { story: fs, options: TextFrameOptions::default() });
-        }
-        if let Some(st) = self.story_mut(fs) {
+            return Ok(());
+        };
+        let mut other = Arc::unwrap_or_clone(self.stories.remove(&ts).ok_or(DocError::NoStory(ts))?);
+        // Frames of the other story from `to` on follow along; frames before it are left as an empty new story.
+        let pos_to = other.frames.iter().position(|f| *f == to).unwrap_or(0);
+        let after = other.frames.split_off(pos_to);
+        let before = std::mem::take(&mut other.frames);
+        let (vertical, direction) = (other.vertical, other.direction);
+        {
+            let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
+            // The story keeps its own direction, even when it was empty and takes the other's text.
+            let own = (st.vertical, st.direction);
+            st.append_story(other);
+            (st.vertical, st.direction) = own;
+            let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
+            for (k, f) in after.iter().enumerate() {
+                st.frames.insert(at + k, *f);
+            }
             st.rev += 1;
         }
+        for f in &after {
+            if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
+                t.story = fs;
+            }
+        }
+        if !before.is_empty() {
+            let nid = StoryId(self.alloc());
+            let mut ns = Story::new(nid);
+            ns.frames = before.clone();
+            ns.vertical = vertical;
+            ns.direction = direction;
+            for f in &before {
+                if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
+                    t.story = nid;
+                }
+            }
+            self.stories.insert(nid, Arc::new(ns));
+        }
         Ok(())
+    }
+
+    /// [`Document::thread`], except that an empty `from` alone in its story, threaded in front of
+    /// the first frame of `to`'s story, joins that story: the story with the text keeps its id
+    /// (and whatever refers to it).
+    pub fn thread_keeping_story(&mut self, from: ItemId, to: ItemId) -> Result<()> {
+        let fs = self.frame_story(from)?;
+        let from_empty = fs.is_none_or(|fs| self.story(fs).is_some_and(|s| s.text.is_empty() && s.frames == [from]));
+        let ts = self.frame_story(to)?;
+        let to_first = ts.and_then(|ts| self.story(ts)).is_some_and(|s| s.frames.first() == Some(&to));
+        let (Some(ts), true, true) = (ts, from_empty, to_first && from != to) else { return self.thread(from, to) };
+        if let Some(fs) = fs {
+            self.stories.remove(&fs);
+        }
+        let st = self.story_mut(ts).ok_or(DocError::NoStory(ts))?;
+        st.frames.insert(0, from);
+        st.rev += 1;
+        let it = self.item_mut(from).ok_or(DocError::NoItem(from))?;
+        match it.text_frame_mut() {
+            Some(t) => t.story = ts,
+            None => it.content = Content::Text(TextFrame { story: ts, options: TextFrameOptions::default() }),
+        }
+        Ok(())
+    }
+
+    /// Can a user thread `from` → `to`? Both are text frames or empty frames (not lines), on
+    /// document spreads or on the same parent spread, not in one story already, and no frame
+    /// threads into `to` yet. [`Document::thread`] itself is less strict (import and autoflow).
+    pub fn check_thread(&self, from: ItemId, to: ItemId) -> Result<()> {
+        if from == to {
+            return Err(DocError::Invalid("cannot thread a frame to itself".into()));
+        }
+        for id in [from, to] {
+            let it = self.item(id).ok_or(DocError::NoItem(id))?;
+            if !matches!(it.content, Content::Text(_) | Content::Unassigned) || it.shape == Shape::GraphicLine {
+                return Err(DocError::Invalid(format!("{id} is not a text frame or an empty frame")));
+            }
+        }
+        let (Some(fl), Some(tl)) = (self.find(from), self.find(to)) else { return Err(DocError::NoItem(to)) };
+        let same_place = match (fl.spread, tl.spread) {
+            (SpreadRef::Doc(_), SpreadRef::Doc(_)) => true,
+            (a, b) => a == b,
+        };
+        if !same_place {
+            return Err(DocError::Invalid("frames on a parent spread thread only to frames on the same parent".into()));
+        }
+        let story = |id: ItemId| self.item(id).and_then(|i| i.text_frame()).map(|t| t.story);
+        if story(from).is_some() && story(from) == story(to) {
+            return Err(DocError::Invalid("the frames are already in the same thread".into()));
+        }
+        if self.prev_frame(to).is_some() {
+            return Err(DocError::Invalid(format!("text already flows into {to} from another frame: break that thread first")));
+        }
+        Ok(())
+    }
+
+    /// The story of a frame that can take part in a thread: `Some` for a text frame, `None` for
+    /// an empty (unassigned) frame.
+    fn frame_story(&self, id: ItemId) -> Result<Option<StoryId>> {
+        match &self.item(id).ok_or(DocError::NoItem(id))?.content {
+            Content::Text(t) => Ok(Some(t.story)),
+            Content::Unassigned => Ok(None),
+            _ => Err(DocError::Invalid("can only thread text frames or empty frames".into())),
+        }
+    }
+
+    /// Make an empty frame a text frame with a new empty story.
+    fn give_empty_story(&mut self, id: ItemId) -> Result<StoryId> {
+        let sid = StoryId(self.alloc());
+        let mut st = Story::new(sid);
+        st.frames.push(id);
+        let it = self.item_mut(id).ok_or(DocError::NoItem(id))?;
+        it.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
+        self.stories.insert(sid, Arc::new(st));
+        Ok(sid)
     }
 
     /// Break the thread after `frame`: the following frames become a new empty story (the text
@@ -306,6 +365,30 @@ impl Document {
                 t.story = nid;
             }
         }
+        Ok(())
+    }
+
+    /// Take `frame` out of its thread: the frames before and after it join up and keep the text,
+    /// `frame` stays on the page with a new empty story.
+    pub fn remove_from_thread(&mut self, frame: ItemId) -> Result<()> {
+        let sid = self.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(frame))?;
+        let (vertical, direction) = {
+            let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
+            if st.frames.len() < 2 {
+                return Err(DocError::Invalid(format!("frame {frame} is not threaded to another frame")));
+            }
+            st.frames.retain(|f| *f != frame);
+            st.rev += 1;
+            (st.vertical, st.direction)
+        };
+        let nid = StoryId(self.alloc());
+        let mut ns = Story::new(nid);
+        ns.frames = vec![frame];
+        ns.vertical = vertical;
+        ns.direction = direction;
+        self.stories.insert(nid, Arc::new(ns));
+        let t = self.item_mut(frame).and_then(Item::text_frame_mut).ok_or(DocError::NoItem(frame))?;
+        t.story = nid;
         Ok(())
     }
 
