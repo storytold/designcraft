@@ -171,7 +171,16 @@ impl Session {
     pub fn commit_interaction(&mut self) -> Result<()> {
         let st = self.doc_mut()?;
         let Some(it) = st.interaction.take() else { return Ok(()) };
-        if !Arc::ptr_eq(&it.doc, &st.doc) {
+        let (uid, changed) = (st.uid, !Arc::ptr_eq(&it.doc, &st.doc));
+        // Smart Text Reflow answers the finished gesture as it would the command, in its undo step.
+        if changed && self.prefs.smart_text_reflow {
+            let _ = self.guarded("smart text reflow", |s| {
+                s.smart_reflow(Some((uid, &it.doc)));
+                Ok(Value::Null)
+            });
+        }
+        let st = self.doc_mut()?;
+        if changed {
             record_undo(st, HistoryEntry { label: it.label, doc: it.doc, selection: it.selection });
         }
         if let Some((c, p)) = it.preview {
