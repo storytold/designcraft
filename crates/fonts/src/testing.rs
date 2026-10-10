@@ -29,14 +29,15 @@ pub fn font_mapping(family: &str, glyphs: &[(char, char)]) -> Option<Vec<u8>> {
     let mut tables = tables_of(base)?;
     tables.retain(|(tag, _)| tag != b"name" && tag != b"cmap");
 
-    // `name`: format 0, family (1) and subfamily (2), Windows Unicode English.
-    let strings: Vec<Vec<u8>> = [family, "Regular"].iter().map(|s| s.encode_utf16().flat_map(u16::to_be_bytes).collect()).collect();
+    // `name`: format 0, family (1), subfamily (2) and PostScript name (6), Windows Unicode English.
+    let ps: String = family.chars().filter(char::is_ascii_alphanumeric).chain("-Regular".chars()).collect();
+    let strings: Vec<Vec<u8>> = [family, "Regular", &ps].iter().map(|s| s.encode_utf16().flat_map(u16::to_be_bytes).collect()).collect();
     let mut name = Vec::new();
-    for v in [0u16, 2, 6 + 2 * 12] {
+    for v in [0u16, 3, 6 + 3 * 12] {
         name.extend_from_slice(&v.to_be_bytes());
     }
     let mut at = 0usize;
-    for (id, s) in [1u16, 2].iter().zip(&strings) {
+    for (id, s) in [1u16, 2, 6].iter().zip(&strings) {
         for v in [3u16, 1, 0x409, *id, u16::try_from(s.len()).ok()?, u16::try_from(at).ok()?] {
             name.extend_from_slice(&v.to_be_bytes());
         }

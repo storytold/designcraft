@@ -6,7 +6,7 @@ use std::sync::Arc;
 use designcraft_compose::Cache;
 use designcraft_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, Shape, SpreadRef};
 use designcraft_geom::{Affine, Rect, shapes};
-use designcraft_pdf::{BookletOptions, PdfError, PdfOptions, Standard, export_booklet, export_pdf, export_pdf_with_report};
+use designcraft_pdf::{BookletOptions, PdfOptions, Standard, export_booklet, export_pdf, export_pdf_with_report};
 
 use crate::image_fixtures as fixtures;
 
@@ -152,17 +152,19 @@ fn compress_images_context_does_not_leak_between_exports() {
 }
 
 #[test]
-fn repeated_png_with_deferred_decode_error_still_fails_export() {
+fn repeated_png_with_deferred_decode_error_is_skipped() {
     let mut bad = png(2, 2, [255, 0, 0, 255]);
     let idat = bad.windows(4).position(|w| w == b"IDAT").unwrap();
     bad[idat + 4] ^= 255;
-    // Metadata succeeds, while corrupted IDAT decoding fails later in the backend.
+    // Metadata succeeds, while corrupted IDAT decoding would fail later in the backend: the
+    // image is decoded first, so both copies are skipped with a warning, not a failed export.
     assert!(krilla::image::Image::from_png(Arc::new(bad.clone()).into(), true).is_ok());
     let mut d = Document::new(&Default::default());
     place(&mut d, bad.clone(), 36.0);
     place(&mut d, bad, 66.0);
-    let error = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap_err();
-    assert!(matches!(error, PdfError::Write(_)), "{error}");
+    let report = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(report.warnings.iter().any(|w| w.contains("could not be decoded")), "{:?}", report.warnings);
+    assert!(image_objects(&report.bytes).is_empty());
 }
 
 #[derive(Debug, PartialEq)]
@@ -308,17 +310,16 @@ fn placed_pdf_selection_and_media_routing_precede_content_cache() {
 }
 
 #[test]
-fn repeated_direct_pngs_preserve_current_pdfa_interpolation_failure() {
+fn repeated_direct_pngs_export_as_pdfa_without_interpolation() {
     let data = png(2, 1, [220, 30, 40, 255]);
     let mut d = Document::new(&Default::default());
     place(&mut d, data.clone(), 36.0);
     place(&mut d, data, 66.0);
-    // Unlike TIFF's raw-RGBA conversion, main's direct PNG path interpolates. PR128 owns
-    // disabling this for PDF/A; caching must preserve the existing validator failure.
-    let error =
+    // PDF/A turns image interpolation off (#128), and the cached conversion keeps that.
+    let report =
         export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, created: Some(1_700_000_000), ..Default::default() })
-            .unwrap_err();
-    assert!(matches!(error, PdfError::Write(_)));
-    assert!(error.to_string().contains("ImageInterpolation"), "{error}");
-    assert!(!error.to_string().contains("MissingCMYKProfile"), "{error}");
+            .unwrap();
+    assert_eq!(image_objects(&report.bytes).len(), 1, "both placements share one image");
+    let needle = b"/Interpolate true";
+    assert!(!report.bytes.windows(needle.len()).any(|w| w == needle));
 }

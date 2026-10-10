@@ -424,3 +424,31 @@ mod japanese_font_tests {
         super::install_fonts(&egui::Context::default(), "ja");
     }
 }
+
+#[cfg(test)]
+mod ukrainian_font_tests {
+    #[test]
+    fn every_catalog_cyrillic_glyph_exists_in_the_bundled_ui_fonts() {
+        // Check the actual installed face data, without craft-fonts or system fonts.
+        // egui's has_glyph can report false for the face providing its replacement glyph.
+        let definitions = super::font_definitions(&[], "uk");
+        let db = designcraft_fonts::FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let characters: std::collections::HashSet<_> = crate::i18n::ukrainian_catalog()
+            .iter()
+            .flat_map(|text| text.chars())
+            .chain("ҐґЄєІіЇї".chars())
+            .filter(|c| matches!(*c, '\u{0400}'..='\u{052f}'))
+            .collect();
+        for (name, family, style) in
+            [("ui", "Source Sans 3", "Regular"), ("ui-semibold", "Source Sans 3", "Semibold"), ("mono", "JetBrains Mono", "Regular")]
+        {
+            let data = &definitions.font_data[name].font;
+            let face = db.face(family, style);
+            assert_eq!(face.data(), data.as_ref(), "configured UI face {name}");
+            for character in &characters {
+                assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
+            }
+        }
+    }
+}

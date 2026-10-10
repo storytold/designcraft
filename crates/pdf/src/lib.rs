@@ -12,15 +12,18 @@
 //! - **Colour:** CMYK as DeviceCMYK, RGB as DeviceRGB, Gray as DeviceGray, spot swatches (and their
 //!   tints) as `/Separation` with the swatch's own values as the alternate space, `[Registration]`
 //!   as `/Separation /All`.
+//!   Gradients with mixed output colour spaces are converted to RGB with an export warning;
+//!   homogeneous gradients keep their existing colour space (subject to PDF/A conversion).
 //! - **Images:** clipped to their frame; JPEG data is passed through, PNG/GIF/WebP are embedded
-//!   losslessly (or re-encoded as JPEG with [`PdfOptions::compress_images`]).
+//!   losslessly (or re-encoded as JPEG with [`PdfOptions::compress_images`]). PDF/X-4 and PDF/A
+//!   images are written without interpolation. In PDF/X-4 an RGB image without a profile of its own
+//!   carries sRGB (`assets/icc/sRGB-v2-magic.icc`).
 //! - **Text as real text:** the composed glyph runs are emitted with embedded, subsetted fonts and a
 //!   Unicode mapping taken from the story text (ligatures, page numbers and inserted hyphens get the
 //!   right characters), so text is selectable and searchable.
 //! - **Marks:** crop marks, bleed marks and a page-information line, drawn in `[Registration]`.
-//! - **Standards:** PDF/A-2b through krilla's validator. PDF/X-4 writes PDF 1.6 with trim/bleed
-//!   boxes, but the PDF/X output intent and identification are not written yet (krilla 0.8 has no
-//!   PDF/X support) — the export report says so.
+//! - **Standards:** PDF/A-2b through krilla's validator and PDF/X-4 output intent/identification
+//!   with built-in conformance checks. `designcraft-cli validate-pdf` exposes those checks for CI.
 //!
 //! Not yet: tagged PDF, bookmarks, hyperlinks, overprint, layers as optional content.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -44,8 +47,7 @@ pub enum Standard {
     /// Plain PDF 1.7.
     #[default]
     None,
-    /// PDF/X-4 (PDF 1.6, trim/bleed boxes). TODO: OutputIntent + GTS_PDFXVersion once krilla
-    /// supports PDF/X.
+    /// PDF/X-4 (PDF 1.6, trim/bleed boxes, output intent and identification).
     PdfX4,
     /// PDF/A-2b (archival; validated by krilla).
     PdfA2b,

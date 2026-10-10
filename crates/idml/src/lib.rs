@@ -20,8 +20,8 @@
 //! (page size, facing pages, bleed/slug, margins and columns, units, grids), layers, sections,
 //! parent (master) spreads and applied parents, spreads and pages, page items (`TextFrame`,
 //! `Rectangle`, `Oval`, `Polygon`, `GraphicLine`, `Group`) with fill/stroke, corner options, text
-//! wrap, transparency (opacity, blend mode, drop shadow, feather), images (embedded `Contents` or
-//! linked), stories with paragraph/character style ranges and local overrides, special
+//! frame options (with column rules), text wrap, transparency (opacity, blend mode, drop shadow,
+//! feather), images (embedded `Contents` or linked), stories with paragraph/character style ranges and local overrides, special
 //! characters and breaks, and text threading.
 //!
 //! ## TODO (ignored on import / not written on export)
@@ -30,7 +30,8 @@
 //! - Guides, page-item overrides of parent items (only the page's `OverrideList` is read),
 //!   parent-of-parent page mapping beyond `AppliedMaster`, alternate layouts, liquid layout.
 //! - Nested/GREP/line styles, bullets & numbering details (bullet glyph, number format), OpenType
-//!   feature flags, paragraph borders, grid alignment, column rules, custom dashed stroke styles.
+//!   feature flags, paragraph borders, grid alignment, custom dashed stroke styles; column rule
+//!   stroke type and overprint.
 //! - Mixed inks, gradient stop opacity and gradient feathers, effects other than drop shadow and
 //!   basic feather, EPS/PDF/AI placed graphics (imported as images when the data is available),
 //!   clipping paths, compound-path fill rules.
