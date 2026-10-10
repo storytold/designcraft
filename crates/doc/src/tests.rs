@@ -143,6 +143,18 @@ fn page_names_follow_sections() {
 }
 
 #[test]
+fn hostile_section_start_numbers_saturate() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    let first = d.sections.iter_mut().find(|s| s.start == 0).unwrap();
+    first.start_number = Some(u32::MAX);
+    let continuing = Section { start: 2, start_number: None, ..first.clone() };
+    d.sections.push(continuing);
+    assert_eq!(d.page_number(1), u32::MAX);
+    assert_eq!(d.page_number(2), u32::MAX);
+    assert_eq!(d.page_name(2), u32::MAX.to_string());
+}
+
+#[test]
 fn document_serde_roundtrip() {
     let mut d = doc();
     let lid = d.default_layer();

@@ -643,14 +643,24 @@ impl Document {
 
     /// The page number (before formatting) of absolute page `abs`, per sections. A section without
     /// a start number continues from the previous section.
+    /// Saturates at `u32::MAX`, so start numbers loaded from a file can't overflow it.
     pub fn page_number(&self, abs: usize) -> u32 {
-        let Some(sec) = self.section_of(abs) else { return abs as u32 + 1 };
-        let start = match sec.start_number {
-            Some(n) => n,
-            None if sec.start == 0 => 1,
-            None => self.page_number(sec.start - 1) + 1,
-        };
-        start + (abs - sec.start) as u32
+        // Walks back through continuing sections iteratively: one section per step, never recursing.
+        let (mut abs, mut offset) = (abs, 0u32);
+        loop {
+            let Some(sec) = self.section_of(abs) else {
+                return u32::try_from(abs).unwrap_or(u32::MAX).saturating_add(1).saturating_add(offset);
+            };
+            let into = u32::try_from(abs - sec.start).unwrap_or(u32::MAX).saturating_add(offset);
+            match sec.start_number {
+                Some(n) => return n.saturating_add(into),
+                None if sec.start == 0 => return into.saturating_add(1),
+                None => {
+                    offset = into.saturating_add(1);
+                    abs = sec.start - 1;
+                }
+            }
+        }
     }
 
     /// The displayed page name ("1", "iv", "A-3"…) for an absolute page index, per sections.

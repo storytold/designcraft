@@ -139,12 +139,12 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(query "book.list", "Book", [], None, "{} → {path, styleSource, documents: [{path, pages, firstPage}]}", has_book, |s, _| {
             let b = s.book.as_ref().ok_or_else(no_book)?;
-            let mut first = 1;
+            let mut first = 1usize;
             let mut docs = Vec::new();
             for p in &b.documents {
                 let pages = load(p).map(|d| d.page_count()).unwrap_or(0);
                 docs.push(json!({"path": p, "pages": pages, "firstPage": first}));
-                first += pages;
+                first = first.saturating_add(pages);
             }
             Ok(json!({"path": b.path, "styleSource": b.style_source, "documents": docs}))
         }),
@@ -154,10 +154,10 @@ pub fn specs() -> Vec<CommandSpec> {
             for p in &b.documents {
                 let mut d = load(p)?;
                 start_at(&mut d, next);
-                next += d.page_count() as u32;
+                next = next.saturating_add(u32::try_from(d.page_count()).unwrap_or(u32::MAX));
                 store(p, &d)?;
             }
-            Ok(json!({"pages": next - 1}))
+            Ok(json!({"pages": next.saturating_sub(1)}))
         }),
         cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{} — paragraph and character styles and swatches of the style source go into every document (by name)", has_book, |s, _| {
             let b = s.book.clone().ok_or_else(no_book)?;

@@ -6,6 +6,14 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, ok, str_param};
 use crate::Result;
 
+/// A start page number parameter: a whole number in 1..=[`designcraft_doc::MAX_PAGE_NUMBER`].
+fn start_number(cmd: &str, key: &str, v: &Value) -> Result<u32> {
+    v.as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| (1..=designcraft_doc::MAX_PAGE_NUMBER).contains(n))
+        .ok_or_else(|| bad(cmd, format!("`{key}` must be a whole number from 1 to {}", designcraft_doc::MAX_PAGE_NUMBER)))
+}
+
 /// Each page's margin box, by spread and page id.
 fn margin_boxes(d: &designcraft_doc::Document) -> Vec<(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)> {
     d.spread_refs()
@@ -269,7 +277,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(i) = intent {
                         d.settings.intent = i;
                     }
-                    if let Some(n) = p.get("startPage").and_then(Value::as_u64) {
+                    if let Some(n) = p.get("startPage").map(|v| start_number("layout.documentSetup", "startPage", v)).transpose()? {
                         if !d.sections.iter().any(|x| x.start == 0) {
                             d.sections.insert(
                                 0,
@@ -284,7 +292,7 @@ pub fn specs() -> Vec<CommandSpec> {
                             );
                         }
                         if let Some(first) = d.sections.iter_mut().find(|x| x.start == 0) {
-                            first.start_number = Some(n.max(1) as u32);
+                            first.start_number = Some(n);
                         }
                     }
                     // Number of Pages: add at the end (with the last page's parent) or remove from the end.
@@ -410,7 +418,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     });
                     match p.get("startNumber") {
                         Some(Value::Null) => sec.start_number = None,
-                        Some(v) => sec.start_number = v.as_u64().map(|v| v.max(1) as u32),
+                        Some(v) => sec.start_number = Some(start_number("layout.section", "startNumber", v)?),
                         None => {}
                     }
                     if let Some(v) = p.get("style") {
@@ -894,6 +902,20 @@ mod page_numbering_view_tests {
         assert_eq!((0..4).map(|i| s.page_label(i)).collect::<Vec<_>>(), ["1", "2", "3", "4"]);
         assert_eq!(s.resolve_page("1"), Some(0));
         assert_eq!(s.resolve_page("9"), None);
+    }
+
+    #[test]
+    fn section_start_numbers_are_bounded() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        for n in [json!(0), json!(100_000), json!(u32::MAX), json!(u64::from(u32::MAX) + 2), json!(-1), json!(2.5), json!("7")] {
+            let e = s.execute("layout.section", &json!({"page": 1, "startNumber": n})).unwrap_err().to_string();
+            assert!(e.contains("startNumber"), "{n}: {e}");
+            assert!(s.execute("layout.documentSetup", &json!({"startPage": n})).is_err(), "{n}");
+        }
+        assert_eq!((0..2).map(|i| s.page_label(i)).collect::<Vec<_>>(), ["1", "2"]);
+        let r = s.execute("layout.section", &json!({"page": 1, "startNumber": 99_999})).unwrap();
+        assert_eq!(r["names"], json!(["99999", "100000"]));
     }
 }
 

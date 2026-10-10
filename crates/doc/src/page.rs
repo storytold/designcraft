@@ -328,6 +328,9 @@ impl Spread {
     }
 }
 
+/// The highest start page number a document or section accepts.
+pub const MAX_PAGE_NUMBER: u32 = 99_999;
+
 /// A numbering section starting at a document page.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
