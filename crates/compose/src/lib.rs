@@ -2041,17 +2041,17 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         .collect();
     // Mojikumi aki takes part with the word spaces (JLREQ §3.8): (gap it widens, capacity) — the
     // aki before a glyph is the gap after the previous one.
-    let mut aki: Vec<(usize, f64)> = Vec::new();
+    let mut aki: Vec<(usize, f64, u8)> = Vec::new();
     for (i, g) in line.iter().enumerate() {
         if g.locked_advance {
             continue;
         }
         let (b, a) = if stretch { (g.aki_before.stretch, g.aki_after.stretch) } else { (g.aki_before.shrink, g.aki_after.shrink) };
         if b > 0.0 && i > 0 {
-            aki.push((i - 1, b));
+            aki.push((i - 1, b, g.aki_before.rank));
         }
         if a > 0.0 {
-            aki.push((i, a));
+            aki.push((i, a, g.aki_after.rank));
         }
     }
     // Letter gaps: between visible glyphs (not after the line's last glyph).
@@ -2098,8 +2098,22 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         if stretch { line.iter().enumerate().filter(|(i, g)| g.jl_expand > 0.0 && is_box(*i, g)).map(|(i, _)| i).collect() } else { Vec::new() };
     let sharers = spaces.len() + cjk_gaps.len();
     let per = if sharers > 0 && !spaces.is_empty() { rem / sharers as f64 } else { 0.0 };
+    // Within the word tier, in the order of JLREQ §3.8.3 and §3.8.4: the word spaces first, then
+    // the aki by rank (middle dots, brackets and commas, wa-ō), each evenly.
+    let word_cap: f64 = word.iter().sum();
+    let word_take = tw.min(word_cap);
+    let mut aki_rem = tw - word_take;
+    let mut aki_take = [0.0f64; 4];
+    let mut aki_cap = [0.0f64; 4];
+    for &(_, cap, rank) in &aki {
+        aki_cap[usize::from(rank.min(3))] += cap;
+    }
+    for r in 0..4 {
+        aki_take[r] = aki_rem.min(aki_cap[r]);
+        aki_rem -= aki_take[r];
+    }
     for (k, &i) in spaces.iter().enumerate() {
-        let share = if yw > 1e-9 { tw * word[k] / yw } else { 0.0 };
+        let share = if word_cap > 1e-9 { word_take * word[k] / word_cap } else { 0.0 };
         add[i] += sign * (share + if stretch { per } else { rem / spaces.len() as f64 });
     }
     if !spaces.is_empty() && stretch {
@@ -2107,11 +2121,12 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
             add[i] += per;
         }
     }
-    if yw > 1e-9 {
-        for &(i, cap) in &aki {
-            if let Some(a) = add.get_mut(i) {
-                *a += sign * tw * cap / yw;
-            }
+    for &(i, cap, rank) in &aki {
+        let r = usize::from(rank.min(3));
+        if aki_cap[r] > 1e-9
+            && let Some(a) = add.get_mut(i)
+        {
+            *a += sign * aki_take[r] * cap / aki_cap[r];
         }
     }
     if yl > 1e-9 && tl > 0.0 {

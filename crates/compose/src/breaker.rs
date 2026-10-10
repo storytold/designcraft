@@ -457,6 +457,34 @@ pub fn knuth_plass(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &
     greedy(glyphs, hyph_after, sp, width)
 }
 
+/// Demerits of a line that compresses its punctuation only to take one more Japanese character
+/// in, when it could have ended at the break before it (the cost of two mismatched lines): such
+/// a line is set at its natural widths and spread out instead, unless that opens it up a lot.
+/// Push-in stays the first choice where kinsoku forbids the natural break (JLREQ §3.8.2).
+const UNFORCED_PUSH_IN: f64 = 3000.0;
+
+/// Is the compressed line from node `n` to the current break taking in a Japanese character it
+/// didn't have to: the line could end at the previous break `prev`, and the character after
+/// that break no longer fits at its natural width?
+#[allow(clippy::too_many_arguments)]
+fn unforced_push_in(
+    items: &[Item],
+    ig: &[usize],
+    glyphs: &[Glyph],
+    sw: &[f64],
+    prev: Option<usize>,
+    next_box: &[usize],
+    n: Node,
+    target: f64,
+) -> bool {
+    let Some(pb) = prev.filter(|pb| *pb > n.pos) else { return false };
+    let Some(&k) = next_box.get(pb).filter(|k| **k < items.len()) else { return false };
+    let Some(g) = ig.get(k).and_then(|i| glyphs.get(*i)) else { return false };
+    let japanese = !matches!(crate::jlreq::class_of(g.ch), crate::jlreq::Class::Western | crate::jlreq::Class::Digit | crate::jlreq::Class::Space);
+    // Natural width up to and including that character.
+    japanese && sw.get(k + 1).is_some_and(|w| w - n.tw > target + 1e-6)
+}
+
 /// Upper bound on the hyphen-count states tracked per breakpoint.
 const MAX_HYPHEN_STATES: usize = 8;
 
@@ -494,6 +522,13 @@ fn kp_pass(
     let mut active: Vec<usize> = vec![0];
     let mut best: Vec<Option<(f64, usize)>> = vec![None; 4 * states];
     let mut keep = Vec::new();
+    // The break before `b` and the first box after each item, to tell a push-in kinsoku forces
+    // from one that only takes another character in.
+    let mut prev_break: Option<usize> = None;
+    let mut next_box = vec![m; m + 1];
+    for i in (0..m).rev() {
+        next_box[i] = if items[i].kind == Kind::Box { i } else { next_box[i + 1] };
+    }
     for b in 0..m {
         let it = items[b];
         let (is_break, pw, pp, flagged) = match it.kind {
@@ -553,6 +588,9 @@ fn kp_pass(
             if flagged && n.flagged {
                 d += 3000.0;
             }
+            if r < 0.0 && unforced_push_in(items, ig, glyphs, &sw, prev_break, &next_box, n, target) {
+                d += UNFORCED_PUSH_IN;
+            }
             let fit = if r < -0.5 {
                 0
             } else if r <= 0.5 {
@@ -581,6 +619,7 @@ fn kp_pass(
             best[0] = Some((arena[a].demerits + 1e8, a));
         }
         std::mem::swap(&mut active, &mut keep);
+        prev_break = Some(b);
         if best.iter().all(Option::is_none) {
             if active.is_empty() {
                 return None;

@@ -137,6 +137,10 @@ impl Class {
     fn is_closing(self) -> bool {
         matches!(self, Class::Close | Class::FullStop | Class::Comma)
     }
+    /// The order its blank shrinks in to take a line in (see `Aki::rank`).
+    fn shrink_rank(self) -> u8 {
+        if self == Class::Middle { 1 } else { 2 }
+    }
     /// The blank a full-width glyph of this class has (before, after), in ems.
     fn blanks(self) -> (f64, f64) {
         match self {
@@ -156,6 +160,10 @@ pub struct Aki {
     pub stretch: f64,
     pub shrink: f64,
     pub edge: f64,
+    /// When the shrink is used to take a line in (JLREQ §3.8.3): after the word spaces, the
+    /// middle dots' quarter ems (1), then the half ems of brackets and commas (2), then wa-ō
+    /// aki (3).
+    pub rank: u8,
 }
 
 impl Aki {
@@ -164,6 +172,10 @@ impl Aki {
         (self.w - self.edge).max(0.0)
     }
     fn add(&mut self, w: f64, stretch: f64, shrink: f64, edge: f64) {
+        self.add_ranked(w, stretch, shrink, edge, 0);
+    }
+    fn add_ranked(&mut self, w: f64, stretch: f64, shrink: f64, edge: f64, rank: u8) {
+        self.rank = self.rank.max(rank);
         self.w += w;
         self.stretch += stretch;
         self.shrink += shrink;
@@ -288,8 +300,9 @@ pub fn apply_mojikumi(glyphs: &mut [Glyph], set: &MojikumiSet) {
     let mut after = vec![Aki::default(); glyphs.len()];
     for i in 0..glyphs.len() {
         let Some(u) = units[i] else { continue };
-        // Paragraph start: an opening bracket keeps its blank (below the first-line indent).
-        if Some(i) == first && u.blanks.0 > 0.0 {
+        // Paragraph start: like a line start, an opening bracket sits at the edge (below the
+        // first-line indent: JIS X 4051's method, JLREQ §3.1.5 ①) unless the set keeps its blank.
+        if Some(i) == first && u.blanks.0 > 0.0 && (set.keep_open_at_line_start || u.class != Class::Open) {
             let b = u.blanks.0;
             before[i].add(b, 0.0, 0.0, b);
         }
@@ -304,7 +317,7 @@ pub fn apply_mojikumi(glyphs: &mut [Glyph], set: &MojikumiSet) {
                 if u.blanks.1 > 0.0 {
                     let a = u.blanks.1;
                     let (w, stretch, shrink, edge) = closing_aki(set, u.class, a);
-                    after[i].add(w, stretch, shrink, edge);
+                    after[i].add_ranked(w, stretch, shrink, edge, u.class.shrink_rank());
                 }
             }
         }
@@ -312,8 +325,8 @@ pub fn apply_mojikumi(glyphs: &mut [Glyph], set: &MojikumiSet) {
     for ((g, b), a) in glyphs.iter_mut().zip(before).zip(after) {
         g.adv += b.w + a.w;
         g.dx += b.w;
-        g.aki_before.add(b.w, b.stretch, b.shrink, b.edge);
-        g.aki_after.add(a.w, a.stretch, a.shrink, a.edge);
+        g.aki_before.add_ranked(b.w, b.stretch, b.shrink, b.edge, b.rank);
+        g.aki_after.add_ranked(a.w, a.stretch, a.shrink, a.edge, a.rank);
     }
 }
 
@@ -363,13 +376,13 @@ fn pair(before: &mut [Aki], after: &mut [Aki], i: usize, u: Unit, v: Unit, set: 
         if b > 0.0
             && let Some(x) = before.get_mut(i + 1)
         {
-            x.add(b, 0.0, b, b);
+            x.add_ranked(b, 0.0, b, b, v.class.shrink_rank());
         }
         if a > 0.0
             && let Some(x) = after.get_mut(i)
         {
             let (w, stretch, shrink, edge) = closing_aki(set, u.class, a);
-            x.add(w, stretch, shrink, edge);
+            x.add_ranked(w, stretch, shrink, edge, u.class.shrink_rank());
         }
         return;
     }
@@ -384,19 +397,20 @@ fn pair(before: &mut [Aki], after: &mut [Aki], i: usize, u: Unit, v: Unit, set: 
         if b >= a {
             // The opening bracket's space: dropped where it starts a line (tentsuki) unless the set
             // keeps it.
-            let shrinkable = punct;
+            // After a full stop it is the sentence break: not used to take a line in (§3.8.3).
+            let shrinkable = if u.class == Class::FullStop { 0.0 } else { punct };
             let (w, stretch, shrink) = match set.punctuation {
                 Punctuation::Half => (0.0, punct, 0.0),
                 _ => (punct, 0.0, shrinkable),
             };
             let edge = if set.keep_open_at_line_start { w } else { 0.0 };
             if let Some(b) = before.get_mut(i + 1) {
-                b.add(w, stretch, shrink, edge);
+                b.add_ranked(w, stretch, shrink, edge, v.class.shrink_rank());
             }
         } else {
             let (w, stretch, shrink, edge) = closing_aki(set, u.class, punct);
             if let Some(a) = after.get_mut(i) {
-                a.add(w, stretch, shrink, edge);
+                a.add_ranked(w, stretch, shrink, edge, u.class.shrink_rank());
             }
         }
         return;
@@ -409,7 +423,7 @@ fn pair(before: &mut [Aki], after: &mut [Aki], i: usize, u: Unit, v: Unit, set: 
         let em = if japanese(u.class) { u.em } else { v.em };
         let w = set.wa_ou * em;
         if let Some(a) = after.get_mut(i) {
-            a.add(w, w, w / 2.0, 0.0);
+            a.add_ranked(w, w, w / 2.0, 0.0, 3);
         }
     }
 }

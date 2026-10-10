@@ -122,8 +122,8 @@ pub struct FrameGrid {
     pub count_size: f64,
     pub view: GridView,
     /// Mojikumi set for text in the grid (a paragraph's own set wins). Empty: none, every
-    /// character and punctuation mark takes a whole cell.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    /// character and punctuation mark takes a whole cell. New grids use `DEFAULT_GRID_MOJIKUMI`.
+    /// Always written: a missing value reads as the default set, an empty one as none.
     pub mojikumi: String,
 }
 
@@ -143,6 +143,10 @@ pub const GRID_FONT_FALLBACKS: &[(&str, &str)] = &[
     ("IPAexMincho", "Regular"),
 ];
 
+/// The mojikumi set of new frame grids: full-width punctuation that closes up between
+/// consecutive marks, half-width at the line end (JIS X 4051 and JLREQ §3.1's basic setting).
+pub const DEFAULT_GRID_MOJIKUMI: &str = "lineEndHalf";
+
 impl Default for FrameGrid {
     fn default() -> Self {
         FrameGrid {
@@ -159,7 +163,7 @@ impl Default for FrameGrid {
             count: GridCount::Bottom,
             count_size: 9.0,
             view: GridView::Grid,
-            mojikumi: String::new(),
+            mojikumi: DEFAULT_GRID_MOJIKUMI.into(),
         }
     }
 }

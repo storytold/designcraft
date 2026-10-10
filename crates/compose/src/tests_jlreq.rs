@@ -134,8 +134,12 @@ fn an_opening_bracket_starts_a_line_flush() {
     let (d, sid, _) = japanese(&text, rect, with_set("fullWidth"));
     let ls = lines(&d, sid);
     assert!((x_at(&ls[1], open) - ls[1].x0).abs() < 1e-6, "full width keeps the bracket's space");
-    // A paragraph starting with a bracket keeps it under any set.
+    // A paragraph starting with a bracket: flush too (JIS X 4051; JLREQ §3.1.5 ①), unless the
+    // set keeps the bracket's space.
     let (d, sid, _) = japanese("「漢」", rect, with_set("lineEndHalf"));
+    let l = &lines(&d, sid)[0];
+    assert!((x_at(l, 0) - (l.x0 - 5.0)).abs() < 1e-6, "{}", x_at(l, 0));
+    let (d, sid, _) = japanese("「漢」", rect, with_set("fullWidth"));
     let l = &lines(&d, sid)[0];
     assert!((x_at(l, 0) - l.x0).abs() < 1e-6);
 }
@@ -169,8 +173,9 @@ fn justified_japanese_lines_fill_the_measure() {
     }
 }
 
+/// A grid without a mojikumi set (every character takes a cell).
 fn grid() -> FrameGrid {
-    FrameGrid { size: 10.0, char_aki: 2.0, line_aki: 5.0, ..Default::default() }
+    FrameGrid { size: 10.0, char_aki: 2.0, line_aki: 5.0, mojikumi: String::new(), ..Default::default() }
 }
 
 /// A frame grid of `chars` × `lines` cells (one column) with `text`.
@@ -328,4 +333,53 @@ fn justified_japanese_pushes_in_before_pushing_out() {
         assert_eq!(text[ls[0].range.clone()].chars().count(), 25, "grid {grid} set {set:?}: {:?}", &text[ls[0].range.clone()]);
         assert!((ls[0].end_x - ls[0].x1).abs() < 0.6, "grid {grid} set {set:?}: ends at {}", ls[0].end_x);
     }
+}
+
+/// A new frame grid sets punctuation by JIS X 4051 / JLREQ: the paragraph's opening bracket at
+/// the line start, consecutive marks closed up, a quarter em between Japanese and Western text,
+/// and lines taken in by the blanks of brackets and commas, never by a full stop's.
+#[test]
+fn a_new_frame_grid_sets_punctuation_by_the_standard() {
+    let text = "「日本語組版処理の要件」は、日本語の組版で使う文字クラスや行頭・行末の規則をまとめたものです。JISX 4051に従い、括弧や句読点（、。）の扱い、和欧間のアキ、禁則処理を定めています。「約物全角・行末半角」で組むと、行末の読点は半角になります。";
+    let g = FrameGrid { size: 10.0, line_aki: 5.0, line_align: Some(Align::LeftJustified), ..Default::default() };
+    assert_eq!(g.mojikumi, "lineEndHalf");
+    let (d, sid, _) = grid_doc(text, g, 20, 7, false);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ls: Vec<&Line> = cs.frames[0].lines.iter().collect();
+    let line = |i: usize| text[ls[i].range.clone()].trim_end().to_string();
+    // (The test font's Western glyphs are an em wide, so the lines differ from a real face's.)
+    assert_eq!(line(0), "「日本語組版処理の要件」は、日本語の組版で");
+    assert_eq!(line(3), "や句読点（、。）の扱い、和欧間のアキ、禁則");
+    assert_eq!(line(4), "処理を定めています。「約物全角・行末半角」");
+    let x = |l: &Line, ch: char| l.glyphs.iter().find(|g| g.len > 0 && text[g.byte..].starts_with(ch)).map(|g| g.x).unwrap();
+    // The paragraph's first bracket is flush: 日 starts half an em in.
+    assert!((x(ls[0], '日') - 5.0).abs() < 1e-6, "{}", x(ls[0], '日'));
+    // Every justified line ends at the grid's edge (a closing mark is half-width there).
+    for l in &ls[..5] {
+        let last = l.glyphs.iter().rev().find(|g| g.len > 0).unwrap();
+        let w = if text[last.byte..].starts_with('」') { 5.0 } else { 10.0 };
+        assert!((last.x + w - 200.0).abs() < 1e-6, "{}", last.x);
+    }
+    // （、。）closes up to three ems: や句読点 four cells, the group, then の at cell 7.
+    assert!((x(ls[3], 'の') - 70.0).abs() < 1e-6, "{}", x(ls[3], 'の'));
+    // The full stop keeps its half em before 「, whatever the line takes in.
+    let l = ls[4];
+    let (stop, open) = (x(l, '。'), x(l, '「'));
+    assert!((open - stop - 5.0).abs() < 1e-6, "full stop {stop}, bracket {open}");
+}
+
+/// A line that fits at its natural widths isn't compressed just to take one more character in:
+/// it ends at the break it reached and is spread out (kinsoku-forced push-in is another matter,
+/// see `justified_japanese_pushes_in_before_pushing_out`).
+#[test]
+fn a_line_that_fits_is_not_compressed_to_take_another_character() {
+    // 20 characters are 19.5 em in a 20 em measure; the next kanji would fit with 」 and 、
+    // squeezed by a quarter em each.
+    let text = format!("「漢」漢、{}", "漢".repeat(55));
+    let (d, sid, _) = japanese(&text, Rect::new(0.0, 0.0, 200.0, 400.0), ParaAttrs { align: Some(Align::LeftJustified), ..with_set("lineEndHalf") });
+    let ls = lines(&d, sid);
+    assert_eq!(text[ls[0].range.clone()].chars().count(), 20, "{:?}", &text[ls[0].range.clone()]);
+    assert!((ls[0].end_x - ls[0].x1).abs() < 0.6, "ends at {}", ls[0].end_x);
+    assert_eq!(text[ls[1].range.clone()].chars().count(), 20);
 }

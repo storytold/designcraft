@@ -49,13 +49,28 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | CJK fonts | Japanese faces (Shippori Mincho first) from the optional craft-fonts build input, in the font menus for users to apply; fallback by language (with fallback fonts on) (Japanese: the craft-fonts faces, then system fonts; Simplified and Traditional Chinese, Korean: system fonts); document fonts: the fonts of a `Document Fonts` folder beside an opened file belong to that document (composition, export, font menus), ahead of installed fonts of the same name, and are forgotten when it closes; Package copies every font file that draws text, fallback fonts included (licence permitting). Font files stay in memory for the session (reopening a document reuses them) and aren't read on the web |
 | Everything else below | missing |
 
-Justified Japanese set solid (no mojikumi set, the frame-grid default) keeps full-width
+New frame grids use the `lineEndHalf` mojikumi set (`doc::DEFAULT_GRID_MOJIKUMI`): JIS X 4051
+and JLREQ's basic setting, with consecutive punctuation closed up (§3.1.4), an opening bracket
+flush at a line and paragraph start (§3.1.5 ①, JIS X 4051's method), a quarter em between
+Japanese and Western text and half-width marks at the line end. A grid's `mojikumi` is always
+written to the file: missing reads as the default set, empty as none.
+
+Lines are taken in in the order of JLREQ §3.8.3 (`jlreq::Aki::rank`): word spaces, then the
+quarter ems around middle dots, then the half ems of brackets and commas, then wa-ō aki. A full
+stop's half em is never used inside a line, also before an opening bracket.
+
+Push-in is the first choice where kinsoku forbids the natural break (§3.8.2). A line that fits at
+its natural widths and may end there is not compressed just to take one more Japanese character
+in (`breaker::UNFORCED_PUSH_IN`); it is spread out instead, as InDesign is observed to do, unless
+that would open it up a lot.
+
+Justified Japanese set solid (no mojikumi set) keeps full-width
 punctuation in place but lets its blanks compress (`jlreq::SOLID`, no collapsing, no wa-ō aki),
-so a line one character over takes it in (push-in) instead of pushing it out and spreading the
-line; inter-character expansion has a small nominal range (1/32 em) so push-in wins whenever it
-fits, and stretch past the ranges is shared by word spaces and Japanese gaps alike.
-Justified Japanese always has JLREQ §3.8.2 inter-character expansion (an eighth of an em per gap
-where a line may break), set solid or with a mojikumi set; without it every inexact line was
+so a line one character over that kinsoku won't let end takes it in (push-in) instead of pushing
+it out and spreading the line; inter-character expansion has a small nominal range (1/32 em), and
+stretch past the ranges is shared by word spaces and Japanese gaps alike.
+Justified Japanese always has JLREQ §3.8.2 inter-character expansion where a line may break, set
+solid or with a mojikumi set; without it every inexact line was
 equally bad and the composer could strand a two-character first line.
 
 ## Architecture
@@ -163,8 +178,8 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
   the column start; a line whose em box is taller than a cell takes as many whole rows as it
   needs (*gyōdori*), placed by the grid alignment (em-box top/centre/bottom, ICF top/bottom,
   Roman baseline, none). Space before/after rounds up to rows. Overset follows the rows. Text in
-  the grid uses the grid's mojikumi set unless its paragraph has one (default: solid, so
-  punctuation takes whole cells), and the grid's line alignment when set.
+  the grid uses the grid's mojikumi set unless its paragraph has one (default: `lineEndHalf`; none sets it solid,
+  punctuation taking whole cells), and the grid's line alignment when set.
 - Commands: `frame.create {grid}`, `object.frameGridOptions`, `object.frameGridInfo`,
   `object.frameType`, `type.applyGridFormat`, `document.frameGridDefaults`; tools
   `horizontalGrid` (Y) and `verticalGrid` (Q); Object › Frame Grid Options… (⌘B on a frame grid),
