@@ -164,3 +164,18 @@ fn next_id_near_the_top_is_rejected() {
     d.next_id = crate::MAX_NEXT_ID;
     d.check().unwrap();
 }
+
+/// A placed PDF saved before its crop choice was stored loads with the crop box (the whole page),
+/// and that default isn't written out.
+#[test]
+fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
+    let a: Asset = serde_json::from_str(r#"{"id": 7, "name": "a.pdf", "mime": "application/pdf", "page": 1}"#).unwrap();
+    assert_eq!((a.pdf_crop, a.pdf_box, a.shown_box()), (PdfCrop::Crop, None, None));
+    let json = serde_json::to_string(&a).unwrap();
+    assert!(!json.contains("pdfCrop") && !json.contains("pdfBox"), "{json}");
+    let trim = Asset { pdf_crop: PdfCrop::Trim, pdf_box: Some([0.1, 0.1, 0.9, 0.9]), ..a };
+    let back: Asset = serde_json::from_str(&serde_json::to_string(&trim).unwrap()).unwrap();
+    assert_eq!((back.pdf_crop, back.shown_box()), (PdfCrop::Trim, Some([0.1, 0.1, 0.9, 0.9])));
+    // A box with no area shows the whole page.
+    assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
+}

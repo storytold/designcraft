@@ -437,6 +437,20 @@ mod tests {
         assert!(!db.has_family("DC Test Suffix"));
     }
 
+    /// IDML files from InDesign can name a family with its `$ID/` prefix (`$ID/Arial`).
+    #[test]
+    fn an_indesign_id_prefix_names_the_plain_family() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let prefixed = format!("$ID/{DEFAULT_FAMILY}");
+        assert_eq!(db.face(&prefixed, "Bold").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&prefixed));
+        assert_eq!(db.styles(&prefixed), db.styles(DEFAULT_FAMILY));
+        assert!(db.has_family(&format!("$ID/{DEFAULT_FAMILY} (OTF)")));
+        assert!(!db.has_family("$ID/"));
+        assert!(!db.has_family("$ID/DC No Such Family"));
+    }
+
     #[test]
     fn outlines_and_metrics() {
         let db = FontDb::global();

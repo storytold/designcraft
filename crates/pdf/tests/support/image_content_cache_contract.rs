@@ -23,7 +23,7 @@ fn place(d: &mut Document, data: Vec<u8>, x: f64) {
 
 fn place_named(d: &mut Document, data: Vec<u8>, x: f64, name: &str, mime: &str, page: u32) {
     let aid = AssetId(d.alloc());
-    d.assets.insert(aid, Arc::new(Asset { id: aid, name: name.into(), mime: mime.into(), link: None, data: Arc::new(data), pixels: None, page }));
+    d.assets.insert(aid, Arc::new(Asset { id: aid, name: name.into(), mime: mime.into(), data: Arc::new(data), page, ..Default::default() }));
     let id = ItemId(d.alloc());
     let mut item = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(x, 36.0, x + 20.0, 56.0)));
     item.stroke.weight = 0.0;

@@ -183,13 +183,12 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
             d.assets.insert(
                 id,
                 Arc::new(Asset {
-                    page: 0,
                     id,
                     name: format!("art-{k}.png"),
                     mime: "image/png".into(),
-                    link: None,
                     data: Arc::new(data),
                     pixels: Some((aw, ah)),
+                    ..Default::default()
                 }),
             );
             id

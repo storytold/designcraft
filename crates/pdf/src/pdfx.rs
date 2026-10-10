@@ -468,7 +468,7 @@ mod tests {
         let asset = AssetId(d.alloc());
         let mime = designcraft_images::mime(&data).into();
         let pixels = designcraft_images::pixel_size(&data);
-        d.assets.insert(asset, Arc::new(Asset { id: asset, name: name.into(), mime, link: None, data: data.into(), pixels, page: 0 }));
+        d.assets.insert(asset, Arc::new(Asset { id: asset, name: name.into(), mime, data: data.into(), pixels, ..Default::default() }));
         let lid = d.default_layer();
         let id = ItemId(d.alloc());
         let r = Rect::new(at.0, at.1, at.0 + 100.0, at.1 + 50.0);

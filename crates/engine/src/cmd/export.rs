@@ -249,13 +249,12 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
             out.assets.insert(
                 aid,
                 std::sync::Arc::new(Asset {
-                    page: 0,
                     id: aid,
                     name: format!("flattened-{}.png", aid.0),
                     mime: "image/png".into(),
-                    link: None,
                     data: std::sync::Arc::new(img.to_png()),
                     pixels: Some((w, h)),
+                    ..Default::default()
                 }),
             );
             let mut it = Item::new(ItemId(out.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
@@ -415,13 +414,12 @@ fn rasterize_where(
         out.assets.insert(
             aid,
             std::sync::Arc::new(Asset {
-                page: 0,
                 id: aid,
                 name: format!("effects-{}.png", id.0),
                 mime: "image/png".into(),
-                link: None,
                 data: std::sync::Arc::new(img.to_png()),
                 pixels: Some((w, h)),
+                ..Default::default()
             }),
         );
         let mut img_item = Item::new(ItemId(out.alloc()), it.layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(reach));
@@ -461,20 +459,23 @@ fn rasterize_layered(d: &designcraft_doc::Document) -> (Option<designcraft_doc::
         if !designcraft_render::is_pdf(&a.data) {
             continue;
         }
-        let side = (g.size.0.max(g.size.1) * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
-        let Some(png) = designcraft_render::pdf_page_png(&a.data, a.page as usize, side, &hidden) else { continue };
+        // The whole page at 300 ppi (the graphic may show only a box of it).
+        let shown = a.shown_box();
+        let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let page_side = (g.size.0 / (r - l)).max(g.size.1 / (b - t));
+        let side = (page_side * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
+        let Some(png) = designcraft_render::pdf_page_png(&a.data, a.page as usize, side, &hidden, shown) else { continue };
         let px = designcraft_render::image_size(&png);
         let aid = designcraft_doc::AssetId(out.alloc());
         out.assets.insert(
             aid,
             std::sync::Arc::new(designcraft_doc::Asset {
-                page: 0,
                 id: aid,
                 name: format!("{}.png", a.name),
                 mime: "image/png".into(),
-                link: None,
                 data: std::sync::Arc::new(png),
                 pixels: px,
+                ..Default::default()
             }),
         );
         if let Some(designcraft_doc::Content::Graphic(gg)) = out.item_mut(id).map(|it| &mut it.content) {

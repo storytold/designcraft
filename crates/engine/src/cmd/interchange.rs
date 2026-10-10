@@ -49,7 +49,8 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
             None
         }
     };
-    let document = designcraft_idml::import_idml_with(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut document = designcraft_idml::import_idml_with(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
+    resolve_pdf_crops(&mut document);
     #[cfg(not(target_arch = "wasm32"))]
     let document = {
         let mut document = document;
@@ -63,6 +64,52 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
         document
     };
     Ok(document)
+}
+
+/// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,
+/// which the IDML reader can't (it doesn't parse PDFs). The box spans the graphic's
+/// `GraphicBounds`; a graphic without bounds takes the box's size.
+pub(crate) fn resolve_pdf_crops(d: &mut Document) {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use designcraft_doc::{AssetId, Content, Item, PdfCrop};
+    let mut sizes: HashMap<AssetId, (f64, f64)> = HashMap::new();
+    for a in d.assets.values_mut() {
+        if a.pdf_crop == PdfCrop::Crop || a.pdf_box.is_some() {
+            continue;
+        }
+        let a = Arc::make_mut(a);
+        if let Some(size) = super::file::crop_pdf(a) {
+            sizes.insert(a.id, size);
+        }
+    }
+    let no_size = |i: &Item| matches!(&i.content, Content::Graphic(g) if !(g.size.0 > 0.0 && g.size.1 > 0.0) && sizes.contains_key(&g.asset));
+    fn fix(it: &mut Arc<Item>, sizes: &HashMap<AssetId, (f64, f64)>, no_size: &dyn Fn(&Item) -> bool) {
+        let mut any = false;
+        it.walk(&mut |i| any |= no_size(i));
+        if !any {
+            return;
+        }
+        let it = Arc::make_mut(it);
+        if let Content::Graphic(g) = &mut it.content
+            && let Some(size) = sizes.get(&g.asset)
+            && !(g.size.0 > 0.0 && g.size.1 > 0.0)
+        {
+            g.size = *size;
+        }
+        for k in it.children_mut().into_iter().flatten() {
+            fix(k, sizes, no_size);
+        }
+    }
+    if sizes.is_empty() {
+        return;
+    }
+    for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
+        for it in &mut Arc::make_mut(sp).items {
+            fix(it, &sizes, &no_size);
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

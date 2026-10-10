@@ -251,3 +251,109 @@ fn named_lists_round_trip_through_idml() {
     assert_eq!(st.paras[0].para.list_name.as_deref(), Some("Steps"));
     assert_eq!(st.paras[0].para.start_at, Some(Some(5)));
 }
+
+/// IDML says which page of a placed PDF shows and which box its graphic spans, so InDesign opens
+/// it at the same size and position; importing it back gives the same page, crop and geometry.
+#[test]
+fn placed_pdf_page_and_crop_round_trip_through_idml() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2})).unwrap();
+    s.execute("layout.documentSetup", &json!({"bleed": 9})).unwrap();
+    let b64 = s.execute("file.exportPdf", &json!({"bleed": true})).unwrap()["base64"].as_str().unwrap().to_string();
+    let mut t = Session::new();
+    t.execute("file.new", &json!({})).unwrap();
+    // Page 2, cropped to its trim box: the frame is smaller than the page with its bleed.
+    let place = json!({"base64": b64, "name": "a.pdf", "pdfPage": 2, "pdfCrop": "trim", "width": 315, "x": 20, "y": 30});
+    let r = t.execute("file.place", &place).unwrap();
+    let d = t.doc().unwrap().doc.clone();
+    let item = d.item(ItemId(r["id"].as_u64().unwrap())).unwrap();
+    let (bounds, g) = (item.bounds(), item.graphic().unwrap().clone());
+    assert_eq!(d.assets[&g.asset].page, 1);
+    assert_eq!(d.assets[&g.asset].pdf_crop, designcraft_doc::PdfCrop::Trim);
+
+    let bytes = designcraft_idml::export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut spreads = String::new();
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        if f.name().starts_with("Spreads/") {
+            std::io::Read::read_to_string(&mut f, &mut spreads).unwrap();
+        }
+    }
+    let attr = spreads.split("<PDFAttribute ").nth(1).and_then(|a| a.split("/>").next()).expect("a PDFAttribute");
+    assert!(attr.contains(r#"PageNumber="2""#) && attr.contains(r#"PDFCrop="CropTrim""#), "{attr}");
+    assert!(spreads.contains(r#"<GraphicBounds Left="0" Top="0" Right="612" Bottom="792"/>"#), "the trim box");
+
+    let back = crate::cmd::interchange::import(&bytes, None).unwrap();
+    let bi = back.spreads.iter().flat_map(|sp| sp.items.iter()).find(|i| i.graphic().is_some()).unwrap();
+    let bg = bi.graphic().unwrap();
+    let ba = &back.assets[&bg.asset];
+    assert_eq!((ba.page, ba.pdf_crop), (1, designcraft_doc::PdfCrop::Trim));
+    let (want, got) = (d.assets[&g.asset].shown_box().unwrap(), ba.shown_box().expect("the trim box found on the page"));
+    assert!(want.iter().zip(got).all(|(a, b)| (a - b).abs() < 1e-9), "{got:?} vs {want:?}");
+    let bb = bi.bounds();
+    assert!([bb.x0 - bounds.x0, bb.y0 - bounds.y0, bb.x1 - bounds.x1, bb.y1 - bounds.y1].iter().all(|v| v.abs() < 1e-3), "{bb:?} vs {bounds:?}");
+    assert!((bg.size.0 - g.size.0).abs() < 1e-3 && (bg.size.1 - g.size.1).abs() < 1e-3);
+    let (a, b) = ((bi.xf * bg.xf).as_coeffs(), (item.xf * g.xf).as_coeffs());
+    assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3), "{a:?} vs {b:?}");
+
+    // A page the PDF doesn't have imports, and the PDF export leaves it out with a warning.
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        let mut body = String::new();
+        std::io::Read::read_to_string(&mut f, &mut body).unwrap();
+        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut out, body.replace(r#"PageNumber="2""#, r#"PageNumber="4294967295""#).as_bytes()).unwrap();
+    }
+    let hostile = designcraft_idml::import_idml(&out.finish().unwrap().into_inner()).unwrap();
+    assert_eq!(hostile.assets.values().map(|a| a.page).collect::<Vec<_>>(), [u32::MAX - 1]);
+    t.edit(|doc, _| {
+        *doc = hostile;
+        Ok(())
+    })
+    .unwrap();
+    let r = t.execute("file.exportPdf", &json!({})).unwrap();
+    assert!(r["warnings"].to_string().contains("has no page 4294967295"), "{r}");
+}
+
+/// An IDML placed PDF cropped to its media box, without `GraphicBounds`: the graphic takes the
+/// media box (the page with its 9 pt bleed).
+#[test]
+fn idml_placed_pdf_cropped_to_its_media_box_gets_media_box_bounds() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("layout.documentSetup", &json!({"bleed": 9})).unwrap();
+    let b64 = s.execute("file.exportPdf", &json!({"bleed": true})).unwrap()["base64"].as_str().unwrap().to_string();
+    let mut t = Session::new();
+    t.execute("file.new", &json!({})).unwrap();
+    t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": "trim", "width": 630, "x": 0, "y": 0})).unwrap();
+    let bytes = designcraft_idml::export_idml(&t.doc().unwrap().doc);
+
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut edited = false;
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut body).unwrap();
+        if f.name().starts_with("Spreads/") {
+            let text = String::from_utf8(body).unwrap().replace(r#"PDFCrop="CropTrim""#, r#"PDFCrop="CropMedia""#);
+            let start = text.find("<GraphicBounds ").unwrap();
+            let end = start + text[start..].find("/>").unwrap() + 2;
+            body = format!("{}{}", &text[..start], &text[end..]).into_bytes();
+            edited = true;
+        }
+        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut out, &body).unwrap();
+    }
+    assert!(edited);
+    let back = crate::cmd::interchange::import(&out.finish().unwrap().into_inner(), None).unwrap();
+    let g = back.spreads.iter().flat_map(|sp| sp.items.iter()).find_map(|i| i.graphic().cloned()).unwrap();
+    let a = &back.assets[&g.asset];
+    assert_eq!(a.pdf_crop, designcraft_doc::PdfCrop::Media);
+    assert!((g.size.0 - 630.0).abs() < 1e-3 && (g.size.1 - 810.0).abs() < 1e-3, "{:?}", g.size);
+    let b = a.shown_box().unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    assert!(b.iter().zip([0.0, 0.0, 1.0, 1.0]).all(|(x, y)| (x - y).abs() < 1e-6), "{b:?}");
+}

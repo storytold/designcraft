@@ -291,7 +291,7 @@ impl<'r> Importer<'r> {
                 .map(|c| designcraft_doc::cjk::CompositeFontEntry {
                     name: c.get("Name").unwrap_or("").into(),
                     characters: c.get("CustomCharacters").unwrap_or("").into(),
-                    family: c.prop("AppliedFont").unwrap_or_default(),
+                    family: c.prop("AppliedFont").as_deref().and_then(names::font_family_in).unwrap_or_default(),
                     style: c.get("FontStyle").unwrap_or("Regular").trim_start_matches("$ID/").into(),
                     relative_size: c.num("RelativeSize").unwrap_or(100.0) / 100.0,
                     horizontal_scale: c.num("HorizontalScale").unwrap_or(100.0) / 100.0,
@@ -1064,15 +1064,7 @@ impl<'r> Importer<'r> {
     }
 
     fn char_attrs(&mut self, e: &El) -> CharAttrs {
-        let mut a = CharAttrs::default();
-        if let Some(f) = e.prop("AppliedFont") {
-            let f = f.trim();
-            // Some writers append the style after a tab.
-            let fam = f.split('\t').next().unwrap_or(f);
-            if !fam.is_empty() && fam != "$ID/" {
-                a.font_family = Some(fam.to_string());
-            }
-        }
+        let mut a = CharAttrs { font_family: e.prop("AppliedFont").as_deref().and_then(names::font_family_in), ..Default::default() };
         a.font_style = e.prop("FontStyle");
         a.size = e.num("PointSize");
         a.leading = e.prop("Leading").and_then(|l| names::leading_in(l.trim()));
@@ -2228,7 +2220,11 @@ impl<'r> Importer<'r> {
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
         let id = AssetId(self.alloc());
         let link_path = uri.filter(|p| p.contains('/') || p.contains('\\'));
-        self.assets.insert(id, Arc::new(Asset { page: 0, id, name, mime, link: link_path, data: Arc::new(data), pixels }));
+        let page = pdf_page_in(g);
+        // Where the box sits on the page needs the PDF parsed: the engine finds it after import.
+        let pdf_crop = g.find("PDFAttribute").and_then(|a| a.get("PDFCrop")).map_or(designcraft_doc::PdfCrop::Crop, names::pdf_crop_in);
+        self.assets
+            .insert(id, Arc::new(Asset { page, id, name, mime, link: link_path, data: Arc::new(data), pixels, pdf_crop, ..Default::default() }));
         Content::Graphic(designcraft_doc::Graphic {
             asset: id,
             size,
@@ -2537,6 +2533,11 @@ fn path_of(pg: &El) -> PathData {
         }
     }
     PathData::new(subs)
+}
+
+/// The page a placed PDF shows (0-based), from its `PDFAttribute` (`PageNumber` is 1-based).
+fn pdf_page_in(g: &El) -> u32 {
+    g.find("PDFAttribute").and_then(|a| a.get("PageNumber")).and_then(|v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.saturating_sub(1))
 }
 
 /// IDML link URI → file system path (`file:/a%20b` → `/a b`, `file:///C:/x` → `C:/x`).

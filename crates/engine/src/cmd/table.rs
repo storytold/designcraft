@@ -1407,13 +1407,13 @@ fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         d.assets.insert(
             aid,
             std::sync::Arc::new(designcraft_doc::Asset {
-                page: 0,
                 id: aid,
                 name,
                 mime,
                 link,
                 data: std::sync::Arc::new(bytes),
                 pixels: Some((pw, ph)),
+                ..Default::default()
             }),
         );
         let st = d.story_mut(g.story).ok_or_else(|| bad(ID, "no story"))?;

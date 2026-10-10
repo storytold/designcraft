@@ -576,6 +576,26 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Trim", ["Trim", "Trim", "Trim", "Trim", "裁切"]),
+    (
+        "Bounding Box (Visible Layers Only)",
+        [
+            "Begrenzungsrahmen (nur sichtbare Ebenen)",
+            "Cadre de sélection (calques visibles uniquement)",
+            "Cuadro delimitador (solo capas visibles)",
+            "バウンディングボックス（表示レイヤーのみ）",
+            "边界框（仅可见图层）",
+        ],
+    ),
+    (
+        "Bounding Box (All Layers)",
+        [
+            "Begrenzungsrahmen (alle Ebenen)",
+            "Cadre de sélection (tous les calques)",
+            "Cuadro delimitador (todas las capas)",
+            "バウンディングボックス（すべてのレイヤー）",
+            "边界框（所有图层）",
+        ],
+    ),
     ("Type:", ["Type:", "Type:", "Type:", "Type:", "类型："]),
     ("Typical", ["Typical", "Typical", "Typical", "Typical", "典型"]),
     ("UI Size:", ["UI Size:", "UI Size:", "UI Size:", "UI Size:", "UI 大小："]),

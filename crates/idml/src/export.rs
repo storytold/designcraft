@@ -1763,7 +1763,9 @@ impl<'a> Ex<'a> {
     fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
         let mut el = El::new(if is_pdf { "PDF" } else { "Image" }).attr("Self", self.fresh());
-        if let Some((pw, ph)) = asset.pixels
+        // A PDF is vector: its page size in `pixels` isn't a resolution, and a cropped graphic
+        // spans less than the page.
+        if let Some((pw, ph)) = asset.pixels.filter(|_| !is_pdf)
             && g.size.0 > 0.0
             && g.size.1 > 0.0
         {
@@ -1802,6 +1804,17 @@ impl<'a> Ex<'a> {
                 .attr("ImportPolicy", "NoAutoImport")
                 .attr("ExportPolicy", "NoAutoExport"),
         );
+        if is_pdf {
+            // `GraphicBounds` span the chosen box, as graphic space does. Without `PDFAttribute`
+            // the page would be cropped to its visible content, which changes the graphic's size
+            // and so its scale and position.
+            el.push(
+                El::new("PDFAttribute")
+                    .attr("PageNumber", asset.page.saturating_add(1))
+                    .attr("PDFCrop", names::pdf_crop_out(asset.pdf_crop))
+                    .attr("TransparentBackground", "true"),
+            );
+        }
         el
     }
 

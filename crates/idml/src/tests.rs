@@ -838,7 +838,7 @@ fn cjk_composite_fonts_and_custom_kinsoku_are_document_resources() {
     let map = DESIGNMAP.replace("</Document>", r#"
       <KinsokuTable Self="KinsokuTable/Test" Name="Test" CantBeginLineChars="乙" CantEndLineChars="甲" CantBeSeparatedChars="—" HangingPunctuationChars="。"/>
       <CompositeFont Self="CompositeFont/Mixed" Name="Mixed"><CompositeFontEntry Self="cf1" Name="Base" FontStyle="Regular"><Properties><AppliedFont type="string">Source Serif 4</AppliedFont></Properties></CompositeFontEntry>
-      <CompositeFontEntry Self="cf2" Name="Digits" CustomCharacters="0123456789" FontStyle="Regular" RelativeSize="80" BaselineShift="10"><Properties><AppliedFont type="string">Source Sans 3</AppliedFont></Properties></CompositeFontEntry></CompositeFont>
+      <CompositeFontEntry Self="cf2" Name="Digits" CustomCharacters="0123456789" FontStyle="Regular" RelativeSize="80" BaselineShift="10"><Properties><AppliedFont type="string">$ID/Source Sans 3</AppliedFont></Properties></CompositeFontEntry></CompositeFont>
     </Document>"#);
     let story = STORY.replace("<ParagraphStyleRange ", "<ParagraphStyleRange KinsokuSet=\"KinsokuTable/Test\" ");
     let bytes = zip_files(&[
@@ -1398,4 +1398,42 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     let d = import_idml(&bytes).unwrap();
     check(&d);
     check(&import_idml(&export_idml(&d)).unwrap());
+}
+
+/// InDesign can write `AppliedFont` with its `$ID/` prefix (`$ID/Source Serif 4`). The text is
+/// set in that family instead of counting as a missing font drawn in the fallback.
+#[test]
+fn applied_font_with_an_id_prefix_names_the_family() {
+    let styles = STYLES.replace(">Source Serif 4</AppliedFont>", ">$ID/Source Serif 4</AppliedFont>");
+    let story = STORY.replace(
+        r#"<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/Strong" PointSize="14">"#,
+        r#"<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/Strong" PointSize="14"><Properties><AppliedFont type="string">$ID/Source Serif 4</AppliedFont></Properties>"#,
+    );
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", &story),
+    ]);
+    let d = import_idml_with(&bytes, &|_| None).unwrap();
+    let fonts: Vec<&str> = d.styles.paragraph.iter().filter_map(|s| s.chars.font_family.as_deref()).collect();
+    assert!(!fonts.is_empty() && fonts.iter().all(|f| *f == "Source Serif 4"), "{fonts:?}");
+    let (sid, story) = d.stories.iter().next().unwrap();
+    let bold = story.runs().find(|(r, _)| story.text[r.clone()].starts_with("bold")).unwrap().1;
+    assert_eq!(bold.over.font_family.as_deref(), Some("Source Serif 4"));
+    // The bundled family draws the text (an unknown family would fall back to Source Sans 3).
+    let cs = designcraft_compose::compose_story(&d, *sid, &Default::default());
+    let first_para = story.text.find('\n').unwrap();
+    let families: Vec<&str> = cs
+        .frames
+        .iter()
+        .flat_map(|f| &f.lines)
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.visible && g.len > 0 && g.byte < first_para)
+        .map(|g| g.face.get().family.as_str())
+        .collect();
+    assert!(!families.is_empty() && families.iter().all(|f| *f == "Source Serif 4"), "{families:?}");
 }

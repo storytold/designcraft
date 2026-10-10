@@ -15,7 +15,7 @@ use crate::{EngineError, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, uses: [{id, page, ppi}]}]", has_doc, |s, _| {
+        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}]", has_doc, |s, _| {
             Ok(Value::Array(list(&s.doc()?.doc)))
         }),
         cmd!(
@@ -136,7 +136,8 @@ fn list(d: &Document) -> Vec<Value> {
                     json!({"id": id.0, "page": page, "ppi": ppi})
                 })
                 .collect();
-            json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": status(a), "pixels": a.pixels, "uses": uses})
+            let pdf_crop = (a.mime == "application/pdf").then(|| a.pdf_crop.name());
+            json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": status(a), "pixels": a.pixels, "pdfCrop": pdf_crop, "uses": uses})
         })
         .collect()
 }
@@ -166,6 +167,8 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         a.pixels = Some(px);
         a.name = name.clone();
         a.link = Some(path.clone());
+        // A placed PDF keeps its crop choice; its box is found on the new file.
+        super::file::crop_pdf(a);
         Ok(json!({"name": name}))
     })
 }
@@ -229,6 +232,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
                 let a = Arc::make_mut(a);
                 a.data = Arc::new(bytes.clone());
                 a.pixels = Some(*px);
+                super::file::crop_pdf(a);
             }
         }
         Ok(json!({"updated": n}))

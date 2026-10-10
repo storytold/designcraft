@@ -448,8 +448,8 @@ pub(crate) struct Exporter<'a> {
     images_by_content: ImageContentCache,
     #[cfg(test)]
     image_conversions: usize,
-    /// Placed PDFs (embedded as vector pages).
-    pdfs: HashMap<AssetId, Option<krilla::pdf::PdfDocument>>,
+    /// Placed PDFs (embedded as vector pages) and their page counts.
+    pdfs: HashMap<AssetId, Option<(krilla::pdf::PdfDocument, usize)>>,
     /// The PDF version written; placed PDFs must not be newer.
     version: PdfVersion,
     /// Placed PDFs too new to embed in this version ("name is PDF 2.0"): the export fails.
@@ -1175,7 +1175,8 @@ impl Exporter<'_> {
     /// VectorCraft and most tools write 1.7. PDF 1.7 changed nothing in how a page draws, so a 1.7
     /// file goes in as 1.6 (its header relabelled, as `qpdf --force-version=1.6` does). A newer
     /// file is left out and the export fails naming it ([`Exporter::check_placed_versions`]).
-    fn placed_pdf(&mut self, asset: &designcraft_doc::Asset) -> Option<krilla::pdf::PdfDocument> {
+    /// Returns the document with its page count.
+    fn placed_pdf(&mut self, asset: &designcraft_doc::Asset) -> Option<(krilla::pdf::PdfDocument, usize)> {
         use hayro_syntax::PdfVersion as V;
         let Ok(pdf) = krilla::pdf::Pdf::new(asset.data.clone()) else {
             self.warn(format!("{}: can't read the placed PDF", asset.name));
@@ -1190,7 +1191,8 @@ impl Exporter<'_> {
         };
         let have = pdf.version();
         if have <= max {
-            return Some(krilla::pdf::PdfDocument::new(Arc::new(pdf)));
+            let pages = pdf.pages().len();
+            return Some((krilla::pdf::PdfDocument::new(Arc::new(pdf)), pages));
         }
         if have == V::Pdf17
             && max == V::Pdf16
@@ -1199,7 +1201,8 @@ impl Exporter<'_> {
             && pdf.version() <= max
         {
             self.warn(format!("{}: a PDF 1.7 placed in a PDF 1.6 file, embedded as PDF 1.6", asset.name));
-            return Some(krilla::pdf::PdfDocument::new(Arc::new(pdf)));
+            let pages = pdf.pages().len();
+            return Some((krilla::pdf::PdfDocument::new(Arc::new(pdf)), pages));
         }
         let v = match have {
             V::Pdf17 => "PDF 1.7",
@@ -1305,7 +1308,11 @@ impl Exporter<'_> {
         if let Some(asset) = doc.assets.get(&g.asset)
             && asset.data.starts_with(b"%PDF")
         {
-            let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
+            // Cropped to a box: the whole page, placed so that the box spans graphic space.
+            let shown = asset.shown_box();
+            let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+            let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
+            let Some(size) = Size::from_wh(page_w.max(1e-3) as f32, page_h.max(1e-3) as f32) else { return };
             let placed = match self.pdfs.get(&g.asset) {
                 Some(p) => p.clone(),
                 None => {
@@ -1314,10 +1321,26 @@ impl Exporter<'_> {
                     p
                 }
             };
-            if let Some(placed) = placed {
-                s.push_transform(&tf(g.xf));
-                s.draw_pdf_page(&placed, size, asset.page as usize);
-                s.pop();
+            match placed {
+                // krilla would fail the whole export at the end on a page the PDF doesn't have.
+                Some((_, pages)) if asset.page as usize >= pages => {
+                    self.warn(format!("{}: the placed PDF has no page {}", asset.name, u64::from(asset.page) + 1));
+                }
+                Some((placed, _)) => {
+                    s.push_transform(&tf(g.xf));
+                    let clip = shown.and_then(|_| to_path(&Rect::new(0.0, 0.0, g.size.0, g.size.1).to_path(0.1)));
+                    if let Some(clip) = &clip {
+                        s.push_clip_path(clip, &FillRule::NonZero);
+                    }
+                    s.push_transform(&tf(Affine::translate((-l * page_w, -t * page_h))));
+                    s.draw_pdf_page(&placed, size, asset.page as usize);
+                    s.pop();
+                    if clip.is_some() {
+                        s.pop();
+                    }
+                    s.pop();
+                }
+                None => {}
             }
             return;
         }
@@ -1551,10 +1574,7 @@ mod image_content_cache_tests {
     }
     fn asset(doc: &mut Document, bytes: Vec<u8>, name: &str) -> AssetId {
         let id = AssetId(doc.alloc());
-        doc.assets.insert(
-            id,
-            Arc::new(Asset { id, name: name.into(), mime: "image/png".into(), link: None, data: Arc::new(bytes), pixels: None, page: 0 }),
-        );
+        doc.assets.insert(id, Arc::new(Asset { id, name: name.into(), mime: "image/png".into(), data: Arc::new(bytes), ..Default::default() }));
         id
     }
     fn exporter<'a>(doc: &'a Document, cache: &'a Cache, opts: &'a PdfOptions) -> Exporter<'a> {

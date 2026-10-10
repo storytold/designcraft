@@ -197,7 +197,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy, an optional PDF and a report → {dir, files, report}",
+            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
             has_doc,
             package
         ),
@@ -394,7 +394,9 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         .collect();
     if p.get("idml").and_then(Value::as_bool).unwrap_or(true) {
         let path = package_output_path(&dir, &title, "idml")?;
-        root.write(&path, &designcraft_idml::export_idml(&packed))?;
+        // The images are in Links/ beside it: link them there, without embedded copies.
+        let opts = designcraft_idml::ExportOptions { embed_images: false };
+        root.write(&path, &designcraft_idml::export_idml_with(&packed, &opts))?;
         files.push(path);
     }
     if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
@@ -464,11 +466,42 @@ mod tests {
             let mut opened = Session::new();
             opened.execute(command, &json!({"path": moved.join(format!("OwnedPackage.{extension}")).to_string_lossy()})).unwrap();
             let asset = opened.doc().unwrap().doc.assets.values().next().unwrap();
-            assert_eq!(*asset.data, png, "{extension}: preserve embedded pixels");
+            assert_eq!(*asset.data, png, "{extension}: the packaged pixels");
             assert_eq!(asset.link.as_deref(), expected.to_str(), "{extension}: use the relocated Links file");
             let links = opened.execute("links.list", &json!({})).unwrap();
             assert_eq!(links[0]["status"], "ok", "{extension}");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The package's IDML links its images to the files in the package's Links folder and embeds
+    /// no copies of them.
+    #[test]
+    fn package_idml_links_the_links_folder_and_embeds_nothing() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("dc-package-idml-links-{}-{nonce}", std::process::id()));
+        let png = designcraft_render::Rendered { width: 4, height: 3, pixels: [30, 90, 180, 255].repeat(12) }.to_png();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "LinkedPackage", "width": 72, "height": 72})).unwrap();
+        s.execute("file.place", &json!({"base64": super::super::base64_encode(&png), "name": "my photo.png", "x": 5, "y": 5, "width": 16})).unwrap();
+        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": true, "pdf": false})).unwrap();
+        let idml = std::fs::read(dir.join("LinkedPackage.idml")).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(idml.as_slice())).unwrap();
+        let mut spreads = String::new();
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i).unwrap();
+            if f.name().starts_with("Spreads/") {
+                std::io::Read::read_to_string(&mut f, &mut spreads).unwrap();
+            }
+        }
+        let linked = dir.join("Links").join("my photo.png");
+        let uri = format!("file:{}", linked.to_string_lossy().replace(' ', "%20"));
+        assert!(spreads.contains(&format!(r#"LinkResourceURI="{uri}""#)), "{spreads}");
+        assert!(!spreads.contains("<Contents") && !spreads.contains(r#"StoredState="Embedded""#), "no image is embedded");
+        let back = designcraft_idml::import_idml_with(&idml, &|_| None).unwrap();
+        let asset = back.assets.values().next().unwrap();
+        assert!(asset.data.is_empty(), "no image is embedded");
+        assert_eq!(asset.link.as_deref(), linked.to_str());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

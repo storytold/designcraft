@@ -832,13 +832,12 @@ mod tests {
         d.assets.insert(
             aid,
             Arc::new(Asset {
-                page: 0,
                 id: aid,
                 name: "Cover & Notes".into(),
                 mime: "image/png; profile=screen".into(),
-                link: None,
                 data: Arc::new(vec![1]),
                 pixels: Some((1, 1)),
+                ..Default::default()
             }),
         );
         let mut item = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(36.0, 120.0, 72.0, 156.0)));

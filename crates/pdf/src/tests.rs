@@ -220,10 +220,9 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
             id: asset,
             name: "scan.tif".into(),
             mime,
-            link: None,
             data: data.into(),
             pixels: Some(px),
-            page: 0,
+            ..Default::default()
         }),
     );
     let lid = d.default_layer();

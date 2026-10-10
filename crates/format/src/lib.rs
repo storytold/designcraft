@@ -214,13 +214,12 @@ mod tests {
         d.assets.insert(
             aid,
             Arc::new(Asset {
-                page: 0,
                 id: aid,
                 name: "x.png".into(),
                 mime: "image/png".into(),
-                link: None,
                 data: Arc::new(vec![1, 2, 3, 4]),
                 pixels: Some((1, 1)),
+                ..Default::default()
             }),
         );
         let bytes = save(&d).unwrap();

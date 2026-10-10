@@ -712,6 +712,14 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
     })
 }
 
+/// `family` without what layout apps add to a family name, if it has any: InDesign's `$ID/`
+/// prefix (`$ID/Arial` → `Arial`) and the font-format suffix appended when a family is installed
+/// in several formats (`Minion Pro (OTF)` → `Minion Pro`).
+fn plain_family(family: &str) -> Option<&str> {
+    let unprefixed = family.trim_start().strip_prefix("$ID/").map(str::trim).filter(|f| !f.is_empty());
+    without_format_suffix(unprefixed.unwrap_or(family)).or(unprefixed)
+}
+
 /// `family` without the font-format suffix layout apps append when a family is installed in
 /// several formats (`Minion Pro (OTF)` → `Minion Pro`), if it has one.
 fn without_format_suffix(family: &str) -> Option<&str> {
@@ -1228,7 +1236,7 @@ impl ScopedFonts<'_> {
     /// Style names available for `family` (Regular first, then by weight).
     pub fn styles(&self, family: &str) -> Vec<String> {
         let v = self.exact_styles(family);
-        match without_format_suffix(family) {
+        match plain_family(family) {
             Some(base) if v.is_empty() => self.exact_styles(base),
             _ => v,
         }
@@ -1255,9 +1263,10 @@ impl ScopedFonts<'_> {
 
     /// Resolve a family + style to a face, falling back to the closest style of the family, then to
     /// Source Sans 3 Regular. Installed system fonts are found by name whatever ran before. A
-    /// family with a format suffix (`Minion Pro (OTF)`) that isn't found is looked up without it.
+    /// family with InDesign's `$ID/` prefix or a format suffix (`Minion Pro (OTF)`) that isn't
+    /// found is looked up without them.
     pub fn face(&self, family: &str, style: &str) -> Arc<FontFace> {
-        if let Some(f) = self.find_or_load(family, style).or_else(|| without_format_suffix(family).and_then(|base| self.find_or_load(base, style))) {
+        if let Some(f) = self.find_or_load(family, style).or_else(|| plain_family(family).and_then(|base| self.find_or_load(base, style))) {
             return f;
         }
         self.find(FALLBACK_FAMILY, style)
@@ -1278,9 +1287,9 @@ impl ScopedFonts<'_> {
     }
 
     /// Is `family` available (the document's, loaded, or installed on the system), as named or
-    /// without a format suffix (see [`ScopedFonts::face`])?
+    /// without an `$ID/` prefix or a format suffix (see [`ScopedFonts::face`])?
     pub fn has_family(&self, family: &str) -> bool {
-        self.has_exact_family(family) || without_format_suffix(family).is_some_and(|base| self.has_exact_family(base))
+        self.has_exact_family(family) || plain_family(family).is_some_and(|base| self.has_exact_family(base))
     }
 
     fn has_exact_family(&self, family: &str) -> bool {

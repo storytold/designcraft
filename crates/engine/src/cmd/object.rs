@@ -1611,6 +1611,11 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(g) = it.graphic() else { continue };
             let Some(asset) = d.assets.get(&g.asset) else { continue };
             let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
+            // A placed PDF cropped to a box: trace that box, which graphic space spans.
+            let px = match asset.shown_box() {
+                Some(frac) => designcraft_render::crop_pixmap(&px, frac).unwrap_or(px),
+                None => px,
+            };
             let (pw, ph) = (px.width() as usize, px.height() as usize);
             // A grid of at most 400 cells on the long side.
             let step = (pw.max(ph) as f64 / 400.0).max(1.0);

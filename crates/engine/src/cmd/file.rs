@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use designcraft_doc::build::{NewDocument, PRESETS};
-use designcraft_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, Selection, Shape};
+use designcraft_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, PdfCrop, Selection, Shape};
 use designcraft_geom::{Affine, Rect, shapes};
 use serde_json::{Value, json};
 
@@ -100,7 +100,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .designcraft: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), layoutPage?: n (IDML / .designcraft: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
             has_doc,
             file_place
         ),
@@ -315,16 +315,23 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // 72 ppi by default unless the file says otherwise; scale so it fits the page when huge.
     let (nw, nh) = eps_size.unwrap_or((pw as f64, ph as f64));
-    // Image Import Options › Crop to: the frame shows that box of the PDF page.
-    let crop_box = match str_param(p, "pdfCrop") {
-        Some(k) if designcraft_render::is_pdf(&bytes) => {
-            if !["crop", "trim", "bleed", "art", "media"].contains(&k) {
-                return Err(bad("file.place", format!("unknown pdfCrop `{k}` (crop, trim, bleed, art, media)")));
-            }
-            designcraft_render::pdf_page_box(&bytes, pdf_page as usize, k).filter(|b| b.2 > 0.0 && b.3 > 0.0)
+    // Image Import Options › Crop to: the graphic spans that box of the PDF page.
+    let is_pdf = designcraft_render::is_pdf(&bytes);
+    let pdf_crop = match str_param(p, "pdfCrop") {
+        Some(k) if is_pdf => PdfCrop::from_name(k)
+            .ok_or_else(|| bad("file.place", format!("unknown pdfCrop `{k}` (crop, art, trim, bleed, media, contentVisible, contentAll)")))?,
+        _ => PdfCrop::Crop,
+    };
+    let mime = designcraft_render::image_mime(&bytes).to_string();
+    let mut asset = Asset { page: pdf_page, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
+    // The graphic's natural size: the box in points (the whole page when the box can't be found,
+    // and then the document says so).
+    let (bw, bh) = match crop_pdf(&mut asset) {
+        Some(size) => size,
+        None => {
+            asset.pdf_crop = PdfCrop::Crop;
+            (nw, nh)
         }
-        Some(_) => None,
-        None => None,
     };
     let target_frame = super::id_param(p, "frame").or_else(|| {
         let st = s.active()?;
@@ -337,8 +344,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let want_w = p.get("width").and_then(Value::as_f64);
     s.edit(|d, sel| {
         let aid = AssetId(d.alloc());
-        let mime = designcraft_render::image_mime(&bytes).to_string();
-        d.assets.insert(aid, Arc::new(Asset { page: pdf_page, id: aid, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)) }));
+        d.assets.insert(aid, Arc::new(Asset { id: aid, ..asset }));
         // The width the whole page (or image) gets; the height follows the proportions.
         let w = match want_w {
             Some(w) => w,
@@ -351,11 +357,11 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
             let r = it.inner_bounds();
             // Fill frame proportionally.
-            let k = (r.width() / nw).max(r.height() / nh);
-            let (gw, gh) = (nw * k, nh * k);
+            let k = (r.width() / bw).max(r.height() / bh);
+            let (gw, gh) = (bw * k, bh * k);
             it.content = Content::Graphic(Graphic {
                 asset: aid,
-                size: (nw, nh),
+                size: (bw, bh),
                 xf: Affine::translate((r.x0 + (r.width() - gw) / 2.0, r.y0 + (r.height() - gh) / 2.0)) * Affine::scale(k),
                 auto_fit: designcraft_doc::Fitting::FillProportionally,
                 fit_align: 4,
@@ -368,13 +374,12 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             let (x, y) = (px.unwrap_or(pr.x0), py.unwrap_or(pr.y0));
             let id = ItemId(d.alloc());
             let k = w / nw;
-            let (bx, by, bw, bh) = crop_box.unwrap_or((0.0, 0.0, nw, nh));
             let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(x, y, x + bw * k, y + bh * k)));
             it.object_style = d.styles.default_graphic_frame.clone();
             it.content = Content::Graphic(Graphic {
                 asset: aid,
-                size: (nw, nh),
-                xf: Affine::translate((x - bx * k, y - by * k)) * Affine::scale(k),
+                size: (bw, bh),
+                xf: Affine::translate((x, y)) * Affine::scale(k),
                 auto_fit: Default::default(),
                 fit_align: 4,
                 crop: [0.0; 4],
@@ -424,6 +429,19 @@ pub fn base64_decode(s: &str) -> Vec<u8> {
     out
 }
 
+/// Sets `a.pdf_box` to where its `pdf_crop` box sits on its page and returns the box's size in
+/// points. The crop box is the whole page and has none; nor has a page that can't be read, which
+/// keeps its crop choice (a missing link relinked later gets its box then).
+pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
+    a.pdf_box = None;
+    if a.pdf_crop == PdfCrop::Crop || !designcraft_render::is_pdf(&a.data) {
+        return None;
+    }
+    let (frac, size) = designcraft_render::pdf_crop_box(&a.data, a.page as usize, a.pdf_crop)?;
+    a.pdf_box = Some(frac);
+    Some(size)
+}
+
 pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)> {
     if let Some(b) = str_param(p, "base64") {
         return Ok((base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None));
@@ -445,7 +463,15 @@ fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
         let mime = designcraft_render::image_mime(&bytes).to_string();
         d.assets.insert(
             aid,
-            Arc::new(Asset { page: 0, id: aid, name: name.clone(), mime, link: link.clone(), data: Arc::new(bytes), pixels: Some((pw, ph)) }),
+            Arc::new(Asset {
+                id: aid,
+                name: name.clone(),
+                mime,
+                link: link.clone(),
+                data: Arc::new(bytes),
+                pixels: Some((pw, ph)),
+                ..Default::default()
+            }),
         );
         Ok(aid)
     })?;
@@ -532,7 +558,9 @@ fn snippet_export(s: &mut Session, p: &Value) -> Result<Value> {
 fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
     const ID: &str = "file.place";
     let src = if name.to_lowercase().ends_with(".idml") {
-        designcraft_idml::import_idml(bytes).map_err(|e| bad(ID, e.to_string()))?
+        let mut d = designcraft_idml::import_idml(bytes).map_err(|e| bad(ID, e.to_string()))?;
+        super::interchange::resolve_pdf_crops(&mut d);
+        d
     } else {
         from_bytes(bytes)?
     };
@@ -638,7 +666,9 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
     {
         let mut d = if path.to_ascii_lowercase().ends_with(".idml") {
             let bytes = std::fs::read(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-            designcraft_idml::import_idml(&bytes).map_err(|e| EngineError::Other(e.to_string()))?
+            let mut d = designcraft_idml::import_idml(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+            super::interchange::resolve_pdf_crops(&mut d);
+            d
         } else {
             from_bytes(&std::fs::read(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?)?
         };
@@ -688,6 +718,58 @@ mod pdf_crop_tests {
         assert!((full.width() - 630.0).abs() < 1e-6, "{full:?}");
         assert!((trim.width() - 612.0).abs() < 1e-3 && (trim.height() - 792.0).abs() < 1e-3, "{trim:?}");
         assert!(t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": "nope"})).is_err());
+    }
+
+    /// Placing with `trim` stores the choice; the graphic spans the trim box and draws only it,
+    /// even in a frame larger than the graphic.
+    #[test]
+    fn a_pdf_placed_with_its_trim_box_stores_and_draws_that_box() {
+        // Letter with a 9 pt bleed: black in the bleed's top-left corner and a black square inside.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("layout.documentSetup", &json!({"bleed": 9})).unwrap();
+        for rect in [[-9, -9, 0, 0], [10, 10, 30, 30]] {
+            let id = s.execute("frame.create", &json!({"rect": rect})).unwrap()["id"].clone();
+            s.execute("object.fill", &json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+        }
+        let b64 = s.execute("file.exportPdf", &json!({"bleed": true})).unwrap()["base64"].as_str().unwrap().to_string();
+
+        let mut t = Session::new();
+        t.execute("file.new", &json!({})).unwrap();
+        // `width` is the whole page's (630 pt with its bleed): half size.
+        let r = t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": "trim", "width": 315, "x": 100, "y": 100})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        let d = t.doc().unwrap().doc.clone();
+        let it = d.item(id).unwrap();
+        let g = it.graphic().unwrap().clone();
+        let a = &d.assets[&g.asset];
+        assert_eq!(a.pdf_crop, designcraft_doc::PdfCrop::Trim);
+        let b = a.shown_box().unwrap();
+        let want = [9.0 / 630.0, 9.0 / 810.0, 621.0 / 630.0, 801.0 / 810.0];
+        assert!(b.iter().zip(want).all(|(x, y)| (x - y).abs() < 1e-4), "{b:?}");
+        assert!((g.size.0 - 612.0).abs() < 1e-3 && (g.size.1 - 792.0).abs() < 1e-3, "{:?}", g.size);
+        let shown = (it.xf * g.xf).transform_rect_bbox(designcraft_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1));
+        let fb = it.bounds();
+        for (x, y) in [(shown.x0, 100.0), (shown.y0, 100.0), (shown.x1, 406.0), (shown.y1, 496.0), (fb.x1, 406.0), (fb.y1, 496.0)] {
+            assert!((x - y).abs() < 1e-3, "{shown:?} {fb:?}");
+        }
+
+        // A frame larger than the graphic still shows only the trim box.
+        t.edit(|d, _| {
+            d.item_mut(id).unwrap().path = designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(90.0, 90.0, 416.0, 506.0));
+            Ok(())
+        })
+        .unwrap();
+        let d = t.doc().unwrap().doc.clone();
+        let mut rr = designcraft_render::Renderer::new();
+        rr.threads = 0;
+        let img = rr.render_page(&d, &t.cache, 0, 1.0, false, &Default::default()).unwrap();
+        let dark = |x: u32, y: u32| img.pixel(x, y)[0] < 60;
+        // The page sits at 95.5: its bleed corner (95.5–100) is cut off, the square (105–115) shows
+        // where it is on the page.
+        assert!(!dark(97, 97), "the bleed is outside the trim box");
+        assert!(!dark(103, 103), "the page is offset by its bleed");
+        assert!(dark(110, 110), "the square inside the trim box");
     }
 }
 

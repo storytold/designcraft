@@ -1408,6 +1408,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Crop to:"));
                     let cur = d.s("crop");
                     let label = |v: &str| match v {
+                        "contentVisible" => crate::i18n::tr(&app.ui.language, "Bounding Box (Visible Layers Only)"),
+                        "contentAll" => crate::i18n::tr(&app.ui.language, "Bounding Box (All Layers)"),
                         "trim" => crate::i18n::tr(&app.ui.language, "Trim"),
                         "bleed" => crate::i18n::tr(&app.ui.language, "Bleed"),
                         "art" => crate::i18n::tr(&app.ui.language, "Art"),
@@ -1415,7 +1417,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         _ => crate::i18n::tr(&app.ui.language, "Crop"),
                     };
                     egui::ComboBox::from_id_salt("pdf_crop").selected_text(crate::rtl::widget(ui, label(&cur))).show_ui(ui, |ui| {
-                        for v in ["crop", "trim", "bleed", "art", "media"] {
+                        for v in designcraft_doc::PdfCrop::ALL.map(designcraft_doc::PdfCrop::name) {
                             if ui.selectable_label(label(&cur) == label(v), label(v)).clicked() {
                                 d.fields.insert("crop".into(), json!(v));
                             }

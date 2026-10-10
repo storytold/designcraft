@@ -44,6 +44,26 @@ pub fn anchor_rel_in(s: &str) -> designcraft_doc::anchored::AnchorRelative {
     }
 }
 
+/// `PDFAttribute` `PDFCrop` for a placed PDF's crop choice.
+pub fn pdf_crop_out(c: designcraft_doc::PdfCrop) -> &'static str {
+    use designcraft_doc::PdfCrop as C;
+    match c {
+        C::Crop => "CropPDF",
+        C::Art => "CropArt",
+        C::Trim => "CropTrim",
+        C::Bleed => "CropBleed",
+        C::Media => "CropMedia",
+        C::ContentVisible => "CropContentVisibleLayers",
+        C::ContentAll => "CropContentAllLayers",
+    }
+}
+
+/// A placed PDF's crop choice from `PDFCrop` (the crop box when unknown).
+pub fn pdf_crop_in(s: &str) -> designcraft_doc::PdfCrop {
+    use designcraft_doc::PdfCrop as C;
+    C::ALL.into_iter().find(|c| pdf_crop_out(*c) == s).unwrap_or(C::Crop)
+}
+
 pub fn anchor_out(i: u8) -> &'static str {
     ANCHORS[(i as usize).min(8)]
 }
@@ -79,6 +99,15 @@ pub fn escape_id(s: &str) -> String {
 }
 pub fn unescape_id(s: &str) -> String {
     s.replace("%3a", ":").replace("%3A", ":").replace("%25", "%")
+}
+
+/// An `AppliedFont` value → font family. InDesign can write the family with its `$ID/` prefix
+/// (`$ID/Arial`), and `$ID/` alone for no font; some writers append the style after a tab.
+pub fn font_family_in(v: &str) -> Option<String> {
+    let v = v.trim();
+    let family = v.split('\t').next().unwrap_or(v);
+    let family = family.strip_prefix("$ID/").unwrap_or(family).trim();
+    (!family.is_empty()).then(|| family.to_string())
 }
 
 /// Built-in style names: (ours, IDML `Name`).
