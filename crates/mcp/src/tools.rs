@@ -277,6 +277,7 @@ pub fn tool_definitions() -> Vec<Value> {
                             "y": num("y (pt)"),
                             "space": {"type": "string", "enum": ["doc", "screen"], "description": "Coordinate space (default doc)"},
                             "mods": mods_schema(),
+                            "clicks": {"type": "integer", "minimum": 1, "description": "On a down: presses in a row it completes (2 double, 3 triple…; default 1)"},
                         }), &["kind", "x", "y"]),
                     },
                     "mods": mods_schema(),

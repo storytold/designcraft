@@ -79,6 +79,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.zoom", "Zoom To", None, "{zoom: 1.0 = 100%}"),
     ("view.screenMode", "Screen Mode", None, "{mode: normal|preview|bleed|slug|presentation}"),
     ("view.togglePreview", "Toggle Normal/Preview", Some("W"), "{}"),
+    (
+        "app.formattingAffectsText",
+        "Formatting Affects Text",
+        Some("J"),
+        "{on?: bool} — with text frames selected, colours go to their text (on) or the frames (off); toggles without `on`",
+    ),
     ("view.frameEdges", "Show/Hide Frame Edges", Some("Cmd+H"), "{}"),
     ("view.rulers", "Show/Hide Rulers", Some("Cmd+R"), "{}"),
     ("view.guides", "Show/Hide Guides", Some("Cmd+;"), "{}"),
@@ -1229,6 +1235,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 "zone": ui.snap_zone,
             }))
         }
+        "app.formattingAffectsText" => {
+            app.ui.formatting_affects_text = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.formatting_affects_text);
+            Ok(json!({"on": app.ui.formatting_affects_text}))
+        }
         "window.richBlack" => {
             app.ui.rich_black = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.rich_black);
             app.canvas.shown = None;
@@ -2016,6 +2026,31 @@ mod tests {
                 Item::Sep => {}
             }
         }
+    }
+
+    #[test]
+    fn formatting_affects_text_sends_swatches_to_the_text() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "words", "caret": false})).unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        app.run("selection.set", json!({"ids": [fid]})).unwrap();
+        let text_fill = |app: &crate::DesignApp| {
+            let st = app.session.active().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
+            st.char_format_at(2).over.fill.clone()
+        };
+        let frame_fill = |app: &crate::DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ItemId(fid)).unwrap().fill.swatch.clone();
+        assert!(!crate::panels::colors_affect_text(&app));
+        crate::panels::apply_swatch(&mut app, false, "Cyan", None).unwrap();
+        assert_eq!(frame_fill(&app), "Cyan");
+        assert_eq!(text_fill(&app), None);
+        let r = run_ui(&mut app, "app.formattingAffectsText", &json!({})).unwrap().unwrap();
+        assert_eq!(r["on"], true, "toggles on");
+        assert!(crate::panels::colors_affect_text(&app));
+        crate::panels::apply_swatch(&mut app, false, "Magenta", Some(0.5)).unwrap();
+        assert_eq!(frame_fill(&app), "Cyan", "the frame is left alone");
+        assert_eq!(text_fill(&app).as_deref(), Some("Magenta"));
+        assert_eq!(crate::panels::color_target(&mut app).map(|t| (t.0, t.1)), Some(("Magenta".to_string(), 0.5)));
     }
 
     #[test]

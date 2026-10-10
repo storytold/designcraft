@@ -164,8 +164,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Color",
             [],
             None,
-            "{color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255), target?: fill|stroke, ids?} — an unnamed colour (not in the Swatches panel until Add to Swatches) on the selection",
-            super::has_selection,
+            "{color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255), target?: fill|stroke, text?: bool, ids?} — an unnamed colour (not in the Swatches panel until Add to Swatches) on the selection; `text`: on the selected text, or the text of the selected frames (Formatting Affects Text)",
+            |s| super::has_text(s).or_else(|_| super::has_selection(s)),
             apply_color
         ),
         cmd!(
@@ -858,8 +858,11 @@ fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
 fn apply_color(s: &mut Session, p: &Value) -> Result<Value> {
     let color = p.get("color").and_then(parse_color).ok_or_else(|| bad("object.color", "missing or bad color"))?;
     let stroke = str_param(p, "target") == Some("stroke");
-    let ids = super::targets(s, p)?;
-    s.edit(|d, _| {
+    let text = p.get("text").and_then(Value::as_bool).unwrap_or(false) || s.doc()?.selection.text.is_some();
+    let (ids, texts) = if text { (vec![], super::text::format_targets_pub(s)) } else { (super::targets(s, p)?, vec![]) };
+    // A caret: the colour is for the next typing (once the swatch exists).
+    let caret = matches!(texts.as_slice(), [t] if t.range.is_empty());
+    let r = s.edit(|d, _| {
         // Reuse a swatch holding exactly this colour, else add an unnamed one.
         let existing = d
             .swatches
@@ -891,8 +894,21 @@ fn apply_color(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
+        if !caret {
+            let a = if stroke {
+                CharAttrs { stroke: Some(name.clone()), stroke_tint: Some(1.0), ..Default::default() }
+            } else {
+                CharAttrs { fill: Some(name.clone()), fill_tint: Some(1.0), ..Default::default() }
+            };
+            super::text::apply_char_attrs(d, &texts, &a, &[]);
+        }
         Ok(json!({"swatch": name}))
-    })
+    })?;
+    if caret && let Some(name) = r.get("swatch").cloned() {
+        let attrs = if stroke { json!({"stroke": name, "strokeTint": 1.0}) } else { json!({"fill": name, "fillTint": 1.0}) };
+        super::text::format_chars(s, &attrs)?;
+    }
+    Ok(r)
 }
 
 fn add_to_swatches(s: &mut Session, p: &Value) -> Result<Value> {

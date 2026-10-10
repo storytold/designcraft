@@ -431,6 +431,8 @@ pub enum NestedUntil {
     ForcedLineBreak,
     EmSpace,
     EnSpace,
+    /// The paragraph's drop cap characters.
+    Dropcap,
     /// Any of these characters.
     Chars(String),
 }
@@ -530,12 +532,16 @@ pub struct TabStop {
     pub align_on: String,
 }
 
+/// The colour of a paragraph rule that follows the paragraph's text colour.
+pub const TEXT_COLOR: &str = "Text Color";
+
 /// A paragraph rule (Rule Above / Rule Below).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Rule {
     pub on: bool,
     pub weight: f64,
+    /// A swatch, or [`TEXT_COLOR`].
     pub color: String,
     pub tint: f32,
     /// Width: column (true) or text (false).
@@ -547,7 +553,7 @@ pub struct Rule {
 
 impl Default for Rule {
     fn default() -> Self {
-        Rule { on: false, weight: 1.0, color: "[Black]".into(), tint: 1.0, column_width: true, offset: 0.0, left_indent: 0.0, right_indent: 0.0 }
+        Rule { on: false, weight: 1.0, color: TEXT_COLOR.into(), tint: 1.0, column_width: true, offset: 0.0, left_indent: 0.0, right_indent: 0.0 }
     }
 }
 
@@ -727,8 +733,17 @@ attr_set! {
         last_line_indent: f64 = 0.0,
         space_before: f64 = 0.0,
         space_after: f64 = 0.0,
+        /// Drop cap: the paragraph's first `drop_cap_chars` characters (code points, never
+        /// splitting a base from its combining marks) set `drop_cap_lines` lines tall, in the
+        /// character style `drop_cap_style` ("" or `[None]`: the text's own formatting).
         drop_cap_lines: u32 = 0,
         drop_cap_chars: u32 = 0,
+        drop_cap_style: String = String::new(),
+        /// Align Left Edge: the drop cap's ink starts at the indent (its first letter's left side
+        /// bearing is taken off), and the lines beside it start where its advance ends.
+        drop_cap_align_left: bool = true,
+        /// Scale for Descenders (kept and round-tripped; doesn't change the layout).
+        drop_cap_scale_descenders: bool = false,
         /// Nested styles, in order from the paragraph start.
         nested_styles: Vec<NestedStyle> = Vec::new(),
         /// GREP styles: a character style for every match of a pattern (applied after nested).
@@ -773,7 +788,8 @@ attr_set! {
         // Keeps
         keep_with_next: u32 = 0,
         keep_lines_together: bool = false,
-        keep_all_lines: bool = true,
+        /// All lines in paragraph (true) or at start/end of paragraph (false).
+        keep_all_lines: bool = false,
         keep_first: u32 = 2,
         keep_last: u32 = 2,
         start_paragraph: StartParagraph = StartParagraph::Anywhere,

@@ -447,6 +447,14 @@ pub fn auto_size_in(s: &str) -> AutoSize {
         .find(|m| auto_size_out(*m) == s)
         .unwrap_or(AutoSize::Off)
 }
+/// Insert Kashidas (`Kashidas`): InDesign's default, or off.
+pub fn kashidas_out(on: bool) -> &'static str {
+    if on { "DefaultKashidas" } else { "KashidasOff" }
+}
+pub fn kashidas_in(s: &str) -> Option<bool> {
+    [true, false].into_iter().find(|on| kashidas_out(*on) == s)
+}
+
 /// Auto-size reference points in our 0..9 order (row-major, top-left first).
 pub const REF_POINTS: [&str; 9] = [
     "TopLeftPoint",
@@ -597,6 +605,7 @@ pub fn nested_until_out(u: &designcraft_doc::NestedUntil) -> (&'static str, Stri
         N::ForcedLineBreak => e("ForcedLineBreak"),
         N::EmSpace => e("EmSpaces"),
         N::EnSpace => e("EnSpaces"),
+        N::Dropcap => e("Dropcap"),
         N::Chars(c) => ("string", c.clone()),
     }
 }
@@ -615,6 +624,7 @@ pub fn nested_until_in(ty: &str, v: &str) -> designcraft_doc::NestedUntil {
         "ForcedLineBreak" => N::ForcedLineBreak,
         "EmSpaces" => N::EmSpace,
         "EnSpaces" => N::EnSpace,
+        "Dropcap" => N::Dropcap,
         _ => N::Words,
     }
 }

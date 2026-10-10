@@ -1305,6 +1305,14 @@ impl<'a> Ex<'a> {
         n!(space_after, "SpaceAfter");
         n!(drop_cap_lines, "DropCapLines");
         n!(drop_cap_chars, "DropCapCharacters");
+        // The drop cap's character style isn't written: IDML has no attribute for it (InDesign
+        // applies one through a Dropcap nested style).
+        if a.drop_cap_align_left.is_some() || a.drop_cap_scale_descenders.is_some() {
+            let d = designcraft_doc::ParaProps::default();
+            let bits = u32::from(a.drop_cap_align_left.unwrap_or(d.drop_cap_align_left))
+                | u32::from(a.drop_cap_scale_descenders.unwrap_or(d.drop_cap_scale_descenders)) << 1;
+            el.set("DropcapDetail", bits);
+        }
         if let Some(g) = a.grid_align {
             match g {
                 designcraft_doc::GridAlign::None => el.set("GridAlignment", "None"),
@@ -1351,6 +1359,9 @@ impl<'a> Ex<'a> {
         n!(auto_leading, "AutoLeading", pct);
         if let Some(v) = a.single_word_justify {
             el.set("SingleWordJustification", names::align_out(v));
+        }
+        if let Some(v) = a.kashidas {
+            el.set("Kashidas", names::kashidas_out(v));
         }
         n!(keep_with_next, "KeepWithNext");
         b!(keep_lines_together, "KeepLinesTogether");
@@ -1442,7 +1453,11 @@ impl<'a> Ex<'a> {
         el.set(&format!("{k}Offset"), num(r.offset));
         el.set(&format!("{k}LeftIndent"), num(r.left_indent));
         el.set(&format!("{k}RightIndent"), num(r.right_indent));
-        props.push(p(&format!("{k}Color"), "object", self.sw(&r.color)));
+        props.push(if r.color == designcraft_doc::TEXT_COLOR {
+            p(&format!("{k}Color"), "string", designcraft_doc::TEXT_COLOR)
+        } else {
+            p(&format!("{k}Color"), "object", self.sw(&r.color))
+        });
     }
 
     fn stroke_attrs(&self, el: &mut El, s: &designcraft_doc::Stroke) {

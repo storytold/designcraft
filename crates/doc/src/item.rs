@@ -321,7 +321,7 @@ pub struct TextFrameOptions {
     pub first_baseline_min: f64,
     pub ignore_wrap: bool,
     pub auto_size: AutoSize,
-    /// Reference point (0..9) that stays fixed when auto-sizing.
+    /// Reference point (0..9, row-major from the top left) that stays fixed when auto-sizing.
     pub auto_size_ref: u8,
     pub column_rule: bool,
     pub column_rule_weight: f64,
@@ -371,7 +371,7 @@ impl Default for TextFrameOptions {
             first_baseline_min: 0.0,
             ignore_wrap: false,
             auto_size: AutoSize::Off,
-            auto_size_ref: 1,
+            auto_size_ref: 4,
             column_rule: false,
             column_rule_weight: 1.0,
             column_rule_color: designcraft_color::swatch::BLACK.into(),

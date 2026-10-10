@@ -201,6 +201,21 @@ impl Story {
         self.chars.last().map_or(&NO_FORMAT, |r| &r.format)
     }
 
+    /// Format of the character starting at byte `pos` (the run containing `pos`), unlike
+    /// [`Self::char_format_at`], which at a run boundary returns the format of the character
+    /// before the caret. Past the end, the last run's format.
+    pub fn char_format_of(&self, pos: usize) -> &CharFormat {
+        let mut start = 0usize;
+        for r in &self.chars {
+            let end = start.saturating_add(r.len);
+            if pos < end {
+                return &r.format;
+            }
+            start = end;
+        }
+        self.chars.last().map_or(&NO_FORMAT, |r| &r.format)
+    }
+
     /// Iterate `(range, format)` of character runs.
     pub fn runs(&self) -> impl Iterator<Item = (std::ops::Range<usize>, &CharFormat)> {
         let mut start = 0;

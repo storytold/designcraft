@@ -1238,6 +1238,37 @@ mod tests {
         assert!(r.stats.glyphs >= 15);
     }
 
+    /// An inside-aligned stroke is the stroke of the path inset by half its weight: a band from the
+    /// edge inwards, its rounded corners concentric with the frame's.
+    #[test]
+    fn inside_strokes_are_inset_by_half_the_weight() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let id = designcraft_doc::ItemId(d.alloc());
+        let mut it =
+            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 300.0, 300.0)));
+        it.stroke = designcraft_doc::Stroke {
+            swatch: designcraft_color::swatch::BLACK.into(),
+            weight: 10.0,
+            align: designcraft_doc::StrokeAlign::Inside,
+            ..Default::default()
+        };
+        it.corners = designcraft_geom::corners::CornerOptions::uniform(designcraft_geom::corners::CornerShape::Rounded, 20.0);
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let ink = |x: u32, y: u32| img.pixel(x, y)[0] < 64;
+        let paper = |x: u32, y: u32| img.pixel(x, y)[0] > 192;
+        // Straight edges: ink from the edge to 10 pt inside, nothing outside.
+        assert!(paper(97, 200) && ink(101, 200) && ink(108, 200) && paper(112, 200));
+        assert!(ink(298, 200) && paper(302, 200) && paper(288, 200));
+        // Rounded corner centred at (120, 120): ink between radii 10 and 20, paper outside the arc
+        // and inside the band.
+        assert!(paper(103, 103) && ink(108, 108) && paper(114, 114));
+    }
+
     #[test]
     fn arrowheads_draw_at_line_ends() {
         let mut d = Document::new(&NewDocument::default());

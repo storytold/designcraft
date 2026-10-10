@@ -126,6 +126,61 @@ impl Story {
         self.rev += 1;
         end
     }
+
+    /// Append the whole of `other` as new paragraphs after this story's text (threading two
+    /// stories merges them this way). Its formatting, notes, endnotes, editorial notes, markers,
+    /// anchored objects and tables come along; footnotes, endnotes, editorial notes and tables get
+    /// ids that are free in this story. An empty story simply takes `other`'s content. Frames stay.
+    pub fn append_story(&mut self, mut other: Story) {
+        if other.text.is_empty() {
+            return;
+        }
+        if self.text.is_empty() {
+            let (id, frames, rev, link) = (self.id, std::mem::take(&mut self.frames), self.rev, self.link.take());
+            *self = Story { id, frames, rev: rev.saturating_add(1), link, ..other };
+            return;
+        }
+        if !other.tables.is_empty() {
+            let mut next = self.tables.keys().max().copied().unwrap_or(0).saturating_add(1);
+            let mut ids = std::collections::HashMap::new();
+            for (old, t) in std::mem::take(&mut other.tables) {
+                let new = next;
+                next = next.saturating_add(1);
+                let mut t = Arc::unwrap_or_clone(t);
+                t.id = new;
+                ids.insert(old, new);
+                self.tables.insert(new, Arc::new(t));
+            }
+            for p in &mut other.paras {
+                p.table = p.table.and_then(|id| ids.get(&id).copied());
+            }
+        }
+        self.text.push('\n');
+        self.text.push_str(&other.text);
+        // The paragraph end takes the last run's format.
+        if let Some(last) = self.chars.last_mut() {
+            last.len += 1;
+        }
+        self.chars.extend(other.chars.into_iter().filter(|r| r.len > 0));
+        self.paras.extend(other.paras);
+        for n in other.notes {
+            let id = self.next_note_id();
+            self.notes.push(Arc::new(crate::notes::Footnote { id, text: n.text.clone() }));
+        }
+        for n in other.endnotes {
+            let id = self.endnotes.iter().map(|x| x.id).max().unwrap_or(0).saturating_add(1);
+            self.endnotes.push(Arc::new(crate::notes::Footnote { id, text: n.text.clone() }));
+        }
+        for n in other.editorial {
+            let id = self.editorial.iter().map(|x| x.id).max().unwrap_or(0).saturating_add(1);
+            self.editorial.push(Arc::new(crate::endnotes::EditorialNote { id, ..(*n).clone() }));
+        }
+        self.anchors.extend(other.anchors);
+        self.xrefs.extend(other.xrefs);
+        self.index_refs.extend(other.index_refs);
+        self.objects.extend(other.objects);
+        self.rev = self.rev.saturating_add(1);
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +213,23 @@ mod tests {
         assert_eq!(part.text, a.text[2..e]);
         assert_eq!(part.notes.len(), 1);
         assert!(a.extract(2..8).notes.is_empty());
+    }
+
+    #[test]
+    fn append_story_with_maximal_ids_does_not_overflow() {
+        let mut a = Story::with_text(StoryId(1), "Alpha", ParaFormat::default());
+        a.tables.insert(u64::MAX, Arc::new(crate::table::Table::new(u64::MAX, 1, 1, 0, 0, 100.0)));
+        let note = |id| Arc::new(crate::notes::Footnote { id, text: Story::with_text(StoryId(0), "n", ParaFormat::default()) });
+        a.endnotes.push(note(u64::MAX));
+        a.notes.push(note(u64::MAX));
+        a.rev = u64::MAX;
+        let mut b = Story::with_text(StoryId(2), "Beta", ParaFormat::default());
+        b.tables.insert(1, Arc::new(crate::table::Table::new(1, 1, 1, 0, 0, 100.0)));
+        b.endnotes.push(note(1));
+        b.notes.push(note(1));
+        a.append_story(b);
+        assert_eq!(a.text, "Alpha\nBeta");
+        assert_eq!(a.endnotes.len(), 2);
+        assert_eq!(a.notes.len(), 2);
     }
 }

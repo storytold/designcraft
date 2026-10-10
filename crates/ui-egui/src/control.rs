@@ -99,7 +99,15 @@ fn key_from(name: &str) -> Option<egui::Key> {
     })
 }
 
+/// Handle one control request. Commands it runs leave the user's system clipboard alone.
 pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    let was = std::mem::replace(&mut app.in_control, true);
+    let out = handle_request(app, ctx, req);
+    app.in_control = was;
+    out
+}
+
+fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     match req.method.as_str() {
@@ -126,6 +134,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             let base_mods: Mods = p.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
             let view = app.view_info();
             let xf = app.canvas_rect.zip(app.view().copied()).map(|(rect, v)| Xf::new(rect, &v));
+            let mut last = None;
             for e in events {
                 let kind = match e.get("kind").and_then(Value::as_str).unwrap_or("") {
                     "down" => PointerKind::Down,
@@ -146,13 +155,19 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                     designcraft_geom::Point::new(x, y)
                 };
                 let mods = e.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or(base_mods);
-                if let Err(e) = app.session.pointer(&PointerEvent { kind, pos, mods }, view) {
+                let clicks = e.get("clicks").and_then(Value::as_u64).map_or(1, |n| n.clamp(1, 255) as u8);
+                if let Err(e) = app.session.pointer(&PointerEvent { kind, pos, mods, clicks }, view) {
                     return err(e);
                 }
                 app.after_engine();
+                last = Some((pos, mods));
             }
             ctx.request_repaint();
-            wrap(app.run("document.inspect", json!({})).map(|d| json!({"selection": d["selection"], "tool": app.session.tool_id()})))
+            // The tool's cursor where the last event was.
+            let cursor = last.map(|(pos, mods)| app.session.cursor(pos, mods, view));
+            wrap(
+                app.run("document.inspect", json!({})).map(|d| json!({"selection": d["selection"], "tool": app.session.tool_id(), "cursor": cursor})),
+            )
         }
         "ui.key" => {
             let Some(k) = s("key").and_then(key_from) else { return err("unknown or missing `key`") };
@@ -359,5 +374,43 @@ pub fn save_screenshot(app: &mut DesignApp, image: &egui::ColorImage, path: Opti
             Err(e) => json!({"ok": false, "error": e}),
         },
         None => json!({"ok": false, "error": "no writer configured"}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn control_paste_never_reads_the_system_clipboard() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let services = crate::Services {
+            clipboard_text: Some(Box::new(move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Some("SECRET".into())
+            })),
+            ..Default::default()
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "words"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        assert!(app.session.active().unwrap().selection.text.is_some(), "the new frame is being typed in");
+        let text = |app: &DesignApp| app.session.active().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
+        let ctx = egui::Context::default();
+        let (req, _rx) = ControlRequest::new("engine.execute", json!({"command": "edit.paste"}));
+        let _ = handle(&mut app, &ctx, &req);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "the control channel must not read the system clipboard");
+        assert!(!text(&app).contains("SECRET"));
+        assert!(!app.in_control);
+        // The same command chosen by the user does paste the system clipboard.
+        let _ = app.run("edit.paste", json!({}));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(text(&app).contains("SECRET"));
     }
 }
