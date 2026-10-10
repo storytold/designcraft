@@ -201,7 +201,7 @@ pub fn specs() -> Vec<CommandSpec> {
             if let Some(text) = copy_text(s)? {
                 return Ok(json!({"text": text}));
             }
-            s.clipboard = Some(Arc::new(clip_doc(s)?));
+            copy_items(s)?;
             s.text_clipboard = None;
             ok()
         }),
@@ -210,7 +210,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 super::text::delete_selection(s)?;
                 return Ok(json!({"text": text}));
             }
-            s.clipboard = Some(Arc::new(clip_doc(s)?));
+            copy_items(s)?;
             s.execute("edit.clear", p)
         }),
         cmd!(
@@ -227,7 +227,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste",
             ["Edit"],
             Some("Cmd+V"),
-            "{inPlace?: bool, text?: the system clipboard's text (pastes it unless it is what was copied here)}",
+            "{inPlace?: bool, spread?: index (0), text?: the system clipboard's text (pastes it unless it is what was copied here)}",
             has_clip_or_text,
             |s, p| {
                 if s.doc()?.selection.text.is_some() {
@@ -237,9 +237,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(super::bad("edit.paste", "clipboard is empty"));
                 };
                 let off = if bool_or(p, "inPlace", false) { 0.0 } else { 12.0 };
+                let to = super::spread_param(p, "spread");
+                let from = s.clipboard_origin;
                 let ids: Vec<ItemId> = clip.spreads.first().map(|sp| sp.items.iter().map(|i| i.id).collect()).unwrap_or_default();
                 s.edit(|d, sel| {
-                    let new = super::object::duplicate_from(d, &clip, &ids, SpreadRef::Doc(0), designcraft_geom::Vec2::new(off, off))?;
+                    // The same place on another spread is the same distance from its spine or left edge.
+                    let dx = d.spread(to).map_or(0.0, |sp| paste_origin(sp) - from);
+                    let new = super::object::duplicate_from(d, &clip, &ids, to, designcraft_geom::Vec2::new(dx + off, off))?;
                     *sel = Selection::items(new.clone());
                     Ok(json!({"ids": new.iter().map(|i| i.0).collect::<Vec<_>>()}))
                 })
@@ -254,11 +258,27 @@ pub fn specs() -> Vec<CommandSpec> {
             has_clip,
             paste_into
         ),
-        cmd!("edit.pasteInPlace", "Paste in Place", ["Edit"], Some("Cmd+Alt+Shift+V"), "{}", has_clip, |s, _| s
-            .execute("edit.paste", &json!({"inPlace": true}))),
+        cmd!("edit.pasteInPlace", "Paste in Place", ["Edit"], Some("Cmd+Alt+Shift+V"), "{spread?: index (0)}", has_clip, |s, p| s
+            .execute("edit.paste", &json!({"inPlace": true, "spread": p.get("spread")}))),
         cmd!("edit.duplicate", "Duplicate", ["Edit"], Some("Cmd+Alt+Shift+D"), "{}", has_selection, |s, _| s
             .execute("transform.move", &json!({"dx": 12.0, "dy": 12.0, "copy": true}))),
     ]
+}
+
+/// Put the selected items on the clipboard, with the x Paste measures them from on their spread.
+fn copy_items(s: &mut Session) -> Result<()> {
+    let clip = clip_doc(s)?;
+    let st = s.doc()?;
+    let spread = st.selection.items.iter().find_map(|id| st.doc.find(*id)).and_then(|loc| st.doc.spread(loc.spread));
+    s.clipboard_origin = spread.map_or(0.0, paste_origin);
+    s.clipboard = Some(Arc::new(clip));
+    Ok(())
+}
+
+/// The x a pasted object keeps its distance from: the spine, or the left edge of single-sided
+/// pages, which have none.
+fn paste_origin(sp: &designcraft_doc::Spread) -> f64 {
+    if sp.pages.iter().all(|p| p.side == designcraft_doc::PageSide::Single) { sp.bounds().x0 } else { sp.spine_x() }
 }
 
 /// A document holding copies of the selected items (and their stories) on spread 0.
@@ -453,5 +473,89 @@ mod paste_into_tests {
         assert!(img.pixel(200, 200)[0] < 90, "{:?}", img.pixel(200, 200));
         assert!(img.pixel(120, 120)[0] > 200, "{:?}", img.pixel(120, 120));
         s.doc().unwrap().doc.check().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+    use designcraft_geom::Rect;
+
+    fn pasted(s: &mut Session, id: &str, p: Value) -> (SpreadRef, Rect) {
+        let new = ItemId(s.execute(id, &p).unwrap()["ids"][0].as_u64().unwrap());
+        let d = &s.doc().unwrap().doc;
+        (d.find(new).unwrap().spread, d.item(new).unwrap().bounds())
+    }
+
+    /// Paste and Paste in Place put the objects on the spread they are given (the first without one).
+    #[test]
+    fn paste_puts_the_objects_on_the_given_spread() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": false})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 2})), (SpreadRef::Doc(2), Rect::new(36.0, 36.0, 136.0, 136.0)));
+        assert_eq!(pasted(&mut s, "edit.paste", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(48.0, 48.0, 148.0, 148.0)));
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({})).0, SpreadRef::Doc(0));
+        // A spread the document doesn't have: an error, and nothing is pasted.
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("edit.paste", &json!({"spread": 9})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before);
+        before.check().unwrap();
+    }
+
+    /// With facing pages the first page sits alone, right of the spine. An object keeps its side
+    /// of the spine when it is pasted in place on another spread.
+    #[test]
+    fn paste_in_place_keeps_the_side_of_the_spine() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 4, "facingPages": true})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        // On page 3, the right-hand page of the second spread.
+        let a = s.execute("frame.create", &json!({"spread": 1, "rect": [w + 36.0, 36, w + 136.0, 136]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 0})), (SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 136.0)));
+        // And back from page 1.
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
+        // Page 4 sits alone left of the spine: the object stays right of it, off the page.
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 2})), (SpreadRef::Doc(2), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
+    }
+
+    /// A single-sided page has no spine: an object keeps its distance from the page's left edge,
+    /// whatever the page widths, and pastes as right-hand content into a facing-pages document.
+    #[test]
+    fn paste_in_place_from_a_single_sided_page_measures_from_its_left_edge() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        s.execute("layout.pageSize", &json!({"pages": [2], "width": 400, "height": 792})).unwrap();
+        let a = s.execute("frame.create", &json!({"spread": 1, "rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 0})), (SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 136.0)));
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({})), (SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 136.0)));
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
+    }
+
+    /// Undo leaves the id of the copy it removed in the selection. Copy measures from the spread
+    /// of the first selected object that is still there.
+    #[test]
+    fn copy_measures_from_the_first_selected_object_that_exists() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        let a = s.execute("frame.create", &json!({"spread": 1, "rect": [w + 36.0, 36, w + 136.0, 136]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let gone = s.execute("edit.paste", &json!({"spread": 1})).unwrap()["ids"][0].as_u64().unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a], "add": true})).unwrap();
+        assert_eq!(s.doc().unwrap().selection.items, [ItemId(gone), ItemId(a)]);
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
     }
 }

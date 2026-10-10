@@ -560,9 +560,16 @@ impl DesignApp {
     }
 
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
-    pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+    pub fn run(&mut self, id: &str, mut params: Value) -> Result<Value, String> {
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
+        }
+        // Copied objects paste on the spread in view.
+        if matches!(id, "edit.paste" | "edit.pasteInPlace")
+            && let Some(spread) = canvas::current_spread(self)
+            && let Some(p) = params.as_object_mut()
+        {
+            p.entry("spread").or_insert(json!(spread));
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
@@ -1277,6 +1284,38 @@ mod tests {
         let control::Outcome::Done(r) = control::handle(&mut app, &egui::Context::default(), &req) else { panic!("app.open answers") };
         assert_eq!(r["ok"], json!(false), "{r}");
         assert!(app.ui.dialog.is_none(), "a control-channel app.open doesn't raise an alert");
+    }
+
+    /// Copied objects were pasted on the first spread whatever page was in view.
+    #[test]
+    fn paste_lands_on_the_spread_in_view() {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({"pages": 3, "facingPages": false})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].clone();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app.run("edit.copy", json!({})).unwrap();
+        let pasted_on = |app: &DesignApp| {
+            let st = app.session.active().unwrap();
+            st.doc.find(st.selection.items[0]).unwrap().spread
+        };
+        // Nothing is in view before the canvas is laid out: the first spread, as in a script.
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(pasted_on(&app), designcraft_doc::SpreadRef::Doc(0));
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        canvas::go_to_page(&mut app, 2);
+        menus::activate(&mut app, "edit.pasteInPlace", &Value::Null);
+        assert_eq!(pasted_on(&app), designcraft_doc::SpreadRef::Doc(2));
+        canvas::go_to_page(&mut app, 1);
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(pasted_on(&app), designcraft_doc::SpreadRef::Doc(1));
+        // A parent spread while parents are edited.
+        app.run("layout.parents.edit", json!({"on": true})).unwrap();
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(pasted_on(&app), designcraft_doc::SpreadRef::Parent(0));
+        // With an insertion point Paste still goes into the text, where the object is anchored.
+        let story = app.run("frame.create", json!({"rect": [36, 200, 300, 400], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+        app.run("text.select", json!({"story": story, "anchor": 2})).unwrap();
+        assert_eq!(app.run("edit.paste", json!({})).unwrap()["anchored"], 1);
     }
 }
 

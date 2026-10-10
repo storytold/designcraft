@@ -139,6 +139,13 @@ pub fn current_slot(app: &DesignApp, layout: &CanvasLayout) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// The spread under the view centre (a parent spread while parents are edited).
+pub fn current_spread(app: &DesignApp) -> Option<SpreadRef> {
+    let st = app.session.active()?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    Some(layout.slots.get(current_slot(app, &layout)?)?.spread)
+}
+
 /// Absolute page index under the view centre.
 pub fn current_page(app: &DesignApp) -> Option<usize> {
     let st = app.session.active()?;
