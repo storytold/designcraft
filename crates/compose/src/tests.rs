@@ -1,5 +1,5 @@
 use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Align, Document, ParaAttrs, ParaFormat, SpreadRef};
+use designcraft_doc::{Align, Composer, Document, ParaAttrs, ParaFormat, SpreadRef};
 use designcraft_geom::Rect;
 
 use super::*;
@@ -1469,38 +1469,84 @@ fn cjk_custom_kinsoku_disables_selected_breaks() {
     assert_eq!(all_lines(&cs).len(), 1);
 }
 
+fn japanese() -> ParaAttrs {
+    ParaAttrs { composer: Some(Composer::Japanese), ..Default::default() }
+}
+
 #[test]
 fn cjk_center_leading_measures_em_centers_across_different_sizes() {
-    let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
-    d.story_mut(sid).unwrap().format_chars(0..3, |f| {
-        f.over.leading = Some(designcraft_doc::Leading::Points(30.0));
-        f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::Center);
-    });
-    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let lines = all_lines(&cs);
+    let lines_with = |para: ParaAttrs| {
+        let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        d.story_mut(sid).unwrap().format_chars(0..3, |f| {
+            f.over.leading = Some(designcraft_doc::Leading::Points(30.0));
+            f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::Center);
+        });
+        d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).into_iter().cloned().collect::<Vec<_>>()
+    };
+    let lines = lines_with(japanese());
     assert_eq!(lines.len(), 2);
     let center = |l: &Line| {
         let g = &l.glyphs[0];
         let (a, b) = g.face.vertical_metrics();
         l.baseline + (b - a) / (2.0 * (a + b)) * g.face.units_per_em() * g.sy
     };
-    assert!((center(lines[1]) - center(lines[0]) - 30.0).abs() < 1e-6);
+    assert!((center(&lines[1]) - center(&lines[0]) - 30.0).abs() < 1e-6);
     assert!((lines[1].baseline - lines[0].baseline - 30.0).abs() > 0.1);
+    // The other composers set lines baseline to baseline.
+    let lines = lines_with(ParaAttrs::default());
+    assert!((lines[1].baseline - lines[0].baseline - 30.0).abs() < 1e-6);
+}
+
+#[test]
+fn cjk_aki_below_sets_the_upper_lines_leading_below_it() {
+    let lines_with = |para: ParaAttrs| {
+        let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..3, |f| f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::AkiBelow));
+        st.format_chars(0..2, |f| {
+            f.over.size = Some(24.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(40.0));
+        });
+        st.format_chars(2..3, |f| {
+            f.over.size = Some(12.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(20.0));
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).into_iter().cloned().collect::<Vec<_>>()
+    };
+    let lines = lines_with(japanese());
+    assert_eq!(lines.len(), 2);
+    let em_bottom = |l: &Line| {
+        let g = &l.glyphs[0];
+        let (a, b) = g.face.vertical_metrics();
+        l.baseline + b / (a + b) * g.face.units_per_em() * g.sy
+    };
+    let gap = em_bottom(&lines[1]) - em_bottom(&lines[0]);
+    assert!((gap - 40.0).abs() < 1e-6, "{gap}");
+    // The other composers advance by the lower line's leading, baseline to baseline.
+    let lines = lines_with(ParaAttrs::default());
+    assert!((lines[1].baseline - lines[0].baseline - 20.0).abs() < 1e-6);
 }
 
 #[test]
 fn cjk_em_center_alignment_moves_small_characters() {
-    let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
-    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
-    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.character_alignment = Some(designcraft_doc::cjk::CharacterAlignment::EmCenter));
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let line = &cs.frames[0].lines[0];
+    let line_with = |para: ParaAttrs| {
+        let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
+        d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.character_alignment = Some(designcraft_doc::cjk::CharacterAlignment::EmCenter));
+        compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].clone()
+    };
+    let line = line_with(japanese());
     let center = |g: &PlacedGlyph| {
         let (a, b) = g.face.vertical_metrics();
         g.y + (b - a) / (2.0 * (a + b)) * g.face.units_per_em() * g.sy
     };
     assert!((center(&line.glyphs[0]) - center(&line.glyphs[1])).abs() < 1e-6);
+    // The other composers keep every character on the baseline.
+    let line = line_with(ParaAttrs::default());
+    assert!(line.glyphs.iter().all(|g| g.y.abs() < 1e-9), "{:?}", line.glyphs.iter().map(|g| g.y).collect::<Vec<_>>());
 }
 
 #[test]

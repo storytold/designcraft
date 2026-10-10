@@ -37,7 +37,7 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Korean line breaking | at spaces (Hangul everywhere, hanja in Korean text); per-paragraph character-based breaking (`koreanCharBreaks`); DesignCraft-only, not in IDML |
 | Mojikumi | tables and paragraph references kept through IDML; not applied (Preflight says so) |
 | Aki, tsume, jidori | done ([cjk-typography.md](cjk-typography.md)) |
-| Character alignment, leading model | em box top / centre / bottom, ICF from ascender and descender, roman baseline; aki above / below, centre (centre down as centre) |
+| Character alignment, leading model | em box top / centre / bottom, ICF from ascender and descender, roman baseline; aki above / below, centre (centre down as centre); under aki below a line's leading is the space to the line below it; with the Japanese composers (`Composer::Japanese`, `JapaneseSingleLine`, IDML `HL Composer J` / `HL Single J`), the others set lines baseline to baseline on the Roman baseline |
 | Tate-chu-yoko | manual, with offsets; no auto, 3+ digits overflow the em |
 | Ruby | group ruby only, fixed 50 % size, no options, doesn't affect leading |
 | Kenten | the IDML kinds and a custom character, drawn as characters; no position, size, alignment, colour or font |
@@ -86,8 +86,8 @@ working (tsume removes the side bearings before mojikumi runs).
   built-in hard and soft sets from JLREQ's classes (today's named sets are common punctuation
   lists), and the kinsoku type (push in first / push out first / push out only / prioritise the
   adjustment amount), which needs the Japanese composer's push-in and push-out candidates.
-- A `Composer::Japanese` (paragraph) and `Composer::JapaneseSingleLine` beside the Western
-  composers. In `breaker::items` the Japanese composer emits:
+- The Japanese composers (`Composer::Japanese`, `Composer::JapaneseSingleLine`) break lines as
+  the Western ones do. In `breaker::items` they are to emit:
   - boxes per glyph,
   - mojikumi glue between glyphs with priority tiers (compress punctuation first, then
     expand inter-ideograph space, then Western/CJK spacing, then letter-spacing),

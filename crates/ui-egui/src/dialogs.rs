@@ -2576,12 +2576,13 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         ui.end_row();
                     }
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Composer:"));
-                    let single = cur(d, "p.composer", &pv["composer"]).as_str() == Some("singleLine");
+                    let (single, [paragraph, single_line]) =
+                        crate::panels::properties::composer_choice(cur(d, "p.composer", &pv["composer"]).as_str());
                     if ui.selectable_label(!single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph Composer"))).clicked() {
-                        d.fields.insert("p.composer".into(), json!("paragraph"));
+                        d.fields.insert("p.composer".into(), json!(paragraph));
                     }
                     if ui.selectable_label(single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Single-line Composer"))).clicked() {
-                        d.fields.insert("p.composer".into(), json!("singleLine"));
+                        d.fields.insert("p.composer".into(), json!(single_line));
                     }
                     ui.end_row();
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Insert Kashidas:"));

@@ -29,7 +29,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use designcraft_doc::{
-    Align, Composer, Document, FirstBaseline, GridAlign, ItemId, ParaProps, SpanColumns, StartParagraph, Story, StoryId, TabAlign, TextFrameOptions,
+    Align, Document, FirstBaseline, GridAlign, ItemId, ParaProps, SpanColumns, StartParagraph, Story, StoryId, TabAlign, TextFrameOptions,
     VerticalJustification, WrapMode, story,
 };
 use designcraft_fonts::{FontDb, ScopedFonts};
@@ -489,6 +489,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         last_baseline: None,
         last_descent: 0.0,
         last_reference: 0.0,
+        aki_below: None,
         pending: 0.0,
         pi: 0,
         band: Band::default(),
@@ -681,7 +682,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let mut gl = sp.glyphs.clone();
                 apply_desired_spacing(&mut gl, &pp);
                 let hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
-                let breaks = if pp.composer == Composer::SingleLine || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
+                let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                     let tab = |j: usize, x: f64, i: usize| {
                         let ind = pp.left_indent + if j == 0 { pp.first_line_indent } else { 0.0 };
                         tab_advance(&pp.tabs, pp.left_indent, ind + x, gl.get(i + 1..).unwrap_or_default()).0
@@ -755,6 +756,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             prepend_label(db, &mut sp.glyphs, label, prange.start, &base_chars, label_env, &mut table);
         }
         let mut glyphs = sp.glyphs;
+        if !pp.composer.japanese() {
+            // Every IDML's root style carries a leading model and character alignment, which only
+            // the Japanese composers use.
+            for g in &mut glyphs {
+                g.leading_model = designcraft_doc::cjk::LeadingModel::Roman;
+                g.character_alignment = designcraft_doc::cjk::CharacterAlignment::Baseline;
+            }
+        }
         let bidi_text = bidi::paragraph_text(&mut glyphs, &story.text);
         let bidi_info = unicode_bidi::BidiInfo::new(
             &bidi_text,
@@ -896,7 +905,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             };
             let rest = &glyphs[g0..];
             let rest_h = &hyph_after[g0..];
-            let breaks: Vec<Break> = if pp.composer == Composer::SingleLine || has_tabs || rest.len() > 4000 {
+            let breaks: Vec<Break> = if pp.composer.single_line() || has_tabs || rest.len() > 4000 {
                 // Where each line starts relative to the tab origin, as `layout_line` places it.
                 let tab = |j: usize, x: f64, i: usize| {
                     let x0 = slots.get(j).map_or(col.x0, |s| s.0);
@@ -914,8 +923,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let (s, e) = (g0 + b.start, g0 + b.end);
                 let line_glyphs = &glyphs[s..e.max(s)];
                 let (asc, desc, lead) = line_metrics(line_glyphs, &glyphs, s, base_leading, base_chars.size, db, &base_chars);
-                let reference = cjk_line_reference(line_glyphs);
-                let mut baseline = cur.next_baseline(f, col, lead, asc, &pp);
+                let (reference, model) = cjk_line_reference(line_glyphs);
+                let advance = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
+                let mut baseline = cur.next_baseline(f, col, advance, asc, &pp);
                 if cur.last_baseline.is_some() {
                     baseline += cur.last_reference - reference;
                 }
@@ -1087,6 +1097,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 }
                 cur.last_baseline = Some(baseline);
                 cur.last_reference = reference;
+                cur.aki_below = (model == designcraft_doc::cjk::LeadingModel::AkiBelow).then_some(lead);
                 cur.last_descent = desc;
                 cur.pending = 0.0;
                 line_no += 1;
@@ -1130,6 +1141,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 baseline: l.baseline,
                 descent: l.descent,
                 reference: cur.last_reference,
+                aki_below: cur.aki_below,
                 pending: pp.space_after,
             };
             cur.band = Band { para: pi + 1, line0: ft.lines.len(), above: Some(above) };
@@ -1720,6 +1732,9 @@ struct Cursor {
     last_baseline: Option<f64>,
     last_descent: f64,
     last_reference: f64,
+    /// The line above's leading when it sets the advance to the next line: under the Japanese
+    /// composers' Aki Below model the leading is the space below its line.
+    aki_below: Option<f64>,
     /// Space before/after waiting to be added to the next line.
     pending: f64,
     /// The paragraph being laid.
@@ -1786,6 +1801,7 @@ struct Resume {
     last_baseline: Option<f64>,
     last_descent: f64,
     last_reference: f64,
+    aki_below: Option<f64>,
     pending: f64,
 }
 
@@ -1829,6 +1845,7 @@ struct Above {
     baseline: f64,
     descent: f64,
     reference: f64,
+    aki_below: Option<f64>,
     /// The spanning paragraph's space after.
     pending: f64,
 }
@@ -1908,7 +1925,13 @@ impl Cursor {
         self.split_part();
     }
     fn state(&self) -> Resume {
-        Resume { last_baseline: self.last_baseline, last_descent: self.last_descent, last_reference: self.last_reference, pending: self.pending }
+        Resume {
+            last_baseline: self.last_baseline,
+            last_descent: self.last_descent,
+            last_reference: self.last_reference,
+            aki_below: self.aki_below,
+            pending: self.pending,
+        }
     }
     /// Start a split block (or its part in a new column) here.
     fn split_part(&mut self) {
@@ -1928,6 +1951,7 @@ impl Cursor {
         self.last_baseline = r.last_baseline;
         self.last_descent = r.last_descent;
         self.last_reference = r.last_reference;
+        self.aki_below = r.aki_below;
         self.pending = r.pending;
     }
     /// Within a split block, the next sub-column when there's one to go to.
@@ -1951,10 +1975,12 @@ impl Cursor {
                 self.last_baseline = Some(a.baseline);
                 self.last_descent = a.descent;
                 self.last_reference = a.reference;
+                self.aki_below = a.aki_below;
                 self.pending = a.pending;
             }
             None => {
                 self.last_baseline = None;
+                self.aki_below = None;
                 self.pending = 0.0;
             }
         }
@@ -2031,16 +2057,19 @@ fn cjk_alignment_shift(g: &Glyph, reference: &Glyph) -> f64 {
         A::IcfBottom => g.descent - reference.descent,
     }
 }
-fn cjk_line_reference(line: &[Glyph]) -> f64 {
+/// The point leading measures a line from, relative to its baseline, and the leading model of
+/// the line's largest character, which sets both.
+fn cjk_line_reference(line: &[Glyph]) -> (f64, designcraft_doc::cjk::LeadingModel) {
     use designcraft_doc::cjk::LeadingModel as L;
-    let Some(g) = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)) else { return 0.0 };
+    let Some(g) = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)) else { return (0.0, L::Roman) };
     let (top, bottom) = cjk_em_box(g);
-    match g.leading_model {
+    let reference = match g.leading_model {
         L::Roman => 0.0,
         L::AkiBelow => bottom,
         L::AkiAbove => top,
         L::Center | L::CenterDown => (top + bottom) / 2.0,
-    }
+    };
+    (reference, g.leading_model)
 }
 
 fn line_metrics(

@@ -1480,12 +1480,12 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Composer"));
-        let single = p["composer"].as_str() == Some("singleLine");
+        let (single, [paragraph, single_line]) = composer_choice(p["composer"].as_str());
         if ui.selectable_label(!single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph"))).clicked() {
-            let _ = app.run("type.para", json!({"attrs": {"composer": "paragraph"}}));
+            let _ = app.run("type.para", json!({"attrs": {"composer": paragraph}}));
         }
         if ui.selectable_label(single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Single-line"))).clicked() {
-            let _ = app.run("type.para", json!({"attrs": {"composer": "singleLine"}}));
+            let _ = app.run("type.para", json!({"attrs": {"composer": single_line}}));
         }
     });
     // Paragraph Border and Shading.
@@ -2129,6 +2129,14 @@ fn variable_font_axes(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, styl
         let spec = values.iter().map(|(t, v)| format!("{t}:{}", v.round())).collect::<Vec<_>>().join(",");
         let _ = app.run("type.char", json!({"attrs": {"fontStyle": format!("{base} {{{spec}}}")}}));
     }
+}
+
+/// Whether `composer` (a paragraph's `composer` attribute) is a single-line composer, and the
+/// paragraph and single-line composers of its kind (Japanese or not), for the composer choice.
+pub(crate) fn composer_choice(composer: Option<&str>) -> (bool, [&'static str; 2]) {
+    let single = matches!(composer, Some("singleLine" | "japaneseSingleLine"));
+    let kind = if composer.is_some_and(|c| c.starts_with("japanese")) { ["japanese", "japaneseSingleLine"] } else { ["paragraph", "singleLine"] };
+    (single, kind)
 }
 
 #[cfg(test)]

@@ -415,6 +415,25 @@ pub enum Composer {
     Paragraph,
     /// Greedy, line by line.
     SingleLine,
+    /// The Japanese paragraph composer: total fit, with the CJK leading model and character
+    /// alignment.
+    Japanese,
+    /// The Japanese single-line composer.
+    JapaneseSingleLine,
+}
+
+impl Composer {
+    /// Breaks lines greedily, one at a time.
+    pub fn single_line(self) -> bool {
+        matches!(self, Composer::SingleLine | Composer::JapaneseSingleLine)
+    }
+
+    /// A Japanese composer: lines follow the leading model ([`crate::cjk::LeadingModel`]) and
+    /// characters their [`crate::cjk::CharacterAlignment`]. The others set lines baseline to
+    /// baseline with every character on the Roman baseline.
+    pub fn japanese(self) -> bool {
+        matches!(self, Composer::Japanese | Composer::JapaneseSingleLine)
+    }
 }
 
 /// What a nested style runs to (Drop Caps and Nested Styles).

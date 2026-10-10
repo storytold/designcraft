@@ -1289,9 +1289,7 @@ impl<'r> Importer<'r> {
                 GridAlign::AllLines
             });
         }
-        a.composer = e
-            .prop("Composer")
-            .map(|c| if c.contains("Single") { designcraft_doc::Composer::SingleLine } else { designcraft_doc::Composer::Paragraph });
+        a.composer = e.prop("Composer").map(|c| composer_in(&c));
         a.hyphenate = e.boolean("Hyphenation");
         a.hyph_min_word = u("HyphenateWordsLongerThan");
         a.hyph_after_first = u("HyphenateAfterFirst");
@@ -2418,6 +2416,18 @@ fn ace_char(v: &str) -> Option<char> {
         "7" => Some(st::INDENT_HERE),
         "8" => Some(st::RIGHT_INDENT_TAB),
         _ => None,
+    }
+}
+
+/// `HL Composer` and `HL Single`, their World-Ready (`… Optyca`) and Japanese (`… J`) forms.
+fn composer_in(name: &str) -> designcraft_doc::Composer {
+    use designcraft_doc::Composer as C;
+    let name = name.trim().trim_start_matches("$ID/");
+    match (name.contains("Single"), name.ends_with(" J") || name.contains("Japanese")) {
+        (false, false) => C::Paragraph,
+        (true, false) => C::SingleLine,
+        (false, true) => C::Japanese,
+        (true, true) => C::JapaneseSingleLine,
     }
 }
 

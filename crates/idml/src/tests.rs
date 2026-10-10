@@ -788,6 +788,33 @@ fn cjk_character_attributes_import_from_independent_xml_and_round_trip() {
 }
 
 #[test]
+fn composers_import_by_kind_and_round_trip() {
+    use designcraft_doc::Composer as C;
+    let para = |composer: &str, text: &str| {
+        format!(
+            r#"<ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" Composer="{composer}"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>{text}</Content><Br /></CharacterStyleRange></ParagraphStyleRange>"#
+        )
+    };
+    let cases = [
+        ("HL Composer", C::Paragraph),
+        ("HL Single Optyca", C::SingleLine),
+        ("HL Composer Optyca", C::Paragraph),
+        ("HL Composer J", C::Japanese),
+        ("$ID/HL Single J", C::JapaneseSingleLine),
+    ];
+    let body: String = cases.iter().enumerate().map(|(i, (name, _))| para(name, &format!("p{i}"))).collect();
+    let story =
+        format!(r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">{body}</Story></idPkg:Story>"#);
+    let doc = import_idml(&fixture_with_story(&story)).unwrap();
+    let back = import_idml(&export_idml(&doc)).unwrap();
+    for d in [&doc, &back] {
+        let st = d.stories.values().find(|s| s.text.contains("p0")).unwrap();
+        let got: Vec<_> = st.paras.iter().take(cases.len()).map(|p| p.para.composer).collect();
+        assert_eq!(got, cases.iter().map(|(_, c)| Some(*c)).collect::<Vec<_>>());
+    }
+}
+
+#[test]
 fn warichu_imports_from_idml_and_round_trips() {
     let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
       <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
