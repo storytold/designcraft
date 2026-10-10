@@ -572,6 +572,21 @@ pub fn segmented(ui: &mut Ui, labels: &[&str], active: usize, width: f32) -> Opt
     out
 }
 
+/// Scrolling for a bar that a small window cuts off (Tools panel, Control panel, application
+/// bar): the mouse wheel scrolls the bar's only direction, and a thin scroll bar floats over the
+/// contents, so nothing moves and nothing shows while everything fits.
+pub fn overflow_scrolling(ui: &mut Ui) {
+    let style = ui.style_mut();
+    style.always_scroll_the_only_direction = true;
+    // A caption at the end of a scrolled row gets only what is left of it: extend, don't wrap.
+    style.wrap_mode = Some(egui::TextWrapMode::Extend);
+    let s = &mut style.spacing.scroll;
+    *s = egui::style::ScrollStyle::floating();
+    s.bar_width = 6.0;
+    // A faint handle while the pointer is elsewhere: the bar shows there is more.
+    s.dormant_handle_opacity = 0.5;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

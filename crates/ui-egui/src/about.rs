@@ -20,7 +20,7 @@ const MARK_PATH: &str = "M104.28,49.49L81.55,0h-31.23l-3.17,4.76L14.75,53.63,0,7
 /// The other ArtCraft apps (app-page slug, name, what it is) — same list as the README.
 pub const SIBLINGS: &[(&str, &str, &str)] = &[
     ("photocraft", "PhotoCraft", "image editing"),
-    ("drawcraft", "VectorCraft", "vector illustration"),
+    ("vectorcraft", "VectorCraft", "vector illustration"),
     ("filmcraft", "FilmCraft", "video editing, color and sound"),
     ("lightcraft", "LightCraft", "photo library and raw development"),
     ("pdfcraft", "PdfCraft", "reading, organizing and protecting PDFs"),

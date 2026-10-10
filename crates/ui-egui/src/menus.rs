@@ -704,7 +704,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
             let l = path.to_lowercase();
             if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
-                return Some(app.run("file.place", json!({"path": path})));
+                return Some(app.open_file("file.place", json!({"path": path})));
             }
             let info = match app.run("place.styles", json!({"path": path})) {
                 Ok(v) => v,
@@ -1360,10 +1360,20 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             }
             // Workspaces choose which bars and panels are visible.
             app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book");
-            app.ui.dock_tab = if name == "Typography" { "properties".into() } else { app.ui.dock_tab.clone() };
+            let dock_tab = match name {
+                "Typography" => Some("properties"),
+                "Interactive for PDF" | "Digital Publishing" => Some("pages"),
+                _ => None,
+            };
+            if let Some(tab) = dock_tab {
+                app.ui.dock_tab = tab.into();
+                app.ui.dock_expanded = true;
+            }
             app.ui.open_panel = match name {
                 "Typography" => Some("paragraphStyles".into()),
                 "Printing and Proofing" => Some("swatches".into()),
+                "Interactive for PDF" => Some("buttons".into()),
+                "Digital Publishing" => Some("liquid".into()),
                 _ => None,
             };
             app.ui.workspace = name.to_string();
@@ -1393,7 +1403,7 @@ fn download_document(app: &mut DesignApp) -> Result<Value, String> {
 
 fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
-    let page = p.get("page").and_then(Value::as_u64).map(|v| v as usize).or_else(|| crate::canvas::current_page(app)).unwrap_or(0);
+    let page = crate::control::page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count())?;
     let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(2.0);
     let mut r = designcraft_render::Renderer::new();
     let img = r
@@ -1743,6 +1753,44 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
     let _ = app.run(id, p);
 }
 
+/// A native menu bar item was chosen (macOS): like [`activate`], except that the menu bar takes
+/// ⌘A, ⌘C, ⌘X, ⌘V, ⌘Z and ⇧⌘Z before the window sees them, so while a text field has keyboard
+/// focus, Select All, Copy, Cut, Paste, Undo and Redo act on that field, as in any Mac app.
+pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, params: &Value) {
+    if !(ctx.text_edit_focused() && params.is_null() && forward_to_text_field(app, ctx, id)) {
+        activate(app, id, params);
+    }
+}
+
+/// Whether a native menu bar item can be chosen: as in the in-window menus, but the editing
+/// commands a focused text field takes are always available to it.
+pub fn native_menu_enabled(app: &DesignApp, ctx: &egui::Context, id: &str) -> bool {
+    (ctx.text_edit_focused() && TEXT_FIELD_COMMANDS.contains(&id)) || menu_enabled(app, id)
+}
+
+/// The editing commands a focused text field takes from the native menu bar.
+const TEXT_FIELD_COMMANDS: [&str; 6] = ["edit.selectAll", "edit.copy", "edit.cut", "edit.paste", "edit.undo", "edit.redo"];
+
+/// Hand a standard editing command to the focused text field as next frame's input; false when
+/// `id` isn't one of them.
+fn forward_to_text_field(app: &mut DesignApp, ctx: &egui::Context, id: &str) -> bool {
+    let key = |key: egui::Key, modifiers: egui::Modifiers| {
+        [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers })
+    };
+    match id {
+        "edit.selectAll" => app.synthetic.extend(key(egui::Key::A, egui::Modifiers::COMMAND)),
+        "edit.undo" => app.synthetic.extend(key(egui::Key::Z, egui::Modifiers::COMMAND)),
+        "edit.redo" => app.synthetic.extend(key(egui::Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT)),
+        "edit.copy" => app.synthetic.push(egui::Event::Copy),
+        "edit.cut" => app.synthetic.push(egui::Event::Cut),
+        // Only the integration reads the system clipboard: it answers with an `Event::Paste`.
+        "edit.paste" => ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+        _ => return false,
+    }
+    ctx.request_repaint();
+    true
+}
+
 /// The menu bar contents (inside the app bar; macOS uses the native menu instead).
 pub fn menu_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let lang = app.ui.language.clone();
@@ -1896,6 +1944,9 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
             if app.native_shortcuts.contains(&id) && !app.ui.shortcuts.contains_key(&id) {
                 continue; // The native menu handles it.
             }
+            // The key press belongs to the shortcut: what it opens (Quick Apply's list, a dialog's
+            // default button) must not see the same press as Enter or Space this frame.
+            ctx.input_mut(|i| i.consume_key(modifiers, key));
             // Like choosing the menu item: "…" commands open their dialog.
             activate(app, &id, &Value::Null);
             continue;
@@ -1931,6 +1982,13 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
         );
         r.request_focus();
         let items = quick_apply_items(&app.session, &q);
+        // Only a fresh Return runs the first entry: ⌘Return pressed again or held down (repeats) is
+        // the shortcut, not a choice.
+        let enter = ui.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if !modifiers.command))
+        });
         egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
             for (i, it) in items.iter().enumerate() {
                 let mut b = egui::Button::new(it.label.as_str()).frame(false);
@@ -1939,7 +1997,13 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
                 } else if !it.kind.is_empty() {
                     b = b.shortcut_text(it.kind);
                 }
-                if ui.add_sized([460.0, 22.0], b).clicked() || (i == 0 && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                // The button aligns its label by the layout it's in: left, like the rows with a shortcut.
+                let size = egui::vec2(460.0, 22.0);
+                let row =
+                    ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min), |ui| {
+                        ui.add(b.min_size(size))
+                    });
+                if row.inner.clicked() || (i == 0 && enter) {
                     run = Some((it.id.clone(), it.params.clone()));
                 }
             }
@@ -2381,6 +2445,78 @@ mod tests {
     }
 
     #[test]
+    fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let cmd_return =
+            |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![cmd_return(true), cmd_return(false)]);
+        frame(&mut app, vec![]);
+        assert_eq!(app.ui.palette.as_deref(), Some(""), "Quick Apply stays open");
+        assert_eq!(app.session.documents().len(), 1, "the first entry (New Document) didn't run");
+        // Pressing the shortcut again, or holding it until it repeats, doesn't run it either.
+        frame(&mut app, vec![cmd_return(true), cmd_return(false)]);
+        let repeat = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: true, modifiers: egui::Modifiers::COMMAND };
+        frame(&mut app, vec![repeat, cmd_return(false)]);
+        assert_eq!(app.ui.palette.as_deref(), Some(""), "Quick Apply stays open");
+        assert_eq!(app.session.documents().len(), 1, "a second ⌘Return or a repeat doesn't run the first entry");
+        // A plain Return still does.
+        let enter =
+            |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        frame(&mut app, vec![enter(true), enter(false)]);
+        assert_eq!(app.ui.palette, None, "Return runs the first entry and closes Quick Apply");
+        assert_eq!(app.session.documents().len(), 2);
+    }
+
+    #[test]
+    fn quick_apply_rows_are_left_aligned() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.ui.palette = Some(String::new());
+        let ctx = egui::Context::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        let label_x = |label: &str| {
+            // The palette is painted last, over anything else with the same text.
+            shapes.iter().rev().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos.x),
+                _ => None,
+            })
+        };
+        // Rows that show a shortcut or a style kind, and rows that show neither, among the first visible ones.
+        let items = quick_apply_items(&app.session, "");
+        let first = items.iter().take(10);
+        let plain = first.clone().find(|it| it.shortcut.is_none() && it.kind.is_empty()).expect("a row without a shortcut");
+        let with_sc = first.clone().find(|it| it.shortcut.is_some()).expect("a row with a shortcut");
+        let (a, b) = (label_x(&plain.label).expect("plain row drawn"), label_x(&with_sc.label).expect("shortcut row drawn"));
+        assert!((a - b).abs() < 0.5, "{:?} at x {a}, {:?} at x {b}", plain.label, with_sc.label);
+    }
+
+    #[test]
     fn sample_scripts_run() {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.session.execute("file.new", &json!({})).unwrap();
@@ -2431,6 +2567,129 @@ mod tests {
         run_ui(&mut app, "window.dockPanel", &json!({"panel": "swatches"})).unwrap().unwrap();
         assert!(app.ui.floating.is_empty());
         assert!(run_ui(&mut app, "window.floatPanel", &json!({"panel": "nope"})).unwrap().is_err());
+    }
+
+    /// One frame as the desktop app runs it: queued synthetic input, then the native menu item
+    /// chosen during the frame (`menu`), then the app's logic and ui.
+    fn native_frame(app: &mut crate::DesignApp, ctx: &egui::Context, events: Vec<egui::Event>, menu: Option<&str>) -> egui::FullOutput {
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        app.raw_input_hook(&mut input);
+        let mut menu = menu;
+        let mut out = ctx.run_ui(input, |ui| {
+            let ctx = ui.ctx().clone();
+            if let Some(id) = menu.take() {
+                activate_native(app, &ctx, id, &Value::Null);
+            }
+            app.logic(&ctx);
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        out
+    }
+
+    /// A document with two frames, nothing selected, and Quick Apply's search field focused
+    /// holding `text`.
+    fn app_with_focused_field(ctx: &egui::Context, text: &str) -> crate::DesignApp {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.session.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
+        app.session.execute("frame.create", &json!({"rect": [236, 36, 400, 200]})).unwrap();
+        app.session.execute("edit.deselectAll", &json!({})).unwrap();
+        app.ui.palette = Some(text.into());
+        for _ in 0..3 {
+            native_frame(&mut app, ctx, vec![], None);
+        }
+        assert!(ctx.text_edit_focused());
+        app
+    }
+
+    fn field_selection(ctx: &egui::Context) -> Option<(usize, usize)> {
+        let id = ctx.memory(|m| m.focused())?;
+        let r = egui::TextEdit::load_state(ctx, id)?.cursor.char_range()?;
+        Some((r.primary.index.min(r.secondary.index).into(), r.primary.index.max(r.secondary.index).into()))
+    }
+
+    fn document_items(app: &crate::DesignApp) -> (usize, usize) {
+        let d = app.session.active().unwrap();
+        (d.doc.spreads.iter().flat_map(|sp| &sp.items).count(), d.selection.items.len())
+    }
+
+    #[test]
+    fn native_select_all_selects_the_focused_fields_text() {
+        // The Mac menu bar takes ⌘A before the window sees it (#30).
+        let ctx = egui::Context::default();
+        let mut app = app_with_focused_field(&ctx, "frame");
+        native_frame(&mut app, &ctx, vec![], Some("edit.selectAll"));
+        native_frame(&mut app, &ctx, vec![], None);
+        assert_eq!(field_selection(&ctx), Some((0, 5)), "the field's whole text is selected");
+        assert_eq!(document_items(&app), (2, 0), "the document selection is unchanged");
+    }
+
+    #[test]
+    fn native_paste_and_copy_act_on_the_focused_field() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_focused_field(&ctx, "frame");
+        native_frame(&mut app, &ctx, vec![], Some("edit.selectAll"));
+        native_frame(&mut app, &ctx, vec![], None);
+        // Copy puts the field's selected text on the clipboard.
+        native_frame(&mut app, &ctx, vec![], Some("edit.copy"));
+        let out = native_frame(&mut app, &ctx, vec![], None);
+        assert!(out.platform_output.commands.contains(&egui::OutputCommand::CopyText("frame".into())), "{:?}", out.platform_output.commands);
+        // Paste asks the integration for the clipboard, which it hands to the field as a paste.
+        let out = native_frame(&mut app, &ctx, vec![], Some("edit.paste"));
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::RequestPaste), "{commands:?}");
+        native_frame(&mut app, &ctx, vec![egui::Event::Paste("text".into())], None);
+        assert_eq!(app.ui.palette.as_deref(), Some("text"));
+        assert_eq!(document_items(&app), (2, 0), "nothing was pasted into the document");
+    }
+
+    #[test]
+    fn native_undo_and_redo_act_on_the_focused_field() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_focused_field(&ctx, "");
+        native_frame(&mut app, &ctx, vec![egui::Event::Text("abc".into())], None);
+        assert_eq!(app.ui.palette.as_deref(), Some("abc"));
+        native_frame(&mut app, &ctx, vec![], Some("edit.undo"));
+        native_frame(&mut app, &ctx, vec![], None);
+        assert_eq!(app.ui.palette.as_deref(), Some(""), "the field's typing is undone");
+        assert_eq!(document_items(&app), (2, 0), "the document's last frame is still there");
+        native_frame(&mut app, &ctx, vec![], Some("edit.redo"));
+        native_frame(&mut app, &ctx, vec![], None);
+        assert_eq!(app.ui.palette.as_deref(), Some("abc"));
+        assert_eq!(document_items(&app), (2, 0));
+    }
+
+    #[test]
+    fn native_editing_items_are_enabled_for_a_focused_field() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_focused_field(&ctx, "frame");
+        // Nothing is selected in the document, so its Copy and Cut are off; the field's are on.
+        assert!(!menu_enabled(&app, "edit.copy") && !menu_enabled(&app, "edit.cut"));
+        for id in ["edit.selectAll", "edit.copy", "edit.cut", "edit.paste", "edit.undo", "edit.redo"] {
+            assert!(native_menu_enabled(&app, &ctx, id), "{id}");
+        }
+        assert!(!native_menu_enabled(&app, &ctx, "edit.duplicate"), "other items follow the document");
+        app.ui.palette = None;
+        native_frame(&mut app, &ctx, vec![], None);
+        native_frame(&mut app, &ctx, vec![], None);
+        assert!(!native_menu_enabled(&app, &ctx, "edit.copy"), "without a focused field, as the document says");
+    }
+
+    #[test]
+    fn native_select_all_without_a_focused_field_selects_the_documents_items() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_focused_field(&ctx, "frame");
+        app.ui.palette = None;
+        native_frame(&mut app, &ctx, vec![], None);
+        native_frame(&mut app, &ctx, vec![], None);
+        assert!(!ctx.text_edit_focused());
+        native_frame(&mut app, &ctx, vec![], Some("edit.selectAll"));
+        assert_eq!(document_items(&app), (2, 2));
     }
 
     #[test]
@@ -2487,6 +2746,18 @@ mod tests {
         run_ui(&mut app, "window.deleteWorkspace", &json!({"name": "Mine"})).unwrap().unwrap();
         assert!(app.ui.custom_workspaces.is_empty());
         assert_eq!(app.ui.workspace, "Essentials");
+    }
+
+    #[test]
+    fn interactive_workspaces_show_their_panels() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.dock_expanded = false;
+        run_ui(&mut app, "window.workspace", &json!({"name": "Interactive for PDF"})).unwrap().unwrap();
+        assert_eq!((app.ui.dock_tab.as_str(), app.ui.dock_expanded, app.ui.open_panel.as_deref()), ("pages", true, Some("buttons")));
+        run_ui(&mut app, "window.workspace", &json!({"name": "Digital Publishing"})).unwrap().unwrap();
+        assert_eq!((app.ui.dock_tab.as_str(), app.ui.open_panel.as_deref()), ("pages", Some("liquid")));
+        run_ui(&mut app, "window.workspace", &json!({"name": "Essentials"})).unwrap().unwrap();
+        assert_eq!(app.ui.open_panel, None);
     }
 
     #[test]

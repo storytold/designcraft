@@ -167,6 +167,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Dock panel", "إرساء اللوحة"),
     ("OK", "موافق"),
     ("Cancel", "إلغاء"),
+    ("Can't Open the File", "تعذّر فتح الملف"),
+    ("Can't Place the File", "تعذّر إدراج الملف"),
     ("Apply", "تطبيق"),
     ("Done", "تم"),
     ("Reset", "إعادة ضبط"),
