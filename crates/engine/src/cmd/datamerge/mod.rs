@@ -197,7 +197,7 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     fill_row(&mut doc, &source.fields, &row, record as u32, &options, &maps, data_dir.as_deref(), doc_dir.as_deref());
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
-    st.revision = st.revision.saturating_add(1);
+    st.bump_revision();
     Ok(json!({"record": record}))
 }
 
@@ -709,7 +709,7 @@ fn remember_source_status(s: &mut Session, status: SourceStatus) {
         return;
     }
     st.doc = Arc::new(doc);
-    st.revision = st.revision.saturating_add(1);
+    st.bump_revision();
 }
 
 fn load_inline(p: &Value) -> std::result::Result<(Table, Option<PathBuf>), String> {

@@ -24,6 +24,7 @@ winresource = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
+arboard = { workspace = true }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 # The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
@@ -31,3 +32,6 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
+# The input context, to drop the IME's marked text when the Type tool ends a composition.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSTextInputContext"] }

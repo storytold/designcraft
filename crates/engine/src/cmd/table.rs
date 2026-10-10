@@ -976,7 +976,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
         text: Some(TextSel { story: g.story, anchor: 0, focus: 0, frame, cell: Some(CellAddr { table: g.table, row: r.r0, col: r.c0 }) }),
         ..Default::default()
     };
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"story": g.story.0, "table": g.table, "range": r}))
 }
 
@@ -1008,7 +1008,7 @@ pub(crate) fn step_cell(s: &mut Session, forward: bool) -> Result<Value> {
     let st = s.doc_mut()?;
     let len = st.doc.text_story(t.story, Some(CellAddr { table: c.table, row, col })).map_or(0, |x| x.len());
     st.selection = Selection::text(TextSel { anchor: 0, focus: len, cell: Some(CellAddr { table: c.table, row, col }), ..t });
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"row": row, "col": col}))
 }
 

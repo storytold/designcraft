@@ -194,14 +194,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// utility button and the Screen Mode well.
 fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
     let t = Tokens::get(ui.ctx());
-    let info = crate::panels::sel_info(app);
+    let target = crate::panels::color_target(app);
     let doc = app.session.active().map(|d| d.doc.clone());
     let stroke_front_id = egui::Id::new("proxy_stroke_front");
-    let text_id = egui::Id::new("proxy_text");
     let stroke_front: bool = ui.data(|d| d.get_temp(stroke_front_id)).unwrap_or(false);
-    let text_mode: bool = ui.data(|d| d.get_temp(text_id)).unwrap_or(false);
-    let (fill_sw, stroke_sw) = match &info {
-        Some(i) => (i.fill.clone(), i.stroke.clone()),
+    let text_mode = crate::panels::colors_affect_text(app) || app.ui.formatting_affects_text;
+    let (fill_sw, stroke_sw) = match &target {
+        Some((fill, _, stroke, _)) => (fill.clone(), stroke.clone()),
         None => ("[None]".to_string(), "[Black]".to_string()),
     };
     let x0 = ui.max_rect().min.x + (width - 30.0) / 2.0;
@@ -216,8 +215,10 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
         })
         .clicked()
     {
-        let _ = app.run("object.fill", json!({"swatch": "[None]"}));
-        let _ = app.run("object.stroke", json!({"swatch": "[Black]"}));
+        // Text defaults to a black fill and no stroke; objects to no fill and a black stroke.
+        let (fill, stroke) = if crate::panels::colors_affect_text(app) { ("[Black]", "[None]") } else { ("[None]", "[Black]") };
+        let _ = crate::panels::apply_swatch(app, false, fill, None);
+        let _ = crate::panels::apply_swatch(app, true, stroke, None);
     }
     let swap = egui::Rect::from_min_size(egui::pos2(x0 + 19.0, row.min.y), vec2(11.0, 11.0));
     icons::paint(ui.painter(), swap, "swap", t.icon);
@@ -228,8 +229,8 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
         })
         .clicked()
     {
-        let _ = app.run("object.fill", json!({"swatch": stroke_sw}));
-        let _ = app.run("object.stroke", json!({"swatch": fill_sw}));
+        let _ = crate::panels::apply_swatch(app, false, &stroke_sw, None);
+        let _ = crate::panels::apply_swatch(app, true, &fill_sw, None);
     }
     ui.add_space(2.0);
     // Proxy: 19.5 pt squares, fill top-left, stroke bottom-right.
@@ -302,7 +303,7 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
             })
             .clicked()
         {
-            ui.data_mut(|d| d.insert_temp(text_id, k == 1));
+            let _ = app.run("app.formattingAffectsText", json!({"on": k == 1}));
         }
     }
     ui.add_space(5.0);
@@ -316,14 +317,13 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
     let chip = egui::Rect::from_center_size(well.center(), vec2(14.0, 14.0));
     crate::widgets::paint_chip(ui.painter(), chip, None, None);
     flyout_triangle(ui.painter(), well, t.icon);
-    let target = if stroke_front { "object.stroke" } else { "object.fill" };
     if resp.clicked() {
-        let _ = app.run(target, json!({"swatch": "[None]"}));
+        let _ = crate::panels::apply_swatch(app, stroke_front, "[None]", None);
     }
     egui::Popup::context_menu(&resp).show(|ui| {
         for (label, sw) in [("Apply Color", "[Black]"), ("Apply None", "[None]")] {
             if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                let _ = app.run(target, json!({"swatch": sw}));
+                let _ = crate::panels::apply_swatch(app, stroke_front, sw, None);
                 ui.close();
             }
         }

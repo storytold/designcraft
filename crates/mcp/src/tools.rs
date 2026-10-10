@@ -279,6 +279,7 @@ pub fn tool_definitions() -> Vec<Value> {
                             "y": num("y (pt)"),
                             "space": {"type": "string", "enum": ["doc", "screen"], "description": "Coordinate space (default doc)"},
                             "mods": mods_schema(),
+                            "clicks": {"type": "integer", "minimum": 1, "description": "On a down: presses in a row it completes (2 double, 3 triple…; default 1)"},
                         }), &["kind", "x", "y"]),
                     },
                     "mods": mods_schema(),
@@ -308,6 +309,25 @@ pub fn tool_definitions() -> Vec<Value> {
             "Type text at the text insertion point, independently of the active tool, or into the focused dialog field in \
              the desktop app. Put a caret first with pointer (tool \"type\") or execute text.placeCaret / text.select.",
             obj(json!({"text": string("Text to type (\\n = new paragraph)")}), &["text"]),
+            false,
+        ),
+        tool(
+            "ime",
+            "Input method",
+            "Input method (IME) events at the Type tool's caret, as a system IME sends them: `preedit` is the marked text \
+             (shown in place, no undo step; an empty string cancels the composition), `active` the clause being converted \
+             in characters of it, `commit` the text the IME types in its place (one undo step). Example, Japanese: \
+             {preedit:\"にほん\", active:[3,3]} then {preedit:\"日本\", active:[0,2]} then {commit:\"日本\"}. Returns \
+             whether a composition is still open.",
+            obj(
+                json!({
+                    "preedit": string("Marked text (replaces the previous marked text; empty = cancel)"),
+                    "active": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2,
+                               "description": "[start, end] of the clause being converted, in characters of preedit (start = end: the IME's cursor)"},
+                    "commit": string("Committed text, typed in place of the marked text"),
+                }),
+                &[],
+            ),
             false,
         ),
         tool(
@@ -571,6 +591,7 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<ToolResult, Str
             j(b.call("ui.key", pick(a, &["key", "shift", "alt", "cmd", "ctrl"]))?)
         }
         "type_text" => j(b.call("ui.text", json!({"text": req_str(a, "text")?}))?),
+        "ime" => j(b.call("ui.ime", pick(a, &["preedit", "active", "commit"]))?),
         "click" | "drag" => {
             need_ui(b, name)?;
             let keys: &[&str] = &["x", "y", "toX", "toY", "steps", "button", "count", "shift", "alt", "cmd", "ctrl"];

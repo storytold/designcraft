@@ -229,7 +229,7 @@ pub fn open(s: &mut Session, dir: &Path) -> Result<Vec<usize>> {
         st.fonts = fonts;
         // Unsaved: the copy on disk (if any) is older than what was recovered.
         st.saved_doc = std::sync::Arc::new((*st.doc).clone());
-        st.revision += 1;
+        st.bump_revision();
         opened.push(s.add_document(st));
         discard(dir, uid);
     }

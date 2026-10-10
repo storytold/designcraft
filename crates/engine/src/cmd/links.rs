@@ -61,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Err(bad("links.goTo", "the graphic isn't placed"));
             }
             st.selection = Selection::items(ids.clone());
-            st.revision += 1;
+            st.bump_revision();
             Ok(json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
         }),
     ]

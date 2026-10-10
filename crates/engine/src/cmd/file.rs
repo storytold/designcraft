@@ -242,7 +242,7 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         super::datamerge::refresh_relative_paths(&mut d, std::path::Path::new(&path));
         if d.data_merge != st.doc.data_merge {
             st.doc = Arc::new(d);
-            st.revision = st.revision.saturating_add(1);
+            st.bump_revision();
         }
     }
     let bytes = to_bytes(&st.doc);
@@ -649,7 +649,6 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         let mut fresh = DocState::new(d, Some(path.clone()));
         fresh.fonts = fonts;
         fresh.uid = uid;
-        fresh.revision = st.revision + 1;
         *st = fresh;
         if let Some(dir) = &s.recovery_dir {
             crate::recovery::discard(dir, uid);
@@ -937,6 +936,26 @@ mod document_fonts_tests {
         s.execute("file.revert", &json!({})).unwrap();
         assert_eq!(font_entry(&mut s, FAMILY)["source"], "document");
         assert!(glyph_faces(&s).iter().all(|(_, f)| f.family == FAMILY));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bold_and_italic_link_the_document_fonts_styles() {
+        const FAMILY: &str = "DocFont Linked";
+        let dir = temp_dir("linked");
+        std::fs::write(dir.join(DOCUMENT_FONTS_FOLDER).join("linked.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
+        let path = dir.join("Linked.designcraft");
+        write_document(&path, FAMILY);
+
+        let mut s = Session::new();
+        open(&mut s, &path);
+        let sid = *s.doc().unwrap().doc.stories.keys().next().unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        // The family is the document's alone: its Regular is the style without bold or italic.
+        let r = s.execute("type.bold", &json!({"on": false})).unwrap();
+        assert_eq!(r["fontStyle"], "Regular", "{r}");
+        let r = s.execute("type.italic", &json!({"on": false})).unwrap();
+        assert_eq!(r["fontStyle"], "Regular", "{r}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -123,7 +123,8 @@ impl Headless {
             let x = e.get("x").and_then(Value::as_f64).ok_or("pointer event needs numeric `x`")?;
             let y = e.get("y").and_then(Value::as_f64).ok_or("pointer event needs numeric `y`")?;
             let mods = e.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or(base);
-            self.session.pointer(&PointerEvent { kind, pos: Point::new(x, y), mods }, VIEW).map_err(|e| e.to_string())?;
+            let clicks = e.get("clicks").and_then(Value::as_u64).map_or(1, |n| n.clamp(1, 255) as u8);
+            self.session.pointer(&PointerEvent { kind, pos: Point::new(x, y), mods, clicks }, VIEW).map_err(|e| e.to_string())?;
         }
         let requests: Vec<Value> = self.session.ui_requests.drain(..).map(|r| serde_json::to_value(r).unwrap_or_default()).collect();
         Ok(json!({"selection": self.selection(), "tool": self.session.tool_id(), "requests": requests}))
@@ -189,6 +190,32 @@ impl Headless {
         Ok(json!({"inserted": t.chars().count()}))
     }
 
+    /// `ui.ime {preedit?, active?: [start, end], commit?}`: input method events at the Type tool's
+    /// caret, as the app's `ui.ime` sends them: marked text shows in place with nothing recorded,
+    /// the committed text is typed as one `text.insert`, an empty `preedit` cancels.
+    fn ime(&mut self, p: &Value) -> Result<Value, String> {
+        let caret = self.session.active().is_some_and(|st| st.selection.text.is_some_and(|t| st.doc.text_story(t.story, t.cell).is_some()));
+        if !caret || !self.session.wants_text() {
+            return Err("no text caret for the input method: click into a text frame with the type tool first (pointer with tool \"type\")".into());
+        }
+        let n = |v: &Value| v.as_u64().and_then(|n| usize::try_from(n).ok());
+        let r = (|| {
+            if let Some(text) = s(p, "preedit") {
+                let active = p.get("active").and_then(Value::as_array).and_then(|a| Some(n(a.first()?)?..n(a.get(1)?)?));
+                self.session.tool_preedit(text, active, VIEW)?;
+            }
+            match s(p, "commit") {
+                // A bare line break confirms the marked text, as Enter does in some IMEs.
+                Some("\n" | "\r") => self.session.end_composition(),
+                Some(text) => self.session.tool_ime_commit(text, VIEW),
+                None => Ok(()),
+            }
+        })();
+        self.session.ui_requests.clear();
+        r.map_err(|e| e.to_string())?;
+        Ok(json!({"composing": self.session.tool_composing(), "selection": self.selection()}))
+    }
+
     fn render(&mut self, p: &Value) -> Result<Value, String> {
         let st = self.session.active().ok_or("no document open")?;
         let page = page_index(p, st.doc.page_count())?;
@@ -245,6 +272,7 @@ impl Backend for Headless {
             "ui.pointer" => self.pointer(p),
             "ui.key" => self.key(p),
             "ui.text" => self.text(p),
+            "ui.ime" => self.ime(p),
             "ui.render" => self.render(p),
             "app.open" => self.exec("file.open", &json!({"path": s(p, "path")})),
             "app.save" => self.exec("file.save", &json!({"path": s(p, "path")})),

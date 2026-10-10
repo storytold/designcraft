@@ -16,7 +16,7 @@ pub fn specs() -> Vec<CommandSpec> {
             if p.get("select").and_then(Value::as_bool).unwrap_or(true) && !ids.is_empty() {
                 let st = s.doc_mut()?;
                 st.selection = designcraft_doc::Selection::items(ids.clone());
-                st.revision += 1;
+                st.bump_revision();
             }
             Ok(json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
         }),

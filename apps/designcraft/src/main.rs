@@ -57,6 +57,10 @@ impl eframe::App for App {
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui(ui);
+        #[cfg(target_os = "macos")]
+        if self.app.take_ime_discard() {
+            discard_marked_text();
+        }
     }
     fn on_exit(&mut self) {
         // A normal exit before the third frame is not a crash.
@@ -64,6 +68,17 @@ impl eframe::App for App {
             s.presented();
         }
         save_prefs(&self.app);
+    }
+}
+
+/// Tell the macOS input method to drop its composition (the Type tool kept the marked text as
+/// typed). winit's IME toggle only clears its own copy, so the IME would type it again.
+#[cfg(target_os = "macos")]
+fn discard_marked_text() {
+    if let Some(mtm) = objc2::MainThreadMarker::new()
+        && let Some(ic) = objc2_app_kit::NSTextInputContext::currentInputContext(mtm)
+    {
+        ic.discardMarkedText();
     }
 }
 
@@ -200,6 +215,7 @@ fn services() -> Services {
         pick_save: Some(Box::new(|name: &str| rfd::FileDialog::new().set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string()))),
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string()))),
+        clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
         ..Default::default()
     }
 }

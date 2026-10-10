@@ -872,12 +872,15 @@ dependencies = [
 name = "designcraft"
 version = "0.5.0"
 dependencies = [
+ "arboard",
  "designcraft-engine",
  "designcraft-ui-egui",
  "eframe",
  "egui",
  "log",
  "muda",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "rfd",
  "serde",
  "serde_json",
@@ -928,6 +931,7 @@ dependencies = [
  "regex",
  "unicode-bidi",
  "unicode-bidi-mirroring",
+ "unicode-segmentation",
 ]
 
 [[package]]

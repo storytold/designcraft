@@ -161,7 +161,7 @@ fn go_to_reference(s: &mut Session, _: &Value) -> Result<Value> {
     let at = st.doc.story(t.story).and_then(|x| x.note_anchor(id)).ok_or_else(|| bad("footnote.goToReference", "footnote not found"))?;
     let pos = at + designcraft_doc::FOOTNOTE_REF.len_utf8();
     st.selection.text = Some(TextSel { anchor: pos, focus: pos, cell: None, ..t });
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"story": t.story.0, "pos": pos}))
 }
 

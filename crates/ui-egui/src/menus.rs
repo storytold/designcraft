@@ -85,6 +85,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.zoom", "Zoom To", None, "{zoom: 1.0 = 100%}"),
     ("view.screenMode", "Screen Mode", None, "{mode: normal|preview|bleed|slug|presentation}"),
     ("view.togglePreview", "Toggle Normal/Preview", Some("W"), "{}"),
+    (
+        "app.formattingAffectsText",
+        "Formatting Affects Text",
+        Some("J"),
+        "{on?: bool} — with text frames selected, colours go to their text (on) or the frames (off); toggles without `on`",
+    ),
     ("view.frameEdges", "Show/Hide Frame Edges", Some("Cmd+H"), "{}"),
     ("view.rulers", "Show/Hide Rulers", Some("Cmd+R"), "{}"),
     ("view.guides", "Show/Hide Guides", Some("Cmd+;"), "{}"),
@@ -1264,6 +1270,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 "zone": ui.snap_zone,
             }))
         }
+        "app.formattingAffectsText" => {
+            app.ui.formatting_affects_text = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.formatting_affects_text);
+            Ok(json!({"on": app.ui.formatting_affects_text}))
+        }
         "window.richBlack" => {
             app.ui.rich_black = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.rich_black);
             app.canvas.shown = None;
@@ -1565,8 +1575,22 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
     }
 }
 
+/// Commands that act on the text being typed wait while an IME composes at the caret (its marked
+/// text isn't typed yet): Undo and Redo (the native menu takes ⌘Z ahead of the IME), the clipboard
+/// and the selection.
+pub(crate) fn waits_for_ime(app: &DesignApp, id: &str) -> bool {
+    app.session.tool_composing()
+        && (matches!(
+            id,
+            "edit.undo" | "edit.redo" | "edit.cut" | "edit.copy" | "edit.clear" | "edit.duplicate" | "edit.selectAll" | "edit.deselectAll"
+        ) || id.starts_with("edit.paste"))
+}
+
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if waits_for_ime(app, id) {
+        return false;
+    }
     match designcraft_engine::find_command(id) {
         Some(c) => (c.enabled)(&app.session).is_ok(),
         None => true,
@@ -1777,6 +1801,9 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if waits_for_ime(app, id) {
+        return false;
+    }
     if ui_label(id).is_some() {
         return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.");
     }
@@ -1801,6 +1828,9 @@ pub fn close_document(app: &mut DesignApp, index: Option<usize>) {
 /// A menu item was chosen. An engine command whose label ends in "…" and that takes parameters
 /// opens a dialog built from its parameter documentation (see [`crate::dialogs::command_fields`]).
 pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
+    if waits_for_ime(app, id) {
+        return;
+    }
     if params.is_null() && id == "file.close" {
         close_document(app, None);
         return;
@@ -2080,7 +2110,8 @@ fn parse_shortcut(sc: &str) -> Option<(egui::Modifiers, egui::Key)> {
 pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
     // Only a focused text field takes the keys: the canvas (or a button) having focus after a click
     // must not swallow tool shortcuts until Esc clears it.
-    if ctx.text_edit_focused() || app.ui.dialog.is_some() || app.ui.palette.is_some() {
+    // While an IME composes at the text caret, the keyboard is its own.
+    if ctx.text_edit_focused() || app.ui.dialog.is_some() || app.ui.palette.is_some() || app.session.tool_composing() {
         return;
     }
     let typing = app.session.wants_text();
@@ -2342,6 +2373,31 @@ mod tests {
         }
         assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
         assert!(!egui::Popup::is_any_open(&ctx), "choosing a command dismisses the menu");
+    }
+
+    #[test]
+    fn formatting_affects_text_sends_swatches_to_the_text() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "words", "caret": false})).unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        app.run("selection.set", json!({"ids": [fid]})).unwrap();
+        let text_fill = |app: &crate::DesignApp| {
+            let st = app.session.active().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
+            st.char_format_at(2).over.fill.clone()
+        };
+        let frame_fill = |app: &crate::DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ItemId(fid)).unwrap().fill.swatch.clone();
+        assert!(!crate::panels::colors_affect_text(&app));
+        crate::panels::apply_swatch(&mut app, false, "Cyan", None).unwrap();
+        assert_eq!(frame_fill(&app), "Cyan");
+        assert_eq!(text_fill(&app), None);
+        let r = run_ui(&mut app, "app.formattingAffectsText", &json!({})).unwrap().unwrap();
+        assert_eq!(r["on"], true, "toggles on");
+        assert!(crate::panels::colors_affect_text(&app));
+        crate::panels::apply_swatch(&mut app, false, "Magenta", Some(0.5)).unwrap();
+        assert_eq!(frame_fill(&app), "Cyan", "the frame is left alone");
+        assert_eq!(text_fill(&app).as_deref(), Some("Magenta"));
+        assert_eq!(crate::panels::color_target(&mut app).map(|t| (t.0, t.1)), Some(("Magenta".to_string(), 0.5)));
     }
 
     #[test]
@@ -2823,6 +2879,56 @@ mod tests {
         let with_sc = first.clone().find(|it| it.shortcut.is_some()).expect("a row with a shortcut");
         let (a, b) = (label_x(&plain.label).expect("plain row drawn"), label_x(&with_sc.label).expect("shortcut row drawn"));
         assert!((a - b).abs() < 0.5, "{:?} at x {a}, {:?} at x {b}", plain.label, with_sc.label);
+    }
+
+    #[test]
+    fn copy_and_paste_keys_work_for_objects_without_a_native_menu() {
+        // Without a native menu the paste key arrives only as a paste event, which needs text on
+        // the system clipboard (#164, #185).
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+            out.platform_output.commands
+        };
+        let count = |app: &crate::DesignApp| app.session.active().unwrap().doc.spreads[0].items.len();
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        let id = app.session.execute("frame.create", &json!({"rect": [72, 72, 200, 160]})).unwrap()["id"].clone();
+        app.session.execute("selection.set", &json!({"ids": [id]})).unwrap();
+        let n = count(&app);
+        let copied = frame(&mut app, vec![egui::Event::Copy])
+            .into_iter()
+            .find_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t),
+                _ => None,
+            })
+            .expect("copying objects puts text on the system clipboard");
+        assert!(!copied.is_empty());
+        frame(&mut app, vec![egui::Event::Paste(copied.clone())]);
+        assert_eq!(count(&app), n + 1, "the paste key pastes the copied rectangle");
+
+        // Pasting into text anchors the copied object; the clipboard placeholder isn't typed.
+        let r = app.session.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
+        let story = r["story"].as_u64().unwrap();
+        app.session.execute("tool.select", &json!({"tool": "type"})).unwrap();
+        app.session.execute("text.select", &json!({"story": story, "anchor": 5, "focus": 5})).unwrap();
+        frame(&mut app, vec![egui::Event::Paste(copied.clone())]);
+        // Shift pastes without formatting.
+        frame(&mut app, vec![egui::Event::ModifiersChanged(egui::Modifiers::SHIFT), egui::Event::Paste(copied)]);
+        let text = app.session.active().unwrap().doc.story(designcraft_doc::StoryId(story)).unwrap().text.clone();
+        assert!(text.starts_with("Hello") && !text.contains('\u{FFFC}'), "{text:?}");
+        assert!(text.contains(designcraft_doc::OBJECT_MARK), "{text:?}");
     }
 
     #[test]

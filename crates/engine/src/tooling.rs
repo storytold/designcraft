@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use designcraft_geom::Unit;
 pub use designcraft_tools::SnapView;
-use designcraft_tools::{Action, CanvasLayout, Cursor, Mods, Overlay, PointerEvent, ToolContext, ToolKey};
+use designcraft_tools::{Action, CanvasLayout, Cursor, Mods, Overlay, PointerEvent, PointerKind, ToolContext, ToolKey};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -58,6 +58,10 @@ impl Session {
         if self.tool.id() == id {
             return;
         }
+        // A composition ends with the tool that shows it: its marked text stays as typed.
+        if let Err(e) = self.end_composition() {
+            log::warn!("ending the IME composition: {e}");
+        }
         self.tool = designcraft_tools::create(id);
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"
@@ -98,11 +102,20 @@ impl Session {
     }
 
     pub fn pointer(&mut self, ev: &PointerEvent, view: ViewInfo) -> Result<()> {
+        // A press ends a composition, keeping its marked text as typed (like clicking away from
+        // one in a native text view); the UI tells the system IME to drop it.
+        if matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick) {
+            self.end_composition()?;
+        }
         let actions = self.with_ctx(view, |t, cx| t.pointer(cx, ev)).unwrap_or_default();
         self.run_actions(actions)
     }
 
     pub fn tool_key(&mut self, key: ToolKey, mods: Mods, view: ViewInfo) -> Result<bool> {
+        // Keys belong to the IME while it composes: nothing else (Escape's deselect) takes them.
+        if self.tool.composing() {
+            return Ok(true);
+        }
         let actions = self.with_ctx(view, |t, cx| t.key(cx, key, mods)).unwrap_or_default();
         let handled = !actions.is_empty();
         self.run_actions(actions)?;
@@ -125,6 +138,55 @@ impl Session {
         self.with_ctx(ViewInfo::at_zoom(1.0), |t, cx| t.wants_text(cx)).unwrap_or(false)
     }
 
+    /// IME marked text at the text caret (see `Tool::ime_preedit`; `active_chars` counts
+    /// characters of `text`). It shows in place as a preview: no undo step, nothing journaled.
+    pub fn tool_preedit(&mut self, text: &str, active_chars: Option<std::ops::Range<usize>>, view: ViewInfo) -> Result<()> {
+        let actions = self.with_ctx(view, |t, cx| t.ime_preedit(cx, text, active_chars)).unwrap_or_default();
+        let r = self.run_actions(actions);
+        if r.is_err() && self.tool.composing() {
+            // The marked text can't show (its story went away): the composition ends with nothing
+            // typed, so no gesture stays open.
+            match self.with_ctx(view, |t, cx| t.ime_preedit(cx, "", None)) {
+                Some(cancel) => self.run_actions(cancel)?,
+                None => self.tool = designcraft_tools::create(self.tool.id()),
+            }
+        }
+        r
+    }
+
+    /// The IME committed `text`: it replaces the marked text as one `text.insert` (one undo step,
+    /// one journaled command).
+    pub fn tool_ime_commit(&mut self, text: &str, view: ViewInfo) -> Result<()> {
+        let actions = self.with_ctx(view, |t, cx| t.ime_commit(cx, text)).unwrap_or_default();
+        self.run_actions(actions)
+    }
+
+    /// Is the active tool showing uncommitted IME text?
+    pub fn tool_composing(&self) -> bool {
+        self.tool.composing()
+    }
+
+    /// End an IME composition from outside the IME (a click, a tool switch, another command): the
+    /// marked text stays as typed, as one undo step.
+    pub fn end_composition(&mut self) -> Result<()> {
+        if !self.tool.composing() {
+            return Ok(());
+        }
+        match self.with_ctx(ViewInfo::default(), |t, cx| t.ime_end(cx)) {
+            Some(actions) => self.run_actions(actions),
+            None => {
+                // No document to type into: only the tool's state goes.
+                self.tool = designcraft_tools::create(self.tool.id());
+                Ok(())
+            }
+        }
+    }
+
+    /// The caret line (canvas space) the IME candidate window follows.
+    pub fn tool_ime_caret(&mut self, view: ViewInfo) -> Option<(designcraft_geom::Point, designcraft_geom::Point)> {
+        self.with_ctx(view, |t, cx| t.ime_caret(cx)).flatten()
+    }
+
     pub fn run_actions(&mut self, actions: Vec<Action>) -> Result<()> {
         for a in actions {
             match a {
@@ -145,7 +207,8 @@ impl Session {
 
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
         let st = self.doc_mut()?;
-        st.interaction = Some(Interaction { label: label.into(), doc: st.doc.clone(), selection: st.selection.clone(), preview: None });
+        st.interaction =
+            Some(Interaction { label: label.into(), doc: st.doc.clone(), selection: st.selection.clone(), preview: None, revision: st.revision });
         Ok(())
     }
 
@@ -155,7 +218,9 @@ impl Session {
         let Some(it) = st.interaction.clone() else { return Err(EngineError::Other("no interaction".into())) };
         st.doc = it.doc.clone();
         st.selection = it.selection.clone();
-        let r = self.execute(cmd, &params);
+        // Not through `execute`: a preview is part of the gesture (an IME composition included),
+        // not a command that ends it.
+        let r = self.guarded(cmd, |s| s.execute_unguarded(cmd, &params));
         if let Some(st) = self.active_mut()
             && let Some(i) = st.interaction.as_mut()
         {
@@ -186,9 +251,10 @@ impl Session {
         if let Some(st) = self.active_mut()
             && let Some(it) = st.interaction.take()
         {
+            // Nothing changed: the document goes back to the state and revision it began with.
             st.doc = it.doc;
             st.selection = it.selection;
-            st.revision += 1;
+            st.revision = it.revision;
             if self.transforms.2 {
                 self.transforms.0.pop();
                 self.transforms.2 = false;

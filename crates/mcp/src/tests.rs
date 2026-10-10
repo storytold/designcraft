@@ -147,6 +147,7 @@ fn tool_definitions_are_well_formed() {
         "pointer",
         "key",
         "type_text",
+        "ime",
         "click",
         "drag",
         "select_tool",
@@ -223,6 +224,34 @@ fn type_tool_gesture_then_typing() {
     assert_eq!(k["command"], "edit.undo");
     // Tool shortcut when not typing.
     assert_eq!(ok(&mut s, "key", json!({"key": "V"}))["tool"], "selection");
+}
+
+#[test]
+fn ime_composes_at_the_type_tool_caret() {
+    let mut s = server();
+    // No caret yet: the error says how to get one.
+    assert_eq!(call(&mut s, "ime", json!({"preedit": "に"}))["isError"], true);
+    ok(
+        &mut s,
+        "pointer",
+        json!({"tool": "type", "events": [{"kind": "down", "x": 72, "y": 72}, {"kind": "drag", "x": 300, "y": 200}, {"kind": "up", "x": 300, "y": 200}]}),
+    );
+    let story = |s: &mut Server| {
+        let doc = ok(s, "inspect_document", json!({}));
+        let id = doc["stories"][0]["id"].as_u64().unwrap();
+        ok(s, "get_story", json!({"story": id}))["text"].as_str().unwrap().to_string()
+    };
+    assert_eq!(ok(&mut s, "ime", json!({"preedit": "にほん", "active": [3, 3]}))["composing"], true);
+    ok(&mut s, "ime", json!({"preedit": "日本", "active": [0, 2]}));
+    assert_eq!(story(&mut s), "日本", "marked text shows in place");
+    assert_eq!(ok(&mut s, "ime", json!({"commit": "日本"}))["composing"], false);
+    assert_eq!(story(&mut s), "日本");
+    // A cancelled composition leaves nothing; the commit is one undo step.
+    ok(&mut s, "ime", json!({"preedit": "ご"}));
+    ok(&mut s, "ime", json!({"preedit": ""}));
+    assert_eq!(story(&mut s), "日本");
+    ok(&mut s, "execute", json!({"command": "edit.undo"}));
+    assert_eq!(story(&mut s), "");
 }
 
 #[test]

@@ -88,6 +88,7 @@ and its second character starts at 3. An offset inside a character snaps back to
 | `pointer` | Mouse gesture events (`down`/`drag`/`up`/`move`/`doubleclick`) for the active tool, optional `tool` |
 | `key` | Key press with modifiers (headless: active tool → command shortcuts → tool shortcuts) |
 | `type_text` | Type at the text insertion point (or into the focused dialog field in the app) |
+| `ime` | Input method events at the Type tool's caret: `preedit` (marked text in place, `active` = converting clause in characters), `commit` (typed as one step) |
 | `click` / `drag` | Real pointer input at screen points (connected only) |
 | `menu_list`, `ui_inspect`, `ui_set` | Menu tree, UI state, change UI state (connected only) |
 | `dialog_set` / `dialog_confirm` / `dialog_cancel` | Fill in and close the open dialog (connected only) |

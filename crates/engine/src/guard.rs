@@ -35,19 +35,19 @@ pub fn install_panic_hook() {
 impl Session {
     /// Run command `id` (`f`) inside the guard.
     pub(crate) fn guarded(&mut self, id: &str, f: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Value> {
-        let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone(), d.revision));
+        let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone()));
         match catch_unwind(AssertUnwindSafe(|| f(self))) {
             Ok(r) => r,
             Err(payload) => {
                 let msg = panic_message(payload.as_ref());
                 // Keep the document as it was before the command.
-                if let (Some((uid, doc, selection, revision)), Some(st)) = (before, self.active_mut())
+                if let (Some((uid, doc, selection)), Some(st)) = (before, self.active_mut())
                     && st.uid == uid
                 {
                     st.doc = doc;
                     st.selection = selection;
                     st.interaction = None;
-                    st.revision = revision.max(st.revision).saturating_add(1);
+                    st.bump_revision();
                 }
                 if let Some(dir) = self.recovery_dir.clone()
                     && let Err(e) = crate::recovery::save(self, &dir)
