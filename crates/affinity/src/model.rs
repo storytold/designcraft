@@ -457,7 +457,7 @@ pub(crate) struct Reader<'s, 'a, 'b> {
     pub(crate) s: &'s Stream,
     pub(crate) archive: &'b mut Archive<'a>,
     pub(crate) dpi: f64,
-    warnings: BTreeMap<String, usize>,
+    pub(crate) warnings: BTreeMap<String, usize>,
     nodes: usize,
     active: HashSet<ObjId>,
     /// Where the spreads go: the identity, or an embedding document's placement.
@@ -473,7 +473,7 @@ pub(crate) struct Reader<'s, 'a, 'b> {
 }
 
 impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
-    fn new(s: &'s Stream, archive: &'b mut Archive<'a>, base: Affine, depth: usize) -> Self {
+    pub(crate) fn new(s: &'s Stream, archive: &'b mut Archive<'a>, base: Affine, depth: usize) -> Self {
         let [a, b, c, d, ..] = base.0;
         Self {
             s,
@@ -556,8 +556,10 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         Ok(Some(Spread { bounds, pages, transparent, nodes }))
     }
 
-    /// The children of `parent`, and the pixel mask a mask layer among them puts on the parent.
-    fn children(&mut self, parent: ObjId, world: Affine, depth: usize) -> Result<(Vec<Node>, Option<Image>), Error> {
+    /// The children of `parent`, and the mask layer among them that masks the parent (with its
+    /// placement), read later over just what it masks.
+    #[allow(clippy::type_complexity)]
+    fn children(&mut self, parent: ObjId, world: Affine, depth: usize) -> Result<(Vec<Node>, Option<(ObjId, Affine)>), Error> {
         let s = self.s;
         let mut out = Vec::new();
         let mut mask = None;
@@ -568,10 +570,10 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                     continue;
                 }
                 let local = s.floats::<6>(c, b"Xfrm").map(Affine::from_xfrm).unwrap_or(Affine::IDENTITY);
-                match crate::raster::mask(self, c, local.then(world))? {
-                    Some(m) if mask.is_none() => mask = Some(m),
-                    Some(_) => self.warn("several pixel masks on one layer (only the first is used)"),
-                    None => {}
+                if mask.is_none() {
+                    mask = Some((c, local.then(world)));
+                } else {
+                    self.warn("several pixel masks on one layer (only the first is used)");
                 }
                 continue;
             }
@@ -623,7 +625,17 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         if let Some(embedded) = self.pending.take() {
             children.extend(embedded);
         }
-        let (mask, attached_mask) = self.attached_masks(id, world)?;
+        // Pixel masks are read only over what they mask (they can span a whole spread at print
+        // resolution, a gigapixel).
+        let over = match (kind_bounds(&kind), nodes_bounds(&children)) {
+            (Some(a), Some(b)) => Some(union(a, b)),
+            (a, b) => a.or(b),
+        };
+        let child_mask = match child_mask {
+            Some((c, at)) => crate::raster::mask(self, c, at, over)?,
+            None => None,
+        };
+        let (mask, attached_mask) = self.attached_masks(id, world, over)?;
         let pixel_mask = attached_mask.or(child_mask);
         self.active.remove(&id);
         let mut node = Node { class, name, visible, locked, opacity, blend, kind, mask, pixel_mask, effects: Vec::new(), children };
@@ -791,7 +803,7 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
 
     /// Vector shapes attached to a node (`AdCh`) mask it: it shows only inside their outlines;
     /// an attached mask layer is a pixel mask. Adjustments attached the same way are reported.
-    fn attached_masks(&mut self, id: ObjId, world: Affine) -> Result<(Option<Path>, Option<Image>), Error> {
+    fn attached_masks(&mut self, id: ObjId, world: Affine, over: Option<Rect>) -> Result<(Option<Path>, Option<Image>), Error> {
         let s = self.s;
         let attached = s.objs(id, b"AdCh");
         let mut mask: Option<Path> = None;
@@ -808,7 +820,7 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 }
             } else if class == Tag::of(b"MRst") {
                 let local = s.floats::<6>(a, b"Xfrm").map(Affine::from_xfrm).unwrap_or(Affine::IDENTITY).then(world);
-                match crate::raster::mask(self, a, local)? {
+                match crate::raster::mask(self, a, local, over)? {
                     Some(m) if pixels.is_none() => pixels = Some(m),
                     Some(_) => self.warn("several pixel masks on one layer (only the first is used)"),
                     None => {}
@@ -920,42 +932,54 @@ pub(crate) fn nodes_bounds(nodes: &[Node]) -> Option<Rect> {
             return;
         }
         for n in nodes.iter().filter(|n| n.visible) {
-            let mut add = |p: Point| {
-                if p.x.is_finite() && p.y.is_finite() {
-                    let r = Rect { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
-                    *out = Some(out.map_or(r, |o| union(o, r)));
-                }
-            };
-            let corners = |r: Rect, m: Affine| [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].map(|(x, y)| m.apply(Point { x, y }));
-            match &n.kind {
-                Kind::Shape { path, .. } | Kind::Artboard { path, .. } => {
-                    for sp in &path.subpaths {
-                        add(sp.start);
-                        for seg in &sp.segments {
-                            seg.iter().for_each(|p| add(*p));
-                        }
-                    }
-                }
-                Kind::Image(img) => corners(Rect { x0: 0.0, y0: 0.0, x1: f64::from(img.width), y1: f64::from(img.height) }, img.transform)
-                    .into_iter()
-                    .for_each(&mut add),
-                Kind::Text(t) => match t.frame {
-                    Some(f) => corners(f, t.transform).into_iter().for_each(&mut add),
-                    None => add(t.transform.apply(t.anchor)),
-                },
-                Kind::Table(t) => {
-                    if let (Some(&x0), Some(&x1), Some(&y0), Some(&y1)) = (t.columns.first(), t.columns.last(), t.rows.first(), t.rows.last()) {
-                        corners(Rect { x0, y0, x1, y1 }, t.transform).into_iter().for_each(&mut add);
-                    }
-                }
-                Kind::Layer | Kind::Group | Kind::Unsupported | Kind::MasterInstance { .. } => {}
-            }
+            kind_points(&n.kind, &mut |p| add_point(out, p));
             walk(&n.children, depth + 1, out);
         }
     }
     let mut out = None;
     walk(nodes, 0, &mut out);
     out
+}
+
+/// The bounds of what one node's own kind draws (not its children).
+pub(crate) fn kind_bounds(kind: &Kind) -> Option<Rect> {
+    let mut out = None;
+    kind_points(kind, &mut |p| add_point(&mut out, p));
+    out
+}
+
+fn add_point(out: &mut Option<Rect>, p: Point) {
+    if p.x.is_finite() && p.y.is_finite() {
+        let r = Rect { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+        *out = Some(out.map_or(r, |o| union(o, r)));
+    }
+}
+
+fn kind_points(kind: &Kind, add: &mut dyn FnMut(Point)) {
+    let corners = |r: Rect, m: Affine| [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].map(|(x, y)| m.apply(Point { x, y }));
+    match kind {
+        Kind::Shape { path, .. } | Kind::Artboard { path, .. } => {
+            for sp in &path.subpaths {
+                add(sp.start);
+                for seg in &sp.segments {
+                    seg.iter().for_each(|p| add(*p));
+                }
+            }
+        }
+        Kind::Image(img) => {
+            corners(Rect { x0: 0.0, y0: 0.0, x1: f64::from(img.width), y1: f64::from(img.height) }, img.transform).into_iter().for_each(add)
+        }
+        Kind::Text(t) => match t.frame {
+            Some(f) => corners(f, t.transform).into_iter().for_each(add),
+            None => add(t.transform.apply(t.anchor)),
+        },
+        Kind::Table(t) => {
+            if let (Some(&x0), Some(&x1), Some(&y0), Some(&y1)) = (t.columns.first(), t.columns.last(), t.rows.first(), t.rows.last()) {
+                corners(Rect { x0, y0, x1, y1 }, t.transform).into_iter().for_each(add);
+            }
+        }
+        Kind::Layer | Kind::Group | Kind::Unsupported | Kind::MasterInstance { .. } => {}
+    }
 }
 
 /// Page rectangles: `SpMd.PagR[].rctp` (Publisher 2, Affinity 3) or `SprB` split into `PagC`

@@ -49,6 +49,7 @@ accept the four extensions.
 | Outline effect | the stroke of a shape without one, or the characters' stroke on text |
 | Colour and gradient overlay effects, in any blend mode | worked into what the object paints: its fill, stroke and text colours (a gradient overlay on one colour becomes a gradient) and its pixels |
 | Placed HEIC/HEIF photos | the pixels Affinity stored with them |
+| Pixel layers over 64 megapixels | read at a half, a quarter… of their resolution; pixel masks (which can cover a whole spread at a gigapixel) are read only over what they mask |
 
 Everything that is not imported, or only approximately, is listed in the open result's
 `warnings`, one line per kind with a count. Not yet imported: masters based on other masters, text threading
