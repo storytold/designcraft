@@ -73,14 +73,17 @@ fn svg_options() -> &'static usvg::Options<'static> {
 }
 
 /// A family the SVG names that isn't bundled comes from the shared fonts (installed ones too),
-/// as it would in a text frame.
+/// as it would in a text frame, and matches in any case, as it does there.
 fn select_font() -> usvg::FontSelectionFn<'static> {
-    let bundled = usvg::FontResolver::default_font_selector();
+    use usvg::fontdb::{Family, Query, Stretch, Style, Weight};
     Box::new(move |font, db| {
         let fonts = designcraft_fonts::FontDb::global();
+        let spelled = |db: &usvg::fontdb::Database, name: &str| {
+            db.faces().flat_map(|f| &f.families).find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(n, _)| n.clone())
+        };
         for family in font.families() {
             if let usvg::FontFamily::Named(name) = family
-                && !db.faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
+                && spelled(db, name).is_none()
                 && fonts.has_family(name)
             {
                 for style in fonts.styles(name) {
@@ -88,7 +91,47 @@ fn select_font() -> usvg::FontSelectionFn<'static> {
                 }
             }
         }
-        bundled(font, db)
+        // usvg's default query, but with each named family spelled as the database spells it:
+        // fontdb compares names exactly, so "DeJaVu SaNs" would quietly fall to the serif.
+        let names: Vec<Option<String>> = font
+            .families()
+            .iter()
+            .map(|f| match f {
+                usvg::FontFamily::Named(name) => Some(spelled(db, name).unwrap_or_else(|| name.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut families: Vec<Family> = font
+            .families()
+            .iter()
+            .zip(&names)
+            .map(|(f, name)| match f {
+                usvg::FontFamily::Serif => Family::Serif,
+                usvg::FontFamily::SansSerif => Family::SansSerif,
+                usvg::FontFamily::Cursive => Family::Cursive,
+                usvg::FontFamily::Fantasy => Family::Fantasy,
+                usvg::FontFamily::Monospace => Family::Monospace,
+                usvg::FontFamily::Named(_) => Family::Name(name.as_deref().unwrap_or_default()),
+            })
+            .collect();
+        families.push(Family::Serif);
+        let stretch = match font.stretch() {
+            usvg::FontStretch::UltraCondensed => Stretch::UltraCondensed,
+            usvg::FontStretch::ExtraCondensed => Stretch::ExtraCondensed,
+            usvg::FontStretch::Condensed => Stretch::Condensed,
+            usvg::FontStretch::SemiCondensed => Stretch::SemiCondensed,
+            usvg::FontStretch::Normal => Stretch::Normal,
+            usvg::FontStretch::SemiExpanded => Stretch::SemiExpanded,
+            usvg::FontStretch::Expanded => Stretch::Expanded,
+            usvg::FontStretch::ExtraExpanded => Stretch::ExtraExpanded,
+            usvg::FontStretch::UltraExpanded => Stretch::UltraExpanded,
+        };
+        let style = match font.style() {
+            usvg::FontStyle::Normal => Style::Normal,
+            usvg::FontStyle::Italic => Style::Italic,
+            usvg::FontStyle::Oblique => Style::Oblique,
+        };
+        db.query(&Query { families: &families, weight: Weight(font.weight()), stretch, style })
     })
 }
 
@@ -340,6 +383,27 @@ mod tests {
         // Characters the bundled default lacks: a shared face that has them, not the default.
         let set = glyph_families(&text("", "한글"));
         assert!(set.len() == 2 && set.iter().all(|(f, gid)| f != "Source Sans 3" && *gid != 0), "{set:?}");
+    }
+
+    #[test]
+    fn svg_family_names_match_in_any_case() {
+        let font = designcraft_fonts::testing::font_with("DC Test SVG Casing", &['A', 'b']).unwrap();
+        designcraft_fonts::FontDb::global().add_font(font);
+        let text = |family: &str, attrs: &str| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20" font-family="{family}"{attrs}>Ab</text></svg>"#
+            )
+        };
+        for family in ["DC Test SVG Casing", "dc test svg casing", "DC TEST svg Casing", "Nope, dc test SVG casing, serif"] {
+            let set = glyph_families(&text(family, ""));
+            assert!(set.len() == 2 && set.iter().all(|(f, gid)| f == "DC Test SVG Casing" && *gid != 0), "{family}: {set:?}");
+        }
+        // Weight and style still reach the query: there's only a regular face, so it sets the text.
+        let set = glyph_families(&text("dc test svg casing", r#" font-weight="700" font-style="italic""#));
+        assert!(set.len() == 2 && set.iter().all(|(f, _)| f == "DC Test SVG Casing"), "{set:?}");
+        // A family nobody has still falls to the bundled serif.
+        let set = glyph_families(&text("DC Test SVG Nobody", ""));
+        assert!(set.len() == 2 && set.iter().all(|(f, _)| f == "Source Serif 4"), "{set:?}");
     }
 
     /// A minimal Photoshop file: 2×1 RGB, no layers, raw merged image.
