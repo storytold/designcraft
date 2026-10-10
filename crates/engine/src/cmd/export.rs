@@ -2,6 +2,7 @@
 
 use designcraft_pdf::{Marks, PdfOptions, Standard};
 use serde_json::{Value, json};
+use std::{borrow::Cow, sync::Arc};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
@@ -12,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
         has_doc, export_pdf),
         cmd!(noundo "file.exportEpub", "Export EPUB (Reflowable)…", ["File"], None,
-        "{path?, title?, author?, language?: \"en\", cover?: bool (the first page as the cover image), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes} (no path: {base64, bytes})",
+        "{path?, title?, author?, language?: \"en\", cover?: bool (the first page as the cover image), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes, warnings} (no path: {base64, bytes, warnings})",
         has_doc, export_epub),
         cmd!(noundo "file.exportFixedEpub", "Export EPUB (Fixed Layout)…", ["File"], None,
         "{path?, title?, author?, language?} — pre-paginated EPUB → {path, bytes} (no path: {base64, bytes})",
@@ -23,7 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, type?: saddleStitch|twoUpConsecutive, spaceBetween? (pt)} — printer spreads as PDF (pages imposed in booklet order) → {path, bytes, sheets} (no path: {base64, …})",
         has_doc, print_booklet),
         cmd!(noundo "file.exportHtml", "Export HTML…", ["File"], None,
-        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes} (no path: {text, bytes})",
+        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes, warnings} (no path: {text, bytes, warnings})",
         has_doc, export_html),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
         "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
@@ -51,18 +52,52 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
+/// HTML and reflowable EPUB embed the EPS preview; keep the session's source bytes intact.
+fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Document>, Vec<String>) {
+    // Match the exporter's reading order (including Article exclusions), not every asset
+    // in the document: unused or hidden graphics must not prevent an export.
+    let mut used = std::collections::BTreeSet::new();
+    for block in designcraft_epub::reading_order(d) {
+        let designcraft_epub::Block::Image(id) = block else { continue };
+        let Some(it) = d.item(id) else { continue };
+        let designcraft_doc::Content::Graphic(g) = &it.content else { continue };
+        used.insert(g.asset);
+        if d.assets.get(&g.asset).is_some_and(|a| designcraft_doc::media_kind(&a.mime).is_some())
+            && let Some(poster) = it.media.as_ref().and_then(|m| m.poster)
+        {
+            used.insert(poster);
+        }
+    }
+    let mut out = Cow::Borrowed(d);
+    let mut warnings = Vec::new();
+    for id in used {
+        let Some(a) = d.assets.get(&id).filter(|a| designcraft_images::is_eps(&a.data)) else { continue };
+        let png = designcraft_images::eps_png(&a.data);
+        if png.is_none() {
+            warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
+        }
+        if let Some(a) = out.to_mut().assets.get_mut(&id) {
+            let a = Arc::make_mut(a);
+            a.mime = "image/png".into();
+            a.data = Arc::new(png.unwrap_or_default());
+        }
+    }
+    (out, warnings)
+}
+
 fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts =
         designcraft_epub::HtmlOptions { title: str_param(p, "title").map(str::to_string), language: str_param(p, "language").map(str::to_string) };
-    let text = designcraft_epub::export_html(&st.doc, &opts);
+    let (doc, warnings) = eps_previews(&st.doc);
+    let text = designcraft_epub::export_html(&doc, &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             std::fs::write(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-            Ok(json!({"path": path, "bytes": text.len()}))
+            Ok(json!({"path": path, "bytes": text.len(), "warnings": warnings}))
         }
-        None => Ok(json!({"bytes": text.len(), "text": text})),
+        None => Ok(json!({"bytes": text.len(), "text": text, "warnings": warnings})),
     }
 }
 
@@ -156,14 +191,15 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
             None => Ok(serde_json::json!({"base64": super::base64_encode(&bytes), "bytes": bytes.len(), "pages": pages.len()})),
         };
     }
-    let bytes = designcraft_epub::export_epub(epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+    let (epub_doc, warnings) = eps_previews(epub_doc);
+    let bytes = designcraft_epub::export_epub(&epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
     match p.get("path").and_then(Value::as_str) {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             std::fs::write(path, &bytes).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
-            Ok(serde_json::json!({"path": path, "bytes": bytes.len()}))
+            Ok(serde_json::json!({"path": path, "bytes": bytes.len(), "warnings": warnings}))
         }
-        None => Ok(serde_json::json!({"base64": super::file::base64_encode(&bytes), "bytes": bytes.len()})),
+        None => Ok(serde_json::json!({"base64": super::file::base64_encode(&bytes), "bytes": bytes.len(), "warnings": warnings})),
     }
 }
 

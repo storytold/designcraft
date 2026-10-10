@@ -1230,7 +1230,20 @@ fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, ID)?;
     let (bytes, name, link) = super::file::read_source(p)?;
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad(ID, "unsupported or corrupt image"))?;
+    let (nw, nh) = designcraft_render::image_natural_size(&bytes).ok_or_else(|| bad(ID, "invalid image dimensions"))?;
     let fill = p.get("fit").and_then(Value::as_str) == Some("fill");
+    // Compute fitting before the edit: a small EPS can overflow in a huge cell.
+    let t = s.doc()?.doc.story(g.story).and_then(|st| st.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let (r, c) = t.owner(g.range.r0, g.range.c0);
+    let cell = t.cell(r, c).ok_or_else(|| bad(ID, "no cell"))?;
+    let (rs, cs) = (cell.row_span.max(1) as usize, cell.col_span.max(1) as usize);
+    let w: f64 = t.columns.get(c..c.saturating_add(cs).min(t.ncols())).ok_or_else(|| bad(ID, "invalid cell span"))?.iter().map(|x| x.width).sum();
+    let h: f64 = t.rows.get(r..r.saturating_add(rs).min(t.nrows())).ok_or_else(|| bad(ID, "invalid cell span"))?.iter().map(|x| x.height).sum();
+    let ins = cell.insets;
+    let (bw, bh) = ((w - ins[1] - ins[3]).max(1.0), (h - ins[0] - ins[2]).max(1.0));
+    let k = if fill { (bw / nw).max(bh / nh) } else { (bw / nw).min(bh / nh) };
+    let xf = designcraft_geom::Affine::translate(((bw - nw * k) / 2.0, (bh - nh * k) / 2.0)) * designcraft_geom::Affine::scale(k);
+    super::file::validate_placement((nw, nh), designcraft_geom::Rect::new(0.0, 0.0, bw, bh), xf, ID)?;
     s.edit(|d, sel| {
         let aid = designcraft_doc::AssetId(d.alloc());
         let mime = designcraft_render::image_mime(&bytes).to_string();
@@ -1248,16 +1261,6 @@ fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         );
         let st = d.story_mut(g.story).ok_or_else(|| bad(ID, "no story"))?;
         let t = st.table_mut(g.table).ok_or_else(|| bad(ID, "no table"))?;
-        let (r, c) = t.owner(g.range.r0, g.range.c0);
-        let cell = t.cell(r, c).ok_or_else(|| bad(ID, "no cell"))?;
-        let (rs, cs) = (cell.row_span.max(1) as usize, cell.col_span.max(1) as usize);
-        let w: f64 = t.columns[c..(c + cs).min(t.ncols())].iter().map(|x| x.width).sum();
-        let h: f64 = t.rows[r..(r + rs).min(t.nrows())].iter().map(|x| x.height).sum();
-        let ins = cell.insets;
-        let (bw, bh) = ((w - ins[1] - ins[3]).max(1.0), (h - ins[0] - ins[2]).max(1.0));
-        let (nw, nh) = (pw as f64, ph as f64);
-        let k = if fill { (bw / nw).max(bh / nh) } else { (bw / nw).min(bh / nh) };
-        let xf = designcraft_geom::Affine::translate(((bw - nw * k) / 2.0, (bh - nh * k) / 2.0)) * designcraft_geom::Affine::scale(k);
         let cell = t.cell_mut(r, c).ok_or_else(|| bad(ID, format!("no cell {r},{c}")))?;
         cell.graphic = Some(designcraft_doc::Graphic {
             asset: aid,

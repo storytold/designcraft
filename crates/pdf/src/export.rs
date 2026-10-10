@@ -1169,7 +1169,17 @@ impl Exporter<'_> {
             return i.clone();
         }
         let asset = self.doc.assets.get(&id)?.clone();
-        let data = asset.data.clone();
+        // Use the same EPS preview as the renderer, preserving CMYK TIFF inks below.
+        let data = if designcraft_images::is_eps(&asset.data) {
+            let Some((proxy, _)) = designcraft_images::eps_proxy(&asset.data) else {
+                self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
+                self.images.insert(id, None);
+                return None;
+            };
+            Arc::new(proxy)
+        } else {
+            asset.data.clone()
+        };
         let fmt = image::guess_format(&data).ok();
         let img = match fmt {
             Some(image::ImageFormat::Jpeg) => Image::from_jpeg(data.clone().into(), self.interpolate).ok(),
@@ -1345,4 +1355,71 @@ fn recompress(data: &[u8], interpolate: bool) -> Option<Image> {
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
     image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
     Image::from_jpeg(buf.into(), interpolate).ok()
+}
+
+#[cfg(test)]
+mod eps_tests {
+    use super::*;
+    use hayro_syntax::object::Name;
+
+    #[test]
+    fn eps_tiff_preview_keeps_cmyk_inks_in_pdf() {
+        let pixels = vec![0u8, 0, 0, 255, 0, 255, 255, 0];
+        let mut tiff = Vec::new();
+        tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut tiff))
+            .unwrap()
+            .write_image::<tiff::encoder::colortype::CMYK8>(2, 1, &pixels)
+            .unwrap();
+        let ps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 2 1\n%%EOF\n";
+        let mut eps = vec![0xC5, 0xD0, 0xD3, 0xC6];
+        for value in [30usize, ps.len(), 0, 0, 30 + ps.len(), tiff.len()] {
+            eps.extend((value as u32).to_le_bytes());
+        }
+        eps.extend([0xFF, 0xFF]);
+        eps.extend_from_slice(ps);
+        eps.extend_from_slice(&tiff);
+        assert_eq!(designcraft_images::eps_proxy(&eps).unwrap().0, tiff);
+        let mut doc = Document::new(&designcraft_doc::build::NewDocument::default());
+        let aid = AssetId(doc.alloc());
+        doc.assets.insert(
+            aid,
+            Arc::new(designcraft_doc::Asset {
+                id: aid,
+                name: "cmyk.eps".into(),
+                mime: "application/postscript".into(),
+                link: None,
+                data: Arc::new(eps),
+                pixels: Some((2, 1)),
+                page: 0,
+            }),
+        );
+        let mut item = Item::new(
+            designcraft_doc::ItemId(doc.alloc()),
+            doc.default_layer(),
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(72.0, 72.0, 272.0, 172.0)),
+        );
+        item.content = Content::Graphic(designcraft_doc::Graphic {
+            asset: aid,
+            size: (2.0, 1.0),
+            xf: Affine::translate((72.0, 72.0)) * Affine::scale(100.0),
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+        });
+        doc.insert_item(designcraft_doc::SpreadRef::Doc(0), item, None).unwrap();
+        for standard in [Standard::None, Standard::PdfX4] {
+            let report = export_pdf_with_report(&doc, &Cache::new(), &PdfOptions { standard, ..Default::default() }).unwrap();
+            assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+            let pdf = hayro_syntax::Pdf::new(report.bytes).unwrap();
+            let images: Vec<_> = pdf
+                .objects()
+                .into_iter()
+                .filter_map(|o| o.into_stream())
+                .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+                .map(|s| (s.dict().get::<Name>("ColorSpace").unwrap().as_str().to_string(), s.decoded().unwrap().into_owned()))
+                .collect();
+            assert_eq!(images, vec![("DeviceCMYK".to_string(), pixels.clone())], "{standard:?}");
+        }
+    }
 }

@@ -1683,7 +1683,15 @@ impl<'a> Ex<'a> {
 
     fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
-        let mut el = El::new(if is_pdf { "PDF" } else { "Image" }).attr("Self", self.fresh());
+        let is_eps = asset.mime == "application/postscript" || designcraft_images::is_eps(&asset.data);
+        let mut el = El::new(if is_eps {
+            "EPS"
+        } else if is_pdf {
+            "PDF"
+        } else {
+            "Image"
+        })
+        .attr("Self", self.fresh());
         if let Some((pw, ph)) = asset.pixels
             && g.size.0 > 0.0
             && g.size.1 > 0.0
@@ -1710,7 +1718,7 @@ impl<'a> Ex<'a> {
                 .attr("AssetURL", "$ID/")
                 .attr("AssetID", "$ID/")
                 .attr("LinkResourceURI", uri)
-                .attr("LinkResourceFormat", format!("$ID/{}", format_name(&asset.mime)))
+                .attr("LinkResourceFormat", format!("$ID/{}", format_name(if is_eps { "application/postscript" } else { &asset.mime })))
                 .attr("StoredState", if embed { "Embedded" } else { "Normal" })
                 .attr("LinkClassID", "35906")
                 .attr("LinkClientID", "257")
@@ -2358,6 +2366,7 @@ fn format_name(mime: &str) -> &'static str {
         "image/gif" => "GIF",
         "image/tiff" => "TIFF",
         "application/pdf" => "Adobe Portable Document Format (PDF)",
+        "application/postscript" => "Encapsulated PostScript (EPS)",
         _ => "Portable Network Graphics (PNG)",
     }
 }

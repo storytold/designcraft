@@ -340,7 +340,7 @@ fn place_image(
         report.warnings.push(format!("Record {record}, field {field}: missing image {cell}."));
         return;
     };
-    let Some((pw, ph)) = designcraft_render::image_size(&bytes) else {
+    let Some(((pw, ph), (nw, nh))) = designcraft_render::image_size(&bytes).zip(designcraft_render::image_natural_size(&bytes)) else {
         if let Some(it) = doc.item_mut(item) {
             it.content = Content::Unassigned;
         }
@@ -353,8 +353,26 @@ fn place_image(
         report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
         return;
     };
-    let (nw, nh) = (f64::from(pw), f64::from(ph));
     let mode = fitting_of(&options.fitting);
+    let mut g =
+        Graphic { asset: AssetId(0), size: (nw, nh), xf: Affine::translate((inner.x0, inner.y0)), auto_fit: mode, fit_align: 0, crop: [0.0; 4] };
+    if let Some(xf) = g.fitted(inner, mode) {
+        g.xf = xf;
+    }
+    if options.center && nw > 0.0 && nh > 0.0 {
+        let bb = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, nw, nh));
+        let c = inner.center();
+        let m = bb.center();
+        g.xf = Affine::translate((c.x - m.x, c.y - m.y)) * g.xf;
+    }
+    if super::super::file::validate_placement((nw, nh), inner, g.xf, "data.merge").is_err() {
+        if let Some(it) = doc.item_mut(item) {
+            it.content = Content::Unassigned;
+        }
+        report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
+        report.warnings.push(format!("Record {record}, field {field}: image {cell} exceeds finite geometry limits."));
+        return;
+    }
     let aid = AssetId(doc.alloc());
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| field.to_string());
     let link = options.link_images.then(|| path.to_string_lossy().into_owned());
@@ -370,16 +388,7 @@ fn place_image(
             page: 0,
         }),
     );
-    let mut g = Graphic { asset: aid, size: (nw, nh), xf: Affine::translate((inner.x0, inner.y0)), auto_fit: mode, fit_align: 0, crop: [0.0; 4] };
-    if let Some(xf) = g.fitted(inner, mode) {
-        g.xf = xf;
-    }
-    if options.center && nw > 0.0 && nh > 0.0 {
-        let bb = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, nw, nh));
-        let c = inner.center();
-        let m = bb.center();
-        g.xf = Affine::translate((c.x - m.x, c.y - m.y)) * g.xf;
-    }
+    g.asset = aid;
     if let Some(it) = doc.item_mut(item) {
         it.content = Content::Graphic(g);
     }
