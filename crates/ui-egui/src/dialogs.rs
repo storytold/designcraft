@@ -4011,6 +4011,7 @@ mod tests {
 
     /// #323: the hex field's text is kept in the dialog, so a code typed one
     /// keystroke per frame (each followed by an idle frame) is not wiped.
+    /// Typed as a user copies it: `#` prefix, uppercase — `from_hex` takes both.
     #[test]
     fn typing_hex_one_keystroke_at_a_time_survives_frames() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -4034,14 +4035,14 @@ mod tests {
                 modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
             }],
         );
-        for ch in ["c", "0", "f", "f", "e", "e"] {
+        for ch in ["#", "C", "0", "F", "F", "E", "E"] {
             dialog_frame(&mut app, &ctx, screen, vec![egui::Event::Text(ch.into())]);
             // An idle frame between keystrokes: the half-typed text must survive it.
             dialog_frame(&mut app, &ctx, screen, vec![]);
         }
         let d = app.ui.dialog.as_ref().unwrap();
-        assert_eq!(d.s("hexEdit"), "c0ffee", "the half-typed hex text survives idle frames");
-        assert_eq!(d.s("hex"), "#c0ffee", "a fully typed hex code commits");
+        assert_eq!(d.s("hexEdit"), "#C0FFEE", "the half-typed hex text survives idle frames");
+        assert_eq!(d.s("hex"), "#c0ffee", "a fully typed #RRGGBB code commits, hash and case included");
     }
 
     /// #323: a number typed into an RGB field commits (on defocus) without being reset.
