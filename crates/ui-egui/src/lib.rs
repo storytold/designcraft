@@ -499,6 +499,24 @@ impl DesignApp {
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
+        if r.is_ok() && matches!(id, "file.open" | "file.openIdml" | "file.openBytes") {
+            if self.ui.dialog.as_ref().is_some_and(|d| d.id == "findFont") {
+                self.ui.dialog = None;
+            }
+            match self.session.execute("font.list", &json!({})) {
+                Ok(fonts) if fonts.as_array().is_some_and(|fonts| fonts.iter().any(|f| f["missing"] == true || f["styleMissing"] == true)) => {
+                    self.ui.dialog = Some(dialogs::Dialog::new("findFont", json!({"_fonts": fonts, "onOpen": true})));
+                }
+                Err(e) => self.status(e.to_string()),
+                _ => {}
+            }
+        }
+        if r.is_ok()
+            && matches!(id, "font.replace" | "edit.undo" | "edit.redo")
+            && let Some(dialog) = self.ui.dialog.as_mut().filter(|d| d.id == "findFont")
+        {
+            dialog.fields.remove("_fonts");
+        }
         if let Err(e) = &r {
             self.status(e.clone());
         }
@@ -871,6 +889,40 @@ pub fn now_ms() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_missing_fonts_offers_repeated_replacement_and_keeps_errors_visible() {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect":[0,0,200,200], "content":"text", "text":"Sample"})).unwrap();
+        let d = std::sync::Arc::make_mut(&mut app.session.doc_mut().unwrap().doc);
+        let sid = *d.stories.keys().next().unwrap();
+        d.story_mut(sid).unwrap().format_chars(0..6, |f| {
+            f.over.font_family = Some("Unavailable Test Family".into());
+            f.over.font_style = Some("Regular".into());
+        });
+        let path = std::env::temp_dir().join(format!("designcraft-font-open-{}.designcraft", std::process::id()));
+        app.run("file.save", json!({"path":path})).unwrap();
+        app.run("file.open", json!({"path":path})).unwrap();
+        let dialog = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(dialog.id, "findFont");
+        assert_eq!(dialog.fields["onOpen"], true);
+        dialog.fields.insert("family".into(), json!("Unavailable Test Family"));
+        dialog.fields.insert("style".into(), json!("Regular"));
+        dialog.fields.insert("toFamily".into(), json!("Unavailable Target"));
+        dialog.fields.insert("toStyle".into(), json!("Regular"));
+        assert!(dialogs::confirm(&mut app).is_err());
+        assert!(app.ui.dialog.as_ref().unwrap().fields.contains_key("error"));
+        app.ui.dialog.as_mut().unwrap().fields.insert("toFamily".into(), json!("Source Sans 3"));
+        dialogs::confirm(&mut app).unwrap();
+        assert!(!app.ui.dialog.as_ref().unwrap().fields.contains_key("_fonts"));
+        assert!(app.run("font.list", json!({})).unwrap().as_array().unwrap().iter().all(|f| f["missing"] == false));
+        app.ui.dialog = None;
+        app.run("file.save", json!({"path":path})).unwrap();
+        app.run("file.open", json!({"path":path})).unwrap();
+        assert!(app.ui.dialog.is_none());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn snap_view_uses_the_saved_switches() {

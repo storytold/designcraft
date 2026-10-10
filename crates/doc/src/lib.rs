@@ -21,6 +21,7 @@ pub mod endnotes;
 pub mod ids;
 pub mod index;
 pub mod item;
+pub mod mojikumi;
 pub mod notes;
 pub mod otf;
 pub mod page;
@@ -729,8 +730,8 @@ impl Document {
                 return Err(DocError::Invalid(format!("story key {sid} != id {}", st.id)));
             }
             for f in &st.frames {
-                let item = self.find(*f).ok_or(DocError::NoItem(*f))?;
-                match self.item_at(&item).and_then(|i| i.text_frame().map(|t| t.story)) {
+                let item = self.item(*f).or_else(|| self.anchored_item(*f)).ok_or(DocError::NoItem(*f))?;
+                match item.text_frame().map(|t| t.story) {
                     Some(s) if s == *sid => {}
                     other => return Err(DocError::Invalid(format!("frame {f} in story {sid} points at {other:?}"))),
                 }
@@ -751,6 +752,50 @@ impl Document {
                     return Err(DocError::Invalid(format!("text frame {b} not in its story's thread")));
                 }
             }
+        }
+        let embedded = self.anchored_items();
+        let mut edges: std::collections::HashMap<StoryId, Vec<StoryId>> = std::collections::HashMap::new();
+        for (owner, item) in embedded {
+            if !ids.insert(item.id.0) {
+                return Err(DocError::Invalid(format!("duplicate item id {}", item.id)));
+            }
+            if let Some(tf) = item.text_frame() {
+                if !self.stories.get(&tf.story).is_some_and(|s| s.frames.contains(&item.id)) {
+                    return Err(DocError::Invalid(format!("embedded text frame {} not in its story's thread", item.id)));
+                }
+                edges.entry(owner).or_default().push(tf.story);
+            }
+        }
+        // Reject cycles and excessive nesting before renderers follow embedded frames.
+        fn visit(
+            id: StoryId,
+            edges: &std::collections::HashMap<StoryId, Vec<StoryId>>,
+            path: &mut Vec<StoryId>,
+            done: &mut std::collections::HashMap<StoryId, usize>,
+        ) -> Result<usize> {
+            if path.contains(&id) || path.len() >= 64 {
+                return Err(DocError::Invalid("cyclic or excessively nested anchored text frames".into()));
+            }
+            if let Some(&height) = done.get(&id) {
+                return Ok(height);
+            }
+            path.push(id);
+            let mut height = 1;
+            if let Some(children) = edges.get(&id) {
+                for &child in children {
+                    height = height.max(1 + visit(child, edges, path, done)?);
+                }
+            }
+            path.pop();
+            if height > 64 {
+                return Err(DocError::Invalid("excessively nested anchored text frames".into()));
+            }
+            done.insert(id, height);
+            Ok(height)
+        }
+        let mut done = std::collections::HashMap::new();
+        for &id in edges.keys() {
+            visit(id, &edges, &mut Vec::new(), &mut done)?;
         }
         if self.next_id < ids.iter().copied().max().unwrap_or(0) {
             return Err(DocError::Invalid("next_id behind existing ids".into()));

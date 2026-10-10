@@ -49,11 +49,14 @@ pub struct Glyph {
     /// Resolved CJK boundary constraint, independent of glyph outlines.
     pub break_after: Option<bool>,
     pub cjk_hang: f64,
+    pub moji: crate::mojikumi::Metrics,
     pub ideographic_space_elastic: bool,
     pub character_alignment: designcraft_doc::cjk::CharacterAlignment,
     pub leading_model: designcraft_doc::cjk::LeadingModel,
     pub character_direction: designcraft_doc::arabic::CharacterDirection,
     pub display_char: char,
+    /// Actual shaped character, including generated labels, for glyph diagnostics.
+    pub rendered_char: char,
     pub bidi_offset: usize,
     pub bidi_end: usize,
     pub allow_kashidas: bool,
@@ -234,8 +237,7 @@ pub(crate) fn shape_para(
             None => para_chars,
         };
         let props = styles.resolve_char(para_chars, fmt);
-        let family = props.font_family.trim_start_matches("CompositeFont/");
-        if let Some(font) = styles.composite_fonts.iter().find(|f| f.name == family) {
+        if let Some(font) = styles.composite_font(&props.font_family) {
             let mut start = a;
             let mut selected = None;
             for (offset, c) in story.text.get(a..b).unwrap_or("").char_indices() {
@@ -301,7 +303,32 @@ pub(crate) fn shape_para(
             if m.starts_with(designcraft_doc::ENDNOTE_REF) {
                 shape_run(db, &story.text, i..e, &eprops, eenv, estyle, sub, &mut glyphs);
             } else {
-                shape_run(db, &story.text, i..e, &rprops, renv, rstyle, sub, &mut glyphs);
+                if let Some(composite) = styles.composite_font(&rprops.font_family) {
+                    let label = sub.notes.get(&i).map_or("#", String::as_str);
+                    let begin = glyphs.len();
+                    let mut segments: Vec<(usize, usize, Option<&designcraft_doc::cjk::CompositeFontEntry>)> = Vec::new();
+                    for (at, c) in label.char_indices() {
+                        let entry = composite.entry(c);
+                        if let Some((_, end, _)) = segments.last_mut().filter(|(_, _, previous)| *previous == entry) {
+                            *end = at + c.len_utf8();
+                        } else {
+                            segments.push((at, at + c.len_utf8(), entry));
+                        }
+                    }
+                    for (a, b, entry) in segments {
+                        let props = composite_props(db, &rprops, entry);
+                        let style = table.intern(db, &props);
+                        let env = table.env_for(auto_leading, style);
+                        let face = db.face(&props.font_family, &props.font_style);
+                        shape_segment(db, &story.text, i..e, label.get(a..b), &props, &face, env, style, &mut glyphs, sub.vertical);
+                    }
+                    for (index, glyph) in glyphs[begin..].iter_mut().enumerate() {
+                        glyph.len = if index == 0 { e - i } else { 0 };
+                        glyph.no_break = true;
+                    }
+                } else {
+                    shape_run(db, &story.text, i..e, &rprops, renv, rstyle, sub, &mut glyphs);
+                }
             }
             k = e;
         }
@@ -587,8 +614,10 @@ fn shape_run_raw(
                             // Sits on the baseline like a (big) character.
                             Some(y) => {
                                 g.adv = o.w;
-                                g.ascent = g.ascent.max(o.h + y);
-                                g.descent = g.descent.max(-y);
+                                // The replacement character has no font ink. Its box alone
+                                // supplies extents; adjacent text supplies its own font metrics.
+                                g.ascent = (o.h + y).max(0.0);
+                                g.descent = (-y).max(0.0);
                             }
                             // Pushes its line down by its height and spacing.
                             None => g.ascent += o.h + o.space,
@@ -775,10 +804,12 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
         break_after: None,
         cjk_hang: 0.0,
+        moji: crate::mojikumi::Metrics { explicit_before: p.leading_aki.is_some(), explicit_after: p.trailing_aki.is_some(), ..Default::default() },
         ideographic_space_elastic: false,
         character_alignment: p.character_alignment,
         leading_model: p.leading_model,
         character_direction: p.character_direction,
+        rendered_char: ch,
         display_char: ch,
         bidi_offset: 0,
         bidi_end: 0,
@@ -803,7 +834,32 @@ fn shape_segment(
     out: &mut Vec<Glyph>,
     vertical: bool,
 ) {
-    let _ = db;
+    // Generated labels need the same coverage fallback as ordinary text. Keep the
+    // original marker address and one carrier even when several faces draw the label.
+    if let Some(label) = replacement.filter(|_| auto_leading.glyph_fallback) {
+        let lang = designcraft_doc::language_tag(&p.language);
+        let mut segments: Vec<(usize, usize, Arc<FontFace>)> = Vec::new();
+        for (at, c) in label.char_indices() {
+            let selected = if face.covers(c) { face.clone() } else { db.fallback_for(c, face.id(), lang).unwrap_or_else(|| face.clone()) };
+            if let Some((_, end, previous)) = segments.last_mut().filter(|(_, _, previous)| previous.id() == selected.id()) {
+                *end = at + c.len_utf8();
+                let _ = previous;
+            } else {
+                segments.push((at, at + c.len_utf8(), selected));
+            }
+        }
+        if segments.iter().any(|(_, _, selected)| selected.id() != face.id()) {
+            let begin = out.len();
+            for (a, b, selected) in segments {
+                shape_segment(db, text, range.clone(), label.get(a..b), p, &selected, auto_leading, style, out, vertical);
+            }
+            for (i, glyph) in out[begin..].iter_mut().enumerate() {
+                glyph.len = if i == 0 { range.len() } else { 0 };
+                glyph.no_break = true;
+            }
+            return;
+        }
+    }
     let (size, k, ascent, descent, leading, cap, xh, shift) = metrics(face, p, auto_leading);
     let hs = p.h_scale;
     let tracking = p.tracking / 1000.0 * p.size;
@@ -857,6 +913,7 @@ fn shape_segment(
             (sg.x_offset as f64 * k * hs, -(sg.y_offset as f64) * k * p.v_scale)
         };
         let (ascent, descent) = if up { (em_top * k_v, -em_bottom * k_v) } else { (ascent, descent) };
+        let body = adv;
         if ch == SOFT_HYPHEN {
             adv = 0.0;
         } else if last_in_cluster {
@@ -893,10 +950,17 @@ fn shape_segment(
             space,
             break_after: None,
             cjk_hang: 0.0,
+            moji: crate::mojikumi::Metrics {
+                body,
+                explicit_before: p.leading_aki.is_some(),
+                explicit_after: p.trailing_aki.is_some(),
+                ..Default::default()
+            },
             ideographic_space_elastic: false,
             character_alignment: p.character_alignment,
             leading_model: p.leading_model,
             character_direction: p.character_direction,
+            rendered_char: src.get(sg.cluster..).and_then(|s| s.chars().next()).unwrap_or(ch),
             display_char: if replacement.is_some() && matches!(ch, '0'..='9' | '\u{0660}'..='\u{0669}' | '\u{06F0}'..='\u{06F9}') {
                 src.chars().next().unwrap_or(ch)
             } else {
@@ -939,5 +1003,7 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.byte = g.byte + g.len;
     h.len = 0;
     h.ch = '-';
+    h.rendered_char = '-';
+    h.moji = Default::default();
     h
 }

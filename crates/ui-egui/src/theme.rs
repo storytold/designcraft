@@ -255,7 +255,34 @@ impl Tokens {
 
 /// Install the UI fonts for the interface language `lang` (it orders the CJK fallbacks).
 pub fn install_fonts(ctx: &egui::Context, lang: &str) {
-    ctx.set_fonts(font_definitions(designcraft_fonts::CRAFT_FONTS, lang));
+    let fonts = font_definitions(designcraft_fonts::CRAFT_FONTS, lang);
+    #[cfg(not(target_arch = "wasm32"))]
+    let fonts = {
+        let mut fonts = fonts;
+        // Local builds may omit craft-fonts. Use the shared resolver for readable document
+        // names and font menus without bundling or copying installed fonts into the project.
+        if designcraft_fonts::CRAFT_FONTS.is_empty() {
+            let db = designcraft_fonts::FontDb::global();
+            for c in ['中', 'あ', '한'] {
+                if let Some(face) = db.fallback_for(c, u32::MAX, Some(lang)) {
+                    let name = format!("system-ui-{}", face.id());
+                    if fonts.font_data.contains_key(&name) {
+                        continue;
+                    }
+                    let mut data = FontData::from_owned(face.data().to_vec());
+                    data.index = face.index();
+                    fonts.font_data.insert(name.clone(), Arc::new(data));
+                    for (family, stack) in &mut fonts.families {
+                        if !matches!(family, FontFamily::Name(name) if name.starts_with("arabic")) {
+                            stack.push(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        fonts
+    };
+    ctx.set_fonts(fonts);
 }
 
 /// The UI fonts: the app's own, then the craft-fonts faces from `craft` (empty without

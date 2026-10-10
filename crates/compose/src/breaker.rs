@@ -50,6 +50,8 @@ pub struct Spacing {
     pub optical: bool,
     /// Korean text breaks between syllables instead of at spaces.
     pub korean_char_breaks: bool,
+    /// 0: minimum adjustment; 1: push in; 2: push out first; 3: push out only.
+    pub kinsoku_priority: u8,
 }
 
 impl Default for Spacing {
@@ -71,6 +73,7 @@ impl Default for Spacing {
             hyph_zone: 0.0,
             optical: false,
             korean_char_breaks: false,
+            kinsoku_priority: 0,
         }
     }
 }
@@ -78,13 +81,18 @@ impl Default for Spacing {
 impl Spacing {
     /// Per-tier (word, letter, glyph) stretch and shrink of glyph `g` as a box.
     fn box_elastic(&self, g: &Glyph) -> ([f64; 3], [f64; 3]) {
-        if !self.justify || g.locked_advance {
+        if g.locked_advance {
             return ([0.0; 3], [0.0; 3]);
+        }
+        let moji_stretch = if self.justify { g.moji.stretch } else { 0.0 };
+        let moji_shrink = if self.kinsoku_priority == 3 { 0.0 } else { g.moji.shrink };
+        if !self.justify {
+            return ([0.0; 3], [moji_shrink, 0.0, 0.0]);
         }
         let natural = g.adv / self.glyph_desired.max(0.01);
         (
-            [0.0, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
-            [0.0, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
+            [moji_stretch, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
+            [moji_shrink, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
         )
     }
     /// Word-space stretch and shrink of space glyph `g` (only U+0020 is elastic).
@@ -146,6 +154,8 @@ struct Item {
     auto: bool,
     /// Breaks: optical hang of the glyph ending the line. Boxes: hang of the glyph starting one.
     hang: f64,
+    edge_elastic: [f64; 2],
+    start_elastic: [f64; 2],
     /// Auto hyphenation points: index of the break opportunity before the word (or `NONE`).
     zone_from: usize,
 }
@@ -154,13 +164,49 @@ const NONE: usize = usize::MAX;
 
 impl Item {
     fn boxed(w: f64, st: [f64; 3], sh: [f64; 3]) -> Item {
-        Item { kind: Kind::Box, w, st, sh, p: 0.0, flagged: false, auto: false, hang: 0.0, zone_from: NONE }
+        Item {
+            kind: Kind::Box,
+            w,
+            st,
+            sh,
+            p: 0.0,
+            flagged: false,
+            auto: false,
+            hang: 0.0,
+            edge_elastic: [0.0; 2],
+            start_elastic: [0.0; 2],
+            zone_from: NONE,
+        }
     }
     fn glue(w: f64, st: f64, sh: f64) -> Item {
-        Item { kind: Kind::Glue, w, st: [st, 0.0, 0.0], sh: [sh, 0.0, 0.0], p: 0.0, flagged: false, auto: false, hang: 0.0, zone_from: NONE }
+        Item {
+            kind: Kind::Glue,
+            w,
+            st: [st, 0.0, 0.0],
+            sh: [sh, 0.0, 0.0],
+            p: 0.0,
+            flagged: false,
+            auto: false,
+            hang: 0.0,
+            edge_elastic: [0.0; 2],
+            start_elastic: [0.0; 2],
+            zone_from: NONE,
+        }
     }
     fn penalty(w: f64, p: f64, flagged: bool) -> Item {
-        Item { kind: Kind::Penalty, w, st: [0.0; 3], sh: [0.0; 3], p, flagged, auto: false, hang: 0.0, zone_from: NONE }
+        Item {
+            kind: Kind::Penalty,
+            w,
+            st: [0.0; 3],
+            sh: [0.0; 3],
+            p,
+            flagged,
+            auto: false,
+            hang: 0.0,
+            edge_elastic: [0.0; 2],
+            start_elastic: [0.0; 2],
+            zone_from: NONE,
+        }
     }
 }
 
@@ -235,7 +281,7 @@ fn hang_left(g: &Glyph) -> f64 {
 }
 
 fn right_hang(g: &Glyph, sp: &Spacing) -> f64 {
-    g.cjk_hang.max(if sp.optical { hang_right(g) } else { 0.0 })
+    g.cjk_hang.max(if sp.optical { hang_right(g) } else { 0.0 }) - g.moji.end
 }
 
 fn hang_right(g: &Glyph) -> f64 {
@@ -287,6 +333,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
             ig.push(i);
             let mut p = Item::penalty(0.0, -INF, false);
             p.hang = prev_hang;
+            if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
+                p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+            }
             it.push(p);
             ig.push(i + 1);
             last_space = NONE;
@@ -298,6 +347,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
                 let (st, sh) = sp.space_elastic(g);
                 let mut gl = Item::glue(w, st, sh);
                 gl.hang = prev_hang;
+                if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
+                    gl.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                }
                 last_space = it.len();
                 it.push(gl);
                 ig.push(i);
@@ -307,6 +359,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
                 ig.push(i);
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = prev_hang;
+                if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
+                    p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                }
                 last_space = it.len();
                 it.push(p);
                 ig.push(i);
@@ -328,9 +383,8 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
         }
         let (st, sh) = sp.box_elastic(g);
         let mut bx = Item::boxed(g.adv, st, sh);
-        if sp.optical {
-            bx.hang = hang_left(g);
-        }
+        bx.hang = (if sp.optical { hang_left(g) } else { 0.0 }) - g.moji.start;
+        bx.start_elastic = crate::mojikumi::start_elastic(g, sp.justify, sp.kinsoku_priority != 3);
         it.push(bx);
         ig.push(i);
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
@@ -338,10 +392,12 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
             if matches!(g.ch, '-' | '\u{2010}') {
                 let mut p = Item::penalty(0.0, 50.0, true);
                 p.hang = right_hang(g, sp);
+                p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp)) {
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = right_hang(g, sp);
+                p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if hyph_after[i] {
                 let hw = hyphen_width(g, &mut hy_cache);
@@ -360,6 +416,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
     ig.push(n);
     let mut p = Item::penalty(0.0, -INF, false);
     p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
+    if let Some(g) = glyphs.last() {
+        p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+    }
     it.push(p);
     ig.push(n);
     (it, ig)
@@ -422,9 +481,21 @@ fn kp_pass(
             sz[i + 1][t] = sz[i][t] + z[t];
         }
     }
-    let first_hang = items.iter().find(|i| i.kind == Kind::Box).map_or(0.0, |b| b.hang);
-    let mut arena: Vec<Node> =
-        vec![Node { pos: 0, line: 0, fitness: 1, tw: first_hang, ty: [0.0; 3], tz: [0.0; 3], demerits: 0.0, prev: None, hyphens: 0, flagged: false }];
+    let first_box = items.iter().find(|i| i.kind == Kind::Box);
+    let first_hang = first_box.map_or(0.0, |b| b.hang);
+    let first_elastic = first_box.map_or([0.0; 2], |b| b.start_elastic);
+    let mut arena: Vec<Node> = vec![Node {
+        pos: 0,
+        line: 0,
+        fitness: 1,
+        tw: first_hang,
+        ty: [-first_elastic[0], 0.0, 0.0],
+        tz: [-first_elastic[1], 0.0, 0.0],
+        demerits: 0.0,
+        prev: None,
+        hyphens: 0,
+        flagged: false,
+    }];
     let limit = sp.hyphen_limit as usize;
     let states = if limit == 0 { 2 } else { (limit + 1).min(MAX_HYPHEN_STATES) };
     let mut active: Vec<usize> = vec![0];
@@ -454,6 +525,8 @@ fn kp_pass(
                 y[t] = sy[b][t] - n.ty[t];
                 z[t] = sz[b][t] - n.tz[t];
             }
+            y[0] = (y[0] + it.edge_elastic[0]).max(0.0);
+            z[0] = (z[0] + it.edge_elastic[1]).max(0.0);
             let (r, feasible) = tiered_ratio(target - l, y, z);
             if feasible && !forced {
                 keep.push(a);
@@ -477,7 +550,12 @@ fn kp_pass(
                     }
                 }
             }
-            let bad = 100.0 * r.abs().powi(3);
+            let preference = match sp.kinsoku_priority {
+                1 if r > 0.0 => 4.0,
+                2 if r < 0.0 => 4.0,
+                _ => 1.0,
+            };
+            let bad = preference * 100.0 * r.abs().powi(3);
             let lp = 10.0 + bad;
             let mut d = if pp >= 0.0 {
                 lp * lp + pp * pp
@@ -531,6 +609,8 @@ fn kp_pass(
             match x.kind {
                 Kind::Box => {
                     tw += x.hang;
+                    ty[0] -= x.start_elastic[0];
+                    tz[0] -= x.start_elastic[1];
                     break;
                 }
                 Kind::Glue => {
@@ -641,8 +721,9 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
     let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
     while start < n {
         let w = width(line).max(1.0);
-        let mut x = if sp.optical { -hang_left(&glyphs[start]) } else { 0.0 };
-        let mut shrink = 0.0;
+        let mut x = (if sp.optical { -hang_left(&glyphs[start]) } else { 0.0 }) + glyphs[start].moji.start;
+        let mut shrink = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, sp.kinsoku_priority != 3)[1];
+        let mut last_natural: Option<(usize, bool)> = None;
         let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
         let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
         let mut i = start;
@@ -658,13 +739,25 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                     shrink += sp.space_elastic(g).1;
                 }
                 last_ok = Some((i, false));
+                if x <= w {
+                    last_natural = last_ok;
+                }
                 last_space = Some((i, x));
                 x += g.adv;
                 i += 1;
                 continue;
             }
             let hang_r = right_hang(g, sp);
-            if x + g.adv - hang_r > w + shrink
+            let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
+            let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
+            if sp.kinsoku_priority == 2
+                && x + g.adv - hang_r > w
+                && let Some((end, hyphen)) = last_natural
+            {
+                brk = Some((end, hyphen, false));
+                break;
+            }
+            if x + g.adv - hang_r > w + available.max(0.0)
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
             {
@@ -680,14 +773,15 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 break;
             }
             x += g.adv;
-            if sp.justify {
-                shrink += sp.box_elastic(g).1.iter().sum::<f64>();
-            }
+            shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
                 if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
                     last_ok = Some((i + 1, false));
+                    if x - hang_r <= w {
+                        last_natural = last_ok;
+                    }
                 } else if hyph_after[i] && may_hyphenate(hyphens) {
                     let hy = hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
                     if x + hy <= w + shrink {

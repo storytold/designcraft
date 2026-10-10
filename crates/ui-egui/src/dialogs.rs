@@ -1373,7 +1373,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  OK  ")).color(egui::Color32::WHITE)))
+                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, if d.id == "findFont" { "Replace All" } else { "  OK  " })).color(egui::Color32::WHITE)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
@@ -1381,7 +1381,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 {
                     result = Some(true);
                 }
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if d.id == "findFont" { "Done" } else { "Cancel" }))).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     result = Some(false);
                 }
             });
@@ -1627,11 +1627,19 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         }
         "polygonSettings" => app.run("tool.polygonSettings", json!({"sides": d.n("sides").unwrap_or(6.0) as u64, "starInset": d.n("starInset").unwrap_or(0.0)})),
         "findFont" => {
-            let (f, st) = (d.s("family"), d.s("style"));
-            if f.is_empty() || d.s("toFamily").is_empty() {
-                return Ok(Value::Null);
+            let result = app.run("font.replace", json!({"family": d.s("family"), "style": d.s("style"), "toFamily": d.s("toFamily"), "toStyle": d.s("toStyle")}));
+            let mut d = d;
+            match &result {
+                Ok(_) => {
+                    d.fields.remove("_fonts");
+                    d.fields.remove("family");
+                    d.fields.remove("style");
+                    d.fields.remove("error");
+                }
+                Err(error) => { d.fields.insert("error".into(), json!(error)); }
             }
-            app.run("font.replace", json!({"family": f, "style": st, "toFamily": d.s("toFamily"), "toStyle": d.s("toStyle")}))
+            app.ui.dialog = Some(d);
+            result
         }
         "insertXref" => {
             let format = d.s("format");
@@ -2603,6 +2611,24 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         d.fields.insert("_fonts".into(), list);
     }
     let fonts = d.fields.get("_fonts").and_then(Value::as_array).cloned().unwrap_or_default();
+    if !fonts.iter().any(|font| font["family"] == d.s("family") && font["style"] == d.s("style"))
+        && let Some(font) = fonts.first()
+    {
+        d.fields.insert("family".into(), font["family"].clone());
+        d.fields.insert("style".into(), font["style"].clone());
+    }
+    if d.b("onOpen") && fonts.iter().any(|f| f["missing"] == true || f["styleMissing"] == true) {
+        crate::rtl::label(
+            ui,
+            crate::i18n::tr(
+                &app.ui.language,
+                "This document uses unavailable fonts. Choose replacements, or select Done to continue with fallback fonts.",
+            ),
+        );
+    }
+    if !d.s("error").is_empty() {
+        crate::rtl::label(ui, d.s("error"));
+    }
     let missing = fonts.iter().filter(|f| f["missing"] == true || f["styleMissing"] == true).count();
     crate::rtl::label(
         ui,
@@ -2617,8 +2643,8 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             let label = format!("{}{fam} {st}", if warn { "\u{26A0} " } else { "" });
             let on = d.s("family") == fam && d.s("style") == st;
             let mut text = egui::RichText::new(label);
-            if warn {
-                text = text.color(egui::Color32::from_rgb(0xe5, 0x4b, 0x4b));
+            if warn && !on {
+                text = text.color(crate::theme::Tokens::get(ui.ctx()).text_strong);
             }
             if ui.selectable_label(on, text).clicked() {
                 d.fields.insert("family".into(), json!(fam));
@@ -2626,10 +2652,30 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             }
         }
     });
+    let key = format!("{}\n{}", d.s("family"), d.s("style"));
+    if let Some(font) = fonts.iter().find(|f| f["family"] == d.s("family") && f["style"] == d.s("style")) {
+        if d.s("_fontKey") != key {
+            d.fields.insert("_fontKey".into(), json!(key));
+            d.fields.insert("toFamily".into(), font["replacementFamily"].clone());
+            d.fields.insert("toStyle".into(), font["replacementStyle"].clone());
+        }
+        crate::rtl::label(
+            ui,
+            format!(
+                "{}: {} {}",
+                crate::i18n::tr(&app.ui.language, "Currently Rendered With"),
+                font["resolvedFamily"].as_str().unwrap_or(""),
+                font["resolvedStyle"].as_str().unwrap_or("")
+            ),
+        );
+    }
     ui.add_space(8.0);
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Replace With")).font(semibold(12.0)));
     let db = crate::panels::fonts(app);
     let menu = crate::panels::font_menu(app);
+    if d.s("toFamily").is_empty() {
+        d.fields.insert("toFamily".into(), json!(designcraft_fonts::FALLBACK_FAMILY));
+    }
     let english = app.session.prefs.show_font_names_in_english;
     let fam_opts: Vec<(&str, &str)> = menu.iter().map(|f| (f.family.as_str(), f.label(english))).collect();
     egui::Grid::new("ff_to").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -2637,6 +2683,17 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         combo(ui, d, "toFamily", &fam_opts);
         ui.end_row();
         let styles = db.styles(&d.s("toFamily"));
+        if !styles.iter().any(|style| style == &d.s("toStyle")) {
+            let preferred = d.s("style");
+            let style = styles
+                .iter()
+                .find(|s| s.eq_ignore_ascii_case(&preferred))
+                .or_else(|| styles.iter().find(|s| s.eq_ignore_ascii_case("Regular")))
+                .or_else(|| styles.first());
+            if let Some(style) = style {
+                d.fields.insert("toStyle".into(), json!(style));
+            }
+        }
         let st_opts: Vec<(&str, &str)> = styles.iter().map(|s| (s.as_str(), s.as_str())).collect();
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Style:"));
         combo(ui, d, "toStyle", &st_opts);
@@ -2644,9 +2701,12 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
     ui.label(crate::rtl::widget(
         ui,
-        egui::RichText::new(crate::i18n::tr(&app.ui.language, "OK changes all: text and paragraph/character styles."))
-            .color(crate::theme::Tokens::get(ui.ctx()).text_dim)
-            .size(11.0),
+        egui::RichText::new(crate::i18n::tr(
+            &app.ui.language,
+            "Replace All updates this font throughout text and styles. Done keeps remaining fallback fonts.",
+        ))
+        .color(crate::theme::Tokens::get(ui.ctx()).text_dim)
+        .size(11.0),
     ));
 }
 

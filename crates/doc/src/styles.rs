@@ -94,6 +94,12 @@ pub struct ExportTag {
 }
 
 impl Styles {
+    /// Resolve either a display name or a normalized IDML composite-font reference.
+    pub fn composite_font(&self, family: &str) -> Option<&crate::cjk::CompositeFont> {
+        let name = family.strip_prefix("CompositeFont/").unwrap_or(family);
+        self.composite_fonts.iter().find(|f| f.name == name)
+    }
+
     /// Export tagging of a paragraph (`character` false) or character style.
     pub fn export_tag(&self, name: &str, character: bool) -> Option<&ExportTag> {
         self.export_tags.get(&format!("{}:{name}", if character { "c" } else { "p" }))

@@ -217,6 +217,7 @@ pub struct Renderer {
     glyphs: text::GlyphCache,
     /// Composed stories looked up during the current render.
     stories: HashMap<(StoryId, Option<String>), Arc<ComposedStory>>,
+    drawing_items: Vec<designcraft_doc::ItemId>,
     pub threads: u16,
     pub stats: FrameStats,
 }
@@ -262,6 +263,7 @@ impl Renderer {
             resources: Resources::new(),
             glyphs: text::GlyphCache::default(),
             stories: HashMap::new(),
+            drawing_items: Vec::new(),
             threads: default_threads(),
             stats: FrameStats::default(),
         }
@@ -432,6 +434,15 @@ impl Renderer {
     }
 
     fn draw_item(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page_name: Option<&str>) {
+        if self.drawing_items.len() >= 64 || self.drawing_items.contains(&it.id) {
+            return;
+        }
+        self.drawing_items.push(it.id);
+        self.draw_item_inner(ctx, f, it, parent, page_name);
+        self.drawing_items.pop();
+    }
+
+    fn draw_item_inner(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page_name: Option<&str>) {
         if it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
             return;
         }
@@ -551,7 +562,7 @@ impl Renderer {
             if op {
                 ctx.push_layer(None, Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)), None, None, None);
             }
-            if set_fill_paint(ctx, doc, &it.fill, bp.bounding_box()) && it.path.is_closed() {
+            if set_fill_paint(ctx, doc, &it.fill, bp.bounding_box()) {
                 ctx.fill_path(bp);
             }
             ctx.reset_paint_transform();
@@ -1168,6 +1179,31 @@ mod tests {
     use super::*;
     use designcraft_doc::build::NewDocument;
     use designcraft_doc::{Fill, ParaFormat};
+
+    #[test]
+    fn footnote_vector_objects_are_painted() {
+        use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, Shape, SpreadRef};
+        let mut d = Document::new(&NewDocument::default());
+        let (_, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 300.0, 300.0), d.default_layer(), "Body", ParaFormat::default()).unwrap();
+        let mut item =
+            Item::new(ItemId(d.alloc()), d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 12.0, 12.0)));
+        item.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+        // Open contours with a fill are implicitly closed for painting. A single
+        // open contour must not hide the whole compound glyph.
+        item.path.subpaths[0].closed = false;
+        let story = d.story_mut(sid).unwrap();
+        story.insert_note(4, "", ParaFormat::default());
+        Arc::make_mut(&mut story.notes[0]).text.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+        let cache = Cache::new();
+        let cs = cache.get(&d, sid, None);
+        let note = &cs.frames[0].notes[0];
+        let object = &note.text.frames[0].objects[0];
+        let centre = note.origin + object.origin.to_vec2() + designcraft_geom::Vec2::new(6.0, 6.0);
+        let image = Renderer::new().render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let pixel = image.pixel(centre.x as u32, centre.y as u32);
+        assert!(pixel[0] < 80 && pixel[1] < 80 && pixel[2] < 80, "{pixel:?}");
+    }
 
     /// `Rendered` has public fields: a buffer that doesn't match the stated size used to panic
     /// in `to_png`.

@@ -392,14 +392,8 @@ impl Renderer {
             }
         }
         // Anchored objects ride on their lines.
-        if !ft.objects.is_empty()
-            && let Some(st) = doc.story(cs.story)
-        {
-            for o in &ft.objects {
-                if let Some(obj) = st.objects.get(o.index) {
-                    self.draw_item(ctx, f, &obj.item, xf * Affine::translate(o.origin.to_vec2()), None);
-                }
-            }
+        for o in &ft.objects {
+            self.draw_item(ctx, f, &o.object.item, xf * Affine::translate(o.origin.to_vec2()), None);
         }
     }
 }

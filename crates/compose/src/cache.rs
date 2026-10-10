@@ -249,7 +249,14 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
     let mut spreads = Vec::new();
     for f in &story.frames {
         let Some(loc) = doc.find(*f) else {
-            sig.push(0);
+            // Embedded frames live in another story (possibly in a note/cell),
+            // so changing their geometry does not change this story's pointer.
+            use std::hash::{Hash, Hasher};
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            if let Some(item) = doc.anchored_item(*f) {
+                format!("{item:?}").hash(&mut hash);
+            }
+            sig.push(hash.finish() as usize);
             continue;
         };
         if let Some(sp) = doc.spread(loc.spread) {

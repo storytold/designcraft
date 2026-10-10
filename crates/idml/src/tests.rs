@@ -792,12 +792,11 @@ fn cjk_composite_fonts_and_custom_kinsoku_are_document_resources() {
 }
 
 #[test]
-fn cjk_unsupported_mojikumi_is_preserved_instead_of_silently_dropped() {
-    let map = DESIGNMAP.replace("</Document>", r#"<MojikumiTable Self="MojikumiTable/Spacing" Name="Spacing" BasedOnMojikumiSet="SimpChineseDefault"><Properties><OverrideMojikumiAkiList>
+fn cjk_mojikumi_overrides_and_priority_round_trip() {
+    let map = DESIGNMAP.replace("</Document>", r#"<MojikumiTable Self="uMojikumi1" Name="Spacing" BasedOnMojikumiSet="SimpChineseDefault"><Properties><OverrideMojikumiAkiList>
     <OverrideMojikumiAkiType TargetMojikumiClass="1" SideMojikumiClass="23" SideIsAfterTarget="false" Minimum="-0.1" Desired="0.25" Maximum="0.5" CompressionPriority="3" AkiDoesNotFloat="true"/>
     </OverrideMojikumiAkiList></Properties></MojikumiTable></Document>"#);
-    let story =
-        STORY.replace("<ParagraphStyleRange ", "<ParagraphStyleRange Mojikumi=\"MojikumiTable/Spacing\" KinsokuType=\"KinsokuPushOutFirst\" ");
+    let story = STORY.replace("<ParagraphStyleRange ", "<ParagraphStyleRange Mojikumi=\"uMojikumi1\" KinsokuType=\"KinsokuPushOutFirst\" ");
     let bytes = zip_files(&[
         ("designmap.xml", &map),
         ("Resources/Graphic.xml", GRAPHIC),
@@ -856,4 +855,127 @@ fn arabic_story_and_table_directions_survive_idml_export() {
     let st = back.stories.values().find(|st| !st.tables.is_empty()).unwrap();
     assert_eq!(st.direction, designcraft_doc::TextDirection::RightToLeft);
     assert_eq!(st.tables.values().next().unwrap().options.direction, designcraft_doc::TextDirection::RightToLeft);
+}
+
+/// Synthetic forward references: both a body anchor and a footnote anchor own
+/// a group containing a text frame whose story is serialized later.
+#[test]
+fn round_trips_anchored_text_frames_in_body_and_footnotes() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, Content, Item, ItemId};
+    use std::sync::Arc;
+    let mut d = Document::new(&NewDocument::default());
+    let layer = d.default_layer();
+    let (_, body) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 400.0, 600.0), layer, "Body", ParaFormat::default()).unwrap();
+    d.story_mut(body).unwrap().insert_note(4, "Note", ParaFormat::default());
+    for in_note in [false, true] {
+        let (frame, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 60.0, 30.0), layer, "Symbol", ParaFormat::default()).unwrap();
+        let child = d.item(frame).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != frame);
+        let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Group, Default::default());
+        group.content = Content::Group { items: vec![Arc::new(child)] };
+        let anchor = AnchoredObject::new(group, AnchorPosition::Inline { y_offset: 2.0 });
+        let story = d.story_mut(body).unwrap();
+        if in_note {
+            Arc::make_mut(&mut story.notes[0]).text.insert_object(0, anchor);
+        } else {
+            story.insert_object(0, anchor);
+        }
+    }
+    d.check().unwrap();
+    for _ in 0..2 {
+        d = import_idml(&export_idml(&d)).unwrap();
+        d.check().unwrap();
+        assert_eq!(d.stories.len(), 3);
+        let body = d.stories.values().find(|s| !s.notes.is_empty()).unwrap();
+        assert_eq!(body.notes.len(), 1);
+        assert_eq!(body.objects.len(), 1);
+        assert_eq!(body.notes[0].text.objects.len(), 1);
+        let children: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).collect();
+        assert_eq!(children.len(), 2);
+        for (_, item) in children {
+            let story = d.story(item.text_frame().unwrap().story).unwrap();
+            assert_eq!(story.text, "Symbol");
+            assert_eq!(story.frames, vec![item.id]);
+        }
+    }
+}
+
+#[test]
+fn composite_references_resolve_by_identity_and_export_as_objects() {
+    let map = DESIGNMAP.replace("</Document>", r#"
+      <CompositeFont Self="CompositeFont/opaque%3a17" Name="Mixed%3a literal">
+        <CompositeFontEntry Name="Base" FontStyle="$ID/Regular"><Properties><AppliedFont type="string">Source Serif 4</AppliedFont></Properties></CompositeFontEntry>
+        <CompositeFontEntry Name="Digits" CustomCharacters="0123456789" FontStyle="$ID/Bold" RelativeSize="80" HorizontalScale="90" VerticalScale="110" BaselineShift="5" ScaleOption="false"><Properties><AppliedFont type="string">Source Sans 3</AppliedFont></Properties></CompositeFontEntry>
+      </CompositeFont></Document>"#);
+    let styles = STYLES
+        .replace("<AppliedFont type=\"string\">Source Serif 4</AppliedFont>", "<AppliedFont type=\"object\">CompositeFont/opaque%3a17</AppliedFont>");
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1"><ParagraphStyleRange><CharacterStyleRange><Content>A1</Content><Footnote><ParagraphStyleRange><CharacterStyleRange><Content>B2</Content></CharacterStyleRange></ParagraphStyleRange></Footnote></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"#;
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    let d = import_idml(&bytes).unwrap();
+    let f = &d.styles.composite_fonts[0];
+    assert_eq!(f.name, "Mixed%3a literal", "display names are not encoded identifiers");
+    let body = d.stories.values().find(|s| !s.notes.is_empty()).unwrap();
+    for text in [body.as_ref(), &body.notes[0].text] {
+        let (_, base) = d.styles.resolve_para(&text.paras[0]);
+        let p = d.styles.resolve_char(&base, &text.chars[0].format);
+        assert_eq!(d.styles.composite_font(&p.font_family), Some(f));
+    }
+    let output = export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&output)).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("Resources/Styles.xml").unwrap(), &mut xml).unwrap();
+    assert!(xml.contains("<AppliedFont type=\"object\">CompositeFont/Mixed%253a literal</AppliedFont>"), "{xml}");
+    let back = import_idml(&output).unwrap();
+    assert_eq!(back.styles.composite_fonts, d.styles.composite_fonts);
+}
+
+#[test]
+fn malformed_mojikumi_rows_are_not_silently_coerced() {
+    let good = r#"<OverrideMojikumiAkiType TargetMojikumiClass="12" SideMojikumiClass="18" SideIsAfterTarget="true" Minimum="0" Desired="0.25" Maximum="0.5" CompressionPriority="3" AkiDoesNotFloat="false"/>"#;
+    for (key, value) in [
+        ("TargetMojikumiClass", "12.9"),
+        ("SideMojikumiClass", "65536"),
+        ("Minimum", "NaN"),
+        ("Desired", "oops"),
+        ("Minimum", "0.4"),
+        ("Maximum", "0.1"),
+        ("Maximum", "101"),
+        ("CompressionPriority", "10"),
+        ("AkiDoesNotFloat", "maybe"),
+    ] {
+        let mut row = crate::xml::parse(good.as_bytes()).unwrap();
+        row.set(key, value);
+        let mut xml = String::new();
+        row.write(&mut xml, 0);
+        let map = DESIGNMAP.replace("</Document>", &format!("<MojikumiTable Name=\"Bad\" BasedOnMojikumiSet=\"SimpChineseDefault\"><Properties><OverrideMojikumiAkiList>{xml}</OverrideMojikumiAkiList></Properties></MojikumiTable></Document>"));
+        let bytes = zip_files(&[
+            ("designmap.xml", &map),
+            ("Resources/Graphic.xml", GRAPHIC),
+            ("Resources/Styles.xml", STYLES),
+            ("Resources/Preferences.xml", PREFS),
+            ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+            ("Spreads/Spread_sp1.xml", SPREAD),
+            ("Stories/Story_s1.xml", STORY),
+        ]);
+        if matches!((key, value), ("Minimum", "0.4") | ("Maximum", "0.1" | "101") | ("CompressionPriority", "10")) {
+            // Finite, representable rules survive import even if composition
+            // cannot apply them. The resolver supplies a diagnostic instead.
+            let document = import_idml(&bytes).unwrap();
+            document.check().unwrap();
+            assert!(designcraft_doc::mojikumi::Rules::resolve(&document.styles, "MojikumiTable/Bad").is_err());
+            let restored = import_idml(&export_idml(&document)).unwrap();
+            assert_eq!(restored.styles.mojikumi_tables, document.styles.mojikumi_tables);
+        } else {
+            let err = import_idml(&bytes).unwrap_err().to_string();
+            assert!(err.contains("Mojikumi"), "{key}={value}: {err}");
+        }
+    }
 }

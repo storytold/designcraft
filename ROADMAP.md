@@ -1,8 +1,30 @@
 # DesignCraft roadmap
 
+- CJK-MOJI8: preserve shaped narrow punctuation when tracking changes its advance.
+- CJK-MOJI7: prevent numeric coercion in Mojikumi import, preserve finite unsupported rules, and check nested note/cell rules in preflight.
+- CJK-MOJI6: apply spacing at shaped-cluster boundaries without moving attached marks.
+- CJK-MOJI5: share equal-priority boundary spacing and honor discrete compression endpoints, including leading-only ragged-line fitting.
+
+- CJK-MOJI3: use the composition rule resolver in preflight, report unknown Mojikumi presets and retain regression coverage for supported and unsupported settings.
+
+- CJK-MOJI2: share Mojikumi pair and line-edge metrics between breaking and placement; honor spacing bounds, compression priorities, explicit aki and kinsoku policies.
+
+- CJK-MOJI1: resolve Chinese and half-em Mojikumi presets and directional custom overrides; preserve IDML table references independently of display names.
+
+- FONT7: replacement recommendations check the characters actually used; placeholder LastResort fonts and glyph-zero mappings cannot masquerade as glyph coverage or suppress missing-glyph diagnostics.
+
+- FONT6: localized and legacy family/style names share canonical resolution across shaping, inventory and replacement. Known compatible and script-based substitutes retain missing status; Find Font shows the resolved face and offers it as the replacement, while preflight reports unavailable styles.
+
+- FONT5: missing-glyph preflight inspects rendered characters in generated labels, including zero-length continuation glyphs, and identifies the owning page frame for nested text.
+
+- FONT4: generated note labels resolve composite character mappings and glyph fallback while retaining a single source anchor; composed glyphs retain the actual rendered character for diagnostics.
+
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
+- FONT3: opening documents with unavailable font families or styles automatically offers Find/Replace Font. The dialog supports repeated replacements, refreshed inventory and visible validation errors; native builds without craft-fonts use system CJK fonts for readable names.
+- FONT2: font replacements validate available targets and resolve inherited formatting in nested text and empty paragraphs, with undo and composite component preservation.
+- FONT1: composite-font references resolve by resource identity, retain literal display names, and export as object references. Font inventory and preflight share the character-selected component fonts, including nested notes and cells.
 - CJK1: IDML composite fonts now retain character mappings and metrics; explicit aki, tsume, jidori, em alignment/leading, named/custom kinsoku boundaries, hanging punctuation, tate-chu-yoko offsets and kenten symbols flow through composition and IDML export. Automatic kerning no longer imports inactive numeric values as enormous manual spacing. Composite definitions are editable through commands with undo/cache invalidation. Mojikumi definitions are retained and unsupported spacing-table / push-in-push-out policies are reported by preflight. Full InDesign CJK composition parity, frame-grid layout and detailed ruby/warichu remain unfinished.
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
@@ -23,6 +45,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - EPUB 3 (reflowable) export: stories in reading order, CSS from paragraph/character styles, images, navigation (`file.exportEpub`, CLI `--export x.epub`).
 - Data Merge (one linked CSV, TSV, text, or Excel file; text, image, QR, and hyperlink placeholders; preview; a new document with one record per page or records tiled on a single page), spell checking (public-domain Moby list + document dictionary, suggestions), Step and Repeat (count or grid), snippets, object styles, Numbering & Section Options.
 - Footnotes: Type › Insert Footnote (caret moves into the note), Document Footnote Options (numbering style incl. symbols, start/restart per page/spread/section, prefix/suffix, reference position/character style, paragraph style, separator, spacing, first baseline, rule above); notes composed at the bottom of the referencing column with the body text making room; edited in place on the canvas; rendered, exported to PDF (real text) and IDML (InDesign's structure, verified opening in InDesign 2026) and imported from IDML; `footnote.*` commands.
+- IDML1: embedded text frames and groups retain forward story references in body text, footnotes and table cells; anonymous composed stories retain anchored artwork for screen/PDF rendering. Filled compound outlines retain open contours; object-only inline lines use geometric extents, preflight distinguishes unplaced stories and locates embedded overflow at its page frame, and cyclic frame references are rejected.
 - Cross-references and text anchors: Insert Cross-Reference (paragraph by style, or text anchor), 11 formats with InDesign's building blocks (full/partial paragraph, paragraph text/number, page number, anchor name, chapter, file name) plus user formats; resolved live at composition — never out of date, no Update step; unresolved destinations show `??`; PDF link annotations to the destination page; IDML export/import as InDesign cross-reference sources, hyperlinks, text destinations and formats (verified in InDesign 2026); `xref.*` / `anchor.*` commands.
 - Index: page references (topic from the selection or up to 4 levels, sort keys; current page, to end of story, next n paragraphs, suppressed, See / See also), Generate / Update Index (section headings, nested or run-in, page ranges merged, Index Title / Section Head / Level 1–4 styles); IDML export/import as InDesign topics, page references and topic cross-references (verified in InDesign 2026); `index.*` commands.
 - Text clipboard keeps formatting (character/paragraph formats, footnotes, cross-references, index markers, tables) and falls back to plain text when the system clipboard changed; Paste without Formatting (⇧⌘V); Change Case (UPPERCASE, lowercase, Title Case, Sentence case — formatting kept); Type › Insert Special Character / White Space / Break Character submenus.

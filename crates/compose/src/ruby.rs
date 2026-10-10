@@ -22,6 +22,7 @@ fn set(base: &PlacedGlyph, text: &str, size: f64, base_size: f64) -> (Vec<Placed
         let ch = text[sg.cluster..].chars().next().unwrap_or(' ');
         let adv = sg.x_advance as f64 * k;
         out.push(PlacedGlyph {
+            rendered_char: ch,
             gid: sg.gid,
             x: x + sg.x_offset as f64 * k,
             y: y - sg.y_offset as f64 * k,

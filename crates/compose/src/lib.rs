@@ -14,6 +14,7 @@ mod bidi;
 pub mod breaker;
 mod cache;
 pub mod hyphen;
+mod mojikumi;
 mod notes;
 mod overlay;
 mod ruby;
@@ -94,6 +95,8 @@ impl RunStyle {
 /// A positioned glyph. `x` is absolute in frame inner space; `y` is relative to the line baseline.
 #[derive(Clone, Debug)]
 pub struct PlacedGlyph {
+    /// Actual character drawn, including generated labels.
+    pub rendered_char: char,
     pub face: designcraft_fonts::FaceRef,
     pub gid: u32,
     pub x: f64,
@@ -212,6 +215,8 @@ pub struct FrameText {
 pub struct PlacedObject {
     /// Index in the story's [`Story::objects`].
     pub index: usize,
+    /// Source item retained for anonymous footnote and cell stories.
+    pub object: Arc<designcraft_doc::AnchoredObject>,
     /// Top-left of the object in frame inner space.
     pub origin: Point,
     pub size: (f64, f64),
@@ -328,13 +333,14 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
     let Some(st) = doc.story(sid) else { return vec![] };
     let mut out = Vec::with_capacity(st.frames.len());
     for &fid in &st.frames {
-        let Some(loc) = doc.find(fid) else { continue };
-        let Some(item) = doc.item_at(&loc) else { continue };
+        let loc = doc.find(fid);
+        let Some(item) = loc.as_ref().and_then(|l| doc.item_at(l)).or_else(|| doc.anchored_item(fid)) else { continue };
         let Some(tf) = item.text_frame() else { continue };
-        let xf = doc.parent_xf(&loc) * item.xf;
+        let xf = loc.as_ref().map(|l| doc.parent_xf(l)).unwrap_or(designcraft_geom::Affine::IDENTITY) * item.xf;
         let inv = xf.inverse();
         let mut exclusions = Vec::new();
-        let spread = doc.spread(loc.spread);
+        let spread_ref = loc.as_ref().map(|l| l.spread);
+        let spread = spread_ref.and_then(|r| doc.spread(r));
         if !tf.options.ignore_wrap
             && let Some(sp) = spread
         {
@@ -352,14 +358,14 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
                 exclusions.push(Exclusion { rect: inner, mode: other.wrap.mode });
             }
         }
-        let (page_name, page, left_page) = match (loc.spread, spread) {
-            (designcraft_doc::SpreadRef::Doc(si), Some(sp)) => {
+        let (page_name, page, left_page) = match (spread_ref, spread) {
+            (Some(designcraft_doc::SpreadRef::Doc(si)), Some(sp)) => {
                 let c = item.bounds().center();
                 let pi = sp.page_at_x(c.x).unwrap_or(0);
                 let abs = doc.first_page_of_spread(si) + pi;
                 (Some(doc.page_name(abs)), Some(abs), sp.pages.get(pi).is_some_and(|p| p.side == designcraft_doc::PageSide::Left))
             }
-            (designcraft_doc::SpreadRef::Parent(pi), Some(sp)) => {
+            (Some(designcraft_doc::SpreadRef::Parent(pi)), Some(sp)) => {
                 let prefix = sp.parent.as_ref().map(|p| p.prefix.clone()).unwrap_or_else(|| "A".into());
                 let _ = pi;
                 (Some(prefix), None, false)
@@ -367,7 +373,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             _ => (None, None, false),
         };
         // The page under the frame and its margins, in inner space (bounding boxes).
-        let page_rect = match (loc.spread, spread) {
+        let page_rect = match (spread_ref, spread) {
             (_, Some(sp)) => sp
                 .page_at_x(item.bounds().center().x)
                 .and_then(|pi| sp.pages.get(pi))
@@ -611,6 +617,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 // The same spacing, hyphenation and breaker as the layout below.
                 let mut gl = sp.glyphs.clone();
                 apply_desired_spacing(&mut gl, &pp);
+                mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
                 let hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
                 let breaks = if pp.composer == Composer::SingleLine || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                     breaker::greedy(&gl, &hy, &spacing, &width)
@@ -687,6 +694,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         );
         bidi::resolve_mirroring(&mut glyphs, &bidi_info);
         apply_desired_spacing(&mut glyphs, &pp);
+        mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
         let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
         let base_size = base_chars.size;
         let base_leading = match base_chars.leading {
@@ -882,8 +890,18 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     let text_ascent = line_glyphs.iter().filter(|g| g.ch != designcraft_doc::OBJECT_MARK).map(|g| g.ascent).fold(0.0, f64::max);
                     let text_ascent = if text_ascent > 0.0 { text_ascent } else { base_chars.size * 0.75 };
                     for g in ft.lines[li].glyphs.iter().filter(|g| g.len > 0) {
-                        if let Some(o) = sub_objects.get(&g.byte) {
-                            ft.objects.push(PlacedObject { index: o.index, origin: Point::ZERO, size: (o.w, o.h), line: li, x: g.x, text_ascent });
+                        if let Some(o) = sub_objects.get(&g.byte)
+                            && let Some(source) = story.objects.get(o.index)
+                        {
+                            ft.objects.push(PlacedObject {
+                                index: o.index,
+                                object: Arc::clone(source),
+                                origin: Point::ZERO,
+                                size: (o.w, o.h),
+                                line: li,
+                                x: g.x,
+                                text_ascent,
+                            });
                         }
                     }
                 }
@@ -1151,6 +1169,12 @@ fn spacing_for(pp: &ParaProps, base_size: f64) -> Spacing {
         hyph_zone: if pp.align.is_justified() { 0.0 } else { pp.hyph_zone },
         optical: pp.optical_margin,
         korean_char_breaks: pp.korean_char_breaks,
+        kinsoku_priority: match pp.kinsoku_type.as_str() {
+            "KinsokuPushInFirst" => 1,
+            "KinsokuPushOutFirst" => 2,
+            "KinsokuPushOutOnly" => 3,
+            _ => 0,
+        },
     }
 }
 
@@ -1553,6 +1577,7 @@ fn layout_line(
     bidi_info: &unicode_bidi::BidiInfo<'_>,
 ) -> (Vec<PlacedGlyph>, f64, f64) {
     let mut line: Vec<Glyph> = glyphs[s..e.max(s)].to_vec();
+    mojikumi::edges(&mut line);
     let reference = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)).cloned();
     if let Some(reference) = reference {
         for g in &mut line {
@@ -1643,7 +1668,10 @@ fn layout_line(
     };
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && !has_tab;
     // A justified paragraph's last line may have been composed with shrunk spaces: shrink it too.
-    let squeeze_last = align.is_justified() && !justify_this && !has_tab && extra < 0.0 && !spaces.is_empty();
+    let squeeze_last = !justify_this
+        && !has_tab
+        && extra < 0.0
+        && (align.is_justified() || line.iter().any(|g| g.moji.shrink > 0.0 || mojikumi::start_elastic(g, false, true)[1] > 0.0));
     // Extra advance per glyph (word spaces and letter gaps) and horizontal scale per glyph.
     let mut add = vec![0.0; line.len()];
     let mut scale = vec![1.0; line.len()];
@@ -1662,6 +1690,9 @@ fn layout_line(
             }
         }
     }
+    if (justify_this || squeeze_last) && (extra >= 0.0 || sp.kinsoku_priority != 3) {
+        extra = mojikumi::distribute(&mut line, extra, &mut add);
+    }
     if (justify_this || squeeze_last) && !spaces.is_empty() {
         distribute(&line, &spaces, extra, sp, &mut add, &mut scale);
     } else if justify_this && spaces.is_empty() && line.len() > 1 && !last {
@@ -1672,13 +1703,13 @@ fn layout_line(
                     .iter()
                     .enumerate()
                     .take(line.len() - 1)
-                    .filter(|(_, g)| !g.locked_advance || g.break_after != Some(false))
+                    .filter(|(_, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
                     .map(|(i, _)| i)
                     .collect();
                 if !gaps.is_empty() {
                     let per = extra / gaps.len() as f64;
                     for i in gaps {
-                        add[i] = per;
+                        add[i] += per;
                     }
                 }
             }
@@ -1867,6 +1898,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
+                rendered_char: '\t',
                 face: tab.face,
                 gid,
                 x: at,
@@ -1970,6 +2002,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == shape::SOFT_HYPHEN
         || g.ch == shape::HIDDEN);
     PlacedGlyph {
+        rendered_char: g.rendered_char,
         face: g.face,
         gid: g.gid,
         x: x + g.dx,

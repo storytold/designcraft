@@ -127,8 +127,7 @@ pub enum KinsokuHang {
     Force,
 }
 
-/// Preserved IDML spacing tables. Keeping these separate from the supported
-/// character spacing is essential: a stored table is not an applied rule.
+/// IDML spacing tables resolved by `mojikumi::Rules` for composition and diagnostics.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MojikumiTable {

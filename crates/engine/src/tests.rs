@@ -537,3 +537,45 @@ fn commands_take_non_object_params_without_panicking() {
         assert!(r.is_ok(), "{p}: {r:?}");
     }
 }
+
+#[test]
+fn preflight_distinguishes_unplaced_stories_and_locates_footnote_overset() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, ParaFormat, SpreadRef, Story, StoryId};
+    use designcraft_geom::Rect;
+    let mut s = session();
+    let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+    let layer = doc.default_layer();
+    let (host, body) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 400.0, 600.0), layer, "Body", ParaFormat::default()).unwrap();
+    let (frame, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 5.0, 2.0), layer, "Overflow", ParaFormat::default()).unwrap();
+    let item = doc.item(frame).unwrap().clone();
+    doc.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != frame);
+    let story = doc.story_mut(body).unwrap();
+    story.insert_note(4, "Note", ParaFormat::default());
+    Arc::make_mut(&mut story.notes[0]).text.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+    let unplaced = StoryId(doc.alloc());
+    doc.stories.insert(unplaced, Arc::new(Story::with_text(unplaced, "Unplaced", ParaFormat::default())));
+    doc.check().unwrap();
+    let issues = s.execute("preflight.run", &json!({})).unwrap();
+    let issues = issues["issues"].as_array().unwrap();
+    let overset: Vec<_> = issues.iter().filter(|i| i["kind"] == "overset").collect();
+    assert_eq!(overset.len(), 1, "{issues:?}");
+    assert_eq!(overset[0]["item"], host.0);
+    assert_eq!(overset[0]["page"], 0);
+    let unplaced = issues.iter().find(|i| i["kind"] == "unplacedStory").unwrap();
+    assert_eq!(unplaced["severity"], "warning");
+    assert!(unplaced.get("page").is_none());
+}
+
+#[test]
+fn preflight_mojikumi_uses_the_same_supported_rules_as_composition() {
+    let mut s = session();
+    s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "中文 A1"})).unwrap();
+    let story = s.doc().unwrap().doc.stories.keys().next().unwrap().0;
+    s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 1})).unwrap();
+    for (name, unsupported) in [("SimpChineseDefault", false), ("LineEndAllOneHalfEmEnum", false), ("UnknownPreset", true), ("Nothing", false)] {
+        s.execute("type.para", &json!({"attrs": {"mojikumi": name, "kinsokuType": "KinsokuPushInFirst"}})).unwrap();
+        let result = s.execute("preflight.run", &json!({})).unwrap();
+        let warnings: Vec<_> = result["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "unsupportedTypography").collect();
+        assert_eq!(!warnings.is_empty(), unsupported, "{name}: {warnings:?}");
+    }
+}
