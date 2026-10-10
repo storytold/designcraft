@@ -148,5 +148,19 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
                 ui.data_mut(|d| d.insert_temp(id, name));
             });
         }
+        if para && !n.starts_with('[') {
+            ui.separator();
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Paragraph Style…"))).clicked() {
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("deleteParagraphStyle", json!({"name": n})));
+                ui.close();
+            }
+        }
+        if !para && !n.starts_with('[') {
+            ui.separator();
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Character Style…"))).clicked() {
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("deleteCharacterStyle", json!({"name": n})));
+                ui.close();
+            }
+        }
     });
 }
