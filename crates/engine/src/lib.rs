@@ -380,6 +380,11 @@ impl Session {
         if i < self.docs.len() {
             self.docs.remove(i);
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
+            if self.docs.is_empty() {
+                // Retire this document generation's cache. In-flight render jobs may still
+                // own it, but must not repopulate the idle session's cache after closing.
+                self.cache = Arc::new(Cache::new());
+            }
         }
     }
 

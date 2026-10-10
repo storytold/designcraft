@@ -355,6 +355,13 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+// Each command edits a copy-on-write Story snapshot. Reserving its known final text growth
+// avoids retaining geometric String spare capacity in every independent undo snapshot.
+// General Story insertion keeps its existing amortized-growth policy for mutable builders.
+fn reserve_command_text(st: &mut designcraft_doc::Story, additional: usize) -> Result<()> {
+    st.text.try_reserve_exact(additional).map_err(|e| crate::EngineError::Other(format!("could not reserve text insertion: {e}")))
+}
+
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
     // Tab in a table cell moves to the next cell (Shift-Tab: `table.prevCell`).
@@ -411,6 +418,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if tracking && t.cell.is_none() {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
             let at = super::changes::mark_deleted(st, r.clone());
+            reserve_command_text(st, text.len())?;
             let mut fmt = st.char_format_at(at).clone();
             fmt.over.change = Some(designcraft_doc::ChangeMark::Inserted);
             st.insert_with(at, &text, fmt);
@@ -418,6 +426,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
             return Ok(json!({"pos": pos}));
         }
+        let a = floor_char_boundary(&st.text, r.start.min(st.len()));
+        let b = floor_char_boundary(&st.text, r.end.min(st.len())).max(a);
+        reserve_command_text(st, text.len().saturating_sub(b - a))?;
         st.replace(r.clone(), &text);
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
@@ -1636,5 +1647,43 @@ mod vertical_caret_tests {
         assert_eq!(nline, line + 1);
         assert!((nx - x).abs() < 0.5, "{x} {nx}");
         assert_eq!(mv(&mut s, "up", false, false), 3 * c);
+    }
+}
+
+#[cfg(test)]
+mod reserve_tests {
+    use super::*;
+
+    #[test]
+    fn failed_reservation_rolls_back_the_edit_even_after_local_text_was_removed() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let result = s.execute("frame.create", &json!({"rect":[36,36,300,300],"content":"text","text":"Keep this text."})).unwrap();
+        let sid = StoryId(result["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story":sid.0,"anchor":1,"focus":4})).unwrap();
+        let before = s.doc().unwrap().clone();
+        assert!(before.selection.text.is_some_and(|t| !t.range().is_empty()));
+        let journal = s.journal.clone();
+        let error = s
+            .edit(|d, sel| {
+                let st = d.story_mut(sid).unwrap();
+                st.format_chars(5..9, |f| f.over.change = Some(designcraft_doc::ChangeMark::Inserted));
+                let at = super::super::changes::mark_deleted(st, 0..9);
+                assert_eq!(at, 5);
+                assert_eq!(st.text, "Keep  text.");
+                assert_eq!(st.format_after(0).over.change, Some(designcraft_doc::ChangeMark::Deleted));
+                sel.text = None;
+                reserve_command_text(st, usize::MAX)?;
+                ok()
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("could not reserve text insertion"));
+        let after = s.doc().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&after.doc, &before.doc));
+        assert_eq!(after.selection, before.selection);
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.history.undo.len(), before.history.undo.len());
+        assert_eq!(after.history.redo.len(), before.history.redo.len());
+        assert_eq!(s.journal, journal);
     }
 }
