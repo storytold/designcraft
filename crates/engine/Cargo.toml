@@ -28,6 +28,10 @@ thiserror = { workspace = true }
 log = { workspace = true }
 regex = { workspace = true }
 quick-xml = { workspace = true }
+caseless = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tempfile = { workspace = true }
 
 [dev-dependencies]
 designcraft-fonts = { workspace = true, features = ["testing"] }
@@ -36,3 +40,6 @@ hayro-syntax = "0.7.2"
 hayro-interpret = { version = "0.7.0", default-features = false, features = ["embed-fonts"] }
 hayro-cmap = "0.1"
 kurbo = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

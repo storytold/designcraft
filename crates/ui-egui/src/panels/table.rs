@@ -100,7 +100,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 run(app, "table.deleteRow", json!({"table": tid, "rows": [n, rows.len() - 1]}));
             }
         }
-        caption(ui, crate::i18n::tr(&app.ui.language, "Columns"));
+        caption(ui, crate::i18n::tr_context(&app.ui.language, "Columns", "table"));
         if let Some(v) = number(ui, "tp_cols", Some(cols.len() as f64), "", 52.0, 0) {
             let n = v.round().max(1.0) as usize;
             if n > cols.len() {
@@ -139,6 +139,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         ui.end_row();
     });
+    if ui
+        .button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Distribute Rows Evenly")))
+        .on_hover_text("Equal fixed heights for the selected rows; cell text may become overset.")
+        .clicked()
+        && let Err(e) = app.run("table.distributeRows", json!({}))
+    {
+        app.status(format!("Table: {e}"));
+    }
     divider(ui);
     caption(ui, crate::i18n::tr(&app.ui.language, "Cell Text"));
     ui.horizontal(|ui| {
@@ -191,6 +199,16 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     });
     divider(ui);
+    // Column order: right to left puts the first column on the right.
+    let rtl = info["options"]["direction"] == "rightToLeft";
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Direction"));
+        for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+            if ui.selectable_label(on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() && !on {
+                run(app, "table.options", json!({"direction": dir}));
+            }
+        }
+    });
     let mut alt = !info["options"]["altRows"].is_null();
     if ui.checkbox(&mut alt, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Alternating Row Fills"))).changed() {
         let v = if alt { json!({"first": 1, "firstColor": "[Black]", "firstTint": 0.1, "next": 1, "nextColor": "[None]"}) } else { Value::Null };

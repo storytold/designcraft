@@ -78,8 +78,8 @@ pub fn character(app: &mut DesignApp, ui: &mut egui::Ui) {
     list(app, ui, false);
 }
 
-/// One style in the list: click applies (⌥ clears overrides), double-click edits (paragraph),
-/// right-click: apply, break link, move to group.
+/// One style in the list: click applies (⌥ clears overrides), double-click edits,
+/// right-click: edit, apply, break link, move to group.
 fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, current: Option<&str>, groups: &[String], t: &Tokens) {
     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
     if current == Some(n) {
@@ -96,8 +96,9 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
         egui::FontId::proportional(12.5),
         t.text,
     );
-    if resp.double_clicked() && para {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphStyleOptions", json!({"name": n})));
+    let editable = n != if para { designcraft_doc::NO_PARA_STYLE } else { designcraft_doc::NO_CHAR_STYLE };
+    if resp.double_clicked() && editable {
+        crate::dialogs::open_style_options(app, para, n);
     } else if resp.clicked() {
         let cmd = if para { "style.paragraph.apply" } else { "style.character.apply" };
         let clear = ui.input(|i| i.modifiers.alt);
@@ -105,17 +106,12 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
     }
     let kind = if para { "paragraph" } else { "character" };
     resp.context_menu(|ui| {
-        if ui
-            .button(crate::rtl::widget(
-                ui,
-                format!(
-                    "{} \"{}\"",
-                    crate::i18n::tr(&app.ui.language, "Apply"),
-                    if n.contains('/') { shown } else { crate::i18n::style_name(&app.ui.language, shown) }
-                ),
-            ))
-            .clicked()
-        {
+        let label = if n.contains('/') { shown } else { crate::i18n::style_name(&app.ui.language, shown) };
+        if editable && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Edit \"{name}\"…").replace("{name}", label))).clicked() {
+            crate::dialogs::open_style_options(app, para, n);
+            ui.close();
+        }
+        if ui.button(crate::rtl::widget(ui, format!("{} \"{}\"", crate::i18n::tr(&app.ui.language, "Apply"), label))).clicked() {
             let cmd = if para { "style.paragraph.apply" } else { "style.character.apply" };
             let _ = app.run(cmd, json!({"name": n}));
             ui.close();
@@ -125,7 +121,7 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
             ui.close();
         }
         if !n.starts_with('[') {
-            ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Move to Group")), |ui| {
+            crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Move to Group")), |ui| {
                 if n.contains('/') && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "[No Group]"))).clicked() {
                     let _ = app.run("style.group", json!({"kind": kind, "names": [n], "group": ""}));
                     ui.close();

@@ -72,10 +72,10 @@ impl NativeMenu {
         Self { _menu: menu, items, last_refresh: 0.0 }
     }
 
-    pub fn poll(&mut self, app: &mut DesignApp) {
+    pub fn poll(&mut self, app: &mut DesignApp, ctx: &egui::Context) {
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if let Some((cmd, params, _)) = self.items.get(ev.id.as_ref()) {
-                designcraft_ui_egui::menus::activate(app, &cmd.clone(), &params.clone());
+                menus::activate_native(app, ctx, &cmd.clone(), &params.clone());
             }
         }
         let now = designcraft_ui_egui::now_ms();
@@ -84,7 +84,7 @@ impl NativeMenu {
         }
         self.last_refresh = now;
         for (cmd, params, h) in self.items.values() {
-            let en = menus::menu_enabled(app, cmd);
+            let en = menus::native_menu_enabled(app, ctx, cmd);
             match h {
                 Handle::Plain(i) => i.set_enabled(en),
                 Handle::Check(c) => {

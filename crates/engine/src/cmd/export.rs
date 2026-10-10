@@ -1,4 +1,4 @@
-//! File › Export: Adobe PDF (Print).
+//! File › Export PDF (Print).
 
 use designcraft_pdf::{Marks, PdfOptions, Standard};
 use serde_json::{Value, json};

@@ -15,3 +15,6 @@ designcraft-doc = { workspace = true }
 thiserror = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }
+
+[dev-dependencies]
+designcraft-compose = { workspace = true }

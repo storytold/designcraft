@@ -1,5 +1,7 @@
 # CJK typesetting plan
 
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
 DesignCraft document can be set to the standard of a Japanese, Chinese or Korean publisher,
@@ -122,7 +124,18 @@ All set after line layout like today's ruby, but able to affect line height:
 - **Kenten**: position, size, alignment, colour, font (the kinds and a custom character are
   there).
 - **Warichu**: an inline run set in 2+ smaller lines inside one line height, with size, line
-  spacing, alignment and breaking rules.
+  spacing, alignment and breaking rules. Type › Warichu (`type.warichu`) does this after the
+  line is broken: the run is scaled and stacked, and the rest of that line closes up. It does
+  not pull more characters onto the line. The first small line keeps at least
+  `WarichuCharsBeforeBreak` glyphs and the last at least `WarichuCharsAfterBreak`; the glyphs
+  are split so those lines are as close in width as the minimums allow. Line spacing of 0 keeps
+  the baselines one small em apart, a positive value adds to that em, and a negative value
+  tightens it down to a shared baseline. The caret, the selection, and hit testing follow the
+  small line the character sits on, and Up and Down move between those lines before leaving the
+  parent line. Underlines follow the small baseline. Right-to-left and tate-chu-yoko runs are
+  left as body text. IDML reads and writes `Warichu`, `WarichuLines`, `WarichuSize`,
+  `WarichuLineSpacing`, `WarichuAlignment`, `WarichuCharsBeforeBreak` and
+  `WarichuCharsAfterBreak`.
 - **Tate-chu-yoko**: scale-to-fit-em, automatic TCY for runs of N digits (with or without
   Latin), rensuji (offsets are there).
 - **Shatai** (oblique in the CJK sense: angle and magnification, keeping the em box),
@@ -274,3 +287,11 @@ Each follows what an InDesign user expects.
    Chinese, since the exact names InDesign writes are unconfirmed without a sample file.
 8. **Missing glyphs** are drawn as the font's box and reported, as in InDesign; drawing them from
    fallback fonts is a per-document choice, on only for documents saved before it existed.
+
+## Revision history
+
+| Date | Change | Summary |
+|---|---|---|
+| 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
+| 2026-10-10 | minor | Updated (see git history) |
+| 2026-10-06 | major | Created: CJK typesetting plan and status (the Japanese/CJK feature set) |
