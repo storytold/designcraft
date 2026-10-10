@@ -50,7 +50,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Changed Links",
             [],
             None,
-            "{} — update the active document's links whose files changed on disk since they were last seen (size or modification time; Preferences › File Handling › Update Links Changed on Disk does this by itself). Each update is an Update Link undo step; files seen for the first time are only remembered → {updated}",
+            "{} — update the active document's links whose files changed on disk since they were last seen (size or modification time; Preferences › File Handling › Update Links Changed on Disk does this by itself). Not an undo step (the file changed, not the layout): the new copy also replaces the old one in the undo states. Files seen for the first time are only remembered; one that can't be read is tried again once it changes again → {updated}",
             has_doc,
             crate::link_watch::update_changed
         ),

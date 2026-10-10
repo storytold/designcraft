@@ -3,22 +3,28 @@
 //! Update Link.
 //!
 //! The active document's linked files are compared by size and modification time with what they
-//! were when last seen; a file whose stamp moved is updated with `links.update`, which only
-//! touches a link whose bytes really differ and is an undo step like a click on Update Link
-//! (undoing it leaves the link modified until the file changes again). The desktop app takes the
-//! stamps every two seconds and when its window comes back to the front, on a worker thread so
-//! a file on a slow network share never holds up the interface ([`Session::start_link_scan`],
-//! [`Session::poll_link_scan`]); `links.updateChanged` takes them on the spot (CLI, agents).
+//! were when last seen, and a file whose stamp moved is read again (its pixel size checked as
+//! Update Link does), all on a worker thread: neither a large file nor one on a slow network
+//! share holds up the interface ([`Session::start_link_scan`], [`Session::poll_link_scan`]). The
+//! desktop app looks every two seconds and when its window comes back to the front;
+//! `links.updateChanged` looks on the spot (CLI, agents).
 //!
-//! Stamps are kept per document: one in the background is looked at when it comes to the
-//! front. A file seen for the first time is only remembered (opening a document whose links
-//! changed meanwhile leaves them to the Links panel); one that can't be read yet (another app is
-//! still writing it) keeps its old stamp, so the next look tries again.
+//! Applying a new copy is not an undo step: the file changed, not the layout, so Undo keeps
+//! undoing the user's own edits. The copy replaces the old one in the document and in the undo
+//! and redo states that hold it, so undoing an earlier edit keeps the new pixels. The document
+//! is modified (it keeps its graphics' bytes). Nothing is applied during a drag or another
+//! interaction; the next look does it.
+//!
+//! Stamps are kept per document: one in the background is looked at when it comes to the front.
+//! A file seen for the first time is only remembered (opening a document whose links changed
+//! meanwhile leaves them to the Links panel). A file that can't be read or isn't an image (one
+//! still being written, an unsupported EPS) is tried again only once it changes again, so it isn't
+//! read over and over.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use designcraft_doc::{AssetId, Document};
+use designcraft_doc::{Asset, AssetId, Document};
 use serde_json::{Value, json};
 
 use crate::{Result, Session};
@@ -26,9 +32,23 @@ use crate::{Result, Session};
 /// A file's size and modification time (nanoseconds since 1970).
 pub type Stamp = (u64, u128);
 
-/// Stamps of a document's linked files taken on a worker thread: (document uid, [(graphic,
-/// file, stamp)]).
-pub type LinkScan = Arc<Mutex<Option<(u64, Vec<(AssetId, String, Option<Stamp>)>)>>>;
+/// What a look found for one linked graphic.
+#[derive(Clone, Debug)]
+pub struct Look {
+    pub asset: AssetId,
+    pub path: String,
+    /// The file's stamp now (`None`: not there right now).
+    pub stamp: Option<Stamp>,
+    /// The file's new bytes and pixel size, when its stamp moved and it reads as an image whose
+    /// bytes differ from the document's copy.
+    pub fresh: Option<(Arc<Vec<u8>>, (u32, u32))>,
+}
+
+/// A look taken on a worker thread: (document uid, what it found).
+pub type LinkScan = Arc<Mutex<Option<(u64, Vec<Look>)>>>;
+
+/// One linked graphic to look at: its file, the document's copy and the stamp last seen.
+type Watched = (AssetId, String, Arc<Vec<u8>>, Option<Stamp>);
 
 #[cfg(not(target_arch = "wasm32"))]
 fn stamp(path: &str) -> Option<Stamp> {
@@ -42,37 +62,75 @@ fn stamp(_: &str) -> Option<Stamp> {
     None
 }
 
-/// The linked graphics of `d` and their files.
-fn linked(d: &Document) -> Vec<(AssetId, String)> {
-    d.assets.values().filter_map(|a| a.link.clone().map(|l| (a.id, l))).collect()
+/// The file's bytes and pixel size, when it reads as an image different from `copy`.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_changed(path: &str, copy: &[u8]) -> Option<(Arc<Vec<u8>>, (u32, u32))> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes == copy {
+        return None;
+    }
+    let px = designcraft_render::image_size(&bytes)?;
+    Some((Arc::new(bytes), px))
 }
 
-/// `links.updateChanged`: stamp the active document's linked files now and update the ones
-/// that changed.
+#[cfg(target_arch = "wasm32")]
+fn read_changed(_: &str, _: &[u8]) -> Option<(Arc<Vec<u8>>, (u32, u32))> {
+    None
+}
+
+/// Stamp `files` and read the ones whose stamp moved (on a worker thread, or on the spot).
+fn look(files: Vec<Watched>) -> Vec<Look> {
+    files
+        .into_iter()
+        .map(|(asset, path, copy, before)| {
+            let now = stamp(&path);
+            let moved = matches!((before, now), (Some(b), Some(n)) if b != n);
+            let fresh = if moved { read_changed(&path, &copy) } else { None };
+            Look { asset, path, stamp: now, fresh }
+        })
+        .collect()
+}
+
+/// `links.updateChanged`: look at the active document's linked files now and update the ones that
+/// changed.
 pub(crate) fn update_changed(s: &mut Session, _: &Value) -> Result<Value> {
-    let st = s.doc()?;
-    let (uid, files) = (st.uid, linked(&st.doc));
-    let now = files.into_iter().map(|(a, p)| (a, p.clone(), stamp(&p))).collect();
-    s.apply_link_stamps(uid, now)
+    let (uid, files) = s.watched().ok_or(crate::EngineError::NoDocument)?;
+    let looks = look(files);
+    s.apply_looks(uid, looks)
 }
 
 impl Session {
-    /// Start stamping the active document's linked files on a worker thread, unless a look is
+    /// The active document's uid and linked graphics, with the stamps last seen.
+    fn watched(&self) -> Option<(u64, Vec<Watched>)> {
+        let st = self.active()?;
+        let files = st
+            .doc
+            .assets
+            .values()
+            .filter_map(|a| {
+                let path = a.link.clone()?;
+                let before = self.link_stamps.get(&(st.uid, path.clone())).copied();
+                Some((a.id, path, a.data.clone(), before))
+            })
+            .collect();
+        Some((st.uid, files))
+    }
+
+    /// Start looking at the active document's linked files on a worker thread, unless a look is
     /// still running (or the build has no files to look at: the web app).
     pub fn start_link_scan(&mut self) {
         if self.link_scan.is_some() || cfg!(target_arch = "wasm32") {
             return;
         }
-        let Some(st) = self.active() else { return };
-        let (uid, files) = (st.uid, linked(&st.doc));
+        let Some((uid, files)) = self.watched() else { return };
         if files.is_empty() {
             return;
         }
         let slot: LinkScan = Arc::default();
         let out = slot.clone();
         let spawned = std::thread::Builder::new().name("link-watch".into()).spawn(move || {
-            let stamps = files.into_iter().map(|(a, p)| (a, p.clone(), stamp(&p))).collect();
-            *out.lock().unwrap_or_else(PoisonError::into_inner) = Some((uid, stamps));
+            let looks = look(files);
+            *out.lock().unwrap_or_else(PoisonError::into_inner) = Some((uid, looks));
         });
         if spawned.is_ok() {
             self.link_scan = Some(slot);
@@ -81,58 +139,55 @@ impl Session {
 
     /// Apply a finished look (`None` while there is none, or it is still running).
     pub fn poll_link_scan(&mut self) -> Option<Result<Value>> {
-        let (uid, stamps) = self.link_scan.as_ref()?.lock().unwrap_or_else(PoisonError::into_inner).take()?;
+        let (uid, looks) = self.link_scan.as_ref()?.lock().unwrap_or_else(PoisonError::into_inner).take()?;
         self.link_scan = None;
-        Some(self.apply_link_stamps(uid, stamps))
+        Some(self.apply_looks(uid, looks))
     }
 
-    /// Compare the stamps of document `uid`'s linked files with the ones last seen and update
-    /// the graphics whose files changed. Returns `{updated}`.
-    fn apply_link_stamps(&mut self, uid: u64, now: Vec<(AssetId, String, Option<Stamp>)>) -> Result<Value> {
-        // The document went to the back meanwhile: it's looked at when it's in front again.
-        if self.active().map(|d| d.uid) != Some(uid) {
-            return Ok(json!({"updated": 0}));
+    /// Remember the stamps a look found and put the new copies it read in document `uid`.
+    /// Returns `{updated}`.
+    fn apply_looks(&mut self, uid: u64, looks: Vec<Look>) -> Result<Value> {
+        let none = json!({"updated": 0});
+        // The document went to the back meanwhile, or the user is in the middle of a drag: the
+        // stamps stay as they were, so a later look finds the change again.
+        let Some(i) = self.docs.iter().position(|d| d.uid == uid).filter(|i| self.active == Some(*i)) else { return Ok(none) };
+        if self.docs.get(i).is_some_and(|d| d.interaction.is_some()) {
+            return Ok(none);
         }
-        // This document's last stamps; those of closed documents are dropped.
-        let open: HashSet<u64> = self.documents().iter().map(|d| d.uid).collect();
-        let mut before: HashMap<String, Stamp> = HashMap::new();
-        self.link_stamps.retain(|(u, p), s| {
-            if *u == uid {
-                before.insert(p.clone(), *s);
-                false
-            } else {
-                open.contains(u)
-            }
-        });
-        let mut changed = Vec::new();
-        for (asset, path, stamp) in now {
-            match (before.get(&path), stamp) {
-                // Not there right now (an app saving by delete and rename): keep the last stamp.
-                (Some(old), None) => {
-                    self.link_stamps.insert((uid, path), *old);
-                }
-                (old, Some(new)) => {
-                    if old.is_some_and(|o| *o != new) {
-                        changed.push((asset, path.clone()));
-                    }
-                    self.link_stamps.insert((uid, path), new);
-                }
-                (None, None) => {}
+        // Stamps of closed documents are dropped; a file not there right now keeps its last one.
+        let open: HashSet<u64> = self.docs.iter().map(|d| d.uid).collect();
+        self.link_stamps.retain(|(u, _), _| open.contains(u));
+        for l in &looks {
+            if let Some(s) = l.stamp {
+                self.link_stamps.insert((uid, l.path.clone()), s);
             }
         }
+        let fresh: Vec<(AssetId, String, Arc<Vec<u8>>, (u32, u32))> =
+            looks.into_iter().filter_map(|l| l.fresh.map(|(bytes, px)| (l.asset, l.path, bytes, px))).collect();
+        let Some(st) = self.docs.get_mut(i) else { return Ok(none) };
         let mut updated = 0;
-        for (asset, path) in changed {
-            match self.execute("links.update", &json!({"asset": asset.0})) {
-                Ok(r) => updated += r["updated"].as_u64().unwrap_or(0),
-                // Not readable yet (still being written): the next look tries again.
-                Err(_) => {
-                    if let Some(old) = before.get(&path) {
-                        self.link_stamps.insert((uid, path), *old);
-                    }
+        for (asset, path, bytes, px) in fresh {
+            let Some(old) = st.doc.assets.get(&asset).filter(|a| a.link.as_deref() == Some(path.as_str())).cloned() else { continue };
+            let new = Arc::new(Asset { data: bytes, pixels: Some(px), ..(*old).clone() });
+            replace(Arc::make_mut(&mut st.doc), &old, &new);
+            for e in st.history.undo.iter_mut().chain(st.history.redo.iter_mut()) {
+                if e.doc.assets.get(&asset).is_some_and(|a| Arc::ptr_eq(a, &old)) {
+                    replace(Arc::make_mut(&mut e.doc), &old, &new);
                 }
             }
+            updated += 1;
+        }
+        if updated > 0 {
+            st.revision += 1;
         }
         Ok(json!({"updated": updated}))
+    }
+}
+
+/// Put `new` in place of graphic `old` in `d`.
+fn replace(d: &mut Document, old: &Arc<Asset>, new: &Arc<Asset>) {
+    if let Some(a) = d.assets.get_mut(&old.id) {
+        *a = new.clone();
     }
 }
 
@@ -168,46 +223,53 @@ mod tests {
         s.execute("links.list", &json!({})).unwrap()[0].clone()
     }
 
+    fn look(s: &mut Session) -> serde_json::Value {
+        s.execute("links.updateChanged", &json!({})).unwrap()
+    }
+
     #[test]
-    fn a_link_whose_file_changed_updates_as_an_undo_step() {
+    fn a_changed_file_updates_without_an_undo_step() {
         let d = dir("update");
         let a = d.join("a.png");
         std::fs::write(&a, png(10, 10)).unwrap();
         let mut s = Session::new();
         placed(&mut s, &a);
+        s.execute("frame.create", &json!({"rect": [300, 300, 400, 400], "content": "text"})).unwrap();
+        let steps = s.doc().unwrap().history.undo.len();
         // First look: remembered, nothing to update.
-        assert_eq!(s.execute("links.updateChanged", &json!({})).unwrap(), json!({"updated": 0}));
+        assert_eq!(look(&mut s), json!({"updated": 0}));
         save(&a, &png(30, 10));
         assert_eq!(link(&mut s)["status"], "modified");
-        assert_eq!(s.execute("links.updateChanged", &json!({})).unwrap(), json!({"updated": 1}));
+        assert_eq!(look(&mut s), json!({"updated": 1}));
         let l = link(&mut s);
         assert_eq!((l["status"].as_str(), &l["pixels"]), (Some("ok"), &json!([30, 10])));
+        assert_eq!(s.doc().unwrap().history.undo.len(), steps, "the file changed, not the layout");
         assert!(s.doc().unwrap().is_dirty(), "the document keeps the new copy: it's modified");
-        // Undo puts the old copy back; the link stays modified until the file changes again.
+        // Undo undoes the user's last edit (the frame), and the graphic keeps its new pixels.
         s.execute("edit.undo", &json!({})).unwrap();
-        assert_eq!(link(&mut s)["status"], "modified");
-        assert_eq!(s.execute("links.updateChanged", &json!({})).unwrap(), json!({"updated": 0}));
-        save(&a, &png(40, 10));
-        assert_eq!(s.execute("links.updateChanged", &json!({})).unwrap(), json!({"updated": 1}));
-        assert_eq!(link(&mut s)["pixels"], json!([40, 10]));
+        let l = link(&mut s);
+        assert_eq!((l["status"].as_str(), &l["pixels"]), (Some("ok"), &json!([30, 10])));
+        assert_eq!(look(&mut s), json!({"updated": 0}), "acted on once");
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
-    fn a_file_still_being_written_is_tried_again() {
+    fn a_file_that_cant_be_read_is_tried_again_once_it_changes() {
         let d = dir("partial");
         let a = d.join("a.png");
         std::fs::write(&a, png(10, 10)).unwrap();
         let mut s = Session::new();
         placed(&mut s, &a);
-        s.execute("links.updateChanged", &json!({})).unwrap();
+        look(&mut s);
         // Another app has only written the start of the file so far.
         let full = png(20, 20);
         save(&a, &full[..16]);
-        assert_eq!(s.execute("links.updateChanged", &json!({})).unwrap(), json!({"updated": 0}));
+        assert_eq!(look(&mut s), json!({"updated": 0}));
         assert_eq!(link(&mut s)["pixels"], json!([10, 10]), "the last good copy stays");
+        // Not read again while it doesn't change.
+        assert_eq!(look(&mut s), json!({"updated": 0}));
         save(&a, &full);
-        assert_eq!(s.execute("links.updateChanged", &json!({})).unwrap(), json!({"updated": 1}));
+        assert_eq!(look(&mut s), json!({"updated": 1}));
         assert_eq!(link(&mut s)["pixels"], json!([20, 20]));
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -219,13 +281,13 @@ mod tests {
         std::fs::write(&a, png(10, 10)).unwrap();
         let mut s = Session::new();
         placed(&mut s, &a);
-        s.execute("links.updateChanged", &json!({})).unwrap();
+        look(&mut s);
         let first = s.active_index().unwrap();
         s.execute("file.new", &json!({})).unwrap();
         save(&a, &png(30, 10));
-        assert_eq!(s.execute("links.updateChanged", &json!({})).unwrap(), json!({"updated": 0}), "the new document links nothing");
+        assert_eq!(look(&mut s), json!({"updated": 0}), "the new document links nothing");
         s.set_active(first);
-        assert_eq!(s.execute("links.updateChanged", &json!({})).unwrap(), json!({"updated": 1}));
+        assert_eq!(look(&mut s), json!({"updated": 1}));
         assert_eq!(link(&mut s)["pixels"], json!([30, 10]));
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -237,7 +299,7 @@ mod tests {
         std::fs::write(&a, png(10, 10)).unwrap();
         let mut s = Session::new();
         placed(&mut s, &a);
-        let look = |s: &mut Session| {
+        let background = |s: &mut Session| {
             s.start_link_scan();
             let t0 = std::time::Instant::now();
             loop {
@@ -248,9 +310,9 @@ mod tests {
                 std::thread::yield_now();
             }
         };
-        assert_eq!(look(&mut s), json!({"updated": 0}));
+        assert_eq!(background(&mut s), json!({"updated": 0}));
         save(&a, &png(30, 10));
-        assert_eq!(look(&mut s), json!({"updated": 1}));
+        assert_eq!(background(&mut s), json!({"updated": 1}));
         assert!(s.link_scan.is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
