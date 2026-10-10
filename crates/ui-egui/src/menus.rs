@@ -245,6 +245,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.language|Español|{\"lang\": \"es\"}",
             "ui:app.language|日本語|{\"lang\": \"ja\"}",
             "ui:app.language|简体中文|{\"lang\": \"zh\"}",
+            "ui:app.language|繁體中文|{\"lang\": \"zh-hant\"}",
+            "ui:app.language|한국어|{\"lang\": \"ko\"}",
             "ui:app.language|العربية|{\"lang\": \"ar\"}",
             "ui:app.language|Português (Brasil)|{\"lang\": \"pt-br\"}",
             "ui:app.language|Italiano|{\"lang\": \"it\"}",
@@ -2438,6 +2440,73 @@ mod tests {
         assert_eq!(run_ui(&mut app, "window.split", &json!({})).unwrap().unwrap(), json!(false));
         assert_eq!(app.pane, 0);
         frame(&mut app);
+    }
+
+    /// Every menu, command, panel and tool name has a Japanese, Chinese (Simplified and
+    /// Traditional) and Korean entry, so those interfaces never fall back to English.
+    #[test]
+    fn cjk_interfaces_translate_every_menu_command_panel_and_tool() {
+        fn walk(items: &[Item], out: &mut Vec<String>) {
+            for it in items {
+                match it {
+                    Item::Sep => {}
+                    Item::Sub(name, children) => {
+                        out.push(name.clone());
+                        walk(children, out);
+                    }
+                    Item::Cmd { label, .. } => out.push(label.clone()),
+                }
+            }
+        }
+        let mut names = Vec::new();
+        for (title, items) in menu_tree() {
+            names.push(title.to_string());
+            walk(&items, &mut names);
+        }
+        for c in designcraft_engine::Session::new().commands() {
+            names.push(c.label.to_string());
+            names.extend(c.menu.iter().map(|m| m.to_string()));
+        }
+        names.extend(UI_COMMANDS.iter().map(|c| c.1.to_string()));
+        names.extend(crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS).map(|p| p.1.to_string()));
+        names.extend(designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).map(|t| t.label.to_string()));
+        // Interface language names are shown in their own language.
+        let own: Vec<&str> = crate::i18n::LANGUAGES.iter().map(|l| l.1).collect();
+        for lang in ["ja", "zh", "zh-hant", "ko"] {
+            let missing: Vec<&String> = names.iter().filter(|n| !own.contains(&n.as_str()) && !crate::i18n::has_entry(lang, n)).collect();
+            assert!(missing.is_empty(), "{lang}: untranslated {missing:?}");
+        }
+    }
+
+    /// Edit › Interface Language offers every supported language, and each one switches.
+    #[test]
+    fn interface_language_menu_lists_every_language() {
+        fn walk(items: &[Item], out: &mut Vec<(String, String)>) {
+            for it in items {
+                match it {
+                    Item::Sub(_, children) => walk(children, out),
+                    Item::Cmd { label, id, params, .. } if id == "app.language" => {
+                        out.push((label.clone(), params["lang"].as_str().unwrap_or("").to_string()))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut entries = Vec::new();
+        for (_, items) in menu_tree() {
+            walk(&items, &mut entries);
+        }
+        let expected: Vec<(String, String)> = crate::i18n::LANGUAGES.iter().map(|(code, name)| (name.to_string(), code.to_string())).collect();
+        assert_eq!(entries.len(), expected.len(), "{entries:?}");
+        for e in &expected {
+            assert!(entries.contains(e), "missing {e:?} in {entries:?}");
+        }
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        for (_, code) in &expected {
+            run_ui(&mut app, "app.language", &json!({"lang": code})).unwrap().unwrap();
+            assert_eq!(&app.ui.language, code);
+            assert_eq!(checked(&app, "app.language", &json!({"lang": code})), Some(true));
+        }
     }
 
     #[test]
