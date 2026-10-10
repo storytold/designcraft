@@ -54,6 +54,7 @@ pub enum PointerKind {
     Up,
     Move,
     DoubleClick,
+    TripleClick,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

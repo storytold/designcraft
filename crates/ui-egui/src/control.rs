@@ -134,6 +134,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                     "up" => PointerKind::Up,
                     "move" => PointerKind::Move,
                     "doubleclick" | "dblclick" => PointerKind::DoubleClick,
+                    "tripleclick" | "triclick" => PointerKind::TripleClick,
                     other => return err(format!("unknown pointer kind `{other}`")),
                 };
                 let x = e.get("x").and_then(Value::as_f64).unwrap_or(0.0);

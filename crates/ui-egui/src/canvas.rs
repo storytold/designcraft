@@ -1383,20 +1383,21 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     let mut events: Vec<PointerEvent> = Vec::new();
     let down_id = egui::Id::new(("canvas_pointer_down", app.pane));
     let mut down: bool = ui.data(|d| d.get_temp(down_id)).unwrap_or(false);
-    let (pressed, released, origin, latest, dbl) = ui.input(|i| {
+    let (pressed, released, origin, latest, dbl, triple) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.primary_released(),
             i.pointer.press_origin(),
             i.pointer.latest_pos(),
             i.pointer.button_double_clicked(egui::PointerButton::Primary),
+            i.pointer.button_triple_clicked(egui::PointerButton::Primary),
         )
     });
     if pressed
         && !space
         && let Some(o) = origin.filter(|o| (if xf.rot == 0 { rect.contains(*o) } else { resp.rect.contains(*o) }) && resp.hovered())
     {
-        events.push(PointerEvent { kind: if dbl { PointerKind::DoubleClick } else { PointerKind::Down }, pos: pos(o), mods: m });
+        events.push(PointerEvent { kind: PointerKind::Down, pos: pos(o), mods: m });
         down = true;
     }
     if down
@@ -1428,6 +1429,15 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     }
     if down && released {
         let p = latest.unwrap_or(rect.center());
+        // egui only knows a click was a double/triple click once the second/third press is
+        // released, so the upgrade event fires here (not on the matching `pressed` above) and
+        // right before `Up`, which lets the Down this release matches re-derive the final
+        // word/line selection.
+        if triple {
+            events.push(PointerEvent { kind: PointerKind::TripleClick, pos: pos(p), mods: m });
+        } else if dbl {
+            events.push(PointerEvent { kind: PointerKind::DoubleClick, pos: pos(p), mods: m });
+        }
         events.push(PointerEvent { kind: PointerKind::Up, pos: pos(p), mods: m });
         down = false;
     } else if !down && let Some(p) = resp.hover_pos() {
