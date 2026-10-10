@@ -57,8 +57,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Missing:** a corpus test of real InDesign-authored IDML (via `storytold/photocraft-corpus` or
   a sibling) measuring what survives import → export → reopen in InDesign. Open bugs: frames not
   rendered without a warning (#193), `$ID/` font names reported missing (#338), no
-  `PDFAttribute` on export (#339), Package writes build-machine absolute paths (#340), drag-drop
-  open of IDML on the app icon (#211).
+  `PDFAttribute` on export (#339), Package writes build-machine absolute paths (#340).
 - **Evidence:** importer coverage is broad (styles, tables, footnotes, xrefs, index, CJK, Arabic,
   verified in InDesign 2026 with synthetic files), but nothing is measured on real documents.
 - **Impact:** IDML is the main interchange format until INDD lands, and the only one that goes
