@@ -722,7 +722,8 @@ attr_set! {
         jidori: u32 = 0,
         character_alignment: crate::cjk::CharacterAlignment = crate::cjk::CharacterAlignment::Baseline,
         leading_model: crate::cjk::LeadingModel = crate::cjk::LeadingModel::Roman,
-        /// Explicit emphasis character; empty uses the traditional sesame dot.
+        /// The kenten mark's text: a custom mark, or the preset of `kenten_kind` (see
+        /// [`crate::cjk_settings::kenten_mark`]); empty is the sesame dot.
         kenten_character: String = String::new(),
         /// Horizontal / vertical scale, 1.0 = 100%.
         h_scale: f64 = 1.0,
@@ -757,8 +758,9 @@ attr_set! {
         tate_chu_yoko: bool = false,
         tate_chu_yoko_x_offset: f64 = 0.0,
         tate_chu_yoko_y_offset: f64 = 0.0,
-        /// Ruby: the reading set small above the text (to its right in vertical text), one group
-        /// over each run that has it.
+        /// Ruby: the reading set small above the text (to its right in vertical text). Group ruby
+        /// sets it over the whole run; per-character ruby holds one reading per character,
+        /// separated by U+3000. Its other settings are the `ruby_*` fields below.
         ruby: String = String::new(),
         /// Kenten: an emphasis dot above each character.
         kenten: bool = false,
@@ -774,6 +776,80 @@ attr_set! {
         /// Minimum characters on a warichu line before a break, and on the line after it.
         warichu_chars_before_break: u32 = 1,
         warichu_chars_after_break: u32 = 1,
+        // Kenten Settings / Kenten Color (`kenten` switches the marks on).
+        /// The mark; [`crate::cjk_settings::KentenKind::Custom`] draws `kenten_character`.
+        kenten_kind: crate::cjk_settings::KentenKind = crate::cjk_settings::KentenKind::SesameDot,
+        /// Font of a custom mark (empty = the text's font) and its style.
+        kenten_font: String = String::new(),
+        kenten_font_style: String = String::new(),
+        /// Mark size in points; `None` is half the text size.
+        kenten_size: Option<f64> = None,
+        /// Horizontal / vertical scale of the mark, 1.0 = 100%.
+        kenten_x_scale: f64 = 1.0,
+        kenten_y_scale: f64 = 1.0,
+        /// Points between the text's em box and the mark's.
+        kenten_distance: f64 = 0.0,
+        kenten_position: crate::cjk_settings::KentenPosition = crate::cjk_settings::KentenPosition::AboveRight,
+        kenten_alignment: crate::cjk_settings::KentenAlignment = crate::cjk_settings::KentenAlignment::Center,
+        /// How a custom mark was entered (IDML `KentenCharacterSet`), kept for interchange.
+        kenten_character_set: String = String::new(),
+        /// Mark fill and stroke swatches (empty = the text's), tints and stroke weight (`None` =
+        /// the text's).
+        kenten_fill: String = String::new(),
+        kenten_fill_tint: Option<f32> = None,
+        kenten_stroke: String = String::new(),
+        kenten_stroke_tint: Option<f32> = None,
+        kenten_stroke_weight: Option<f64> = None,
+        kenten_overprint_fill: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
+        kenten_overprint_stroke: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
+        // Shatai (斜体): the character is compressed across the direction at `shatai_angle`.
+        /// Compression in percent of the em (0 = off).
+        shatai_magnification: f64 = 0.0,
+        /// Degrees from the line direction, counter-clockwise.
+        shatai_angle: f64 = 45.0,
+        /// Turn the compressed character back so its edge along the line stays along the line.
+        shatai_adjust_rotation: bool = false,
+        /// Fit the advance to the compressed em box.
+        shatai_adjust_tsume: bool = true,
+        // Ruby settings (see [`crate::ruby`]). Defaults are the IDML text defaults.
+        ruby_type: crate::ruby::RubyType = crate::ruby::RubyType::Group,
+        /// How a ruby shorter than its parent is spread over it.
+        ruby_alignment: crate::ruby::RubyAlignment = crate::ruby::RubyAlignment::Jis,
+        ruby_position: crate::ruby::RubyPosition = crate::ruby::RubyPosition::AboveRight,
+        /// Points along the line, and away from the parent text across it.
+        ruby_x_offset: f64 = 0.0,
+        ruby_y_offset: f64 = 0.0,
+        /// Empty: the parent's font and style.
+        ruby_font: String = String::new(),
+        ruby_font_style: String = String::new(),
+        /// Points; `None` is half the parent size.
+        ruby_font_size: Option<f64> = None,
+        /// 1.0 = 100%.
+        ruby_x_scale: f64 = 1.0,
+        ruby_y_scale: f64 = 1.0,
+        /// Use the font's ruby glyphs (OpenType `ruby`).
+        ruby_open_type_pro: bool = true,
+        /// Tate-chu-yoko in vertical ruby for runs of up to this many digits (0 = off).
+        ruby_auto_tcy_digits: u32 = 0,
+        ruby_auto_tcy_include_roman: bool = false,
+        ruby_auto_tcy_auto_scale: bool = true,
+        /// IDML `RubyOverhang`, kept for round trips; `ruby_overhang_amount` sets the overhang.
+        ruby_overhang: bool = false,
+        ruby_overhang_amount: crate::ruby::RubyOverhang = crate::ruby::RubyOverhang::OneRuby,
+        ruby_parent_spacing: crate::ruby::RubyParentSpacing = crate::ruby::RubyParentSpacing::Aki121,
+        /// A longer ruby at a line's start or end is set flush with the line edge.
+        ruby_auto_align: bool = true,
+        /// A longer ruby is narrowed first, down to `ruby_scaling_min` (1.0 = 100%).
+        ruby_auto_scaling: bool = false,
+        ruby_scaling_min: f64 = 0.66,
+        /// Ruby colour: empty is the text's colour; `None` tint and weight follow the text.
+        ruby_fill: String = String::new(),
+        ruby_fill_tint: Option<f32> = None,
+        ruby_stroke: String = String::new(),
+        ruby_stroke_tint: Option<f32> = None,
+        ruby_stroke_weight: Option<f64> = None,
+        ruby_overprint_fill: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
+        ruby_overprint_stroke: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
         /// Digits (World-Ready): how 0–9 are drawn.
         digits: Digits = Digits::Default,
         character_direction: crate::arabic::CharacterDirection = crate::arabic::CharacterDirection::Default,
@@ -890,6 +966,24 @@ attr_set! {
         bunri_kinshi: bool = false,
         rensuuji: bool = true,
         treat_ideographic_space_as_space: bool = false,
+        // Auto Tate-chu-yoko, Japanese Composition and Grid Settings.
+        /// Auto tate-chu-yoko: in vertical text, runs of up to this many half-width digits are set
+        /// across one em (0 = off).
+        auto_tcy: u32 = 0,
+        /// Auto tate-chu-yoko also takes runs of half-width roman letters.
+        auto_tcy_include_roman: bool = false,
+        /// Rotate Roman Characters in Vertical Text (縦組み中の欧文回転): half-width characters
+        /// stand upright one by one instead of lying along the line.
+        rotate_roman: bool = false,
+        /// Roman word break (欧文泣き別れ): roman words may break between any two letters,
+        /// without a hyphen.
+        roman_word_break: bool = false,
+        /// The point of a line that sits on the grid while `grid_align` is on.
+        grid_reference: crate::cjk::CharacterAlignment = crate::cjk::CharacterAlignment::Baseline,
+        /// Gyoudori (行取り): grid lines each line takes (0 = as many as its leading needs).
+        grid_gyoudori: u32 = 0,
+        /// Paragraph gyoudori: the paragraph as a whole, not each line, takes `grid_gyoudori` lines.
+        paragraph_gyoudori: bool = false,
         /// Paragraph shading, and how far it reaches past the text: top, left, bottom, right.
         shading_on: bool = false,
         shading_color: String = "[Black]".into(),

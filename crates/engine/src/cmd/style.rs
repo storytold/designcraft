@@ -95,7 +95,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Style Options…",
             [],
             None,
-            "{name, rename?, basedOn?, nextStyle?, para?: {… ruleAbove?/ruleBelow?: only the named rule fields change}, chars?: {…}}",
+            "{name, rename?, basedOn?, nextStyle?, para?: {… ruleAbove?/ruleBelow?: only the named rule fields change, kinsoku?: set | null (default rules)}, chars?: {…}}",
             has_doc,
             edit_para
         ),
@@ -428,6 +428,7 @@ fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
 fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Paragraph Style 1").to_string();
     let mut para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json(k, v))?;
+    explicit_default_kinsoku(&mut para, p.get("para"));
     let mut chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
     if p.get("fromSelection").and_then(Value::as_bool).unwrap_or(false)
         && let Ok(cur) = s.execute("type.selectionAttrs", &json!({}))
@@ -458,6 +459,14 @@ fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// `kinsoku: null` sets the composer's default kinsoku rules, also over a Based On style's set.
+/// For the other attributes `null` leaves the style's value as it is.
+fn explicit_default_kinsoku(para: &mut ParaAttrs, given: Option<&Value>) {
+    if given.and_then(|o| o.get("kinsoku")).is_some_and(Value::is_null) {
+        para.kinsoku = Some(None);
+    }
+}
+
 #[allow(non_snake_case)]
 fn ParaProps_to_attrs(p: &designcraft_doc::ParaProps) -> ParaAttrs {
     designcraft_doc::ParaProps::common([p])
@@ -480,7 +489,8 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // A rule object changes only the rule fields it names, over the style's resolved rule.
         let (current, _) = d.styles.resolve_para_style(&name);
-        let para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json_over(k, v, &current))?;
+        let mut para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json_over(k, v, &current))?;
+        explicit_default_kinsoku(&mut para, p.get("para"));
         let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
         st.para.merge(&para);
         st.chars.merge(&chars);
@@ -1116,6 +1126,22 @@ mod color_tests {
         assert!(s.execute("style.character.edit", &json!({"name": "Strong", "rename": "  "})).is_err());
         assert!(s.execute("style.character.edit", &json!({"name": "[None]", "chars": {"size": 9}})).is_err());
         assert!(s.doc().unwrap().doc.styles.char_style("[None]").unwrap().chars.is_empty());
+    }
+
+    #[test]
+    fn null_kinsoku_sets_the_default_rules_over_a_based_on_set() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let hard = serde_json::to_value(designcraft_doc::cjk::Kinsoku::named("HardKinsoku").unwrap()).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Base", "para": {"kinsoku": hard}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Body", "basedOn": "Base", "para": {"kinsoku": hard}})).unwrap();
+        s.execute("style.paragraph.edit", &json!({"name": "Body", "para": {"kinsoku": null}})).unwrap();
+        let styles = s.doc().unwrap().doc.styles.clone();
+        assert_eq!(styles.para("Body").unwrap().para.kinsoku, Some(None));
+        assert_eq!(styles.resolve_para_style("Body").0.kinsoku, None, "Base's set no longer applies");
+        // An edit without the attribute keeps it.
+        s.execute("style.paragraph.edit", &json!({"name": "Body", "para": {"rensuuji": false}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.para("Body").unwrap().para.kinsoku, Some(None));
     }
 
     #[test]

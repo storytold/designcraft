@@ -119,6 +119,8 @@ pub struct FontFace {
     bmp: std::sync::OnceLock<Box<[u64]>>,
     /// The ideographic em box, read on first use.
     em: std::sync::OnceLock<(f64, f64)>,
+    /// The ideographic character face box, read on first use.
+    icf: std::sync::OnceLock<(f64, f64)>,
     /// The font menu group and native family name, read on first use.
     group: std::sync::OnceLock<(FontGroup, Option<String>)>,
 }
@@ -264,6 +266,11 @@ impl FontFace {
     /// descender, the last two centred on one em.
     pub fn em_box(&self) -> (f64, f64) {
         *self.em.get_or_init(|| crate::vertical::em_box(self))
+    }
+    /// The ideographic character face (ICF) box (top, bottom) in font units, y up: `BASE`
+    /// `icft`/`icfb`, else the em box inset by 5% of the em at the top and bottom.
+    pub fn icf_box(&self) -> (f64, f64) {
+        *self.icf.get_or_init(|| crate::vertical::icf_box(self))
     }
     /// The font menu group the font is for and, for a CJK group, its family name in that language
     /// (see [`crate::FamilyInfo`]); read from the font once.
@@ -708,6 +715,7 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         index,
         bmp: std::sync::OnceLock::new(),
         em: std::sync::OnceLock::new(),
+        icf: std::sync::OnceLock::new(),
         group: std::sync::OnceLock::new(),
     })
 }

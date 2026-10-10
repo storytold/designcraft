@@ -162,6 +162,36 @@ pub fn with_vorg(font: &[u8], default: i16, overrides: &[(u16, i16)]) -> Option<
     with_tables(font, vec![(*b"VORG", vorg)])
 }
 
+/// `font` with a `BASE` table whose horizontal axis gives the default script the `baselines`
+/// (tag, coordinate in font units). `None` if `font` can't be read.
+pub fn with_base(font: &[u8], baselines: &[([u8; 4], i16)]) -> Option<Vec<u8>> {
+    let mut lines = baselines.to_vec();
+    lines.sort_unstable_by_key(|l| l.0);
+    lines.dedup_by_key(|l| l.0);
+    let n = u16::try_from(lines.len()).ok()?;
+    let u16s = |out: &mut Vec<u8>, vs: &[u16]| vs.iter().for_each(|v| out.extend_from_slice(&v.to_be_bytes()));
+    // Header (version 1.0, horizontal axis at 8), the axis (tag list at 4, script list after it),
+    // the tag list, one `DFLT` script record, its BaseScript (values at 6) and the BaseValues
+    // with one format-1 BaseCoord per baseline.
+    let mut base = Vec::new();
+    u16s(&mut base, &[1, 0, 8, 0]);
+    u16s(&mut base, &[4, 4 + 2 + 4 * n]);
+    u16s(&mut base, &[n]);
+    lines.iter().for_each(|(tag, _)| base.extend_from_slice(tag));
+    u16s(&mut base, &[1]);
+    base.extend_from_slice(b"DFLT");
+    u16s(&mut base, &[8, 6, 0, 0]);
+    u16s(&mut base, &[0, n]);
+    for k in 0..n {
+        u16s(&mut base, &[4 + 2 * n + 4 * k]);
+    }
+    for (_, y) in &lines {
+        u16s(&mut base, &[1]);
+        base.extend_from_slice(&y.to_be_bytes());
+    }
+    with_tables(font, vec![(*b"BASE", base)])
+}
+
 /// `font` with its OS/2 `fsType` (embedding licence bits) set to `fs_type`. `None` if the font has
 /// no OS/2 table.
 pub fn with_fs_type(mut font: Vec<u8>, fs_type: u16) -> Option<Vec<u8>> {

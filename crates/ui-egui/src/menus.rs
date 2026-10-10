@@ -4,6 +4,16 @@ use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode};
 
+/// Menu and Quick Apply entries that only CJK typesetting uses: hidden unless
+/// [`crate::cjk_features`]. The commands still run from scripts, the control channel and MCP.
+pub const CJK_ONLY: &[&str] = &["type.tateChuYoko", "app.rubyDialog", "type.kenten", "type.warichu"];
+
+/// Whether command `id` has a menu item or Quick Apply entry in the current interface (CJK-only
+/// ones need [`crate::cjk_features`]).
+pub fn shown(app: &DesignApp, id: &str) -> bool {
+    !CJK_ONLY.contains(&id) || crate::cjk_features(app)
+}
+
 /// UI commands: (id, label, shortcut, params).
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
@@ -74,6 +84,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.deletePage", "Delete Page", None, "{} — deletes the page in view"),
     ("app.duplicateSpread", "Duplicate Spread", None, "{} — duplicates the spread in view (pages and items)"),
     ("app.tablePanel", "Table Panel", Some("Shift+F9"), "{}"),
+    ("app.tabsPanel", "Tabs", Some("Cmd+Shift+T"), "{} — show or hide the Tabs panel (it opens above the selected text frame)"),
     ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{}"),
@@ -303,6 +314,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.pathOptions",
             "cmd:type.pathOptions|Delete Type from Path|{\"delete\": true}",
             "<",
+            "ui:app.tabsPanel",
             "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
             "cmd:type.fillWithPlaceholder",
             ">Insert Special Character",
@@ -655,6 +667,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.panel",
             "-",
             ">Type & Tables",
+            "ui:app.tabsPanel",
             "ui:window.panel|Conditional Text|{\"panel\": \"conditions\"}",
             "ui:window.panel|Notes|{\"panel\": \"notes\"}",
             "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
@@ -703,6 +716,17 @@ pub const MENUS: &[(&str, &[&str])] = &[
 
 pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
     UI_COMMANDS.iter().find(|c| c.0 == id).map(|c| (c.1, c.2))
+}
+
+/// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
+fn toggle_tabs_panel(app: &mut DesignApp) {
+    if app.ui.floating.iter().any(|(p, _)| p == "tabs") {
+        crate::dock::dock_panel(app, "tabs");
+    } else {
+        let at = app.canvas_rect.map_or(egui::pos2(300.0, 140.0), |r| r.min + egui::vec2(80.0, 60.0));
+        crate::dock::float_panel(app, "tabs", at);
+        app.ui.tabs_panel.snap_request = 2;
+    }
 }
 
 /// Run a UI command; `None` if `id` isn't one.
@@ -922,7 +946,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 let at = if t.range().is_empty() { t.range().start } else { t.range().start + 1 };
                 story.char_format_at(at).over.ruby.clone()
             });
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("ruby", json!({"text": cur.unwrap_or_default()})));
+            let cur = cur.unwrap_or_default();
+            // The ruby settings the panes show: the selection's resolved character attributes.
+            let base = crate::panels::text_attrs(app).and_then(|a| a.get("chars").cloned()).unwrap_or(Value::Null);
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("ruby", json!({"text": cur, "base": base})));
             Ok(Value::Null)
         }
         "app.paragraphRulesDialog" => {
@@ -971,6 +998,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "app.tablePanel" => {
             app.ui.open_panel = if app.ui.open_panel.as_deref() == Some("table") { None } else { Some("table".into()) };
+            Ok(Value::Null)
+        }
+        "app.tabsPanel" => {
+            toggle_tabs_panel(app);
             Ok(Value::Null)
         }
         "app.exportPdf" => {
@@ -1036,6 +1067,11 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             f["storyEditorSize"] = json!(app.ui.story_editor_size);
             let list = app.session.prefs.autocorrect_list.iter().map(|(a, b)| format!("{a} → {b}")).collect::<Vec<_>>().join("\n");
             f["autocorrectText"] = json!(list);
+            // The effective setting; it becomes an explicit preference only when the user changes it,
+            // so an untouched one keeps following the interface language.
+            let cjk = crate::cjk_features(app);
+            f["cjkFeatures"] = json!(cjk);
+            f["cjkFeatures.initial"] = json!(cjk);
             f["section"] = json!("general");
             app.ui.dialog = Some(crate::dialogs::Dialog::new("preferences", f));
             Ok(Value::Null)
@@ -1204,7 +1240,9 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties").to_string();
-            if crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
+            if panel == "tabs" {
+                toggle_tabs_panel(app);
+            } else if crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
                 app.ui.dock_tab = panel;
                 app.ui.dock_expanded = true;
                 app.ui.open_panel = None;
@@ -1276,7 +1314,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "window.floatPanel" | "window.dockPanel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("");
-            if !crate::dock::ICON_PANELS.iter().any(|(id, _, _)| *id == panel) {
+            if !crate::dock::ICON_PANELS.iter().any(|(id, _, _)| *id == panel) && !crate::dock::FLOATING_PANELS.iter().any(|(id, _)| *id == panel) {
                 return Some(Err(format!("{id}: unknown panel `{panel}`")));
             }
             if id == "window.floatPanel" {
@@ -2008,6 +2046,7 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
                     hidden += menu_items(app, ui, children, &sub);
                 });
             }
+            Item::Cmd { id, .. } if !shown(app, id) => {}
             Item::Cmd { label, .. } if !app.ui.show_full_menus && app.ui.hidden_menu_items.contains(&menu_key(path, label)) => hidden += 1,
             Item::Cmd { label, id, params, shortcut: _ } => {
                 let label = crate::i18n::tr(&app.ui.language, label);
@@ -2152,7 +2191,7 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
                 .desired_width(f32::INFINITY),
         );
         r.request_focus();
-        let items = quick_apply_items(&app.session, &q);
+        let items = quick_apply_items(&app.session, &q, crate::cjk_features(app));
         // Only a fresh Return runs the first entry: ⌘Return pressed again or held down (repeats) is
         // the shortcut, not a choice.
         let enter = ui.input(|i| {
@@ -2201,7 +2240,7 @@ pub struct QuickItem {
 }
 
 /// Quick Apply matches (styles first, as InDesign lists them), at most 14.
-pub fn quick_apply_items(session: &designcraft_engine::Session, query: &str) -> Vec<QuickItem> {
+pub fn quick_apply_items(session: &designcraft_engine::Session, query: &str, cjk: bool) -> Vec<QuickItem> {
     let ql = query.to_lowercase();
     let hit = |label: &str, id: &str| ql.is_empty() || label.to_lowercase().contains(&ql) || id.to_lowercase().contains(&ql);
     let mut out = Vec::new();
@@ -2232,7 +2271,7 @@ pub fn quick_apply_items(session: &designcraft_engine::Session, query: &str) -> 
         .filter(|c| !c.menu.is_empty() || c.shortcut.is_some())
         .map(|c| (c.id, c.label, c.shortcut))
         .chain(UI_COMMANDS.iter().map(|c| (c.0, c.1, c.2)))
-        .filter(|(id, l, _)| hit(l, id))
+        .filter(|(id, l, _)| hit(l, id) && (cjk || !CJK_ONLY.contains(id)))
         .map(|(id, l, sc)| QuickItem { label: l.to_string(), id: id.to_string(), params: json!({}), shortcut: sc.map(str::to_string), kind: "" });
     out.extend(commands);
     out.truncate(14);
@@ -2817,7 +2856,7 @@ mod tests {
             })
         };
         // Rows that show a shortcut or a style kind, and rows that show neither, among the first visible ones.
-        let items = quick_apply_items(&app.session, "");
+        let items = quick_apply_items(&app.session, "", false);
         let first = items.iter().take(10);
         let plain = first.clone().find(|it| it.shortcut.is_none() && it.kind.is_empty()).expect("a row without a shortcut");
         let with_sc = first.clone().find(|it| it.shortcut.is_some()).expect("a row with a shortcut");
@@ -3006,12 +3045,12 @@ mod tests {
         let mut s = designcraft_engine::Session::new();
         s.execute("file.new", &json!({})).unwrap();
         s.execute("style.paragraph.create", &json!({"name": "Body Copy"})).unwrap();
-        let items = quick_apply_items(&s, "body");
+        let items = quick_apply_items(&s, "body", false);
         assert_eq!(items[0].id, "style.paragraph.apply");
         assert_eq!(items[0].params, json!({"name": "Body Copy"}));
         assert_eq!(items[0].kind, "Paragraph Style");
-        assert!(quick_apply_items(&s, "").iter().all(|i| i.kind.is_empty()));
-        assert!(quick_apply_items(&s, "preferences").iter().any(|i| i.id == "app.preferences"));
+        assert!(quick_apply_items(&s, "", false).iter().all(|i| i.kind.is_empty()));
+        assert!(quick_apply_items(&s, "preferences", false).iter().any(|i| i.id == "app.preferences"));
     }
 
     #[test]
@@ -3100,6 +3139,91 @@ mod tests {
         run_ui(&mut app, "window.hideMenuItem", &json!({"item": key, "hidden": false})).unwrap().unwrap();
         assert!(app.ui.hidden_menu_items.is_empty());
         assert!(items.len() > 100, "every menu's items are listed: {}", items.len());
+    }
+
+    /// The Type menu as drawn: every item label.
+    fn drawn_type_menu(app: &mut DesignApp) -> Vec<String> {
+        let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 4000.0));
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+            menu_items(app, ui, &ty, "Type");
+        });
+        out.textures_delta.clear();
+        fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.job.text.trim().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        let mut labels = Vec::new();
+        out.shapes.iter().for_each(|s| collect(&s.shape, &mut labels));
+        labels
+    }
+
+    /// Tate-Chu-Yoko, Ruby, Kenten and Warichu are in the Type menu of InDesign's Japanese edition
+    /// only: they show while Show CJK Features is on, which follows the interface language until
+    /// the user sets it. Hidden, they still run.
+    #[test]
+    fn cjk_menu_items_follow_show_cjk_features() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+        let cjk: Vec<String> = ty
+            .iter()
+            .filter_map(|i| match i {
+                Item::Cmd { label, id, .. } if CJK_ONLY.contains(&id.as_str()) => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cjk.len(), 4, "{cjk:?}");
+        let drawn = |app: &mut DesignApp| {
+            let labels = drawn_type_menu(app);
+            assert!(labels.iter().any(|l| l == crate::i18n::tr(&app.ui.language, "Story Direction")), "in both editions: {labels:?}");
+            let shown: Vec<bool> = cjk.iter().map(|l| labels.iter().any(|d| d == crate::i18n::tr(&app.ui.language, l))).collect();
+            assert!(shown.iter().all(|s| *s == shown[0]), "{shown:?}");
+            shown[0]
+        };
+        for (lang, on) in [("", false), ("de", false), ("ja", true), ("zh", true), ("ko", true)] {
+            app.ui.language = lang.into();
+            assert_eq!(crate::cjk_features(&app), on, "{lang}");
+            assert_eq!(drawn(&mut app), on, "{lang}");
+        }
+        app.run("prefs.set", json!({"cjkFeatures": false})).unwrap();
+        assert!(!drawn(&mut app), "off in a Korean interface");
+        app.ui.language = String::new();
+        app.run("prefs.set", json!({"cjkFeatures": true})).unwrap();
+        assert!(drawn(&mut app), "on in an English interface");
+        assert!(quick_apply_items(&app.session, "ruby", crate::cjk_features(&app)).iter().any(|i| i.id == "app.rubyDialog"));
+        app.run("prefs.set", json!({"cjkFeatures": false})).unwrap();
+        assert!(!drawn(&mut app));
+        assert!(!quick_apply_items(&app.session, "ruby", crate::cjk_features(&app)).iter().any(|i| i.id == "app.rubyDialog"));
+        app.run("app.rubyDialog", json!({})).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("ruby"), "hidden, not removed");
+    }
+
+    /// Preferences › Type › Show CJK Features: left as it is, it keeps following the interface
+    /// language; changed, it is kept in prefs.json.
+    #[test]
+    fn show_cjk_features_is_a_persisted_preference() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.language = "ja".into();
+        run_ui(&mut app, "app.preferences", &json!({})).unwrap().unwrap();
+        assert_eq!(app.ui.dialog.as_ref().unwrap().fields["cjkFeatures"], true);
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.prefs.cjk_features, None, "untouched: follows the language");
+        run_ui(&mut app, "app.preferences", &json!({})).unwrap().unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("cjkFeatures".into(), json!(false));
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.prefs.cjk_features, Some(false));
+        assert!(!crate::cjk_features(&app));
+        // prefs.json round trip; a file from before the setting follows the language.
+        let saved = serde_json::to_vec(&app.session.prefs).unwrap();
+        assert_eq!(serde_json::from_slice::<designcraft_engine::Prefs>(&saved).unwrap().cjk_features, Some(false));
+        assert_eq!(serde_json::from_str::<designcraft_engine::Prefs>(r#"{"scaleStrokes": false}"#).unwrap().cjk_features, None);
+        assert_eq!(app.run("prefs.set", json!({"cjkFeatures": null})).unwrap()["cjkFeatures"], Value::Null);
+        assert!(crate::cjk_features(&app), "follows the Japanese interface again");
     }
 
     #[test]

@@ -116,6 +116,15 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             let mut fams = vec![base.font_family.clone()];
             for (run, f) in story.runs().filter(|(run, _)| run.start < range.end && run.end > range.start) {
                 let props = d.styles.resolve_char(&base, f);
+                {
+                    use designcraft_doc::cjk_settings::AdornmentOverprint as O;
+                    let kenten = props.kenten && (props.kenten_overprint_fill == O::On || props.kenten_overprint_stroke == O::On);
+                    let ruby = !props.ruby.is_empty() && (props.ruby_overprint_fill == O::On || props.ruby_overprint_stroke == O::On);
+                    if kenten || ruby {
+                        unsupported_typography
+                            .insert("Ruby and kenten overprint show in Overprint Preview, but PDF export doesn't write overprint".to_string());
+                    }
+                }
                 if has_rtl
                     && story.text.get(run.start.max(range.start)..run.end.min(range.end)).is_some_and(|t| t.chars().any(designcraft_fonts::is_rtl))
                 {

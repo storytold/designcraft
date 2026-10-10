@@ -255,7 +255,8 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
                         continue;
                     }
                     let skew = if st.skew != 0.0 { Affine::new([1.0, 0.0, -st.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
-                    let a = Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    let shatai = st.shatai_xf(g, l.baseline).unwrap_or(Affine::IDENTITY);
+                    let a = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
                     let key = (st.fill.clone(), st.fill_tint, st.stroke.clone(), st.stroke_tint, st.stroke_weight);
                     let k = match runs.iter().position(|r| r.0 == key) {
                         Some(k) => k,

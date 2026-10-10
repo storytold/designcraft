@@ -107,6 +107,8 @@ fn build(app: &DesignApp, parent: &Submenu, entries: &[Item], items: &mut HashMa
                 build(app, &sub, children, items, counter);
                 let _ = parent.append(&sub);
             }
+            // The menu bar is built once, so Show CJK Features applies here from the next launch.
+            Item::Cmd { id, .. } if !menus::shown(app, id) => {}
             Item::Cmd { label, id, params, shortcut } => {
                 *counter += 1;
                 let mid = format!("dc{counter}");
