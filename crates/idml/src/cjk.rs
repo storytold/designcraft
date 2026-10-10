@@ -40,6 +40,29 @@ pub(crate) fn alignment_out(v: A) -> &'static str {
         A::IcfBottom => "AlignIcfBottom",
     }
 }
+pub(crate) fn warichu_align_in(v: &str) -> Option<designcraft_doc::cjk::WarichuAlignment> {
+    use designcraft_doc::cjk::WarichuAlignment as A;
+    Some(match v {
+        "Auto" => A::Auto,
+        "Left" | "LeftAlign" => A::Left,
+        "Center" | "CenterAlign" => A::Center,
+        "Right" | "RightAlign" => A::Right,
+        "FullJustify" | "Justify" | "LeftJustify" | "CenterJustify" | "RightJustify" => A::Justify,
+        _ => return None,
+    })
+}
+
+pub(crate) fn warichu_align_out(v: designcraft_doc::cjk::WarichuAlignment) -> &'static str {
+    use designcraft_doc::cjk::WarichuAlignment as A;
+    match v {
+        A::Auto => "Auto",
+        A::Left => "Left",
+        A::Center => "Center",
+        A::Right => "Right",
+        A::Justify => "FullJustify",
+    }
+}
+
 pub(crate) fn kenten_character(v: &str) -> Option<&'static str> {
     Some(match v {
         "None" => "",

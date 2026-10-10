@@ -4,7 +4,10 @@
 use std::{collections::HashMap, sync::OnceLock};
 
 mod ar;
+mod it;
+mod ja;
 mod pt_br;
+mod uk;
 
 /// Supported interface languages: (code, name in that language).
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -16,6 +19,8 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("zh", "简体中文"),
     ("ar", "العربية"),
     ("pt-br", "Português (Brasil)"),
+    ("it", "Italiano"),
+    ("uk", "Українська"),
 ];
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
@@ -83,6 +88,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Tate-Chu-Yoko", ["Tate-Chu-Yoko", "Tate-Chu-Yoko", "Tate-Chu-Yoko", "縦中横", "纵中横"]),
     ("Ruby…", ["Ruby …", "Ruby…", "Ruby…", "ルビ…", "旁注…"]),
     ("Kenten", ["Kenten", "Kenten", "Kenten", "圏点", "圈点"]),
+    ("Warichu", ["Warichu", "Warichu", "Warichu", "割り注", "割注"]),
     ("Font", ["Schriftart", "Police", "Fuente", "フォント", "字体"]),
     ("Size", ["Schriftgrad", "Corps", "Tamaño", "サイズ", "大小"]),
     ("Character", ["Zeichen", "Caractère", "Carácter", "文字", "字符"]),
@@ -223,6 +229,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Art", ["Art", "Art", "Art", "Art", "画板"]),
     ("Based On:", ["Based On:", "Based On:", "Based On:", "Based On:", "基于："]),
     ("Bleed", ["Bleed", "Bleed", "Bleed", "Bleed", "出血"]),
+    ("Bleed Marks", ["Beschnittmarken", "Traits de fond perdu", "Marcas de sangrado", "塗り足しマーク", "出血标记"]),
     ("Body Rows", ["Body Rows", "Body Rows", "Body Rows", "Body Rows", "表体行"]),
     ("Bottom", ["Bottom", "Bottom", "Bottom", "Bottom", "底部"]),
     ("Break Link to Style", ["Break Link to Style", "Break Link to Style", "Break Link to Style", "Break Link to Style", "断开与样式的链接"]),
@@ -230,6 +237,26 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Business Card", ["Business Card", "Business Card", "Business Card", "Business Card", "名片"]),
     ("CMYK", ["CMYK", "CMYK", "CMYK", "CMYK", "CMYK"]),
     ("Cancel", ["Cancel", "Cancel", "Cancel", "Cancel", "取消"]),
+    (
+        "Can't Open the File",
+        [
+            "Datei kann nicht geöffnet werden",
+            "Impossible d'ouvrir le fichier",
+            "No se puede abrir el archivo",
+            "ファイルを開けません",
+            "无法打开文件",
+        ],
+    ),
+    (
+        "Can't Place the File",
+        [
+            "Datei kann nicht platziert werden",
+            "Impossible d'importer le fichier",
+            "No se puede colocar el archivo",
+            "ファイルを配置できません",
+            "无法置入文件",
+        ],
+    ),
     ("Center Content", ["Center Content", "Center Content", "Center Content", "Center Content", "内容居中"]),
     ("Change All", ["Change All", "Change All", "Change All", "Change All", "全部更改"]),
     ("Change to:", ["Change to:", "Change to:", "Change to:", "Change to:", "更改为："]),
@@ -249,6 +276,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Create Table", ["Create Table", "Create Table", "Create Table", "Create Table", "创建表"]),
     ("Create Table…", ["Create Table…", "Create Table…", "Create Table…", "Create Table…", "创建表…"]),
     ("Crop", ["Crop", "Crop", "Crop", "Crop", "裁剪"]),
+    ("Crop Marks", ["Schnittmarken", "Traits de coupe", "Marcas de recorte", "トンボ", "裁切标记"]),
     ("Crop to:", ["Crop to:", "Crop to:", "Crop to:", "Crop to:", "裁剪到："]),
     ("Cursor Key:", ["Cursor Key:", "Cursor Key:", "Cursor Key:", "Cursor Key:", "光标键："]),
     ("Default", ["Default", "Default", "Default", "Default", "默认"]),
@@ -268,6 +296,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Duplicate Spread", ["Duplicate Spread", "Duplicate Spread", "Duplicate Spread", "Duplicate Spread", "复制跨页"]),
     ("Email", ["Email", "Email", "Email", "Email", "电子邮件"]),
     ("Embed", ["Embed", "Embed", "Embed", "Embed", "嵌入"]),
+    ("Export PDF", ["PDF exportieren", "Exporter en PDF", "Exportar PDF", "PDF を書き出し", "导出PDF"]),
     ("Export XML…", ["Export XML…", "Export XML…", "Export XML…", "Export XML…", "导出XML…"]),
     ("Fast", ["Fast", "Fast", "Fast", "Fast", "快速"]),
     (
@@ -285,6 +314,10 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Fit Content to Frame", ["Fit Content to Frame", "Fit Content to Frame", "Fit Content to Frame", "Fit Content to Frame", "内容适合框架"]),
     ("Fitting:", ["Fitting:", "Fitting:", "Fitting:", "Fitting:", "适合："]),
+    (
+        "Flattener preset",
+        ["Voreinstellung für Transparenzreduzierung", "Préréglage d'aplatissement", "Preajuste de acoplado", "透明分割プリセット", "拼合器预设"],
+    ),
     ("Font Family:", ["Font Family:", "Font Family:", "Font Family:", "Font Family:", "字体系列："]),
     ("Font Size:", ["Font Size:", "Font Size:", "Font Size:", "Font Size:", "字体大小："]),
     ("Font Style:", ["Font Style:", "Font Style:", "Font Style:", "Font Style:", "字体样式："]),
@@ -302,6 +335,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Height", ["Height", "Height", "Height", "Height", "高度"]),
     ("Height:", ["Height:", "Height:", "Height:", "Height:", "高度："]),
     ("High Quality", ["High Quality", "High Quality", "High Quality", "High Quality", "高品质"]),
+    ("Desktop Printing", ["Bürodruck", "Impression bureautique", "Impresión de oficina", "オフィス印刷", "办公打印"]),
     (
         "Horizontal Gridline Every:",
         ["Horizontal Gridline Every:", "Horizontal Gridline Every:", "Horizontal Gridline Every:", "Horizontal Gridline Every:", "水平网格线间隔："],
@@ -310,6 +344,16 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Hyphenate", ["Hyphenate", "Hyphenate", "Hyphenate", "Hyphenate", "连字符"]),
     ("Import Options", ["Import Options", "Import Options", "Import Options", "Import Options", "导入选项"]),
     ("Import XML…", ["Import XML…", "Import XML…", "Import XML…", "Import XML…", "导入XML…"]),
+    (
+        "Include document bleed",
+        [
+            "Dokumentbeschnitt einschließen",
+            "Inclure le fond perdu du document",
+            "Incluir sangrado del documento",
+            "ドキュメントの塗り足しを含める",
+            "包含文档出血",
+        ],
+    ),
     ("Increment Every:", ["Increment Every:", "Increment Every:", "Increment Every:", "Increment Every:", "递增步长："]),
     ("Ink Manager", ["Ink Manager", "Ink Manager", "Ink Manager", "Ink Manager", "油墨管理器"]),
     ("Insert Column", ["Insert Column", "Insert Column", "Insert Column", "Insert Column", "插入列"]),
@@ -329,6 +373,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Load…", ["Load…", "Load…", "Load…", "Load…", "加载…"]),
     ("Make Compound", ["Make Compound", "Make Compound", "Make Compound", "Make Compound", "建立复合路径"]),
     ("Margins", ["Margins", "Margins", "Margins", "Margins", "边距"]),
+    ("Marks and Bleeds", ["Marken und Beschnitt", "Traits et fond perdu", "Marcas y sangrado", "トンボと塗り足し", "标记和出血"]),
     ("Maximum", ["Maximum", "Maximum", "Maximum", "Maximum", "最大"]),
     ("Menu Customization", ["Menu Customization", "Menu Customization", "Menu Customization", "Menu Customization", "菜单自定"]),
     (
@@ -399,6 +444,9 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("OpenType", ["OpenType", "OpenType", "OpenType", "OpenType", "OpenType"]),
     ("Orientation:", ["Orientation:", "Orientation:", "Orientation:", "Orientation:", "方向："]),
     ("Outside", ["Outside", "Outside", "Outside", "Outside", "外侧"]),
+    ("Page Information", ["Seiteninformationen", "Informations sur la page", "Información de página", "ページ情報", "页面信息"]),
+    ("Page Range", ["Seitenbereich", "Plage de pages", "Intervalo de páginas", "ページ範囲", "页面范围"]),
+    ("Page Range:", ["Seitenbereich:", "Plage de pages :", "Intervalo de páginas:", "ページ範囲:", "页面范围："]),
     ("Pages:", ["Pages:", "Pages:", "Pages:", "Pages:", "页面："]),
     ("Paragraph Composer", ["Paragraph Composer", "Paragraph Composer", "Paragraph Composer", "Paragraph Composer", "段落排版器"]),
     (
@@ -406,6 +454,8 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ["Paragraph Style Options", "Paragraph Style Options", "Paragraph Style Options", "Paragraph Style Options", "段落样式选项"],
     ),
     ("Paragraph Style:", ["Paragraph Style:", "Paragraph Style:", "Paragraph Style:", "Paragraph Style:", "段落样式："]),
+    ("PDF/A-2b", ["PDF/A-2b", "PDF/A-2b", "PDF/A-2b", "PDF/A-2b", "PDF/A-2b"]),
+    ("PDF/X-4", ["PDF/X-4", "PDF/X-4", "PDF/X-4", "PDF/X-4", "PDF/X-4"]),
     ("Place PDF", ["Place PDF", "Place PDF", "Place PDF", "Place PDF", "置入PDF"]),
     ("Plain Text", ["Plain Text", "Plain Text", "Plain Text", "Plain Text", "纯文本"]),
     ("Polygon Settings", ["Polygon Settings", "Polygon Settings", "Polygon Settings", "Polygon Settings", "多边形设置"]),
@@ -415,6 +465,8 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Preferences", ["Preferences", "Preferences", "Preferences", "Preferences", "首选项"]),
     ("Prefix:", ["Prefix:", "Prefix:", "Prefix:", "Prefix:", "前缀："]),
     ("Preset", ["Preset", "Preset", "Preset", "Preset", "预设"]),
+    ("Preset:", ["Voreinstellung:", "Préréglage :", "Preajuste:", "プリセット:", "预设："]),
+    ("Commercial Printing", ["Druckerei", "Impression commerciale", "Impresión comercial", "商業印刷", "商业印刷"]),
     ("Print", ["Print", "Print", "Print", "Print", "打印"]),
     ("Printer:", ["Printer:", "Printer:", "Printer:", "Printer:", "打印机："]),
     ("Printing / Exporting:", ["Printing / Exporting:", "Printing / Exporting:", "Printing / Exporting:", "Printing / Exporting:", "打印/导出："]),
@@ -482,11 +534,14 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Single-line", ["Single-line", "Single-line", "Single-line", "Single-line", "单行"]),
     ("Single-line Composer", ["Single-line Composer", "Single-line Composer", "Single-line Composer", "Single-line Composer", "单行排版器"]),
     ("Size:", ["Size:", "Size:", "Size:", "Size:", "大小："]),
+    ("Screen and Email", ["Bildschirm und E-Mail", "Écran et e-mail", "Pantalla y correo", "画面とメール", "屏幕和电子邮件"]),
     (
         "Space Between Footnotes:",
         ["Space Between Footnotes:", "Space Between Footnotes:", "Space Between Footnotes:", "Space Between Footnotes:", "脚注间距："],
     ),
     ("Speed", ["Speed", "Speed", "Speed", "Speed", "速度"]),
+    ("Standard", ["Standard", "Norme", "Estándar", "標準", "标准"]),
+    ("Standard:", ["Standard:", "Norme :", "Estándar:", "標準:", "标准："]),
     ("Star Inset:", ["Star Inset:", "Star Inset:", "Star Inset:", "Star Inset:", "星形内边距："]),
     ("Start Page #:", ["Start Page #:", "Start Page #:", "Start Page #:", "Start Page #:", "起始页码："]),
     ("Start at:", ["Start at:", "Start at:", "Start at:", "Start at:", "起始编号："]),
@@ -498,6 +553,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Suffix:", ["Suffix:", "Suffix:", "Suffix:", "Suffix:", "后缀："]),
     ("Synchronize", ["Synchronize", "Synchronize", "Synchronize", "Synchronize", "同步"]),
     ("Tag:", ["Tag:", "Tag:", "Tag:", "Tag:", "标签："]),
+    ("Tagged PDF", ["Markiertes PDF", "PDF balisé", "PDF etiquetado", "タグ付き PDF", "带标签的 PDF"]),
     ("Text Frame", ["Text Frame", "Text Frame", "Text Frame", "Text Frame", "文本框架"]),
     ("Text Frame Options", ["Text Frame Options", "Text Frame Options", "Text Frame Options", "Text Frame Options", "文本框架选项"]),
     ("Text Message", ["Text Message", "Text Message", "Text Message", "Text Message", "短信"]),
@@ -709,6 +765,8 @@ const TABLE: &[(&str, [&str; 5])] = &[
         "Community & Project Links",
         ["Community & Project Links", "Community & Project Links", "Community & Project Links", "Community & Project Links", "社区与项目链接"],
     ),
+    ("Compress images", ["Bilder komprimieren", "Compresser les images", "Comprimir imágenes", "画像を圧縮", "压缩图像"]),
+    ("Compression", ["Komprimierung", "Compression", "Compresión", "圧縮", "压缩"]),
     ("Conditions", ["Conditions", "Conditions", "Conditions", "Conditions", "条件"]),
     ("Container", ["Container", "Container", "Container", "Container", "容器"]),
     ("Content", ["Content", "Content", "Content", "Content", "内容"]),
@@ -1237,6 +1295,12 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Close Path", ["Close Path", "Close Path", "Close Path", "Close Path", "闭合路径"]),
     ("Color Group Options", ["Color Group Options", "Color Group Options", "Color Group Options", "Color Group Options", "颜色组选项"]),
     ("Column Width", ["Column Width", "Column Width", "Column Width", "Column Width", "列宽"]),
+    ("Column Rules", ["Spaltenlinien", "Filets de colonne", "Filetes de columna", "段間罫線", "栏间线"]),
+    ("Insert Column Rule", ["Spaltenlinie einfügen", "Insérer un filet de colonne", "Insertar filete de columna", "段間罫線を挿入", "插入栏间线"]),
+    ("Tint %", ["Farbton %", "Teinte %", "Matiz %", "濃淡 %", "色调 %"]),
+    ("Top Inset", ["Oberer Einzug", "Retrait supérieur", "Sangría superior", "上インセット", "顶部内边距"]),
+    ("Bottom Inset", ["Unterer Einzug", "Retrait inférieur", "Sangría inferior", "下インセット", "底部内边距"]),
+    ("Horizontal Offset", ["Horizontaler Versatz", "Décalage horizontal", "Desplazamiento horizontal", "水平オフセット", "水平偏移"]),
     ("Condition Options…", ["Condition Options…", "Condition Options…", "Condition Options…", "Condition Options…", "条件选项…"]),
     (
         "Convert to Liquid Guide",
@@ -2240,6 +2304,37 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Underline Options", ["Underline Options", "Underline Options", "Underline Options", "Underline Options", "下划线选项"]),
     ("Strikethrough Options", ["Strikethrough Options", "Strikethrough Options", "Strikethrough Options", "Strikethrough Options", "删除线选项"]),
     (
+        "Character Style Options",
+        ["Character Style Options", "Character Style Options", "Character Style Options", "Character Style Options", "字符样式选项"],
+    ),
+    (
+        "Advanced Character Formats",
+        ["Advanced Character Formats", "Advanced Character Formats", "Advanced Character Formats", "Advanced Character Formats", "高级字符格式"],
+    ),
+    ("OpenType Features", ["OpenType Features", "OpenType Features", "OpenType Features", "OpenType Features", "OpenType 功能"]),
+    ("Style Settings:", ["Style Settings:", "Style Settings:", "Style Settings:", "Style Settings:", "样式设置："]),
+    ("Kerning:", ["Kerning:", "Kerning:", "Kerning:", "Kerning:", "字偶间距："]),
+    ("Case:", ["Case:", "Case:", "Case:", "Case:", "大小写："]),
+    (
+        "OpenType All Small Caps",
+        ["OpenType All Small Caps", "OpenType All Small Caps", "OpenType All Small Caps", "OpenType All Small Caps", "OpenType 全部小型大写字母"],
+    ),
+    ("Subscript", ["Subscript", "Subscript", "Subscript", "Subscript", "下标"]),
+    ("OpenType Subscript", ["OpenType Subscript", "OpenType Subscript", "OpenType Subscript", "OpenType Subscript", "OpenType 下标"]),
+    ("OpenType Numerator", ["OpenType Numerator", "OpenType Numerator", "OpenType Numerator", "OpenType Numerator", "OpenType 分子"]),
+    ("OpenType Denominator", ["OpenType Denominator", "OpenType Denominator", "OpenType Denominator", "OpenType Denominator", "OpenType 分母"]),
+    ("Ligatures", ["Ligatures", "Ligatures", "Ligatures", "Ligatures", "连字"]),
+    ("No Break", ["No Break", "No Break", "No Break", "No Break", "不换行"]),
+    ("Horizontal Scale:", ["Horizontal Scale:", "Horizontal Scale:", "Horizontal Scale:", "Horizontal Scale:", "水平缩放："]),
+    ("Vertical Scale:", ["Vertical Scale:", "Vertical Scale:", "Vertical Scale:", "Vertical Scale:", "垂直缩放："]),
+    ("Baseline Shift:", ["Baseline Shift:", "Baseline Shift:", "Baseline Shift:", "Baseline Shift:", "基线偏移："]),
+    ("Skew:", ["Skew:", "Skew:", "Skew:", "Skew:", "倾斜："]),
+    ("Language:", ["Language:", "Language:", "Language:", "Language:", "语言："]),
+    ("Figure Style:", ["Figure Style:", "Figure Style:", "Figure Style:", "Figure Style:", "数字样式："]),
+    ("Underline On", ["Underline On", "Underline On", "Underline On", "Underline On", "启用下划线"]),
+    ("Strikethrough On", ["Strikethrough On", "Strikethrough On", "Strikethrough On", "Strikethrough On", "启用删除线"]),
+    ("Edit \"{name}\"…", ["„{name}“ bearbeiten…", "Modifier « {name} »…", "Editar \"{name}\"…", "\"{name}\" を編集…", "编辑\"{name}\"…"]),
+    (
         "Discretionary Ligatures",
         ["Discretionary Ligatures", "Discretionary Ligatures", "Discretionary Ligatures", "Discretionary Ligatures", "自由连字"],
     ),
@@ -2710,6 +2805,12 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "请通过控制通道传入 csv、rows 或 bytes。",
         ],
     ),
+    // Paragraph Rules.
+    ("Paragraph Rules…", ["Absatzlinien …", "Filets de paragraphe…", "Filetes de párrafo…", "段落境界線…", "段落线…"]),
+    ("Paragraph Rules", ["Absatzlinien", "Filets de paragraphe", "Filetes de párrafo", "段落境界線", "段落线"]),
+    ("Rule Below", ["Linie unterhalb", "Filet après", "Filete después", "後境界線", "下方横线"]),
+    ("Tint:", ["Farbton:", "Teinte:", "Matiz:", "濃淡:", "色调："]),
+    ("Column", ["Spalte", "Colonne", "Columna", "段", "栏"]),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.
@@ -2730,17 +2831,52 @@ fn column(lang: &str) -> Option<usize> {
 
 /// `s` in `lang` (English, or the string itself, when there's no translation).
 pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
+    static JAPANESE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static TRANSLATIONS: OnceLock<HashMap<&'static str, [&'static str; 5]>> = OnceLock::new();
     static ARABIC: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static UKRAINIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static PORTUGUESE_BR: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static ITALIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
+    // The Japanese table covers the whole interface; the shared table's Japanese column is the fallback
+    // for keys added there after it.
+    if lang == "ja"
+        && let Some(text) = JAPANESE.get_or_init(|| ja::TABLE.iter().copied().collect()).get(s).copied()
+    {
+        return text;
     }
     if lang == "pt-br" {
         return PORTUGUESE_BR.get_or_init(|| pt_br::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
+    if lang == "it" {
+        return ITALIAN.get_or_init(|| it::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
+    if lang == "uk" {
+        return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     let Some(c) = column(lang) else { return s };
     TRANSLATIONS.get_or_init(|| TABLE.iter().copied().collect()).get(s).and_then(|row| row.get(c)).copied().unwrap_or(s)
+}
+
+/// Context-sensitive UI captions; unsupported contexts keep the shared translation.
+pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
+    if lang == "uk" {
+        return uk::CONTEXT.iter().find(|(key, scope, _)| *key == s && *scope == context).map_or_else(|| tr(lang, s), |(_, _, text)| text);
+    }
+    tr(lang, s)
+}
+
+#[cfg(test)]
+pub(crate) fn ukrainian_catalog() -> Vec<&'static str> {
+    uk::TABLE.iter().map(|(_, text)| *text).chain(uk::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
+}
+
+/// Count captions in Ukrainian put the category before the value so every count uses
+/// a grammatical form; other languages keep the existing value-first caption.
+pub fn count_label(lang: &str, noun: &str, count: usize) -> String {
+    if lang == "uk" { format!("{}: {count}", tr(lang, noun)) } else { format!("{count} {}", tr(lang, noun)) }
 }
 
 /// Localize reserved built-in style names only; user-defined names are document data.
@@ -2767,7 +2903,10 @@ mod tests {
     fn cached_lookup_preserves_every_translation_across_language_switches() {
         for (key, translations) in TABLE {
             for (lang, expected) in ["de", "fr", "es", "ja", "zh"].into_iter().zip(translations) {
-                assert_eq!(tr(lang, key), *expected, "{lang}: {key}");
+                // `ja::TABLE` translates the whole interface and wins over the shared Japanese column.
+                if lang != "ja" {
+                    assert_eq!(tr(lang, key), *expected, "{lang}: {key}");
+                }
             }
             assert_eq!(tr("", key), *key);
         }
@@ -2777,8 +2916,14 @@ mod tests {
         for (key, expected) in pt_br::TABLE {
             assert_eq!(tr("pt-br", key), *expected, "pt-br: {key}");
         }
+        for (key, expected) in it::TABLE {
+            assert_eq!(tr("it", key), *expected, "it: {key}");
+        }
+        for (key, expected) in uk::TABLE {
+            assert_eq!(tr("uk", key), *expected, "uk: {key}");
+        }
         let unknown = String::from("A user-defined untranslated label");
-        for lang in ["ar", "pt-br", "zh", "ja", "de", "fr", "es", "", "unknown"] {
+        for lang in ["uk", "ar", "pt-br", "it", "zh", "ja", "de", "fr", "es", "", "unknown"] {
             assert!(std::ptr::eq(tr(lang, &unknown), unknown.as_str()));
         }
     }
@@ -2794,6 +2939,9 @@ mod tests {
         assert_eq!(tr("pt-br", "File"), "Arquivo");
         assert_eq!(tr("pt-br", "New Document…"), "Novo documento…");
         assert_eq!(tr("pt-br", "Unknown label"), "Unknown label");
+        assert_eq!(tr("it", "Edit"), "Modifica");
+        assert_eq!(tr("it", "New Document…"), "Nuovo documento…");
+        assert_eq!(tr("it", "Unknown label"), "Unknown label");
         assert!(is_rtl("ar"));
         for (i, (en, translation)) in ar::TABLE.iter().enumerate() {
             assert!(ar::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
@@ -2803,11 +2951,73 @@ mod tests {
             assert!(pt_br::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
             assert!(!translation.is_empty(), "{en}");
         }
+        for (i, (en, translation)) in it::TABLE.iter().enumerate() {
+            assert!(it::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
+            assert!(!translation.is_empty(), "{en}");
+        }
+        // Italian entries are for keys the shared or Arabic table knows. A new English string
+        // falls back to English until it is translated, so it doesn't fail here.
+        for (en, _) in it::TABLE {
+            assert!(TABLE.iter().any(|(key, _)| key == en) || ar::TABLE.iter().any(|(key, _)| key == en), "it: unknown key {en}");
+        }
         // Every row is unique and complete.
         for (i, (en, t)) in TABLE.iter().enumerate() {
             assert!(TABLE[..i].iter().all(|(e, _)| e != en), "duplicate {en}");
             assert!(t.iter().all(|x| !x.is_empty()), "{en}");
         }
+    }
+
+    #[test]
+    fn ukrainian_catalog_covers_existing_keys_and_preserves_placeholders() {
+        let catalog: std::collections::HashMap<_, _> = uk::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), uk::TABLE.len(), "duplicate Ukrainian keys");
+        let mut keys = std::collections::HashSet::new();
+        keys.extend(TABLE.iter().map(|(key, _)| *key));
+        keys.extend(ar::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(pt_br::TABLE.iter().map(|(key, _)| *key));
+        // A new English string falls back to English until it is translated, so only stale
+        // entries (keys no catalog knows any more) fail.
+        let stale: Vec<_> = catalog.keys().filter(|k| !keys.contains(*k)).collect();
+        assert!(stale.is_empty(), "Ukrainian entries for unknown keys: {stale:?}");
+        let placeholders =
+            |s: &str| s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<Vec<_>>();
+        for (key, translation) in uk::TABLE {
+            assert!(!translation.trim().is_empty(), "empty {key}");
+            let mut source = placeholders(key);
+            let mut translated = placeholders(translation);
+            source.sort();
+            translated.sort();
+            assert_eq!(source, translated, "placeholders: {key}");
+        }
+        assert_eq!(tr_context("uk", "Columns", "table"), "Стовпці");
+        assert_eq!(tr("uk", "Columns"), "Колонки");
+        assert_eq!(tr_context("uk", "Group", "selection"), "Група");
+        assert_eq!(tr("uk", "Group"), "Згрупувати");
+        assert_eq!(tr_context("", "Columns", "table"), "Columns");
+        assert_eq!(tr_context("uk", "Custom caption", "custom"), "Custom caption");
+        assert_eq!(tr("uk", "through"), "включно");
+        assert_eq!(tr("uk", "up to"), "не включно");
+        assert!(!is_rtl("uk"));
+        assert_eq!(tr("uk", "Type"), "Текст");
+        assert_eq!(tr("uk", "Spread"), "Розворот");
+        assert_eq!(tr("uk", "Story"), "Текстовий матеріал");
+        assert_eq!(tr("uk", "Footer Rows"), "Рядки нижнього колонтитула");
+        assert_eq!(style_name("uk", "[Basic Paragraph]"), "[Основний абзац]");
+        assert_eq!(style_name("uk", "My layout style"), "My layout style");
+        assert_eq!(workspace_name("uk", "Essentials"), "Основне");
+        assert_eq!(workspace_name("uk", "My workspace"), "My workspace");
+    }
+
+    #[test]
+    fn ukrainian_counts_use_category_captions_for_every_number() {
+        for n in [0, 1, 2, 4, 5, 11, 21, 22, 25] {
+            assert_eq!(count_label("uk", "pages", n), format!("сторінок: {n}"));
+            assert_eq!(count_label("uk", "objects", n), format!("об’єктів: {n}"));
+            assert_eq!(count_label("uk", "errors", n), format!("помилок: {n}"));
+            let pages = tr("uk", "{pages} Pages in {spreads} Spreads").replace("{pages}", &n.to_string()).replace("{spreads}", &n.to_string());
+            assert_eq!(pages, format!("Сторінок: {n}; розворотів: {n}"));
+        }
+        assert_eq!(count_label("", "objects", 2), "2 objects");
     }
 
     #[test]
@@ -2819,8 +3029,24 @@ mod tests {
             ("Tate-Chu-Yoko", "縦中横"),
             ("Ruby…", "ルビ…"),
             ("Kenten", "圏点"),
+            ("Warichu", "割り注"),
         ] {
             assert_eq!(tr("ja", en), ja);
         }
+    }
+
+    #[test]
+    fn pdf_export_dialog_strings_are_translated() {
+        // Translated labels in every supported language.
+        assert_ne!(tr("zh", "Crop Marks"), "Crop Marks");
+        assert_ne!(tr("de", "Tagged PDF"), "Tagged PDF");
+        assert_ne!(tr("ar", "Include document bleed"), "Include document bleed");
+        assert_ne!(tr("pt-br", "Compress images"), "Compress images");
+        // English returns the key unchanged.
+        assert_eq!(tr("", "Export PDF"), "Export PDF");
+        // An unknown string still falls through unchanged.
+        assert_eq!(tr("de", "Low Quality Print"), "Low Quality Print");
+        // Fixed standard names stay identical in every language.
+        assert_eq!(tr("ja", "PDF/X-4"), "PDF/X-4");
     }
 }

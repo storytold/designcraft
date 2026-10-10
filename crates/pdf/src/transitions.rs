@@ -3,6 +3,7 @@
 //! a new cross-reference section pointing back at the original.
 
 use designcraft_doc::{PageTransition, TransitionKind};
+use std::collections::HashMap;
 
 /// The `/Trans` dictionary for a transition.
 fn trans_dict(t: &PageTransition) -> String {
@@ -51,6 +52,56 @@ pub(crate) fn object(pdf: &[u8], id: usize) -> Option<std::ops::Range<usize>> {
     Some(start..end)
 }
 
+// Bound optional indexing metadata. Larger requests retain the original lookup path.
+const MAX_INDEXED_PAGE_OBJECTS: usize = 4096;
+
+/// Latest literal object headers for the requested IDs, found in a single reverse pass.
+/// Match `object` exactly, including embedded headers and the lack of a boundary after `obj`.
+/// Only requested IDs are retained; neither PDF size nor the largest ID sizes this map.
+/// If the metadata limit or an allocation failure prevents indexing, use `object` instead.
+fn object_starts(pdf: &[u8], ids: impl Iterator<Item = usize>) -> Option<HashMap<usize, Option<usize>>> {
+    let mut starts = HashMap::new();
+    for id in ids {
+        if starts.contains_key(&id) {
+            continue;
+        }
+        if starts.len() == MAX_INDEXED_PAGE_OBJECTS || starts.try_reserve(1).is_err() {
+            return None;
+        }
+        starts.insert(id, None);
+    }
+    let mut missing = starts.len();
+    if missing == 0 {
+        return Some(starts);
+    }
+    let mut end = pdf.len();
+    while let Some(at) = pdf.get(..end).and_then(|bytes| bytes.iter().rposition(|b| *b == b'\n')) {
+        let Some(start) = at.checked_add(1) else { break };
+        let Some(line) = pdf.get(start..end) else { break };
+        end = at;
+        let digits = line.iter().position(|b| !b.is_ascii_digit()).unwrap_or(line.len());
+        let Some(number) = line.get(..digits) else { continue };
+        if number.is_empty() || (number.len() > 1 && number.first() == Some(&b'0')) {
+            continue;
+        }
+        if !line.get(digits..).is_some_and(|tail| tail.starts_with(b" 0 obj")) {
+            continue;
+        }
+        let Some(id) = number.iter().try_fold(0usize, |n, b| n.checked_mul(10)?.checked_add(usize::from(*b - b'0'))) else { continue };
+        let Some(slot) = starts.get_mut(&id) else { continue };
+        if slot.is_some() {
+            continue;
+        }
+        let Some(body) = start.checked_add(digits).and_then(|n| n.checked_add(6)) else { continue };
+        *slot = Some(body);
+        missing -= 1;
+        if missing == 0 {
+            break;
+        }
+    }
+    Some(starts)
+}
+
 /// Add transitions to the pages of `pdf` (index = PDF page). `None` when the file's structure
 /// isn't the simple kind this understands (classic xref table, a flat page tree).
 pub fn add_transitions(pdf: &[u8], trans: &[Option<PageTransition>]) -> Option<Vec<u8>> {
@@ -84,6 +135,7 @@ pub fn add_page_entries(pdf: &[u8], extra: &[Option<String>]) -> Option<Vec<u8>>
     let kids_str = &kids_str[kids_str.find('[')? + 1..kids_str.find(']')?];
     let nums: Vec<usize> = kids_str.split_whitespace().filter_map(|t| t.parse().ok()).collect();
     let kids: Vec<usize> = nums.chunks(2).map(|c| c[0]).collect();
+    let starts = object_starts(pdf, extra.iter().zip(&kids).filter_map(|(t, &kid)| t.as_ref().map(|_| kid)));
     let mut out = pdf.to_vec();
     if !out.ends_with(b"\n") {
         out.push(b'\n');
@@ -91,7 +143,13 @@ pub fn add_page_entries(pdf: &[u8], extra: &[Option<String>]) -> Option<Vec<u8>>
     let mut entries: Vec<(usize, usize)> = Vec::new();
     for (i, t) in extra.iter().enumerate() {
         let (Some(t), Some(&kid)) = (t, kids.get(i)) else { continue };
-        let body = String::from_utf8_lossy(&pdf[object(pdf, kid)?]).to_string();
+        let range = if let Some(starts) = &starts {
+            let start = starts.get(&kid).copied().flatten()?;
+            start..find(pdf, b"endobj", start)?
+        } else {
+            object(pdf, kid)?
+        };
+        let body = String::from_utf8_lossy(&pdf[range]).to_string();
         if !body.contains("/Type/Page") && !body.contains("/Type /Page") {
             return None;
         }
@@ -139,4 +197,20 @@ pub fn add_catalog_entries(pdf: &[u8], entries: &str) -> Option<Vec<u8>> {
             .as_bytes(),
     );
     Some(out)
+}
+
+#[cfg(test)]
+mod object_index_tests {
+    use super::{MAX_INDEXED_PAGE_OBJECTS, object_starts};
+
+    #[test]
+    fn metadata_limit_disables_only_the_optional_index() {
+        let at_limit = object_starts(b"", 0..MAX_INDEXED_PAGE_OBJECTS).unwrap();
+        assert_eq!(at_limit.len(), MAX_INDEXED_PAGE_OBJECTS);
+        assert!(object_starts(b"", 0..=MAX_INDEXED_PAGE_OBJECTS).is_none());
+        // Duplicate requests do not consume the unique-ID budget.
+        let starts = object_starts(b"\n0 0 objendobj", std::iter::repeat_n(0, MAX_INDEXED_PAGE_OBJECTS + 1)).unwrap();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts.get(&0), Some(&Some(8)));
+    }
 }

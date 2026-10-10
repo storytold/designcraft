@@ -110,12 +110,14 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
             _ => runs.push((c.to_string(), fmt.clone())),
         }
     };
+    let mut units = crate::Utf16Units::default();
     let mut i = 0;
     let mut skipped = 0;
     while i < chars.len() {
         let c = chars[i];
         match c {
             '\\' if i + 1 < chars.len() => {
+                units.reset();
                 push(&mut paras, chars[i + 1], &fmt);
                 i += 2;
             }
@@ -143,7 +145,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 match name {
                     n if n.starts_with("0x") => {
                         if let Ok(u) = u32::from_str_radix(&n[2..], 16)
-                            && let Some(ch) = char::from_u32(u)
+                            && let Some(ch) = units.push(u)
                         {
                             push(&mut paras, ch, &fmt);
                         }
@@ -193,6 +195,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 i += 1;
             }
             c => {
+                units.reset();
                 push(&mut paras, c, &fmt);
                 i += 1;
             }
@@ -225,6 +228,20 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Characters past U+FFFF are written as two tags, a UTF-16 surrogate pair. Each half was
+    /// converted alone and dropped.
+    #[test]
+    fn surrogate_pairs_become_one_character() {
+        let i = import("<ASCII-WIN>\r\n<Version:7>\r\n<ParaStyle:Body>A<0xD83D><0xDE00>B <0xD842><0xDFB7><0x7530>".as_bytes()).unwrap();
+        assert_eq!(i.story.text, "A\u{1F600}B \u{20BB7}\u{7530}");
+        // What the exporter writes comes back.
+        let doc = Document::new(&designcraft_doc::build::NewDocument::default());
+        let back = import(tagged_text(&doc, &i.story).as_bytes()).unwrap();
+        assert_eq!(back.story.text, i.story.text);
+        // Half a pair is not a character: it is still left out.
+        assert_eq!(import("<ASCII-WIN>\r\n<ParaStyle:Body>A<0xD83D>B<0xDE00>C".as_bytes()).unwrap().story.text, "ABC");
+    }
 
     #[test]
     fn tagged_text_round_trips() {

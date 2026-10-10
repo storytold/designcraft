@@ -416,3 +416,87 @@ fn batch_steps_use_earlier_results() {
     );
     assert_eq!(v["completed"], 2);
 }
+
+#[test]
+fn explicit_typing_honors_caret_range_and_undo_without_changing_shortcuts() {
+    let mut s = server();
+    assert_eq!(call(&mut s, "type_text", json!({"text":"X"}))["isError"], true);
+    let f = ok(&mut s, "execute", json!({"command":"frame.create","params":{"rect":[36,36,300,200],"content":"text","text":"Hello"}}));
+    let story = f["story"].as_u64().unwrap();
+    for (anchor, focus, expected) in [(5, 5, "HelloX"), (0, 5, "X")] {
+        ok(&mut s, "set_story_text", json!({"story":story,"text":"Hello"}));
+        ok(&mut s, "execute", json!({"command":"text.select","params":{"story":story,"anchor":anchor,"focus":focus}}));
+        ok(&mut s, "type_text", json!({"text":"X"}));
+        assert_eq!(ok(&mut s, "get_story", json!({"story":story}))["text"], expected);
+        ok(&mut s, "execute", json!({"command":"edit.undo"}));
+        assert_eq!(ok(&mut s, "get_story", json!({"story":story}))["text"], "Hello");
+    }
+    ok(&mut s, "execute", json!({"command":"text.placeCaret","params":{"frame":f["id"],"point":[100,50]}}));
+    ok(&mut s, "type_text", json!({"text":"X"}));
+    assert_eq!(ok(&mut s, "get_story", json!({"story":story}))["text"], "HelloX");
+    assert_eq!(ok(&mut s, "key", json!({"key":"T"}))["handledBy"], "tool.select");
+    assert_eq!(ok(&mut s, "get_story", json!({"story":story}))["text"], "HelloX");
+}
+
+#[test]
+fn story_queries_distinguish_missing_from_empty() {
+    let mut s = server();
+    assert_eq!(call(&mut s, "get_story", json!({"story":999}))["isError"], true);
+    let f = ok(&mut s, "execute", json!({"command":"frame.create","params":{"rect":[36,36,300,200],"content":"text"}}));
+    assert_eq!(ok(&mut s, "get_story", json!({"story":f["story"]}))["text"], "");
+    assert_eq!(ok(&mut s, "get_story", json!({"frame":f["id"]}))["text"], "");
+    ok(&mut s, "execute", json!({"command":"text.select","params":{"story":f["story"],"anchor":0}}));
+    assert_eq!(ok(&mut s, "get_story", json!({}))["text"], "");
+}
+
+#[test]
+fn page_contract_rejects_supplied_invalid_values_without_writes() {
+    let mut s = server();
+    ok(&mut s, "new_document", json!({"sample":true}));
+    let path = tmp("page-contract.png");
+    for tool in ["export_png", "render_page"] {
+        for page in
+            [json!(-1), json!(-2), json!(1.5), Value::Null, json!("0"), json!(true), json!(u64::MAX), json!(18446744073709551616_f64), json!(99)]
+        {
+            std::fs::write(&path, b"KEEP").unwrap();
+            let args = json!({"page":page,"path":path,"scale":0.1});
+            assert_eq!(call(&mut s, tool, args)["isError"], true, "{tool}: {page}");
+            assert_eq!(std::fs::read(&path).unwrap(), b"KEEP");
+        }
+    }
+    let first = image_of(&call(&mut s, "render_page", json!({"page":0,"scale":0.1})));
+    let next = image_of(&call(&mut s, "render_page", json!({"page":1,"scale":0.1})));
+    assert_ne!(first, next);
+    assert_eq!(first, image_of(&call(&mut s, "render_page", json!({"scale":0.1}))));
+    ok(&mut s, "export_png", json!({"page":1,"path":path,"scale":0.1}));
+    assert_eq!(std::fs::read(&path).unwrap(), next);
+    ok(&mut s, "export_png", json!({"path":path,"scale":0.1}));
+    assert_eq!(std::fs::read(&path).unwrap(), first);
+    for tool in ["render_page", "export_png"] {
+        let definition = tool_definitions().into_iter().find(|v| v["name"] == tool).unwrap();
+        assert_eq!(definition["inputSchema"]["properties"]["page"]["minimum"], 0);
+    }
+    let mut b = Headless::with_document();
+    for method in ["ui.render", "app.export"] {
+        for page in [json!(-1), Value::Null, json!("0"), json!(99)] {
+            std::fs::write(&path, b"KEEP").unwrap();
+            assert!(b.call(method, json!({"page":page,"path":path,"scale":0.1})).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"KEEP");
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert!(b.call(method, json!({"page":-1,"path":path,"scale":0.1})).is_err());
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn explicit_typing_rejects_stale_selection_and_closed_document() {
+    let mut b = Headless::with_document();
+    let f = b.session.execute("frame.create", &json!({"rect":[36,36,300,200],"content":"text","text":"Hello"})).unwrap();
+    b.session.execute("text.select", &json!({"story":f["story"],"anchor":5})).unwrap();
+    b.session.active_mut().unwrap().selection.text.as_mut().unwrap().story.0 = 999;
+    assert!(b.call("ui.text", json!({"text":"X"})).is_err());
+    assert_eq!(b.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
+    b.session.execute("file.close", &json!({})).unwrap();
+    assert!(b.call("ui.text", json!({"text":"X"})).is_err());
+}

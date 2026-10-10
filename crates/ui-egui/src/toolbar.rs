@@ -12,27 +12,33 @@ const BTN: f32 = 24.0;
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let cols = if app.ui.tools_double_column { 2 } else { 1 };
+    let frame = egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.divider));
+    // A single column that doesn't fit the window's height becomes two, without changing the
+    // preference; whatever two columns still can't fit scrolls.
+    let single_h_id = egui::Id::new("tools_single_column_height");
+    let single_h: Option<f32> = ui.data(|d| d.get_temp(single_h_id));
+    let viewport_h = ui.available_height() - frame.total_margin().sum().y;
+    let crowded = !app.ui.tools_double_column && single_h.is_some_and(|h| h > viewport_h);
+    let cols = if app.ui.tools_double_column || crowded { 2 } else { 1 };
     let width = 8.0 + BTN * cols as f32 + 4.0 * (cols as f32 - 1.0) + 8.0;
-    let r = egui::Panel::left("tools")
-        .exact_size(width)
-        .resizable(false)
-        .frame(egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.divider)))
-        .show(ui, |ui| {
+    let r = egui::Panel::left("tools").exact_size(width).resizable(false).frame(frame).show(ui, |ui| {
+        crate::widgets::overflow_scrolling(ui);
+        let scroll = egui::ScrollArea::vertical().id_salt("tools_scroll").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             ui.add_space(3.0);
-            // Collapse chevrons.
+            // Collapse chevrons (nothing to toggle while the window forces two columns).
             ui.horizontal(|ui| {
                 ui.add_space(width / 2.0 - 8.0);
-                if icons::button(
-                    ui,
-                    if cols == 1 { "double-chevron-right" } else { "double-chevron-left" },
-                    16.0,
-                    false,
-                    crate::i18n::tr(&app.ui.language, "Toggle double column"),
-                )
-                .clicked()
-                {
+                let toggle = ui.add_enabled_ui(!crowded, |ui| {
+                    icons::button(
+                        ui,
+                        if cols == 1 { "double-chevron-right" } else { "double-chevron-left" },
+                        16.0,
+                        false,
+                        crate::i18n::tr(&app.ui.language, "Toggle double column"),
+                    )
+                });
+                if toggle.inner.clicked() {
                     app.ui.tools_double_column = !app.ui.tools_double_column;
                 }
             });
@@ -169,6 +175,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.add_space(8.0);
             fill_stroke_proxy(app, ui, width);
         });
+        if cols == 1 {
+            let h = scroll.content_size.y;
+            ui.data_mut(|d| d.insert_temp(single_h_id, h));
+            // Laid out in one column that turned out too tall: lay out again in two.
+            if h > viewport_h {
+                ui.ctx().request_discard("tools panel: one column does not fit");
+            }
+        }
+    });
     if std::env::var_os("DESIGNCRAFT_DEBUG_LAYOUT").is_some() {
         eprintln!("tools panel rect {:?} (wanted width {width}); remaining {:?}", r.response.rect, ui.available_rect_before_wrap());
     }
@@ -252,9 +267,11 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
         paint_stroke(p);
         paint_fill(p);
     }
+    let fill_tip = crate::i18n::tr(&app.ui.language, "Fill (X)");
     let fresp = ui.interact(fill_r, ui.id().with("proxy_fill"), Sense::click()).on_hover_ui(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Fill (X)"));
+        crate::rtl::label(ui, fill_tip);
     });
+    fresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, fill_tip));
     let sresp = ui.interact(stroke_r.translate(vec2(0.0, 0.0)), ui.id().with("proxy_stroke"), Sense::click()).on_hover_ui(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Stroke (X)"));
     });
@@ -387,7 +404,82 @@ fn tool_button(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::
         ui.painter().rect_filled(egui::Rect::from_center_size(r.center(), egui::vec2(28.0, 20.0)), 2.0, t.hover);
     }
     icons::paint(ui.painter(), egui::Rect::from_center_size(r.center(), egui::vec2(17.0, 17.0)), icon, if active { t.text_strong } else { t.icon });
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
     resp.on_hover_ui(|ui| {
         crate::rtl::label(ui, tip);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{pos2, vec2};
+    use egui_kittest::kittest::Queryable;
+
+    use crate::test_window::{self, wheel};
+
+    /// The last tool group's button and the Fill proxy, near the bottom of the panel.
+    const LAST_TOOL: &str = "Zoom Tool (Z)";
+    const FILL: &str = "Fill (X)";
+    /// Status bar height: the Tools panel ends above it.
+    const STATUS_H: f32 = 17.0;
+
+    fn app(double: bool) -> crate::DesignApp {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.tools_double_column = double;
+        app
+    }
+
+    fn column_width(cols: f32) -> f32 {
+        8.0 + super::BTN * cols + 4.0 * (cols - 1.0) + 8.0
+    }
+
+    fn rect(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> egui::Rect {
+        h.get_by_label(label).rect()
+    }
+
+    #[test]
+    fn a_short_window_reaches_every_tool() {
+        for double in [false, true] {
+            let (w, ht) = (1000.0, 500.0);
+            let mut h = test_window::open(app(double), vec2(w, ht));
+            let panel = test_window::panel_rect(&h, "tools");
+            wheel(&mut h, panel.center(), vec2(0.0, -2000.0));
+            let visible = egui::Rect::from_min_max(pos2(0.0, panel.min.y), pos2(w, ht - STATUS_H));
+            for label in [LAST_TOOL, FILL] {
+                let r = rect(&h, label);
+                assert!(visible.contains_rect(r), "double column {double}: {label} at {r:?} is outside {visible:?}");
+            }
+            assert_eq!(h.state().app.ui.tools_double_column, double, "the preference is the user's");
+        }
+    }
+
+    #[test]
+    fn tools_take_two_columns_while_one_does_not_fit() {
+        let (w, ht) = (1086.0, 612.0);
+        let mut h = test_window::open(app(false), vec2(w, ht));
+        assert_eq!(test_window::panel_rect(&h, "tools").width(), column_width(2.0));
+        let visible = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(w, ht - STATUS_H));
+        for label in [LAST_TOOL, FILL] {
+            let r = rect(&h, label);
+            assert!(visible.contains_rect(r), "{label} at {r:?} is outside {visible:?} without scrolling");
+        }
+        assert!(!h.state().app.ui.tools_double_column);
+        // A taller window brings the single column back.
+        h.set_size(vec2(1400.0, 900.0));
+        h.run_steps(4);
+        assert_eq!(test_window::panel_rect(&h, "tools").width(), column_width(1.0));
+        assert!(!h.state().app.ui.tools_double_column);
+    }
+
+    #[test]
+    fn a_tall_window_keeps_one_column_and_does_not_scroll() {
+        let mut h = test_window::open(app(false), vec2(1400.0, 900.0));
+        let panel = test_window::panel_rect(&h, "tools");
+        assert_eq!(panel.width(), column_width(1.0));
+        let before = (rect(&h, LAST_TOOL), rect(&h, FILL));
+        assert!(panel.contains_rect(before.0) && panel.contains_rect(before.1), "{before:?} outside {panel:?}");
+        wheel(&mut h, panel.center(), vec2(0.0, -2000.0));
+        assert_eq!((rect(&h, LAST_TOOL), rect(&h, FILL)), before);
+    }
 }

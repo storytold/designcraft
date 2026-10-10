@@ -5,44 +5,71 @@
 //! `--control <port>` (or `DESIGNCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server:
 //! `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
 //! See `designcraft_ui_egui::control` for the methods.
+//!
+//! The graphics backend (DirectX 12, Vulkan, Metal or OpenGL) is chosen in `gpu` before the window
+//! exists, with a fallback for a driver that crashes at start-up; `WGPU_BACKEND` overrides it.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod control_server;
+mod gpu;
+mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Services};
 
-struct App(DesignApp, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>);
+struct App {
+    app: DesignApp,
+    #[cfg(target_os = "macos")]
+    menu: Option<native_menu::NativeMenu>,
+    /// The graphics start in progress (`gpu.json`) until a frame has been presented; see `gpu`.
+    startup: Option<gpu::Startup>,
+    /// Frames begun so far.
+    frames: u32,
+}
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The third call: two frames went through `ui`, so the first was presented and the driver
+        // survived it (a fault at the first present is what the fallback in `gpu` is for).
+        if self.frames >= 2
+            && let Some(s) = self.startup.as_mut()
+        {
+            s.presented();
+            self.startup = None;
+        }
+        self.frames = self.frames.saturating_add(1);
         #[cfg(target_os = "macos")]
         {
-            if self.1.is_none() && std::env::var_os("DESIGNCRAFT_NO_NATIVE_MENU").is_none() {
-                self.1 = Some(native_menu::NativeMenu::install(&mut self.0));
+            if self.menu.is_none() && std::env::var_os("DESIGNCRAFT_NO_NATIVE_MENU").is_none() {
+                self.menu = Some(native_menu::NativeMenu::install(&mut self.app));
             }
-            if let Some(m) = &mut self.1 {
-                m.poll(&mut self.0);
+            if let Some(m) = &mut self.menu {
+                m.poll(&mut self.app, ctx);
             }
         }
-        self.0.logic(ctx);
+        self.app.logic(ctx);
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.0.raw_input_hook(raw);
+        self.app.raw_input_hook(raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.0.ui(ui);
+        self.app.ui(ui);
     }
     fn on_exit(&mut self) {
-        save_prefs(&self.0);
+        // A normal exit before the third frame is not a crash.
+        if let Some(s) = self.startup.as_mut() {
+            s.presented();
+        }
+        save_prefs(&self.app);
     }
 }
 
-fn prefs_path() -> Option<std::path::PathBuf> {
-    let base = if cfg!(target_os = "macos") {
+/// The per-user settings directory: `ui.json`, `prefs.json`, `gpu.json` and `logs/` live here.
+fn config_dir() -> Option<std::path::PathBuf> {
+    if cfg!(target_os = "macos") {
         std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support/DesignCraft"))
     } else if cfg!(windows) {
         std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("DesignCraft"))
@@ -51,12 +78,20 @@ fn prefs_path() -> Option<std::path::PathBuf> {
             .map(std::path::PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
             .map(|c| c.join("designcraft"))
-    };
-    base.map(|b| b.join("ui.json"))
+    }
+}
+
+/// `DESIGNCRAFT_NO_PREFS`: read and write nothing in the settings directory (tests, demos).
+fn no_prefs() -> bool {
+    std::env::var_os("DESIGNCRAFT_NO_PREFS").is_some()
+}
+
+fn prefs_path() -> Option<std::path::PathBuf> {
+    config_dir().map(|b| b.join("ui.json"))
 }
 
 fn load_prefs(app: &mut DesignApp) {
-    if std::env::var_os("DESIGNCRAFT_NO_PREFS").is_some() {
+    if no_prefs() {
         return;
     }
     if let Some(p) = prefs_path()
@@ -75,7 +110,7 @@ fn load_prefs(app: &mut DesignApp) {
 }
 
 fn save_prefs(app: &DesignApp) {
-    if std::env::var_os("DESIGNCRAFT_NO_PREFS").is_some() {
+    if no_prefs() {
         return;
     }
     if let Some(p) = prefs_path() {
@@ -182,20 +217,43 @@ fn app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
 }
 
+/// The control port from `--control <port>` or `DESIGNCRAFT_CONTROL_PORT` (`source`); a value that
+/// is not a port is logged and ignored instead of silently starting no control channel.
+fn control_port_from(source: &str, value: Option<String>) -> Option<u16> {
+    let value = value?;
+    let port = value.trim().parse().ok();
+    if port.is_none() {
+        log::warn!("{source}: {value:?} is not a port number; the control channel is off");
+    }
+    port
+}
+
 fn main() -> eframe::Result {
-    let mut control_port: Option<u16> = std::env::var("DESIGNCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
+    // First, so every start-up record (and the engine's panic hook, installed with the first
+    // Session) is captured; see `logging`.
+    let logger = logging::install();
+    let mut control_port = control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok());
     let mut files = Vec::new();
     let mut sample = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
+            "--control" => control_port = control_port_from("--control", args.next()),
             "--sample" => sample = true,
             "--version" => {
                 println!("designcraft {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             _ => files.push(a),
+        }
+    }
+    // The log file lives under the settings directory; opened after the arguments, so `--version`
+    // leaves no file behind. Records logged until now are written to it first.
+    if let (Some(logger), Some(dir)) = (logger, config_dir()) {
+        match logger.attach_dir(&dir.join("logs")) {
+            Ok(path) => log::info!("DesignCraft {}, log file {}", env!("CARGO_PKG_VERSION"), path.display()),
+            // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
+            Err(e) => log::warn!("no log file: {e}"),
         }
     }
     let mut options = eframe::NativeOptions {
@@ -213,6 +271,14 @@ fn main() -> eframe::Result {
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
+    // The graphics backend, decided before the window exists: a driver that faults takes the
+    // process down before any Rust code can catch it (see `gpu`).
+    let gpu = gpu::Startup::begin(if no_prefs() { None } else { config_dir().map(|d| d.join(gpu::FILE)) }, env!("CARGO_PKG_VERSION"));
+    if let Some(s) = &gpu
+        && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
+    {
+        create.instance_descriptor.backends = s.backends();
+    }
     // winit has no file drag-and-drop on Wayland (only on X11), so dropping images from the file
     // manager showed a "no" cursor. Run through XWayland when it's there; DESIGNCRAFT_WAYLAND=1
     // keeps the native Wayland backend.
@@ -227,11 +293,24 @@ fn main() -> eframe::Result {
         "DesignCraft",
         options,
         Box::new(move |cc| {
+            let mut gpu = gpu;
+            if let Some(rs) = &cc.wgpu_render_state {
+                // What a bug report needs to know about the graphics driver.
+                let info = rs.adapter.get_info();
+                log::info!("graphics: {} on {:?} ({:?}; driver {} {})", info.name, info.backend, info.device_type, info.driver, info.driver_info);
+                if let (Some(s), Some(backend)) = (gpu.as_mut(), gpu::Backend::of(info.backend)) {
+                    s.started_with(backend);
+                }
+            }
             let mut session = Session::new();
             // Crash recovery: reopen what a previous run left unsaved, then keep it current.
             session.recovery_dir = designcraft_engine::recovery::default_dir();
             let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
             let mut app = DesignApp::new(session, services());
+            if let Some(line) = gpu.as_ref().and_then(gpu::Startup::status_line) {
+                app.status(line);
+            }
+            // Recovered documents matter more than the graphics note; both are in the log.
             if let Some(n) = recovered.as_ref().and_then(|r| r["opened"].as_array()).map(Vec::len).filter(|n| *n > 0) {
                 app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
             }
@@ -245,21 +324,33 @@ fn main() -> eframe::Result {
                 let _ = app.run("file.newSample", serde_json::json!({}));
             }
             for f in files {
-                if let Err(e) = app.run("file.open", serde_json::json!({"path": f})) {
+                if let Err(e) = app.open_file("file.open", serde_json::json!({"path": f})) {
                     eprintln!("designcraft: {f}: {e}");
                 }
             }
-            Ok(Box::new(App(
+            Ok(Box::new(App {
                 app,
                 #[cfg(target_os = "macos")]
-                None,
-            )))
+                menu: None,
+                startup: gpu,
+                frames: 0,
+            }))
         }),
     )
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn control_port_values_that_are_not_ports_are_ignored() {
+        assert_eq!(super::control_port_from("--control", Some("7979".into())), Some(7979));
+        assert_eq!(super::control_port_from("--control", Some(" 7979 ".into())), Some(7979));
+        assert_eq!(super::control_port_from("--control", None), None);
+        for bad in ["", "abc", "-1", "65536", "99999999999999999999"] {
+            assert_eq!(super::control_port_from("--control", Some(bad.into())), None, "{bad:?}");
+        }
+    }
+
     #[test]
     fn data_merge_open_dialog_lists_table_extensions() {
         let filters = super::open_filters("dataMerge");
