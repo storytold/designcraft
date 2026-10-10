@@ -1225,6 +1225,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Object Layer Options…", "خيارات طبقات الكائن…"),
     ("Object Layers", "طبقات الكائن"),
     ("Object Liquid Settings", "إعدادات الكائن المرن"),
+    ("Open Affinity Document", "فتح مستند Affinity"),
     ("Open Book", "فتح كتاب"),
     ("Open Bytes", "فتح بيانات بايت"),
     ("Open IDML", "فتح IDML"),

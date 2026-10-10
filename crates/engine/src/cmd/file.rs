@@ -20,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
             "{path} — .designcraft or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON or an IDML package", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package or an Affinity document", always, file_open_bytes),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
@@ -162,6 +162,9 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
         if path.to_ascii_lowercase().ends_with(".idml") {
             return super::interchange::open_idml(s, p);
         }
+        if super::interchange::is_affinity_path(path) {
+            return super::interchange::open_affinity(s, p);
+        }
         let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
         let mut d = from_bytes(&bytes)?;
         super::interchange::resolve_packaged_links(&mut d, std::path::Path::new(path).parent());
@@ -221,6 +224,9 @@ fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     // IDML packages are recognised by their stored `mimetype` first entry.
     if designcraft_idml::is_idml(&b) {
         return super::interchange::open_idml(s, p);
+    }
+    if designcraft_affinity::is_affinity(&b) {
+        return super::interchange::open_affinity(s, p);
     }
     let mut d = from_bytes(&b)?;
     super::datamerge::resolve_sources_on_open(&mut d, None);

@@ -21,6 +21,7 @@ designcraft-images = { path = "crates/images" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }
+designcraft-affinity = { path = "crates/affinity" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-textimport = { path = "crates/textimport" }
 designcraft-format = { path = "crates/format" }
@@ -63,6 +64,10 @@ krilla = { version = "0.8", features = ["pdf"] }
 hayro = "0.7"
 quick-xml = "0.38"
 zip = { version = "3", default-features = false, features = ["deflate"] }
+# Affinity documents (designcraft-affinity): entry checksums, zlib and zstd entries.
+crc32fast = "1.5"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 # ui
 egui = "0.36"

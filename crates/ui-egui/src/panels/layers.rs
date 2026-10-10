@@ -1,6 +1,6 @@
 //! Layers panel: expandable layer rows listing the current spread's objects (`<rectangle>`,
-//! `<first words…>` for text frames), with eye / lock columns per layer and per object and a
-//! selection square in the layer colour.
+//! `<first words…>` for text frames, `<table>`), groups expandable in turn, with eye / lock columns
+//! per layer and per object and a selection square in the layer colour.
 
 use designcraft_doc::{Content, Document, Item, ItemId};
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
@@ -39,6 +39,9 @@ pub fn item_label(doc: &Document, it: &Item) -> String {
             let short: String = short.chars().take(24).collect();
             let ell = if short.chars().count() < words.chars().count() { "…" } else { "" };
             return format!("<{short}{ell}>");
+        }
+        if !story.tables.is_empty() {
+            return "<table>".to_string();
         }
     }
     it.default_label().to_string()
@@ -102,6 +105,70 @@ fn selection_square(
         crate::rtl::label(ui, crate::i18n::tr(language, "Select"));
     })
     .clicked()
+}
+
+/// Indent per group level.
+const INDENT: f32 = 12.0;
+
+/// Whether `it` or anything inside it is selected.
+fn holds_selection(it: &Item, selected: &[ItemId]) -> bool {
+    selected.contains(&it.id) || it.children().iter().any(|c| holds_selection(c, selected))
+}
+
+/// One object's row and, for an open group, its children's rows (topmost first) below it.
+#[allow(clippy::too_many_arguments)]
+fn item_rows(app: &mut DesignApp, ui: &mut Ui, doc: &Document, it: &Item, depth: usize, lc: Color32, layer_visible: bool, selected: &[ItemId]) {
+    let t = Tokens::get(ui.ctx());
+    let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    let is_sel = selected.contains(&it.id);
+    if resp.hovered() {
+        ui.painter().rect_filled(row, 0.0, t.hover);
+    }
+    let (eye, lock) = eye_lock(ui, &app.ui.language, row, !it.hidden, it.locked, !layer_visible, ("item", it.id.0));
+    let indent = depth as f32 * INDENT;
+    // Groups (and frames holding pasted-in objects) open like layers.
+    let kids = it.children();
+    let open_id = egui::Id::new(("group_open", it.id.0));
+    let mut tri_clicked = false;
+    let open = !kids.is_empty() && {
+        // Closed by default, unless something inside is selected.
+        let open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or_else(|| kids.iter().any(|c| holds_selection(c, selected)));
+        let tri = Rect::from_min_size(row.min + vec2(2.0 * COL_W + 14.0 + indent, 0.0), vec2(14.0, ROW_H));
+        let c = tri.center();
+        let pts = if open {
+            vec![c + vec2(-3.5, -1.5), c + vec2(3.5, -1.5), c + vec2(0.0, 2.5)]
+        } else {
+            vec![c + vec2(-1.5, -3.5), c + vec2(2.5, 0.0), c + vec2(-1.5, 3.5)]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(pts, t.icon, Stroke::NONE));
+        tri_clicked = ui.interact(tri, ui.id().with(("gtri", it.id.0)), Sense::click()).clicked();
+        open
+    };
+    let name = item_label(doc, it);
+    let clip = Rect::from_min_max(row.min, pos2(row.max.x - 26.0, row.max.y));
+    ui.painter().with_clip_rect(clip).text(
+        row.min + vec2(2.0 * COL_W + 30.0 + indent, ROW_H / 2.0),
+        egui::Align2::LEFT_CENTER,
+        &name,
+        egui::FontId::proportional(11.0),
+        if it.hidden { t.text_dim } else { t.text },
+    );
+    let sq = selection_square(ui, &app.ui.language, row, lc, is_sel, true, ("item", it.id.0));
+    if eye {
+        let _ = app.run("object.setFlags", json!({"ids": [it.id.0], "hidden": !it.hidden}));
+    } else if lock {
+        let _ = app.run("object.setFlags", json!({"ids": [it.id.0], "locked": !it.locked}));
+    } else if tri_clicked {
+        ui.data_mut(|d| d.insert_temp(open_id, !open));
+    } else if sq || resp.clicked() {
+        let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+        let _ = app.run("selection.set", json!({"ids": [it.id.0], "add": add}));
+    }
+    if open && depth < 64 {
+        for c in kids.iter().rev() {
+            item_rows(app, ui, doc, c, depth + 1, lc, layer_visible, selected);
+        }
+    }
 }
 
 pub fn show(app: &mut DesignApp, ui: &mut Ui) {
@@ -200,30 +267,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             continue;
         }
         for it in spread_items.iter().filter(|i| i.layer == l.id) {
-            let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
-            let is_sel = selected.contains(&it.id);
-            if resp.hovered() {
-                ui.painter().rect_filled(row, 0.0, t.hover);
-            }
-            let (eye, lock) = eye_lock(ui, &app.ui.language, row, !it.hidden, it.locked, !l.visible, ("item", it.id.0));
-            let name = item_label(&doc, it);
-            let clip = Rect::from_min_max(row.min, pos2(row.max.x - 26.0, row.max.y));
-            ui.painter().with_clip_rect(clip).text(
-                row.min + vec2(2.0 * COL_W + 30.0, ROW_H / 2.0),
-                egui::Align2::LEFT_CENTER,
-                &name,
-                egui::FontId::proportional(11.0),
-                if it.hidden { t.text_dim } else { t.text },
-            );
-            let sq = selection_square(ui, &app.ui.language, row, lc, is_sel, true, ("item", it.id.0));
-            if eye {
-                let _ = app.run("object.setFlags", json!({"ids": [it.id.0], "hidden": !it.hidden}));
-            } else if lock {
-                let _ = app.run("object.setFlags", json!({"ids": [it.id.0], "locked": !it.locked}));
-            } else if sq || resp.clicked() {
-                let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-                let _ = app.run("selection.set", json!({"ids": [it.id.0], "add": add}));
-            }
+            item_rows(app, ui, &doc, it, 0, lc, l.visible, &selected);
         }
     }
     ui.add_space(6.0);
@@ -266,5 +310,15 @@ mod tests {
         assert_eq!(item_label(doc, tf), "<Every page begins as an…>");
         let rr = doc.item(ItemId(rect["id"].as_u64().unwrap())).unwrap();
         assert_eq!(item_label(doc, rr), "<rectangle>");
+    }
+
+    #[test]
+    fn a_frame_holding_just_a_table_is_labelled_table() {
+        let mut s = designcraft_engine::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(item_label(doc, doc.item(ItemId(r["id"].as_u64().unwrap())).unwrap()), "<table>");
     }
 }

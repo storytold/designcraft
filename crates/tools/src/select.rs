@@ -412,9 +412,11 @@ impl Tool for SelectionTool {
                     self.drag = Drag::Pending { start: p, hit: true };
                     return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
                 }
-                match cx.hit(p) {
-                    Some((sr, id)) => {
-                        let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
+                match cx.hit_chain(p) {
+                    Some((sr, chain)) => {
+                        let Some(id) = (if self.direct { chain.last().copied() } else { pick_in_chain(cx, &chain) }) else {
+                            return vec![];
+                        };
                         let mut out = vec![];
                         if ev.mods.shift {
                             if cx.selection.contains(id) {
@@ -707,7 +709,9 @@ impl Tool for SelectionTool {
                 }
             }
             PointerKind::DoubleClick => {
-                if let Some((_, id)) = cx.hit(p)
+                let Some((_, chain)) = cx.hit_chain(p) else { return vec![] };
+                // A text frame, grouped or not, takes the caret (in a table: in the cell clicked).
+                if let Some(&id) = chain.last()
                     && cx.doc.item(id).is_some_and(|i| i.is_text_frame())
                 {
                     let (sr, sp) = cx.layout.spread_at(p).unwrap_or((SpreadRef::Doc(0), p));
@@ -717,7 +721,12 @@ impl Tool for SelectionTool {
                         Action::Exec("text.placeCaret".into(), json!({"frame": id.0, "point": [sp.x, sp.y]})),
                     ];
                 }
-                vec![]
+                // Otherwise one level into the group: the object under the pointer below the selected one.
+                let depth = chain.iter().rposition(|id| cx.selection.contains(*id)).map_or(0, |d| d + 1);
+                match chain.get(depth) {
+                    Some(id) => vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]}))],
+                    None => vec![],
+                }
             }
         }
     }
@@ -767,6 +776,26 @@ impl Tool for SelectionTool {
     fn busy(&self) -> bool {
         !matches!(self.drag, Drag::None)
     }
+}
+
+/// What a Selection tool click on `chain` (top-level item → innermost object) selects: a selected
+/// object in it, else its sibling of an object selected inside a group (staying at that level),
+/// else the top-level item.
+fn pick_in_chain(cx: &ToolContext, chain: &[ItemId]) -> Option<ItemId> {
+    for (k, id) in chain.iter().enumerate().rev() {
+        if cx.selection.contains(*id) {
+            return Some(*id);
+        }
+        let in_group = k
+            .checked_sub(1)
+            .and_then(|parent| chain.get(parent))
+            .and_then(|parent| cx.doc.item(*parent))
+            .is_some_and(|g| g.children().iter().any(|c| cx.selection.contains(c.id)));
+        if in_group {
+            return Some(*id);
+        }
+    }
+    chain.first().copied()
 }
 
 fn handle_cursor(h: usize) -> Cursor {

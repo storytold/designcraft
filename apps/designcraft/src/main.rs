@@ -151,9 +151,10 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "DesignCraft or IDML", extensions: &["designcraft", "idml"] },
+            OpenFilter { name: "DesignCraft, IDML or Affinity", extensions: &["designcraft", "idml", "afpub", "af", "afdesign", "afphoto"] },
             OpenFilter { name: "DesignCraft", extensions: &["designcraft"] },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
+            OpenFilter { name: "Affinity", extensions: &["afpub", "af", "afdesign", "afphoto"] },
         ],
     }
 }
@@ -311,5 +312,6 @@ mod tests {
         assert!(place.iter().any(|filter| filter.extensions.contains(&"png")));
         let documents = super::open_filters("");
         assert!(documents.iter().any(|filter| filter.extensions.contains(&"designcraft")));
+        assert!(documents.iter().any(|filter| filter.extensions.contains(&"afpub")), "Affinity documents open as documents");
     }
 }

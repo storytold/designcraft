@@ -1,4 +1,4 @@
-//! Interchange formats: IDML (InDesign Markup Language) import and export.
+//! Interchange formats: IDML (InDesign Markup Language) import and export, and Affinity import.
 
 use designcraft_doc::Document;
 use serde_json::{Value, json};
@@ -15,7 +15,48 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
             "{path | base64, name?} — opens an IDML package as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings}",
             always, open_idml),
+        cmd!(noundo "file.openAffinity", "Open Affinity Document", [], None,
+            "{path | base64, name?} — opens an Affinity document (.afpub, .af, .afdesign, .afphoto) as a new, unsaved document; what can't be imported is listed → {index, warnings}",
+            always, open_affinity),
     ]
+}
+
+/// File extensions of Affinity documents.
+pub const AFFINITY_EXTENSIONS: &[&str] = &["afpub", "af", "afdesign", "afphoto"];
+
+/// Is `path` named like an Affinity document?
+pub fn is_affinity_path(path: &str) -> bool {
+    std::path::Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| AFFINITY_EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+pub(crate) fn open_affinity(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "file.openAffinity";
+    let (bytes, name) = if let Some(b) = str_param(p, "base64") {
+        let name = str_param(p, "name").map(|n| match n.rsplit_once('.') {
+            Some((stem, ext)) if is_affinity_path(n) && !ext.is_empty() => stem.to_string(),
+            _ => n.to_string(),
+        });
+        (base64_decode(b), name)
+    } else if let Some(path) = str_param(p, "path") {
+        #[cfg(not(target_arch = "wasm32"))]
+        let b = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        #[cfg(target_arch = "wasm32")]
+        let b: Vec<u8> = Vec::new();
+        (b, std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()))
+    } else {
+        return Err(bad(ID, "missing `path` or `base64`"));
+    };
+    if !designcraft_affinity::is_affinity(&bytes) {
+        return Err(bad(ID, "not an Affinity document"));
+    }
+    let imported = designcraft_affinity::import(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut d = imported.document;
+    if let Some(n) = name {
+        d.title = n;
+    }
+    // Never save over the Affinity file: the document starts unsaved.
+    let i = s.add_document(DocState::new(d, None));
+    Ok(json!({"index": i, "warnings": imported.warnings}))
 }
 
 fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
@@ -254,5 +295,63 @@ mod tests {
         assert_eq!(asset.link.as_deref(), Some(oversized.as_str()));
         assert_eq!(*asset.data, png);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A one-page Affinity document with a 100 × 50 px rectangle at 72 dpi (synthetic).
+    fn affinity_doc() -> Vec<u8> {
+        use designcraft_affinity::synth::{self, F, Method, tag};
+        let page = F::Def(4, vec![tag(b"PagR")], vec![(tag(b"rctp"), F::F64s(vec![0.0, 0.0, 300.0, 400.0]))]);
+        let rect = F::Def(
+            10,
+            vec![tag(b"ShpN")],
+            vec![
+                (tag(b"ShpB"), F::F64s(vec![0.0, 0.0, 100.0, 50.0])),
+                (tag(b"Shpe"), F::Def(11, vec![tag(b"ShNR")], vec![])),
+                (tag(b"Desc"), F::Str("Box".into())),
+            ],
+        );
+        let spread = F::Def(
+            2,
+            vec![tag(b"Sprd")],
+            vec![(tag(b"SpMd"), F::Obj(tag(b"SpMd"), vec![(tag(b"PagR"), F::Shared(vec![page]))])), (tag(b"Chld"), F::Shared(vec![rect]))],
+        );
+        let data = synth::stream(&[(tag(b"DocR"), F::Def(1, vec![tag(b"DocN")], vec![(tag(b"Chld"), F::Shared(vec![spread]))]))]);
+        synth::container(&[("doc.dat", &data, Method::Zlib)], None)
+    }
+
+    #[test]
+    fn affinity_documents_open_as_new_unsaved_documents() -> Result<()> {
+        let bytes = affinity_doc();
+        let mut s = Session::new();
+        let r = s.execute("file.openBytes", &json!({"base64": base64_encode(&bytes), "name": "Sample.afpub"}))?;
+        assert!(r["warnings"].is_array(), "{r}");
+        let st = s.doc()?;
+        assert_eq!(st.doc.title, "Sample");
+        assert!(st.path.is_none(), "never saved over the Affinity file");
+        assert_eq!(st.doc.page_count(), 1);
+        assert_eq!((st.doc.settings.page_width, st.doc.settings.page_height), (300.0, 400.0));
+        let item = st.doc.spreads[0].items.first().ok_or_else(|| EngineError::Other("no item".into()))?;
+        assert_eq!(item.name, "Box");
+        assert_eq!(item.bounds(), kurbo::Rect::new(0.0, 0.0, 100.0, 50.0));
+
+        let dir = std::env::temp_dir().join(format!("designcraft-affinity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(e.to_string()))?;
+        let path = dir.join("Example.af");
+        std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+        s.execute("file.open", &json!({"path": path.to_string_lossy()}))?;
+        assert_eq!(s.doc()?.doc.title, "Example");
+        std::fs::remove_dir_all(dir).map_err(|e| EngineError::Other(e.to_string()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn damaged_affinity_documents_are_errors() {
+        let mut bytes = affinity_doc();
+        bytes.truncate(bytes.len() / 2);
+        let mut s = Session::new();
+        assert!(s.execute("file.openAffinity", &json!({"base64": base64_encode(&bytes)})).is_err());
+        assert!(s.execute("file.openAffinity", &json!({"base64": base64_encode(b"PK not affinity")})).is_err());
+        assert!(s.execute("file.openAffinity", &json!({})).is_err());
+        assert!(s.active().is_none(), "nothing half-open");
     }
 }

@@ -961,11 +961,11 @@ impl DesignApp {
     }
 }
 
-/// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft
-/// and IDML.
+/// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
+/// IDML and Affinity.
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    [".designcraft", ".idml"].iter().any(|ext| n.ends_with(ext))
+    [".designcraft", ".idml"].iter().any(|ext| n.ends_with(ext)) || designcraft_engine::cmd::interchange::is_affinity_path(&n)
 }
 
 pub fn now_ms() -> f64 {
