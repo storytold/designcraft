@@ -4,7 +4,7 @@ use designcraft_doc::{LAYER_COLORS, Layer, LayerId, Margins, SpreadId};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, ok, str_param};
-use crate::Result;
+use crate::{Result, Session};
 
 /// Each page's margin box, by spread and page id.
 fn margin_boxes(d: &designcraft_doc::Document) -> Vec<(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)> {
@@ -385,7 +385,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Numbering & Section Options…",
             ["Layout"],
             None,
-            "{page (1-based; starts a section there), startNumber?: n|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters, prefix?, includePrefix?, marker?, remove?: bool}",
+            "{page (1-based; starts a section there), startNumber?: n|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits, prefix? (up to 8 characters; no + or comma), includePrefix?, marker?, remove?: bool}",
             has_doc,
             |s, p| {
                 let page = p.get("page").and_then(Value::as_u64).ok_or_else(|| bad("layout.section", "missing page"))? as usize;
@@ -394,6 +394,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("layout.section", format!("no page {page}")));
                 }
                 let start = page - 1;
+                if let Some(prefix) = p.get("prefix").and_then(Value::as_str)
+                    && (prefix.chars().count() > 8 || prefix.contains(['+', ',']))
+                {
+                    return Err(bad("layout.section", "section prefix: up to 8 characters, without + or ,"));
+                }
                 let p = p.clone();
                 s.edit(|d, _| {
                     d.sections.retain(|x| x.start != start || start == 0);
@@ -414,7 +419,11 @@ pub fn specs() -> Vec<CommandSpec> {
                         None => {}
                     }
                     if let Some(v) = p.get("style") {
-                        sec.style = serde_json::from_value(v.clone()).map_err(|e| bad("layout.section", e.to_string()))?;
+                        sec.style = match serde_json::from_value(v.clone()) {
+                            Ok(designcraft_doc::NumberStyle::Symbols) => return Err(bad("layout.section", "symbols don't number pages")),
+                            Ok(style) => style,
+                            Err(e) => return Err(bad("layout.section", e.to_string())),
+                        };
                     }
                     if let Some(v) = p.get("prefix").and_then(Value::as_str) {
                         sec.prefix = v.into();
@@ -430,6 +439,60 @@ pub fn specs() -> Vec<CommandSpec> {
                     d.sections.sort_by_key(|x| x.start);
                     Ok(json!({"names": (0..d.page_count()).map(|i| d.page_name(i)).collect::<Vec<_>>()}))
                 })
+            }
+        ),
+        cmd!(
+            "layout.chapterNumbering",
+            "Document Chapter Numbering",
+            [],
+            None,
+            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits, start?: n (Start Chapter Numbering at), source?: automatic|userDefined|sameAsPrevious} → {chapterNumber, label, style, source, book: the open book holding the document, or null}; no parameters reports the setting",
+            has_doc,
+            |s, p| {
+                if p.as_object().is_none_or(|o| o.is_empty()) {
+                    return chapter_numbering(s);
+                }
+                let style = match p.get("style") {
+                    Some(v) => match serde_json::from_value::<designcraft_doc::NumberStyle>(v.clone()) {
+                        Ok(designcraft_doc::NumberStyle::Symbols) | Err(_) => {
+                            return Err(bad("layout.chapterNumbering", format!("unknown chapter style {v}")));
+                        }
+                        Ok(style) => Some(style),
+                    },
+                    None => None,
+                };
+                let mut source = match p.get("source") {
+                    Some(v) => Some(
+                        serde_json::from_value::<designcraft_doc::ChapterSource>(v.clone())
+                            .map_err(|_| bad("layout.chapterNumbering", format!("unknown chapter number source {v}")))?,
+                    ),
+                    None => None,
+                };
+                let start = match p.get("start") {
+                    Some(v) => Some(
+                        v.as_u64()
+                            .filter(|n| (1..=MAX_CHAPTER).contains(n))
+                            .ok_or_else(|| bad("layout.chapterNumbering", format!("start: 1 to {MAX_CHAPTER}")))? as u32,
+                    ),
+                    None => None,
+                };
+                // A start number alone means Start Chapter Numbering at.
+                if start.is_some() && source.is_none() {
+                    source = Some(designcraft_doc::ChapterSource::UserDefined);
+                }
+                s.edit(|d, _| {
+                    if let Some(style) = style {
+                        d.settings.chapter_style = style;
+                    }
+                    if let Some(source) = source {
+                        d.settings.chapter_source = source;
+                    }
+                    if let Some(n) = start {
+                        d.settings.chapter_number = n;
+                    }
+                    ok()
+                })?;
+                chapter_numbering(s)
             }
         ),
         cmd!("layer.move", "Move Layer", [], None, "{id, to: index (0 = top/frontmost)}", has_doc, |s, p| {
@@ -708,9 +771,46 @@ fn document_setup(d: &designcraft_doc::Document) -> Value {
         "binding": if st.right_to_left_binding { "rightToLeft" } else { "leftToRight" }, "intent": st.intent, "bleed": st.bleed, "slug": st.slug})
 }
 
+/// The largest chapter number (as for page numbers).
+const MAX_CHAPTER: u64 = 99_999;
+
+/// The active document's chapter numbering, and the open book that holds it.
+fn chapter_numbering(s: &Session) -> Result<Value> {
+    let st = s.doc()?;
+    let set = &st.doc.settings;
+    let book = s
+        .book
+        .as_ref()
+        .filter(|b| st.path.as_deref().is_some_and(|p| b.documents.iter().any(|d| std::path::Path::new(d) == std::path::Path::new(p))))
+        .map(|b| std::path::Path::new(&b.path).file_stem().map_or_else(|| b.path.clone(), |n| n.to_string_lossy().to_string()));
+    Ok(
+        json!({"chapterNumber": set.chapter_number.max(1), "label": st.doc.chapter_label(), "style": set.chapter_style, "source": set.chapter_source, "book": book}),
+    )
+}
+
 #[cfg(test)]
 mod setup_tests {
     use serde_json::json;
+
+    #[test]
+    fn chapter_numbering_sets_style_and_start() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("layout.chapterNumbering", &json!({})).unwrap();
+        assert_eq!(r, json!({"chapterNumber": 1, "label": "1", "style": "arabic", "source": "automatic", "book": null}));
+        let r = s.execute("layout.chapterNumbering", &json!({"start": 4, "style": "upperRoman"})).unwrap();
+        assert_eq!((&r["label"], &r["source"]), (&json!("IV"), &json!("userDefined")), "a start number means Start Chapter Numbering at");
+        s.execute("variables.define", &json!({"name": "Chapter", "type": "chapterNumber"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let chapter = d.variable("Chapter").unwrap();
+        assert_eq!(d.variable_value(chapter, Some(0)).as_deref(), Some("IV"), "the Chapter Number variable uses the style");
+        for bad in [json!({"style": "symbols"}), json!({"start": 0}), json!({"start": 100_000}), json!({"source": "nextBook"})] {
+            assert!(s.execute("layout.chapterNumbering", &bad).is_err(), "{bad}");
+        }
+        s.execute("layout.chapterNumbering", &json!({"source": "sameAsPrevious"})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("layout.chapterNumbering", &json!({})).unwrap()["source"], "userDefined", "undoable");
+    }
 
     #[test]
     fn document_setup_pages_start_bleed_slug() {
@@ -894,6 +994,20 @@ mod page_numbering_view_tests {
         assert_eq!((0..4).map(|i| s.page_label(i)).collect::<Vec<_>>(), ["1", "2", "3", "4"]);
         assert_eq!(s.resolve_page("1"), Some(0));
         assert_eq!(s.resolve_page("9"), None);
+    }
+
+    #[test]
+    fn section_prefixes_are_short_and_avoid_plus_and_comma() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        for prefix in ["A-", "Appendix", "§ 1"] {
+            s.execute("layout.section", &json!({"page": 2, "prefix": prefix})).unwrap();
+        }
+        for prefix in ["Appendix1", "A+", "1,2"] {
+            assert!(s.execute("layout.section", &json!({"page": 2, "prefix": prefix})).is_err(), "{prefix}");
+        }
+        assert!(s.execute("layout.section", &json!({"page": 2, "style": "symbols"})).is_err());
+        assert_eq!(s.doc().unwrap().doc.sections.iter().find(|x| x.start == 1).unwrap().prefix, "§ 1", "a refused prefix changes nothing");
     }
 }
 

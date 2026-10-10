@@ -4105,6 +4105,13 @@ mod tests {
     }
 
     #[test]
+    fn numbering_commands_document_their_fields() {
+        let names = |id: &str| command_fields(designcraft_engine::find_command(id).unwrap().params).into_iter().map(|f| f.key).collect::<Vec<_>>();
+        assert_eq!(names("layout.section"), ["page", "startNumber", "style", "prefix", "includePrefix", "marker", "remove"]);
+        assert_eq!(names("layout.chapterNumbering"), ["style", "start", "source"]);
+    }
+
+    #[test]
     fn generic_command_preserves_array_geometry() {
         let mut app = command_app("file.new", json!({}));
         confirm(&mut app).unwrap();
