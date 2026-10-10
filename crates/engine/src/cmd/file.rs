@@ -100,7 +100,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .designcraft: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .designcraft: that page's objects as a group)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
             has_doc,
             file_place
         ),
@@ -327,6 +327,9 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         None => None,
     };
     let target_frame = super::id_param(p, "frame").or_else(|| {
+        if ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some()) {
+            return None;
+        }
         let st = s.active()?;
         st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
     });
@@ -660,6 +663,137 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
     {
         let _ = (s, path);
         Err(EngineError::Other("revert isn't available on the web".into()))
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod image_place_tests {
+    use designcraft_doc::{Content, ItemId};
+    use designcraft_geom::Rect;
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    fn image_file() -> std::io::Result<tempfile::NamedTempFile> {
+        let file = tempfile::Builder::new().suffix(".png").tempfile()?;
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: [30, 90, 180, 255].repeat(800) }.to_png();
+        std::fs::write(file.path(), png)?;
+        Ok(file)
+    }
+
+    #[test]
+    fn consecutive_path_placements_create_distinct_graphics() {
+        let image = image_file().unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({"pages": 3, "facingPages": false})).unwrap();
+        let mut placements = Vec::new();
+        let mut originals = Vec::new();
+
+        for (spread, x, y) in [(0, 0.0, 0.0), (1, 70.0, 90.0), (2, 150.0, 210.0)] {
+            let placed = session.execute("file.place", &json!({"path": image.path(), "spread": spread, "x": x, "y": y})).unwrap();
+            let id = ItemId(placed["id"].as_u64().unwrap());
+            assert!(
+                placements.iter().all(|previous: &Value| previous["id"] != placed["id"]),
+                "each explicit placement needs a distinct frame: {placed}"
+            );
+            let document = &session.doc().unwrap().doc;
+            let item = document.item(id).unwrap();
+            assert_eq!(item.bounds(), Rect::new(x, y, x + 40.0, y + 20.0));
+            assert!(document.spreads[spread].items.iter().any(|item| item.id == id));
+            originals.push(serde_json::to_value(item).unwrap());
+            placements.push(placed);
+        }
+
+        let document = &session.doc().unwrap().doc;
+        assert_eq!(document.spreads.iter().flat_map(|spread| &spread.items).filter(|item| matches!(item.content, Content::Graphic(_))).count(), 3);
+        assert_eq!(document.assets.len(), 3);
+        for (placed, original) in placements.iter().zip(originals) {
+            assert_eq!(serde_json::to_value(document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap()).unwrap(), original);
+        }
+        let links = session.execute("links.list", &json!({})).unwrap();
+        assert_eq!(links.as_array().unwrap().len(), 3);
+        for placed in placements {
+            let row = links.as_array().unwrap().iter().find(|row| row["asset"] == placed["asset"]).unwrap();
+            assert_eq!(row["path"], json!(image.path()));
+            assert_eq!(row["uses"].as_array().unwrap().len(), 1);
+            assert_eq!(row["uses"][0]["id"], placed["id"]);
+        }
+    }
+
+    #[test]
+    fn individual_placement_parameters_bypass_selected_frames() {
+        let image = image_file().unwrap();
+        for graphic in [false, true] {
+            for (key, value, expected) in [
+                ("x", 0, Rect::new(0.0, 36.0, 40.0, 56.0)),
+                ("y", 0, Rect::new(36.0, 0.0, 76.0, 20.0)),
+                ("spread", 0, Rect::new(36.0, 36.0, 76.0, 56.0)),
+                ("width", 0, Rect::new(36.0, 36.0, 36.0, 36.0)),
+                ("width", 80, Rect::new(36.0, 36.0, 116.0, 76.0)),
+            ] {
+                let mut session = Session::new();
+                session.execute("file.new", &json!({})).unwrap();
+                let selected = session.execute("frame.create", &json!({"rect": [100, 120, 200, 220]})).unwrap();
+                if graphic {
+                    session.execute("file.place", &json!({"path": image.path()})).unwrap();
+                }
+                let id = ItemId(selected["id"].as_u64().unwrap());
+                let original = serde_json::to_value(session.doc().unwrap().doc.item(id).unwrap()).unwrap();
+                let mut params = json!({"path": image.path()});
+                params[key] = json!(value);
+
+                let placed = session.execute("file.place", &params).unwrap();
+
+                assert_ne!(placed["id"], selected["id"], "{key}={value}, graphic={graphic}");
+                let document = &session.doc().unwrap().doc;
+                assert_eq!(serde_json::to_value(document.item(id).unwrap()).unwrap(), original);
+                assert_eq!(document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap().bounds(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_frame_wins_over_placement_and_selection() {
+        let image = image_file().unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let target = session.execute("frame.create", &json!({"rect": [100, 120, 200, 220]})).unwrap();
+        let selected = session.execute("frame.create", &json!({"rect": [300, 320, 400, 420]})).unwrap();
+
+        let placed =
+            session.execute("file.place", &json!({"path": image.path(), "frame": target["id"], "x": 0, "y": 0, "spread": 99, "width": 0})).unwrap();
+
+        assert_eq!(placed["id"], target["id"]);
+        let document = &session.doc().unwrap().doc;
+        let item = document.item(ItemId(target["id"].as_u64().unwrap())).unwrap();
+        assert_eq!(item.bounds(), Rect::new(100.0, 120.0, 200.0, 220.0));
+        assert!(matches!(item.content, Content::Graphic(_)));
+        assert!(matches!(document.item(ItemId(selected["id"].as_u64().unwrap())).unwrap().content, Content::Unassigned));
+        assert_eq!(document.spreads[0].items.len(), 2);
+    }
+
+    #[test]
+    fn implicit_placement_fills_empty_and_replaces_graphic_selection() {
+        let image = image_file().unwrap();
+        for graphic in [false, true] {
+            let mut session = Session::new();
+            session.execute("file.new", &json!({})).unwrap();
+            let selected = session.execute("frame.create", &json!({"rect": [100, 120, 200, 220]})).unwrap();
+            let previous = graphic.then(|| session.execute("file.place", &json!({"path": image.path()})).unwrap());
+
+            let placed = session.execute("file.place", &json!({"path": image.path()})).unwrap();
+
+            assert_eq!(placed["id"], selected["id"]);
+            if let Some(previous) = previous {
+                assert_ne!(placed["asset"], previous["asset"]);
+            }
+            let document = &session.doc().unwrap().doc;
+            let item = document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap();
+            assert_eq!(item.bounds(), Rect::new(100.0, 120.0, 200.0, 220.0));
+            let Content::Graphic(content) = &item.content else { panic!("placed frame must be graphic") };
+            assert_eq!(json!(content.asset.0), placed["asset"]);
+            assert_eq!(document.spreads[0].items.len(), 1);
+        }
     }
 }
 
