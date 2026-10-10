@@ -356,6 +356,8 @@ impl<'r> Importer<'r> {
                 self.layer_ids.insert(s.to_string(), id);
             }
         }
+        // IDML lists layers back to front; `Document::layers` is front to back.
+        self.layers.reverse();
         if self.layers.is_empty() {
             let id = LayerId(self.alloc());
             self.layers.push(Layer {
@@ -686,6 +688,15 @@ impl<'r> Importer<'r> {
     }
 
     /// A swatch reference (Self id) → our swatch name; unnamed colours become value-named swatches.
+    /// A `TextFramePreference`, with its column rule colour resolved to a swatch.
+    fn frame_options(&mut self, e: &El) -> TextFrameOptions {
+        let mut o = text_frame_options(e);
+        if let Some(r) = e.get("ColumnRuleStrokeColor") {
+            o.column_rule_color = self.swatch_ref(r);
+        }
+        o
+    }
+
     fn swatch_ref(&mut self, r: &str) -> String {
         if let Some(n) = self.swatch_names.get(r) {
             return n.clone();
@@ -896,8 +907,11 @@ impl<'r> Importer<'r> {
             let paragraph_style = enabled("EnableParagraphStyle", "AppliedParagraphStyle")
                 .then(|| e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)))
                 .flatten();
-            let text_frame =
-                if e.get("EnableTextFrameGeneralOptions") == Some("true") { e.find("TextFramePreference").map(text_frame_options) } else { None };
+            let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
+                e.find("TextFramePreference").map(|t| self.frame_options(t))
+            } else {
+                None
+            };
             let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, text_frame };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
@@ -1095,7 +1109,9 @@ impl<'r> Importer<'r> {
         // Underline / strikethrough options (-9999 = automatic).
         for k in ["Underline", "StrikeThru"] {
             let num = |n: &str| e.num(&format!("{k}{n}")).filter(|v| *v > -9000.0);
-            let color = e.prop(&format!("{k}Color")).map(|r| self.swatch_ref(r.trim())).filter(|r| r != "Text Color" && !r.is_empty());
+            // An explicit Text Color resets an inherited swatch; absence still inherits.
+            // Resolve the sentinel before swatch_ref, which maps unknown names to [None].
+            let color = e.prop(&format!("{k}Color")).map(|r| if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
             let tint = e.num(&format!("{k}Tint")).filter(|v| *v >= 0.0).map(|v| (v / 100.0) as f32);
             if k == "Underline" {
                 a.underline_weight = num("Weight").map(Some);
@@ -2042,7 +2058,7 @@ impl<'r> Importer<'r> {
                         sid
                     }
                 };
-                let mut options = e.find("TextFramePreference").map(text_frame_options).unwrap_or_default();
+                let mut options = e.find("TextFramePreference").map(|t| self.frame_options(t)).unwrap_or_default();
                 if let Some(g) = e.find("BaselineFrameGridOption")
                     && g.get("UseCustomBaselineFrameGrid") == Some("true")
                 {
@@ -2375,6 +2391,24 @@ fn text_frame_options(e: &El) -> TextFrameOptions {
     }
     if let Some(v) = e.get("AutoSizingReferencePoint") {
         o.auto_size_ref = names::REF_POINTS.iter().position(|p| *p == v).unwrap_or(1) as u8;
+    }
+    // Column rules (the colour is a swatch reference: see `Importer::frame_options`).
+    o.column_rule = e.get("ColumnRuleOverride") == Some("true");
+    let finite = |k: &str| e.num(k).filter(|v| v.is_finite());
+    if let Some(v) = finite("ColumnRuleStrokeWidth") {
+        o.column_rule_weight = v.clamp(0.0, 1000.0);
+    }
+    if let Some(t) = tint(finite("ColumnRuleStrokeTint")) {
+        o.column_rule_tint = t.clamp(0.0, 1.0);
+    }
+    for (k, v) in [
+        ("ColumnRuleOffset", &mut o.column_rule_offset),
+        ("ColumnRuleTopInset", &mut o.column_rule_top_inset),
+        ("ColumnRuleBottomInset", &mut o.column_rule_bottom_inset),
+    ] {
+        if let Some(x) = finite(k) {
+            *v = x.clamp(-1440.0, 1440.0);
+        }
     }
     o
 }

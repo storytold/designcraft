@@ -124,7 +124,7 @@ pub(crate) fn place_table(
     if cur.fi >= frames.len() || table.nrows() == 0 || table.ncols() == 0 {
         return false;
     }
-    let col_rect = |cur: &Cursor| cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
+    let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
     let mut col = col_rect(cur);
     // Column widths: scaled to fit the measure.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);

@@ -390,7 +390,7 @@ pub fn knuth_plass(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &
             return b;
         }
     }
-    greedy(glyphs, hyph_after, sp, width)
+    greedy(glyphs, hyph_after, sp, width, &|_, _, _| 0.0)
 }
 
 /// Upper bound on the hyphen-count states tracked per breakpoint.
@@ -628,7 +628,16 @@ fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
 }
 
 /// Greedy first-fit breaking (single-line composer; also used for paragraphs with tabs).
-pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn Fn(usize) -> f64) -> Vec<Break> {
+///
+/// `tab(line, x, i)` is the advance of the tab glyph `i` when it starts `x` from the start of
+/// line `line`: tabs have no width until they reach their stop, which depends on where they sit.
+pub fn greedy(
+    glyphs: &[Glyph],
+    hyph_after: &[bool],
+    sp: &Spacing,
+    width: &dyn Fn(usize) -> f64,
+    tab: &dyn Fn(usize, f64, usize) -> f64,
+) -> Vec<Break> {
     let n = glyphs.len();
     let mut out = Vec::new();
     let mut start = 0;
@@ -664,7 +673,8 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 continue;
             }
             let hang_r = right_hang(g, sp);
-            if x + g.adv - hang_r > w + shrink
+            let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
+            if x + adv - hang_r > w + shrink
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
             {
@@ -679,7 +689,7 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 });
                 break;
             }
-            x += g.adv;
+            x += adv;
             if sp.justify {
                 shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             }

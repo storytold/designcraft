@@ -12,8 +12,12 @@
 //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?sample` opens the
-//! sample magazine on start.
+//! sample magazine on start. Flags match case-sensitive, percent-decoded query keys; values
+//! are ignored and repeated keys have the same presence semantics (`?sample=false` enables it).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod browser_policy;
 
 #[cfg(target_arch = "wasm32")]
 mod web;

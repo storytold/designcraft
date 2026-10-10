@@ -56,7 +56,7 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
         Some(i) if i.count > 1 => crate::i18n::tr(&app.ui.language, "Multiple Objects").into(),
         Some(i) => match i.kind {
             "<text frame>" => crate::i18n::tr(&app.ui.language, "Text Frame").into(),
-            "<group>" => crate::i18n::tr(&app.ui.language, "Group").into(),
+            "<group>" => crate::i18n::tr_context(&app.ui.language, "Group", "selection").into(),
             "<image>" => crate::i18n::tr(&app.ui.language, "Image").into(),
             "<rectangle>" => crate::i18n::tr(&app.ui.language, "Rectangle").into(),
             "<ellipse>" => crate::i18n::tr(&app.ui.language, "Ellipse").into(),
@@ -164,6 +164,7 @@ const PAGE_PRESETS: &[(&str, f64, f64)] = &[
     ("A3", 841.89, 1190.55),
     ("A4", 595.276, 841.89),
     ("A5", 419.528, 595.276),
+    ("A6", 297.638, 419.528),
     ("B5", 498.898, 708.661),
 ];
 
@@ -572,6 +573,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     widgets::paint_chip(ui.painter(), chip, fc, fg);
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let resp = ui.interact(chip, ui.id().with("fillchip"), Sense::click()).on_hover_text(format!("Fill: {}", i.fill));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fill swatch"));
     swatch_menu(app, &resp, &doc, &i.fill, |app, n| {
         let _ = app.run("object.fill", json!({"swatch": n}));
     });
@@ -591,6 +593,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     widgets::paint_stroke_chip(ui.painter(), chip, sc, egui::Color32::from_gray(20));
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let resp = ui.interact(chip, ui.id().with("strokechip"), Sense::click()).on_hover_text(format!("Stroke: {}", i.stroke));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stroke swatch"));
     swatch_menu(app, &resp, &doc, &i.stroke, |app, n| {
         let _ = app.run("object.stroke", json!({"swatch": n}));
     });
@@ -667,15 +670,10 @@ fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &designcraft_doc
     let mut picked = None;
     egui::Popup::menu(resp).show(|ui| {
         ui.set_min_width(200.0);
+        ui.set_max_width(280.0);
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for sw in &doc.swatches {
-                let (c, g) = widgets::swatch_colors(doc, &sw.name, 1.0);
-                let row = ui.horizontal(|ui| {
-                    let (cr, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                    widgets::paint_chip(ui.painter(), cr, c, g);
-                    ui.add(egui::Button::new(&sw.name).frame(false).selected(sw.name == cur))
-                });
-                if row.inner.clicked() {
+                if super::swatch_menu_row(ui, doc, &sw.name, cur) {
                     picked = Some(sw.name.clone());
                     ui.close();
                 }
@@ -999,20 +997,8 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
         egui::FontId::proportional(11.5),
         t.text,
     );
-    let mut pick_fam = None;
-    egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(fw);
-        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-            if let Some(f) = super::font_menu_rows(app, ui, &menu, &fam) {
-                pick_fam = Some(f);
-                ui.close();
-            }
-        });
-    });
-    if let Some(f) = pick_fam {
-        let styles = fonts.styles(&f);
-        let style = if styles.iter().any(|s| s == "Regular") { "Regular".to_string() } else { styles.first().cloned().unwrap_or_default() };
-        let _ = app.run("type.char", json!({"attrs": {"fontFamily": f, "fontStyle": style}}));
+    if let Some(f) = super::font_popup(app, &resp, &menu, &fam) {
+        super::apply_font_family(app, &f);
     }
     ui.add_space(1.0);
     let styles = fonts.styles(&fam);
@@ -1070,6 +1056,18 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     }) {
         let _ = app.run("type.char", json!({"attrs": {"tracking": v}}));
     }
+    // Language: hyphenation, spelling and typographer's quotes follow it.
+    ui.add_space(1.0);
+    let lang = c["language"].as_str().unwrap_or("English: USA").to_string();
+    let label = crate::i18n::tr(&app.ui.language, "Language");
+    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &lang), fw).on_hover_ui(|ui| {
+        crate::rtl::label(ui, label);
+    });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, label));
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(fw);
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| language_menu(app, ui, &lang));
+    });
     if more_options(ui, &app.ui.language).clicked() {
         app.ui.open_panel = Some("character".into());
     }
@@ -1178,7 +1176,7 @@ fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
 }
 
 /// Languages offered for text (InDesign-style names).
-const LANGUAGES: &[&str] = &[
+pub(crate) const LANGUAGES: &[&str] = &[
     "[No Language]",
     "English: USA",
     "English: UK",
@@ -1212,6 +1210,17 @@ const LANGUAGES: &[&str] = &[
     "Hebrew",
 ];
 
+/// The Language list (Character panel, Properties ▸ Character): picking one sets the language of
+/// the selected text.
+fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
+    for l in LANGUAGES {
+        if ui.selectable_label(*l == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+            let _ = app.run("type.char", json!({"attrs": {"language": l}}));
+            ui.close();
+        }
+    }
+}
+
 pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(a) = text_attrs(app) else {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select text or a text frame."));
@@ -1231,13 +1240,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         egui::ComboBox::from_id_salt("char_language")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &lang)))
             .width(170.0)
-            .show_ui(ui, |ui| {
-                for l in LANGUAGES {
-                    if ui.selectable_label(*l == lang, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
-                        let _ = app.run("type.char", json!({"attrs": {"language": l}}));
-                    }
-                }
-            });
+            .show_ui(ui, |ui| language_menu(app, ui, &lang));
     });
     // Digits (World-Ready): shown for right-to-left paragraphs or once set.
     let digits = c["digits"].as_str().unwrap_or("default").to_string();
@@ -1404,7 +1407,17 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     };
     let u = units(app);
     let p = a["para"].clone();
-    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button("☰", |ui| {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph Rules…"))).clicked() {
+                    let _ = app.run("app.paragraphRulesDialog", json!({}));
+                    ui.close();
+                }
+            });
+        });
+    });
     let cur: Align = serde_json::from_value(p["align"].clone()).unwrap_or_default();
     ui.horizontal(|ui| {
         for (al, icon) in [
@@ -1918,13 +1931,10 @@ pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::rtl::label(
                     ui,
                     format!(
-                        "{} {} · {} {} · {} {}",
-                        st.doc.page_count(),
-                        crate::i18n::tr(&app.ui.language, "pages"),
-                        st.doc.stories.len(),
-                        crate::i18n::tr(&app.ui.language, "stories"),
-                        st.doc.all_items().len(),
-                        crate::i18n::tr(&app.ui.language, "items")
+                        "{} · {} · {}",
+                        crate::i18n::count_label(&app.ui.language, "pages", st.doc.page_count()),
+                        crate::i18n::count_label(&app.ui.language, "stories", st.doc.stories.len()),
+                        crate::i18n::count_label(&app.ui.language, "items", st.doc.all_items().len())
                     ),
                 );
             }
@@ -2038,10 +2048,9 @@ pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::i18n::tr(&app.ui.language, "No errors").to_string()
             } else {
                 format!(
-                    "{errors} {}, {} {}",
-                    crate::i18n::tr(&app.ui.language, "errors"),
-                    issues.len() - errors,
-                    crate::i18n::tr(&app.ui.language, "warnings")
+                    "{}, {}",
+                    crate::i18n::count_label(&app.ui.language, "errors", errors),
+                    crate::i18n::count_label(&app.ui.language, "warnings", issues.len() - errors)
                 )
             },
         );
@@ -2118,5 +2127,83 @@ fn variable_font_axes(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, styl
     if changed {
         let spec = values.iter().map(|(t, v)| format!("{t}:{}", v.round())).collect::<Vec<_>>().join(",");
         let _ = app.run("type.char", json!({"attrs": {"fontStyle": format!("{base} {{{spec}}}")}}));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    use super::*;
+
+    fn language(app: &mut DesignApp) -> Value {
+        text_attrs(app).unwrap()["chars"]["language"].clone()
+    }
+
+    #[test]
+    fn properties_character_section_sets_the_language() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "bunun", "caret": true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        assert_ne!(language(&mut app), "French");
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                // The panel's fonts are installed before its first frame.
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("Language").click();
+        h.run_steps(2);
+        h.get_by_label("French").click();
+        h.run_steps(2);
+        assert_eq!(language(h.state_mut()), "French");
+    }
+
+    #[test]
+    fn clicking_a_swatch_chip_in_the_appearance_fill_menu_applies_it() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        // A graphic frame: the Appearance section shows a single Fill chip.
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let before = app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch.clone();
+        assert_ne!(before, "[Paper]");
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        // Open the Fill menu from the Appearance chip.
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        // Click the *chip* (the row's left edge), not the name.
+        let name = "[Paper]".to_string();
+        let row = h.get_by_label(&name).rect();
+        // The row spans the menu (chip + name), not just the name text.
+        assert!(row.width() > 150.0, "the row is the full menu width, chip included: {row:?}");
+        let p = row.min + vec2(8.0, row.height() / 2.0);
+        h.hover_at(p);
+        h.drag_at(p);
+        h.drop_at(p);
+        h.run_steps(4);
+        let after = h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch.clone();
+        assert_eq!(after, name, "clicking the swatch chip applies it");
     }
 }

@@ -38,10 +38,21 @@ pub use control::{ControlRequest, ControlResponse};
 pub type ReadFn = Box<dyn Fn(&str) -> Result<Vec<u8>, String>>;
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
-pub type OpenAsyncFn = Box<dyn FnMut(&str)>;
+/// Context captured before any host file-picker or read await.
+#[derive(Clone, Debug)]
+pub struct ImportRequest {
+    pub purpose: String,
+    pub target: Option<u64>,
+}
+pub struct ImportedFile {
+    pub request: ImportRequest,
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+pub type OpenAsyncFn = Box<dyn FnMut(ImportRequest)>;
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8])>;
-/// Files `(name, bytes)` delivered asynchronously by the host (web file picker, dropped files).
-pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
+/// Files delivered asynchronously with their original operation and document identity.
+pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
 /// Platform services injected by the host (desktop or web).
 #[derive(Default)]
@@ -58,8 +69,7 @@ pub struct Services {
     /// Hand bytes to the user as a named file (browser download). When set, Save uses it
     /// instead of writing to a path.
     pub download: Option<DownloadFn>,
-    /// Files delivered asynchronously, drained every frame: `.designcraft` → `file.openBytes`,
-    /// anything else → `file.place`.
+    /// Files delivered asynchronously, drained every frame with their captured request context.
     pub inbox: Option<Inbox>,
 }
 
@@ -81,6 +91,7 @@ pub struct SavedWorkspace {
     pub name: String,
     pub control_bar: bool,
     pub task_bar: bool,
+    pub task_bar_pin: Option<[f32; 2]>,
     pub tools_double_column: bool,
     pub dock_tab: String,
     pub dock_expanded: bool,
@@ -189,6 +200,12 @@ pub struct UiState {
     pub snap_zone: f64,
     /// Window > Contextual Task Bar.
     pub task_bar: bool,
+    /// Where the Contextual Task Bar is pinned: its top-left, in points from the canvas's top-left
+    /// (`None`: it follows the selection).
+    pub task_bar_pin: Option<[f32; 2]>,
+    /// Where the Contextual Task Bar was last shown, like [`Self::task_bar_pin`].
+    #[serde(skip)]
+    pub task_bar_at: Option<[f32; 2]>,
     /// Help › About DesignCraft is open.
     pub about: bool,
     /// The About window's tab: 0 About, 1 Contributors, 2 Models (`about::ABOUT_TABS`).
@@ -264,6 +281,8 @@ impl Default for UiState {
             smart_spacing: true,
             snap_zone: 4.0,
             task_bar: true,
+            task_bar_pin: None,
+            task_bar_at: None,
             about: false,
             about_tab: 0,
             pending_urls: Vec::new(),
@@ -377,6 +396,7 @@ pub struct Perf {
 }
 
 pub struct DesignApp {
+    pending_pdf: Option<ImportedFile>,
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
@@ -425,6 +445,7 @@ impl DesignApp {
         // The font menus and the first file opened need the installed fonts: catalog them now.
         designcraft_fonts::FontDb::global().scan_in_background();
         DesignApp {
+            pending_pdf: None,
             session,
             ui: UiState::default(),
             services,
@@ -528,6 +549,7 @@ impl DesignApp {
     /// Ask the host for a file to open (`open`) or place (`place`). Synchronous pickers run the
     /// command right away; asynchronous ones (web) deliver the file through the inbox.
     pub fn pick_and_open(&mut self, purpose: &str) -> Result<Value, String> {
+        let target = self.session.active().map(|d| d.uid);
         let cmd = if purpose == "place" { "file.place" } else { "file.open" };
         if let Some(pick) = self.services.pick_open.as_mut() {
             return match pick(purpose) {
@@ -536,40 +558,107 @@ impl DesignApp {
                     let pages =
                         self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
                     if pages > 1 {
-                        self.ui.dialog = Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages})));
+                        self.ui.dialog =
+                            Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target})));
                         Ok(Value::Null)
                     } else {
-                        self.run(cmd, json!({"path": path}))
+                        self.open_file(cmd, json!({"path": path}))
                     }
                 }
-                Some(path) => self.run(cmd, json!({"path": path})),
+                Some(path) => self.open_file(cmd, json!({"path": path})),
                 None => Ok(Value::Null),
             };
         }
+        let request = self.import_request(purpose);
         if let Some(open) = self.services.open_async.as_mut() {
-            open(purpose);
+            open(request);
         }
         Ok(Value::Null)
     }
 
-    /// Open or place files delivered through the inbox.
+    pub fn import_request(&self, purpose: &str) -> ImportRequest {
+        ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) }
+    }
+
+    pub(crate) fn activate_import_target(&mut self, request: &ImportRequest) -> Result<(), String> {
+        let Some(index) = request.target.and_then(|uid| self.session.documents().iter().position(|d| d.uid == uid)) else {
+            let message = "Import cancelled: the originating document has closed";
+            self.status(message);
+            return Err(message.into());
+        };
+        self.run("file.activate", json!({"index": index}))?;
+        Ok(())
+    }
+
+    pub(crate) fn cancel_pdf_import(&mut self) {
+        self.pending_pdf = None;
+    }
+
+    pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String) -> Result<Value, String> {
+        let file = self.pending_pdf.take().ok_or("PDF import cancelled: no pending file")?;
+        self.activate_import_target(&file.request)?;
+        self.open_file(
+            "file.place",
+            json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop}),
+        )
+    }
+
+    /// A single unresolved PDF owns its bytes. Later deliveries cancel explicitly rather than
+    /// replacing its options. Cancellation, replacement and target closure release its payload.
     fn drain_inbox(&mut self) {
+        if let Some(file) = &self.pending_pdf {
+            let target_exists = self.session.documents().iter().any(|d| Some(d.uid) == file.request.target);
+            let owns_dialog =
+                self.ui.dialog.as_ref().is_some_and(|d| d.id == "pdfImport" && d.fields.get("async").and_then(Value::as_bool) == Some(true));
+            if !target_exists || !owns_dialog {
+                self.pending_pdf = None;
+                if !target_exists {
+                    if owns_dialog {
+                        self.ui.dialog = None;
+                    }
+                    self.status("PDF import cancelled: the originating document has closed");
+                }
+            }
+        }
         let Some(inbox) = self.services.inbox.clone() else { return };
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(|e| e.into_inner()));
-        for (name, bytes) in files {
-            let b64 = designcraft_engine::cmd::base64_encode(&bytes);
-            let lower = name.to_ascii_lowercase();
-            let r = if lower.ends_with(".ase") {
-                self.run("swatch.load", json!({"base64": b64}))
-            } else if lower.ends_with(".designcraft") || lower.ends_with(".idml") {
-                let title = name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem);
-                self.run("file.openBytes", json!({"name": title, "base64": b64}))
-            } else {
-                self.run("file.place", json!({"name": name, "base64": b64}))
-            };
-            if let Err(e) = r {
+        for file in files {
+            if self.ui.dialog.is_some() {
+                self.status(format!("{}: import cancelled while a dialog is open; choose the file again", file.name));
+                continue;
+            }
+            let name = file.name.clone();
+            if let Err(e) = self.import_file(file) {
                 self.status(format!("{name}: {e}"));
             }
+        }
+    }
+
+    fn import_file(&mut self, file: ImportedFile) -> Result<Value, String> {
+        let lower = file.name.to_ascii_lowercase();
+        let layout = opens_as_document(&file.name);
+        let place =
+            file.request.purpose == "place" || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && !lower.ends_with(".ase"));
+        if place || lower.ends_with(".ase") || file.request.purpose == "swatches" {
+            self.activate_import_target(&file.request)?;
+        }
+        if place && lower.ends_with(".pdf") {
+            let pages = designcraft_render::pdf_page_count(&file.bytes).unwrap_or(1);
+            if pages > 1 {
+                self.ui.dialog =
+                    Some(dialogs::Dialog::new("pdfImport", json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages})));
+                self.pending_pdf = Some(file);
+                return Ok(Value::Null);
+            }
+        }
+        let b64 = designcraft_engine::cmd::base64_encode(&file.bytes);
+        if lower.ends_with(".ase") || file.request.purpose == "swatches" {
+            self.run("swatch.load", json!({"base64": b64}))
+        } else if place {
+            self.open_file("file.place", json!({"name": file.name, "base64": b64}))
+        } else {
+            let title = file.name.rsplit_once('.').map_or(file.name.as_str(), |(stem, _)| stem);
+            self.open_file("file.openBytes", json!({"name": title, "base64": b64}))
         }
     }
 
@@ -636,16 +725,32 @@ impl DesignApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
-            {
-                let p = f.path().to_string_lossy().to_string();
-                if p.is_empty() {
-                    continue;
-                }
-                let lp = p.to_ascii_lowercase();
-                let cmd = if lp.ends_with(".designcraft") || lp.ends_with(".idml") { "file.open" } else { "file.place" };
-                let _ = self.run(cmd, json!({"path": p}));
+            let p = f.path().to_string_lossy().to_string();
+            if !p.is_empty() {
+                let _ = self.open_dropped(&p);
             }
         }
+    }
+
+    /// A file dropped on the window: documents open, anything else is placed.
+    pub fn open_dropped(&mut self, path: &str) -> Result<Value, String> {
+        let cmd = if opens_as_document(path) { "file.open" } else { "file.place" };
+        self.open_file(cmd, json!({"path": path}))
+    }
+
+    /// Open (`file.open`, `file.openBytes`) or place (`file.place`) a file the user chose. A file
+    /// that can't be opened or placed gets an alert with the reason, as well as the status line.
+    pub fn open_file(&mut self, cmd: &str, params: Value) -> Result<Value, String> {
+        let file = match params.get("path").and_then(Value::as_str) {
+            Some(path) => std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string()),
+            None => params.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+        };
+        let r = self.run(cmd, params);
+        if let Err(e) = &r {
+            let title = if cmd == "file.place" { "Can't Place the File" } else { "Can't Open the File" };
+            self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": title, "file": file, "message": e})));
+        }
+        r
     }
 
     /// Inject synthetic events (one pointer event per frame).
@@ -856,6 +961,13 @@ impl DesignApp {
     }
 }
 
+/// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft
+/// and IDML.
+pub fn opens_as_document(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    [".designcraft", ".idml"].iter().any(|ext| n.ends_with(ext))
+}
+
 pub fn now_ms() -> f64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -868,9 +980,137 @@ pub fn now_ms() -> f64 {
     }
 }
 
+/// Is `text` the name of a key ("AltGraph", "Dead", "AudioVolumeUp") instead of typed text?
+/// Browsers report a key press as a string: the character it types, or a name made of ASCII
+/// letters and digits that starts with a capital. One key press never types such a word.
+pub fn is_key_name(text: &str) -> bool {
+    text.len() > 1 && text.starts_with(|c: char| c.is_ascii_uppercase()) && text.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Drop text events that are key names. eframe's web backend sends the name of every key it
+/// doesn't know as text, so AltGr typed "AltGraph" into the story. `text_field_focused`: an
+/// egui text field has the keyboard; its text comes from the browser's input events, which can
+/// hold whole words, and is left alone.
+pub fn drop_key_name_text(raw: &mut egui::RawInput, text_field_focused: bool) {
+    if !text_field_focused {
+        raw.events.retain(|e| !matches!(e, egui::Event::Text(t) if is_key_name(t)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An app with one document that has an unsaved edit.
+    fn app_with_unsaved_document() -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        assert!(!app.session.documents()[0].is_dirty(), "a new document has nothing to save");
+        app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap();
+        assert!(app.session.documents()[0].is_dirty());
+        app
+    }
+
+    /// File ▸ Close (and its shortcut) closed a document with unsaved changes without asking, and
+    /// closing discards the document's recovery data too.
+    #[test]
+    fn closing_an_unsaved_document_asks_first() {
+        let mut app = app_with_unsaved_document();
+        menus::activate(&mut app, "file.close", &Value::Null);
+        assert_eq!(app.session.documents().len(), 1, "the document stays open until the user answers");
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("closeDocument"));
+        // Cancel: nothing happens.
+        app.ui.dialog = None;
+        assert!(app.session.documents()[0].is_dirty());
+        // The tab's × asks too.
+        menus::close_document(&mut app, Some(0));
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("closeDocument"));
+        assert_eq!(app.session.documents().len(), 1);
+    }
+
+    #[test]
+    fn closing_without_saving_discards_the_document() {
+        let mut app = app_with_unsaved_document();
+        menus::close_document(&mut app, None);
+        app.ui.dialog.as_mut().unwrap().fields.insert("discard".into(), json!(true));
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.session.documents().is_empty());
+        assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn closing_with_save_writes_the_file_then_closes() {
+        let mut app = app_with_unsaved_document();
+        let path = std::env::temp_dir().join(format!("designcraft-close-test-{}.designcraft", std::process::id()));
+        app.run("file.saveAs", json!({"path": path})).unwrap();
+        let saved = std::fs::metadata(&path).unwrap().len();
+        app.run("frame.create", json!({"rect": [200, 200, 300, 300]})).unwrap();
+        menus::close_document(&mut app, None);
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.session.documents().is_empty());
+        let written = std::fs::metadata(&path).unwrap().len();
+        std::fs::remove_file(&path).unwrap();
+        assert!(written > saved, "the second frame was saved ({saved} → {written} bytes)");
+    }
+
+    /// Save on a document that has no file opens the file picker; cancelling it must not close the
+    /// document. (No picker service here: the same as cancelling.)
+    #[test]
+    fn a_cancelled_save_keeps_the_document_open() {
+        let mut app = app_with_unsaved_document();
+        menus::close_document(&mut app, None);
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.documents().len(), 1);
+        assert!(app.session.documents()[0].is_dirty());
+    }
+
+    #[test]
+    fn closing_a_saved_document_does_not_ask() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        menus::activate(&mut app, "file.close", &Value::Null);
+        assert!(app.session.documents().is_empty());
+        assert!(app.ui.dialog.is_none());
+    }
+
+    /// The Control panel's two-row groups were centred as if they were one row tall, so the second
+    /// row hung below the panel and was cut off.
+    #[test]
+    fn control_bar_shows_its_second_row() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
+        app.run("file.newSample", json!({})).unwrap();
+        app.ui.control_bar = true;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        let bar = egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new("control_bar")).unwrap().outer_rect;
+        assert!(bar.height() > 40.0, "{bar:?}");
+        let rows: Vec<egui::Rect> = h.query_all_by_label("Y:").map(|n| n.rect()).filter(|r| bar.contains(r.left_top())).collect();
+        assert_eq!(rows.len(), 1, "the Y: caption of the Control panel");
+        assert!(rows[0].bottom() <= bar.bottom(), "Y: caption {:?} hangs below the Control panel {bar:?}", rows[0]);
+    }
+
+    #[test]
+    fn key_names_sent_as_text_are_dropped() {
+        let text = |t: &str| egui::Event::Text(t.to_string());
+        let events = || {
+            vec![text("AltGraph"), text("é"), text("Dead"), text("A"), text("Unidentified"), text("ß"), text("AudioVolumeUp"), text("ab"), text("Æ")]
+        };
+        let mut raw = egui::RawInput { events: events(), ..Default::default() };
+        drop_key_name_text(&mut raw, false);
+        assert_eq!(raw.events, vec![text("é"), text("A"), text("ß"), text("ab"), text("Æ")]);
+        // A focused text field gets its text from input events, which can be whole words.
+        let mut raw = egui::RawInput { events: events(), ..Default::default() };
+        drop_key_name_text(&mut raw, true);
+        assert_eq!(raw.events, events());
+    }
 
     #[test]
     fn snap_view_uses_the_saved_switches() {
@@ -882,5 +1122,392 @@ mod tests {
         ui.snap_zone = 0.0;
         assert!(!ui.snap_view().snap_to_guides);
         assert_eq!(ui.snap_view().zone_px, 0.0);
+    }
+
+    /// A temporary file named `name` whose bytes aren't a document or a graphic.
+    fn unreadable_file(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("designcraft-ui-{}-{name}", std::process::id()));
+        std::fs::write(&path, b"neither a document nor a graphic").unwrap();
+        path
+    }
+
+    /// The open alert dialog: (title, message).
+    fn alert(app: &DesignApp) -> (String, String) {
+        let d = app.ui.dialog.as_ref().expect("an alert is open");
+        assert_eq!(d.id, "alert");
+        (d.fields["title"].as_str().unwrap().to_string(), d.fields["message"].as_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn dropped_documents_open_and_the_rest_is_placed() {
+        for name in ["a.designcraft", "B.IDML"] {
+            assert!(opens_as_document(name), "{name}");
+        }
+        for name in ["a.png", "b.pdf", "idml.txt", "c.idml.zip"] {
+            assert!(!opens_as_document(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn dropping_an_unreadable_file_alerts() {
+        // A document opens, so it says it can't be opened.
+        let path = unreadable_file("broken.designcraft");
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        let r = app.open_dropped(&path.to_string_lossy());
+        let _ = std::fs::remove_file(&path);
+        let e = r.unwrap_err();
+        let (title, message) = alert(&app);
+        assert_eq!(title, "Can't Open the File", "a document opens, it isn't placed");
+        assert_eq!(message, e);
+        assert!(app.ui.status.contains(&e), "the status line says it too");
+        assert!(app.session.documents().is_empty());
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none(), "OK closes the alert");
+        // Anything else is placed, so it says it can't be placed.
+        app.run("file.new", json!({})).unwrap();
+        let path = unreadable_file("notes.xyz");
+        let r = app.open_dropped(&path.to_string_lossy());
+        let _ = std::fs::remove_file(&path);
+        let e = r.unwrap_err();
+        assert_eq!(alert(&app), ("Can't Place the File".to_string(), e));
+    }
+
+    #[test]
+    fn file_open_failures_show_an_alert() {
+        let path = unreadable_file("open.designcraft");
+        let picked = path.to_string_lossy().to_string();
+        let services = Services { pick_open: Some(Box::new(move |_| Some(picked.clone()))), ..Default::default() };
+        let mut app = DesignApp::new(Session::new(), services);
+        let e = app.run("app.openDialog", json!({})).unwrap_err();
+        assert_eq!(alert(&app), ("Can't Open the File".to_string(), e));
+        // Placing it says so too.
+        app.ui.dialog = None;
+        app.run("file.new", json!({})).unwrap();
+        let e = app.run("app.placeDialog", json!({})).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(alert(&app), ("Can't Place the File".to_string(), e));
+    }
+
+    #[test]
+    fn other_command_errors_stay_in_the_status_line() {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        assert!(app.run("file.open", json!({"path": "/nonexistent/x.designcraft"})).is_err());
+        assert!(app.ui.dialog.is_none(), "a scripted file.open doesn't raise an alert");
+        assert!(!app.ui.status.is_empty());
+        // The control channel's app.open answers with the error; no alert waits for a click.
+        let (req, _rx) = control::ControlRequest::new("app.open", json!({"path": "/nonexistent/x.designcraft"}));
+        let control::Outcome::Done(r) = control::handle(&mut app, &egui::Context::default(), &req) else { panic!("app.open answers") };
+        assert_eq!(r["ok"], json!(false), "{r}");
+        assert!(app.ui.dialog.is_none(), "a control-channel app.open doesn't raise an alert");
+    }
+}
+
+/// The whole window in a headless test harness, at a chosen window size.
+#[cfg(test)]
+pub(crate) mod test_window {
+    use egui_kittest::Harness;
+
+    pub struct Window {
+        pub app: crate::DesignApp,
+        ready: bool,
+    }
+
+    /// The window at `size` with a new document open.
+    pub fn open(mut app: crate::DesignApp, size: egui::Vec2) -> Harness<'static, Window> {
+        if app.session.active().is_none() {
+            app.run("file.new", serde_json::json!({})).unwrap();
+        }
+        let mut h = Harness::builder().with_size(size).with_max_steps(1000).build_ui_state(
+            |ui, w: &mut Window| {
+                // The builder runs a frame before the texture size can be raised: skip it.
+                if !w.ready {
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                w.app.logic(&ctx);
+                w.app.ui(ui);
+            },
+            Window { app, ready: false },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        h.state_mut().ready = true;
+        h.run_steps(6);
+        h
+    }
+
+    /// The mouse wheel turned over `pos`: positive `delta` moves the content right and down.
+    pub fn wheel(h: &mut Harness<'static, Window>, pos: egui::Pos2, delta: egui::Vec2) {
+        h.hover_at(pos);
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta,
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(10);
+    }
+
+    /// The outer rect of a side or top panel, from egui's memory.
+    pub fn panel_rect(h: &Harness<'static, Window>, id: &str) -> egui::Rect {
+        egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new(id)).map(|s| s.outer_rect).unwrap()
+    }
+
+    /// A primary click at `pos`, then a few frames.
+    pub fn click_at(h: &mut Harness<'static, Window>, pos: egui::Pos2) {
+        h.hover_at(pos);
+        h.drag_at(pos);
+        h.drop_at(pos);
+        h.run_steps(4);
+    }
+}
+
+#[cfg(test)]
+mod browser_import_tests {
+    use super::*;
+
+    fn app() -> DesignApp {
+        let mut app = DesignApp::new(Session::new(), Services { inbox: Some(Inbox::default()), ..Default::default() });
+        app.run("file.new", json!({"title": "A"})).unwrap();
+        app
+    }
+    fn deliver(app: &mut DesignApp, request: ImportRequest, name: &str, bytes: Vec<u8>) {
+        app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: name.into(), bytes });
+        app.drain_inbox();
+    }
+    fn image() -> Vec<u8> {
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##.to_vec()
+    }
+    fn pdf_pages(count: usize) -> Vec<u8> {
+        let kids = (0..count).map(|i| format!("{} 0 R", 3 + i * 2)).collect::<Vec<_>>().join(" ");
+        let mut objects = vec!["<< /Type /Catalog /Pages 2 0 R >>".to_string(), format!("<< /Type /Pages /Kids [{kids}] /Count {count} >>")];
+        for (i, color) in ["1 0 0", "0 1 0", "0 0 1"].iter().take(count).enumerate() {
+            let content = format!("{color} rg 0 0 200 200 re f\n");
+            objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents {} 0 R >>", 4 + i * 2));
+            objects.push(format!("<< /Length {} >>\nstream\n{content}endstream", content.len()));
+        }
+        let mut result = "%PDF-1.4\n".to_string();
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(result.len());
+            result.push_str(&format!("{} 0 obj\n{object}\nendobj\n", i + 1));
+        }
+        let xref = result.len();
+        result.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1));
+        for offset in offsets {
+            result.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        result.push_str(&format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1));
+        result.into_bytes()
+    }
+    fn pdf() -> Vec<u8> {
+        pdf_pages(3)
+    }
+
+    #[test]
+    fn picker_receives_context_before_returning_and_cancel_does_not_edit() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let copy = captured.clone();
+        let mut app = app();
+        app.services.open_async = Some(Box::new(move |request| *copy.lock().unwrap() = Some(request)));
+        let uid = app.session.doc().unwrap().uid;
+        app.pick_and_open("place").unwrap();
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        let request = captured.lock().unwrap().take().unwrap();
+        assert_eq!(request.purpose, "place");
+        assert_eq!(request.target, Some(uid));
+        assert!(app.session.documents().iter().all(|d| d.doc.assets.is_empty()));
+        deliver(&mut app, request, "broken.pdf", b"not a PDF".to_vec());
+        assert!(app.session.documents().iter().all(|d| d.doc.assets.is_empty()));
+        assert!(app.pending_pdf.is_none());
+    }
+
+    #[test]
+    fn delayed_place_activates_original_document_and_undo_belongs_to_it() {
+        let mut app = app();
+        let request = app.import_request("place");
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        deliver(&mut app, request, "red.svg", image());
+        assert_eq!(app.session.active_index(), Some(0));
+        assert_eq!(app.session.documents()[0].doc.assets.len(), 1);
+        assert!(app.session.documents()[1].doc.assets.is_empty());
+        app.run("edit.undo", json!({})).unwrap();
+        assert!(app.session.doc().unwrap().doc.assets.is_empty());
+        app.run("edit.redo", json!({})).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.assets.len(), 1);
+    }
+
+    #[test]
+    fn closed_target_is_not_replaced_by_a_reused_tab_index() {
+        let mut app = app();
+        let request = app.import_request("place");
+        app.run("file.close", json!({})).unwrap();
+        app.run("file.new", json!({"title": "replacement"})).unwrap();
+        deliver(&mut app, request, "red.svg", image());
+        assert!(app.session.doc().unwrap().doc.assets.is_empty());
+    }
+
+    #[test]
+    fn closing_earlier_tab_does_not_shift_import_target() {
+        let mut app = app();
+        app.run("file.new", json!({"title": "target"})).unwrap();
+        let request = app.import_request("place");
+        app.run("file.new", json!({"title": "other"})).unwrap();
+        app.run("file.close", json!({"index": 0})).unwrap();
+        deliver(&mut app, request, "red.svg", image());
+        assert_eq!(app.session.doc().unwrap().doc.title, "target");
+        assert_eq!(app.session.documents()[0].doc.assets.len(), 1);
+        assert!(app.session.documents()[1].doc.assets.is_empty());
+    }
+
+    #[test]
+    fn layout_place_and_open_preserve_explicit_intent() {
+        let mut source = Session::new();
+        source.execute("file.new", &json!({"title": "source"})).unwrap();
+        source.execute("frame.create", &json!({"rect": [10, 10, 50, 50], "content": "text", "text": "placed"})).unwrap();
+        let native = designcraft_engine::cmd::to_bytes(&source.doc().unwrap().doc);
+        let idml = designcraft_idml::export_idml(&source.doc().unwrap().doc);
+        for (name, bytes) in [("source.designcraft", native), ("source.idml", idml)] {
+            let mut app = app();
+            let request = app.import_request("place");
+            deliver(&mut app, request, name, bytes.clone());
+            assert_eq!(app.session.documents().len(), 1);
+            assert_eq!(app.session.doc().unwrap().doc.title, "A");
+            assert!(app.session.doc().unwrap().doc.stories.values().any(|s| s.text == "placed"));
+            app.run("edit.undo", json!({})).unwrap();
+            assert!(app.session.doc().unwrap().doc.stories.is_empty());
+            app.run("edit.redo", json!({})).unwrap();
+            assert!(!app.session.doc().unwrap().doc.stories.is_empty());
+            let request = app.import_request("open");
+            deliver(&mut app, request, name, bytes);
+            assert_eq!(app.session.documents().len(), 2);
+        }
+    }
+
+    #[test]
+    fn pdf_options_keep_bytes_target_and_selected_page() {
+        let mut app = app();
+        let bytes = pdf();
+        let request = app.import_request("place");
+        deliver(&mut app, request, "three.pdf", bytes.clone());
+        assert!(app.session.doc().unwrap().doc.assets.is_empty());
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "pdfImport");
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!("2"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.active_index(), Some(0));
+        let asset = app.session.doc().unwrap().doc.assets.values().next().unwrap();
+        assert_eq!(asset.page, 1);
+        assert_eq!(*asset.data, bytes);
+        assert!(app.pending_pdf.is_none());
+        assert!(app.session.documents()[1].doc.assets.is_empty());
+        let exported = app.run("file.exportPdf", json!({})).unwrap();
+        let exported = designcraft_engine::cmd::base64_decode(exported["base64"].as_str().unwrap());
+        let pixels = designcraft_render::render_pdf_page(&exported, 0, 400).unwrap();
+        assert!(pixels.data().iter().filter(|p| p.g > 240 && p.r < 10 && p.b < 10).count() > 1000);
+        assert_eq!(pixels.data().iter().filter(|p| p.r > 240 && p.g < 10 && p.b < 10).count(), 0);
+    }
+
+    #[test]
+    fn pdf_options_reject_oversized_page_without_editing() {
+        let mut app = app();
+        for page in [0_u64, 4, 4_294_967_296, 4_294_967_297, u64::MAX] {
+            let request = app.import_request("place");
+            deliver(&mut app, request, "three.pdf", pdf());
+            app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!(page.to_string()));
+            // The native dialog clamps zero to one; positive invalid pages must fail.
+            if page == 0 {
+                assert!(app.confirm_pdf_import(page, "crop".into()).is_err());
+            } else {
+                assert!(dialogs::confirm(&mut app).is_err());
+            }
+            app.ui.dialog = None;
+            assert!(app.session.doc().unwrap().doc.assets.is_empty());
+            assert!(app.pending_pdf.is_none());
+        }
+        let request = app.import_request("place");
+        deliver(&mut app, request, "three.pdf", pdf());
+        app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!("2"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.assets.values().next().unwrap().page, 1);
+    }
+
+    #[test]
+    fn drop_routing_and_nonlayout_open_remain_compatible() {
+        let mut app = app();
+        let native = designcraft_engine::cmd::to_bytes(&app.session.doc().unwrap().doc);
+        let request = app.import_request("drop");
+        deliver(&mut app, request, "document.designcraft", native);
+        assert_eq!(app.session.documents().len(), 2);
+        let request = app.import_request("drop");
+        app.run("file.activate", json!({"index": 0})).unwrap();
+        deliver(&mut app, request, "red.svg", image());
+        assert_eq!(app.session.active_index(), Some(1));
+        assert_eq!(app.session.doc().unwrap().doc.assets.len(), 1);
+        let request = app.import_request("open");
+        deliver(&mut app, request, "single.pdf", pdf_pages(1));
+        assert_eq!(app.session.documents().len(), 2);
+        assert!(app.pending_pdf.is_none());
+        assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn ase_swatches_keep_purpose_and_target() {
+        let mut source = Session::new();
+        source.execute("file.new", &json!({})).unwrap();
+        source.execute("swatch.create", &json!({"name": "Import Teal", "color": "#108080"})).unwrap();
+        let data = source.execute("swatch.save", &json!({"names": ["Import Teal"]})).unwrap();
+        let bytes = designcraft_engine::cmd::base64_decode(data["base64"].as_str().unwrap());
+        for (purpose, name) in [("swatches", "picker-file"), ("drop", "palette.ase")] {
+            let mut app = app();
+            let request = app.import_request(purpose);
+            app.run("file.new", json!({"title": "B"})).unwrap();
+            deliver(&mut app, request, name, bytes.clone());
+            assert_eq!(app.session.active_index(), Some(0));
+            assert!(app.session.documents()[0].doc.swatches.iter().any(|s| s.name == "Import Teal"));
+            assert!(!app.session.documents()[1].doc.swatches.iter().any(|s| s.name == "Import Teal"));
+        }
+    }
+
+    #[test]
+    fn native_pdf_dialog_keeps_path_and_uid_at_confirmation() {
+        let mut app = app();
+        let path = std::env::temp_dir().join(format!("designcraft-native-import-{}-{}.pdf", std::process::id(), app.session.doc().unwrap().uid));
+        std::fs::write(&path, pdf()).unwrap();
+        let pick_path = path.to_string_lossy().to_string();
+        app.services.pick_open = Some(Box::new(move |_| Some(pick_path.clone())));
+        app.services.read = Some(Box::new(|path| std::fs::read(path).map_err(|e| e.to_string())));
+        app.pick_and_open("place").unwrap();
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "pdfImport");
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!("2"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.active_index(), Some(0));
+        assert_eq!(app.session.doc().unwrap().doc.assets.values().next().unwrap().page, 1);
+        assert!(app.session.documents()[1].doc.assets.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn pending_pdf_cancel_close_supersession_and_second_delivery_release_bytes() {
+        let mut app = app();
+        let request = app.import_request("place");
+        deliver(&mut app, request.clone(), "first.pdf", pdf());
+        deliver(&mut app, request.clone(), "second.svg", image());
+        assert_eq!(app.pending_pdf.as_ref().unwrap().name, "first.pdf");
+        assert!(app.session.doc().unwrap().doc.assets.is_empty());
+        app.ui.dialog = None;
+        app.drain_inbox();
+        assert!(app.pending_pdf.is_none());
+        deliver(&mut app, request.clone(), "first.pdf", pdf());
+        app.ui.dialog = Some(dialogs::Dialog::new("newDocument", json!({})));
+        app.drain_inbox();
+        assert!(app.pending_pdf.is_none());
+        app.ui.dialog = None;
+        deliver(&mut app, request, "first.pdf", pdf());
+        app.run("file.close", json!({})).unwrap();
+        app.run("file.new", json!({})).unwrap();
+        assert!(dialogs::confirm(&mut app).is_err());
+        assert!(app.pending_pdf.is_none());
+        assert!(app.session.doc().unwrap().doc.assets.is_empty());
     }
 }

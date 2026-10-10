@@ -25,8 +25,9 @@ pub(crate) struct LineGlyphs {
     pub bounds: Option<Rect>,
     /// Glyph outlines batched per run style.
     pub runs: Vec<(u32, BezPath)>,
-    /// Underline / strikethrough bars: colour swatch, tint, rectangle.
-    pub decos: Vec<(String, f32, Rect)>,
+    /// Bars below/above the glyph paint pass: colour swatch, tint, rectangle.
+    pub underlines: Vec<(String, f32, Rect)>,
+    pub strikes: Vec<(String, f32, Rect)>,
     pub glyphs: usize,
 }
 
@@ -116,15 +117,18 @@ fn union(r: Option<Rect>, b: Rect) -> Option<Rect> {
 
 fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> LineGlyphs {
     let mut runs: Vec<(u32, BezPath)> = Vec::new();
-    let mut decos = Vec::new();
+    let mut underlines = Vec::new();
+    let mut strikes = Vec::new();
     let mut glyphs = 0;
     for g in &l.glyphs {
         if !g.visible {
             continue;
         }
         let style = &cs.styles[g.style as usize];
-        for (rule, r) in style.rules(g.x, g.x + g.adv, l.baseline) {
-            decos.push((rule.color.clone(), rule.tint, r));
+        for (on, rule, bars) in [(style.underline, &style.underline_rule, &mut underlines), (style.strikethrough, &style.strike_rule, &mut strikes)] {
+            if on {
+                bars.push((rule.color.clone(), rule.tint, rule.rect(g.x, g.x + g.adv, l.baseline)));
+            }
         }
         let outline = db.outline(&g.face, g.gid);
         if outline.elements().is_empty() {
@@ -155,10 +159,10 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
         let sw = if st.stroke != designcraft_color::swatch::NONE { st.stroke_weight } else { 0.0 };
         bounds = union(bounds, bp.bounding_box().inflate(sw, sw));
     }
-    for (_, _, r) in &decos {
+    for (_, _, r) in underlines.iter().chain(&strikes) {
         bounds = union(bounds, *r);
     }
-    LineGlyphs { bounds, runs, decos, glyphs }
+    LineGlyphs { bounds, runs, underlines, strikes, glyphs }
 }
 
 fn build(cs: &ComposedStory, ft: &FrameText) -> FrameGlyphs {
@@ -339,12 +343,19 @@ impl Renderer {
                     doc.resolve_color(&st.fill, st.fill_tint).map(|c| color_of(&c, 1.0))
                 })
             };
-            for i in shown {
-                let lg = &fg.lines[i];
-                let Some(b) = lg.bounds else { continue };
-                if !rect_overlaps(b, vis) {
-                    continue;
+            shown.retain(|&i| fg.lines[i].bounds.is_some_and(|b| rect_overlaps(b, vis)));
+            // Paint all underlines before any glyphs: skewed runs and tightly spaced lines
+            // can overlap a later run's rule. A per-run paint pass would still cover ink.
+            for &i in &shown {
+                for (sw, tint, r) in &fg.lines[i].underlines {
+                    if let Some(c) = doc.resolve_color(sw, *tint) {
+                        ctx.set_paint(color_of(&c, 1.0));
+                        ctx.fill_rect(r);
+                    }
                 }
+            }
+            for &i in &shown {
+                let lg = &fg.lines[i];
                 self.stats.glyphs += lg.glyphs;
                 for (si, bp) in &lg.runs {
                     if let Some(c) = fill_of(*si) {
@@ -374,7 +385,9 @@ impl Renderer {
                         ctx.stroke_path(bp);
                     }
                 }
-                for (sw, tint, r) in &lg.decos {
+            }
+            for &i in &shown {
+                for (sw, tint, r) in &fg.lines[i].strikes {
                     if let Some(c) = doc.resolve_color(sw, *tint) {
                         ctx.set_paint(color_of(&c, 1.0));
                         ctx.fill_rect(r);
