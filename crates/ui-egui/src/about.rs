@@ -52,7 +52,7 @@ pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
         let mut res = vello_cpu::Resources::new();
         rc.render(&mut pm, &mut res);
         let ci = egui::ColorImage::from_rgba_premultiplied([px as usize, px as usize], pm.data_as_u8_slice());
-        let t = ctx.load_texture("artcraft_mark", ci, egui::TextureOptions::LINEAR);
+        let t = crate::widgets::load_texture(ctx, "artcraft_mark", ci, egui::TextureOptions::LINEAR);
         ctx.data_mut(|d| d.insert_temp(key, t.clone()));
         t
     });

@@ -493,6 +493,11 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     let Some(regions) = designcraft_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return false };
     let t0 = crate::now_ms();
     let (tw, th) = ((sh.size.0 as f64 * ppp).round() as i64, (sh.size.1 as f64 * ppp).round() as i64);
+    // A texture `upload` sampled down to the GPU limit has other pixels than the view: a region
+    // computed in view pixels would be written outside it. Render it whole instead.
+    if app.canvas.texture.as_ref().is_none_or(|t| t.size() != [tw.max(0) as usize, th.max(0) as usize]) {
+        return false;
+    }
     let k = sh.zoom * ppp;
     let mut px: Option<(i64, i64, i64, i64)> = None;
     for (r, rect) in &regions {
@@ -573,6 +578,7 @@ fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render:
         designcraft_render::separation_view(&mut img, None, app.ui.ink_limit);
     }
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
+    let ci = crate::widgets::fit_texture(ci, ctx.input(|i| i.max_texture_side));
     match &mut app.canvas.texture {
         Some(tex) => tex.set(ci, egui::TextureOptions::LINEAR),
         None => app.canvas.texture = Some(ctx.load_texture("canvas", ci, egui::TextureOptions::LINEAR)),
@@ -1154,7 +1160,7 @@ fn draw_inverse_highlight(
             let mut res = vello_cpu::Resources::new();
             rc.render(&mut pm, &mut res);
             let ci = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], pm.data_as_u8_slice());
-            let t = ctx.load_texture("inverse_selection", ci, egui::TextureOptions::NEAREST);
+            let t = crate::widgets::load_texture(ctx, "inverse_selection", ci, egui::TextureOptions::NEAREST);
             ctx.data_mut(|d| d.insert_temp(cache_id, (key, t.clone())));
             t
         }
@@ -1770,6 +1776,38 @@ mod tests {
     fn units(h: &Harness<'_, DesignApp>) -> (Unit, Unit) {
         let s = &h.state().session.doc().unwrap().doc.settings;
         (s.horizontal_units, s.vertical_units)
+    }
+
+    /// A viewport wider than the GPU's largest texture: the canvas texture is sampled down, and an
+    /// edit repaints it whole. A region repainted in view pixels would land in the wrong place,
+    /// or outside the texture (a wgpu validation error). A view that fits is still patched.
+    #[test]
+    fn an_edit_repaints_a_canvas_texture_sampled_down_to_the_gpu_limit_whole() {
+        for (width, sampled_down) in [(1440.0, false), (2600.0, true)] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text"})).unwrap();
+            let mut h = Harness::builder().with_size(vec2(width, 900.0)).build_ui_state(
+                |ui, app: &mut DesignApp| {
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    app.ui(ui);
+                },
+                app,
+            );
+            h.run_steps(6);
+            let limit = h.ctx.input(|i| i.max_texture_side);
+            let size = h.state().canvas.texture.as_ref().map(|t| t.size()).unwrap();
+            assert!(size[0] <= limit && size[1] <= limit, "{size:?}");
+            let shown = h.state().canvas.shown.unwrap().size;
+            assert_eq!(shown.0 > limit as f32, sampled_down, "view {shown:?}, limit {limit}");
+            let patches = h.state().canvas.patches;
+            // A small edit: one more character in the frame.
+            h.state_mut().run("text.insert", json!({"story": frame["story"], "at": 4, "text": "s"})).unwrap();
+            h.run_steps(6);
+            assert_eq!(h.state().canvas.patches == patches, sampled_down, "width {width}");
+            assert_eq!(h.state().canvas.texture.as_ref().map(|t| t.size()), Some(size));
+        }
     }
 
     #[test]

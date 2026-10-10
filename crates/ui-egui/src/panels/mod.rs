@@ -353,7 +353,7 @@ pub fn font_menu_body(app: &mut DesignApp, ui: &mut egui::Ui, menu: &[designcraf
             let tex = tex.unwrap_or_else(|| {
                 let img = designcraft_render::glyphs::text_line(&fonts, f, "Regular", "Sample", (18.0 * ppp) as u32, t.text.to_array());
                 let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
-                let h = ui.ctx().load_texture(format!("font_preview_{f}"), ci, egui::TextureOptions::LINEAR);
+                let h = crate::widgets::load_texture(ui.ctx(), format!("font_preview_{f}"), ci, egui::TextureOptions::LINEAR);
                 ui.data_mut(|d| d.insert_temp(key, h.clone()));
                 h
             });
