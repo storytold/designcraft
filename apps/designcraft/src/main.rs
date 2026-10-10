@@ -27,11 +27,10 @@ impl eframe::App for App {
             if let Some(m) = &mut self.1 {
                 m.poll(&mut self.0, ctx);
             }
-            // Files opened from Finder or the Dock (double-click, drop on the app icon, Open With).
+            // Files opened from Finder or the Dock (double-click, drop on the app icon, Open With):
+            // the same as a drop on the window (a failure shows an alert).
             for p in designcraft_macos_open::take_pending() {
-                if let Err(e) = self.0.open_or_place(&p) {
-                    self.0.status(format!("Could not open {p}: {e}"));
-                }
+                let _ = self.0.open_dropped(&p);
             }
         }
         self.0.logic(ctx);
