@@ -320,6 +320,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         draw_rulers(app, ui, full, rect, &xf, &doc, &layout, &t);
         ruler_units_menus(app, &resp, full, rect, &doc);
     }
+    context_menu(app, ui, &resp);
     if let Some(r) = sel_rect
         && !preview
         && r.intersects(screen)
@@ -1336,12 +1337,107 @@ fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, key: &str, cur: desi
     }
 }
 
+/// A canvas context menu asked for by a right-click; `open` until the popup is open after a frame.
+#[derive(Clone, Copy, Debug)]
+struct MenuRequest {
+    kind: crate::menus::ContextMenu,
+    open: bool,
+}
+
+/// The popup id of the canvas context menu in split-view pane `pane`.
+fn context_menu_id(pane: u8) -> egui::Id {
+    egui::Id::new(("canvas_context_menu", pane))
+}
+
+/// Was a canvas context menu open (in either pane of this window) when this frame began?
+/// Pane 0 shows its menu, which a click or Escape may close, before pane 1 handles input; that
+/// click or key still belongs to the menu. Popups are per window (viewport), and so is input.
+pub fn context_menu_open(ctx: &egui::Context) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    let key = egui::Id::new("canvas_context_menu_open").with(ctx.viewport_id());
+    if let Some((p, open)) = ctx.data(|d| d.get_temp::<(u64, bool)>(key))
+        && p == pass
+    {
+        return open;
+    }
+    let open = (0..2).any(|pane| egui::Popup::is_id_open(ctx, context_menu_id(pane)));
+    ctx.data_mut(|d| d.insert_temp(key, (pass, open)));
+    open
+}
+
+/// Shows the context menu a right-click asked for. A right-click while the menu is open closes it
+/// in that frame (it was a click outside the menu), so the request stays until a frame ends with
+/// the menu open: it reopens in the next frame where the new click was.
+fn context_menu(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response) {
+    let id = context_menu_id(app.pane);
+    let Some(req) = ui.data(|d| d.get_temp::<MenuRequest>(id)) else { return };
+    egui::Popup::menu(resp)
+        .id(id)
+        .open_memory(req.open.then_some(egui::SetOpenCommand::Bool(true)))
+        .at_pointer_fixed()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| crate::menus::context_menu(app, ui, req.kind));
+    if req.open {
+        if egui::Popup::is_id_open(ui.ctx(), id) {
+            ui.data_mut(|d| d.insert_temp(id, MenuRequest { open: false, ..req }));
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+/// Prepares a right-click at canvas point `p`: picks the menu and the selection it acts on.
+/// - Typing: a click in a text frame places the caret there as a left click would, except
+///   inside the selected text, which stays selected; elsewhere the text is left as it is.
+/// - On an object: it is selected first unless it already is, as the Selection tool would.
+/// - On nothing: the selection stays.
+fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::ContextMenu {
+    use crate::menus::ContextMenu;
+    let hit = item_at(app, p, zoom);
+    if app.session.wants_text() {
+        let text_frame = hit.filter(|(id, _)| app.session.active().and_then(|st| st.doc.item(*id)).is_some_and(Item::is_text_frame));
+        if let Some((id, sp)) = text_frame {
+            // A press in the selected text keeps it for dragging; end that press without a move.
+            if app.run("text.placeCaret", json!({"frame": id.0, "point": [sp.x, sp.y]})).is_ok_and(|r| r["dragging"] == json!(true)) {
+                let _ = app.run("text.release", json!({"frame": id.0, "point": [sp.x, sp.y], "moved": true}));
+            }
+        }
+        return ContextMenu::Text;
+    }
+    let Some((id, _)) = hit else { return ContextMenu::Canvas };
+    let direct = app.session.tool_id() == "directSelection";
+    let Some((target, selected)) = app.session.active().map(|st| {
+        let target = if direct { id } else { st.doc.top_level_of(id).unwrap_or(id) };
+        (target, st.selection.contains(target))
+    }) else {
+        return ContextMenu::Canvas;
+    };
+    if !selected {
+        let _ = app.run("selection.set", json!({"ids": [target.0], "content": direct}));
+    }
+    ContextMenu::Object
+}
+
+/// The frontmost item under canvas point `p` and that point in its spread, hit as the tools do.
+fn item_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::ItemId, Point)> {
+    let st = app.session.active()?;
+    let (sr, sp) = CanvasLayout::new(&st.doc, st.editing_parents).spread_at(p)?;
+    let tol = 4.0 / zoom.max(1e-6);
+    let id = match sr {
+        SpreadRef::Doc(si) => st.doc.hit_item(si, sp, tol)?,
+        _ => st.doc.spread(sr)?.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, tol))?.id,
+    };
+    Some((id, sp))
+}
+
 fn fmt_tick(v: f64) -> String {
     let r = v.round();
     if (v - r).abs() < 1e-6 { format!("{}", r as i64) } else { format!("{v:.1}") }
 }
 
 fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect) {
+    // While a context menu is open (in either pane), the click that closes it and the keys go to the menu.
+    let menu_open = context_menu_open(ui.ctx());
     let Some(v) = app.view().copied() else { return };
     let xf = Xf::new(rect, &v);
     let wants_text = app.session.wants_text();
@@ -1374,7 +1470,7 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
         return;
     }
     // Ruler guides need the rulers (hidden while the view is rotated).
-    if !space && xf.rot == 0 && guide_drag(app, ui, resp, rect, &xf) {
+    if !space && !menu_open && xf.rot == 0 && guide_drag(app, ui, resp, rect, &xf) {
         return;
     }
     let m = ui.input(|i| mods(i, space));
@@ -1392,9 +1488,11 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
             i.pointer.button_double_clicked(egui::PointerButton::Primary),
         )
     });
+    let in_view = |o: Pos2| if xf.rot == 0 { rect.contains(o) } else { resp.rect.contains(o) };
     if pressed
         && !space
-        && let Some(o) = origin.filter(|o| (if xf.rot == 0 { rect.contains(*o) } else { resp.rect.contains(*o) }) && resp.hovered())
+        && !menu_open
+        && let Some(o) = origin.filter(|o| in_view(*o) && resp.hovered())
     {
         events.push(PointerEvent { kind: if dbl { PointerKind::DoubleClick } else { PointerKind::Down }, pos: pos(o), mods: m });
         down = true;
@@ -1440,11 +1538,22 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
         }
     }
     app.after_engine();
+    // Right-click: tools only see the primary button, so it starts no gesture; it opens the menu.
+    if resp.secondary_clicked()
+        && !down
+        && !space
+        && app.ui.screen_mode != ScreenMode::Presentation
+        && let Some(o) = resp.interact_pointer_pos().filter(|o| in_view(*o))
+    {
+        let kind = context_target(app, xf.to_canvas(o), xf.zoom);
+        ui.data_mut(|d| d.insert_temp(context_menu_id(app.pane), MenuRequest { kind, open: true }));
+        ui.ctx().request_repaint();
+    }
     if resp.clicked() || resp.drag_started() {
         resp.request_focus();
     }
     // Keyboard for the active tool.
-    if ui.ctx().text_edit_focused() && !resp.has_focus() {
+    if menu_open || (ui.ctx().text_edit_focused() && !resp.has_focus()) {
         return;
     }
     let evs = ui.input(|i| i.events.clone());
@@ -1796,6 +1905,195 @@ mod tests {
             right_click(&mut h, p);
             assert!(h.query_by_label("   Points").is_none());
         }
+    }
+
+    /// Screen position of spread 0's point (x, y).
+    fn screen_of(h: &Harness<'_, DesignApp>, x: f64, y: f64) -> Pos2 {
+        let app = h.state();
+        let st = app.session.active().unwrap();
+        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+        xf.to_screen(CanvasLayout::new(&st.doc, st.editing_parents).xf(SpreadRef::Doc(0)) * Point::new(x, y))
+    }
+
+    /// A menu row: its label, then its shortcut if it has one.
+    fn menu_row<'h>(h: &'h Harness<'_, DesignApp>, label: &'h str) -> Option<egui_kittest::Node<'h>> {
+        h.query_by(move |n| {
+            n.role() == egui::accesskit::Role::Button
+                && n.label().is_some_and(|l| l == label || l.strip_prefix(label).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| !r.contains(' ')))
+        })
+    }
+
+    fn enabled(h: &Harness<'_, DesignApp>, label: &str) -> bool {
+        use egui_kittest::kittest::NodeT;
+        !menu_row(h, label).unwrap_or_else(|| panic!("no menu row {label}")).accesskit_node().is_disabled()
+    }
+
+    fn spread_items(h: &Harness<'_, DesignApp>) -> Vec<u64> {
+        h.state().session.doc().unwrap().doc.spreads[0].items.iter().map(|i| i.id.0).collect()
+    }
+
+    fn selected(h: &Harness<'_, DesignApp>) -> Vec<u64> {
+        h.state().session.doc().unwrap().selection.items.iter().map(|i| i.0).collect()
+    }
+
+    #[test]
+    fn right_clicking_an_object_selects_it_and_its_menu_arranges_it() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [150, 150, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        let mut h = harness(app);
+        assert_eq!(selected(&h), [b]);
+        let on_a = screen_of(&h, 60.0, 60.0);
+        right_click(&mut h, on_a);
+        assert_eq!(selected(&h), [a], "the object under the pointer is selected first");
+        // An empty frame's menu: Content, but no Fitting (nothing to fit) and no text frame entries.
+        assert!(menu_row(&h, "Content").is_some());
+        assert!(menu_row(&h, "Fitting").is_none() && menu_row(&h, "Text Frame Options…").is_none());
+        assert!(enabled(&h, "Copy") && !enabled(&h, "Paste"), "nothing copied yet: Paste is greyed");
+        menu_row(&h, "Arrange").unwrap().click();
+        h.run_steps(3);
+        menu_row(&h, "Bring to Front").unwrap().click();
+        h.run_steps(3);
+        assert_eq!(spread_items(&h), [b, a]);
+        assert!(menu_row(&h, "Arrange").is_none(), "choosing an entry closes the menu");
+    }
+
+    #[test]
+    fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("edit.copy", json!({})).unwrap();
+        app.select_tool("rectangleFrame");
+        let mut h = harness(app);
+        let empty = screen_of(&h, 400.0, 500.0);
+        right_click(&mut h, empty);
+        assert_eq!(selected(&h), [a], "a right-click on nothing keeps the selection");
+        assert!(menu_row(&h, "Arrange").is_none(), "the page menu, not the object menu");
+        assert!(enabled(&h, "Paste in Place"));
+        assert!(menu_row(&h, "✓ Show/Hide Rulers").is_some(), "toggles show their state");
+        // Escape closes the menu and does nothing else: the tool would deselect, the shortcuts
+        // would switch to the Selection tool.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(menu_row(&h, "Paste in Place").is_none());
+        assert_eq!((h.state().session.tool_id(), selected(&h)), ("rectangleFrame", vec![a]));
+        right_click(&mut h, empty);
+        menu_row(&h, "Paste").unwrap().click();
+        h.run_steps(3);
+        assert_eq!(spread_items(&h).len(), 2);
+    }
+
+    #[test]
+    fn right_clicking_another_object_while_the_menu_is_open_reopens_it_there() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [36, 600, 200, 760]})).unwrap()["id"].as_u64().unwrap();
+        let mut h = harness(app);
+        // The menu opens down from A, with the pointer on its first row (no submenu open); B is below it.
+        let (on_a, on_b) = (screen_of(&h, 60.0, 60.0), screen_of(&h, 50.0, 700.0));
+        right_click(&mut h, on_a);
+        assert_eq!(selected(&h), [a]);
+        assert!(menu_row(&h, "Arrange").is_some());
+        right_click(&mut h, on_b);
+        assert_eq!(selected(&h), [b]);
+        assert!(menu_row(&h, "Arrange").is_some(), "the menu reopens at the new click");
+    }
+
+    #[test]
+    fn a_context_menu_in_one_pane_keeps_the_keys_from_the_other() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        app.select_tool("rectangleFrame");
+        app.split = true;
+        let mut h = harness(app);
+        // The focused pane is the left one; this point is near its right edge, away from the frame.
+        let left = h.state().canvas_rect.unwrap();
+        right_click(&mut h, pos2(left.max.x - 40.0, left.center().y));
+        assert!(menu_row(&h, "Paste in Place").is_some());
+        // Escape closes the left pane's menu before the right pane handles the keys.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(menu_row(&h, "Paste in Place").is_none());
+        assert_eq!((h.state().session.tool_id(), selected(&h)), ("rectangleFrame", vec![a]));
+    }
+
+    #[test]
+    fn right_clicking_text_keeps_the_selected_text_or_places_the_caret() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 400, 200], "content": "text"})).unwrap();
+        app.select_tool("type");
+        app.run("text.insert", json!({"text": "Hello world"})).unwrap();
+        let sid = *app.session.doc().unwrap().doc.stories.keys().next().unwrap();
+        app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 5})).unwrap();
+        let mut h = harness(app);
+        let text_sel = |h: &Harness<'_, DesignApp>| h.state().session.doc().unwrap().selection.text.as_ref().map(|t| (t.anchor, t.focus));
+        // Inside "Hello": the selection stays.
+        let inside = screen_of(&h, 45.0, 44.0);
+        right_click(&mut h, inside);
+        assert_eq!(text_sel(&h), Some((0, 5)));
+        assert!(menu_row(&h, "Paste without Formatting").is_some(), "the text menu");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        // Past the end of the line: the caret goes there.
+        let past_end = screen_of(&h, 300.0, 44.0);
+        right_click(&mut h, past_end);
+        assert_eq!(text_sel(&h), Some((11, 11)));
+        assert!(menu_row(&h, "Paste without Formatting").is_some());
+    }
+
+    #[test]
+    fn rows_hidden_in_the_menu_bar_are_hidden_in_context_menus() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
+        app.ui.hidden_menu_items.push(crate::menus::menu_key("Object/Arrange", "Bring to Front"));
+        let mut h = harness(app);
+        let on_frame = screen_of(&h, 60.0, 60.0);
+        right_click(&mut h, on_frame);
+        menu_row(&h, "Arrange").unwrap().click();
+        h.run_steps(3);
+        assert!(menu_row(&h, "Bring to Front").is_none());
+        assert!(menu_row(&h, "Send to Back").is_some());
+        assert!(h.query_by_label("Show All Menu Items").is_some());
+    }
+
+    #[test]
+    fn a_secondary_drag_neither_moves_marquees_nor_draws() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let mut h = harness(app);
+        // A secondary-button drag between spread points.
+        let drag = |h: &mut Harness<'_, DesignApp>, from: (f64, f64), to: (f64, f64)| {
+            let (from, to) = (screen_of(h, from.0, from.1), screen_of(h, to.0, to.1));
+            h.hover_at(from);
+            h.step();
+            h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Secondary, pressed: true, modifiers: Default::default() });
+            h.step();
+            for t in [0.25, 0.5, 0.75, 1.0] {
+                h.event(egui::Event::PointerMoved(from + (to - from) * t));
+                h.step();
+            }
+            h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Secondary, pressed: false, modifiers: Default::default() });
+            h.run_steps(3);
+        };
+        let xf = |h: &Harness<'_, DesignApp>| h.state().session.doc().unwrap().doc.item(designcraft_doc::ItemId(a)).unwrap().xf;
+        let before = xf(&h);
+        // Selection tool: on the object (no move), and from empty page across it (no marquee).
+        drag(&mut h, (100.0, 100.0), (300.0, 300.0));
+        assert_eq!(xf(&h), before);
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        drag(&mut h, (400.0, 400.0), (20.0, 20.0));
+        assert!(selected(&h).is_empty());
+        // Rectangle Frame tool: no frame.
+        h.state_mut().select_tool("rectangleFrame");
+        drag(&mut h, (300.0, 300.0), (500.0, 500.0));
+        assert_eq!(spread_items(&h), [a]);
     }
 
     #[test]

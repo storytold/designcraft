@@ -2197,6 +2197,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "逆时针旋转 90°",
         ],
     ),
+    ("Rotate 180°", ["180° drehen", "Rotation à 180°", "Girar 180°", "180°回転", "旋转 180°"]),
     ("Rotation Angle", ["Rotation Angle", "Rotation Angle", "Rotation Angle", "Rotation Angle", "旋转角度"]),
     ("Rows", ["Rows", "Rows", "Rows", "Rows", "行数"]),
     ("Run", ["Run", "Run", "Run", "Run", "运行"]),

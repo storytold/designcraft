@@ -1093,6 +1093,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Release to Objects", "個別のオブジェクトに分離"),
     ("Remove", "削除"),
     ("Rotate 90° Counterclockwise", "反時計回りに90°回転"),
+    ("Rotate 180°", "180°回転"),
     ("Rotation Angle", "回転角度"),
     ("Rows", "行数"),
     ("Run", "実行"),
