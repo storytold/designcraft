@@ -1453,6 +1453,22 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
             ui.end_row();
         }
+        // Drop caps: how many lines the initial drops, and how many characters it takes.
+        for (icon, tip, key, id) in
+            [("drop-cap-lines", "Drop cap lines", "dropCapLines", "ppdcl"), ("drop-cap-chars", "Drop cap characters", "dropCapChars", "ppdcc")]
+        {
+            let tip = crate::i18n::tr(&app.ui.language, tip);
+            let (r, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+            icons::paint(ui.painter(), r, icon, Tokens::get(ui.ctx()).icon);
+            resp.on_hover_ui(|ui| {
+                crate::rtl::label(ui, tip);
+            });
+            let max = if key == "dropCapLines" { 25.0 } else { 150.0 };
+            if let Some(v) = number(ui, id, p[key].as_f64(), "", 64.0, 0) {
+                let _ = app.run("type.para", json!({"attrs": {key: v.round().clamp(0.0, max) as u32}}));
+            }
+        }
+        ui.end_row();
     });
     ui.horizontal(|ui| {
         let mut h = p["hyphenate"].as_bool().unwrap_or(true);

@@ -1877,3 +1877,102 @@ fn vertical_lines_fit_the_em_box() {
         assert!((l.baseline - col.y0 - ascent).abs() < 1e-9, "{family}: {} {}", l.baseline, col.y0);
     }
 }
+
+fn drop_cap(lines: u32, chars: u32) -> ParaAttrs {
+    ParaAttrs { drop_cap_lines: Some(lines), drop_cap_chars: Some(chars), ..Default::default() }
+}
+
+/// The glyphs of line `l` that belong to the first `end` story bytes.
+fn cap_glyphs(l: &Line, end: usize) -> Vec<&PlacedGlyph> {
+    l.glyphs.iter().filter(|g| g.len > 0 && g.byte < end).collect()
+}
+
+#[test]
+fn drop_cap_spans_its_lines() {
+    let rect = Rect::new(0.0, 0.0, 260.0, 2000.0);
+    let (d, sid, _) = doc_with(LOREM, rect, ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let (d, sid, _) = doc_with(LOREM, rect, drop_cap(3, 1));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let (p, l) = (all_lines(&plain), all_lines(&cs));
+    // Body lines keep their baselines: the cap only changes widths.
+    assert!((l[0].baseline - p[0].baseline).abs() < 1e-6);
+    assert!((l[3].baseline - l[0].baseline - 3.0 * 14.4).abs() < 1e-6);
+    let cap = cap_glyphs(l[0], 1);
+    assert_eq!(cap.len(), 1);
+    let (c, body) = (cap[0], p[0].glyphs[0].clone());
+    // Sitting on the third line's baseline...
+    assert!((l[0].baseline + c.y - l[2].baseline).abs() < 1e-6, "cap baseline {} vs line 3 {}", l[0].baseline + c.y, l[2].baseline);
+    // ...scaled so its cap height reaches the first line's: (2 × leading + cap) / cap.
+    let k = c.sy / body.sy;
+    let cap_h = body.face.cap_height * body.sy;
+    assert!((k - (2.0 * 14.4 + cap_h) / cap_h).abs() < 1e-6, "scale {k}");
+    // The lines beside it start after it; the fourth is back at the margin.
+    let after = c.x + c.adv;
+    for line in &l[1..3] {
+        assert!((line.glyphs[0].x - after).abs() < 1.0, "line starts at {} not {after}", line.glyphs[0].x);
+        assert!(line.end_x <= line.x1 + 0.5);
+    }
+    assert!(l[3].glyphs[0].x < 1.0);
+}
+
+#[test]
+fn drop_cap_text_is_not_duplicated_or_lost() {
+    let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 240.0, 2000.0), drop_cap(4, 3));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    // Every byte of the story is still in exactly one line.
+    let mut pos = 0;
+    for l in &lines {
+        assert_eq!(l.range.start, pos);
+        pos = l.range.end;
+    }
+    assert_eq!(pos, LOREM.len());
+    // All three cap characters ride on the first line, lowered by the same amount.
+    let cap = cap_glyphs(lines[0], 3);
+    assert_eq!(cap.len(), 3);
+    assert!(cap.iter().all(|g| (g.y - cap[0].y).abs() < 1e-9 && g.y > 0.0));
+    assert!(lines[1..].iter().all(|l| cap_glyphs(l, 3).is_empty()));
+}
+
+#[test]
+fn drop_cap_needs_two_lines_and_a_character() {
+    let rect = Rect::new(0.0, 0.0, 260.0, 2000.0);
+    let (d, sid, _) = doc_with(LOREM, rect, ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    for attrs in [drop_cap(1, 1), drop_cap(3, 0), drop_cap(0, 3)] {
+        let (d, sid, _) = doc_with(LOREM, rect, attrs);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let (a, b) = (all_lines(&plain), all_lines(&cs));
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x.range, y.range);
+            assert!((x.glyphs[0].sy - y.glyphs[0].sy).abs() < 1e-12);
+        }
+    }
+}
+
+#[test]
+fn drop_cap_survives_hostile_values() {
+    // More characters than the paragraph has, more lines than it has, and the maximum of both:
+    // no panic, and the text is all still there.
+    for (lines, chars) in [(3, 10_000), (u32::MAX, 1), (u32::MAX, u32::MAX)] {
+        let (d, sid, _) = doc_with("Hi.", Rect::new(0.0, 0.0, 200.0, 2000.0), drop_cap(lines, chars));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs);
+        assert_eq!(l.first().map(|l| l.range.clone()), Some(0..3));
+        assert!(l.iter().flat_map(|l| &l.glyphs).all(|g| g.sx.is_finite() && g.sy.is_finite() && g.y.is_finite()));
+    }
+    // An empty paragraph has nothing to enlarge.
+    let (d, sid, _) = doc_with("", Rect::new(0.0, 0.0, 200.0, 2000.0), drop_cap(3, 1));
+    let _ = compose_story(&d, sid, &ComposeOptions::default());
+}
+
+#[test]
+fn drop_cap_stays_inline_in_right_to_left_paragraphs() {
+    let attrs = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..drop_cap(3, 1) };
+    let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 260.0, 2000.0), attrs);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs);
+    assert!(cap_glyphs(l[0], 1).iter().all(|g| g.y.abs() < 1e-9));
+}
