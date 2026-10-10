@@ -1212,7 +1212,39 @@ fn draw_tool_overlays(app: &mut DesignApp, painter: &egui::Painter, xf: &Xf) {
                 painter.rect_filled(r, 3.0, tok.measure_bg);
                 painter.galley(r.min + vec2(5.0, 3.0), g, tok.measure_text);
             }
-            Overlay::Path { .. } => {}
+            Overlay::Path { path, color, dashed: d } => draw_path_overlay(painter, xf, &path, c32(color), d),
+        }
+    }
+}
+
+/// A path overlay (canvas coordinates; the Pencil's stroke while drawing, the Smooth and Erase
+/// drags) as screen polylines, its curves flattened to about a quarter of a screen pixel.
+fn draw_path_overlay(painter: &egui::Painter, xf: &Xf, path: &designcraft_geom::BezPath, color: Color32, dashed_line: bool) {
+    use designcraft_geom::PathEl;
+    let stroke = Stroke::new(1.0, color);
+    let mut runs: Vec<Vec<Pos2>> = Vec::new();
+    designcraft_geom::kurbo::flatten(path, 0.25 / xf.zoom.max(1e-9), |el| match el {
+        PathEl::MoveTo(p) => runs.push(vec![xf.to_screen(p)]),
+        PathEl::LineTo(p) => {
+            if let Some(run) = runs.last_mut() {
+                run.push(xf.to_screen(p));
+            }
+        }
+        PathEl::ClosePath => {
+            if let Some(run) = runs.last_mut()
+                && let Some(&first) = run.first()
+            {
+                run.push(first);
+            }
+        }
+        // Flattening yields only moves, lines and closes.
+        PathEl::QuadTo(..) | PathEl::CurveTo(..) => {}
+    });
+    for run in runs.into_iter().filter(|r| r.len() >= 2) {
+        if dashed_line {
+            painter.extend(egui::Shape::dashed_line(&run, stroke, 3.0, 3.0));
+        } else {
+            painter.add(egui::Shape::line(run, stroke));
         }
     }
 }
@@ -1804,5 +1836,60 @@ mod tests {
         let Some(rect) = h.state().canvas_rect else { return };
         right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
         assert!(h.query_by_label("   Points").is_none());
+    }
+}
+
+#[cfg(test)]
+mod pencil_preview_tests {
+    use egui::{Pos2, pos2, vec2};
+
+    /// Lines painted in `color` (egui paths) and the points they pass through.
+    fn lines_in(h: &egui_kittest::Harness<'static, crate::test_window::Window>, color: egui::Color32) -> Vec<Vec<Pos2>> {
+        fn walk(s: &egui::Shape, color: egui::Color32, out: &mut Vec<Vec<Pos2>>) {
+            match s {
+                egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(color) && p.points.len() >= 2 => out.push(p.points.clone()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, color, out)),
+                _ => {}
+            }
+        }
+        let mut out = vec![];
+        h.output().shapes.iter().for_each(|s| walk(&s.shape, color, &mut out));
+        out
+    }
+
+    #[test]
+    fn the_pencil_stroke_shows_while_drawing() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({})).unwrap();
+        app.run("tool.select", serde_json::json!({"tool": "pencil"})).unwrap();
+        let mut h = crate::test_window::open(app, vec2(1400.0, 900.0));
+        let doc = &h.state().app.session.doc().unwrap().doc;
+        let layer = doc.layers[0].color;
+        let color = egui::Color32::from_rgb(layer[0], layer[1], layer[2]);
+        let items = |h: &egui_kittest::Harness<'static, crate::test_window::Window>| h.state().app.session.doc().unwrap().doc.spreads[0].items.len();
+        let before = items(&h);
+        // Press on the page and drag, without letting go.
+        let start = pos2(520.0, 380.0);
+        h.hover_at(start);
+        h.drag_at(start);
+        h.run_steps(2);
+        let path: Vec<Pos2> = (1..=12).map(|i| start + vec2(i as f32 * 12.0, (i as f32 * 0.6).sin() * 30.0)).collect();
+        for p in &path {
+            h.hover_at(*p);
+            h.run_steps(1);
+        }
+        let drawn = lines_in(&h, color);
+        let stroke = drawn.iter().max_by_key(|l| l.len()).expect("the stroke is painted while the button is down");
+        let near = |a: Pos2, b: Pos2| (a - b).length() < 2.0;
+        assert!(near(stroke[0], start), "it starts where the press was: {:?}", stroke[0]);
+        assert!(path.iter().all(|p| stroke.iter().any(|q| near(*p, *q))), "it follows the pointer: {stroke:?}");
+        assert_eq!(items(&h), before, "nothing is made before the release");
+        // Letting go makes the path and ends the preview.
+        h.drop_at(*path.last().unwrap());
+        h.run_steps(3);
+        assert_eq!(items(&h), before + 1);
+        let app = &mut h.state_mut().app;
+        let view = app.view_info();
+        assert!(app.session.overlays(view).is_empty(), "the preview is gone");
     }
 }

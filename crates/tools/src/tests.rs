@@ -172,7 +172,18 @@ fn pencil_draws_a_smooth_path() {
         t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 100.0 + 50.0 * a.sin() + off.x, 100.0 + 50.0 * (1.0 - a.cos()) + off.y));
     }
     assert!(t.busy());
+    // While drawing, the stroke so far is shown, in the colour of the layer it goes on.
+    let layer = d.layer(cx.layer).unwrap().color;
+    match &t.overlays(&cx)[..] {
+        [crate::Overlay::Path { path, color, dashed: false }] => {
+            assert_eq!(*color, layer);
+            assert!(path.elements().len() > 40, "the stroke so far: {} points", path.elements().len());
+            assert_eq!(path.elements()[0], designcraft_geom::PathEl::MoveTo(designcraft_geom::Point::new(100.0 + off.x, 100.0 + off.y)));
+        }
+        other => panic!("{other:?}"),
+    }
     let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 150.0 + off.x, 150.0 + off.y));
+    assert!(t.overlays(&cx).is_empty(), "the preview ends with the stroke");
     match &a[..] {
         [Action::Exec(cmd, p)] => {
             assert_eq!(cmd, "path.create");
