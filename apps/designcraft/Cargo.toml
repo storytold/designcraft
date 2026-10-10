@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 designcraft-engine = { workspace = true }
-designcraft-ui-egui = { workspace = true }
+designcraft-ui-egui = { workspace = true, features = ["clipboard"] }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
 egui = { workspace = true }
 serde_json = { workspace = true }

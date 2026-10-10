@@ -1393,7 +1393,11 @@ fn download_document(app: &mut DesignApp) -> Result<Value, String> {
 
 fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
-    let page = p.get("page").and_then(Value::as_u64).map(|v| v as usize).or_else(|| crate::canvas::current_page(app)).unwrap_or(0);
+    let page = match p.get("page").and_then(Value::as_i64) {
+        Some(v) if v < 0 => return Err("page index must be non-negative".into()),
+        Some(v) => v as usize,
+        None => crate::canvas::current_page(app).unwrap_or(0),
+    };
     let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(2.0);
     let mut r = designcraft_render::Renderer::new();
     let img = r
