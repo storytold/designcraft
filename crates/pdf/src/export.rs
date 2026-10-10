@@ -141,6 +141,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
     pdf.set_metadata(meta);
 
     let mut ex = Exporter {
+        drawing_items: Vec::new(),
         doc,
         cache,
         opts,
@@ -313,6 +314,7 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
     }
     pdf.set_metadata(meta);
     let mut ex = Exporter {
+        drawing_items: Vec::new(),
         doc,
         cache,
         opts: &pdf_opts,
@@ -408,6 +410,7 @@ pub(crate) struct Exporter<'a> {
     /// Current sheet's visible area (spread space) for culling.
     pub clip: Rect,
     pub warnings: Vec<String>,
+    drawing_items: Vec<designcraft_doc::ItemId>,
     images: HashMap<AssetId, Option<Image>>,
     /// Placed PDFs (embedded as vector pages).
     pdfs: HashMap<AssetId, Option<krilla::pdf::PdfDocument>>,
@@ -711,6 +714,16 @@ impl Exporter<'_> {
     }
 
     fn item(&mut self, s: &mut Surface, it: &Item, parent: Affine, page_name: Option<&str>) {
+        if self.drawing_items.len() >= 64 || self.drawing_items.contains(&it.id) {
+            self.warnings.push(format!("Cyclic or excessively nested item {} was not rendered", it.id));
+            return;
+        }
+        self.drawing_items.push(it.id);
+        self.item_guarded(s, it, parent, page_name);
+        self.drawing_items.pop();
+    }
+
+    fn item_guarded(&mut self, s: &mut Surface, it: &Item, parent: Affine, page_name: Option<&str>) {
         let gf = &it.effects.gradient_feather;
         if !gf.on || it.hidden || it.nonprinting {
             return self.item_inner(s, it, parent, page_name);
@@ -854,7 +867,6 @@ impl Exporter<'_> {
         s.push_transform(&tf(xf));
         // Fill.
         if !it.fill.is_none()
-            && it.path.is_closed()
             && let Some(p) = &path
             && let Some(paint) = self.fill_paint(&it.fill, bp.bounding_box())
         {
@@ -921,16 +933,30 @@ impl Exporter<'_> {
         for _ in 0..pushes {
             s.pop();
         }
-        // Anchored objects in the frame's text.
-        if let Content::Text(tfr) = &it.content
-            && let Some(st) = doc.story(tfr.story).filter(|st| !st.objects.is_empty())
-        {
+        if let Content::Text(tfr) = &it.content {
             let cs = self.cache.get(doc, tfr.story, page_name);
             if let Some(ft) = cs.frame(it.id) {
-                for o in &ft.objects {
-                    if let Some(obj) = st.objects.get(o.index) {
-                        self.item(s, &obj.item, xf * Affine::translate(o.origin.to_vec2()), page_name);
-                    }
+                self.frame_objects(s, ft, xf * doc.text_local(it), page_name);
+            }
+        }
+    }
+
+    /// Draw embedded page items after restoring the surface, retaining spread-space
+    /// transforms for page culling (also for anonymous note and cell stories).
+    fn frame_objects(&mut self, s: &mut Surface, ft: &designcraft_compose::FrameText, xf: Affine, page_name: Option<&str>) {
+        let mut pending = vec![(ft, xf)];
+        while let Some((frame, transform)) = pending.pop() {
+            for object in &frame.objects {
+                self.item(s, &object.object.item, transform * Affine::translate(object.origin.to_vec2()), page_name);
+            }
+            for note in &frame.notes {
+                if let Some(frame) = note.text.frames.first() {
+                    pending.push((frame, transform * Affine::translate(note.origin.to_vec2())));
+                }
+            }
+            for cell in frame.tables.iter().flat_map(|t| &t.cells) {
+                if let Some(frame) = cell.text.frames.first() {
+                    pending.push((frame, transform * Affine::translate(cell.origin.to_vec2())));
                 }
             }
         }

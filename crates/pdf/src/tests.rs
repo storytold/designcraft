@@ -337,3 +337,32 @@ fn missing_glyphs_print_as_boxes() {
     assert_eq!(glyphs.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), ["a", "b"], "{glyphs:?}");
     assert_eq!(boxes(&paths), 1, "{paths:?}");
 }
+
+#[test]
+fn exports_embedded_text_from_footnotes() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    use std::sync::Arc;
+    let mut d = doc_with_text("Body");
+    let body = *d.stories.keys().next().unwrap();
+    let (fid, _) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), d.default_layer(), "Embedded", ParaFormat::default()).unwrap();
+    let item = d.item(fid).unwrap().clone();
+    d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+    let story = d.story_mut(body).unwrap();
+    story.insert_note(4, "Note", ParaFormat::default());
+    Arc::make_mut(&mut story.notes[0]).text.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+    d.check().unwrap();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let text = extract_text(&bytes).join("");
+    assert!(text.contains("Embedded"), "{text}");
+}
+
+#[test]
+fn fills_open_contours_without_changing_strokes() {
+    let mut d = Document::new(&NewDocument::default());
+    add_box(&mut d, Rect::new(40.0, 50.0, 62.0, 67.0), designcraft_color::swatch::BLACK);
+    let id = d.spreads[0].items[0].id;
+    d.item_mut(id).unwrap().path.subpaths[0].closed = false;
+    let (_, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+    assert!(paths.iter().any(|r| (r.width() - 22.0).abs() < 0.01 && (r.height() - 17.0).abs() < 0.01), "{paths:?}");
+}

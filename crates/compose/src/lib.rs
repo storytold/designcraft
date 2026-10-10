@@ -212,6 +212,8 @@ pub struct FrameText {
 pub struct PlacedObject {
     /// Index in the story's [`Story::objects`].
     pub index: usize,
+    /// Source item retained for anonymous footnote and cell stories.
+    pub object: Arc<designcraft_doc::AnchoredObject>,
     /// Top-left of the object in frame inner space.
     pub origin: Point,
     pub size: (f64, f64),
@@ -328,13 +330,14 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
     let Some(st) = doc.story(sid) else { return vec![] };
     let mut out = Vec::with_capacity(st.frames.len());
     for &fid in &st.frames {
-        let Some(loc) = doc.find(fid) else { continue };
-        let Some(item) = doc.item_at(&loc) else { continue };
+        let loc = doc.find(fid);
+        let Some(item) = loc.as_ref().and_then(|l| doc.item_at(l)).or_else(|| doc.anchored_item(fid)) else { continue };
         let Some(tf) = item.text_frame() else { continue };
-        let xf = doc.parent_xf(&loc) * item.xf;
+        let xf = loc.as_ref().map(|l| doc.parent_xf(l)).unwrap_or(designcraft_geom::Affine::IDENTITY) * item.xf;
         let inv = xf.inverse();
         let mut exclusions = Vec::new();
-        let spread = doc.spread(loc.spread);
+        let spread_ref = loc.as_ref().map(|l| l.spread);
+        let spread = spread_ref.and_then(|r| doc.spread(r));
         if !tf.options.ignore_wrap
             && let Some(sp) = spread
         {
@@ -352,14 +355,14 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
                 exclusions.push(Exclusion { rect: inner, mode: other.wrap.mode });
             }
         }
-        let (page_name, page, left_page) = match (loc.spread, spread) {
-            (designcraft_doc::SpreadRef::Doc(si), Some(sp)) => {
+        let (page_name, page, left_page) = match (spread_ref, spread) {
+            (Some(designcraft_doc::SpreadRef::Doc(si)), Some(sp)) => {
                 let c = item.bounds().center();
                 let pi = sp.page_at_x(c.x).unwrap_or(0);
                 let abs = doc.first_page_of_spread(si) + pi;
                 (Some(doc.page_name(abs)), Some(abs), sp.pages.get(pi).is_some_and(|p| p.side == designcraft_doc::PageSide::Left))
             }
-            (designcraft_doc::SpreadRef::Parent(pi), Some(sp)) => {
+            (Some(designcraft_doc::SpreadRef::Parent(pi)), Some(sp)) => {
                 let prefix = sp.parent.as_ref().map(|p| p.prefix.clone()).unwrap_or_else(|| "A".into());
                 let _ = pi;
                 (Some(prefix), None, false)
@@ -367,7 +370,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             _ => (None, None, false),
         };
         // The page under the frame and its margins, in inner space (bounding boxes).
-        let page_rect = match (loc.spread, spread) {
+        let page_rect = match (spread_ref, spread) {
             (_, Some(sp)) => sp
                 .page_at_x(item.bounds().center().x)
                 .and_then(|pi| sp.pages.get(pi))
@@ -882,8 +885,18 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     let text_ascent = line_glyphs.iter().filter(|g| g.ch != designcraft_doc::OBJECT_MARK).map(|g| g.ascent).fold(0.0, f64::max);
                     let text_ascent = if text_ascent > 0.0 { text_ascent } else { base_chars.size * 0.75 };
                     for g in ft.lines[li].glyphs.iter().filter(|g| g.len > 0) {
-                        if let Some(o) = sub_objects.get(&g.byte) {
-                            ft.objects.push(PlacedObject { index: o.index, origin: Point::ZERO, size: (o.w, o.h), line: li, x: g.x, text_ascent });
+                        if let Some(o) = sub_objects.get(&g.byte)
+                            && let Some(source) = story.objects.get(o.index)
+                        {
+                            ft.objects.push(PlacedObject {
+                                index: o.index,
+                                object: Arc::clone(source),
+                                origin: Point::ZERO,
+                                size: (o.w, o.h),
+                                line: li,
+                                x: g.x,
+                                text_ascent,
+                            });
                         }
                     }
                 }

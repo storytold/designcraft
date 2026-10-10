@@ -857,3 +857,46 @@ fn arabic_story_and_table_directions_survive_idml_export() {
     assert_eq!(st.direction, designcraft_doc::TextDirection::RightToLeft);
     assert_eq!(st.tables.values().next().unwrap().options.direction, designcraft_doc::TextDirection::RightToLeft);
 }
+
+/// Synthetic forward references: both a body anchor and a footnote anchor own
+/// a group containing a text frame whose story is serialized later.
+#[test]
+fn round_trips_anchored_text_frames_in_body_and_footnotes() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, Content, Item, ItemId};
+    use std::sync::Arc;
+    let mut d = Document::new(&NewDocument::default());
+    let layer = d.default_layer();
+    let (_, body) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 400.0, 600.0), layer, "Body", ParaFormat::default()).unwrap();
+    d.story_mut(body).unwrap().insert_note(4, "Note", ParaFormat::default());
+    for in_note in [false, true] {
+        let (frame, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 60.0, 30.0), layer, "Symbol", ParaFormat::default()).unwrap();
+        let child = d.item(frame).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != frame);
+        let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Group, Default::default());
+        group.content = Content::Group { items: vec![Arc::new(child)] };
+        let anchor = AnchoredObject::new(group, AnchorPosition::Inline { y_offset: 2.0 });
+        let story = d.story_mut(body).unwrap();
+        if in_note {
+            Arc::make_mut(&mut story.notes[0]).text.insert_object(0, anchor);
+        } else {
+            story.insert_object(0, anchor);
+        }
+    }
+    d.check().unwrap();
+    for _ in 0..2 {
+        d = import_idml(&export_idml(&d)).unwrap();
+        d.check().unwrap();
+        assert_eq!(d.stories.len(), 3);
+        let body = d.stories.values().find(|s| !s.notes.is_empty()).unwrap();
+        assert_eq!(body.notes.len(), 1);
+        assert_eq!(body.objects.len(), 1);
+        assert_eq!(body.notes[0].text.objects.len(), 1);
+        let children: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).collect();
+        assert_eq!(children.len(), 2);
+        for (_, item) in children {
+            let story = d.story(item.text_frame().unwrap().story).unwrap();
+            assert_eq!(story.text, "Symbol");
+            assert_eq!(story.frames, vec![item.id]);
+        }
+    }
+}

@@ -376,11 +376,15 @@ impl<'r> Importer<'r> {
             self.index_topics_of(ix, &[]);
         }
         // Stories (ids first so frames can reference them).
+        let mut pending_stories = Vec::new();
         for e in top.iter().filter(|e| e.local() == "Story") {
             let id = StoryId(self.alloc());
             if let Some(s) = e.get("Self") {
                 self.story_ids.insert(s.to_string(), id);
             }
+            pending_stories.push((id, e));
+        }
+        for (id, e) in pending_stories {
             let story = self.story(id, e);
             self.stories.insert(id, story);
         }
@@ -1668,11 +1672,9 @@ impl<'r> Importer<'r> {
                         rcf.over.position = None;
                         b.push(&designcraft_doc::FOOTNOTE_REF.to_string(), &rcf);
                     }
-                    // Not supported yet: skip their content entirely.
-                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" => {
-                        // An anchored object (text frames inside stories aren't supported yet).
-                        let has_text = c.find_all("TextFrame").next().is_some();
-                        if !has_text && let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY) {
+                    // Anchored page items, including groups containing text frames.
+                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
+                        if let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY) {
                             use designcraft_doc::anchored::AnchorAlign as A;
                             let set = c.find("AnchoredObjectSetting");
                             let get = |k: &str| set.and_then(|s| s.num(k)).unwrap_or(0.0);
@@ -1714,7 +1716,7 @@ impl<'r> Importer<'r> {
                             b.push(&designcraft_doc::OBJECT_MARK.to_string(), cf);
                         }
                     }
-                    "Properties" | "Note" | "TextFrame" | "StoryPreference" | "InCopyExportOption" | "TextVariableInstance" => {}
+                    "Properties" | "Note" | "StoryPreference" | "InCopyExportOption" | "TextVariableInstance" => {}
                     _ => self.walk_story(c, b, pf, pchars, cf, brk),
                 },
                 Node::Pi(t, v) if t == "ACE" => {
@@ -2147,8 +2149,8 @@ impl<'r> Importer<'r> {
         let threads = std::mem::take(&mut self.ctx.threads);
         let by_self: HashMap<String, ItemId> = self.item_ids.clone();
         let mut per_story: BTreeMap<StoryId, Vec<usize>> = BTreeMap::new();
-        for (i, (id, _, _, _)) in threads.iter().enumerate() {
-            let sid = self.frame_story(*id);
+        for (i, (id, story, _, _)) in threads.iter().enumerate() {
+            let sid = self.story_ids.get(story).copied().or_else(|| self.frame_story(*id));
             if let Some(sid) = sid {
                 per_story.entry(sid).or_default().push(i);
             }

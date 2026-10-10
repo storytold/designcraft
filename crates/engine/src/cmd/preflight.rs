@@ -71,6 +71,45 @@ fn missing_glyphs(cs: &ComposedStory, text: &str, depth: usize, out: &mut Vec<(F
     }
 }
 
+/// Locate an embedded frame at the outer page frame that actually renders it.
+fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<(designcraft_doc::ItemId, Option<usize>)> {
+    let d = &s.active()?.doc;
+    if let Some(loc) = d.find(target) {
+        return Some((target, d.item(target).and_then(|it| page_of(d, loc.spread, it))));
+    }
+    fn contains(root: &designcraft_compose::FrameText, target: designcraft_doc::ItemId) -> bool {
+        let mut frames = vec![root];
+        while let Some(frame) = frames.pop() {
+            for object in &frame.objects {
+                let mut found = false;
+                object.object.item.walk(&mut |it| {
+                    found |= it.id == target;
+                });
+                if found {
+                    return true;
+                }
+            }
+            frames.extend(frame.notes.iter().flat_map(|n| n.text.frames.iter()));
+            frames.extend(frame.tables.iter().flat_map(|t| t.cells.iter().flat_map(|c| c.text.frames.iter())));
+        }
+        false
+    }
+    let mut current = target;
+    let mut seen = std::collections::HashSet::new();
+    let embedded = d.anchored_items();
+    while seen.insert(current) {
+        let owner = embedded.iter().find_map(|(owner, it)| (it.id == current).then_some(*owner))?;
+        let cs = s.cache.get(d, owner, None);
+        // Search each host frame separately, including objects in its notes and cells.
+        let frame = cs.frames.iter().find(|f| contains(f, current))?;
+        current = frame.frame;
+        if let Some(loc) = d.find(current) {
+            return Some((current, d.item(current).and_then(|it| page_of(d, loc.spread, it))));
+        }
+    }
+    None
+}
+
 pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let Some(st) = s.active() else { return vec![] };
     let d = &st.doc;
@@ -85,9 +124,20 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
         missing_glyphs(&cs, &story.text, 0, &mut missing);
         if cs.is_overset() {
             let last = story.frames.last().copied();
-            let page = last.and_then(|f| d.find(f).zip(d.item(f))).and_then(|(loc, it)| page_of(d, loc.spread, it));
-            let n = story.text[cs.overset_at.unwrap_or(0).min(story.len())..].chars().count();
-            out.push(Issue { severity: "error", kind: "overset", message: format!("Overset text: {n} characters"), item: last.map(|i| i.0), page });
+            let location = last.and_then(|f| overset_location(s, f));
+            let n = story.text.get(cs.overset_at.unwrap_or(0)..).unwrap_or("").chars().count();
+            let unplaced = story.frames.is_empty();
+            out.push(Issue {
+                severity: if unplaced { "warning" } else { "error" },
+                kind: if unplaced { "unplacedStory" } else { "overset" },
+                message: if unplaced {
+                    format!("Unplaced story {}: {n} characters have no text frame", story.id)
+                } else {
+                    format!("Overset text: {n} characters")
+                },
+                item: location.map(|(item, _)| item.0).or(last.map(|i| i.0)),
+                page: location.and_then(|(_, page)| page),
+            });
         }
         let ranges = story.para_ranges();
         for (pi, pf) in story.paras.iter().enumerate() {

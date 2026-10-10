@@ -89,6 +89,28 @@ impl Document {
         self.item_at(&self.find(id)?)
     }
 
+    /// Items embedded in stories (including footnotes and table cells), with their
+    /// owning top-level story. Does not follow text-frame references between stories.
+    pub fn anchored_items(&self) -> Vec<(StoryId, &Item)> {
+        let mut out = Vec::new();
+        let mut stories: Vec<_> = self.stories.iter().map(|(id, story)| (*id, story.as_ref())).collect();
+        while let Some((owner, story)) = stories.pop() {
+            stories.extend(story.notes.iter().chain(&story.endnotes).map(|n| (owner, &n.text)));
+            stories.extend(story.tables.values().flat_map(|t| t.cells.iter().map(|c| (owner, &c.text))));
+            let mut items: Vec<&Item> = story.objects.iter().map(|o| &o.item).collect();
+            while let Some(item) = items.pop() {
+                out.push((owner, item));
+                items.extend(item.children().iter().map(AsRef::as_ref));
+            }
+        }
+        out
+    }
+
+    /// An embedded item is not a spread selection location (`find`).
+    pub fn anchored_item(&self, id: ItemId) -> Option<&Item> {
+        self.anchored_items().into_iter().find_map(|(_, item)| (item.id == id).then_some(item))
+    }
+
     pub fn item_mut_at(&mut self, loc: &ItemLoc) -> Option<&mut Item> {
         let sp = self.spread_mut(loc.spread)?;
         let mut it: &mut Item = Arc::make_mut(sp.items.get_mut(*loc.path.first()?)?);
