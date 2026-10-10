@@ -489,7 +489,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns?, gutter?, inset?: number|[t,l,b,r], verticalJustification?: top|center|bottom|justify, firstBaseline?, autoSize?, ignoreWrap?, balanceColumns?, vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
+            "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, firstBaseline?, autoSize?, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
             has_selection,
             text_frame_options
         ),
@@ -1421,6 +1421,7 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
     let mut ids = targets(s, p)?;
     if ids.is_empty()
@@ -1428,6 +1429,23 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     {
         ids = st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default();
     }
+    let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(x) if x.is_finite() && (lo..=hi).contains(&x) => Ok(Some(x)),
+            _ => Err(bad(ID, format!("{key} must be {what} from {lo} to {hi}, not {v}"))),
+        },
+    };
+    let rule_weight = ranged("columnRuleWeight", 0.0, 1000.0, "a number of points")?;
+    let rule_tint = ranged("columnRuleTint", 0.0, 1.0, "a tint")?;
+    let rule_offset = ranged("columnRuleOffset", -1440.0, 1440.0, "a number of points")?;
+    let rule_top = ranged("columnRuleTopInset", -1440.0, 1440.0, "a number of points")?;
+    let rule_bottom = ranged("columnRuleBottomInset", -1440.0, 1440.0, "a number of points")?;
+    let rule_color = match p.get("columnRuleColor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(c)) if st.doc.swatch(c).is_some() => Some(c.clone()),
+        Some(v) => return Err(bad(ID, format!("no swatch {v}"))),
+    };
     let p = p.clone();
     s.edit(|d, _| {
         for id in &ids {
@@ -1442,8 +1460,12 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             match p.get("inset") {
                 Some(Value::Number(n)) => o.inset = [n.as_f64().unwrap_or(0.0); 4],
                 Some(v @ Value::Array(_)) => {
-                    if let Ok(a) = serde_json::from_value(v.clone()) {
-                        o.inset = a;
+                    if let Ok(a) = serde_json::from_value::<[Option<f64>; 4]>(v.clone()) {
+                        for (side, v) in o.inset.iter_mut().zip(a) {
+                            if let Some(v) = v {
+                                *side = v;
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1466,6 +1488,24 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(v) = p.get("columnRule").and_then(Value::as_bool) {
                 o.column_rule = v;
+            }
+            if let Some(w) = rule_weight {
+                o.column_rule_weight = w;
+            }
+            if let Some(c) = &rule_color {
+                o.column_rule_color = c.clone();
+            }
+            if let Some(t) = rule_tint {
+                o.column_rule_tint = t as f32;
+            }
+            if let Some(v) = rule_offset {
+                o.column_rule_offset = v;
+            }
+            if let Some(v) = rule_top {
+                o.column_rule_top_inset = v;
+            }
+            if let Some(v) = rule_bottom {
+                o.column_rule_bottom_inset = v;
             }
         }
         // Story direction belongs to the story: every frame of the thread turns.
@@ -2430,6 +2470,57 @@ mod named_target_tests {
         assert_eq!(columns(&s), Some(2));
         // Commands documented with `ids` honour `id` too.
         assert_eq!(s.execute("conveyor.collect", &json!({"id": r["id"]})).unwrap()["count"], 1);
+    }
+}
+
+#[cfg(test)]
+mod column_rule_tests {
+    use super::*;
+
+    #[test]
+    fn column_rules_set_validate_undo_and_inspect() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let opts = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": 3, "inset": [1, 2, 3, 4]})).unwrap();
+        let before = opts(&s);
+        // An unknown swatch or a bad weight is an error and changes nothing.
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRule": true, "columnRuleColor": "Mauve"})).unwrap_err();
+        assert!(e.to_string().contains("Mauve"), "{e}");
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleWeight": -1})).is_err());
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleTint": 2})).is_err());
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleTopInset": "x"})).is_err());
+        assert_eq!(opts(&s), before);
+        s.execute(
+            "object.textFrameOptions",
+            &json!({"ids": [id.0], "columnRule": true, "columnRuleWeight": 0.5, "columnRuleColor": "C=100 M=0 Y=0 K=0", "columnRuleTint": 0.5,
+                "columnRuleOffset": -2, "columnRuleTopInset": 4, "columnRuleBottomInset": 6}),
+        )
+        .unwrap();
+        let o = opts(&s);
+        assert!(o.column_rule && o.column_rule_weight == 0.5 && o.column_rule_color == "C=100 M=0 Y=0 K=0");
+        assert_eq!(o.inset, [1.0, 2.0, 3.0, 4.0], "untouched options stay");
+        assert_eq!((o.column_rule_tint, o.column_rule_offset, o.column_rule_top_inset, o.column_rule_bottom_inset), (0.5, -2.0, 4.0, 6.0));
+        let item = s.execute("document.inspect", &json!({})).unwrap()["spreads"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == json!(id.0))
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            (&item["columnRule"], &item["columnRuleWeight"], &item["columnRuleColor"]),
+            (&json!(true), &json!(0.5), &json!("C=100 M=0 Y=0 K=0"))
+        );
+        assert_eq!(
+            (&item["columnRuleTint"], &item["columnRuleOffset"], &item["columnRuleTopInset"], &item["columnRuleBottomInset"]),
+            (&json!(0.5), &json!(-2.0), &json!(4.0), &json!(6.0))
+        );
+        // One undo step.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(opts(&s), before);
     }
 }
 

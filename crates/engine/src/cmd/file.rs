@@ -297,10 +297,13 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let pdf_page = match p.get("pdfPage").and_then(Value::as_u64) {
         Some(n) if designcraft_render::is_pdf(&bytes) => {
             let count = designcraft_render::pdf_page_count(&bytes).unwrap_or(1);
-            if n == 0 || n as usize > count {
-                return Err(bad("file.place", format!("the PDF has {count} page(s)")));
+            let invalid_page = || bad("file.place", format!("the PDF has {count} page(s)"));
+            let one_based = usize::try_from(n).map_err(|_| invalid_page())?;
+            if one_based == 0 || one_based > count {
+                return Err(invalid_page());
             }
-            n as u32 - 1
+            let zero_based = one_based.checked_sub(1).ok_or_else(invalid_page)?;
+            u32::try_from(zero_based).map_err(|_| invalid_page())?
         }
         _ => 0,
     };

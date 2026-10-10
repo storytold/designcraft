@@ -58,52 +58,67 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                         ui.add_space(8.0);
                         let current = app.ui.workspace.clone();
                         let shown = crate::i18n::workspace_name(&app.ui.language, &current);
-                        ui.menu_button(crate::rtl::widget(ui, egui::RichText::new(format!("{shown} ▾")).font(semibold(11.5)).color(t.text)), |ui| {
-                            let customs: Vec<String> = app.ui.custom_workspaces.iter().map(|w| w.name.clone()).collect();
-                            for w in
-                                ["Essentials", "Advanced", "Book", "Digital Publishing", "Interactive for PDF", "Printing and Proofing", "Typography"]
-                                    .into_iter()
-                                    .map(str::to_string)
-                                    .chain(customs.iter().cloned())
-                            {
+                        crate::menus::menu_button(
+                            ui,
+                            crate::rtl::widget(ui, egui::RichText::new(format!("{shown} ▾")).font(semibold(11.5)).color(t.text)),
+                            |ui| {
+                                let customs: Vec<String> = app.ui.custom_workspaces.iter().map(|w| w.name.clone()).collect();
+                                for w in [
+                                    "Essentials",
+                                    "Advanced",
+                                    "Book",
+                                    "Digital Publishing",
+                                    "Interactive for PDF",
+                                    "Printing and Proofing",
+                                    "Typography",
+                                ]
+                                .into_iter()
+                                .map(str::to_string)
+                                .chain(customs.iter().cloned())
+                                {
+                                    if ui
+                                        .selectable_label(w == current, crate::rtl::widget(ui, crate::i18n::workspace_name(&app.ui.language, &w)))
+                                        .clicked()
+                                    {
+                                        let _ = app.run("window.workspace", json!({"name": w}));
+                                        ui.close();
+                                    }
+                                }
+                                ui.separator();
                                 if ui
-                                    .selectable_label(w == current, crate::rtl::widget(ui, crate::i18n::workspace_name(&app.ui.language, &w)))
+                                    .button(crate::rtl::widget(
+                                        ui,
+                                        format!(
+                                            "{} {}",
+                                            crate::i18n::tr(&app.ui.language, "Reset"),
+                                            crate::i18n::workspace_name(&app.ui.language, &current)
+                                        ),
+                                    ))
                                     .clicked()
                                 {
-                                    let _ = app.run("window.workspace", json!({"name": w}));
+                                    let _ = app.run("window.resetWorkspace", json!({}));
                                     ui.close();
                                 }
-                            }
-                            ui.separator();
-                            if ui
-                                .button(crate::rtl::widget(
-                                    ui,
-                                    format!(
-                                        "{} {}",
-                                        crate::i18n::tr(&app.ui.language, "Reset"),
-                                        crate::i18n::workspace_name(&app.ui.language, &current)
-                                    ),
-                                ))
-                                .clicked()
-                            {
-                                let _ = app.run("window.resetWorkspace", json!({}));
-                                ui.close();
-                            }
-                            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Workspace…"))).clicked() {
-                                let _ = app.run("window.newWorkspace", json!({}));
-                                ui.close();
-                            }
-                            if !customs.is_empty() {
-                                ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Workspace")), |ui| {
-                                    for w in &customs {
-                                        if ui.button(w).clicked() {
-                                            let _ = app.run("window.deleteWorkspace", json!({"name": w}));
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                            }
-                        });
+                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Workspace…"))).clicked() {
+                                    let _ = app.run("window.newWorkspace", json!({}));
+                                    ui.close();
+                                }
+                                if !customs.is_empty() {
+                                    crate::menus::menu_button(
+                                        ui,
+                                        crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Workspace")),
+                                        |ui| {
+                                            for w in &customs {
+                                                if ui.button(w).clicked() {
+                                                    let _ = app.run("window.deleteWorkspace", json!({"name": w}));
+                                                    ui.close();
+                                                }
+                                            }
+                                        },
+                                    );
+                                }
+                            },
+                        );
                         ui.add_space(6.0);
                         if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
                             app.status("Export a PDF, IDML or package to share — no cloud account needed.");
@@ -514,7 +529,7 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         x += w;
     }
     if let Some(i) = close {
-        let _ = app.run("file.close", json!({"index": i}));
+        crate::menus::close_document(app, Some(i));
     } else if let Some(i) = activate {
         let _ = app.run("file.activate", json!({"index": i}));
     }
@@ -534,7 +549,7 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     return;
                 }
                 let z = app.view().map(|v| v.zoom).unwrap_or(1.0);
-                ui.menu_button(egui::RichText::new(format!("{:.2}% ▾", z * 100.0)).font(small.clone()), |ui| {
+                crate::menus::menu_button(ui, egui::RichText::new(format!("{:.2}% ▾", z * 100.0)).font(small.clone()), |ui| {
                     for p in [0.05, 0.125, 0.25, 0.5, 0.75, 1.0, 2.0, 4.0, 8.0, 16.0] {
                         if ui.button(format!("{}%", p * 100.0)).clicked() {
                             let _ = app.run("view.zoom", json!({"zoom": p}));
@@ -678,7 +693,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
             ));
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                for p in designcraft_doc::build::PRESETS.iter().take(10) {
+                for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
                     let (cr, resp) = ui.allocate_exact_size(vec2(120.0, 150.0), Sense::click());
                     let hov = resp.hovered();
                     ui.painter().rect_filled(cr, 6.0, if hov { t.hover } else { t.panel });

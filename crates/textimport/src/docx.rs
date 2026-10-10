@@ -378,6 +378,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let body = doc.child("body").ok_or_else(|| ImportError::Corrupt("no document body".into()))?;
     let mut st = Story::new(StoryId(0));
     ctx.blocks(body, &mut st, true);
+    // A page or column break ends its paragraph.
+    st.end_paragraphs_at_breaks();
     // Only styles that are used, plus what they are based on.
     let used_p: std::collections::HashSet<String> = st.paras.iter().map(|p| p.style.clone()).collect();
     let used_c: std::collections::HashSet<String> = st.runs().map(|(_, f)| f.style.clone()).collect();
@@ -470,6 +472,24 @@ mod tests {
         assert_eq!(i.para_styles[0].chars.size, Some(16.0));
         assert_eq!(i.para_styles[0].para.space_before, Some(12.0));
         assert_eq!(i.char_styles[0].chars.font_style.as_deref(), Some("Italic"));
+    }
+
+    /// A page break ends its paragraph: the text after it is a paragraph of its own (same style).
+    #[test]
+    fn page_break_ends_its_paragraph() {
+        let styles = format!(r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="H"><w:name w:val="Chapter"/></w:style></w:styles>"#);
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t>End of one</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>
+              <w:p><w:pPr><w:pStyle w:val="H"/></w:pPr><w:r><w:br w:type="page"/><w:t>Two</w:t><w:br w:type="column"/></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, &styles, "")).unwrap().story;
+        st.check().unwrap();
+        let (pb, cb) = (designcraft_doc::PAGE_BREAK, designcraft_doc::COLUMN_BREAK);
+        assert_eq!(st.text, format!("End of one{pb}\n{pb}\nTwo{cb}\n"));
+        let styles: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
+        assert_eq!(styles, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
     }
 
     #[test]

@@ -347,13 +347,18 @@ impl Document {
         let (sid, pos) = self.find_anchor(id)?;
         let st = self.story(sid)?;
         let pi = st.para_at(pos);
-        let r = st.para_ranges()[pi].clone();
+        let ranges = st.para_ranges();
+        let r = ranges[pi].clone();
         let (pp, _) = self.styles.resolve_para(&st.paras[pi]);
         let para_num = match pp.list_type {
-            crate::ListType::Numbers => {
-                // Count the run of numbered paragraphs before this one.
-                let n = (0..=pi).rev().take_while(|&k| self.styles.resolve_para(&st.paras[k]).0.list_type == crate::ListType::Numbers).count();
-                format!("{}.", pp.number_style.format(n as u32))
+            crate::ListType::Numbers if !r.is_empty() => {
+                // Count the run of numbered paragraphs before this one (empty ones have no number).
+                let n = (0..=pi)
+                    .rev()
+                    .take_while(|&k| self.styles.resolve_para(&st.paras[k]).0.list_type == crate::ListType::Numbers)
+                    .filter(|&k| ranges.get(k).is_some_and(|r| !r.is_empty()))
+                    .count();
+                pp.number_label(u32::try_from(n).unwrap_or(u32::MAX)).trim_end().to_string()
             }
             _ => String::new(),
         };

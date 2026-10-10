@@ -153,6 +153,34 @@ pub fn preflight_errors(app: &DesignApp) -> usize {
     n
 }
 
+/// Height of one swatch-menu row.
+const SWATCH_MENU_ROW_H: f32 = 22.0;
+
+/// One swatch-menu row: a chip and the swatch name; the whole row is clickable (the chip included).
+/// `name == current` highlights it. Returns true when the row was clicked.
+pub fn swatch_menu_row(ui: &mut egui::Ui, doc: &designcraft_doc::Document, name: &str, current: &str) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SWATCH_MENU_ROW_H), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, name == current, name));
+    if name == current {
+        ui.painter().rect_filled(row, 0.0, t.row_selected);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(row, 0.0, t.hover);
+    }
+    let (c, g) = crate::widgets::swatch_colors(doc, name, 1.0);
+    let chip = egui::Rect::from_min_size(row.min + vec2(4.0, 3.0), vec2(16.0, 16.0));
+    crate::widgets::paint_chip(ui.painter(), chip, c, g);
+    crate::rtl::paint(
+        ui.painter(),
+        row.min + vec2(28.0, SWATCH_MENU_ROW_H / 2.0),
+        egui::Align2::LEFT_CENTER,
+        name,
+        egui::FontId::proportional(12.5),
+        t.text,
+    );
+    resp.clicked()
+}
+
 /// A swatch dropdown showing a chip and name; `on_pick` gets the chosen swatch name.
 pub fn swatch_picker(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, current: Option<String>, on_pick: impl FnOnce(&mut DesignApp, String)) {
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
@@ -175,15 +203,10 @@ pub fn swatch_picker(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, current: 
         );
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(200.0);
+            ui.set_max_width(280.0);
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 for sw in &doc.swatches {
-                    let (c, g) = crate::widgets::swatch_colors(&doc, &sw.name, 1.0);
-                    let row = ui.horizontal(|ui| {
-                        let (cr, _) = ui.allocate_exact_size(vec2(14.0, 14.0), egui::Sense::hover());
-                        crate::widgets::paint_chip(ui.painter(), cr, c, g);
-                        ui.add(egui::Button::new(&sw.name).frame(false).selected(sw.name == cur))
-                    });
-                    if row.inner.clicked() {
+                    if swatch_menu_row(ui, &doc, &sw.name, &cur) {
                         picked = Some(sw.name.clone());
                         ui.close();
                     }

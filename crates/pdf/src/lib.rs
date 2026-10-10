@@ -15,7 +15,9 @@
 //!   Gradients with mixed output colour spaces are converted to RGB with an export warning;
 //!   homogeneous gradients keep their existing colour space (subject to PDF/A conversion).
 //! - **Images:** clipped to their frame; JPEG data is passed through, PNG/GIF/WebP are embedded
-//!   losslessly (or re-encoded as JPEG with [`PdfOptions::compress_images`]).
+//!   losslessly (or re-encoded as JPEG with [`PdfOptions::compress_images`]). PDF/X-4 and PDF/A
+//!   images are written without interpolation. In PDF/X-4 an RGB image without a profile of its own
+//!   carries sRGB (`assets/icc/sRGB-v2-magic.icc`).
 //! - **Text as real text:** the composed glyph runs are emitted with embedded, subsetted fonts and a
 //!   Unicode mapping taken from the story text (ligatures, page numbers and inserted hyphens get the
 //!   right characters), so text is selectable and searchable.
@@ -200,3 +202,14 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
 
 #[cfg(test)]
 mod tests;
+
+// Run the same public API/output contracts with the unit-only colliding cache hasher as well
+// as the production RandomState used by the integration-test executable.
+#[cfg(test)]
+extern crate self as designcraft_pdf;
+#[cfg(test)]
+#[path = "../tests/support/image_content_cache_contract.rs"]
+mod image_content_cache_collision_exports;
+#[cfg(test)]
+#[path = "../tests/support/image_fixtures.rs"]
+mod image_fixtures;

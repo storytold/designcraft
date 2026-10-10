@@ -650,6 +650,11 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
     edit_table(s, &g, "table.setCell", |t| {
         let owners = t.owners();
         let nc = t.ncols();
+        let nr = t.nrows();
+        let rtl = t.options.direction == designcraft_doc::TextDirection::RightToLeft;
+        let borders: [CellStroke; 4] = std::array::from_fn(|side| t.options.border_for(side).clone());
+        // Local edits outrank previously imported edges, including explicit zero/None.
+        let priority = if stroke.is_some() { next_cell_stroke_priority(t) } else { 0 };
         let rg = g.range;
         for r in rg.r0..=rg.r1 {
             for c in rg.c0..=rg.c1 {
@@ -675,45 +680,109 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 if let Some(sv) = &stroke {
                     let edges = str_param(sv, "edges").unwrap_or("all");
+                    let at_bottom = r.saturating_add(cell.row_span.max(1) as usize);
+                    let at_right = c.saturating_add(cell.col_span.max(1) as usize);
+                    let perimeter = [r == 0, if rtl { at_right == nc } else { c == 0 }, at_bottom == nr, if rtl { c == 0 } else { at_right == nc }];
                     for (i, on) in [
                         ("top", r == rg.r0),
-                        ("left", c == rg.c0),
-                        ("bottom", r + cell.row_span as usize - 1 == rg.r1),
-                        ("right", c + cell.col_span as usize - 1 == rg.c1),
+                        ("left", if rtl { at_right.saturating_sub(1) == rg.c1 } else { c == rg.c0 }),
+                        ("bottom", at_bottom.saturating_sub(1) == rg.r1),
+                        ("right", if rtl { c == rg.c0 } else { at_right.saturating_sub(1) == rg.c1 }),
                     ]
                     .iter()
                     .enumerate()
                     .map(|(i, (name, outer))| (i, edges == "all" || edges == *name || (edges == "outer" && *outer) || (edges == "inner" && !*outer)))
                     {
                         if on {
-                            cell.strokes[i] = parse_stroke(sv, cell.strokes[i].clone());
+                            let base = if perimeter[i] && !cell.border_overrides[i] { &borders[i] } else { &cell.strokes[i] };
+                            cell.strokes[i] = parse_stroke(sv, base.clone());
+                            cell.stroke_defined[i] = true;
+                            cell.stroke_priorities[i] = priority;
+                            cell.border_overrides[i] = true;
                         }
                     }
                 }
             }
         }
-        // Neighbouring cells share edges: mirror the edges along the range boundary.
+        // Keep both copies of unmerged shared boundaries consistent. Left/right name
+        // physical sides, also in RTL tables.
         if let Some(sv) = &stroke {
             let edges = str_param(sv, "edges").unwrap_or("all");
-            if matches!(edges, "all" | "outer" | "bottom") && rg.r1 + 1 < t.nrows() {
+            let selected = |side: &str| edges == "all" || edges == "outer" || edges == side;
+            if selected("top")
+                && let Some(row) = rg.r0.checked_sub(1)
+            {
                 for c in rg.c0..=rg.c1 {
-                    let s0 = t.cell(rg.r1, c).map(|x| x.strokes[2].clone());
-                    if let (Some(s0), Some(n)) = (s0, t.cell_mut(rg.r1 + 1, c)) {
-                        n.strokes[0] = s0;
-                    }
+                    mirror_cell_edge(t, &owners, (rg.r0, c), 0, (row, c), 2);
                 }
             }
-            if matches!(edges, "all" | "outer" | "right") && rg.c1 + 1 < t.ncols() {
+            if selected("bottom") && rg.r1.saturating_add(1) < nr {
+                for c in rg.c0..=rg.c1 {
+                    mirror_cell_edge(t, &owners, (rg.r1, c), 2, (rg.r1 + 1, c), 0);
+                }
+            }
+            if selected(if rtl { "right" } else { "left" })
+                && let Some(col) = rg.c0.checked_sub(1)
+            {
                 for r in rg.r0..=rg.r1 {
-                    let s0 = t.cell(r, rg.c1).map(|x| x.strokes[3].clone());
-                    if let (Some(s0), Some(n)) = (s0, t.cell_mut(r, rg.c1 + 1)) {
-                        n.strokes[1] = s0;
-                    }
+                    mirror_cell_edge(t, &owners, (r, rg.c0), if rtl { 3 } else { 1 }, (r, col), if rtl { 1 } else { 3 });
+                }
+            }
+            if selected(if rtl { "left" } else { "right" }) && rg.c1.saturating_add(1) < nc {
+                for r in rg.r0..=rg.r1 {
+                    mirror_cell_edge(t, &owners, (r, rg.c1), if rtl { 1 } else { 3 }, (r, rg.c1 + 1), if rtl { 3 } else { 1 });
                 }
             }
         }
         ok()
     })
+}
+
+/// Only saturation needs rebasing. Preserve every distinct priority's order and keep
+/// zero/negative priorities untouched; the work is bounded by the table's edges.
+fn next_cell_stroke_priority(t: &mut Table) -> i32 {
+    let highest = t.cells.iter().flat_map(|cell| cell.stroke_priorities).max().unwrap_or(0).max(0);
+    if highest < i32::MAX {
+        return highest + 1;
+    }
+    let values: std::collections::BTreeSet<_> = t.cells.iter().flat_map(|cell| cell.stroke_priorities).filter(|p| *p > 0).collect();
+    let mut ranks = std::collections::BTreeMap::new();
+    let mut highest = 0i32;
+    for value in values {
+        highest = highest.saturating_add(1);
+        ranks.insert(value, highest);
+    }
+    for cell in &mut t.cells {
+        for priority in &mut cell.stroke_priorities {
+            if let Some(rank) = ranks.get(priority) {
+                *priority = *rank;
+            }
+        }
+    }
+    highest.saturating_add(1)
+}
+
+fn mirror_cell_edge(t: &mut Table, owners: &[(usize, usize)], from: (usize, usize), edge: usize, to: (usize, usize), opposite: usize) {
+    let owner = |pos: (usize, usize)| owners.get(pos.0.checked_mul(t.ncols())?.checked_add(pos.1)?).copied();
+    if owner(from) != Some(from) || owner(to) != Some(to) {
+        return;
+    }
+    // A merged cell's edge may border several separately editable cells. Mirroring
+    // a segment onto that whole edge would change unselected neighbors; priorities
+    // instead resolve each segment without altering the merged cell's formatting.
+    let merged = |cell: &designcraft_doc::Cell| cell.row_span > 1 || cell.col_span > 1;
+    if t.cell(from.0, from.1).is_some_and(merged) || t.cell(to.0, to.1).is_some_and(merged) {
+        return;
+    }
+    let source = t
+        .cell(from.0, from.1)
+        .map(|cell| (cell.strokes[edge].clone(), cell.stroke_defined[edge], cell.stroke_priorities[edge], cell.border_overrides[edge]));
+    if let (Some((stroke, defined, priority, border_override)), Some(neighbor)) = (source, t.cell_mut(to.0, to.1)) {
+        neighbor.strokes[opposite] = stroke;
+        neighbor.stroke_defined[opposite] = defined;
+        neighbor.stroke_priorities[opposite] = priority;
+        neighbor.border_overrides[opposite] = border_override;
+    }
 }
 
 fn set_row_height(s: &mut Session, p: &Value) -> Result<Value> {
@@ -846,6 +915,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(b) = p.get("border") {
             o.border = parse_stroke(b, o.border.clone());
+            o.borders = Default::default();
         }
         o.space_before = f64_or(&p, "spaceBefore", o.space_before);
         o.space_after = f64_or(&p, "spaceAfter", o.space_after);
@@ -982,6 +1052,9 @@ fn stroke_param(v: Option<&Value>) -> Option<designcraft_doc::CellStroke> {
 
 /// Fill in the cell style fields given in `p`.
 fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, cmd: &str) -> Result<()> {
+    if let Some(v) = p.get("basedOn") {
+        cs.based_on = v.as_str().map(str::to_string);
+    }
     if let Some(f) = color_param(p, "fill") {
         cs.fill = Some(f);
     }
@@ -989,10 +1062,14 @@ fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, cmd: &str) 
         cs.fill_tint = Some(t.clamp(0.0, 1.0) as f32);
     }
     match p.get("insets") {
-        Some(Value::Number(n)) => cs.insets = n.as_f64().map(|v| [v.max(0.0); 4]),
+        Some(Value::Number(n)) => {
+            cs.insets = n.as_f64().map(|v| [v.max(0.0); 4]);
+            cs.inset_overrides = Default::default();
+        }
         Some(Value::Array(a)) if a.len() == 4 => {
             let v: Vec<f64> = a.iter().map(|x| x.as_f64().unwrap_or(0.0).max(0.0)).collect();
             cs.insets = Some([v[0], v[1], v[2], v[3]]);
+            cs.inset_overrides = Default::default();
         }
         _ => {}
     }
@@ -1001,6 +1078,7 @@ fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, cmd: &str) 
     }
     if let Some(st) = stroke_param(p.get("stroke")) {
         cs.stroke = Some(st);
+        cs.strokes = Default::default();
     }
     if let Some(ps) = str_param(p, "paragraphStyle") {
         cs.paragraph_style = Some(ps.to_string());
@@ -1037,15 +1115,11 @@ fn cell_style_create(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn cell_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.cell.apply", "missing name"))?.to_string();
-    let cs = s
-        .doc()?
-        .doc
-        .styles
-        .cell
-        .iter()
-        .find(|c| c.name == name)
-        .cloned()
-        .ok_or_else(|| bad("style.cell.apply", format!("no cell style `{name}`")))?;
+    let styles = &s.doc()?.doc.styles.cell;
+    if !styles.iter().any(|c| c.name == name) {
+        return Err(bad("style.cell.apply", format!("no cell style `{name}`")));
+    }
+    let cs = designcraft_doc::resolve_cell_style(styles, &name);
     let g = target(s, p, "style.cell.apply")?;
     edit_table(s, &g, "style.cell.apply", |t| {
         let owners = t.owners();
@@ -1067,7 +1141,7 @@ fn cell_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Re-apply cell styles named in `names` to every cell using them (after a style edit).
 fn reapply_cell_styles(d: &mut Document, names: &[String]) {
-    let styles = d.styles.cell.clone();
+    let styles: Vec<_> = names.iter().map(|name| designcraft_doc::resolve_cell_style(&d.styles.cell, name)).collect();
     for sid in d.stories.keys().copied().collect::<Vec<_>>() {
         let Some(st) = d.story_mut(sid) else { continue };
         for t in st.tables.values_mut() {
@@ -1086,18 +1160,42 @@ fn reapply_cell_styles(d: &mut Document, names: &[String]) {
     }
 }
 
+/// Include descendants when editing an inherited style, with the resolver's depth limit.
+fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Vec<String> {
+    let styles: Vec<_> = styles.collect();
+    styles
+        .iter()
+        .filter(|(candidate, _)| {
+            let mut current = Some(*candidate);
+            for _ in 0..32 {
+                let Some(current_name) = current else { return false };
+                if current_name == name {
+                    return true;
+                }
+                current = styles.iter().find(|(n, _)| *n == current_name).and_then(|(_, base)| *base);
+            }
+            false
+        })
+        .map(|(name, _)| (*name).to_string())
+        .collect()
+}
+
 fn cell_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.cell.edit", "missing name"))?.to_string();
     let p = p.clone();
     s.edit(|d, _| {
         let cs = d.styles_mut().cell.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.cell.edit", format!("no cell style `{name}`")))?;
         cell_style_fields(cs, &p, "style.cell.edit")?;
-        reapply_cell_styles(d, std::slice::from_ref(&name));
+        let names = dependent_styles(&name, d.styles.cell.iter().map(|cs| (cs.name.as_str(), cs.based_on.as_deref())));
+        reapply_cell_styles(d, &names);
         ok()
     })
 }
 
 fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value) {
+    if let Some(v) = p.get("basedOn") {
+        ts.based_on = v.as_str().map(str::to_string);
+    }
     for (k, f) in [
         ("header", &mut ts.header),
         ("body", &mut ts.body),
@@ -1111,6 +1209,7 @@ fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value) {
     }
     if let Some(b) = stroke_param(p.get("border")) {
         ts.border = Some(b);
+        ts.borders = Default::default();
     }
     if let Some(a) = p.get("altRows").and_then(Value::as_object) {
         let n = |k: &str, d: u32| a.get(k).and_then(Value::as_u64).map_or(d, |v| v as u32);
@@ -1150,7 +1249,10 @@ fn table_style_create(s: &mut Session, p: &Value) -> Result<Value> {
 fn table_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.table.apply", "missing name"))?.to_string();
     let doc = &s.doc()?.doc;
-    let ts = doc.styles.table.iter().find(|c| c.name == name).cloned().ok_or_else(|| bad("style.table.apply", format!("no table style `{name}`")))?;
+    if !doc.styles.table.iter().any(|c| c.name == name) {
+        return Err(bad("style.table.apply", format!("no table style `{name}`")));
+    }
+    let ts = doc.styles.resolve_table_style(&name);
     let cells = doc.styles.cell.clone();
     let g = target(s, p, "style.table.apply")?;
     edit_table(s, &g, "style.table.apply", |t| {
@@ -1166,11 +1268,13 @@ fn table_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
         let ts =
             d.styles_mut().table.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.table.edit", format!("no table style `{name}`")))?;
         table_style_fields(ts, &p);
-        let (ts, cells) = (ts.clone(), d.styles.cell.clone());
+        let names = dependent_styles(&name, d.styles.table.iter().map(|ts| (ts.name.as_str(), ts.based_on.as_deref())));
+        let styles: Vec<_> = names.iter().map(|name| d.styles.resolve_table_style(name)).collect();
+        let cells = d.styles.cell.clone();
         for sid in d.stories.keys().copied().collect::<Vec<_>>() {
             let Some(st) = d.story_mut(sid) else { continue };
             for t in st.tables.values_mut() {
-                if t.style == name {
+                if let Some(ts) = styles.iter().find(|ts| ts.name == t.style) {
                     ts.apply_to(std::sync::Arc::make_mut(t), &cells);
                 }
             }

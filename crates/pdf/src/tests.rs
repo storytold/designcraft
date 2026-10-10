@@ -240,6 +240,20 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
 }
 
+/// A placed image whose linked file wasn't found has no data: the warning says it is missing,
+/// not that it could not be decoded.
+#[test]
+fn a_missing_linked_image_is_reported_as_missing() {
+    let mut d = doc_with_text("still here");
+    place(&mut d, Vec::new(), (64, 64));
+    if let Some(a) = d.assets.values_mut().next() {
+        std::sync::Arc::make_mut(a).link = Some("/gone/curtains.jpeg".into());
+    }
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("is missing (/gone/curtains.jpeg) and was skipped")), "{:?}", r.warnings);
+    assert!(!r.warnings.iter().any(|w| w.contains("could not be decoded")), "{:?}", r.warnings);
+}
+
 /// krilla reads PNG, GIF and WebP lazily, so a damaged one passed the exporter's "does it decode"
 /// check and failed the whole export when the PDF was written ("PDF writer error: … unexpected
 /// end of file"). A cut-off download must be skipped with a warning, as a damaged TIFF is.
@@ -410,4 +424,25 @@ fn missing_glyphs_print_as_boxes() {
     let (glyphs, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
     assert_eq!(glyphs.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), ["a", "b"], "{glyphs:?}");
     assert_eq!(boxes(&paths), 1, "{paths:?}");
+}
+
+#[test]
+fn column_rules_are_drawn() {
+    let rules = |on: bool| {
+        let mut d = doc_with_text("Column text");
+        let fid = d.stories.values().next().unwrap().frames[0];
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.columns = 3;
+        o.gutter = 12.0;
+        o.inset = [0.0; 4];
+        o.column_rule = on;
+        o.column_rule_weight = 2.0;
+        let (_, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+        paths.into_iter().filter(|r| (r.width() - 2.0).abs() < 0.01 && (r.height() - 264.0).abs() < 0.01).map(|r| r.center().x).collect::<Vec<_>>()
+    };
+    // 540 pt wide in three columns with 12 pt gutters: columns of 172 pt from x 36.
+    let xs = rules(true);
+    assert_eq!(xs.len(), 2, "{xs:?}");
+    assert!((xs[0] - 214.0).abs() < 0.01 && (xs[1] - 398.0).abs() < 0.01, "{xs:?}");
+    assert!(rules(false).is_empty());
 }

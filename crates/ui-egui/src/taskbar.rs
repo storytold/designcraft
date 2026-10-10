@@ -160,11 +160,14 @@ fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool) {
         let sw = c["fill"].as_str().unwrap_or("[Black]").to_string();
         let (col, g) = widgets::swatch_colors(&doc, &sw, 1.0);
         let resp = widgets::swatch_chip(ui, 17.0, col, g).on_hover_text(format!("Fill: {sw}"));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Task Bar fill"));
         let mut picked = None;
         egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(180.0);
+            ui.set_max_width(280.0);
             egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                 for s in &doc.swatches {
-                    if ui.selectable_label(s.name == sw, &s.name).clicked() {
+                    if panels::swatch_menu_row(ui, &doc, &s.name, &sw) {
                         picked = Some(s.name.clone());
                         ui.close();
                     }
@@ -228,11 +231,16 @@ fn object_controls(app: &mut DesignApp, ui: &mut Ui) {
             widgets::paint_stroke_chip(ui.painter(), r, col, egui::Color32::from_gray(20));
         }
         let resp = resp.on_hover_text(format!("{}: {sw}", if k == 0 { "Fill" } else { "Stroke" }));
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Task Bar {}", if k == 0 { "fill" } else { "stroke" }))
+        });
         let mut picked = None;
         egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(180.0);
+            ui.set_max_width(280.0);
             egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                 for s in &doc.swatches {
-                    if ui.selectable_label(s.name == sw, &s.name).clicked() {
+                    if panels::swatch_menu_row(ui, &doc, &s.name, &sw) {
                         picked = Some(s.name.clone());
                         ui.close();
                     }

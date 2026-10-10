@@ -30,7 +30,6 @@ impl Dialog {
             "insertTable" => json!({"bodyRows": 4, "columns": 4, "headerRows": 0, "footerRows": 0}),
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
-            "textFrameOptions" => json!({"columns": 1, "gutter": "1p0", "inset": "0p0", "verticalJustification": "top"}),
             "documentSetup" => json!({}),
             _ => json!({}),
         };
@@ -50,7 +49,7 @@ impl Dialog {
             fields.insert("separator".into(), json!(sep.replace('\t', "^t").replace('\u{2003}', "^m").replace('\u{2002}', "^>")));
             fields.entry("tab".to_string()).or_insert(json!("numbering"));
         }
-        if id == "paragraphStyleOptions" {
+        if id == "paragraphStyleOptions" || id == "characterStyleOptions" {
             fields.entry("section".to_string()).or_insert(json!("general"));
         }
         if id == "frameSize" {
@@ -285,6 +284,185 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
+/// The options of the selected text frame (the first selected item, or the frame of the caret).
+fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameOptions> {
+    let st = app.session.active()?;
+    let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))?;
+    st.doc.item(fid)?.text_frame().map(|t| t.options.clone())
+}
+
+/// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
+/// so OK sends only the fields the user changed. Fields given when the dialog opened count as
+/// changed.
+fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
+    if d.fields.contains_key("_shown") {
+        return;
+    }
+    let o = selected_frame_options(app).unwrap_or_default();
+    let units = app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
+    let fm = |v: f64| json!(format_measure(v, units));
+    let shown = json!({
+        "columns": o.columns, "gutter": fm(o.gutter),
+        "insetTop": fm(o.inset[0]), "insetLeft": fm(o.inset[1]), "insetBottom": fm(o.inset[2]), "insetRight": fm(o.inset[3]),
+        "verticalJustification": serde_json::to_value(o.vertical_justification).unwrap_or(Value::Null),
+        "columnRule": o.column_rule, "columnRuleWeight": format_measure(o.column_rule_weight, Unit::Points), "columnRuleColor": o.column_rule_color,
+        "columnRuleTint": percent(o.column_rule_tint), "columnRuleTopInset": fm(o.column_rule_top_inset),
+        "columnRuleBottomInset": fm(o.column_rule_bottom_inset), "columnRuleOffset": fm(o.column_rule_offset),
+    });
+    if let Value::Object(m) = &shown {
+        for (k, v) in m {
+            d.fields.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    d.fields.insert("_shown".into(), shown);
+}
+
+/// A 0..1 tint as a percentage ("40", "12.5").
+fn percent(t: f32) -> String {
+    let s = format!("{:.2}", f64::from(t) * 100.0);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.clone();
+    let tr = |s: &'static str| crate::i18n::tr(&lang, s);
+    egui::Grid::new("tfo").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Number of columns"));
+        text_field(ui, d, "columns", 80.0);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Gutter"));
+        text_field(ui, d, "gutter", 80.0);
+        ui.end_row();
+    });
+    ui.add_space(6.0);
+    crate::rtl::label(ui, egui::RichText::new(tr("Inset spacing")).font(semibold(12.0)));
+    egui::Grid::new("tfo_inset").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        for (label, key) in [("Top", "insetTop"), ("Bottom", "insetBottom"), ("Left", "insetLeft"), ("Right", "insetRight")] {
+            crate::rtl::label(ui, tr(label));
+            text_field(ui, d, key, 80.0);
+            ui.end_row();
+        }
+    });
+    ui.add_space(6.0);
+    egui::Grid::new("tfo_vj").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Vertical justification"));
+        let cur = d.s("verticalJustification");
+        egui::ComboBox::from_id_salt("vj").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, &cur))).show_ui(ui, |ui| {
+            for v in ["top", "center", "bottom", "justify"] {
+                if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&lang, v))).clicked() {
+                    d.fields.insert("verticalJustification".into(), json!(v));
+                }
+            }
+        });
+        ui.end_row();
+    });
+    ui.add_space(6.0);
+    crate::rtl::label(ui, egui::RichText::new(tr("Column Rules")).font(semibold(12.0)));
+    check(ui, d, "columnRule", tr("Insert Column Rule"));
+    let swatches: Vec<String> = app
+        .session
+        .active()
+        .map(|s| {
+            s.doc
+                .swatches
+                .iter()
+                .filter(|w| !matches!(w.value, designcraft_color::swatch::SwatchValue::Gradient { .. }))
+                .map(|w| w.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let opts: Vec<(&str, &str)> = swatches.iter().map(|n| (n.as_str(), n.as_str())).collect();
+    egui::Grid::new("tfo_rule").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Weight"));
+        text_field(ui, d, "columnRuleWeight", 70.0);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Color"));
+        combo(ui, d, "columnRuleColor", &opts);
+        ui.end_row();
+        for (label, key) in [
+            ("Tint %", "columnRuleTint"),
+            ("Top Inset", "columnRuleTopInset"),
+            ("Bottom Inset", "columnRuleBottomInset"),
+            ("Horizontal Offset", "columnRuleOffset"),
+        ] {
+            crate::rtl::label(ui, tr(label));
+            text_field(ui, d, key, 70.0);
+            ui.end_row();
+        }
+    });
+}
+
+/// Whether the user changed `key` from what the dialog showed.
+fn edited(d: &Dialog, key: &str) -> bool {
+    let shown = match d.fields.get("_shown").and_then(|s| s.get(key)) {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => return d.fields.contains_key(key),
+    };
+    d.fields.contains_key(key) && d.s(key).trim() != shown.trim()
+}
+
+fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
+    seed_text_frame_options(app, d);
+    let d = &*d;
+    let mut p = Map::new();
+    let bad = |what: &str| format!("Text Frame Options: {what}");
+    if edited(d, "columns") {
+        p.insert("columns".into(), json!(d.n("columns").ok_or_else(|| bad("the number of columns is not a number"))?.max(1.0) as u64));
+    }
+    if edited(d, "gutter") {
+        p.insert("gutter".into(), json!(d.m("gutter").ok_or_else(|| bad("the gutter is not a measure"))?));
+    }
+    let sides = ["insetTop", "insetLeft", "insetBottom", "insetRight"];
+    if edited(d, "inset") {
+        p.insert("inset".into(), json!(d.m("inset").ok_or_else(|| bad("the inset is not a measure"))?));
+    } else if sides.iter().any(|k| edited(d, k)) {
+        // Sides left as shown are null: each selected frame keeps its own.
+        let mut inset = [None; 4];
+        for (v, k) in inset.iter_mut().zip(sides) {
+            if edited(d, k) {
+                *v = Some(d.m(k).ok_or_else(|| bad("an inset is not a measure"))?);
+            }
+        }
+        p.insert("inset".into(), json!(inset));
+    }
+    if edited(d, "verticalJustification") {
+        p.insert("verticalJustification".into(), json!(d.s("verticalJustification")));
+    }
+    if edited(d, "columnRule") {
+        p.insert("columnRule".into(), json!(d.b("columnRule")));
+    }
+    if edited(d, "columnRuleWeight") {
+        p.insert("columnRuleWeight".into(), json!(d.pt("columnRuleWeight").ok_or_else(|| bad("the column rule weight is not a measure"))?));
+    }
+    if edited(d, "columnRuleColor") {
+        p.insert("columnRuleColor".into(), json!(d.s("columnRuleColor")));
+    }
+    if edited(d, "columnRuleTint") {
+        p.insert("columnRuleTint".into(), json!(d.n("columnRuleTint").ok_or_else(|| bad("the column rule tint is not a number"))? / 100.0));
+    }
+    for (key, what) in [
+        ("columnRuleTopInset", "the column rule top inset is not a measure"),
+        ("columnRuleBottomInset", "the column rule bottom inset is not a measure"),
+        ("columnRuleOffset", "the column rule offset is not a measure"),
+    ] {
+        if edited(d, key) {
+            p.insert(key.into(), json!(d.m(key).ok_or_else(|| bad(what))?));
+        }
+    }
+    if p.is_empty() {
+        return Ok(Value::Null);
+    }
+    // Typing in a frame: the options apply to that frame.
+    if let Some(st) = app.session.active()
+        && st.selection.items.is_empty()
+        && let Some(f) = st.selection.text.and_then(|t| t.frame)
+    {
+        p.insert("ids".into(), json!([f.0]));
+    }
+    app.run("object.textFrameOptions", Value::Object(p))
+}
+
 /// File › Document Setup, filled from the document.
 pub fn open_document_setup(app: &mut DesignApp) {
     let Ok(cur) = app.session.execute("layout.documentSetup", &json!({})) else { return };
@@ -398,7 +576,7 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 
 /// Preferences: a section list and the section's options. Application options always; units and
 /// increments when a document is open (InDesign keeps those with the document).
-fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_height: f32) {
     let has_doc = d.fields.contains_key("horizontalUnits");
     let sections: &[(&str, &str)] = if has_doc {
         &[
@@ -437,21 +615,26 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     };
     let cur = d.s("section");
     ui.horizontal_top(|ui| {
-        // A fixed height: the separator would otherwise take the whole window.
-        ui.set_min_height(240.0);
-        ui.set_max_height(240.0);
+        // Bound both panes independently so selecting a lower section keeps its options visible.
+        let height = max_height.min(440.0);
+        ui.set_min_height(240.0_f32.min(height));
+        ui.set_max_height(height);
         ui.vertical(|ui| {
             ui.set_width(150.0);
-            for (id, label) in sections {
-                if ui.selectable_label(cur == *id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    d.fields.insert("section".into(), json!(id));
+            egui::ScrollArea::vertical().id_salt("preferences_sections").min_scrolled_height(1.0).max_height(height).show(ui, |ui| {
+                for (id, label) in sections {
+                    if ui.selectable_label(cur == *id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                        d.fields.insert("section".into(), json!(id));
+                    }
                 }
-            }
+            });
         });
         ui.separator();
         ui.vertical(|ui| {
             ui.set_min_width(300.0);
-            match cur.as_str() {
+            egui::ScrollArea::vertical().id_salt(("preferences_options", &cur)).min_scrolled_height(1.0).max_height(height).show(ui, |ui| match cur
+                .as_str()
+            {
                 "dictionary" => {
                     ui.label(crate::rtl::widget(
                         ui,
@@ -785,7 +968,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page Numbering")).font(semibold(12.0)));
                     check(ui, d, "absolutePageNumbers", crate::i18n::tr(&app.ui.language, "Absolute Numbering (instead of Section Numbering)"));
                 }
-            }
+            });
         });
     });
 }
@@ -821,12 +1004,15 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
         "findChange" => crate::i18n::tr(&app.ui.language, "Find/Change"),
         "paragraphStyleOptions" => crate::i18n::tr(&app.ui.language, "Paragraph Style Options"),
+        "characterStyleOptions" => crate::i18n::tr(&app.ui.language, "Character Style Options"),
         "footnoteOptions" => crate::i18n::tr(&app.ui.language, "Footnote Options"),
+        "paragraphRules" => crate::i18n::tr(&app.ui.language, "Paragraph Rules"),
         "insertXref" => crate::i18n::tr(&app.ui.language, "New Cross-Reference"),
         "findFont" => crate::i18n::tr(&app.ui.language, "Find/Replace Font"),
         "polygonSettings" => crate::i18n::tr(&app.ui.language, "Polygon Settings"),
         "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
+        "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
@@ -844,12 +1030,17 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         },
     };
     egui::Modal::new(egui::Id::new("dialog")).show(ctx, |ui| {
-        ui.set_min_width(380.0);
-        ui.set_max_width(match d.id.as_str() {
+        let frame_margin = egui::Frame::popup(ui.style()).total_margin().sum();
+        let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
+        let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
+            "closeDocument" => 380.0,
             "newDocument" if crate::i18n::is_rtl(&app.ui.language) => 380.0,
             _ => 640.0,
-        });
+        };
+        let width = preferred_width.min(available.x);
+        ui.set_min_width(380.0_f32.min(width));
+        ui.set_max_width(width);
         if crate::i18n::is_rtl(&app.ui.language) {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -860,6 +1051,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             crate::rtl::label(ui, egui::RichText::new(title).font(semibold(16.0)));
         }
         ui.add_space(10.0);
+        // Keep the title and action buttons outside the scrollable body. Oversized
+        // forms remain reachable at large UI scales, without shrinking their text.
+        let footer_height = ui.spacing().interact_size.y.max(ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y);
+        let body_height = (available.y - ui.min_size().y - footer_height - 12.0 - 2.0 * ui.spacing().item_spacing.y).max(1.0);
+        egui::ScrollArea::both().id_salt(("dialog_body", &d.id)).min_scrolled_width(1.0).min_scrolled_height(1.0).max_width(width).max_height(body_height).show(ui, |ui| {
         match d.id.as_str() {
             "newDocument" => {
                 ui.horizontal(|ui| {
@@ -1065,14 +1261,19 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 }
             }
             "paragraphStyleOptions" => paragraph_style_options(app, ui, &mut d),
+            "characterStyleOptions" => character_style_options(app, ui, &mut d),
             "footnoteOptions" => footnote_options(app, ui, &mut d),
+            "paragraphRules" => {
+                let current = d.fields.get("current").cloned().unwrap_or_default();
+                paragraph_rules(app, ui, &mut d, "", &current);
+            }
             "insertXref" => insert_xref(app, ui, &mut d),
             "findFont" => find_font(app, ui, &mut d),
             "colorPicker" => color_picker(ui, &mut d),
-            "preferences" => preferences(app, ui, &mut d),
+            "preferences" => preferences(app, ui, &mut d, body_height),
             "print" => print_dialog(app, ui, &mut d),
             "pdfImport" => {
-                ui.label(egui::RichText::new(d.s("path")).size(11.0));
+                ui.label(egui::RichText::new(if d.b("async") { d.s("name") } else { d.s("path") }).size(11.0));
                 ui.horizontal(|ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Page (1–{count}):").replace("{count}", &d.n("pages").unwrap_or(1.0).to_string()));
                     text_field(ui, &mut d, "page", 60.0);
@@ -1209,6 +1410,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         });
                     });
                 }
+            }
+            "closeDocument" => {
+                let text = crate::i18n::tr(&app.ui.language, "“{}” has changes that are not saved. Save them before closing?").replace("{}", &d.s("title"));
+                crate::rtl::label(ui, text);
             }
             "newWorkspace" => {
                 ui.horizontal(|ui| {
@@ -1355,27 +1560,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 });
             }
             "textFrameOptions" => {
-                egui::Grid::new("tfo").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Number of columns"));
-                    text_field(ui, &mut d, "columns", 80.0);
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Gutter"));
-                    text_field(ui, &mut d, "gutter", 80.0);
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Inset spacing"));
-                    text_field(ui, &mut d, "inset", 80.0);
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Vertical justification"));
-                    let cur = d.s("verticalJustification");
-                    egui::ComboBox::from_id_salt("vj").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &cur))).show_ui(ui, |ui| {
-                        for v in ["top", "center", "bottom", "justify"] {
-                            if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, v))).clicked() {
-                                d.fields.insert("verticalJustification".into(), json!(v));
-                            }
-                        }
-                    });
-                    ui.end_row();
-                });
+                seed_text_frame_options(app, &mut d);
+                text_frame_options_dialog(app, ui, &mut d);
             }
             "documentSetup" => document_setup(app, ui, &mut d),
             "alert" => {
@@ -1388,12 +1574,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             }
             _ => {}
         }
+        });
         ui.add_space(12.0);
+        let ok_label = if d.id == "closeDocument" { "  Save  " } else { "  OK  " };
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  OK  ")).color(egui::Color32::WHITE)))
+                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, ok_label)).color(egui::Color32::WHITE)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
@@ -1406,6 +1594,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     result = Some(false);
                 }
+                if d.id == "closeDocument" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Don't Save"))).clicked() {
+                    d.fields.insert("discard".into(), json!(true));
+                    result = Some(true);
+                }
             });
         });
     });
@@ -1414,7 +1606,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         Some(true) => {
             let _ = confirm(app);
         }
-        Some(false) => app.ui.dialog = None,
+        Some(false) => {
+            app.ui.dialog = None;
+            app.cancel_pdf_import();
+        }
         None => {}
     }
 }
@@ -1422,6 +1617,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
 /// Apply the open dialog.
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
+    if d.id != "pdfImport" || !d.b("async") {
+        app.cancel_pdf_import();
+    }
     match d.id.as_str() {
         "newDocument" => {
             let margins = json!({"top": d.m("marginTop").unwrap_or(36.0), "bottom": d.m("marginBottom").unwrap_or(36.0), "inside": d.m("marginInside").unwrap_or(36.0), "outside": d.m("marginOutside").unwrap_or(36.0)});
@@ -1463,10 +1661,16 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             json!({"rows": d.n("bodyRows").unwrap_or(4.0).max(1.0) as u64, "cols": d.n("columns").unwrap_or(4.0).max(1.0) as u64,
                 "headerRows": d.n("headerRows").unwrap_or(0.0).max(0.0) as u64, "footerRows": d.n("footerRows").unwrap_or(0.0).max(0.0) as u64}),
         ),
-        "textFrameOptions" => app.run(
-            "object.textFrameOptions",
-            json!({"columns": d.n("columns").unwrap_or(1.0) as u64, "gutter": d.m("gutter").unwrap_or(12.0), "inset": d.m("inset").unwrap_or(0.0), "verticalJustification": d.s("verticalJustification")}),
-        ),
+        "textFrameOptions" => {
+            // On an error the dialog stays open to be corrected.
+            let mut d = d;
+            let r = confirm_text_frame_options(app, &mut d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
         "documentSetup" => {
             let edges = |k: &str| json!(["Top", "Bottom", "Inside", "Outside"].map(|e| d.m(&format!("{k}{e}")).unwrap_or(0.0)));
             app.run(
@@ -1481,28 +1685,92 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             let mut chars = serde_json::Map::new();
             for (k, v) in &d.fields {
                 if let Some(a) = k.strip_prefix("p.") {
-                    para.insert(a.into(), v.clone());
+                    // `p.ruleAbove.weight`: one field of a rule (the command keeps the others).
+                    match a.split_once('.') {
+                        Some((attr, field)) => {
+                            if let Value::Object(m) = para.entry(attr).or_insert_with(|| json!({})) {
+                                m.insert(field.into(), v.clone());
+                            }
+                        }
+                        None => {
+                            para.insert(a.into(), v.clone());
+                        }
+                    }
                 } else if let Some(a) = k.strip_prefix("c.") {
                     chars.insert(a.into(), v.clone());
                 }
             }
-            let mut params = json!({"name": name, "para": para, "chars": chars});
             let based = d.s("basedOn");
-            if !based.is_empty() {
-                params["basedOn"] = if based == "[No Paragraph Style]" { Value::Null } else { json!(based) };
-            }
             let rename = d.s("rename");
-            if !rename.is_empty() && rename != name {
-                params["rename"] = json!(rename);
-            }
-            let r = app.run("style.paragraph.edit", params)?;
+            let (r, style) = if d.b("new") {
+                let mut params = json!({"name": if rename.trim().is_empty() { "Paragraph Style 1" } else { rename.trim() }, "para": para, "chars": chars});
+                if !based.is_empty() && based != designcraft_doc::NO_PARA_STYLE {
+                    params["basedOn"] = json!(based);
+                }
+                let r = app.run("style.paragraph.create", params)?;
+                let style = r["name"].as_str().unwrap_or_default().to_string();
+                (r, style)
+            } else {
+                let mut params = json!({"name": name, "para": para, "chars": chars});
+                if !based.is_empty() {
+                    params["basedOn"] = if based == designcraft_doc::NO_PARA_STYLE { Value::Null } else { json!(based) };
+                }
+                if !rename.is_empty() && rename != name {
+                    params["rename"] = json!(rename);
+                }
+                let style = if !rename.is_empty() && rename != name { rename } else { name };
+                (app.run("style.paragraph.edit", params)?, style)
+            };
             if d.fields.contains_key("x.tag") {
                 let tag = d.s("x.tag");
                 let tag = if tag == "[Automatic]" { String::new() } else { tag };
-                let style = if !rename.is_empty() && rename != name { rename } else { name };
                 app.run("style.exportTag", json!({"style": style, "tag": tag, "class": d.s("x.class")}))?;
             }
             Ok(r)
+        }
+        "paragraphRules" => {
+            let attrs = rule_edits(&d, "");
+            if attrs.is_empty() {
+                return Ok(Value::Null);
+            }
+            app.run("type.para", json!({"attrs": attrs}))
+        }
+        "characterStyleOptions" => {
+            let name = d.s("name");
+            let mut chars = Map::new();
+            for (k, v) in &d.fields {
+                if let Some(a) = k.strip_prefix("c.") {
+                    chars.insert(a.into(), v.clone());
+                }
+            }
+            let rename = d.s("rename").trim().to_string();
+            let based = d.fields.get("basedOn").and_then(Value::as_str).map(str::to_string);
+            let r = if d.b("new") {
+                // A new style sets only what was filled in.
+                chars.retain(|_, v| !v.is_null());
+                let mut params = json!({"name": if rename.is_empty() { "Character Style 1" } else { rename.as_str() }, "chars": chars});
+                if let Some(b) = based.filter(|b| b != designcraft_doc::NO_CHAR_STYLE) {
+                    params["basedOn"] = json!(b);
+                }
+                app.run("style.character.create", params)
+            } else {
+                let mut params = json!({"name": name, "chars": chars});
+                if let Some(b) = based {
+                    params["basedOn"] = if b == designcraft_doc::NO_CHAR_STYLE { Value::Null } else { json!(b) };
+                }
+                if !rename.is_empty() && rename != name {
+                    params["rename"] = json!(rename);
+                }
+                app.run("style.character.edit", params)
+            };
+            if let Err(e) = &r {
+                // Keep the dialog open with the reason (a taken name, a based-on loop).
+                let mut d = d.clone();
+                d.fields.insert("status".into(), json!(e));
+                d.fields.insert("section".into(), json!("general"));
+                app.ui.dialog = Some(d);
+            }
+            r
         }
         "colorPicker" => {
             let hex = d.s("hex");
@@ -1520,6 +1788,12 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         }
         "pdfImport" => {
             let crop = d.s("crop");
+            if d.b("async") {
+                return app.confirm_pdf_import(d.n("page").unwrap_or(1.0).max(1.0) as u64, if crop.is_empty() { "crop".into() } else { crop });
+            }
+            if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
+                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
+            }
             app.open_file("file.place", json!({"path": d.s("path"), "pdfPage": d.n("page").unwrap_or(1.0).max(1.0) as u64, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
         }
         "print" => {
@@ -1623,6 +1897,24 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             app.run("document.preferences", doc)
         }
         "newWorkspace" => app.run("window.newWorkspace", json!({"name": d.s("name")})),
+        "closeDocument" => {
+            // The document may have moved in the tab row (or gone) while the dialog was open.
+            let uid = d.fields.get("uid").and_then(Value::as_u64);
+            let index = |app: &DesignApp| app.session.documents().iter().position(|doc| Some(doc.uid) == uid);
+            let Some(i) = index(app) else { return Ok(Value::Null) };
+            if !d.b("discard") {
+                app.run("file.activate", json!({"index": i}))?;
+                app.run("app.save", json!({}))?;
+                // Still unsaved: the save was cancelled (no file chosen). Keep the document open.
+                if app.session.documents().get(i).is_none_or(|doc| doc.is_dirty()) {
+                    return Ok(Value::Null);
+                }
+            }
+            match index(app) {
+                Some(i) => app.run("file.close", json!({"index": i})),
+                None => Ok(Value::Null),
+            }
+        }
         "importOptions" => app.open_file(
             "file.place",
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
@@ -1739,13 +2031,29 @@ fn regex_ok(p: &str) -> Result<(), ()> {
 
 fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let name = d.s("name");
+    let new = d.b("new");
     let Some(doc) = app.session.active().map(|s| s.doc.clone()) else { return };
-    let Some(style) = doc.styles.para(&name).cloned() else {
-        ui.label(format!("No style named {name}"));
-        return;
+    let style = match doc.styles.para(&name) {
+        _ if new => designcraft_doc::ParagraphStyle {
+            name: String::new(),
+            based_on: None,
+            next_style: None,
+            para: Default::default(),
+            chars: Default::default(),
+            shortcut: String::new(),
+        },
+        Some(s) => s.clone(),
+        None => {
+            ui.label(format!("No style named {name}"));
+            return;
+        }
     };
-    let names: Vec<String> = doc.styles.paragraph.iter().map(|p| p.name.clone()).filter(|n| *n != name).collect();
-    let (pp, cp) = doc.styles.resolve_para_style(&name);
+    if new && !d.fields.contains_key("rename") {
+        d.fields.insert("rename".into(), json!(next_style_name(&doc.styles, true)));
+    }
+    let names: Vec<String> = doc.styles.paragraph.iter().map(|p| p.name.clone()).filter(|n| new || *n != name).collect();
+    // A new style shows what it would inherit from its Based On.
+    let (pp, cp) = doc.styles.resolve_para_style(if new { d.fields.get("basedOn").and_then(Value::as_str).unwrap_or("") } else { &name });
     let units = doc.settings.horizontal_units;
     let pv = serde_json::to_value(&pp).unwrap_or_default();
     let cv = serde_json::to_value(&cp).unwrap_or_default();
@@ -1755,24 +2063,23 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
         // A fixed height: the separator would otherwise stretch the dialog to the window.
         ui.set_min_height(380.0);
         ui.set_max_height(380.0);
-        ui.vertical(|ui| {
-            ui.set_width(170.0);
-            for (id, label) in [
+        section_list(
+            &app.ui.language,
+            ui,
+            d,
+            &[
                 ("general", "General"),
                 ("chars", "Basic Character Formats"),
                 ("indents", "Indents and Spacing"),
+                ("rules", "Paragraph Rules"),
                 ("hyph", "Hyphenation"),
                 ("justify", "Justification"),
                 ("nested", "Drop Caps and Nested Styles"),
                 ("grep", "GREP Style"),
                 ("color", "Character Color"),
                 ("export", "Export Tagging"),
-            ] {
-                if ui.selectable_label(d.s("section") == id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    d.fields.insert("section".into(), json!(id));
-                }
-            }
-        });
+            ],
+        );
         ui.separator();
         let cnames: Vec<String> = app.session.active().map(|s| s.doc.styles.character.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
         ui.vertical(|ui| match d.s("section").as_str() {
@@ -2018,44 +2325,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     d.fields.insert("p.grepStyles".into(), Value::Array(list));
                 }
             }
-            "chars" => {
-                let fonts = crate::panels::fonts(app);
-                egui::Grid::new("psc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Family:"));
-                    let fam = cur(d, "c.fontFamily", &cv["fontFamily"]).as_str().unwrap_or("").to_string();
-                    if let Some(f) = crate::panels::font_combo(app, ui, "psfam", &fam, 200.0) {
-                        d.fields.insert("c.fontFamily".into(), json!(f));
-                    }
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Style:"));
-                    let sty = cur(d, "c.fontStyle", &cv["fontStyle"]).as_str().unwrap_or("").to_string();
-                    egui::ComboBox::from_id_salt("pssty").selected_text(&sty).width(200.0).show_ui(ui, |ui| {
-                        for s in fonts.styles(&fam) {
-                            if ui.selectable_label(s == sty, &s).clicked() {
-                                d.fields.insert("c.fontStyle".into(), json!(s));
-                            }
-                        }
-                    });
-                    ui.end_row();
-                    for (label, key, suffix) in [("Size:", "size", " pt"), ("Tracking:", "tracking", "")] {
-                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
-                        let v = cur(d, &format!("c.{key}"), &cv[key]).as_f64();
-                        if let Some(n) = crate::widgets::number(ui, &format!("ps{key}"), v, suffix, 80.0, 2) {
-                            d.fields.insert(format!("c.{key}"), json!(n));
-                        }
-                        ui.end_row();
-                    }
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Leading:"));
-                    let lv = match cur(d, "c.leading", &cv["leading"]) {
-                        v if v["kind"] == "points" => v["value"].as_f64(),
-                        _ => None,
-                    };
-                    if let Some(n) = crate::widgets::number(ui, "pslead", lv, " pt", 80.0, 2) {
-                        d.fields.insert("c.leading".into(), json!({"kind": "points", "value": n}));
-                    }
-                    ui.end_row();
-                });
-            }
+            "chars" => basic_character_formats(app, ui, d, &CharFields { base: &cv, sparse: false }),
             "indents" => {
                 egui::Grid::new("psi").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Alignment:"));
@@ -2087,6 +2357,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     }
                 });
             }
+            "rules" => paragraph_rules(app, ui, d, "p.", &pv),
             "hyph" => {
                 let mut h = cur(d, "p.hyphenate", &pv["hyphenate"]).as_bool().unwrap_or(true);
                 if ui.checkbox(&mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
@@ -2152,22 +2423,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     ui.end_row();
                 });
             }
-            "color" => {
-                let cur_fill = cur(d, "c.fill", &cv["fill"]).as_str().unwrap_or("").to_string();
-                let swatches: Vec<String> = doc.swatches.iter().map(|s| s.name.clone()).collect();
-                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                    for sw in swatches {
-                        let (c, g) = crate::widgets::swatch_colors(&doc, &sw, 1.0);
-                        ui.horizontal(|ui| {
-                            let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                            crate::widgets::paint_chip(ui.painter(), r, c, g);
-                            if ui.selectable_label(sw == cur_fill, &sw).clicked() {
-                                d.fields.insert("c.fill".into(), json!(sw));
-                            }
-                        });
-                    }
-                });
-            }
+            "color" => character_color(&app.ui.language, ui, d, &CharFields { base: &cv, sparse: false }, &doc),
             _ => {
                 egui::Grid::new("psg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Style Name:"));
@@ -2216,6 +2472,489 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     });
 }
 
+/// The section list on the left of the style options dialogs.
+fn section_list(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, sections: &[(&str, &str)]) {
+    ui.vertical(|ui| {
+        ui.set_width(170.0);
+        for (id, label) in sections {
+            if ui.selectable_label(d.s("section") == *id, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                d.fields.insert("section".into(), json!(id));
+            }
+        }
+    });
+}
+
+/// "Paragraph Style n" / "Character Style n": the first name no style has.
+fn next_style_name(styles: &designcraft_doc::Styles, para: bool) -> String {
+    let (base, count) = if para { ("Paragraph Style", styles.paragraph.len()) } else { ("Character Style", styles.character.len()) };
+    let taken = |n: &str| if para { styles.para(n).is_some() } else { styles.char_style(n).is_some() };
+    // Among count + 1 numbers at least one is free.
+    (1..=count + 1).map(|i| format!("{base} {i}")).find(|n| !taken(n)).unwrap_or_else(|| format!("{base} {}", count + 1))
+}
+
+/// Paragraph or Character Style Options for an existing style (a double-click on it in the styles
+/// panel, or Edit in its menu). [None] and [No Paragraph Style] have no options.
+pub fn open_style_options(app: &mut DesignApp, para: bool, name: &str) {
+    if name == if para { designcraft_doc::NO_PARA_STYLE } else { designcraft_doc::NO_CHAR_STYLE } {
+        return;
+    }
+    let id = if para { "paragraphStyleOptions" } else { "characterStyleOptions" };
+    app.ui.dialog = Some(Dialog::new(id, json!({"name": name})));
+}
+
+/// New Paragraph Style… / New Character Style…: the style options for a style made on OK, named
+/// with the next free "Paragraph Style n" / "Character Style n".
+pub fn open_new_style(app: &mut DesignApp, para: bool) {
+    let Some(st) = app.session.active() else { return };
+    let name = next_style_name(&st.doc.styles, para);
+    let id = if para { "paragraphStyleOptions" } else { "characterStyleOptions" };
+    app.ui.dialog = Some(Dialog::new(id, json!({"new": true, "rename": name})));
+}
+
+/// Character Style Options: General, then the character sections it shares with Paragraph Style
+/// Options. A character style sets only some attributes: the fields show those it and its Based
+/// On set and leave the rest blank. Edits are `c.<attr>` fields (`null` = no longer set), applied
+/// on OK; `new` makes the style instead of editing `name`.
+fn character_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let name = d.s("name");
+    let new = d.b("new");
+    let Some(doc) = app.session.active().map(|st| st.doc.clone()) else { return };
+    let styles = &doc.styles;
+    let style = match styles.char_style(&name) {
+        _ if new => designcraft_doc::CharacterStyle { name: String::new(), based_on: None, chars: Default::default(), shortcut: String::new() },
+        Some(s) if name != designcraft_doc::NO_CHAR_STYLE => s.clone(),
+        _ => {
+            crate::rtl::label(ui, format!("No style named {name}"));
+            return;
+        }
+    };
+    if !d.fields.contains_key("rename") {
+        d.fields.insert("rename".into(), json!(if new { next_style_name(styles, false) } else { name.clone() }));
+    }
+    let based = d
+        .fields
+        .get("basedOn")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(style.based_on.clone())
+        .unwrap_or_else(|| designcraft_doc::NO_CHAR_STYLE.into());
+    // The fields show the style's own attributes over those its Based On gives it.
+    let mut shown = styles.char_style_attrs(&based);
+    shown.merge(&style.chars);
+    let base = serde_json::to_value(&shown).unwrap_or_default();
+    let cf = CharFields { base: &base, sparse: true };
+    let lang = app.ui.language.clone();
+    ui.set_min_width(560.0);
+    ui.horizontal_top(|ui| {
+        // A fixed height: the separator would otherwise stretch the dialog to the window.
+        ui.set_min_height(380.0);
+        ui.set_max_height(380.0);
+        section_list(
+            &lang,
+            ui,
+            d,
+            &[
+                ("general", "General"),
+                ("chars", "Basic Character Formats"),
+                ("advanced", "Advanced Character Formats"),
+                ("color", "Character Color"),
+                ("openType", "OpenType Features"),
+                ("underline", "Underline Options"),
+                ("strikethrough", "Strikethrough Options"),
+            ],
+        );
+        ui.separator();
+        ui.vertical(|ui| match d.s("section").as_str() {
+            "chars" => basic_character_formats(app, ui, d, &cf),
+            "advanced" => advanced_character_formats(&lang, ui, d, &cf),
+            "color" => character_color(&lang, ui, d, &cf, &doc),
+            "openType" => open_type_features(&lang, ui, d, &cf),
+            "underline" => line_options(&lang, ui, d, &cf, &doc, "underline"),
+            "strikethrough" => line_options(&lang, ui, d, &cf, &doc, "strikethrough"),
+            _ => {
+                egui::Grid::new("csg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    crate::rtl::label(ui, crate::i18n::tr(&lang, "Style Name:"));
+                    text_field(ui, d, "rename", 220.0);
+                    ui.end_row();
+                    crate::rtl::label(ui, crate::i18n::tr(&lang, "Based On:"));
+                    egui::ComboBox::from_id_salt("csbased")
+                        .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&lang, &based)))
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            // Not itself, nor a style based on it.
+                            for s in styles.character.iter().filter(|s| new || !styles.char_based_on_cycles(&name, &s.name)) {
+                                if ui.selectable_label(s.name == based, crate::rtl::widget(ui, crate::i18n::style_name(&lang, &s.name))).clicked() {
+                                    d.fields.insert("basedOn".into(), json!(s.name));
+                                }
+                            }
+                        });
+                    ui.end_row();
+                });
+                let status = d.s("status");
+                if !status.is_empty() {
+                    crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+                }
+                ui.add_space(8.0);
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Style Settings:")).font(semibold(12.0)));
+                // What OK would leave the style setting, after its Based On.
+                let mut own = serde_json::to_value(&style.chars).unwrap_or_default();
+                if let Some(o) = own.as_object_mut() {
+                    for (k, v) in d.fields.iter().filter_map(|(k, v)| Some((k.strip_prefix("c.")?, v))) {
+                        if v.is_null() {
+                            o.remove(k);
+                        } else {
+                            o.insert(k.to_string(), v.clone());
+                        }
+                    }
+                }
+                let mut parts = vec![crate::i18n::style_name(&lang, &based).to_string()];
+                parts.extend(own.as_object().into_iter().flatten().map(|(k, v)| format!("{}: {}", setting_label(&lang, k), setting_text(v))));
+                ui.add(egui::Label::new(egui::RichText::new(parts.join(" + ")).color(crate::theme::Tokens::get(ui.ctx()).text_dim)).wrap());
+            }
+        });
+    });
+}
+
+/// An attribute's name as Style Settings shows it: the field's label where the name reads poorly.
+fn setting_label(lang: &str, key: &str) -> String {
+    match key {
+        "hScale" => crate::i18n::tr(lang, "Horizontal Scale:").trim_end_matches([':', '：']).to_string(),
+        "vScale" => crate::i18n::tr(lang, "Vertical Scale:").trim_end_matches([':', '：']).to_string(),
+        "capitalization" => crate::i18n::tr(lang, "Case:").trim_end_matches([':', '：']).to_string(),
+        "otfFeatures" => crate::i18n::tr(lang, "OpenType Features").to_string(),
+        _ => crate::i18n::tr(lang, &humanize(key)).to_string(),
+    }
+}
+
+/// An attribute value as Style Settings shows it.
+fn setting_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |x| format!("{}", (x * 1000.0).round() / 1000.0)),
+        Value::Bool(b) => if *b { "on" } else { "off" }.into(),
+        Value::Array(a) => a.iter().map(setting_text).collect::<Vec<_>>().join(", "),
+        Value::Object(o) => o.get("value").or_else(|| o.get("kind")).map(setting_text).unwrap_or_default(),
+        Value::Null => String::new(),
+    }
+}
+
+/// Where the character sections of the style options dialogs get the values they show: `base`
+/// holds them by attribute name (resolved values for a paragraph style; for a character style the
+/// attributes it sets, the others absent). `sparse` (a character style) lets a field be blank:
+/// emptying it, or picking the blank entry, unsets the attribute.
+struct CharFields<'a> {
+    base: &'a Value,
+    sparse: bool,
+}
+
+impl CharFields<'_> {
+    /// The value shown for attribute `key`: the dialog's edit, else the base value.
+    fn get(&self, d: &Dialog, key: &str) -> Value {
+        d.fields.get(&format!("c.{key}")).cloned().unwrap_or_else(|| self.base.get(key).cloned().unwrap_or(Value::Null))
+    }
+    fn set(&self, d: &mut Dialog, key: &str, v: Value) {
+        d.fields.insert(format!("c.{key}"), v);
+    }
+}
+
+/// A number attribute shown multiplied by `scale` (100 for a fraction shown as a percentage).
+fn char_number(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, suffix: &str, scale: f64, range: (f64, f64)) {
+    let v = cf.get(d, key).as_f64().map(|x| x * scale);
+    let field = crate::widgets::NumField::number(key, v, suffix, 2).width(80.0).range(range.0, range.1);
+    let edit = if cf.sparse { field.show_or_clear(ui) } else { field.show(ui).map(Some) };
+    if let Some(n) = edit {
+        cf.set(d, key, n.map_or(Value::Null, |n| json!(n / scale)));
+    }
+}
+
+/// An attribute chosen from `opts` (value, label); a character style also has a blank entry.
+fn char_choice(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, opts: &[(Value, &str)]) {
+    let cur = cf.get(d, key);
+    let shown = opts.iter().find(|o| o.0 == cur).map_or("", |o| crate::i18n::tr(lang, o.1));
+    egui::ComboBox::from_id_salt(("cs", key)).selected_text(crate::rtl::widget(ui, shown)).width(200.0).show_ui(ui, |ui| {
+        if cf.sparse && ui.selectable_label(cur.is_null(), " ").clicked() {
+            cf.set(d, key, Value::Null);
+        }
+        for (v, label) in opts {
+            if ui.selectable_label(*v == cur, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                cf.set(d, key, v.clone());
+            }
+        }
+    });
+}
+
+/// An on/off attribute; for a character style a third, mixed state leaves it unset (clicks go
+/// unset → on → off → unset).
+fn char_check(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, label: &str) {
+    let cur = cf.get(d, key);
+    let mut on = cur.as_bool().unwrap_or(false);
+    let unset = cf.sparse && cur.is_null();
+    if ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, label)).indeterminate(unset)).clicked() {
+        let next = match cur.as_bool() {
+            _ if !cf.sparse => json!(on),
+            None => json!(true),
+            Some(true) => json!(false),
+            Some(false) => Value::Null,
+        };
+        cf.set(d, key, next);
+    }
+}
+
+/// A swatch attribute from a menu; `text_color` names the "" entry (the text's own colour).
+fn char_swatch(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, doc: &designcraft_doc::Document, key: &str, text_color: Option<&str>) {
+    let mut opts: Vec<(Value, &str)> = text_color.map(|l| (json!(""), l)).into_iter().collect();
+    opts.extend(doc.swatches.iter().map(|w| (json!(w.name), w.name.as_str())));
+    char_choice(lang, ui, d, cf, key, &opts);
+}
+
+/// Basic Character Formats: font, size, leading, kerning, tracking, case, position and the
+/// underline, strikethrough, ligatures and no-break switches.
+fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields) {
+    let lang = app.ui.language.clone();
+    let lang = lang.as_str();
+    let fonts = crate::panels::fonts(app);
+    let menu = crate::panels::font_menu(app);
+    egui::Grid::new("psc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Font Family:"));
+        let fam = cf.get(d, "fontFamily").as_str().unwrap_or("").to_string();
+        let shown = if fam.is_empty() { "—".to_string() } else { crate::panels::font_label(app, &menu, &fam) };
+        egui::ComboBox::from_id_salt("psfam")
+            .selected_text(shown)
+            .width(200.0)
+            .height(440.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show_ui(ui, |ui| {
+                if cf.sparse && ui.selectable_label(fam.is_empty(), " ").clicked() {
+                    cf.set(d, "fontFamily", Value::Null);
+                }
+                if let Some(f) = crate::panels::font_menu_body(app, ui, &menu, &fam, 200.0) {
+                    cf.set(d, "fontFamily", json!(f));
+                }
+            });
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Font Style:"));
+        let sty = cf.get(d, "fontStyle").as_str().unwrap_or("").to_string();
+        if cf.sparse && fam.is_empty() {
+            // No family to list styles of: type the style ("Italic" in whatever font the text has).
+            let mut s = sty.clone();
+            if ui.add(egui::TextEdit::singleline(&mut s).desired_width(200.0)).changed() {
+                cf.set(d, "fontStyle", if s.trim().is_empty() { Value::Null } else { json!(s) });
+            }
+        } else {
+            egui::ComboBox::from_id_salt("pssty").selected_text(&sty).width(200.0).show_ui(ui, |ui| {
+                if cf.sparse && ui.selectable_label(sty.is_empty(), " ").clicked() {
+                    cf.set(d, "fontStyle", Value::Null);
+                }
+                for s in fonts.styles(&fam) {
+                    if ui.selectable_label(s == sty, &s).clicked() {
+                        cf.set(d, "fontStyle", json!(s));
+                    }
+                }
+            });
+        }
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Size:"));
+        char_number(ui, d, cf, "size", " pt", 1.0, (0.1, 1296.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Leading:"));
+        let lv = match cf.get(d, "leading") {
+            v if v["kind"] == "points" => v["value"].as_f64(),
+            _ => None,
+        };
+        let field = crate::widgets::NumField::number("pslead", lv, " pt", 2).width(80.0).range(0.0, 5000.0);
+        let edit = if cf.sparse { field.show_or_clear(ui) } else { field.show(ui).map(Some) };
+        if let Some(n) = edit {
+            cf.set(d, "leading", n.map_or(Value::Null, |n| json!({"kind": "points", "value": n})));
+        }
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Kerning:"));
+        char_choice(
+            lang,
+            ui,
+            d,
+            cf,
+            "kerning",
+            &[(json!({"kind": "metrics"}), "Metrics"), (json!({"kind": "optical"}), "Optical"), (json!({"kind": "none"}), "0")],
+        );
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Tracking:"));
+        char_number(ui, d, cf, "tracking", "", 1.0, (-1000.0, 10000.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Case:"));
+        char_choice(
+            lang,
+            ui,
+            d,
+            cf,
+            "capitalization",
+            &[
+                (json!("normal"), "Normal"),
+                (json!("allCaps"), "All Caps"),
+                (json!("smallCaps"), "Small Caps"),
+                (json!("openTypeAllSmallCaps"), "OpenType All Small Caps"),
+            ],
+        );
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Position:"));
+        char_choice(
+            lang,
+            ui,
+            d,
+            cf,
+            "position",
+            &[
+                (json!("normal"), "Normal"),
+                (json!("superscript"), "Superscript"),
+                (json!("subscript"), "Subscript"),
+                (json!("otSuperscript"), "OpenType Superscript"),
+                (json!("otSubscript"), "OpenType Subscript"),
+                (json!("otNumerator"), "OpenType Numerator"),
+                (json!("otDenominator"), "OpenType Denominator"),
+            ],
+        );
+        ui.end_row();
+    });
+    ui.add_space(4.0);
+    egui::Grid::new("pscb").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+        char_check(ui, d, cf, "underline", crate::i18n::tr(lang, "Underline"));
+        char_check(ui, d, cf, "ligatures", crate::i18n::tr(lang, "Ligatures"));
+        ui.end_row();
+        char_check(ui, d, cf, "strikethrough", crate::i18n::tr(lang, "Strikethrough"));
+        char_check(ui, d, cf, "noBreak", crate::i18n::tr(lang, "No Break"));
+        ui.end_row();
+    });
+}
+
+/// Advanced Character Formats: scaling, baseline shift, skew and language.
+fn advanced_character_formats(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields) {
+    egui::Grid::new("csa").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Horizontal Scale:"));
+        char_number(ui, d, cf, "hScale", "%", 100.0, (1.0, 1000.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Vertical Scale:"));
+        char_number(ui, d, cf, "vScale", "%", 100.0, (1.0, 1000.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Baseline Shift:"));
+        char_number(ui, d, cf, "baselineShift", " pt", 1.0, (-5000.0, 5000.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Skew:"));
+        char_number(ui, d, cf, "skew", "°", 1.0, (-85.0, 85.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Language:"));
+        let opts: Vec<(Value, &str)> = crate::panels::properties::LANGUAGES.iter().map(|l| (json!(l), *l)).collect();
+        char_choice(lang, ui, d, cf, "language", &opts);
+        ui.end_row();
+    });
+}
+
+/// Character Color: the fill or stroke swatch, its tint and the stroke weight.
+fn character_color(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, doc: &designcraft_doc::Document) {
+    let stroke = d.s("colorTarget") == "stroke";
+    ui.horizontal(|ui| {
+        for (target, label) in [("fill", "Fill"), ("stroke", "Stroke")] {
+            if ui.selectable_label((target == "stroke") == stroke, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                d.fields.insert("colorTarget".into(), json!(target));
+            }
+        }
+    });
+    let key = if stroke { "stroke" } else { "fill" };
+    let cur = cf.get(d, key).as_str().unwrap_or("").to_string();
+    egui::ScrollArea::vertical().id_salt(("cscolor", key)).max_height(220.0).show(ui, |ui| {
+        for sw in &doc.swatches {
+            let (c, g) = crate::widgets::swatch_colors(doc, &sw.name, 1.0);
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                crate::widgets::paint_chip(ui.painter(), r, c, g);
+                if ui.selectable_label(sw.name == cur, &sw.name).clicked() {
+                    // A character style's chosen swatch, clicked again, is no longer set.
+                    cf.set(d, key, if cf.sparse && sw.name == cur { Value::Null } else { json!(sw.name) });
+                }
+            });
+        }
+    });
+    egui::Grid::new("cscg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
+        char_number(ui, d, cf, if stroke { "strokeTint" } else { "fillTint" }, "%", 100.0, (0.0, 100.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
+        char_number(ui, d, cf, "strokeWeight", " pt", 1.0, (0.0, 800.0));
+        ui.end_row();
+    });
+}
+
+/// OpenType Features: the feature switches, figure style and stylistic sets (one `otfFeatures`
+/// list: changing any feature sets the whole list).
+fn open_type_features(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields) {
+    use designcraft_doc::otf;
+    let mut list: Vec<String> =
+        cf.get(d, "otfFeatures").as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let mut changed = false;
+    egui::Grid::new("csot").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+        for (i, (tag, label, _)) in otf::TOGGLES.iter().enumerate() {
+            let mut on = otf::is_on(&list, tag);
+            if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).changed() {
+                otf::set(&mut list, tag, on);
+                changed = true;
+            }
+            if i % 2 == 1 {
+                ui.end_row();
+            }
+        }
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Figure Style:"));
+        let fig = otf::figures(&list);
+        let shown = otf::FIGURES.iter().find(|f| f.0 == fig).map_or("", |f| f.1);
+        egui::ComboBox::from_id_salt("csfig").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, shown))).width(180.0).show_ui(ui, |ui| {
+            for (id, label, ..) in otf::FIGURES {
+                if ui.selectable_label(fig == *id, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() && otf::set_figures(&mut list, id)
+                {
+                    changed = true;
+                }
+            }
+        });
+    });
+    ui.add_space(4.0);
+    crate::rtl::label(ui, crate::i18n::tr(lang, "Stylistic Sets"));
+    let mask = otf::stylistic_sets(&list);
+    egui::Grid::new("csss").num_columns(10).spacing([2.0, 2.0]).show(ui, |ui| {
+        for n in 1..=20u32 {
+            let bit = 1u32 << (n - 1);
+            if ui.add_sized([28.0, 20.0], egui::Button::selectable(mask & bit != 0, format!("{n}"))).clicked() {
+                otf::set_stylistic_sets(&mut list, mask ^ bit);
+                changed = true;
+            }
+            if n % 10 == 0 {
+                ui.end_row();
+            }
+        }
+    });
+    if changed {
+        cf.set(d, "otfFeatures", json!(list));
+    }
+}
+
+/// Underline Options / Strikethrough Options (`key` is `underline` or `strikethrough`).
+fn line_options(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, doc: &designcraft_doc::Document, key: &str) {
+    char_check(ui, d, cf, key, crate::i18n::tr(lang, if key == "underline" { "Underline On" } else { "Strikethrough On" }));
+    ui.add_space(4.0);
+    egui::Grid::new(("csline", key)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
+        char_number(ui, d, cf, &format!("{key}Weight"), " pt", 1.0, (0.0, 800.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
+        char_number(ui, d, cf, &format!("{key}Offset"), " pt", 1.0, (-800.0, 800.0));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Color:"));
+        char_swatch(lang, ui, d, cf, doc, &format!("{key}Color"), Some("(Text Color)"));
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
+        char_number(ui, d, cf, &format!("{key}Tint"), "%", 100.0, (0.0, 100.0));
+        ui.end_row();
+    });
+}
+
 fn combo(ui: &mut egui::Ui, d: &mut Dialog, key: &str, opts: &[(&str, &str)]) {
     let cur = d.s(key);
     let shown = opts.iter().find(|o| o.0 == cur).map_or(cur.as_str(), |o| o.1).to_string();
@@ -2252,6 +2991,131 @@ fn style_combo(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str, ch
         opts.insert(0, (designcraft_doc::NO_CHAR_STYLE, crate::i18n::style_name(&app.ui.language, designcraft_doc::NO_CHAR_STYLE)));
     }
     combo(ui, d, key, &opts);
+}
+
+const RULES: [(&str, &str); 2] = [("ruleAbove", "Rule Above"), ("ruleBelow", "Rule Below")];
+
+/// A rule as the dialog shows it: `current[which]` (the resolved rule, inherited values included)
+/// with the fields edited in the dialog (`{prefix}{which}.{field}`) on top.
+fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
+    let mut r = match current.get(which) {
+        Some(Value::Object(m)) => m.clone(),
+        _ => Map::new(),
+    };
+    let edited = format!("{prefix}{which}.");
+    for (k, v) in &d.fields {
+        if let Some(field) = k.strip_prefix(&edited) {
+            r.insert(field.into(), v.clone());
+        }
+    }
+    Value::Object(r)
+}
+
+/// The rule fields edited in the dialog, as `type.para` attrs: `{ruleAbove?: {…}, ruleBelow?: {…}}`.
+fn rule_edits(d: &Dialog, prefix: &str) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (which, _) in RULES {
+        let edited = format!("{prefix}{which}.");
+        let fields: Map<String, Value> = d.fields.iter().filter_map(|(k, v)| k.strip_prefix(&edited).map(|f| (f.to_string(), v.clone()))).collect();
+        if !fields.is_empty() {
+            out.insert(which.into(), Value::Object(fields));
+        }
+    }
+    out
+}
+
+/// Paragraph Rules (the dialog, and the Paragraph Style Options section): Rule Above or Rule Below,
+/// chosen at the top. `current` holds the resolved `ruleAbove` / `ruleBelow`; each edit is stored as
+/// `{prefix}{rule}.{field}`, so OK changes only the fields edited.
+fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, current: &Value) {
+    let lang = app.ui.language.as_str();
+    let (swatches, h_units, v_units) = app
+        .session
+        .active()
+        .map(|st| {
+            let sw: Vec<String> = st.doc.swatches.iter().filter(|w| !w.hidden).map(|w| w.name.clone()).collect();
+            (sw, st.doc.settings.horizontal_units, st.doc.settings.vertical_units)
+        })
+        .unwrap_or((Vec::new(), Unit::Points, Unit::Points));
+    let which = if d.s("rule") == "ruleBelow" { "ruleBelow" } else { "ruleAbove" };
+    let rule = shown_rule(d, prefix, which, current);
+    let key = |field: &str| format!("{prefix}{which}.{field}");
+    // A number field takes the rest of the row; keep its grid column to the field's width.
+    let sized = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui) -> Option<f64>| {
+        ui.allocate_ui_with_layout(egui::vec2(80.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| add(ui)).inner
+    };
+    ui.horizontal(|ui| {
+        let shown = RULES.iter().find(|r| r.0 == which).map_or(which, |r| r.1);
+        egui::ComboBox::from_id_salt("rule_which").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, shown))).width(130.0).show_ui(
+            ui,
+            |ui| {
+                for (v, label) in RULES {
+                    if ui.selectable_label(v == which, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                        d.fields.insert("rule".into(), json!(v));
+                    }
+                }
+            },
+        );
+        ui.add_space(12.0);
+        let mut on = rule["on"].as_bool().unwrap_or(false);
+        if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, "Rule On"))).changed() {
+            d.fields.insert(key("on"), json!(on));
+        }
+    });
+    ui.add_space(6.0);
+    let on = rule["on"].as_bool().unwrap_or(false);
+    ui.add_enabled_ui(on, |ui| {
+        egui::Grid::new(("rules", which)).num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
+            if let Some(v) = sized(ui, &mut |ui| crate::widgets::number(ui, &key("weight"), rule["weight"].as_f64(), " pt", 80.0, 2)) {
+                d.fields.insert(key("weight"), json!(v.clamp(0.0, 1000.0)));
+            }
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Color:"));
+            let color = rule["color"].as_str().unwrap_or("").to_string();
+            egui::ComboBox::from_id_salt(("rule_color", which)).selected_text(&color).width(130.0).show_ui(ui, |ui| {
+                for w in &swatches {
+                    let (c, g) = app.session.active().map_or((None, None), |st| crate::widgets::swatch_colors(&st.doc, w, 1.0));
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                        crate::widgets::paint_chip(ui.painter(), r, c, g);
+                        if ui.selectable_label(*w == color, w).clicked() {
+                            d.fields.insert(key("color"), json!(w));
+                        }
+                    });
+                }
+            });
+            ui.end_row();
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
+            if let Some(v) = sized(ui, &mut |ui| crate::widgets::number(ui, &key("tint"), rule["tint"].as_f64().map(|t| t * 100.0), "%", 80.0, 0)) {
+                d.fields.insert(key("tint"), json!((v / 100.0).clamp(0.0, 1.0)));
+            }
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Width:"));
+            let column = rule["columnWidth"].as_bool().unwrap_or(true);
+            egui::ComboBox::from_id_salt(("rule_width", which))
+                .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, if column { "Column" } else { "Text" })))
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for (v, label) in [(true, "Column"), (false, "Text")] {
+                        if ui.selectable_label(v == column, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                            d.fields.insert(key("columnWidth"), json!(v));
+                        }
+                    }
+                });
+            ui.end_row();
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
+            if let Some(v) = sized(ui, &mut |ui| crate::widgets::measure(ui, &key("offset"), rule["offset"].as_f64(), v_units, 80.0)) {
+                d.fields.insert(key("offset"), json!(v));
+            }
+            ui.end_row();
+            for (label, field) in [("Left Indent:", "leftIndent"), ("Right Indent:", "rightIndent")] {
+                crate::rtl::label(ui, crate::i18n::tr(lang, label));
+                if let Some(v) = sized(ui, &mut |ui| crate::widgets::measure(ui, &key(field), rule[field].as_f64(), h_units, 80.0)) {
+                    d.fields.insert(key(field), json!(v));
+                }
+            }
+            ui.end_row();
+        });
+    });
 }
 
 /// Document Footnote Options: Numbering and Formatting / Layout tabs.
@@ -2699,6 +3563,335 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 mod tests {
     use super::*;
 
+    fn dialog_context(language: &str) -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, language);
+        crate::theme::apply(&ctx, &crate::theme::Tokens::for_brightness(crate::theme::Brightness::default()));
+        ctx
+    }
+
+    fn dialog_frame(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, events: Vec<egui::Event>) -> Vec<(String, egui::Rect, egui::Rect)> {
+        let time = ctx.input(|i| i.time) + 1.0 / 60.0;
+        let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| {
+            show(app, ui.ctx());
+        });
+        output.textures_delta.clear();
+        fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(t) => labels.push((t.galley.job.text.clone(), t.visual_bounding_rect(), clip)),
+                egui::Shape::Vec(shapes) => {
+                    for s in shapes {
+                        collect(s, clip, labels);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut labels = Vec::new();
+        for shape in output.shapes {
+            collect(&shape.shape, shape.clip_rect, &mut labels);
+        }
+        labels
+    }
+
+    fn visible_label(labels: &[(String, egui::Rect, egui::Rect)], screen: egui::Rect, expected: &str) -> egui::Rect {
+        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text.trim() == expected).unwrap_or_else(|| panic!("{expected} is painted"));
+        assert!(screen.contains_rect(*rect), "{expected} must stay on screen: {rect:?}");
+        assert!(clip.contains_rect(*rect), "{expected} must not be clipped: {rect:?}, {clip:?}");
+        *rect
+    }
+
+    fn click_dialog(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            dialog_frame(
+                app,
+                ctx,
+                screen,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+    }
+
+    fn scroll_dialog(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, pos: egui::Pos2, delta: egui::Vec2) {
+        dialog_frame(
+            app,
+            ctx,
+            screen,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE },
+            ],
+        );
+        // Let smooth wheel scrolling and scrollbar visibility settle before clicking.
+        for _ in 0..30 {
+            dialog_frame(app, ctx, screen, vec![]);
+        }
+    }
+
+    #[test]
+    fn dialog_title_and_actions_fit_scaled_viewports() {
+        for language in ["en", "ar"] {
+            for size in [egui::vec2(1178.0, 814.0), egui::vec2(589.0, 407.0), egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0)] {
+                for (command, title) in [("app.preferences", "Preferences"), ("app.newDocumentDialog", "New Document")] {
+                    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+                    app.ui.language = language.into();
+                    app.run("file.new", json!({})).unwrap();
+                    app.run(command, json!({})).unwrap();
+                    let ctx = dialog_context(language);
+                    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                    for _ in 0..3 {
+                        dialog_frame(&mut app, &ctx, screen, vec![]);
+                    }
+                    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+                    for expected in [title, "OK", "Cancel"] {
+                        visible_label(&labels, screen, crate::i18n::tr(language, expected));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preferences_sidebar_scroll_keeps_selected_options_visible() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("app.preferences", json!({})).unwrap();
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(589.0, 407.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let sidebar = visible_label(&labels, screen, "General").center();
+        assert!(
+            !labels.iter().any(|(text, rect, clip)| text == "File Handling" && clip.contains_rect(*rect)),
+            "last section starts below the sidebar"
+        );
+        scroll_dialog(&mut app, &ctx, screen, sidebar, egui::vec2(0.0, -600.0));
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let files = visible_label(&labels, screen, "File Handling").center();
+        click_dialog(&mut app, &ctx, screen, files);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("section"), "files");
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        for expected in ["Document Recovery Data", "Save recovery data every:", "OK", "Cancel"] {
+            visible_label(&labels, screen, expected);
+        }
+    }
+
+    #[test]
+    fn preferences_horizontal_scroll_reaches_clipped_options() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("app.preferences", json!({})).unwrap();
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(450.0, 280.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let body = visible_label(&labels, screen, "When Scaling").center();
+        let option = "Absolute Numbering (instead of Section Numbering)";
+        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == option).unwrap();
+        assert!(rect.right() > clip.right(), "rightmost option starts horizontally clipped: {rect:?}, {clip:?}");
+        scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(-600.0, 0.0));
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        for expected in [option, "Preferences", "OK", "Cancel"] {
+            visible_label(&labels, screen, expected);
+        }
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, option).center());
+        assert!(app.ui.dialog.as_ref().unwrap().b("absolutePageNumbers"));
+    }
+
+    #[test]
+    fn new_document_vertical_scroll_reaches_last_field() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("app.newDocumentDialog", json!({})).unwrap();
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(392.0, 271.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let body = visible_label(&labels, screen, "Width").center();
+        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == "Primary Text Frame").unwrap();
+        assert!(rect.bottom() > clip.bottom(), "last field starts vertically clipped");
+        scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(0.0, -600.0));
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        for expected in ["Primary Text Frame", "New Document", "OK", "Cancel"] {
+            visible_label(&labels, screen, expected);
+        }
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Primary Text Frame").center());
+        assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"));
+    }
+
+    #[test]
+    fn arabic_new_document_leftmost_fields_remain_reachable() {
+        for size in [egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0)] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "ar".into();
+            app.run("app.newDocumentDialog", json!({})).unwrap();
+            let fields = [("height", "66p1"), ("gutter", "1p2"), ("marginBottom", "3p3"), ("marginOutside", "3p4")];
+            for (field, value) in fields {
+                app.ui.dialog.as_mut().unwrap().fields.insert(field.into(), json!(value));
+            }
+            let ctx = dialog_context("ar");
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            for _ in 0..3 {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            for (_, value) in fields {
+                visible_label(&labels, screen, value);
+            }
+            let body = visible_label(&labels, screen, "66p1").center();
+            for x in [-600.0, 600.0] {
+                scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(x, 0.0));
+                let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+                for (_, value) in fields {
+                    visible_label(&labels, screen, value);
+                }
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "66p1").center());
+            dialog_frame(
+                &mut app,
+                &ctx,
+                screen,
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
+                    },
+                    egui::Event::Text("88p8".into()),
+                ],
+            );
+            assert_eq!(app.ui.dialog.as_ref().unwrap().s("height"), "88p8", "leftmost numeric field accepts edits");
+            scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(0.0, -600.0));
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            let label = crate::i18n::tr("ar", "Primary Text Frame");
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, label).center());
+            assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"), "leftmost checkbox remains clickable after scrolling");
+        }
+    }
+
+    #[test]
+    fn resized_dialogs_cancel_and_reopen_without_applying_edits() {
+        for (command, title, field) in [("app.preferences", "Preferences", "recoveryMinutes"), ("app.newDocumentDialog", "New Document", "pages")] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run(command, json!({})).unwrap();
+            let original = app.ui.dialog.as_ref().unwrap().fields[field].clone();
+            app.ui.dialog.as_mut().unwrap().fields.insert(field.into(), json!(42));
+            let ctx = dialog_context("en");
+            for size in [egui::vec2(1178.0, 814.0), egui::vec2(392.0, 271.0), egui::vec2(589.0, 407.0)] {
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                for _ in 0..3 {
+                    dialog_frame(&mut app, &ctx, screen, vec![]);
+                }
+                let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+                for expected in [title, "OK", "Cancel"] {
+                    visible_label(&labels, screen, expected);
+                }
+            }
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(589.0, 407.0));
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Cancel").center());
+            assert!(app.ui.dialog.is_none());
+            assert!(app.session.active().is_none(), "cancelling must not create a document");
+            app.run(command, json!({})).unwrap();
+            assert_eq!(app.ui.dialog.as_ref().unwrap().fields[field], original, "cancelled edits must not survive reopening");
+            for _ in 0..3 {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            visible_label(&labels, screen, title);
+            dialog_frame(
+                &mut app,
+                &ctx,
+                screen,
+                vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            );
+            assert!(app.ui.dialog.is_none(), "Escape must also close the reopened dialog");
+        }
+    }
+
+    fn draw(app: &mut DesignApp, ctx: &egui::Context) {
+        let input =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    }
+
+    /// A paragraph styled "Ruled Child", whose Rule Below comes from its parent "Ruled".
+    fn ruled_paragraph() -> (DesignApp, Value) {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let rule = json!({"on": true, "weight": 3.0, "color": "[Black]", "tint": 0.5, "columnWidth": false, "offset": 4.0, "leftIndent": 6.0, "rightIndent": 2.0});
+        app.run("style.paragraph.create", json!({"name": "Ruled", "para": {"ruleBelow": rule}})).unwrap();
+        app.run("style.paragraph.create", json!({"name": "Ruled Child", "basedOn": "Ruled"})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 400], "content": "text", "text": "One"})).unwrap();
+        app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        app.run("style.paragraph.apply", json!({"name": "Ruled Child"})).unwrap();
+        (app, rule)
+    }
+
+    fn undo_steps(app: &DesignApp) -> usize {
+        app.session.doc().map_or(0, |st| st.history.undo.len())
+    }
+
+    #[test]
+    fn paragraph_rules_dialog_shows_the_rule_and_applies_one_field() {
+        let (mut app, rule) = ruled_paragraph();
+        let ctx = egui::Context::default();
+        app.run("app.paragraphRulesDialog", json!({"rule": "ruleBelow"})).unwrap();
+        draw(&mut app, &ctx);
+        let d = app.ui.dialog.clone().unwrap();
+        assert_eq!(d.id, "paragraphRules");
+        let current = d.fields["current"].clone();
+        assert_eq!(shown_rule(&d, "", "ruleBelow", &current), rule, "the inherited rule");
+        assert_eq!(shown_rule(&d, "", "ruleAbove", &current)["on"], false);
+        // Pick a colour, as the Color menu does.
+        app.ui.dialog.as_mut().unwrap().fields.insert("ruleBelow.color".into(), json!("[Registration]"));
+        draw(&mut app, &ctx);
+        let before = undo_steps(&app);
+        confirm(&mut app).unwrap();
+        assert_eq!(undo_steps(&app), before + 1, "one undo step");
+        let mut want = rule.clone();
+        want["color"] = json!("[Registration]");
+        assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], want);
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], rule);
+    }
+
+    #[test]
+    fn paragraph_style_options_edit_one_rule_field() {
+        let (mut app, rule) = ruled_paragraph();
+        let ctx = egui::Context::default();
+        app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
+        draw(&mut app, &ctx);
+        let resolved = |app: &DesignApp| serde_json::to_value(app.session.doc().unwrap().doc.styles.resolve_para_style("Ruled Child").0).unwrap();
+        let d = app.ui.dialog.clone().unwrap();
+        assert_eq!(shown_rule(&d, "p.", "ruleBelow", &resolved(&app)), rule, "inherited from the parent style");
+        app.ui.dialog.as_mut().unwrap().fields.insert("p.ruleBelow.weight".into(), json!(1.5));
+        draw(&mut app, &ctx);
+        let before = undo_steps(&app);
+        confirm(&mut app).unwrap();
+        assert_eq!(undo_steps(&app), before + 1, "one undo step");
+        let mut want = rule.clone();
+        want["weight"] = json!(1.5);
+        assert_eq!(resolved(&app)["ruleBelow"], want);
+        assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], want, "the paragraph follows its style");
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(resolved(&app)["ruleBelow"], rule);
+    }
+
     fn command_app(id: &str, fields: Value) -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.ui.dialog = Some(Dialog::new(&format!("cmd:{id}"), fields));
@@ -2767,6 +3960,52 @@ mod tests {
     }
 
     #[test]
+    fn text_frame_options_change_only_what_was_edited() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "content": "text", "text": "Hello"})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        app.run("object.textFrameOptions", json!({"ids": [id.0], "columns": 2, "inset": [1, 2, 3, 4]})).unwrap();
+        let opts = |app: &DesignApp| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        let before = opts(&app);
+        let open = |app: &mut DesignApp, fields: &[(&str, Value)]| {
+            app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
+            let mut d = app.ui.dialog.take().unwrap();
+            seed_text_frame_options(app, &mut d);
+            for (k, v) in fields {
+                d.fields.insert((*k).into(), v.clone());
+            }
+            app.ui.dialog = Some(d);
+            confirm(app)
+        };
+        // OK without edits changes nothing (no undo step either).
+        assert_eq!(open(&mut app, &[]).unwrap(), Value::Null);
+        assert_eq!(opts(&app), before);
+        // The rule's weight is in points; unequal insets the user didn't touch stay.
+        open(&mut app, &[("columnRule", json!(true)), ("columnRuleWeight", json!("6"))]).unwrap();
+        let o = opts(&app);
+        assert!(o.column_rule && o.column_rule_weight == 6.0, "{o:?}");
+        assert_eq!((o.inset, o.columns, o.gutter), (before.inset, before.columns, before.gutter));
+        // One of the rule's insets edited: the other rule settings stay.
+        open(&mut app, &[("columnRuleBottomInset", json!("0p9")), ("columnRuleTint", json!("40"))]).unwrap();
+        let o = opts(&app);
+        assert_eq!((o.column_rule_bottom_inset, o.column_rule_top_inset, o.column_rule_offset, o.column_rule_weight), (9.0, 0.0, 0.0, 6.0));
+        assert!((o.column_rule_tint - 0.4).abs() < 1e-6 && o.column_rule);
+        // One inset side edited: the others keep their values.
+        open(&mut app, &[("insetLeft", json!("1p0"))]).unwrap();
+        assert_eq!(opts(&app).inset, [1.0, 12.0, 3.0, 4.0]);
+        // An unknown swatch is an error and the dialog stays open.
+        let e = open(&mut app, &[("columnRuleColor", json!("Mauve"))]).unwrap_err();
+        assert!(e.contains("Mauve") && app.ui.dialog.is_some(), "{e}");
+        assert_eq!(opts(&app).column_rule_color, designcraft_color::swatch::BLACK);
+        // Each OK is one undo step.
+        for _ in 0..3 {
+            app.run("edit.undo", json!({})).unwrap();
+        }
+        assert_eq!(opts(&app), before);
+    }
+
+    #[test]
     fn parses_command_params() {
         let f = command_fields("{name, type: custom|lastPageNumber|chapterNumber, text?, rule?: {on, weight}, flag?: bool} — creates");
         let keys: Vec<&str> = f.iter().map(|f| f.key.as_str()).collect();
@@ -2791,6 +4030,143 @@ mod tests {
         // Every command with a "…" label parses without panicking.
         for c in designcraft_engine::command_specs() {
             let _ = command_fields(c.params);
+        }
+    }
+
+    use designcraft_doc::{CharAttrs, CharacterStyle};
+
+    /// A document with character styles Base (bold) and Emphasis (italic) on the first two letters.
+    fn styled_app() -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("style.character.create", json!({"name": "Base", "chars": {"fontStyle": "Bold"}})).unwrap();
+        app.run("style.character.create", json!({"name": "Emphasis", "chars": {"fontStyle": "Italic"}})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hi there"})).unwrap();
+        app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 2})).unwrap();
+        app.run("style.character.apply", json!({"name": "Emphasis"})).unwrap();
+        app
+    }
+
+    /// One control-channel request, as the control port or MCP would send it.
+    fn ctl(app: &mut DesignApp, method: &str, params: Value) -> Value {
+        let (req, _reply) = crate::control::ControlRequest::new(method, params);
+        match crate::control::handle(app, &egui::Context::default(), &req) {
+            crate::control::Outcome::Done(v) => v,
+            crate::control::Outcome::Screenshot { .. } => Value::Null,
+        }
+    }
+
+    fn char_style(app: &DesignApp, name: &str) -> Option<CharacterStyle> {
+        app.session.active().and_then(|st| st.doc.styles.char_style(name).cloned())
+    }
+
+    #[test]
+    fn character_style_options_set_exactly_the_edited_attributes() {
+        let mut app = styled_app();
+        assert_eq!(ctl(&mut app, "ui.dialog.open", json!({"id": "characterStyleOptions", "fields": {"name": "Emphasis"}}))["ok"], true);
+        ctl(&mut app, "ui.dialog.set", json!({"field": "c.size", "value": 14}));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "c.fill", "value": "[Paper]"}));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "basedOn", "value": "Base"}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        assert!(app.ui.dialog.is_none());
+        let st = char_style(&app, "Emphasis").unwrap();
+        assert_eq!(st.based_on.as_deref(), Some("Base"));
+        assert_eq!(st.chars, CharAttrs { font_style: Some("Italic".into()), size: Some(14.0), fill: Some("[Paper]".into()), ..Default::default() });
+    }
+
+    #[test]
+    fn character_style_options_unset_cleared_fields_and_rename_every_use() {
+        let mut app = styled_app();
+        ctl(&mut app, "ui.dialog.open", json!({"id": "characterStyleOptions", "fields": {"name": "Emphasis"}}));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "c.fontStyle", "value": null}));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "rename", "value": "Strong"}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        assert!(char_style(&app, "Emphasis").is_none());
+        assert!(char_style(&app, "Strong").unwrap().chars.is_empty());
+        let st = app.session.active().unwrap();
+        let story = st.doc.stories.values().next().unwrap();
+        assert!(story.chars.iter().any(|r| r.format.style == "Strong"));
+        // A taken name keeps the dialog open with the reason.
+        ctl(&mut app, "ui.dialog.open", json!({"id": "characterStyleOptions", "fields": {"name": "Strong"}}));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "rename", "value": "Base"}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], false);
+        assert!(app.ui.dialog.as_ref().is_some_and(|d| !d.s("status").is_empty()));
+        assert!(char_style(&app, "Strong").is_some());
+    }
+
+    #[test]
+    fn new_character_style_opens_its_options_and_creates_the_style() {
+        let mut app = styled_app();
+        crate::menus::activate(&mut app, "style.character.create", &Value::Null);
+        let d = app.ui.dialog.clone().unwrap();
+        assert_eq!((d.id.as_str(), d.b("new"), d.s("rename").as_str()), ("characterStyleOptions", true, "Character Style 1"));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "c.size", "value": 9}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        let st = char_style(&app, "Character Style 1").unwrap();
+        assert_eq!((st.based_on, st.chars), (None, CharAttrs { size: Some(9.0), ..Default::default() }));
+        crate::menus::activate(&mut app, "style.character.create", &Value::Null);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("rename"), "Character Style 2");
+    }
+
+    #[test]
+    fn new_paragraph_style_opens_its_options_and_creates_the_style() {
+        let mut app = styled_app();
+        crate::menus::activate(&mut app, "style.paragraph.create", &Value::Null);
+        let d = app.ui.dialog.clone().unwrap();
+        assert_eq!((d.id.as_str(), d.b("new"), d.s("rename").as_str()), ("paragraphStyleOptions", true, "Paragraph Style 1"));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "c.size", "value": 20}));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "basedOn", "value": designcraft_doc::BASIC_PARAGRAPH}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        let st = app.session.active().unwrap().doc.styles.para("Paragraph Style 1").cloned().unwrap();
+        assert_eq!(st.based_on.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
+        assert_eq!(st.chars, CharAttrs { size: Some(20.0), ..Default::default() });
+    }
+
+    #[test]
+    fn style_rows_open_their_options_except_none() {
+        let mut app = styled_app();
+        open_style_options(&mut app, false, "Emphasis");
+        let d = app.ui.dialog.take().unwrap();
+        assert_eq!((d.id.as_str(), d.s("name").as_str()), ("characterStyleOptions", "Emphasis"));
+        open_style_options(&mut app, false, designcraft_doc::NO_CHAR_STYLE);
+        assert!(app.ui.dialog.is_none());
+        open_style_options(&mut app, true, designcraft_doc::BASIC_PARAGRAPH);
+        assert_eq!(app.ui.dialog.take().unwrap().id, "paragraphStyleOptions");
+    }
+
+    #[test]
+    fn style_options_sections_draw() {
+        let mut app = styled_app();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut DesignApp| {
+            for _ in 0..2 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+                    max_texture_side: Some(8192),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(raw, |ui| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                });
+                out.textures_delta.clear();
+            }
+        };
+        for lang in ["", "ar"] {
+            app.run("app.language", json!({"lang": lang})).unwrap();
+            for fields in [json!({"name": "Emphasis"}), json!({"new": true}), json!({"name": "Emphasis", "c.size": null, "c.underline": false})] {
+                for section in ["general", "chars", "advanced", "color", "openType", "underline", "strikethrough"] {
+                    let mut f = fields.clone();
+                    f["section"] = json!(section);
+                    app.ui.dialog = Some(Dialog::new("characterStyleOptions", f));
+                    frame(&mut app);
+                    assert!(app.ui.dialog.is_some(), "{section} stays open");
+                }
+            }
+            for section in ["general", "chars", "color"] {
+                app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"new": true, "section": section})));
+                frame(&mut app);
+            }
         }
     }
 

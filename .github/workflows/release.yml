@@ -73,6 +73,7 @@ jobs:
       DESIGNCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Optional font input (docs: storytold/craft-fonts docs/integration.md); releases always embed it.
       - name: Check out craft-fonts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,6 +132,7 @@ jobs:
       DESIGNCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Optional font input (docs: storytold/craft-fonts docs/integration.md); releases always embed it.
       - name: Check out craft-fonts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -181,14 +183,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-22.04, deb: amd64 }
-          - { arch: aarch64, runner: ubuntu-22.04-arm, deb: arm64 }
+          - arch: x86_64
+            runner: ubuntu-22.04
+            deb: amd64
+            nfpm_sha256: 3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+            deb: arm64
+            nfpm_sha256: 27419eb382695a7942be8ad52259f3ec1854fad001b3ae4baed34ce39a223b97
     env:
       DESIGNCRAFT_VERSION: ${{ needs.version.outputs.version }}
       DESIGNCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       NFPM_VERSION: 2.47.0
+      NFPM_SHA256: ${{ matrix.nfpm_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Optional font input (docs: storytold/craft-fonts docs/integration.md); releases always embed it.
       - name: Check out craft-fonts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -203,6 +213,7 @@ jobs:
             desktop-file-utils appstream python3-yaml zsync
           curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
+          printf '%s  %s\n' "$NFPM_SHA256" "$RUNNER_TEMP/nfpm.deb" | sha256sum -c -
           sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -286,6 +297,7 @@ jobs:
       DESIGNCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Optional font input (docs: storytold/craft-fonts docs/integration.md); releases always embed it.
       - name: Check out craft-fonts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -305,7 +317,11 @@ jobs:
           # The FreeBSD CI packages, plus bash for the packaging script.
           prepare: |
             pkg install -y bash git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            curl -fsSL -o /tmp/rustup-init \
+              https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-freebsd/rustup-init
+            test "$(sha256 -q /tmp/rustup-init)" = "4d9fef2e40731489f3186c61a0f178d54d79864fe3d34791edf5b17f70074956"
+            chmod 700 /tmp/rustup-init
+            /tmp/rustup-init -y --profile minimal --default-toolchain stable
           run: |
             set -e
             . "$HOME/.cargo/env"
@@ -334,8 +350,10 @@ jobs:
       DESIGNCRAFT_VERSION: ${{ needs.version.outputs.version }}
       DESIGNCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       TRUNK_VERSION: 0.21.14
+      TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Optional font input (docs: storytold/craft-fonts docs/integration.md); releases always embed it.
       - name: Check out craft-fonts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -350,8 +368,11 @@ jobs:
           key: release-web
       - name: Install trunk
         run: |
-          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar -xz -C "$HOME/.cargo/bin" trunk
+          archive="$RUNNER_TEMP/trunk.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          printf '%s  %s\n' "$TRUNK_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$HOME/.cargo/bin" trunk
           trunk --version
       - name: Apply version override
         if: inputs.version != ''

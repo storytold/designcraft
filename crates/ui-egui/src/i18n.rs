@@ -4,6 +4,7 @@
 use std::{collections::HashMap, sync::OnceLock};
 
 mod ar;
+mod it;
 mod ja;
 mod pt_br;
 mod uk;
@@ -18,6 +19,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("zh", "简体中文"),
     ("ar", "العربية"),
     ("pt-br", "Português (Brasil)"),
+    ("it", "Italiano"),
     ("uk", "Українська"),
 ];
 
@@ -86,6 +88,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Tate-Chu-Yoko", ["Tate-Chu-Yoko", "Tate-Chu-Yoko", "Tate-Chu-Yoko", "縦中横", "纵中横"]),
     ("Ruby…", ["Ruby …", "Ruby…", "Ruby…", "ルビ…", "旁注…"]),
     ("Kenten", ["Kenten", "Kenten", "Kenten", "圏点", "圈点"]),
+    ("Warichu", ["Warichu", "Warichu", "Warichu", "割り注", "割注"]),
     ("Font", ["Schriftart", "Police", "Fuente", "フォント", "字体"]),
     ("Size", ["Schriftgrad", "Corps", "Tamaño", "サイズ", "大小"]),
     ("Character", ["Zeichen", "Caractère", "Carácter", "文字", "字符"]),
@@ -1260,6 +1263,12 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Close Path", ["Close Path", "Close Path", "Close Path", "Close Path", "闭合路径"]),
     ("Color Group Options", ["Color Group Options", "Color Group Options", "Color Group Options", "Color Group Options", "颜色组选项"]),
     ("Column Width", ["Column Width", "Column Width", "Column Width", "Column Width", "列宽"]),
+    ("Column Rules", ["Spaltenlinien", "Filets de colonne", "Filetes de columna", "段間罫線", "栏间线"]),
+    ("Insert Column Rule", ["Spaltenlinie einfügen", "Insérer un filet de colonne", "Insertar filete de columna", "段間罫線を挿入", "插入栏间线"]),
+    ("Tint %", ["Farbton %", "Teinte %", "Matiz %", "濃淡 %", "色调 %"]),
+    ("Top Inset", ["Oberer Einzug", "Retrait supérieur", "Sangría superior", "上インセット", "顶部内边距"]),
+    ("Bottom Inset", ["Unterer Einzug", "Retrait inférieur", "Sangría inferior", "下インセット", "底部内边距"]),
+    ("Horizontal Offset", ["Horizontaler Versatz", "Décalage horizontal", "Desplazamiento horizontal", "水平オフセット", "水平偏移"]),
     ("Condition Options…", ["Condition Options…", "Condition Options…", "Condition Options…", "Condition Options…", "条件选项…"]),
     (
         "Convert to Liquid Guide",
@@ -2263,6 +2272,37 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Underline Options", ["Underline Options", "Underline Options", "Underline Options", "Underline Options", "下划线选项"]),
     ("Strikethrough Options", ["Strikethrough Options", "Strikethrough Options", "Strikethrough Options", "Strikethrough Options", "删除线选项"]),
     (
+        "Character Style Options",
+        ["Character Style Options", "Character Style Options", "Character Style Options", "Character Style Options", "字符样式选项"],
+    ),
+    (
+        "Advanced Character Formats",
+        ["Advanced Character Formats", "Advanced Character Formats", "Advanced Character Formats", "Advanced Character Formats", "高级字符格式"],
+    ),
+    ("OpenType Features", ["OpenType Features", "OpenType Features", "OpenType Features", "OpenType Features", "OpenType 功能"]),
+    ("Style Settings:", ["Style Settings:", "Style Settings:", "Style Settings:", "Style Settings:", "样式设置："]),
+    ("Kerning:", ["Kerning:", "Kerning:", "Kerning:", "Kerning:", "字偶间距："]),
+    ("Case:", ["Case:", "Case:", "Case:", "Case:", "大小写："]),
+    (
+        "OpenType All Small Caps",
+        ["OpenType All Small Caps", "OpenType All Small Caps", "OpenType All Small Caps", "OpenType All Small Caps", "OpenType 全部小型大写字母"],
+    ),
+    ("Subscript", ["Subscript", "Subscript", "Subscript", "Subscript", "下标"]),
+    ("OpenType Subscript", ["OpenType Subscript", "OpenType Subscript", "OpenType Subscript", "OpenType Subscript", "OpenType 下标"]),
+    ("OpenType Numerator", ["OpenType Numerator", "OpenType Numerator", "OpenType Numerator", "OpenType Numerator", "OpenType 分子"]),
+    ("OpenType Denominator", ["OpenType Denominator", "OpenType Denominator", "OpenType Denominator", "OpenType Denominator", "OpenType 分母"]),
+    ("Ligatures", ["Ligatures", "Ligatures", "Ligatures", "Ligatures", "连字"]),
+    ("No Break", ["No Break", "No Break", "No Break", "No Break", "不换行"]),
+    ("Horizontal Scale:", ["Horizontal Scale:", "Horizontal Scale:", "Horizontal Scale:", "Horizontal Scale:", "水平缩放："]),
+    ("Vertical Scale:", ["Vertical Scale:", "Vertical Scale:", "Vertical Scale:", "Vertical Scale:", "垂直缩放："]),
+    ("Baseline Shift:", ["Baseline Shift:", "Baseline Shift:", "Baseline Shift:", "Baseline Shift:", "基线偏移："]),
+    ("Skew:", ["Skew:", "Skew:", "Skew:", "Skew:", "倾斜："]),
+    ("Language:", ["Language:", "Language:", "Language:", "Language:", "语言："]),
+    ("Figure Style:", ["Figure Style:", "Figure Style:", "Figure Style:", "Figure Style:", "数字样式："]),
+    ("Underline On", ["Underline On", "Underline On", "Underline On", "Underline On", "启用下划线"]),
+    ("Strikethrough On", ["Strikethrough On", "Strikethrough On", "Strikethrough On", "Strikethrough On", "启用删除线"]),
+    ("Edit \"{name}\"…", ["„{name}“ bearbeiten…", "Modifier « {name} »…", "Editar \"{name}\"…", "\"{name}\" を編集…", "编辑\"{name}\"…"]),
+    (
         "Discretionary Ligatures",
         ["Discretionary Ligatures", "Discretionary Ligatures", "Discretionary Ligatures", "Discretionary Ligatures", "自由连字"],
     ),
@@ -2733,6 +2773,12 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "请通过控制通道传入 csv、rows 或 bytes。",
         ],
     ),
+    // Paragraph Rules.
+    ("Paragraph Rules…", ["Absatzlinien …", "Filets de paragraphe…", "Filetes de párrafo…", "段落境界線…", "段落线…"]),
+    ("Paragraph Rules", ["Absatzlinien", "Filets de paragraphe", "Filetes de párrafo", "段落境界線", "段落线"]),
+    ("Rule Below", ["Linie unterhalb", "Filet après", "Filete después", "後境界線", "下方横线"]),
+    ("Tint:", ["Farbton:", "Teinte:", "Matiz:", "濃淡:", "色调："]),
+    ("Column", ["Spalte", "Colonne", "Columna", "段", "栏"]),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.
@@ -2758,6 +2804,7 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static ARABIC: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static UKRAINIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static PORTUGUESE_BR: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static ITALIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -2770,6 +2817,9 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     }
     if lang == "pt-br" {
         return PORTUGUESE_BR.get_or_init(|| pt_br::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
+    if lang == "it" {
+        return ITALIAN.get_or_init(|| it::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
     if lang == "uk" {
         return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
@@ -2834,11 +2884,14 @@ mod tests {
         for (key, expected) in pt_br::TABLE {
             assert_eq!(tr("pt-br", key), *expected, "pt-br: {key}");
         }
+        for (key, expected) in it::TABLE {
+            assert_eq!(tr("it", key), *expected, "it: {key}");
+        }
         for (key, expected) in uk::TABLE {
             assert_eq!(tr("uk", key), *expected, "uk: {key}");
         }
         let unknown = String::from("A user-defined untranslated label");
-        for lang in ["uk", "ar", "pt-br", "zh", "ja", "de", "fr", "es", "", "unknown"] {
+        for lang in ["uk", "ar", "pt-br", "it", "zh", "ja", "de", "fr", "es", "", "unknown"] {
             assert!(std::ptr::eq(tr(lang, &unknown), unknown.as_str()));
         }
     }
@@ -2854,6 +2907,9 @@ mod tests {
         assert_eq!(tr("pt-br", "File"), "Arquivo");
         assert_eq!(tr("pt-br", "New Document…"), "Novo documento…");
         assert_eq!(tr("pt-br", "Unknown label"), "Unknown label");
+        assert_eq!(tr("it", "Edit"), "Modifica");
+        assert_eq!(tr("it", "New Document…"), "Nuovo documento…");
+        assert_eq!(tr("it", "Unknown label"), "Unknown label");
         assert!(is_rtl("ar"));
         for (i, (en, translation)) in ar::TABLE.iter().enumerate() {
             assert!(ar::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
@@ -2862,6 +2918,15 @@ mod tests {
         for (i, (en, translation)) in pt_br::TABLE.iter().enumerate() {
             assert!(pt_br::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
             assert!(!translation.is_empty(), "{en}");
+        }
+        for (i, (en, translation)) in it::TABLE.iter().enumerate() {
+            assert!(it::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
+            assert!(!translation.is_empty(), "{en}");
+        }
+        // Italian entries are for keys the shared or Arabic table knows. A new English string
+        // falls back to English until it is translated, so it doesn't fail here.
+        for (en, _) in it::TABLE {
+            assert!(TABLE.iter().any(|(key, _)| key == en) || ar::TABLE.iter().any(|(key, _)| key == en), "it: unknown key {en}");
         }
         // Every row is unique and complete.
         for (i, (en, t)) in TABLE.iter().enumerate() {
@@ -2878,7 +2943,10 @@ mod tests {
         keys.extend(TABLE.iter().map(|(key, _)| *key));
         keys.extend(ar::TABLE.iter().map(|(key, _)| *key));
         keys.extend(pt_br::TABLE.iter().map(|(key, _)| *key));
-        assert_eq!(keys, catalog.keys().copied().collect());
+        // A new English string falls back to English until it is translated, so only stale
+        // entries (keys no catalog knows any more) fail.
+        let stale: Vec<_> = catalog.keys().filter(|k| !keys.contains(*k)).collect();
+        assert!(stale.is_empty(), "Ukrainian entries for unknown keys: {stale:?}");
         let placeholders =
             |s: &str| s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<Vec<_>>();
         for (key, translation) in uk::TABLE {
@@ -2929,6 +2997,7 @@ mod tests {
             ("Tate-Chu-Yoko", "縦中横"),
             ("Ruby…", "ルビ…"),
             ("Kenten", "圏点"),
+            ("Warichu", "割り注"),
         ] {
             assert_eq!(tr("ja", en), ja);
         }

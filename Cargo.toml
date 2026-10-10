@@ -43,6 +43,7 @@ unicode-script = "0.5"
 unicode-bidi-mirroring = "0.4"
 unicode-segmentation = "1"
 regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
+tempfile = "3"
 
 # text / rendering / formats
 skrifa = "0.47"

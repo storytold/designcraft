@@ -164,6 +164,7 @@ const PAGE_PRESETS: &[(&str, f64, f64)] = &[
     ("A3", 841.89, 1190.55),
     ("A4", 595.276, 841.89),
     ("A5", 419.528, 595.276),
+    ("A6", 297.638, 419.528),
     ("B5", 498.898, 708.661),
 ];
 
@@ -572,6 +573,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     widgets::paint_chip(ui.painter(), chip, fc, fg);
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let resp = ui.interact(chip, ui.id().with("fillchip"), Sense::click()).on_hover_text(format!("Fill: {}", i.fill));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fill swatch"));
     swatch_menu(app, &resp, &doc, &i.fill, |app, n| {
         let _ = app.run("object.fill", json!({"swatch": n}));
     });
@@ -591,6 +593,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     widgets::paint_stroke_chip(ui.painter(), chip, sc, egui::Color32::from_gray(20));
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let resp = ui.interact(chip, ui.id().with("strokechip"), Sense::click()).on_hover_text(format!("Stroke: {}", i.stroke));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stroke swatch"));
     swatch_menu(app, &resp, &doc, &i.stroke, |app, n| {
         let _ = app.run("object.stroke", json!({"swatch": n}));
     });
@@ -667,15 +670,10 @@ fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &designcraft_doc
     let mut picked = None;
     egui::Popup::menu(resp).show(|ui| {
         ui.set_min_width(200.0);
+        ui.set_max_width(280.0);
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for sw in &doc.swatches {
-                let (c, g) = widgets::swatch_colors(doc, &sw.name, 1.0);
-                let row = ui.horizontal(|ui| {
-                    let (cr, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                    widgets::paint_chip(ui.painter(), cr, c, g);
-                    ui.add(egui::Button::new(&sw.name).frame(false).selected(sw.name == cur))
-                });
-                if row.inner.clicked() {
+                if super::swatch_menu_row(ui, doc, &sw.name, cur) {
                     picked = Some(sw.name.clone());
                     ui.close();
                 }
@@ -1178,7 +1176,7 @@ fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
 }
 
 /// Languages offered for text (InDesign-style names).
-const LANGUAGES: &[&str] = &[
+pub(crate) const LANGUAGES: &[&str] = &[
     "[No Language]",
     "English: USA",
     "English: UK",
@@ -1335,7 +1333,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         let features: Vec<String> =
             c["otfFeatures"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        ui.menu_button("OpenType", |ui| open_type_menu(app, ui, &features));
+        crate::menus::menu_button(ui, "OpenType", |ui| open_type_menu(app, ui, &features));
     });
     // Underline / Strikethrough Options.
     for (key, title) in [("underline", "Underline Options"), ("strikethrough", "Strikethrough Options")] {
@@ -1390,13 +1388,14 @@ pub fn open_type_menu(app: &mut DesignApp, ui: &mut egui::Ui, features: &[String
         }
     }
     ui.separator();
-    ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stylistic Sets")), |ui| {
+    crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stylistic Sets")), |ui| {
         let mask = otf::stylistic_sets(features);
         for n in 1..=20u32 {
             let mut on = mask & (1 << (n - 1)) != 0;
             if ui.checkbox(&mut on, crate::rtl::widget(ui, format!("{} {n}", crate::i18n::tr(&app.ui.language, "Set")))).clicked() {
                 let sets: Vec<u32> = (1..=20).filter(|k| if *k == n { on } else { mask & (1 << (k - 1)) != 0 }).collect();
                 let _ = app.run("type.openType", json!({"stylisticSets": sets}));
+                ui.close();
             }
         }
     });
@@ -1409,7 +1408,17 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     };
     let u = units(app);
     let p = a["para"].clone();
-    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::menus::menu_button(ui, "☰", |ui| {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph Rules…"))).clicked() {
+                    let _ = app.run("app.paragraphRulesDialog", json!({}));
+                    ui.close();
+                }
+            });
+        });
+    });
     let cur: Align = serde_json::from_value(p["align"].clone()).unwrap_or_default();
     ui.horizontal(|ui| {
         for (al, icon) in [
@@ -2158,5 +2167,44 @@ mod tests {
         h.get_by_label("French").click();
         h.run_steps(2);
         assert_eq!(language(h.state_mut()), "French");
+    }
+
+    #[test]
+    fn clicking_a_swatch_chip_in_the_appearance_fill_menu_applies_it() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        // A graphic frame: the Appearance section shows a single Fill chip.
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let before = app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch.clone();
+        assert_ne!(before, "[Paper]");
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        // Open the Fill menu from the Appearance chip.
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        // Click the *chip* (the row's left edge), not the name.
+        let name = "[Paper]".to_string();
+        let row = h.get_by_label(&name).rect();
+        // The row spans the menu (chip + name), not just the name text.
+        assert!(row.width() > 150.0, "the row is the full menu width, chip included: {row:?}");
+        let p = row.min + vec2(8.0, row.height() / 2.0);
+        h.hover_at(p);
+        h.drag_at(p);
+        h.drop_at(p);
+        h.run_steps(4);
+        let after = h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch.clone();
+        assert_eq!(after, name, "clicking the swatch chip applies it");
     }
 }

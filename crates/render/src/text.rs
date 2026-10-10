@@ -127,7 +127,7 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
         let style = &cs.styles[g.style as usize];
         for (on, rule, bars) in [(style.underline, &style.underline_rule, &mut underlines), (style.strikethrough, &style.strike_rule, &mut strikes)] {
             if on {
-                bars.push((rule.color.clone(), rule.tint, rule.rect(g.x, g.x + g.adv, l.baseline)));
+                bars.push((rule.color.clone(), rule.tint, rule.rect(g.x, g.x + g.adv, designcraft_compose::rule_baseline(style, l, g))));
             }
         }
         let outline = db.outline(&g.face, g.gid);

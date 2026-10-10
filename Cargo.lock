@@ -912,6 +912,7 @@ dependencies = [
  "designcraft-doc",
  "designcraft-fonts",
  "designcraft-geom",
+ "hypher",
  "log",
  "miniz_oxide 0.8.9",
  "proptest",
@@ -958,6 +959,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "wasm-bindgen-test",
  "zip",
@@ -1013,6 +1015,7 @@ name = "designcraft-idml"
 version = "0.5.0"
 dependencies = [
  "designcraft-color",
+ "designcraft-compose",
  "designcraft-doc",
  "designcraft-geom",
  "quick-xml 0.38.4",
@@ -1115,6 +1118,7 @@ dependencies = [
  "designcraft-engine",
  "designcraft-fonts",
  "designcraft-geom",
+ "designcraft-idml",
  "designcraft-render",
  "designcraft-tools",
  "egui",
@@ -2084,6 +2088,12 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hypher"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f2b4f6b5da34d400d4c112eadcc14512cc5d04307a8eee182586d9bebd7ce6"
 
 [[package]]
 name = "icu_collections"

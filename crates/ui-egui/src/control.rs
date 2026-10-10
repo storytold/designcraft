@@ -302,6 +302,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         }
         "ui.dialog.confirm" => wrap(crate::dialogs::confirm(app)),
         "ui.dialog.cancel" => {
+            app.cancel_pdf_import();
             app.ui.dialog = None;
             ok(Value::Null)
         }
