@@ -59,13 +59,22 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
                 std::sync::Arc::make_mut(asset).link = Some(path);
             }
         }
+        resolve_packaged_links(&mut document, dir);
         document
     };
     Ok(document)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_packaged_link(link: &str, dir: Option<&std::path::Path>) -> Option<(String, Vec<u8>)> {
+const MAX_LINK_PATH_BYTES: usize = 128 * 1024;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn packaged_link_candidates(link: &str, dir: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    // Enough for a maximum-length Windows path even with four-byte UTF-8 characters.
+    // Bound splitting/allocation for link strings supplied by imported documents.
+    if link.len() > MAX_LINK_PATH_BYTES {
+        return Vec::new();
+    }
     let mut candidates = vec![std::path::PathBuf::from(link)];
     if let Some(dir) = dir {
         // IDML may retain Windows paths even when the package is opened on another platform.
@@ -87,7 +96,29 @@ fn read_packaged_link(link: &str, dir: Option<&std::path::Path>) -> Option<(Stri
             candidates.push(dir.join("Links").join(name));
         }
     }
-    for path in candidates {
+    candidates
+}
+
+/// Embedded images do not call the IDML resource loader. Rebind their missing links
+/// beside the opened document too, without replacing their embedded image bytes.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn resolve_packaged_links(document: &mut Document, dir: Option<&std::path::Path>) {
+    let Some(dir) = dir else { return };
+    for asset in document.assets.values_mut() {
+        let Some(link) = asset.link.as_deref() else { continue };
+        if link.len() > MAX_LINK_PATH_BYTES || std::path::Path::new(link).is_file() {
+            continue;
+        }
+        let Some(path) = packaged_link_candidates(link, Some(dir)).into_iter().find(|p| p.is_file()) else { continue };
+        // Preserve ordinary Windows paths rather than canonicalizing to a verbatim URI.
+        let path = std::path::absolute(&path).unwrap_or(path);
+        std::sync::Arc::make_mut(asset).link = Some(path.to_string_lossy().into_owned());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_packaged_link(link: &str, dir: Option<&std::path::Path>) -> Option<(String, Vec<u8>)> {
+    for path in packaged_link_candidates(link, dir) {
         if let Ok(bytes) = std::fs::read(&path) {
             // Keep ordinary Windows drive/UNC syntax for IDML URI export; canonicalize
             // would introduce a verbatim prefix that is not an IDML file URI.
@@ -132,7 +163,7 @@ mod tests {
 
     use super::*;
 
-    fn linked_idml(link: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+    fn linked_idml(link: &str, embed_images: bool) -> Result<(Vec<u8>, Vec<u8>)> {
         let png = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![255; 16] }.to_png();
         let mut session = Session::new();
         session.execute("file.new", &json!({}))?;
@@ -142,7 +173,7 @@ mod tests {
             Arc::make_mut(asset).link = Some(link.into());
             Ok(Value::Null)
         })?;
-        let bytes = designcraft_idml::export_idml_with(&session.doc()?.doc, &designcraft_idml::ExportOptions { embed_images: false });
+        let bytes = designcraft_idml::export_idml_with(&session.doc()?.doc, &designcraft_idml::ExportOptions { embed_images });
         Ok((bytes, png))
     }
 
@@ -151,7 +182,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dc-idml-nested-links-{}", std::process::id()));
         let path = dir.join("Links").join("illustrations").join("logo.png");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let (idml, png) = linked_idml("C:\\original-computer\\project\\Links\\illustrations\\logo.png").unwrap();
+        let (idml, png) = linked_idml("C:\\original-computer\\project\\Links\\illustrations\\logo.png", false).unwrap();
         std::fs::write(&path, &png).unwrap();
         std::fs::write(dir.join("logo.png"), b"a different file with the same basename").unwrap();
 
@@ -169,7 +200,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dc-idml-flat-links-{}", std::process::id()));
         let path = dir.join("Links").join("logo.png");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let (idml, png) = linked_idml("/original-computer/project/logo.png").unwrap();
+        let (idml, png) = linked_idml("/original-computer/project/logo.png", false).unwrap();
         std::fs::write(&path, &png).unwrap();
 
         let doc = import(&idml, Some(&dir)).unwrap();
@@ -177,6 +208,51 @@ mod tests {
         assert_eq!(*asset.data, png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
         assert_eq!(super::super::links::status(asset), "ok");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn embedded_link_resolution_preserves_originals_and_image_bytes() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("dc-embedded-links-{}-{nonce}", std::process::id()));
+        let original = dir.join("original").join("logo.png");
+        let package = dir.join("package");
+        let copy = package.join("Links").join("logo.png");
+        std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        let (idml, png) = linked_idml(original.to_str().unwrap(), true).unwrap();
+        std::fs::write(&original, b"modified original").unwrap();
+        std::fs::write(&copy, &png).unwrap();
+        let doc = import(&idml, Some(&package)).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "an existing original stays authoritative");
+        assert_eq!(*asset.data, png);
+        assert_eq!(super::super::links::status(asset), "modified");
+
+        std::fs::remove_file(&original).unwrap();
+        std::fs::write(&copy, b"modified packaged copy").unwrap();
+        let doc = import(&idml, Some(&package)).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(asset.link.as_deref(), copy.to_str());
+        assert_eq!(*asset.data, png, "rebinding must not replace embedded pixels");
+        assert_eq!(super::super::links::status(asset), "modified");
+
+        std::fs::remove_file(&copy).unwrap();
+        for folder in [Some(package.as_path()), None] {
+            let doc = import(&idml, folder).unwrap();
+            let asset = doc.assets.values().next().unwrap();
+            assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "keep a missing link when there is no candidate");
+            assert_eq!(*asset.data, png);
+            assert_eq!(super::super::links::status(asset), "missing");
+        }
+        let oversized = "a/".repeat(MAX_LINK_PATH_BYTES);
+        assert!(packaged_link_candidates(&oversized, Some(&package)).is_empty());
+        let mut doc = import(&idml, None).unwrap();
+        Arc::make_mut(doc.assets.values_mut().next().unwrap()).link = Some(oversized.clone());
+        resolve_packaged_links(&mut doc, Some(&package));
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(asset.link.as_deref(), Some(oversized.as_str()));
+        assert_eq!(*asset.data, png);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

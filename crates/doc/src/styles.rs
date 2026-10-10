@@ -336,6 +336,15 @@ impl Styles {
         cp
     }
 
+    /// The attributes character style `name` sets, with those of its Based On chain beneath them.
+    pub fn char_style_attrs(&self, name: &str) -> CharAttrs {
+        let mut a = CharAttrs::default();
+        for s in self.char_chain(name) {
+            a.merge(&s.chars);
+        }
+        a
+    }
+
     /// Would making `name` based on `parent` create a cycle?
     pub fn para_based_on_cycles(&self, name: &str, parent: &str) -> bool {
         name == parent || self.para_chain(parent).iter().any(|s| s.name == name)
@@ -400,6 +409,24 @@ mod tests {
         let _ = st.resolve_para_style("A"); // terminates
         assert!(st.para_based_on_cycles("A", "B"));
         assert!(!st.para_based_on_cycles(BASIC_PARAGRAPH, NO_PARA_STYLE));
+    }
+
+    #[test]
+    fn character_style_attrs_include_its_based_on_chain_only() {
+        let mut st = Styles::default();
+        let cs = |name: &str, based_on: Option<&str>, chars| CharacterStyle {
+            name: name.into(),
+            based_on: based_on.map(Into::into),
+            chars,
+            shortcut: String::new(),
+        };
+        st.character.push(cs("Base", None, CharAttrs { font_style: Some("Bold".into()), size: Some(9.0), ..Default::default() }));
+        st.character.push(cs("Strong", Some("Base"), CharAttrs { size: Some(14.0), ..Default::default() }));
+        st.character.push(cs("Loop", Some("Loop"), CharAttrs { tracking: Some(5.0), ..Default::default() }));
+        assert_eq!(st.char_style_attrs("Strong"), CharAttrs { font_style: Some("Bold".into()), size: Some(14.0), ..Default::default() });
+        assert_eq!(st.char_style_attrs("Loop"), CharAttrs { tracking: Some(5.0), ..Default::default() });
+        assert!(st.char_style_attrs(NO_CHAR_STYLE).is_empty());
+        assert!(st.char_style_attrs("Missing").is_empty());
     }
 
     #[test]

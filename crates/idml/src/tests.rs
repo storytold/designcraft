@@ -7,6 +7,8 @@ use designcraft_geom::{Rect, shapes};
 
 use super::*;
 
+mod decorations;
+
 fn zip_files(files: &[(&str, &str)]) -> Vec<u8> {
     use zip::write::SimpleFileOptions;
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -856,4 +858,39 @@ fn arabic_story_and_table_directions_survive_idml_export() {
     let st = back.stories.values().find(|st| !st.tables.is_empty()).unwrap();
     assert_eq!(st.direction, designcraft_doc::TextDirection::RightToLeft);
     assert_eq!(st.tables.values().next().unwrap().options.direction, designcraft_doc::TextDirection::RightToLeft);
+}
+
+/// InDesign's designmap lists layers back to front; `Document::layers[0]` is the front layer.
+#[test]
+fn layers_import_and_export_in_stacking_order() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <Layer Self="L1" Name="Background"/>
+      <Layer Self="L2" Name="Content"/>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Spread Self="s">
+        <Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/>
+        <Rectangle Self="r" ItemLayer="L1">
+          <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+            <PathPointType Anchor="0 0"/><PathPointType Anchor="0 100"/>
+            <PathPointType Anchor="100 100"/><PathPointType Anchor="100 0"/>
+          </PathPointArray></GeometryPathType></PathGeometry></Properties>
+        </Rectangle>
+      </Spread>
+    </idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", spread)])).unwrap();
+    let names = |d: &Document| d.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&d), ["Content", "Background"]);
+    assert_eq!(d.spreads[0].items[0].layer, d.layers[1].id, "the rectangle stays on Background");
+
+    let bytes = export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut map = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("designmap.xml").unwrap(), &mut map).unwrap();
+    let (bg, content) = (map.find(r#"Name="Background""#).unwrap(), map.find(r#"Name="Content""#).unwrap());
+    assert!(bg < content, "designmap lists the back layer first");
+    let back = import_idml(&bytes).unwrap();
+    assert_eq!(names(&back), ["Content", "Background"]);
+    assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
 }

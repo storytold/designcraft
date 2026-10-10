@@ -10,10 +10,16 @@ use crate::{DesignApp, icons, panels};
 
 pub const HEIGHT: f32 = 36.0;
 
-/// Show the bar under `sel` (screen rect of the selection), kept inside `canvas`.
+/// The grip that moves the bar.
+const GRIP: &str = "task_bar_grip";
+
+/// Show the bar under `sel` (screen rect of the selection), or where it is pinned, kept inside
+/// `canvas`.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
+    let grip_id = egui::Id::new(GRIP);
     // (Two separate context calls: `is_pointer_over_egui` inside an `input` closure deadlocks.)
-    if !app.ui.task_bar || (ctx.input(|i| i.pointer.any_down()) && !ctx.is_pointer_over_egui()) {
+    let dragging = ctx.dragged_id() == Some(grip_id);
+    if !app.ui.task_bar || (ctx.input(|i| i.pointer.any_down()) && !ctx.is_pointer_over_egui() && !dragging) {
         return;
     }
     let Some(st) = app.session.active() else { return };
@@ -25,16 +31,23 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
     let id = egui::Id::new("task_bar");
     // Width from the previous frame (content-sized).
     let w = ctx.memory(|m| m.area_rect(id).map(|r| r.width())).unwrap_or(420.0);
-    let mut x = sel.center().x - w / 2.0;
-    x = x.clamp(canvas.min.x + 8.0, (canvas.max.x - w - 8.0).max(canvas.min.x + 8.0));
-    let mut y = sel.max.y + 14.0;
-    if y + HEIGHT > canvas.max.y - 8.0 {
-        y = (sel.min.y - HEIGHT - 14.0).max(canvas.min.y + 8.0);
-    }
-    if y + HEIGHT > canvas.max.y - 4.0 {
-        y = canvas.max.y - HEIGHT - 8.0;
-    }
-    egui::Area::new(id).order(egui::Order::Middle).fixed_pos(pos2(x, y)).show(ctx, |ui| {
+    let at = match app.ui.task_bar_pin {
+        Some([x, y]) => inside(canvas.min + vec2(x, y), w, canvas),
+        None => {
+            let mut x = sel.center().x - w / 2.0;
+            x = x.clamp(canvas.min.x + 8.0, (canvas.max.x - w - 8.0).max(canvas.min.x + 8.0));
+            let mut y = sel.max.y + 14.0;
+            if y + HEIGHT > canvas.max.y - 8.0 {
+                y = (sel.min.y - HEIGHT - 14.0).max(canvas.min.y + 8.0);
+            }
+            if y + HEIGHT > canvas.max.y - 4.0 {
+                y = canvas.max.y - HEIGHT - 8.0;
+            }
+            pos2(x, y)
+        }
+    };
+    app.ui.task_bar_at = Some([at.x - canvas.min.x, at.y - canvas.min.y]);
+    egui::Area::new(id).order(egui::Order::Middle).fixed_pos(at).show(ctx, |ui| {
         egui::Frame::NONE
             .fill(t.panel)
             .stroke(Stroke::new(1.0, t.border))
@@ -45,8 +58,17 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
                 ui.set_height(HEIGHT);
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
+                    // Dragging the grip moves the bar, and pins it where it is dropped.
                     let (g, _) = ui.allocate_exact_size(vec2(12.0, 20.0), Sense::hover());
-                    icons::paint(ui.painter(), g, "grip", t.icon);
+                    let grip = ui.interact(g, grip_id, Sense::drag());
+                    icons::paint(ui.painter(), g, "grip", if grip.hovered() || grip.dragged() { t.text_strong } else { t.icon });
+                    if grip.dragged() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        let to = inside(at + grip.drag_delta(), w, canvas) - canvas.min;
+                        let _ = app.run("window.taskBarPin", json!({"at": [to.x, to.y]}));
+                    } else if grip.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    }
                     let text_frame = panels::sel_info(app).is_some_and(|i| i.is_text && i.count == 1);
                     if has_text || text_frame {
                         text_controls(app, ui, has_text);
@@ -57,6 +79,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
                 });
             });
     });
+}
+
+/// `at` moved as little as needed for a bar `w` wide to sit inside `canvas` (8 pt in).
+fn inside(at: egui::Pos2, w: f32, canvas: Rect) -> egui::Pos2 {
+    let x = at.x.min(canvas.max.x - w - 8.0).max(canvas.min.x + 8.0);
+    let y = at.y.min(canvas.max.y - HEIGHT - 8.0).max(canvas.min.y + 8.0);
+    pos2(x, y)
 }
 
 fn split_button(ui: &mut Ui, icon: &str, label: &str) -> (egui::Response, egui::Response) {
@@ -109,15 +138,10 @@ fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool) {
     let sty = c["fontStyle"].as_str().unwrap_or("").to_string();
     let fonts = panels::fonts(app);
     let menu = panels::font_menu(app);
-    let english = app.session.prefs.show_font_names_in_english;
-    let labels: Vec<String> = menu.iter().map(|f| f.label(english).to_string()).collect();
-    let cur = menu.iter().position(|f| f.family == fam);
     let shown = if fam.is_empty() { "—".to_string() } else { panels::font_label(app, &menu, &fam) };
-    if let Some(f) = widgets::dropdown_list(ui, &shown, 150.0, &labels, cur).and_then(|k| menu.get(k)) {
-        let f = f.family.clone();
-        let styles = fonts.styles(&f);
-        let style = if styles.iter().any(|s| s == "Regular") { "Regular".to_string() } else { styles.first().cloned().unwrap_or_default() };
-        let _ = app.run("type.char", json!({"attrs": {"fontFamily": f, "fontStyle": style}}));
+    let field = widgets::dropdown(ui, &shown, 150.0);
+    if let Some(f) = panels::font_popup(app, &field, &menu, &fam) {
+        panels::apply_font_family(app, &f);
     }
     let styles = fonts.styles(&fam);
     let cur = styles.iter().position(|s| *s == sty);
@@ -136,11 +160,14 @@ fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool) {
         let sw = c["fill"].as_str().unwrap_or("[Black]").to_string();
         let (col, g) = widgets::swatch_colors(&doc, &sw, 1.0);
         let resp = widgets::swatch_chip(ui, 17.0, col, g).on_hover_text(format!("Fill: {sw}"));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Task Bar fill"));
         let mut picked = None;
         egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(180.0);
+            ui.set_max_width(280.0);
             egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                 for s in &doc.swatches {
-                    if ui.selectable_label(s.name == sw, &s.name).clicked() {
+                    if panels::swatch_menu_row(ui, &doc, &s.name, &sw) {
                         picked = Some(s.name.clone());
                         ui.close();
                     }
@@ -204,11 +231,16 @@ fn object_controls(app: &mut DesignApp, ui: &mut Ui) {
             widgets::paint_stroke_chip(ui.painter(), r, col, egui::Color32::from_gray(20));
         }
         let resp = resp.on_hover_text(format!("{}: {sw}", if k == 0 { "Fill" } else { "Stroke" }));
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Task Bar {}", if k == 0 { "fill" } else { "stroke" }))
+        });
         let mut picked = None;
         egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(180.0);
+            ui.set_max_width(280.0);
             egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                 for s in &doc.swatches {
-                    if ui.selectable_label(s.name == sw, &s.name).clicked() {
+                    if panels::swatch_menu_row(ui, &doc, &s.name, &sw) {
                         picked = Some(s.name.clone());
                         ui.close();
                     }
@@ -251,8 +283,14 @@ fn more(app: &mut DesignApp, ui: &mut Ui) {
             app.ui.task_bar = false;
             ui.close();
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Properties Panel"))).clicked() {
-            let _ = app.run("window.panel", json!({"panel": "properties"}));
+        let pinned = app.ui.task_bar_pin.is_some();
+        let pin = crate::i18n::tr(&app.ui.language, "Pin Bar Position");
+        if ui.button(crate::rtl::widget(ui, if pinned { format!("✓ {pin}") } else { format!("   {pin}") })).clicked() {
+            let _ = app.run("window.taskBarPin", json!({"on": !pinned}));
+            ui.close();
+        }
+        if ui.add_enabled(pinned, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Reset Bar Position")))).clicked() {
+            let _ = app.run("window.taskBarReset", json!({}));
             ui.close();
         }
     });
@@ -262,4 +300,112 @@ fn sep(ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(1.0, 24.0), Sense::hover());
     ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, t.border));
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{pos2, vec2};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use serde_json::json;
+
+    use crate::test_window::{self, Window, click_at};
+
+    /// A selected frame, with the task bar under it.
+    fn window() -> (Harness<'static, Window>, u64) {
+        let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut h = test_window::open(app, vec2(1440.0, 900.0));
+        let app = &mut h.state_mut().app;
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        h.run_steps(4);
+        (h, id)
+    }
+
+    fn bar(h: &Harness<'static, Window>) -> egui::Rect {
+        h.ctx.memory(|m| m.area_rect(egui::Id::new("task_bar"))).unwrap()
+    }
+
+    fn grip(h: &Harness<'static, Window>) -> egui::Pos2 {
+        let b = bar(h);
+        pos2(b.min.x + 10.0, b.center().y)
+    }
+
+    fn drag(h: &mut Harness<'static, Window>, from: egui::Pos2, by: egui::Vec2) {
+        h.hover_at(from);
+        h.drag_at(from);
+        h.run_steps(2);
+        for k in 1..=8 {
+            h.hover_at(from + by * (k as f32 / 8.0));
+            h.run_steps(1);
+        }
+        h.drop_at(from + by);
+        h.run_steps(4);
+    }
+
+    fn more(h: &mut Harness<'static, Window>) {
+        let b = bar(h);
+        click_at(h, pos2(b.max.x - 19.0, b.center().y));
+    }
+
+    #[test]
+    fn pinning_is_a_command() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let run = |app: &mut crate::DesignApp, id: &str, p| crate::menus::run_ui(app, id, &p).unwrap();
+        assert!(run(&mut app, "window.taskBarPin", json!({})).is_err(), "nowhere to pin a bar that isn't showing");
+        assert!(run(&mut app, "window.taskBarPin", json!({"at": [1, "x"]})).is_err());
+        run(&mut app, "window.taskBarPin", json!({"at": [40, 60]})).unwrap();
+        assert_eq!(app.ui.task_bar_pin, Some([40.0, 60.0]));
+        assert_eq!(crate::menus::checked(&app, "window.taskBarPin", &json!({})), Some(true));
+        run(&mut app, "window.taskBarPin", json!({})).unwrap();
+        assert_eq!(app.ui.task_bar_pin, None, "toggled off");
+        app.ui.task_bar_at = Some([10.0, 20.0]);
+        run(&mut app, "window.taskBarPin", json!({"on": true})).unwrap();
+        assert_eq!(app.ui.task_bar_pin, Some([10.0, 20.0]), "pinned where it shows");
+        run(&mut app, "window.taskBarReset", json!({})).unwrap();
+        assert_eq!(app.ui.task_bar_pin, None);
+        // A workspace keeps the bar's place.
+        app.ui.task_bar_pin = Some([5.0, 6.0]);
+        run(&mut app, "window.newWorkspace", json!({"name": "Mine"})).unwrap();
+        app.ui.task_bar_pin = None;
+        run(&mut app, "window.workspace", json!({"name": "Mine"})).unwrap();
+        assert_eq!(app.ui.task_bar_pin, Some([5.0, 6.0]));
+    }
+
+    #[test]
+    fn the_grip_moves_the_bar_and_it_stays_there() {
+        let (mut h, id) = window();
+        let before = bar(&h);
+        let g = grip(&h);
+        drag(&mut h, g, vec2(200.0, 150.0));
+        let after = bar(&h);
+        assert!((after.min - before.min - vec2(200.0, 150.0)).length() < 2.0, "dragged from {before:?} to {after:?}");
+        assert!(h.state().app.ui.task_bar_pin.is_some(), "pinned where it was dropped");
+        // A moved selection leaves it where it is.
+        h.state_mut().app.run("transform.set", json!({"ids": [id], "y": 300})).unwrap();
+        h.run_steps(4);
+        assert_eq!(bar(&h).min, after.min);
+        // Dragged past the canvas, it stays inside.
+        let canvas = h.state().app.canvas_rect.unwrap();
+        let g = grip(&h);
+        drag(&mut h, g, vec2(5000.0, 5000.0));
+        assert!(canvas.contains_rect(bar(&h)), "{:?} outside the canvas {canvas:?}", bar(&h));
+        // Reset Bar Position: back under the selection.
+        more(&mut h);
+        let at = h.get_by_label("Reset Bar Position").rect().center();
+        click_at(&mut h, at);
+        assert_eq!(h.state().app.ui.task_bar_pin, None);
+        // Pin Bar Position keeps it where it is.
+        more(&mut h);
+        let at = h.get_by_label_contains("Pin Bar Position").rect().center();
+        click_at(&mut h, at);
+        let at = bar(&h).min - canvas.min;
+        let [x, y] = h.state().app.ui.task_bar_pin.unwrap();
+        assert!((vec2(x, y) - at).length() < 1.0, "pinned at {x}, {y}; showing at {at:?}");
+        // Hide Bar.
+        more(&mut h);
+        let at = h.get_by_label("Hide Bar").rect().center();
+        click_at(&mut h, at);
+        assert!(!h.state().app.ui.task_bar);
+    }
 }

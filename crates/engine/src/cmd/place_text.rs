@@ -105,27 +105,37 @@ fn strip(story: &mut Story) {
     story.format_chars(0..n, |f| *f = Default::default());
 }
 
-/// Is the story overset in its frames, and how much of it do its frames show?
-fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize) {
+/// Is the story overset in its frames, and how much text do its full frames hold (bytes, frames)?
+/// A frame a column, frame or page break ends early is left out: it says nothing about how much
+/// a frame holds.
+fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize, usize) {
     let cs = designcraft_compose::compose_story(d, sid, &Default::default());
-    let shown = cs.frames.iter().map(|f| f.range.end).max().unwrap_or(0);
-    (cs.overset_at, shown)
+    let text = d.story(sid).map_or("", |s| s.text.as_str());
+    let is_break = |c: char| matches!(c, designcraft_doc::COLUMN_BREAK | designcraft_doc::FRAME_BREAK | designcraft_doc::PAGE_BREAK);
+    let (mut held, mut full) = (0, 0);
+    for f in &cs.frames {
+        let Some(shown) = text.get(f.range.clone()) else { continue };
+        if !shown.is_empty() && !shown.chars().any(is_break) {
+            held += shown.len();
+            full += 1;
+        }
+    }
+    (cs.overset_at, held, full)
 }
 
 /// Thread new frames on new pages (margin rectangles) until the story fits. Returns pages added.
 pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Result<usize> {
     let mut added = 0;
     loop {
-        let (overset, shown) = fit(d, sid);
+        let (overset, held, full) = fit(d, sid);
         let Some(at) = overset else { return Ok(added) };
         if added >= max_pages {
             return Err(bad("file.place", format!("autoflow stopped after {max_pages} pages")));
         }
         let len = d.story(sid).map_or(0, |s| s.len());
-        let frames = d.story(sid).map_or(1, |s| s.frames.len()).max(1);
-        // Frames still needed at the rate the existing ones are filled (at least one).
-        let per_frame = (shown.max(at) / frames).max(1);
-        let want = (len - at).div_ceil(per_frame).clamp(1, max_pages - added);
+        // Frames still needed at the rate the full ones are filled (at least one); with no full
+        // frame to go by yet, one more page.
+        let want = held.checked_div(full).map_or(1, |per_frame| len.saturating_sub(at).div_ceil(per_frame.max(1))).clamp(1, max_pages - added);
         let last = *d.story(sid).and_then(|s| s.frames.last()).ok_or_else(|| bad("file.place", "the story has no frame"))?;
         let mut page = d.page_of_item(last).unwrap_or(d.page_count().saturating_sub(1));
         let parent = d.page_loc(page).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
@@ -200,6 +210,7 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
                 Some(_) => {
                     let sid = StoryId(d.alloc());
                     let mut ns = Story::new(sid);
+                    ns.direction = d.new_story_direction();
                     ns.frames = vec![fid];
                     d.stories.insert(sid, std::sync::Arc::new(ns));
                     if let Some(it) = d.item_mut(fid) {
@@ -255,6 +266,29 @@ mod tests {
         let st = s.doc().unwrap().doc.story(StoryId(sid2)).unwrap().clone();
         assert_eq!(st.text, "Start middle end");
         assert_eq!(st.format_after(6).over.font_style.as_deref(), Some("Bold"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autoflow_adds_only_the_pages_breaks_ask_for() {
+        // Regression (#262): a frame a break ends early made autoflow take it for a frame that
+        // holds a few characters, and add a page per few characters left (33 for this text).
+        let dir = std::env::temp_dir().join(format!("dc-place-breaks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, rtf, pages) in [
+            ("lead.rtf", r"{\rtf1 \page\par A Short Heading\par First short paragraph.\par Second short paragraph.\par}", 2),
+            ("each.rtf", r"{\rtf1 One\par\page\par Two\par\page\par Three\par\page\par Four\par}", 4),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, rtf).unwrap();
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 1})).unwrap();
+            let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "autoflow": true})).unwrap();
+            assert_eq!(r["overset"], false, "{name}: {r}");
+            let d = &s.doc().unwrap().doc;
+            assert_eq!(d.page_count(), pages, "{name}: {r}");
+            assert_eq!(d.story(StoryId(r["story"].as_u64().unwrap())).unwrap().frames.len(), pages, "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

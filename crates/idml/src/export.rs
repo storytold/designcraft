@@ -346,7 +346,8 @@ impl<'a> Ex<'a> {
             let n = format!("<?AID 001b?>TV {name}");
             root.push(El::new("TextVariable").attr("Self", format!("dTextVariablen{n}")).attr("Name", &n).attr("VariableType", ty));
         }
-        for l in &d.layers {
+        // IDML lists layers back to front.
+        for l in d.layers.iter().rev() {
             let color = match names::layer_color_out(l.color) {
                 Some(n) => p("LayerColor", "enumeration", n),
                 None => {
@@ -1098,8 +1099,8 @@ impl<'a> Ex<'a> {
             if let Some(o) = o {
                 el.set(&format!("{k}Offset"), num(o.unwrap_or(-9999.0)));
             }
-            if let Some(c) = c.as_ref().filter(|c| !c.is_empty()) {
-                el.set(&format!("{k}Color"), self.sw(c));
+            if let Some(c) = c {
+                el.set(&format!("{k}Color"), if c.is_empty() { "Text Color".into() } else { self.sw(c) });
             }
             if let Some(t) = t {
                 el.set(&format!("{k}Tint"), num(t as f64 * 100.0));

@@ -24,3 +24,6 @@ sync_github_name = false
 
 [people.moppeeer]
 sync_github_name = true
+
+[people.thaynej]
+real_name = "Jeffrey Thayne"

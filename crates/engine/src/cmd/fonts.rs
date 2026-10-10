@@ -190,4 +190,39 @@ mod tests {
         assert_eq!(r["changed"], 1);
         assert_eq!(s.doc().unwrap().doc.styles.para("Odd").unwrap().chars.font_family.as_deref(), Some(avail.as_str()));
     }
+
+    /// InDesign names a family installed in several formats `Family (OTF)`; the plain family
+    /// stands for it, and a family that isn't available under either name is still missing.
+    #[test]
+    fn a_family_with_a_format_suffix_uses_the_plain_family() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Some text here."})).unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 15})).unwrap();
+        s.execute("type.char", &json!({"fontFamily": "Source Serif 4 (OTF)", "fontStyle": "Bold"})).unwrap();
+        let l = s.execute("font.list", &json!({})).unwrap();
+        let entry = l.as_array().unwrap().iter().find(|f| f["family"] == "Source Serif 4 (OTF)").unwrap();
+        assert_eq!((&entry["missing"], &entry["styleMissing"], &entry["source"]), (&json!(false), &json!(false), &json!("bundled")), "{l}");
+        let st = s.doc().unwrap();
+        let cs = s.cache.get(&st.doc, sid, None);
+        let faces: Vec<_> =
+            cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter(|g| g.visible && g.len > 0).map(|g| g.face.get()).collect();
+        assert!(!faces.is_empty() && faces.iter().all(|f| f.family == "Source Serif 4" && f.style == "Bold"));
+        let kinds = |s: &mut Session| {
+            s.execute("preflight.run", &json!({})).unwrap()["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["kind"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(!kinds(&mut s).iter().any(|k| k == "missingFont"));
+
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 4})).unwrap();
+        s.execute("type.char", &json!({"fontFamily": "Nope (OTF)"})).unwrap();
+        let l = s.execute("font.list", &json!({})).unwrap();
+        assert_eq!((&l[0]["family"], &l[0]["missing"]), (&json!("Nope (OTF)"), &json!(true)), "{l}");
+        assert!(kinds(&mut s).iter().any(|k| k == "missingFont"));
+    }
 }

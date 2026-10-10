@@ -24,6 +24,7 @@ pub mod xref;
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use designcraft_doc::{
@@ -71,7 +72,7 @@ pub struct RunStyle {
     pub kenten_character: String,
 }
 
-/// An underline or strikethrough bar: its top edge `offset` below the baseline (negative =
+/// An underline or strikethrough bar: its centre `offset` below the baseline (negative =
 /// above), thickness and colour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rule {
@@ -81,13 +82,21 @@ pub struct Rule {
     pub tint: f32,
 }
 
+impl Rule {
+    /// The stroke is centred on the offset, matching Underline / Strikethrough Options.
+    pub fn rect(&self, x0: f64, x1: f64, baseline: f64) -> Rect {
+        let center = baseline + self.offset;
+        Rect::new(x0, center - self.weight / 2.0, x1, center + self.weight / 2.0)
+    }
+}
+
 impl RunStyle {
     /// The bars this run draws between `x0` and `x1` on a line at `baseline`.
     pub fn rules(&self, x0: f64, x1: f64, baseline: f64) -> impl Iterator<Item = (&Rule, Rect)> {
         [(self.underline, &self.underline_rule), (self.strikethrough, &self.strike_rule)]
             .into_iter()
             .filter(|(on, _)| *on)
-            .map(move |(_, r)| (r, Rect::new(x0, baseline + r.offset, x1, baseline + r.offset + r.weight)))
+            .map(move |(_, r)| (r, r.rect(x0, x1, baseline)))
     }
 }
 
@@ -462,7 +471,17 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         .zip(&cols)
         .map(|(f, columns)| FrameText { frame: f.id, vertical: f.vertical, columns: columns.clone(), ..Default::default() })
         .collect();
-    let mut cur = Cursor { fi: 0, col: 0, last_baseline: None, last_descent: 0.0, last_reference: 0.0, pending: 0.0 };
+    let mut cur = Cursor {
+        fi: 0,
+        col: 0,
+        last_baseline: None,
+        last_descent: 0.0,
+        last_reference: 0.0,
+        pending: 0.0,
+        pi: 0,
+        band: Band::default(),
+        limits: Rc::default(),
+    };
     let para_ranges = story.para_ranges();
     let np = para_ranges.len();
     let hyph_exceptions = doc.hyphenation_exception_map();
@@ -496,14 +515,33 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut notes = Notes::new(doc, story);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<Option<usize>, std::sync::Arc<Vec<String>>> = Default::default();
+    // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
+    // in progress, and a budget for the re-lays.
+    let mut limits: Rc<Vec<(BandKey, f64)>> = Rc::default();
+    let mut trial: Option<Trial> = None;
+    let mut balance_runs = 0usize;
+    let balance_budget = 20 * story.paras.iter().filter(|p| matches!(doc.styles.resolve_para(p).0.span_columns, SpanColumns::Span(_))).count();
+    // Paragraphs set across columns (vertical justification moves their frames' lines together).
+    let mut span_paras = vec![false; np];
     'paras: while pi < np {
         let prange = para_ranges[pi].clone();
+        cur.pi = pi;
+        cur.limits = Rc::clone(&limits);
         let snap = Snapshot::take(&out, &cur, list_counter);
         snaps.truncate(pi);
         snaps.push(snap);
         note_snaps.truncate(pi);
         note_snaps.push((notes.num, notes.key, notes.placed.len()));
         info.truncate(pi);
+        // A balancing trial whose band ran past its frame: re-lay the band with more room.
+        if trial.as_ref().is_some_and(|t| cur.fi > t.key.0)
+            && let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget)
+        {
+            balance_runs += 1;
+            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+            pi = j;
+            continue 'paras;
+        }
         let pf = &story.paras[pi];
         let (pp, base_chars) = doc.styles.resolve_para(pf);
         if let Some(t) = story.para_table(pi) {
@@ -520,6 +558,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let start_at = (cur.fi, cur.col);
             let anchor = prange.start + story.text[prange.clone()].find(story::TABLE_ANCHOR).unwrap_or(0);
             if !table::place_table(doc, t, anchor, pi, &pp, frames, &cols, &mut cur, &mut out, opts) {
+                if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
+                    balance_runs += 1;
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                    pi = j;
+                    continue 'paras;
+                }
                 out.overset_at = Some(prange.start);
                 break 'paras;
             }
@@ -603,7 +647,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             // Nested line styles: find where the first lines end in this column, restyle them, and
             // look again (the style changes the widths) until the lines settle.
             let cols_here = &cols[cur.fi];
-            let col = cols_here[cur.col.min(cols_here.len() - 1)];
+            let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
             let spacing = spacing_for(&pp, base_chars.size);
             let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
             for _ in 0..3 {
@@ -694,15 +738,61 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             designcraft_doc::Leading::Points(v) => v,
         };
         let spacing = spacing_for(&pp, base_size);
+        // A paragraph set across the columns moves on to the next frame where others move on to
+        // the next column.
+        let spanning = matches!(pp.span_columns, SpanColumns::Span(n) if n != 1);
+        span_paras[pi] = spanning;
+        let next_column = |cur: &mut Cursor| if spanning { cur.next_frame() } else { cur.next_column(&cols) };
         // Paragraph start options.
         if force_col[pi] {
-            cur.next_column(&cols);
+            next_column(&mut cur);
         }
         if cur.last_baseline.is_some() {
             match pp.start_paragraph {
-                StartParagraph::NextColumn => cur.next_column(&cols),
+                StartParagraph::NextColumn => next_column(&mut cur),
                 StartParagraph::NextFrame | StartParagraph::NextPage | StartParagraph::NextOddPage | StartParagraph::NextEvenPage => cur.next_frame(),
                 StartParagraph::Anywhere => {}
+            }
+        }
+        if spanning && cur.fi < frames.len() {
+            // Close the band: the paragraph goes below the deepest of its columns, which are
+            // balanced first.
+            let key = cur.band_key();
+            let deepest = out.frames[cur.fi]
+                .lines
+                .get(cur.band.line0..)
+                .unwrap_or_default()
+                .iter()
+                .map(|l| (l.baseline, l.descent))
+                .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)));
+            if let Some((baseline, descent)) = deepest {
+                let bottom = baseline + descent;
+                let multi = cols[cur.fi].len() > 1;
+                let active = trial.as_ref().is_some_and(|t| t.key == key && t.span == pi);
+                if !active && let Some(t) = trial.take() {
+                    set_limit(&mut limits, t.key, None);
+                }
+                if multi && (active || limit_of(&limits, key).is_none() && balance_runs < balance_budget) {
+                    let top = cur.clip(cols[cur.fi][0]).y0;
+                    let mut t = trial.take().unwrap_or(Trial { key, span: pi, lo: top, hi: bottom, tries: 0, done: false });
+                    // This layout fits: its bottom is the best so far.
+                    t.hi = t.hi.min(bottom);
+                    let next = if t.done { t.hi } else { t.next() };
+                    set_limit(&mut limits, key, Some(next));
+                    if !t.done {
+                        trial = Some(t);
+                        balance_runs += 1;
+                        rewind(key.1, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                        pi = key.1;
+                        continue 'paras;
+                    }
+                }
+                cur.col = 0;
+                cur.last_baseline = Some(baseline);
+                cur.last_descent = descent;
+            } else if cur.col != 0 {
+                cur.col = 0;
+                cur.resume();
             }
         }
         if cur.last_baseline.is_some() {
@@ -719,21 +809,22 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let mut first_line_rect: Option<(usize, f64, f64, f64)> = None; // frame, baseline, ascent, x-span
         loop {
             if cur.fi >= frames.len() {
+                if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
+                    balance_runs += 1;
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                    pi = j;
+                    continue 'paras;
+                }
                 out.overset_at = Some(glyphs.get(g0).map(|g| g.byte).unwrap_or(prange.start));
                 // The part of the paragraph that fits keeps its shading and border.
                 para_box_decos(&mut out, pi, &pp);
                 break 'paras;
             }
             let f = &frames[cur.fi];
-            let col = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
-            let col = match pp.span_columns {
-                SpanColumns::Span(n) if cur.col == 0 => {
-                    let n = if n == 0 { cols[cur.fi].len() } else { (n as usize).min(cols[cur.fi].len()) };
-                    let other = cols[cur.fi][n - 1];
-                    Rect::new(col.x0.min(other.x0), col.y0, col.x1.max(other.x1), col.y1)
-                }
-                _ => col,
-            };
+            let base = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
+            let col = cur.clip(base);
+            // A spanning paragraph isn't held to the balanced bottom of the columns above it.
+            let col = if spanning { span_rect(&cols[cur.fi], Rect::new(col.x0, col.y0, col.x1, base.y1), pp.span_columns) } else { col };
             // Estimate slots for the breaker with the paragraph's base leading.
             let est_first = cur.next_baseline(f, col, base_leading, base_chars.size * 0.75, &pp);
             let slots = estimate_slots(f, col, est_first, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
@@ -809,7 +900,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                             remaining: breaks.len() - k,
                             here: (cur.fi, cur.col),
                         };
-                        let action = if restores < 4 * np + 64 { keep_violation(&ctx, &pp, &info, &force_col, &line_cap) } else { None };
+                        let action = if restores < (4 * np + 64) * (balance_runs + 1) {
+                            keep_violation(&ctx, &pp, &info, &force_col, &line_cap)
+                        } else {
+                            None
+                        };
                         if let Some(action) = action {
                             restores += 1;
                             let j = match action {
@@ -822,20 +917,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                                     j
                                 }
                             };
-                            for k in j + 1..np {
-                                force_col[k] = false;
-                                line_cap[k] = None;
-                            }
-                            snaps[j].restore(&mut out, &mut cur, &mut list_counter);
-                            (notes.num, notes.key) = (note_snaps[j].0, note_snaps[j].1);
-                            notes.placed.truncate(note_snaps[j].2);
+                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
                             pi = j;
                             continue 'paras;
                         }
                     }
                     // Next column / frame; re-break the rest of the paragraph there.
                     g0 = s;
-                    cur.next_column(&cols);
+                    next_column(&mut cur);
                     col_first_line = line_no;
                     moved = true;
                     break;
@@ -844,8 +933,18 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let lx0 = x0 + ind_l;
                 let lx1 = x1 - pp.right_indent;
                 let last = k + 1 == breaks.len();
+                // The break character that ends this line, if any (it is the line's last glyph).
+                let brk = if b.forced && e > s {
+                    e.checked_sub(1).and_then(|i| glyphs.get(i)).map(|g| g.ch).filter(|&c| breaker::is_forced(c))
+                } else {
+                    None
+                };
+                // A column, frame or page break ends the line as a paragraph's last line (last-line
+                // alignment); a justified line ended by a forced line break stays justified.
+                let ends_para = last || matches!(brk, Some(story::COLUMN_BREAK | story::FRAME_BREAK | story::PAGE_BREAK));
+                let forced_mid = brk == Some(story::FORCED_LINE_BREAK) && !last;
                 let (mut placed, end_x, ratio) =
-                    layout_line(&glyphs, s, e, b.hyphen, lx0, lx1, col.x0, &pp, &spacing, last, b.forced && !last, f.left_page, &bidi_info);
+                    layout_line(&glyphs, s, e, b.hyphen, lx0, lx1, col.x0, &pp, &spacing, ends_para, forced_mid, f.left_page, &bidi_info);
                 ruby::annotate(db, &styles_tab, &mut placed, doc.settings.glyph_fallback);
                 let range_end = if last { prange.end } else { glyphs.get(g0 + b.next).map(|g| g.byte).unwrap_or(prange.end) };
                 let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
@@ -894,10 +993,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 line_no += 1;
                 // Column / frame / page break characters.
                 if b.forced && e < glyphs.len() + 1 {
-                    let brk = glyphs.get(g0 + b.next.saturating_sub(1)).map(|g| g.ch);
                     let jumped = match brk {
                         Some(story::COLUMN_BREAK) => {
-                            cur.next_column(&cols);
+                            next_column(&mut cur);
                             true
                         }
                         Some(story::FRAME_BREAK) | Some(story::PAGE_BREAK) => {
@@ -933,6 +1031,20 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             keep_first: pp.keep_first as usize,
             keep_last: pp.keep_last as usize,
         });
+        // The columns below a spanning paragraph start under it.
+        if spanning
+            && let Some(ft) = out.frames.get(cur.fi)
+            && let Some(l) = ft.lines.last().filter(|l| l.para == pi)
+        {
+            let above = Above {
+                top: l.baseline + l.descent,
+                baseline: l.baseline,
+                descent: l.descent,
+                reference: cur.last_reference,
+                pending: pp.space_after,
+            };
+            cur.band = Band { para: pi + 1, line0: ft.lines.len(), above: Some(above) };
+        }
         // Rules and shading for the paragraph.
         if let Some((fi, bl, asc, _)) = first_line_rect {
             let ft = &mut out.frames[fi];
@@ -972,7 +1084,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             ft.range = p..p;
         }
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
-        vertical_justify(ft, f);
+        let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true));
+        vertical_justify(ft, f, spanned);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -1039,6 +1152,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     out.styles = styles_tab;
     mark_keep_violations(doc, story, &mut out);
     out
+}
+
+/// The columns a spanning paragraph is set across, from `col`'s top to its bottom.
+fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
+    let SpanColumns::Span(n) = span else { return col };
+    let n = if n == 0 { cols.len() } else { (n as usize).min(cols.len()) };
+    let (Some(a), Some(b)) = (cols.first(), n.checked_sub(1).and_then(|i| cols.get(i))) else { return col };
+    Rect::new(a.x0.min(b.x0), col.y0, a.x1.max(b.x1), col.y1)
 }
 
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
@@ -1236,6 +1357,31 @@ impl Snapshot {
     }
 }
 
+/// Re-lay from paragraph `j`: back to its snapshot and footnote numbering, with fresh keep
+/// decisions for the paragraphs after it.
+#[allow(clippy::too_many_arguments)]
+fn rewind(
+    j: usize,
+    snaps: &[Snapshot],
+    note_snaps: &[(u32, Option<usize>, usize)],
+    notes: &mut Notes,
+    out: &mut ComposedStory,
+    cur: &mut Cursor,
+    list_counter: &mut u32,
+    force_col: &mut [bool],
+    line_cap: &mut [Option<usize>],
+) {
+    force_col.iter_mut().skip(j + 1).for_each(|f| *f = false);
+    line_cap.iter_mut().skip(j + 1).for_each(|c| *c = None);
+    if let Some(s) = snaps.get(j) {
+        s.restore(out, cur, list_counter);
+    }
+    if let Some(&(num, key, placed)) = note_snaps.get(j) {
+        (notes.num, notes.key) = (num, key);
+        notes.placed.truncate(placed);
+    }
+}
+
 /// Where a placed paragraph sits (for keep resolution).
 #[derive(Clone, Debug)]
 struct ParaInfo {
@@ -1356,23 +1502,136 @@ struct Cursor {
     last_reference: f64,
     /// Space before/after waiting to be added to the next line.
     pending: f64,
+    /// The paragraph being laid.
+    pi: usize,
+    /// The band of columns the cursor is in.
+    band: Band,
+    /// Column bottoms that balance bands, by band key (kept by the compose loop).
+    limits: Rc<Vec<(BandKey, f64)>>,
+}
+
+/// A band's frame and first paragraph.
+type BandKey = (usize, usize);
+
+/// A run of the frame's columns: the whole frame, or the part between spanning paragraphs.
+/// Text fills its columns one after the other; a spanning paragraph closes it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Band {
+    /// First paragraph laid (at least in part) in the band: balancing re-lays from there.
+    para: usize,
+    /// Lines of the frame above the band.
+    line0: usize,
+    /// Below a spanning paragraph, its last line: every column of the band continues from it.
+    above: Option<Above>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Above {
+    /// Bottom of the spanning paragraph's last line (the band's top).
+    top: f64,
+    baseline: f64,
+    descent: f64,
+    reference: f64,
+    /// The spanning paragraph's space after.
+    pending: f64,
+}
+
+/// Balancing the columns above a spanning paragraph: a search for the lowest column bottom at
+/// which the band's text still fits its frame, re-laying the band at each trial bottom.
+#[derive(Debug)]
+struct Trial {
+    key: BandKey,
+    /// The spanning paragraph that closes the band.
+    span: usize,
+    /// Highest bottom known not to fit / lowest known to fit.
+    lo: f64,
+    hi: f64,
+    tries: u32,
+    /// The band is laid at `hi` for good.
+    done: bool,
+}
+
+impl Trial {
+    /// The next bottom to try: half way, or `hi` once settled.
+    fn next(&mut self) -> f64 {
+        self.tries += 1;
+        if self.hi - self.lo > 0.5 && self.tries < 16 {
+            (self.lo + self.hi) / 2.0
+        } else {
+            self.done = true;
+            self.hi
+        }
+    }
+}
+
+/// A balancing trial whose band didn't fit its frame: records the next bottom to try in
+/// `limits` (or, when even the settled bottom fails or the budget is spent, leaves the band
+/// unbalanced) and returns the paragraph to re-lay from.
+fn trial_failed(trial: &mut Option<Trial>, limits: &mut Rc<Vec<(BandKey, f64)>>, budget_left: bool) -> Option<usize> {
+    let t = trial.as_mut()?;
+    let key = t.key;
+    let bottom = if t.done || !budget_left {
+        *trial = None;
+        f64::INFINITY
+    } else {
+        t.lo = limit_of(limits, key).unwrap_or(t.lo);
+        t.next()
+    };
+    set_limit(limits, key, Some(bottom));
+    Some(key.1)
+}
+
+fn set_limit(limits: &mut Rc<Vec<(BandKey, f64)>>, key: BandKey, bottom: Option<f64>) {
+    let v = Rc::make_mut(limits);
+    v.retain(|(k, _)| *k != key);
+    if let Some(b) = bottom {
+        v.push((key, b));
+    }
+}
+
+fn limit_of(limits: &[(BandKey, f64)], key: BandKey) -> Option<f64> {
+    limits.iter().find(|(k, _)| *k == key).map(|&(_, b)| b)
 }
 
 impl Cursor {
     fn next_column(&mut self, cols: &[Vec<Rect>]) {
         self.col += 1;
         if self.fi < cols.len() && self.col >= cols[self.fi].len() {
-            self.col = 0;
-            self.fi += 1;
+            self.next_frame();
+        } else {
+            self.resume();
         }
-        self.last_baseline = None;
-        self.pending = 0.0;
     }
     fn next_frame(&mut self) {
         self.fi += 1;
         self.col = 0;
-        self.last_baseline = None;
-        self.pending = 0.0;
+        self.band = Band { para: self.pi, ..Band::default() };
+        self.resume();
+    }
+    /// Start the current column at the top of the band.
+    fn resume(&mut self) {
+        match self.band.above {
+            Some(a) => {
+                self.last_baseline = Some(a.baseline);
+                self.last_descent = a.descent;
+                self.last_reference = a.reference;
+                self.pending = a.pending;
+            }
+            None => {
+                self.last_baseline = None;
+                self.pending = 0.0;
+            }
+        }
+    }
+    fn band_key(&self) -> BandKey {
+        (self.fi, self.band.para)
+    }
+    /// Column `col` of the current frame limited to the band: below the spanning paragraph above
+    /// it and, while balancing, above the trial bottom.
+    fn clip(&self, col: Rect) -> Rect {
+        let y0 = self.band.above.map_or(col.y0, |a| a.top.max(col.y0).min(col.y1.max(col.y0)));
+        let y1 = limit_of(&self.limits, self.band_key()).map_or(col.y1, |b| b.min(col.y1).max(y0));
+        Rect::new(col.x0, y0, col.x1, y1)
     }
     /// Baseline for the next line with leading `lead` and ascent `asc`.
     fn next_baseline(&self, f: &FrameSpec, col: Rect, lead: f64, asc: f64, _pp: &ParaProps) -> f64 {
@@ -2080,6 +2339,11 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
         while j < glyphs.len() && (glyphs[j].is_letter() || glyphs[j].len == 0 || glyphs[j].ch == shape::SOFT_HYPHEN) && !glyphs[j].no_break {
             j += 1;
         }
+        // A no-break letter can't start a hyphenatable word.
+        if j == i {
+            i += 1;
+            continue;
+        }
         // A discretionary hyphen in a word (or right before it) replaces automatic hyphenation.
         let discretionary = glyphs[i..j].iter().any(|g| g.ch == shape::SOFT_HYPHEN) || (i > 0 && glyphs[i - 1].ch == shape::SOFT_HYPHEN);
         let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
@@ -2109,16 +2373,20 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
     out
 }
 
-fn vertical_justify(ft: &mut FrameText, f: &FrameSpec) {
+/// `spanned`: a paragraph spans the frame's columns, so the lines move together.
+fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
-    // Per column.
-    let ncols = ft.columns.len().max(1) as u32;
+    if spanned && f.opts.vertical_justification == VerticalJustification::Justify {
+        return;
+    }
+    // Per column (or all lines together).
+    let ncols = if spanned { 1 } else { ft.columns.len().max(1) as u32 };
     for c in 0..ncols {
-        let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| l.column == c).map(|(i, _)| i).collect();
-        let (Some(&a), Some(&z)) = (idx.first(), idx.last()) else { continue };
-        let bottom = ft.lines[z].baseline + ft.lines[z].descent;
+        let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| spanned || l.column == c).map(|(i, _)| i).collect();
+        let (Some(&a), Some(_)) = (idx.first(), idx.last()) else { continue };
+        let bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
         let space = f.area.y1 - bottom;
         if space <= 0.0 {
             continue;
