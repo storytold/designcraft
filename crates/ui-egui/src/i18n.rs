@@ -2878,7 +2878,10 @@ mod tests {
         keys.extend(TABLE.iter().map(|(key, _)| *key));
         keys.extend(ar::TABLE.iter().map(|(key, _)| *key));
         keys.extend(pt_br::TABLE.iter().map(|(key, _)| *key));
-        assert_eq!(keys, catalog.keys().copied().collect());
+        // A new English string falls back to English until it is translated, so only stale
+        // entries (keys no catalog knows any more) fail.
+        let stale: Vec<_> = catalog.keys().filter(|k| !keys.contains(*k)).collect();
+        assert!(stale.is_empty(), "Ukrainian entries for unknown keys: {stale:?}");
         let placeholders =
             |s: &str| s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<Vec<_>>();
         for (key, translation) in uk::TABLE {
