@@ -58,9 +58,22 @@ designcraft-cli mcp --automation-read-root /work/project --automation-write-root
   the write root. A root you omit is an authority you don't grant (that side is refused).
 - Request paths are **relative to the matching root** (`save_document {"path": "out.designcraft"}`
   writes `<write root>/out.designcraft`); an absolute path is accepted only if it is already under
-  the root. `..`, `\` separators, drive prefixes and symlinks that leave the root are refused
-  before any I/O.
-- `script.run` (nested commands that would bypass the per-step check) and unmapped `file.*`
+  the root. `..`, `\` separators, drive prefixes and symlinks that leave the root — including a
+  dangling symlink as the last component — are refused before any I/O.
+- Every path-carrying parameter is checked, whichever command it reaches: nested ones too
+  (`media.options`' `poster.path`) and folder parameters (`links.copyTo {dir}`,
+  `links.relinkFolder {dir}`, `file.package {dir}`), plus the connected-mode `app.export*` and
+  `app.saveSwatches` commands. The connected-mode file-picker dialogs (`app.openDialog`,
+  `app.saveDialog`, …) are refused while roots are set — the picked path cannot be checked — as
+  are `app.save` and `file.save` without an explicit `path` (they would write to the document's
+  ambient location); pass the path to the command itself instead.
+- Commands that follow paths **stored in the document** are refused while roots are set, because
+  the guard cannot verify a path it never sees: `data.source.update`, `data.merge` without inline
+  data, `links.list`/`links.update`, `links.relinkFolder` without `dir`, the `book.*` commands
+  that read or save stored document paths, `library.add`/`library.remove`, `file.package` and
+  `file.revert`. Give the data or the path explicitly (`data.source.select {path}`,
+  `links.relink {path}`, `file.open {path}`) and it is checked like any other.
+- `script.run` (nested commands that would bypass the per-step check) and unmapped `file.*`/`app.*`
   commands carrying a path are refused while roots are set; everything else works as usual.
 - Without either flag nothing changes: the server is unrestricted, as before.
 

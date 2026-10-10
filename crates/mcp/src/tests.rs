@@ -550,6 +550,41 @@ fn automation_roots_confine_tool_paths() {
     assert_eq!(out["isError"], true, "{out}");
     assert!(text_of(&out).contains("bypass"), "{out}");
 
+    // Commands that follow paths stored in the document are refused: the guard cannot
+    // verify a path it never sees (this is the file.exportText exfiltration chain).
+    for (id, params) in [
+        ("data.source.update", json!({})),
+        ("data.merge", json!({})),
+        ("links.list", json!({})),
+        ("links.update", json!({})),
+        ("links.relinkFolder", json!({})),
+        ("book.list", json!({})),
+        ("file.package", json!({})),
+        ("file.revert", json!({})),
+        ("app.save", json!({})),
+    ] {
+        let out = call(&mut s, "execute", json!({"command": id, "params": params}));
+        assert_eq!(out["isError"], true, "{id} must be refused with roots set: {out}");
+    }
+    // …and the folder/dir parameters of links commands are confined like any other path.
+    let out = call(&mut s, "execute", json!({"command": "links.copyTo", "params": {"dir": "/tmp/dc-links-escape"}}));
+    assert_eq!(out["isError"], true, "links.copyTo outside the write root: {out}");
+    assert!(text_of(&out).contains("outside the write root"), "{out}");
+
+    // A dangling symlink as the last component: the link exists inside the root but its
+    // target does not — the write must be refused, not follow the link out.
+    #[cfg(unix)]
+    {
+        let plant = r.join("plant.txt");
+        let target = dir.join("nowhere");
+        let _ = std::fs::remove_file(&plant);
+        std::os::unix::fs::symlink(&target, &plant).unwrap();
+        let out = call(&mut s, "open_document", json!({"path": "plant.txt"}));
+        assert_eq!(out["isError"], true, "dangling symlink read: {out}");
+        assert!(text_of(&out).contains("outside the read root"), "{out}");
+        let _ = std::fs::remove_file(&plant);
+    }
+
     // Path-less commands still work with roots set.
     ok(&mut s, "execute", json!({"command": "frame.create", "params": {"rect": [36, 36, 200, 100]}}));
 
