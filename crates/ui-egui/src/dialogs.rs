@@ -3643,6 +3643,12 @@ fn insert_xref(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 }
 
 /// Color Picker: saturation/brightness field and hue slider, with RGB, CMYK and hex fields.
+///
+/// The hex field's typed text lives in `d.fields["hexEdit"]`, not rebuilt from the colour
+/// each frame: egui's immediate-mode TextEdit shows whatever string it is handed, so
+/// regenerating it every frame wiped every keystroke that didn't instantly parse (#323).
+/// The buffer only resyncs to the canonical hex when the colour changes elsewhere
+/// (picker, eyedropper, RGB fields).
 fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
     let hex = d.s("hex");
     let mut c = designcraft_color::Color::from_hex(&hex).map(|c| c.to_rgb()).map_or(egui::Color32::BLACK, |[r, g, b]| {
@@ -3660,7 +3666,7 @@ fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
                     ui.end_row();
                 }
             });
-            c = egui::Color32::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8);
+            c = egui::Color32::from_rgb(rgb[0].round() as u8, rgb[1].round() as u8, rgb[2].round() as u8);
             let col = designcraft_color::Color::rgb8(c.r(), c.g(), c.b());
             let [cc, m, y, k] = col.to_cmyk();
             ui.add_space(6.0);
@@ -3668,12 +3674,18 @@ fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label("#");
-                let mut h = format!("{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
-                if ui.add(egui::TextEdit::singleline(&mut h).desired_width(70.0)).changed()
-                    && let Some(n) = designcraft_color::Color::from_hex(&h)
-                {
-                    let [r, g, b] = n.to_rgb();
-                    c = egui::Color32::from_rgb((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8);
+                // Resync the typed text only when the colour changed elsewhere this frame.
+                let committed = format!("{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
+                if !d.fields.contains_key("hexEdit") || c != before {
+                    d.fields.insert("hexEdit".into(), json!(committed));
+                }
+                let mut h = d.s("hexEdit");
+                if ui.add(egui::TextEdit::singleline(&mut h).desired_width(70.0)).changed() {
+                    if let Some(n) = designcraft_color::Color::from_hex(&h) {
+                        let [r, g, b] = n.to_rgb();
+                        c = egui::Color32::from_rgb((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8);
+                    }
+                    d.fields.insert("hexEdit".into(), json!(h));
                 }
             });
         });
@@ -3995,6 +4007,72 @@ mod tests {
             );
             assert!(app.ui.dialog.is_none(), "Escape must also close the reopened dialog");
         }
+    }
+
+    /// #323: the hex field's text is kept in the dialog, so a code typed one
+    /// keystroke per frame (each followed by an idle frame) is not wiped.
+    #[test]
+    fn typing_hex_one_keystroke_at_a_time_survives_frames() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#ffffff"})));
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 500.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "ffffff").center());
+        dialog_frame(
+            &mut app,
+            &ctx,
+            screen,
+            vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
+            }],
+        );
+        for ch in ["c", "0", "f", "f", "e", "e"] {
+            dialog_frame(&mut app, &ctx, screen, vec![egui::Event::Text(ch.into())]);
+            // An idle frame between keystrokes: the half-typed text must survive it.
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.s("hexEdit"), "c0ffee", "the half-typed hex text survives idle frames");
+        assert_eq!(d.s("hex"), "#c0ffee", "a fully typed hex code commits");
+    }
+
+    /// #323: a number typed into an RGB field commits (on defocus) without being reset.
+    /// (Return can't be used to commit here: the dialog framework OKs on any Enter.)
+    #[test]
+    fn typing_an_rgb_value_commits_it() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#010203"})));
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 500.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        // R, G and B read 1, 2 and 3 for #010203, so each field's text is unambiguous.
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "1").center());
+        let select = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
+        };
+        dialog_frame(&mut app, &ctx, screen, vec![select]);
+        dialog_frame(&mut app, &ctx, screen, vec![egui::Event::Text("128".into())]);
+        // DragValue commits on defocus; Return would OK the whole dialog (line ~1715),
+        // so move focus away by clicking the static "#" label next to the hex field.
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "#").center());
+        assert!(app.ui.dialog.is_some(), "the dialog stays open: no Enter was pressed");
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("hex"), "#800203", "the typed RGB value commits on defocus");
     }
 
     fn draw(app: &mut DesignApp, ctx: &egui::Context) {
