@@ -371,6 +371,19 @@ pub enum Effect {
         width: f64,
         align: u16,
     },
+    /// Bevel and emboss: lit and shaded edges `size` wide. `angle` is the light's azimuth
+    /// (radians, counter-clockwise from +x with y up), `depth` Affinity's depth (5 by default);
+    /// `inner` is false for the outer, emboss and pillow kinds.
+    Bevel {
+        size: f64,
+        depth: f64,
+        angle: f64,
+        highlight: crate::paint::Color,
+        highlight_opacity: f64,
+        shadow: crate::paint::Color,
+        shadow_opacity: f64,
+        inner: bool,
+    },
     /// Colour overlay: everything the node paints takes `color`, laid over it in `blend` mode at
     /// `opacity` (the node's own alpha is kept).
     ColorOverlay {
@@ -760,7 +773,21 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                     out.push(Effect::Outline { color, opacity, width: len(b"Radi"), align });
                 }
                 (Some(b"Strk"), _) => self.warn("gradient outline effects (left out)"),
-                (Some(b"BevE" | b"EmbE"), _) => self.warn("bevel and emboss effects (left out)"),
+                (Some(b"BevE" | b"EmbE"), _) => {
+                    // No radius, no bevel (as Affinity draws it).
+                    let size = len(b"Radi");
+                    if size > 0.0 {
+                        let white = crate::paint::Color::Rgb { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+                        let black = crate::paint::Color::Rgb { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+                        let highlight = s.obj(e, b"HiCl").and_then(|c| crate::paint::color(self, c)).unwrap_or(white);
+                        let shadow = s.obj(e, b"ShCl").and_then(|c| crate::paint::color(self, c)).unwrap_or(black);
+                        let shadow_opacity = s.f64(e, b"ShOp").filter(|v| v.is_finite()).unwrap_or(0.75).clamp(0.0, 1.0);
+                        let depth = s.f64(e, b"Dept").filter(|v| v.is_finite()).unwrap_or(5.0);
+                        let azimuth = s.f64(e, b"Azim").filter(|v| v.is_finite()).unwrap_or(std::f64::consts::FRAC_PI_4 * 3.0);
+                        let inner = s.enumeration(e, b"Beve").is_none_or(|(k, _)| k == 0);
+                        out.push(Effect::Bevel { size, depth, angle: azimuth, highlight, highlight_opacity: opacity, shadow, shadow_opacity, inner });
+                    }
+                }
                 (Some(b"ColO"), Some(color)) => {
                     let blend = self.effect_blend(e);
                     out.push(Effect::ColorOverlay { color, opacity, blend });

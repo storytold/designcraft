@@ -539,6 +539,27 @@ impl Builder {
                         spread: 0.0,
                     };
                 }
+                model::Effect::Bevel { size, depth, angle, highlight, highlight_opacity, shadow, shadow_opacity, inner } => {
+                    // Fitted on no visible example yet: Affinity's defaults (depth 5, light from
+                    // 135°) map to DesignCraft's (100 %, the light's angle).
+                    self.warn("bevel and emboss effects (approximated)");
+                    if !inner {
+                        self.warn("outer bevel, emboss and pillow emboss effects (imported as inner bevels)");
+                    }
+                    let (highlight, ha) = self.color(highlight);
+                    let (shadow, sa) = self.color(shadow);
+                    it.effects.bevel = designcraft_doc::Bevel {
+                        on: true,
+                        size: pt(*size),
+                        depth: (depth * 20.0).clamp(1.0, 1000.0),
+                        angle: angle.to_degrees().rem_euclid(360.0),
+                        global_light: false,
+                        highlight: self.swatch(highlight),
+                        highlight_opacity: (highlight_opacity * ha) as f32,
+                        shadow: self.swatch(shadow),
+                        shadow_opacity: (shadow_opacity * sa) as f32,
+                    };
+                }
                 // Baked into the paint (see `overlaid`).
                 model::Effect::ColorOverlay { .. } | model::Effect::GradientOverlay { .. } => {}
             }

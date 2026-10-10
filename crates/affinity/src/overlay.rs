@@ -104,7 +104,7 @@ fn bake_node(node: &mut Node, o: &Overlay, depth: usize, warn: &mut dyn FnMut(&s
     for e in &mut node.effects {
         match e {
             Effect::Outline { color, .. } => *color = over(*color, o.source.at_solid(), o),
-            Effect::DropShadow { .. } | Effect::InnerShadow { .. } | Effect::OuterGlow { .. } => {}
+            Effect::DropShadow { .. } | Effect::InnerShadow { .. } | Effect::OuterGlow { .. } | Effect::Bevel { .. } => {}
             Effect::ColorOverlay { .. } | Effect::GradientOverlay { .. } => {}
         }
     }

@@ -538,7 +538,39 @@ fn shadows_point_where_affinity_puts_them() {
     assert!((ds.angle - 90.0).abs() < 1e-9, "{}", ds.angle);
     assert_eq!((ds.distance, ds.size, ds.opacity), (10.0, 2.0, 0.5));
     assert_eq!(d.resolve_color(&ds.color, 1.0), Some(Color::rgb(0.0, 0.0, 1.0)));
-    assert!(imported.warnings.iter().any(|w| w.contains("bevel")), "{:?}", imported.warnings);
+    // A bevel without a radius draws nothing, in Affinity as here.
+    assert!(!rect.effects.bevel.on);
+    assert!(!imported.warnings.iter().any(|w| w.contains("bevel")), "{:?}", imported.warnings);
+}
+
+#[test]
+fn bevels_become_bevel_and_emboss() {
+    let bevel = F::Obj(
+        tag(b"BevE"),
+        vec![
+            (tag(b"Enab"), F::Bool(true)),
+            (tag(b"Opac"), F::F64(0.5)),
+            (tag(b"Radi"), F::F64(4.0)),
+            (tag(b"Dept"), F::F64(5.0)),
+            (tag(b"Azim"), F::F64(std::f64::consts::FRAC_PI_4 * 3.0)),
+            (tag(b"ShOp"), F::F64(0.25)),
+        ],
+    );
+    let mut node = rectangle(10, (0.0, 0.0), (50.0, 50.0));
+    if let F::Def(_, _, fields) = &mut node {
+        fields.push((tag(b"FiEf"), F::Shared(vec![bevel])));
+    }
+    let imported = designcraft_affinity::import(&canvas_with(vec![node], None)).unwrap();
+    let d = &imported.document;
+    let rect = d.spreads[0].items.iter().find(|i| i.name == "Magenta box").unwrap();
+    let b = &rect.effects.bevel;
+    assert!(b.on);
+    assert_eq!((b.size, b.depth, b.highlight_opacity, b.shadow_opacity), (4.0, 100.0, 0.5, 0.25));
+    assert!((b.angle - 135.0).abs() < 1e-9, "{}", b.angle);
+    // White highlight and black shadow unless the effect names its colours.
+    assert_eq!(d.resolve_color(&b.highlight, 1.0), Some(Color::rgb(1.0, 1.0, 1.0)));
+    assert_eq!(d.resolve_color(&b.shadow, 1.0), Some(Color::rgb(0.0, 0.0, 0.0)));
+    assert!(imported.warnings.iter().any(|w| w.starts_with("bevel and emboss effects (approximated)")), "{:?}", imported.warnings);
 }
 
 #[test]
