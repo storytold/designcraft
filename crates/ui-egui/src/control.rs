@@ -324,10 +324,9 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         }
         "ui.render" => {
             let Some(st) = app.session.active() else { return err("no document") };
-            let page = match p.get("page").and_then(Value::as_i64) {
-                Some(v) if v < 0 => return err("page index must be non-negative"),
-                Some(v) => v as usize,
-                None => crate::canvas::current_page(app).unwrap_or(0),
+            let page = match page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count()) {
+                Ok(page) => page,
+                Err(e) => return err(e),
             };
             let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
             let Some(img) = app.canvas.renderer.render_page(
