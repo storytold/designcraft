@@ -366,11 +366,14 @@ pub struct View {
     pub fitted: bool,
     /// View › Rotate Spread: quarter turns clockwise (0–3).
     pub rotation: u8,
+    /// Custom ruler zero point (canvas space), dragged from the ruler corner crosshair.
+    /// `None` means the default: the current spread's first page's top-left corner.
+    pub ruler_origin: Option<Point>,
 }
 
 impl Default for View {
     fn default() -> Self {
-        View { zoom: 0.5, origin: Point::new(-100.0, -100.0), fitted: false, rotation: 0 }
+        View { zoom: 0.5, origin: Point::new(-100.0, -100.0), fitted: false, rotation: 0, ruler_origin: None }
     }
 }
 
