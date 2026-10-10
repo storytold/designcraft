@@ -2,7 +2,7 @@
 //! time a lookup needs them, native only), outline cache.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use kurbo::BezPath;
@@ -320,6 +320,9 @@ struct ScannedFace {
 /// each open document's own fonts under its scope (see [`FontDb::scoped`]).
 pub struct FontDb {
     faces: RwLock<Vec<Arc<FontFace>>>,
+    /// Changes that can affect composition, including retryable primary-font misses.
+    /// Saturation disables reuse rather than allowing an old epoch to recur.
+    composition_epoch: AtomicU64,
     /// Each open document's fonts (its `Document Fonts` folder), by scope.
     scopes: RwLock<HashMap<u32, Arc<[Arc<FontFace>]>>>,
     /// The document font files read, by path: (length, modification time, faces). A document
@@ -763,6 +766,7 @@ impl FontDb {
         }
         Self {
             faces: RwLock::new(faces),
+            composition_epoch: AtomicU64::new(0),
             scopes: RwLock::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             document_files: Mutex::new(HashMap::new()),
@@ -783,7 +787,11 @@ impl FontDb {
     pub fn set_system_fallback(&self, on: bool) {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.sys.lock().unwrap_or_else(|e| e.into_inner()).enabled = on;
+            let mut sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
+            if sys.enabled != on {
+                sys.enabled = on;
+                self.advance_composition_epoch();
+            }
         }
         #[cfg(target_arch = "wasm32")]
         let _ = on;
@@ -795,6 +803,24 @@ impl FontDb {
     pub fn global() -> &'static FontDb {
         static DB: std::sync::OnceLock<FontDb> = std::sync::OnceLock::new();
         DB.get_or_init(|| FontDb::with_font_dirs(system_font_dirs()))
+    }
+
+    /// A composition can be reused only if this non-saturated value is unchanged before and
+    /// after composition and at reuse. An unresolved primary-font lookup advances it too: a
+    /// cataloged but unreadable file can become readable before any new font is published.
+    pub fn composition_epoch(&self) -> Option<u64> {
+        let epoch = self.composition_epoch.load(Ordering::Acquire);
+        (epoch != u64::MAX).then_some(epoch)
+    }
+
+    fn advance_composition_epoch(&self) {
+        let mut epoch = self.composition_epoch.load(Ordering::Relaxed);
+        while epoch != u64::MAX {
+            match self.composition_epoch.compare_exchange_weak(epoch, epoch + 1, Ordering::Release, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(current) => epoch = current,
+            }
+        }
     }
 
     fn read_faces(&self) -> std::sync::RwLockReadGuard<'_, Vec<Arc<FontFace>>> {
@@ -860,6 +886,9 @@ impl FontDb {
                 added += 1;
             }
         }
+        if added > 0 {
+            self.advance_composition_epoch();
+        }
         added
     }
 
@@ -922,7 +951,9 @@ impl FontDb {
         }
         let n = found.len();
         log::debug!("cataloged {n} system font faces");
-        *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = found;
+        let mut catalog = self.catalog.write().unwrap_or_else(|e| e.into_inner());
+        *catalog = found;
+        self.advance_composition_epoch();
         n
     }
 
@@ -1005,7 +1036,9 @@ impl FontDb {
         if !own.is_empty() {
             out.scope = NEXT_SCOPE.fetch_add(1, Ordering::Relaxed);
             out.faces = own.len();
-            self.scopes.write().unwrap_or_else(|e| e.into_inner()).insert(out.scope, own.into());
+            let mut scopes = self.scopes.write().unwrap_or_else(|e| e.into_inner());
+            scopes.insert(out.scope, own.into());
+            self.advance_composition_epoch();
         }
         out
     }
@@ -1057,7 +1090,10 @@ impl FontDb {
     /// Close a document's font scope: its fonts are no longer found (in it or anywhere). Their
     /// files stay read, for the document opening again.
     pub fn close_scope(&self, scope: u32) {
-        self.scopes.write().unwrap_or_else(|e| e.into_inner()).remove(&scope);
+        let mut scopes = self.scopes.write().unwrap_or_else(|e| e.into_inner());
+        if scopes.remove(&scope).is_some() {
+            self.advance_composition_epoch();
+        }
     }
 
     /// The shared fonts' face for `family` + `style` (see [`ScopedFonts::face`]).
@@ -1121,7 +1157,10 @@ impl FontDb {
                 return true;
             }
         }
-        self.sys.lock().unwrap_or_else(|e| e.into_inner()).misses.insert(c);
+        let mut sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
+        if sys.misses.insert(c) {
+            self.advance_composition_epoch();
+        }
         false
     }
 
@@ -1248,6 +1287,8 @@ impl ScopedFonts<'_> {
         {
             return f;
         }
+        // A fresh composition can retry this lookup, including for an empty paragraph's metrics.
+        self.db.advance_composition_epoch();
         self.find(FALLBACK_FAMILY, style)
             .or_else(|| self.find(FALLBACK_FAMILY, "Regular"))
             .or_else(|| self.db.read_faces().first().cloned())
@@ -1317,7 +1358,16 @@ impl ScopedFonts<'_> {
             }
         }
         let f = make_face(base.bytes.clone(), base.source.clone(), base.index, base.family.clone(), style.to_string(), coords)?;
-        Some(self.db.instances.write().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert_with(|| Arc::new(f)).clone())
+        let mut instances = self.db.instances.write().unwrap_or_else(|e| e.into_inner());
+        Some(
+            instances
+                .entry(key)
+                .or_insert_with(|| {
+                    self.db.advance_composition_epoch();
+                    Arc::new(f)
+                })
+                .clone(),
+        )
     }
 
     fn find(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
@@ -1376,6 +1426,7 @@ impl ScopedFonts<'_> {
             // Held while loading, so a parallel lookup waits for the font instead of passing it by.
             let mut sys = self.db.sys.lock().unwrap_or_else(|e| e.into_inner());
             if sys.enabled && sys.chain_tried.insert(family) {
+                self.db.advance_composition_epoch();
                 self.db.load_cataloged(family);
             }
         }

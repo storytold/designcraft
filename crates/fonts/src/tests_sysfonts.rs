@@ -164,3 +164,6 @@ fn font_menus_group_installed_and_loaded_fonts_without_loading_them() {
     assert_eq!(infos.iter().filter(|i| i.family == "Groups Mincho").count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[path = "tests_composition_epoch.rs"]
+mod composition_epoch;

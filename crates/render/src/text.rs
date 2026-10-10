@@ -7,7 +7,7 @@
 //! the greeking threshold become grey bars without touching any outline.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use designcraft_compose::{ComposedStory, FrameText, Line};
 use designcraft_doc::ItemId;
@@ -37,8 +37,10 @@ pub(crate) struct FrameGlyphs {
 }
 
 struct Entry {
-    /// Keeps the composed story alive so its address can't be reused while cached.
-    _story: Arc<ComposedStory>,
+    /// Pins only the allocation identity used by the key. The cached paths own their data;
+    /// old story layout buffers can drop once composition/render users release them. A Weak
+    /// still prevents this allocation address from being reused by another story.
+    _story: Weak<ComposedStory>,
     glyphs: Arc<FrameGlyphs>,
     stamp: u64,
 }
@@ -68,7 +70,7 @@ impl GlyphCache {
         }
         let g = Arc::new(build(cs, ft));
         self.elements += g.elements;
-        self.map.insert(key, Entry { _story: cs.clone(), glyphs: g.clone(), stamp });
+        self.map.insert(key, Entry { _story: Arc::downgrade(cs), glyphs: g.clone(), stamp });
         if self.elements > MAX_ELEMENTS {
             self.evict();
         }
@@ -484,5 +486,101 @@ impl Renderer {
             }
             self.stats.glyphs += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_identity_tests {
+    use super::*;
+
+    fn composition() -> Arc<ComposedStory> {
+        Arc::new(ComposedStory { frames: vec![FrameText { frame: ItemId(1), ..Default::default() }], ..Default::default() })
+    }
+
+    fn rich_composition() -> (crate::Cache, Arc<ComposedStory>) {
+        let mut doc = designcraft_doc::Document::new(&Default::default());
+        for style in &mut doc.styles_mut().paragraph {
+            style.chars.underline = Some(true);
+        }
+        let layer = doc.default_layer();
+        let (_, sid) = doc
+            .add_text_frame(
+                designcraft_doc::SpreadRef::Doc(0),
+                Rect::new(36.0, 36.0, 300.0, 300.0),
+                layer,
+                "Visible decorated glyphs.",
+                designcraft_doc::ParaFormat::default(),
+            )
+            .unwrap();
+        let owner = crate::Cache::new();
+        let cs = owner.get(&doc, sid, None);
+        (owner, cs)
+    }
+
+    #[test]
+    fn cache_owns_weak_identity_and_reuses_live_glyphs() {
+        let cs = composition();
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let first = cache.get(&cs, &cs.frames[0]);
+        assert_eq!(Arc::strong_count(&cs), 1, "the glyph cache must not own the whole layout");
+        assert_eq!(Arc::weak_count(&cs), 1, "the glyph cache must still pin the allocation identity");
+        assert!(Arc::ptr_eq(&first, &cache.get(&cs, &cs.frames[0])));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn make_mut_moves_to_a_new_cache_identity_without_reusing_old_paths() {
+        let mut cs = composition();
+        let old_address = Arc::as_ptr(&cs) as usize;
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let original_paths = cache.get(&cs, &cs.frames[0]);
+        Arc::make_mut(&mut cs).text_len = 5;
+        assert_ne!(Arc::as_ptr(&cs) as usize, old_address);
+        let new_paths = cache.get(&cs, &cs.frames[0]);
+        assert!(!Arc::ptr_eq(&original_paths, &new_paths));
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn in_flight_owner_keeps_layout_valid_then_releases_it_without_losing_outlines() {
+        let (origin, cs) = rich_composition();
+        let in_flight = cs.clone();
+        let lifetime = Arc::downgrade(&cs);
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let glyphs = cache.get(&cs, &cs.frames[0]);
+        assert!(glyphs.elements > 0);
+        let runs = glyphs.lines[0].runs.clone();
+        let decorations = glyphs.lines[0].decos.clone();
+        assert!(!decorations.is_empty());
+        drop(cs);
+        origin.clear();
+        assert!(lifetime.upgrade().is_some());
+        assert!(!in_flight.styles.is_empty());
+        assert!(Arc::ptr_eq(&glyphs, &cache.get(&in_flight, &in_flight.frames[0])));
+        drop(in_flight);
+        assert!(lifetime.upgrade().is_none(), "only the real in-flight owner should keep the layout alive");
+        assert_eq!(glyphs.lines[0].runs, runs);
+        assert_eq!(glyphs.lines[0].decos, decorations);
+        assert_eq!(cache.len(), 1, "no path eviction was needed");
+    }
+
+    #[test]
+    fn clearing_cache_releases_weak_identity_but_not_independently_owned_paths() {
+        let (origin, cs) = rich_composition();
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let glyphs = cache.get(&cs, &cs.frames[0]);
+        let runs = glyphs.lines[0].runs.clone();
+        assert!(glyphs.elements > 0);
+        assert_eq!(Arc::weak_count(&cs), 1);
+        cache.clear();
+        assert_eq!(Arc::weak_count(&cs), 0);
+        assert_eq!(cache.len(), 0);
+        origin.clear();
+        drop(cs);
+        assert_eq!(glyphs.lines[0].runs, runs);
     }
 }

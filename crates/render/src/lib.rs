@@ -1164,6 +1164,9 @@ pub fn image_mime(bytes: &[u8]) -> &'static str {
 }
 
 #[cfg(test)]
+mod tests_previous_layout_reuse;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use designcraft_doc::build::NewDocument;

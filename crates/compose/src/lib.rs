@@ -271,7 +271,7 @@ pub struct Exclusion {
 }
 
 /// One frame of the thread, ready for composition.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FrameSpec {
     pub id: ItemId,
     /// Text area (inner space, after inset).
