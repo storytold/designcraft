@@ -74,9 +74,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 let g = TOOL_GROUPS[gi];
                                 let shown = g.iter().find(|tl| tl.id == current).unwrap_or(&g[0]);
                                 let active = g.iter().any(|tl| tl.id == current);
+                                let name = crate::i18n::tr(&app.ui.language, shown.label);
                                 let tip = match shown.shortcut {
-                                    Some(s) => format!("{} ({s})", shown.label),
-                                    None => shown.label.to_string(),
+                                    Some(s) => format!("{name} ({s})"),
+                                    None => name.to_string(),
                                 };
                                 let resp = tool_button(ui, shown.icon, active, &tip);
                                 if g.len() > 1 {
@@ -135,7 +136,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                                         ui.painter().text(
                                                             r.min + vec2(28.0, 12.0),
                                                             egui::Align2::LEFT_CENTER,
-                                                            tl.label,
+                                                            crate::i18n::tr(&app.ui.language, tl.label),
                                                             egui::FontId::proportional(12.5),
                                                             t.text,
                                                         );

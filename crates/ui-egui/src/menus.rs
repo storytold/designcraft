@@ -245,6 +245,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.language|Español|{\"lang\": \"es\"}",
             "ui:app.language|日本語|{\"lang\": \"ja\"}",
             "ui:app.language|简体中文|{\"lang\": \"zh\"}",
+            "ui:app.language|繁體中文|{\"lang\": \"zh-hant\"}",
+            "ui:app.language|한국어|{\"lang\": \"ko\"}",
             "ui:app.language|العربية|{\"lang\": \"ar\"}",
             "ui:app.language|Português (Brasil)|{\"lang\": \"pt-br\"}",
             "ui:app.language|Italiano|{\"lang\": \"it\"}",
@@ -2438,6 +2440,37 @@ mod tests {
         assert_eq!(run_ui(&mut app, "window.split", &json!({})).unwrap().unwrap(), json!(false));
         assert_eq!(app.pane, 0);
         frame(&mut app);
+    }
+
+    /// Edit › Interface Language offers every supported language, and each one switches.
+    #[test]
+    fn interface_language_menu_lists_every_language() {
+        fn walk(items: &[Item], out: &mut Vec<(String, String)>) {
+            for it in items {
+                match it {
+                    Item::Sub(_, children) => walk(children, out),
+                    Item::Cmd { label, id, params, .. } if id == "app.language" => {
+                        out.push((label.clone(), params["lang"].as_str().unwrap_or("").to_string()))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut entries = Vec::new();
+        for (_, items) in menu_tree() {
+            walk(&items, &mut entries);
+        }
+        let expected: Vec<(String, String)> = crate::i18n::LANGUAGES.iter().map(|(code, name)| (name.to_string(), code.to_string())).collect();
+        assert_eq!(entries.len(), expected.len(), "{entries:?}");
+        for e in &expected {
+            assert!(entries.contains(e), "missing {e:?} in {entries:?}");
+        }
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        for (_, code) in &expected {
+            run_ui(&mut app, "app.language", &json!({"lang": code})).unwrap().unwrap();
+            assert_eq!(&app.ui.language, code);
+            assert_eq!(checked(&app, "app.language", &json!({"lang": code})), Some(true));
+        }
     }
 
     #[test]
