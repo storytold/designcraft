@@ -49,6 +49,11 @@ impl eframe::App for App {
             if let Some(m) = &mut self.menu {
                 m.poll(&mut self.app, ctx);
             }
+            // Files opened from Finder or the Dock (double-click, drop on the app icon, Open With):
+            // the same as a drop on the window (a failure shows an alert).
+            for p in designcraft_macos_open::take_pending() {
+                let _ = self.app.open_dropped(&p);
+            }
         }
         self.app.logic(ctx);
     }
@@ -289,6 +294,10 @@ fn main() -> eframe::Result {
             b.with_x11();
         }));
     }
+    // macOS passes files opened from Finder as an Apple Event, not in argv; this must be in place
+    // before the event loop starts so the files the app is launched with are caught.
+    #[cfg(target_os = "macos")]
+    designcraft_macos_open::install();
     eframe::run_native(
         "DesignCraft",
         options,
@@ -301,6 +310,11 @@ fn main() -> eframe::Result {
                 if let (Some(s), Some(backend)) = (gpu.as_mut(), gpu::Backend::of(info.backend)) {
                     s.started_with(backend);
                 }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let ctx = cc.egui_ctx.clone();
+                designcraft_macos_open::set_waker(move || ctx.request_repaint());
             }
             let mut session = Session::new();
             // Crash recovery: reopen what a previous run left unsaved, then keep it current.

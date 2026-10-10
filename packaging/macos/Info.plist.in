@@ -45,7 +45,60 @@
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the DesignCraft authors. MIT OR Apache-2.0.</string>
 
-  <!-- Designcraft's own format. -->
+  <!-- What DesignCraft opens. Without this key Finder and the Dock refuse every drop on the
+       app icon and DesignCraft never appears in "Open With". These are the formats the app
+       opens as documents (main.rs open filter, ui-egui file.open); placeable formats
+       (images, PDF, text) are not listed. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>DesignCraft Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>CFBundleTypeIconFile</key>
+      <string>DesignCraft</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>ai.storyteller.designcraft.document</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>InDesign Markup Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <!-- Alternate: offered in Open With and accepts drops, but does not take the default
+           away from InDesign. -->
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>ai.storyteller.designcraft.idml</string>
+      </array>
+    </dict>
+    <!-- Fallback by extension. If another installed app (InDesign) exports its own UTI for
+         .idml, files get that UTI instead of the one imported below and the entry above no
+         longer matches. A legacy extension entry matches regardless of UTI. It must be its own
+         dict: in a dict that has LSItemContentTypes, the extension keys are ignored. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>InDesign Markup Document (by extension)</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>idml</string>
+      </array>
+    </dict>
+  </array>
+
+  <!-- Designcraft's own format. The app saves .designcraft; .pcraft kept for the Windows
+       installer's association until the two are reconciled. -->
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
@@ -63,7 +116,10 @@
       <key>UTTypeTagSpecification</key>
       <dict>
         <key>public.filename-extension</key>
-        <array><string>pcraft</string></array>
+        <array>
+          <string>designcraft</string>
+          <string>pcraft</string>
+        </array>
         <key>public.mime-type</key>
         <array><string>application/x-designcraft</string></array>
       </dict>
@@ -102,6 +158,24 @@
       <dict>
         <key>public.filename-extension</key>
         <array><string>qoi</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>ai.storyteller.designcraft.idml</string>
+      <key>UTTypeDescription</key>
+      <string>InDesign Markup Document</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <!-- IDML is a ZIP package of XML files. -->
+        <string>public.zip-archive</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>idml</string></array>
+        <key>public.mime-type</key>
+        <array><string>application/vnd.adobe.indesign-idml-package</string></array>
       </dict>
     </dict>
   </array>
