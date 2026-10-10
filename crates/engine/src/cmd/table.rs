@@ -204,6 +204,15 @@ fn table_specs() -> Vec<CommandSpec> {
         cmd!("table.setColumnWidth", "Column Width", [], None, "{width}", in_table, set_col_width),
         cmd!("table.distributeColumns", "Distribute Columns Evenly", ["Table"], None, "{}", in_table, distribute_cols),
         cmd!(
+            "table.distributeRows",
+            "Distribute Rows Evenly",
+            ["Table"],
+            None,
+            "{story?, table?, rows?: [a,b]} — equal fixed heights preserving the selected rows' composed total height; may overset cell text; unmerge row-spanning cells first",
+            in_table,
+            distribute_rows
+        ),
+        cmd!(
             "table.options",
             "Table Options",
             [],
@@ -372,6 +381,14 @@ fn column_width(s: &Session, t: &TextSel) -> f64 {
     spec.and_then(|f| f.columns().first().map(|c| c.width())).unwrap_or(300.0)
 }
 
+/// The direction of the paragraph at `offset` in `story`, as composition resolves it (its style
+/// chain, then local overrides). A table created there takes it.
+fn para_direction(d: &Document, story: StoryId, offset: usize) -> designcraft_doc::TextDirection {
+    d.story(story)
+        .and_then(|st| st.paras.get(st.para_at(offset)))
+        .map_or(designcraft_doc::TextDirection::LeftToRight, |pf| d.styles.resolve_para(pf).0.direction)
+}
+
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| bad("table.insert", "no insertion point"))?;
     if t.cell.is_some() {
@@ -385,6 +402,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         let id = d.alloc();
         let mut table = Table::new(id, rows, cols, header, footer, width);
+        table.options.direction = para_direction(d, t.story, t.range().start);
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.insert", "no story"))?;
         // Cells start with the paragraph format at the caret.
         let pf = st.paras[st.para_at(t.range().start)].clone();
@@ -410,6 +428,7 @@ fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
     let width = p.get("width").and_then(Value::as_f64).unwrap_or_else(|| column_width(s, &t));
     s.edit(|d, sel| {
         let id = d.alloc();
+        let direction = para_direction(d, t.story, t.range().start);
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.convertFromText", "no story"))?;
         let ranges = st.para_ranges();
         let (pa, pb) = (st.para_at(t.range().start), st.para_at(t.range().end));
@@ -420,7 +439,8 @@ fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
         let data: Vec<Vec<String>> = st.text[a..b].split('\n').map(|line| line.split(sep).map(|c| c.trim().to_string()).collect()).collect();
         let pf = st.paras[pa].clone();
         let cf = st.format_after(a).clone();
-        let table = Table::from_strings(id, &data, width, &pf, &cf);
+        let mut table = Table::from_strings(id, &data, width, &pf, &cf);
+        table.options.direction = direction;
         st.delete(a..b);
         let anchor = st.insert_table(a, table);
         *sel = Selection::text(TextSel::caret(t.story, anchor));
@@ -729,6 +749,63 @@ fn set_col_width(s: &mut Session, p: &Value) -> Result<Value> {
             c.width = w;
         }
         ok()
+    })
+}
+
+fn distribute_rows(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "table.distributeRows";
+    if !p.is_object() {
+        return Err(bad(ID, "parameters must be an object"));
+    }
+    if let Some(rows) = p.get("rows") {
+        let valid = rows.as_array().is_some_and(|a| a.len() == 2 && a.iter().all(|v| v.as_u64().is_some_and(|n| usize::try_from(n).is_ok())));
+        if !valid {
+            return Err(bad(ID, "rows must be two non-negative row indices"));
+        }
+    }
+    for key in ["row", "story", "table"] {
+        if let Some(v) = p.get(key)
+            && !v.as_u64().is_some_and(|n| usize::try_from(n).is_ok())
+        {
+            return Err(bad(ID, format!("{key} must be a non-negative integer")));
+        }
+    }
+    let g = target(s, p, ID)?;
+    let st = s.doc()?;
+    let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    if t.cells.iter().any(|c| c.row_span > 1) {
+        return Err(bad(ID, "unmerge cells that span rows first"));
+    }
+    let cs = s.cache.get(&st.doc, g.story, None);
+    let mut total = 0.0;
+    for row in g.range.r0..=g.range.r1 {
+        let height = cs
+            .frames
+            .iter()
+            .flat_map(|f| &f.tables)
+            .filter(|f| f.table == g.table)
+            .flat_map(|f| &f.cells)
+            .filter(|c| c.row == row)
+            .map(|c| c.rect.height())
+            .reduce(f64::max)
+            .ok_or_else(|| bad(ID, "all selected rows must be laid out; enlarge or thread the text frame first"))?;
+        if !height.is_finite() || height <= 0.0 {
+            return Err(bad(ID, "invalid composed row height"));
+        }
+        total += height;
+    }
+    let count = g.range.r1 - g.range.r0 + 1;
+    let height = total / count as f64;
+    if !height.is_finite() {
+        return Err(bad(ID, "invalid total row height"));
+    }
+    edit_table(s, &g, ID, |t| {
+        let rows = t.rows.get_mut(g.range.r0..=g.range.r1).ok_or_else(|| bad(ID, "invalid row range"))?;
+        for row in rows {
+            row.height = height;
+            row.mode = RowHeightMode::Exactly;
+        }
+        Ok(json!({"rows": count, "height": height}))
     })
 }
 
@@ -1315,6 +1392,105 @@ mod sort_tests {
 
     use crate::Session;
 
+    fn distribution_session() -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 700], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
+        for (row, height) in [(0, 25), (1, 40), (2, 80), (3, 30)] {
+            s.execute("table.setRowHeight", &json!({"row": row, "height": height, "mode": "exactly"})).unwrap();
+            s.execute("table.setCell", &json!({"row": row, "col": 0, "text": format!("row {row}")})).unwrap();
+        }
+        s
+    }
+
+    fn table(s: &Session) -> designcraft_doc::Table {
+        (**s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap()).clone()
+    }
+
+    #[test]
+    fn distribute_selected_rows_preserves_height_content_and_undo() {
+        let mut s = distribution_session();
+        s.execute("table.select", &json!({"rows": [1, 2], "what": "row"})).unwrap();
+        let before = table(&s);
+        let selection = s.doc().unwrap().selection.cells;
+        let result = s.execute("table.distributeRows", &json!({})).unwrap();
+        assert_eq!(result, json!({"rows": 2, "height": 60.0}));
+        let after = table(&s);
+        assert_eq!(after.rows.iter().map(|r| r.height).collect::<Vec<_>>(), [25.0, 60.0, 60.0, 30.0]);
+        assert_eq!(after.cells, before.cells);
+        assert_eq!(after.rows[0].kind, before.rows[0].kind);
+        assert_eq!(s.doc().unwrap().selection.cells, selection);
+        let st = s.doc().unwrap();
+        let sid = st.doc.stories.values().find(|st| !st.tables.is_empty()).unwrap().id;
+        let cs = s.cache.get(&st.doc, sid, None);
+        let heights: Vec<_> =
+            cs.frames.iter().flat_map(|f| &f.tables).flat_map(|f| &f.cells).filter(|c| c.col == 0).map(|c| c.rect.height()).collect();
+        assert_eq!(heights, [25.0, 60.0, 60.0, 30.0]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(table(&s), before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(table(&s), after);
+    }
+
+    #[test]
+    fn distribution_uses_content_grown_heights_and_explicit_table() {
+        let mut s = distribution_session();
+        s.execute("table.setRowHeight", &json!({"rows": [1, 2], "height": 3, "mode": "atLeast"})).unwrap();
+        s.execute("table.setCell", &json!({"row": 2, "col": 0, "text": "one\ntwo\nthree"})).unwrap();
+        let st = s.doc().unwrap();
+        let story = st.doc.stories.values().find(|st| !st.tables.is_empty()).unwrap();
+        let (sid, tid) = (story.id, *story.tables.keys().next().unwrap());
+        let cs = s.cache.get(&st.doc, sid, None);
+        let total: f64 = cs
+            .frames
+            .iter()
+            .flat_map(|f| &f.tables)
+            .flat_map(|f| &f.cells)
+            .filter(|c| c.col == 0 && (1..=2).contains(&c.row))
+            .map(|c| c.rect.height())
+            .sum();
+        let result = s.execute("table.distributeRows", &json!({"story": sid.0, "table": tid, "rows": [1, 2]})).unwrap();
+        assert!((result["height"].as_f64().unwrap() * 2.0 - total).abs() < 1e-6);
+        assert!(table(&s).rows[1].height > 3.0);
+        assert_eq!(table(&s).rows[1].mode, designcraft_doc::RowHeightMode::Exactly);
+    }
+
+    #[test]
+    fn distribution_keeps_column_spans_and_caret() {
+        let mut s = distribution_session();
+        s.execute("table.merge", &json!({"rows": [1, 1], "cols": [0, 1]})).unwrap();
+        let before = table(&s);
+        let caret = s.doc().unwrap().selection.text;
+        let result = s.execute("table.distributeRows", &json!({"rows": [2, 1]})).unwrap();
+        assert_eq!(result["height"], 60.0);
+        assert_eq!(table(&s).cell(1, 0).unwrap().col_span, 2);
+        assert_eq!(table(&s).cells, before.cells);
+        assert_eq!(s.doc().unwrap().selection.text, caret);
+    }
+
+    #[test]
+    fn distribution_rejects_merges_and_missing_rows_without_changes() {
+        let mut s = distribution_session();
+        s.execute("table.merge", &json!({"rows": [1, 2], "cols": [0, 0]})).unwrap();
+        let before = table(&s);
+        assert!(s.execute("table.distributeRows", &json!({"rows": [1, 2]})).is_err());
+        assert_eq!(table(&s), before);
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("table.setRowHeight", &json!({"rows": [0, 3], "height": 10000, "mode": "exactly"})).unwrap();
+        let before = table(&s);
+        assert!(s.execute("table.distributeRows", &json!({"rows": [0, 3]})).is_err());
+        assert_eq!(table(&s), before);
+        assert!(s.execute("table.distributeRows", &json!({"rows": [0, 99]})).is_err());
+        for params in
+            [json!({"rows": "all"}), json!({"rows": [0]}), json!({"rows": [-1, 2]}), json!({"row": 1.5}), json!({"table": "bad"}), json!([])]
+        {
+            assert!(s.execute("table.distributeRows", &params).is_err(), "{params}");
+            assert_eq!(table(&s), before);
+        }
+    }
+
     #[test]
     fn sort_body_rows_by_a_column() {
         let mut s = Session::new();
@@ -1434,5 +1610,47 @@ mod arabic_tests {
         let t = s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap();
         assert_eq!(t.ncols(), 2);
         assert_eq!(t.options.direction, designcraft_doc::TextDirection::RightToLeft);
+    }
+
+    /// A text frame whose paragraphs have a paragraph style with `direction`, with the story's
+    /// text selected. Returns the session and the story id.
+    fn styled_frame(direction: &str, text: &str) -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "A4", "pages": 1})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Dir", "para": {"direction": direction}})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [40, 330, 555, 420], "content": "text", "text": text, "caret": true})).unwrap();
+        s.execute("edit.selectAll", &json!({})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Dir"})).unwrap();
+        s.execute("edit.selectAll", &json!({})).unwrap();
+        (s, r["story"].as_u64().unwrap())
+    }
+
+    fn only_table(s: &Session) -> std::sync::Arc<designcraft_doc::Table> {
+        s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap().clone()
+    }
+
+    /// Text converted to a table in a right-to-left paragraph laid its columns out left to right
+    /// (#100): the first column belongs on the right.
+    #[test]
+    fn tables_take_the_direction_of_their_paragraph() {
+        use designcraft_doc::TextDirection::{LeftToRight, RightToLeft};
+        let (mut s, sid) = styled_frame("rightToLeft", "١\t٢\t٣\nأ\tب\tج");
+        s.execute("table.convertFromText", &json!({"columnSeparator": "tab"})).unwrap();
+        assert_eq!(only_table(&s).options.direction, RightToLeft);
+        let st = s.doc().unwrap();
+        let cs = s.cache.get(&st.doc, designcraft_doc::StoryId(sid), None);
+        let placed = &cs.frames[0].tables[0];
+        let (first, last) = (placed.cell(0, 0).unwrap().rect, placed.cell(0, 2).unwrap().rect);
+        assert!(first.x0 > last.x0, "cell ١ is the rightmost: {first:?} {last:?}");
+
+        let (mut s, _) = styled_frame("leftToRight", "1\t2\t3\na\tb\tc");
+        s.execute("table.convertFromText", &json!({"columnSeparator": "tab"})).unwrap();
+        assert_eq!(only_table(&s).options.direction, LeftToRight);
+
+        for (direction, expected) in [("rightToLeft", RightToLeft), ("leftToRight", LeftToRight)] {
+            let (mut s, _) = styled_frame(direction, "x");
+            s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+            assert_eq!(only_table(&s).options.direction, expected, "table.insert in a {direction} paragraph");
+        }
     }
 }

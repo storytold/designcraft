@@ -318,6 +318,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     draw_tool_overlays(app, &painter, &xf);
     if rulers {
         draw_rulers(app, ui, full, rect, &xf, &doc, &layout, &t);
+        ruler_units_menus(app, &resp, full, rect, &doc);
     }
     if let Some(r) = sel_rect
         && !preview
@@ -1247,8 +1248,7 @@ fn draw_tool_overlays(app: &mut DesignApp, painter: &egui::Painter, xf: &Xf) {
 #[allow(clippy::too_many_arguments)]
 fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, doc: &Document, layout: &CanvasLayout, t: &Tokens) {
     let painter = ui.painter_at(full);
-    let top = Rect::from_min_max(pos2(rect.min.x, full.min.y), pos2(full.max.x, rect.min.y));
-    let left = Rect::from_min_max(pos2(full.min.x, rect.min.y), pos2(rect.min.x, full.max.y));
+    let (top, left) = ruler_rects(full, rect);
     painter.rect_filled(top, 0.0, t.ruler);
     painter.rect_filled(left, 0.0, t.ruler);
     painter.rect_filled(Rect::from_min_max(full.min, rect.min), 0.0, t.ruler);
@@ -1262,11 +1262,11 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
     let Some(i) = current_slot(app, layout) else { return };
     let slot = &layout.slots[i];
     let origin = Point::new(slot.bounds.x0, slot.bounds.y0);
-    let unit = doc.settings.horizontal_units;
-    let (major, sub) = unit.ruler_ticks(xf.zoom);
     let font = egui::FontId::proportional(9.0);
     let tick = Stroke::new(1.0, t.ruler_tick);
     // Horizontal.
+    let unit = doc.settings.horizontal_units;
+    let (major, sub) = unit.ruler_ticks(xf.zoom);
     let c0 = xf.to_canvas(top.min).x - origin.x;
     let c1 = xf.to_canvas(pos2(top.max.x, 0.0)).x - origin.x;
     let mut k = (c0 / major).floor() as i64;
@@ -1291,6 +1291,8 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
         k += 1;
     }
     // Vertical.
+    let unit = doc.settings.vertical_units;
+    let (major, sub) = unit.ruler_ticks(xf.zoom);
     let c0 = xf.to_canvas(pos2(0.0, left.min.y)).y - origin.y;
     let c1 = xf.to_canvas(pos2(0.0, left.max.y)).y - origin.y;
     let mut k = (c0 / major).floor() as i64;
@@ -1322,6 +1324,43 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
         let m = Stroke::new(1.0, t.text_dim);
         dashed(&painter, pos2(p.x, top.min.y), pos2(p.x, top.max.y), m, 1.5, 1.5);
         dashed(&painter, pos2(left.min.x, p.y), pos2(left.max.x, p.y), m, 1.5, 1.5);
+    }
+}
+
+/// The horizontal (top) and vertical (left) rulers around the view `rect` in `full`.
+fn ruler_rects(full: Rect, rect: Rect) -> (Rect, Rect) {
+    (
+        Rect::from_min_max(pos2(rect.min.x, full.min.y), pos2(full.max.x, rect.min.y)),
+        Rect::from_min_max(pos2(full.min.x, rect.min.y), pos2(rect.min.x, full.max.y)),
+    )
+}
+
+/// Right-clicking a ruler opens a menu of units for that ruler.
+fn ruler_units_menus(app: &mut DesignApp, resp: &egui::Response, full: Rect, rect: Rect, doc: &Document) {
+    let (top, left) = ruler_rects(full, rect);
+    let at = resp.interact_pointer_pos();
+    for (ruler, key, cur) in [(top, "horizontalUnits", doc.settings.horizontal_units), (left, "verticalUnits", doc.settings.vertical_units)] {
+        let open = if resp.secondary_clicked() {
+            Some(egui::SetOpenCommand::Bool(at.is_some_and(|p| ruler.contains(p))))
+        } else if resp.clicked() {
+            Some(egui::SetOpenCommand::Bool(false))
+        } else {
+            None
+        };
+        egui::Popup::context_menu(resp).id(resp.id.with(("ruler_units", key))).open_memory(open).show(|ui| ruler_units_menu(app, ui, key, cur));
+    }
+}
+
+/// Every unit, the current one checked; picking one sets `key` (`horizontalUnits` or
+/// `verticalUnits`) through `document.preferences`.
+fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, key: &str, cur: designcraft_geom::Unit) {
+    for u in designcraft_geom::Unit::ALL {
+        let label = crate::i18n::tr(&app.ui.language, u.label());
+        let text = if u == cur { format!("✓ {label}") } else { format!("   {label}") };
+        if ui.button(crate::rtl::widget(ui, text)).clicked() {
+            let _ = app.run("document.preferences", json!({ key: u }));
+            ui.close();
+        }
     }
 }
 
@@ -1725,4 +1764,73 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
         _ => {}
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use designcraft_geom::Unit;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    use super::*;
+
+    fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
+        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        h
+    }
+
+    fn right_click(h: &mut Harness<'_, DesignApp>, p: Pos2) {
+        h.hover_at(p);
+        h.step();
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() });
+        }
+        h.run_steps(3);
+    }
+
+    fn units(h: &Harness<'_, DesignApp>) -> (Unit, Unit) {
+        let s = &h.state().session.doc().unwrap().doc.settings;
+        (s.horizontal_units, s.vertical_units)
+    }
+
+    #[test]
+    fn right_clicking_a_ruler_sets_that_rulers_units() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut h = harness(app);
+        let rect = h.state().canvas_rect.unwrap();
+        assert_eq!(units(&h), (Unit::Picas, Unit::Picas));
+        // Vertical ruler: the current unit is checked; picking one sets only the vertical units.
+        right_click(&mut h, pos2(rect.min.x - RULER / 2.0, rect.center().y));
+        h.get_by_label("✓ Picas");
+        h.get_by_label("   Millimeters").click();
+        h.run_steps(3);
+        assert_eq!(units(&h), (Unit::Picas, Unit::Millimeters));
+        // Horizontal ruler.
+        right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
+        h.get_by_label("✓ Picas");
+        h.get_by_label("   Inches").click();
+        h.run_steps(3);
+        assert_eq!(units(&h), (Unit::Inches, Unit::Millimeters));
+        // The page and the ruler corner open no units menu.
+        for p in [rect.center(), rect.min - vec2(RULER / 2.0, RULER / 2.0)] {
+            right_click(&mut h, p);
+            assert!(h.query_by_label("   Points").is_none());
+        }
+    }
+
+    #[test]
+    fn rulers_open_no_units_menu_without_a_document() {
+        let mut h = harness(DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()));
+        let Some(rect) = h.state().canvas_rect else { return };
+        right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
+        assert!(h.query_by_label("   Points").is_none());
+    }
 }

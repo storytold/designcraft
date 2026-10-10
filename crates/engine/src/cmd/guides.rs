@@ -51,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Guides…",
             ["Layout"],
             None,
-            "{rows?: 0, columns?: 0, rowGutter?: 12, columnGutter?: 12, fitTo?: margins|page, removeExisting?: false, spread?, page? (index in the spread; default all pages)}",
+            "{rows?: 0, columns?: 0 (at most 100 each), rowGutter?: 12, columnGutter?: 12, fitTo?: margins|page, removeExisting?: false, spread?, page? (index in the spread; default all pages)}",
             has_doc,
             create_guides
         ),
@@ -157,9 +157,13 @@ pub(crate) fn grid_positions(a: f64, b: f64, n: u32, gutter: f64) -> Vec<f64> {
     v
 }
 
+/// The most rows or columns Create Guides lays out. The count comes from the caller, and every
+/// guide is stored in the document.
+const MAX_GUIDE_GRID: u32 = 100;
+
 fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
-    let rows = p.get("rows").and_then(Value::as_u64).unwrap_or(0) as u32;
-    let cols = p.get("columns").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let count = |key: &str| p.get(key).and_then(Value::as_u64).unwrap_or(0).min(u64::from(MAX_GUIDE_GRID)) as u32;
+    let (rows, cols) = (count("rows"), count("columns"));
     let rg = p.get("rowGutter").and_then(Value::as_f64).unwrap_or(12.0);
     let cg = p.get("columnGutter").and_then(Value::as_f64).unwrap_or(12.0);
     let to_page = str_param(p, "fitTo") == Some("page");
@@ -237,6 +241,18 @@ mod tests {
         assert!(s.doc().unwrap().doc.spreads[0].pages[0].guides.is_empty());
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.spreads[0].pages[0].guides.len(), 5);
+    }
+
+    /// A huge row or column count once made that many guides (2³² − 1 of them exhaust memory, which
+    /// no guard catches), and a count past 2³² wrapped to a small one.
+    #[test]
+    fn create_guides_caps_the_row_and_column_counts() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let args = json!({"spread": 0, "rows": 4_294_967_298_u64, "columns": 3_000_000, "rowGutter": 0.0, "columnGutter": 0.0});
+        let r = s.execute("layout.createGuides", &args).unwrap();
+        let per_page = 2 * (u64::from(MAX_GUIDE_GRID) - 1);
+        assert_eq!(r["guides"], per_page * s.doc().unwrap().doc.spreads[0].pages.len() as u64);
     }
 }
 

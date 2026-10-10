@@ -222,6 +222,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn relocated_packages_rebind_embedded_image_links_on_open() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("dc-package-relocation-{}-{nonce}", std::process::id()));
+        let original = dir.join("original");
+        let moved = dir.join("moved");
+        let png = designcraft_render::Rendered { width: 4, height: 3, pixels: [30, 90, 180, 255].repeat(12) }.to_png();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "OwnedPackage", "width": 72, "height": 72})).unwrap();
+        s.execute("file.place", &json!({"base64": super::super::base64_encode(&png), "name": "owned.png", "x": 5, "y": 5, "width": 16})).unwrap();
+        s.execute("file.package", &json!({"dir": original.to_string_lossy(), "idml": true, "pdf": false})).unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        let expected = std::path::absolute(moved.join("Links").join("owned.png")).unwrap();
+        for (command, extension) in [("file.open", "designcraft"), ("file.openIdml", "idml")] {
+            let mut opened = Session::new();
+            opened.execute(command, &json!({"path": moved.join(format!("OwnedPackage.{extension}")).to_string_lossy()})).unwrap();
+            let asset = opened.doc().unwrap().doc.assets.values().next().unwrap();
+            assert_eq!(*asset.data, png, "{extension}: preserve embedded pixels");
+            assert_eq!(asset.link.as_deref(), expected.to_str(), "{extension}: use the relocated Links file");
+            let links = opened.execute("links.list", &json!({})).unwrap();
+            assert_eq!(links[0]["status"], "ok", "{extension}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn package_writes_document_links_and_report() {
         let dir = std::env::temp_dir().join(format!("dc-package-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

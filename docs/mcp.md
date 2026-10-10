@@ -24,6 +24,23 @@ Other MCP clients use the same command line, e.g. in a JSON config:
 {"mcpServers": {"designcraft": {"command": "/path/to/designcraft-cli", "args": ["mcp"]}}}
 ```
 
+### From an installed release
+
+The release packages ship `designcraft-cli` alongside the desktop app, so no build is needed:
+
+| Install | CLI |
+|---|---|
+| Windows (MSI) | `C:\Program Files\DesignCraft\designcraft-cli.exe` by default (wherever you installed it otherwise), not on `PATH` |
+| Linux (deb, rpm) | `/usr/bin/designcraft-cli` |
+| macOS | the separate `designcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
+
+```sh
+# Windows, default install folder
+claude mcp add designcraft -- "C:\Program Files\DesignCraft\designcraft-cli.exe" mcp
+# Linux, or macOS with the CLI unzipped onto PATH
+claude mcp add designcraft -- designcraft-cli mcp
+```
+
 ## Modes
 
 | | Headless (`mcp`) | Connected (`mcp --connect PORT` or `HOST:PORT`) |
@@ -31,7 +48,7 @@ Other MCP clients use the same command line, e.g. in a JSON config:
 | Engine | In-process `designcraft_engine::Session`, starts with an empty Letter document (`--sample` opens the sample magazine) | The app's session, through its loopback control channel ([control-protocol.md](control-protocol.md)) |
 | Rendering | `designcraft-render` (CPU) | The app's renderer |
 | Window tools (`screenshot`, `click`, `drag`, `menu_list`, `ui_inspect`, `ui_set`, `dialog_*`) | Return an error explaining how to connect | Work |
-| UI-only commands (`view.*`, `window.*`, `app.*`) via `execute` | Error | Work |
+| UI-only commands via `execute` (`view.*`, `window.*`, `help.*`, `edit.dynamicSpelling`, and `app.*` except `app.links`) | Error | Work |
 
 In connected mode every tool maps to a control-channel method (`engine.execute`, `ui.render`, `ui.pointer`, …), so
 what the agent does shows up live in the window. The connection is re-established once if the app restarts.
@@ -42,6 +59,14 @@ Points (1/72 in), y down, in **spread** space: on a single-page spread the page'
 spread the right page starts at x = page width. `inspect_document` lists page bounds per spread. Page indices in
 `render_page` / `export_png` are 0-based. `pointer` events in connected mode may use `"space": "screen"` (egui points,
 see `ui_inspect` → `canvasRect`).
+
+## Text offsets
+
+Positions in a story's text are **UTF-8 byte offsets**, not character counts: `anchor` / `focus` of `text.select`,
+`start` / `end` of `story.replaceRange` and of `find.find` matches, the `pos` that `text.placeCaret`, `text.insert`
+and `text.move` return, a story's `length` in `get_story` and `inspect_document`, and its `overset` position in
+`get_story`. A character outside ASCII takes 2 to 4 bytes (é 2, — and は 3), so the story `はただ商店` has length 15
+and its second character starts at 3. An offset inside a character snaps back to the start of that character.
 
 ## Tools
 
