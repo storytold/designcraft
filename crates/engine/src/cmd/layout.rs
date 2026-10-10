@@ -759,6 +759,35 @@ mod setup_tests {
         let d = &s.doc().unwrap().doc;
         assert_eq!(d.spreads[1].pages.iter().map(|p| (p.side, p.x)).collect::<Vec<_>>(), vec![(Left, 0.0), (Right, w)]);
     }
+
+    /// Multi-column frames filled the left column first in a right-to-left document (#100):
+    /// stories made in a right-to-left-bound document start their columns on the right.
+    #[test]
+    fn new_stories_follow_the_binding_direction() {
+        use designcraft_doc::TextDirection::{LeftToRight, RightToLeft};
+        let text = (1..=12).map(|i| format!("الفقرة {i}")).collect::<Vec<_>>().join("\n");
+        for (binding, expected) in [("rightToLeft", RightToLeft), ("leftToRight", LeftToRight)] {
+            let mut s = crate::Session::new();
+            s.execute("file.new", &json!({"preset": "A4", "pages": 1})).unwrap();
+            s.execute("layout.documentSetup", &json!({"binding": binding})).unwrap();
+            let f = s.execute("frame.create", &json!({"rect": [40, 170, 555, 260], "content": "text", "text": text})).unwrap();
+            s.execute("object.textFrameOptions", &json!({"ids": [f["id"]], "columns": 2, "gutter": 20})).unwrap();
+            let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+            let st = s.doc().unwrap();
+            assert_eq!(st.doc.story(sid).unwrap().direction, expected, "{binding}");
+            let cs = s.cache.get(&st.doc, sid, None);
+            let fr = &cs.frames[0];
+            let (first, last) = (fr.lines.first().unwrap(), fr.lines.last().unwrap());
+            assert!(fr.columns.len() == 2 && first.x0 != last.x0, "the text fills both columns: {:?}", fr.columns);
+            assert_eq!(first.x0 > last.x0, expected == RightToLeft, "{binding}: the first line is in the first column");
+            // An empty frame given text content starts a story too.
+            let g = s.execute("frame.create", &json!({"rect": [40, 400, 555, 500]})).unwrap();
+            s.execute("object.content", &json!({"ids": [g["id"]], "type": "text"})).unwrap();
+            let d = &s.doc().unwrap().doc;
+            let tf = d.item(designcraft_doc::ItemId(g["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+            assert_eq!(d.story(tf).unwrap().direction, expected, "{binding}: object.content");
+        }
+    }
 }
 
 #[cfg(test)]

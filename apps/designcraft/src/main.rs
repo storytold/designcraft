@@ -9,6 +9,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod control_server;
+mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
 
@@ -25,7 +26,7 @@ impl eframe::App for App {
                 self.1 = Some(native_menu::NativeMenu::install(&mut self.0));
             }
             if let Some(m) = &mut self.1 {
-                m.poll(&mut self.0);
+                m.poll(&mut self.0, ctx);
             }
         }
         self.0.logic(ctx);
@@ -41,8 +42,9 @@ impl eframe::App for App {
     }
 }
 
-fn prefs_path() -> Option<std::path::PathBuf> {
-    let base = if cfg!(target_os = "macos") {
+/// The per-user settings directory: `ui.json`, `prefs.json` and `logs/` live here.
+fn config_dir() -> Option<std::path::PathBuf> {
+    if cfg!(target_os = "macos") {
         std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support/DesignCraft"))
     } else if cfg!(windows) {
         std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("DesignCraft"))
@@ -51,8 +53,11 @@ fn prefs_path() -> Option<std::path::PathBuf> {
             .map(std::path::PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
             .map(|c| c.join("designcraft"))
-    };
-    base.map(|b| b.join("ui.json"))
+    }
+}
+
+fn prefs_path() -> Option<std::path::PathBuf> {
+    config_dir().map(|b| b.join("ui.json"))
 }
 
 fn load_prefs(app: &mut DesignApp) {
@@ -182,20 +187,43 @@ fn app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
 }
 
+/// The control port from `--control <port>` or `DESIGNCRAFT_CONTROL_PORT` (`source`); a value that
+/// is not a port is logged and ignored instead of silently starting no control channel.
+fn control_port_from(source: &str, value: Option<String>) -> Option<u16> {
+    let value = value?;
+    let port = value.trim().parse().ok();
+    if port.is_none() {
+        log::warn!("{source}: {value:?} is not a port number; the control channel is off");
+    }
+    port
+}
+
 fn main() -> eframe::Result {
-    let mut control_port: Option<u16> = std::env::var("DESIGNCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
+    // First, so every start-up record (and the engine's panic hook, installed with the first
+    // Session) is captured; see `logging`.
+    let logger = logging::install();
+    let mut control_port = control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok());
     let mut files = Vec::new();
     let mut sample = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
+            "--control" => control_port = control_port_from("--control", args.next()),
             "--sample" => sample = true,
             "--version" => {
                 println!("designcraft {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             _ => files.push(a),
+        }
+    }
+    // The log file lives under the settings directory; opened after the arguments, so `--version`
+    // leaves no file behind. Records logged until now are written to it first.
+    if let (Some(logger), Some(dir)) = (logger, config_dir()) {
+        match logger.attach_dir(&dir.join("logs")) {
+            Ok(path) => log::info!("DesignCraft {}, log file {}", env!("CARGO_PKG_VERSION"), path.display()),
+            // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
+            Err(e) => log::warn!("no log file: {e}"),
         }
     }
     let mut options = eframe::NativeOptions {
@@ -245,7 +273,7 @@ fn main() -> eframe::Result {
                 let _ = app.run("file.newSample", serde_json::json!({}));
             }
             for f in files {
-                if let Err(e) = app.run("file.open", serde_json::json!({"path": f})) {
+                if let Err(e) = app.open_file("file.open", serde_json::json!({"path": f})) {
                     eprintln!("designcraft: {f}: {e}");
                 }
             }
@@ -260,6 +288,16 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn control_port_values_that_are_not_ports_are_ignored() {
+        assert_eq!(super::control_port_from("--control", Some("7979".into())), Some(7979));
+        assert_eq!(super::control_port_from("--control", Some(" 7979 ".into())), Some(7979));
+        assert_eq!(super::control_port_from("--control", None), None);
+        for bad in ["", "abc", "-1", "65536", "99999999999999999999"] {
+            assert_eq!(super::control_port_from("--control", Some(bad.into())), None, "{bad:?}");
+        }
+    }
+
     #[test]
     fn data_merge_open_dialog_lists_table_extensions() {
         let filters = super::open_filters("dataMerge");

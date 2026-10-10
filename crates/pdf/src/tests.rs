@@ -240,6 +240,31 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
 }
 
+/// krilla reads PNG, GIF and WebP lazily, so a damaged one passed the exporter's "does it decode"
+/// check and failed the whole export when the PDF was written ("PDF writer error: … unexpected
+/// end of file"). A cut-off download must be skipped with a warning, as a damaged TIFF is.
+#[test]
+fn a_cut_off_image_is_skipped_not_fatal() {
+    let px = image::RgbaImage::from_fn(64, 64, |x, y| image::Rgba([(x * 37 + y * 11) as u8, (x * 5) as u8, (y * 91) as u8, 255]));
+    for format in [image::ImageFormat::Png, image::ImageFormat::Gif, image::ImageFormat::WebP] {
+        let mut whole = Vec::new();
+        px.write_to(&mut std::io::Cursor::new(&mut whole), format).unwrap();
+        let cut = whole[..whole.len() * 9 / 10].to_vec();
+        let mut d = doc_with_text("still here");
+        place(&mut d, cut, (64, 64));
+        let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        assert!(r.warnings.iter().any(|w| w.contains("could not be decoded and was skipped")), "{format:?}: {:?}", r.warnings);
+        assert!(image_xobjects(&r.bytes).is_empty(), "{format:?}");
+        assert!(extract_text(&r.bytes).concat().contains("still"), "{format:?}: the rest of the page is exported");
+        // The undamaged file still goes in.
+        let mut d = doc_with_text("x");
+        place(&mut d, whole, (64, 64));
+        let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+        assert!(r.warnings.is_empty(), "{format:?}: {:?}", r.warnings);
+        assert_eq!(image_xobjects(&r.bytes).len(), 1, "{format:?}");
+    }
+}
+
 /// Every image XObject in a PDF: its /ColorSpace name (`?` when not a name) and decoded samples.
 fn image_xobjects(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
     use hayro_syntax::object::Name;
@@ -268,6 +293,55 @@ fn cmyk_tiff_keeps_its_inks() {
         let images = image_xobjects(&r.bytes);
         assert_eq!(images, vec![("DeviceCMYK".to_string(), px.clone())], "{standard:?}");
         assert_eq!(images[0].1[..4], [0, 0, 0, 255], "K only");
+    }
+}
+
+/// An 8×8 raster encoded as `fmt`; `alpha` gives it a transparent corner.
+fn raster(fmt: image::ImageFormat, alpha: bool) -> Vec<u8> {
+    let img =
+        image::RgbaImage::from_fn(8, 8, |x, y| image::Rgba([(x * 30) as u8, (y * 30) as u8, 128, if alpha && x == 0 && y == 0 { 0 } else { 255 }]));
+    let img = if fmt == image::ImageFormat::Jpeg {
+        image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(img).to_rgb8())
+    } else {
+        image::DynamicImage::ImageRgba8(img)
+    };
+    let mut b = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut b, fmt).unwrap();
+    b.into_inner()
+}
+
+/// Each image XObject's /Interpolate value (`None` when absent).
+fn interpolate_flags(bytes: &[u8]) -> Vec<Option<bool>> {
+    use hayro_syntax::object::Name;
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    pdf.objects()
+        .into_iter()
+        .filter_map(|o| o.into_stream())
+        .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+        .map(|s| s.dict().get::<bool>("Interpolate"))
+        .collect()
+}
+
+/// PDF/A-2b rejected placed PNG, JPEG, GIF and WebP images (#71): they were written with
+/// /Interpolate true, which PDF/A forbids. Ordinary exports keep interpolation.
+#[test]
+fn archival_exports_keep_placed_images_without_interpolation() {
+    use image::ImageFormat as F;
+    let mut d = doc_with_text("x");
+    for (fmt, alpha) in [(F::Png, true), (F::Png, false), (F::Jpeg, false), (F::Gif, true), (F::WebP, true)] {
+        place(&mut d, raster(fmt, alpha), (8, 8));
+    }
+    for compress_images in [false, true] {
+        let opts = PdfOptions { compress_images, created: Some(1_700_000_000), ..Default::default() };
+        let a = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, ..opts.clone() });
+        let a = a.unwrap_or_else(|e| panic!("PDF/A-2b with images (compress {compress_images}): {e:?}"));
+        let flags = interpolate_flags(&a.bytes);
+        assert!(flags.len() >= 5, "every placed image is in the PDF/A file: {flags:?}");
+        assert!(flags.iter().all(|f| *f != Some(true)), "{flags:?}");
+        let plain = export_pdf(&d, &Cache::new(), &opts).unwrap();
+        let flags = interpolate_flags(&plain);
+        assert!(flags.len() >= 5, "{flags:?}");
+        assert!(flags.contains(&Some(true)), "ordinary exports interpolate: {flags:?}");
     }
 }
 
@@ -336,4 +410,25 @@ fn missing_glyphs_print_as_boxes() {
     let (glyphs, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
     assert_eq!(glyphs.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), ["a", "b"], "{glyphs:?}");
     assert_eq!(boxes(&paths), 1, "{paths:?}");
+}
+
+#[test]
+fn column_rules_are_drawn() {
+    let rules = |on: bool| {
+        let mut d = doc_with_text("Column text");
+        let fid = d.stories.values().next().unwrap().frames[0];
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.columns = 3;
+        o.gutter = 12.0;
+        o.inset = [0.0; 4];
+        o.column_rule = on;
+        o.column_rule_weight = 2.0;
+        let (_, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+        paths.into_iter().filter(|r| (r.width() - 2.0).abs() < 0.01 && (r.height() - 264.0).abs() < 0.01).map(|r| r.center().x).collect::<Vec<_>>()
+    };
+    // 540 pt wide in three columns with 12 pt gutters: columns of 172 pt from x 36.
+    let xs = rules(true);
+    assert_eq!(xs.len(), 2, "{xs:?}");
+    assert!((xs[0] - 214.0).abs() < 0.01 && (xs[1] - 398.0).abs() < 0.01, "{xs:?}");
+    assert!(rules(false).is_empty());
 }

@@ -817,9 +817,47 @@ attr_set! {
     }
 }
 
+impl ParaAttrs {
+    /// [`set_json`](Self::set_json), except that a `ruleAbove` / `ruleBelow` object names only the
+    /// rule fields to change; the others keep their values in `current` (the resolved attributes
+    /// of the paragraph or style being edited).
+    pub fn set_json_over(&mut self, key: &str, value: &serde_json::Value, current: &ParaProps) -> Result<(), String> {
+        let rule = match key.chars().filter(|c| *c != '_').collect::<String>().to_ascii_lowercase().as_str() {
+            "ruleabove" => &current.rule_above,
+            "rulebelow" => &current.rule_below,
+            _ => return self.set_json(key, value),
+        };
+        let serde_json::Value::Object(patch) = value else { return self.set_json(key, value) };
+        let mut merged = serde_json::to_value(rule).map_err(|e| format!("{key}: {e}"))?;
+        let serde_json::Value::Object(fields) = &mut merged else { return Err(format!("{key}: not an object")) };
+        for (k, v) in patch {
+            if !fields.contains_key(k) {
+                return Err(format!("{key}: unknown rule field `{k}`"));
+            }
+            fields.insert(k.clone(), v.clone());
+        }
+        self.set_json(key, &merged)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_partial_rule_keeps_the_other_fields() {
+        let current = ParaProps {
+            rule_below: Rule { on: true, weight: 3.0, color: "Red".into(), offset: 4.0, column_width: false, ..Rule::default() },
+            ..ParaProps::default()
+        };
+        let mut a = ParaAttrs::default();
+        a.set_json_over("ruleBelow", &serde_json::json!({"color": "Blue"}), &current).unwrap();
+        assert_eq!(a.rule_below, Some(Rule { color: "Blue".into(), ..current.rule_below.clone() }));
+        assert_eq!(a.rule_above, None);
+        assert!(a.set_json_over("ruleAbove", &serde_json::json!({"colour": "Blue"}), &current).is_err(), "unknown field");
+        a.set_json_over("ruleBelow", &serde_json::Value::Null, &current).unwrap();
+        assert_eq!(a.rule_below, None, "null clears the override");
+    }
 
     #[test]
     fn digits_map_to_their_script() {

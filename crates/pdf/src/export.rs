@@ -154,6 +154,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: archival.is_some(),
+        interpolate: archival.is_none(),
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,
@@ -327,6 +328,7 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: false,
+        interpolate: true,
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,
@@ -421,6 +423,8 @@ pub(crate) struct Exporter<'a> {
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
     pub rgb_only: bool,
+    /// Ask viewers to smooth upscaled images (`/Interpolate`). Off for PDF/A, which forbids it.
+    interpolate: bool,
     /// Tagged PDF: the structure in reading order (stories gather their frames' content).
     tags: Vec<TagEntry>,
     story_tags: HashMap<designcraft_doc::StoryId, Vec<Identifier>>,
@@ -937,22 +941,43 @@ impl Exporter<'_> {
     }
 
     /// A swatch fill (solid or gradient) in the item's inner space. `None` for [None]/unknown.
-    fn fill_paint(&self, fill: &designcraft_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
+    fn fill_paint(&mut self, fill: &designcraft_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
         let (swatch, tint, angle) = (fill.swatch.as_str(), fill.tint, fill.gradient_angle);
         if let Some(g) = designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
+            let kind = g.kind;
+            let expanded = g.expanded_stops();
+            // A PDF shading needs one colour space. Midpoint expansion can introduce RGB even
+            // when every authored stop is CMYK/Gray; PDF/A can also change the output space.
+            let components = |c: &Color| match c {
+                Color::Cmyk { .. } if !self.rgb_only => 4,
+                Color::Gray { .. } => 1,
+                _ => 3,
+            };
+            let mixed = expanded.first().is_some_and(|(_, first, _)| expanded.iter().any(|(_, c, _)| components(c) != components(first)));
+            if mixed {
+                self.warn(format!("gradient '{swatch}': mixed color spaces converted to RGB (colour appearance and separations may change)"));
+            }
             let mut stops: Vec<Stop> = Vec::new();
             let mut last = 0.0f32;
-            for (o, c, a) in g.expanded_stops() {
+            for (o, c, a) in expanded {
                 let o = o.clamp(last, 1.0);
                 last = o;
-                stops.push(Stop { offset: norm(o), color: device(&c, self.rgb_only), opacity: norm(a) });
+                let color = if mixed && !matches!(c, Color::Rgb { .. }) {
+                    let [r, g, b] = c.to_rgb();
+                    rgb::Color::new(q(r), q(g), q(b)).into()
+                } else {
+                    // Preserve RGB values, including already-interpolated display RGB, and
+                    // leave every homogeneous gradient on its existing device-space path.
+                    device(&c, self.rgb_only)
+                };
+                stops.push(Stop { offset: norm(o), color, opacity: norm(a) });
             }
             if stops.is_empty() {
                 return None;
             }
             let c = bounds.center();
             let v = fill.gradient_vector;
-            return Some(match g.kind {
+            return Some(match kind {
                 GradientKind::Radial => {
                     let (c, r) = match v {
                         Some([x0, y0, x1, y1]) => (designcraft_geom::Point::new(x0, y0), Vec2::new(x1 - x0, y1 - y0).hypot()),
@@ -1167,22 +1192,24 @@ impl Exporter<'_> {
         let asset = self.doc.assets.get(&id)?.clone();
         let data = asset.data.clone();
         let fmt = image::guess_format(&data).ok();
+        let mut mode = RasterMode::for_standard(self.opts.standard);
+        mode.interpolate &= self.interpolate;
         let img = match fmt {
-            Some(image::ImageFormat::Jpeg) => Image::from_jpeg(data.clone().into(), true).ok(),
+            Some(image::ImageFormat::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
             // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
             // as four-colour black). PDF/A exports are RGB only.
-            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data) {
+            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
                 Some(img) => Some(img),
                 None => {
                     self.warn(format!(
                         "{}: converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)",
                         asset.name
                     ));
-                    lossless(&data, fmt)
+                    lossless(&data, fmt, mode)
                 }
             },
-            _ if self.opts.compress_images => recompress(&data).or_else(|| lossless(&data, fmt)),
-            _ => lossless(&data, fmt),
+            _ if self.opts.compress_images => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
+            _ => lossless(&data, fmt, mode),
         };
         if img.is_none() {
             self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
@@ -1276,19 +1303,128 @@ fn relabel_pdf_header(data: &[u8], from: &[u8], to: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn lossless(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>) -> Option<Image> {
+/// The sRGB profile (ICC v2.1) that untagged RGB images carry in PDF/X-4.
+pub(crate) static SRGB_ICC: &[u8] = include_bytes!("../../../assets/icc/sRGB-v2-magic.icc");
+
+/// How raster images are written for the export's standard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RasterMode {
+    /// `/Interpolate true`: smoother upscaling in viewers. PDF/X-4 and PDF/A don't allow it.
+    interpolate: bool,
+    /// Give RGB images with no ICC profile of their own the sRGB profile: under PDF/X-4's CMYK
+    /// output intent, RGB must be colour-managed.
+    tag_rgb: bool,
+}
+
+impl RasterMode {
+    fn for_standard(standard: Standard) -> Self {
+        Self { interpolate: standard == Standard::None, tag_rgb: standard == Standard::PdfX4 }
+    }
+}
+
+/// The ICC profile embedded in an image file, if it has one.
+fn embedded_icc(data: &[u8]) -> Option<Vec<u8>> {
+    use image::ImageDecoder;
+    let mut dec = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?.into_decoder().ok()?;
+    dec.icc_profile().ok().flatten()
+}
+
+/// Whether an ICC profile describes RGB (its colour space signature, header bytes 16 to 20).
+fn is_rgb_icc(icc: &[u8]) -> bool {
+    icc.get(16..20) == Some(b"RGB ".as_slice())
+}
+
+/// A JPEG, passed through. With `tag_rgb`, a JPEG keeps its own profile, and one without gets
+/// sRGB. krilla uses a profile only when its channels match the JPEG's, so a grey or CMYK JPEG
+/// without a profile stays DeviceGray or DeviceCMYK.
+fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mode: RasterMode) -> Option<Image> {
+    if !mode.tag_rgb {
+        return Image::from_jpeg(data, mode.interpolate).ok();
+    }
+    let icc: krilla::Data = match icc() {
+        Some(own) => own.into(),
+        None => SRGB_ICC.into(),
+    };
+    Image::from_jpeg_with_icc(data, Some(icc), mode.interpolate).ok()
+}
+
+/// Whether krilla would write this PNG, GIF or WebP as untagged RGB: not grey, and no profile of
+/// its own.
+fn untagged_rgb(data: &[u8]) -> bool {
+    use image::ImageDecoder;
+    let Some(mut dec) = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok().and_then(|r| r.into_decoder().ok()) else {
+        return false;
+    };
+    let grey = matches!(dec.color_type(), image::ColorType::L8 | image::ColorType::La8 | image::ColorType::L16 | image::ColorType::La16);
+    !grey && dec.icc_profile().ok().flatten().is_none()
+}
+
+fn lossless(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>, mode: RasterMode) -> Option<Image> {
+    let i = mode.interpolate;
+    // krilla reads PNG, GIF and WebP lazily: a damaged file is accepted here and fails the whole
+    // export when the PDF is written. Decoding it first means it is skipped, like any other
+    // image that can't be decoded.
+    let rgba = designcraft_images::decode_rgba(data)?;
     let direct = match fmt {
-        Some(image::ImageFormat::Png) => Image::from_png(data.clone().into(), true).ok(),
-        Some(image::ImageFormat::Gif) => Image::from_gif(data.clone().into(), true).ok(),
-        Some(image::ImageFormat::WebP) => Image::from_webp(data.clone().into(), true).ok(),
+        Some(image::ImageFormat::Png | image::ImageFormat::Gif | image::ImageFormat::WebP) if mode.tag_rgb && untagged_rgb(data) => None,
+        Some(image::ImageFormat::Png) => Image::from_png(data.clone().into(), i).ok(),
+        Some(image::ImageFormat::Gif) => Image::from_gif(data.clone().into(), i).ok(),
+        Some(image::ImageFormat::WebP) => Image::from_webp(data.clone().into(), i).ok(),
         _ => None,
     };
     direct.or_else(|| {
-        // TIFF, BMP, PSD composites…
-        let rgba = designcraft_images::decode_rgba(data)?;
+        // TIFF, BMP, PSD composites… and, with `tag_rgb`, untagged RGB.
+        if mode.tag_rgb {
+            return SrgbImage::new(rgba).and_then(|img| Image::from_custom(img, i).ok());
+        }
         let (w, h) = rgba.dimensions();
         Some(Image::from_rgba8(rgba.into_raw(), w, h))
     })
+}
+
+/// An RGB raster tagged with the sRGB profile, for PDF/X-4.
+#[derive(Clone, Hash)]
+struct SrgbImage {
+    rgb: Arc<Vec<u8>>,
+    /// Only when some pixel is not opaque.
+    alpha: Option<Arc<Vec<u8>>>,
+    size: (u32, u32),
+}
+
+impl SrgbImage {
+    fn new(rgba: image::RgbaImage) -> Option<Self> {
+        let size = rgba.dimensions();
+        let pixels = usize::try_from(size.0).ok()?.checked_mul(usize::try_from(size.1).ok()?)?;
+        let mut rgb = Vec::with_capacity(pixels.checked_mul(3)?);
+        let mut alpha = Vec::with_capacity(pixels);
+        for p in rgba.pixels() {
+            rgb.extend_from_slice(&p.0[..3]);
+            alpha.push(p.0[3]);
+        }
+        let alpha = alpha.iter().any(|a| *a < 255).then(|| Arc::new(alpha));
+        Some(Self { rgb: Arc::new(rgb), alpha, size })
+    }
+}
+
+impl krilla::image::CustomImage for SrgbImage {
+    fn color_channel(&self) -> &[u8] {
+        &self.rgb
+    }
+    fn alpha_channel(&self) -> Option<&[u8]> {
+        self.alpha.as_deref().map(Vec::as_slice)
+    }
+    fn bits_per_component(&self) -> krilla::image::BitsPerComponent {
+        krilla::image::BitsPerComponent::Eight
+    }
+    fn size(&self) -> (u32, u32) {
+        self.size
+    }
+    fn icc_profile(&self) -> Option<&[u8]> {
+        Some(SRGB_ICC)
+    }
+    fn color_space(&self) -> krilla::image::ImageColorspace {
+        krilla::image::ImageColorspace::Rgb
+    }
 }
 
 /// A CMYK raster as a krilla image: its samples are written unchanged as DeviceCMYK, like a
@@ -1320,18 +1456,19 @@ impl krilla::image::CustomImage for CmykImage {
 }
 
 /// A CMYK TIFF as a DeviceCMYK image. `None` when it can't be read as CMYK.
-fn cmyk_tiff(data: &[u8]) -> Option<Image> {
+fn cmyk_tiff(data: &[u8], mode: RasterMode) -> Option<Image> {
     let r = designcraft_images::decode_cmyk_tiff(data)?;
     // krilla panics when the channel lengths don't match the size.
     let pixels = usize::try_from(r.width).ok()?.checked_mul(usize::try_from(r.height).ok()?)?;
     if r.cmyk.len() != pixels.checked_mul(4)? || r.alpha.as_ref().is_some_and(|a| a.len() != pixels) {
         return None;
     }
-    Image::from_custom(CmykImage(Arc::new(r)), true).ok()
+    Image::from_custom(CmykImage(Arc::new(r)), mode.interpolate).ok()
 }
 
 /// Opaque raster → JPEG (quality 90). `None` when the image has transparency or can't be decoded.
-fn recompress(data: &[u8]) -> Option<Image> {
+/// With `tag_rgb`, the JPEG keeps the source's RGB profile, or gets sRGB.
+fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
     let img = image::load_from_memory(data).ok()?;
     if img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255) {
         return None;
@@ -1340,5 +1477,5 @@ fn recompress(data: &[u8]) -> Option<Image> {
     let mut buf = Vec::new();
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
     image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
-    Image::from_jpeg(buf.into(), true).ok()
+    jpeg(buf.into(), || embedded_icc(data).filter(|p| is_rgb_icc(p)), mode)
 }

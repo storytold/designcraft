@@ -313,6 +313,18 @@ fn discretionary_hyphen_replaces_automatic_points() {
     assert!(lines.iter().filter(|l| l.hyphenated).count() <= 1);
 }
 
+#[test]
+fn hyphenation_skips_a_no_break_word_at_the_start() {
+    // Used to index before the first glyph and panic.
+    let text = "Extraordinarily long words wrap in a narrow column";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 60.0, 1000.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..15, |f| f.over.no_break = Some(true));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // The no-break word stays whole on the first line.
+    let first = all_lines(&cs)[0];
+    assert!(!first.hyphenated && first.range.end >= 15, "{:?}", &text[first.range.clone()]);
+}
+
 /// Story of `n` one-line filler paragraphs followed by `extra` paragraphs, in a 2-column frame.
 fn keep_doc(fillers: usize, extra: &[&str], height: f64) -> (Document, StoryId, Vec<usize>) {
     let mut parts: Vec<String> = (0..fillers).map(|k| format!("Filler {k}")).collect();
@@ -559,6 +571,32 @@ fn column_break_moves_following_text() {
     assert_eq!(lines[0].column, 0);
     assert_eq!(lines[1].column, 1);
     assert!(lines[1].baseline < 20.0, "second column starts at the top");
+}
+
+#[test]
+fn line_before_a_break_character_is_a_last_line() {
+    // As in InDesign: column, frame and page breaks end the paragraph's last line (set with the
+    // last-line alignment), while a forced line break inside a justified paragraph is justified.
+    use designcraft_doc::story::{COLUMN_BREAK, FORCED_LINE_BREAK, FRAME_BREAK, PAGE_BREAK};
+    for (brk, align, justified) in [
+        (COLUMN_BREAK, Align::LeftJustified, false),
+        (FRAME_BREAK, Align::LeftJustified, false),
+        (PAGE_BREAK, Align::LeftJustified, false),
+        (PAGE_BREAK, Align::FullyJustified, true),
+        (FORCED_LINE_BREAK, Align::LeftJustified, true),
+    ] {
+        // A space after the break is skipped and does not keep the break from moving the text.
+        let text = format!("one two three{brk} four five six");
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 300.0), ParaAttrs { align: Some(align), ..Default::default() });
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines[0];
+        let full = (l.end_x - l.x1).abs() < 0.6;
+        assert_eq!(full, justified, "{brk:?} {align:?}: line ends at {} of {}", l.end_x, l.x1);
+        if brk == COLUMN_BREAK {
+            assert_eq!(all_lines(&cs)[1].column, 1, "the text after a column break starts the next column");
+        }
+    }
 }
 
 #[test]
@@ -1067,6 +1105,27 @@ fn only_english_text_gets_english_hyphenation() {
     let n = st.len();
     st.format_chars(0..n, |f| f.over.language = Some("French".into()));
     assert_eq!(hyphenated(&d2, sid), 0, "French isn't hyphenated with English rules");
+}
+
+#[test]
+fn spanish_text_gets_spanish_hyphenation() {
+    let text = "La transición democrática fue una construcción colectiva extraordinariamente compleja y desesperadamente necesaria.";
+    let narrow = Rect::new(36.0, 36.0, 120.0, 700.0);
+    let (mut d, sid, _) = doc_with(text, narrow, ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    let n = st.len();
+    st.format_chars(0..n, |f| f.over.language = Some("Spanish".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let hy: Vec<&str> = lines.iter().filter(|l| l.hyphenated).map(|l| text[l.range.clone()].trim_end()).collect();
+    assert!(!hy.is_empty(), "Spanish hyphenates");
+    for l in &hy {
+        let last: String = l.chars().rev().take_while(|c| c.is_alphabetic()).collect::<Vec<_>>().into_iter().rev().collect();
+        let whole = text[text.find(l).unwrap() + l.len() - last.len()..].split(|c: char| !c.is_alphabetic()).next().unwrap();
+        let es = hyphen::Lang::for_language("Spanish").unwrap();
+        let pts = hyphen::hyphen_points_in(whole, &hyphen::Limits::default(), es);
+        assert!(pts.contains(&last.chars().count()), "break {last}- in {whole} is a Bezos point");
+    }
 }
 
 #[test]
@@ -1876,4 +1935,277 @@ fn vertical_lines_fit_the_em_box() {
         assert!((l.ascent - ascent).abs() < 1e-9 && (l.descent - descent).abs() < 1e-9, "{family}: {} {}", l.ascent, l.descent);
         assert!((l.baseline - col.y0 - ascent).abs() < 1e-9, "{family}: {} {}", l.baseline, col.y0);
     }
+}
+
+fn ruled(text: &str, rect: Rect, columns: u32, edit: impl FnOnce(&mut Document, StoryId)) -> (Document, ItemId, Vec<Rect>) {
+    let (mut d, sid, fid) = doc_with(text, rect, ParaAttrs::default());
+    {
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.columns = columns;
+        o.gutter = 12.0;
+        o.inset = [10.0, 6.0, 20.0, 6.0];
+        o.column_rule = true;
+        o.column_rule_weight = 2.0;
+        o.column_rule_color = "[Black]".into();
+    }
+    edit(&mut d, sid);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let rules = cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect).collect();
+    (d, fid, rules)
+}
+
+#[test]
+fn column_rules_sit_in_the_gutters_inside_the_insets() {
+    // Two columns in 0..300 with 6 pt side insets: the gutter is centred on 150.
+    let (_, _, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |_, _| {});
+    assert_eq!(rules.len(), 1, "{rules:?}");
+    let r = rules[0];
+    assert!((r.center().x - 150.0).abs() < 1e-9 && (r.width() - 2.0).abs() < 1e-9, "{r:?}");
+    assert!((r.y0 - 10.0).abs() < 1e-9 && (r.y1 - 180.0).abs() < 1e-9, "{r:?}");
+    // Three columns: one rule per gutter, each centred between its two columns.
+    let (_, _, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 3, |_, _| {});
+    assert_eq!(rules.len(), 2, "{rules:?}");
+    let w = (288.0 - 24.0) / 3.0;
+    for (i, r) in rules.iter().enumerate() {
+        let edge = 6.0 + w * (i + 1) as f64 + 12.0 * i as f64;
+        assert!((r.center().x - (edge + 6.0)).abs() < 1e-9, "{i}: {r:?}");
+    }
+    // Off, or a single column: no rule.
+    let (_, _, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 1, |_, _| {});
+    assert!(rules.is_empty());
+    let (_, _, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |d, sid| {
+        let fid = d.story(sid).unwrap().frames[0];
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.column_rule = false;
+    });
+    assert!(rules.is_empty());
+}
+
+#[test]
+fn column_rules_centre_on_unequal_gutters_and_ignore_bad_weights() {
+    let cols = [Rect::new(200.0, 0.0, 300.0, 50.0), Rect::new(0.0, 0.0, 100.0, 50.0), Rect::new(110.0, 0.0, 180.0, 50.0)];
+    let weight = |w: f64| TextFrameOptions { column_rule_weight: w, ..Default::default() };
+    let rules = column_rule_rects(&cols, &[], &weight(1.0));
+    let centres: Vec<f64> = rules.iter().map(|r| r.center().x).collect();
+    assert_eq!(centres, [105.0, 190.0]);
+    assert!(column_rule_rects(&cols, &[], &weight(f64::NAN)).is_empty());
+    assert!(column_rule_rects(&cols, &[], &weight(-1.0)).is_empty());
+    assert!((column_rule_rects(&cols, &[], &weight(1e12))[0].width() - 1000.0).abs() < 1e-9);
+}
+
+#[test]
+fn column_rules_in_right_to_left_and_vertical_frames() {
+    let (_, _, rules) = ruled("نص", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |d, sid| {
+        d.story_mut(sid).unwrap().direction = designcraft_doc::TextDirection::RightToLeft;
+    });
+    assert_eq!(rules.len(), 1);
+    assert!((rules[0].center().x - 150.0).abs() < 1e-9, "{rules:?}");
+    // Vertical type: the columns stack top to bottom, so the rule runs across the frame.
+    let (d, fid, rules) = ruled("縦書き", Rect::new(100.0, 100.0, 400.0, 300.0), 2, |d, sid| d.story_mut(sid).unwrap().vertical = true);
+    assert_eq!(rules.len(), 1);
+    let r = d.text_xf(d.item(fid).unwrap()).transform_rect_bbox(rules[0]);
+    // Text area: x 106..394, y 110..280; the gutter is centred on y 195.
+    assert!((r.x0 - 106.0).abs() < 1e-6 && (r.x1 - 394.0).abs() < 1e-6, "{r:?}");
+    assert!((r.center().y - 195.0).abs() < 1e-6 && (r.height() - 2.0).abs() < 1e-6, "{r:?}");
+}
+
+#[test]
+fn column_rules_break_around_paragraphs_that_span_columns() {
+    let text = format!("A heading that spans both columns\n{LOREM} {LOREM}");
+    let (d, fid, rules) = ruled(&text, Rect::new(0.0, 0.0, 300.0, 400.0), 2, |d, sid| {
+        d.story_mut(sid).unwrap().paras[0].para.span_columns = Some(designcraft_doc::SpanColumns::Span(0));
+    });
+    let sid = d.item(fid).unwrap().text_frame().unwrap().story;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let span: Vec<&Line> = cs.frames[0].lines.iter().filter(|l| l.para == 0).collect();
+    assert!(!span.is_empty() && span.iter().all(|l| l.x0 < 150.0 && l.x1 > 150.0), "the heading spans");
+    let (top, bottom) = (span[0].baseline - span[0].ascent, span[span.len() - 1].baseline + span[span.len() - 1].descent);
+    assert!(!rules.is_empty());
+    for r in &rules {
+        assert!(r.y1 <= top + 1e-9 || r.y0 >= bottom - 1e-9, "rule {r:?} cuts the span {top}..{bottom}");
+    }
+    // The rule resumes below the span and runs to the bottom of the columns.
+    assert!(rules.iter().any(|r| (r.y0 - bottom).abs() < 1e-9 && (r.y1 - 380.0).abs() < 1e-9), "{rules:?}");
+}
+
+#[test]
+fn column_rules_take_their_offset_insets_and_tint() {
+    let (d, fid, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |d, sid| {
+        let fid = d.story(sid).unwrap().frames[0];
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.column_rule_offset = 3.0;
+        o.column_rule_top_inset = 15.0;
+        o.column_rule_bottom_inset = 25.0;
+        o.column_rule_tint = 0.4;
+    });
+    // Gutter centre 150 moved 3 pt; columns 10..180 shortened to 25..155.
+    assert_eq!(rules.len(), 1, "{rules:?}");
+    let r = rules[0];
+    assert!((r.center().x - 153.0).abs() < 1e-9 && (r.y0 - 25.0).abs() < 1e-9 && (r.y1 - 155.0).abs() < 1e-9, "{r:?}");
+    let sid = d.item(fid).unwrap().text_frame().unwrap().story;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.frames[0].decos.iter().any(|dc| dc.rect == r && (dc.tint - 0.4).abs() < 1e-6));
+    // Insets that meet leave no rule.
+    let (_, _, rules) = ruled("Text", Rect::new(0.0, 0.0, 300.0, 200.0), 2, |d, sid| {
+        let fid = d.story(sid).unwrap().frames[0];
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.column_rule_top_inset = 100.0;
+        o.column_rule_bottom_inset = 100.0;
+    });
+    assert!(rules.is_empty(), "{rules:?}");
+}
+
+// ---------- span columns ----------
+
+/// A story of `before` body paragraphs, a heading spanning all columns, and `after` body
+/// paragraphs, in a three-column frame. Returns the heading's paragraph index.
+fn span_doc(before: usize, after: usize, rect: Rect) -> (Document, StoryId, ItemId, usize) {
+    let mut paras: Vec<&str> = vec![LOREM; before];
+    paras.push("A heading across the columns");
+    paras.extend(vec![LOREM; after]);
+    let (mut d, sid, fid) = doc_with(&paras.join("\n"), rect, ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 3;
+    d.story_mut(sid).unwrap().paras[before].para.span_columns = Some(SpanColumns::Span(0));
+    (d, sid, fid, before)
+}
+
+/// The line's leading slot (glyph ascent and descent may reach into the neighbouring lines).
+fn line_box(l: &Line) -> (f64, f64) {
+    (l.baseline - 0.75 * l.leading, l.baseline + 0.25 * l.leading)
+}
+
+/// No two lines of a frame share any area.
+fn assert_no_overlap(ft: &FrameText) {
+    for (i, a) in ft.lines.iter().enumerate() {
+        for b in &ft.lines[i + 1..] {
+            let ((at, ab), (bt, bb)) = (line_box(a), line_box(b));
+            let x_overlap = a.x0 < b.x1 - 0.5 && b.x0 < a.x1 - 0.5;
+            let y_overlap = at < bb - 0.5 && bt < ab - 0.5;
+            assert!(
+                !(x_overlap && y_overlap),
+                "lines overlap: para {} col {} y {:.1}..{:.1} and para {} col {} y {:.1}..{:.1}",
+                a.para,
+                a.column,
+                at,
+                ab,
+                b.para,
+                b.column,
+                bt,
+                bb
+            );
+        }
+    }
+}
+
+/// The heading spans the frame; text before it sits above it and text after it below it.
+fn assert_span_layout(ft: &FrameText, h: usize) {
+    let heading: Vec<&Line> = ft.lines.iter().filter(|l| l.para == h).collect();
+    assert!(!heading.is_empty());
+    let (c0, cn) = (ft.columns[0], ft.columns[ft.columns.len() - 1]);
+    for l in &heading {
+        assert!((l.x0 - c0.x0.min(cn.x0)).abs() < 1e-6 && (l.x1 - c0.x1.max(cn.x1)).abs() < 1e-6, "heading spans {}..{}", l.x0, l.x1);
+    }
+    let top = heading.iter().map(|l| line_box(l).0).fold(f64::INFINITY, f64::min);
+    let bottom = heading.iter().map(|l| line_box(l).1).fold(f64::NEG_INFINITY, f64::max);
+    for l in ft.lines.iter().filter(|l| l.para < h) {
+        assert!(line_box(l).1 <= top + 0.5, "para {} col {} ends at {} below the heading top {top}", l.para, l.column, line_box(l).1);
+    }
+    for l in ft.lines.iter().filter(|l| l.para > h) {
+        assert!(line_box(l).0 >= bottom - 0.5, "para {} col {} starts at {} above the heading bottom {bottom}", l.para, l.column, line_box(l).0);
+    }
+    assert_no_overlap(ft);
+}
+
+#[test]
+fn text_after_a_spanning_paragraph_flows_below_it() {
+    let (d, sid, _, h) = span_doc(2, 3, Rect::new(0.0, 0.0, 540.0, 300.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_span_layout(ft, h);
+    // The text before is balanced across the three columns above the heading.
+    let before: Vec<&Line> = ft.lines.iter().filter(|l| l.para < h).collect();
+    let per_col = |c: u32| before.iter().filter(|l| l.column == c).count();
+    let counts = [per_col(0), per_col(1), per_col(2)];
+    assert!(counts.iter().all(|&n| n > 0), "{counts:?}");
+    assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1, "{counts:?}");
+    // The text after starts right below the heading in every column, on the same baseline.
+    let bottom = ft.lines.iter().filter(|l| l.para == h).map(|l| l.baseline).fold(f64::NEG_INFINITY, f64::max);
+    let firsts: Vec<f64> = (0..3).map(|c| ft.lines.iter().find(|l| l.para > h && l.column == c).map(|l| l.baseline).unwrap()).collect();
+    for b in &firsts {
+        assert!(*b > bottom && *b < bottom + 40.0, "{firsts:?} after {bottom}");
+    }
+    assert!((firsts[1] - firsts[2]).abs() < 1e-6, "{firsts:?}");
+}
+
+#[test]
+fn spanning_heading_kept_with_next_and_spanning_two_of_three_columns() {
+    let (mut d, sid, _, h) = span_doc(2, 3, Rect::new(0.0, 0.0, 540.0, 300.0));
+    d.story_mut(sid).unwrap().paras[h].para.keep_with_next = Some(2);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_span_layout(&cs.frames[0], h);
+    // Spanning two of three columns: the third column beside the heading stays empty.
+    d.story_mut(sid).unwrap().paras[h].para.span_columns = Some(SpanColumns::Span(2));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let heading = ft.lines.iter().find(|l| l.para == h).unwrap();
+    assert!((heading.x0 - ft.columns[0].x0).abs() < 1e-6 && (heading.x1 - ft.columns[1].x1).abs() < 1e-6);
+    assert_no_overlap(ft);
+    let bottom = heading.baseline + 0.25 * heading.leading;
+    assert!(ft.lines.iter().filter(|l| l.para > h).all(|l| line_box(l).0 >= bottom - 0.5));
+    assert!((0..3).all(|c| ft.lines.iter().any(|l| l.para > h && l.column == c)));
+}
+
+#[test]
+fn spanning_paragraph_at_the_top_and_end_of_a_frame() {
+    let (d, sid, _, h) = span_doc(0, 4, Rect::new(0.0, 0.0, 540.0, 300.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_span_layout(ft, h);
+    assert!(ft.lines[0].para == h && ft.lines[0].baseline < 20.0);
+    assert!((1..3).all(|c| ft.lines.iter().any(|l| l.column == c)));
+
+    let (d, sid, _, h) = span_doc(3, 0, Rect::new(0.0, 0.0, 540.0, 300.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_span_layout(&cs.frames[0], h);
+}
+
+#[test]
+fn text_after_a_spanning_paragraph_threads_into_the_next_frame() {
+    let (mut d, sid, f1, h) = span_doc(2, 8, Rect::new(0.0, 0.0, 540.0, 200.0));
+    let lid = d.default_layer();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 300.0, 540.0, 700.0), lid, "", ParaFormat::default()).unwrap();
+    d.item_mut(f2).unwrap().text_frame_mut().unwrap().options.columns = 3;
+    d.thread(f1, f2).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "overset at {:?}", cs.overset_at);
+    assert_span_layout(&cs.frames[0], h);
+    let (a, b) = (&cs.frames[0], &cs.frames[1]);
+    assert!((0..3).all(|c| a.lines.iter().any(|l| l.para > h && l.column == c)));
+    assert!(!b.lines.is_empty() && b.lines[0].para > h && b.lines[0].baseline < 320.0);
+    assert_no_overlap(b);
+    // Every line of the story is set once, in order.
+    let lines = all_lines(&cs);
+    for w in lines.windows(2) {
+        assert!(w[1].range.start >= w[0].range.end, "{:?} then {:?}", w[0].range, w[1].range);
+    }
+    assert_eq!(lines.last().unwrap().range.end, d.story(sid).unwrap().text.len());
+}
+
+#[test]
+fn spanning_paragraph_in_rtl_and_vertical_frames() {
+    let (mut d, sid, _, h) = span_doc(2, 4, Rect::new(0.0, 0.0, 540.0, 500.0));
+    d.story_mut(sid).unwrap().direction = designcraft_doc::TextDirection::RightToLeft;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_span_layout(&cs.frames[0], h);
+
+    let (mut d, sid, _, h) = span_doc(2, 4, Rect::new(0.0, 0.0, 540.0, 540.0));
+    d.story_mut(sid).unwrap().vertical = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.frames[0].lines.is_empty());
+    assert_no_overlap(&cs.frames[0]);
+    assert!(cs.frames[0].lines.iter().any(|l| l.para == h));
 }
