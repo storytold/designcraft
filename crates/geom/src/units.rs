@@ -270,7 +270,12 @@ pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
             let a = pt.abs();
             let mut whole = (a / big).floor();
             let mut rest = (a - whole * big) / small;
-            if (rest - 12.0).abs() < 1e-6 || rest > 12.0 - 1e-6 {
+            // Carry when the displayed fractional points round up to a full pica/cicero.
+            // Checking unrounded rest misses values such as 11.9999 at 3 decimals,
+            // which would otherwise render as the misleading "0p12".
+            let scale = 10.0_f64.powi(decimals.min(12) as i32);
+            rest = (rest * scale).round() / scale;
+            if rest >= 12.0 {
                 whole += 1.0;
                 rest = 0.0;
             }
@@ -333,6 +338,17 @@ mod tests {
         assert!(parse_measure("12zz", Unit::Points).is_err());
         assert!(parse_measure("4/0", Unit::Points).is_err());
         assert!(parse_measure("50%", Unit::Points).is_err());
+    }
+
+    #[test]
+    fn pica_and_cicero_rounding_carries_into_the_major_unit() {
+        assert_eq!(format_measure_prec(11.9999, Unit::Picas, 3), "1p0");
+        assert_eq!(format_measure_prec(-11.9999, Unit::Picas, 3), "-1p0");
+        assert_eq!(format_measure_prec(11.9994, Unit::Picas, 3), "0p11.999");
+        assert_eq!(format_measure_prec(11.6, Unit::Picas, 0), "1p0");
+        let almost_cicero = PT_PER_CICERO - 0.0001 * PT_PER_DIDOT;
+        assert_eq!(format_measure_prec(almost_cicero, Unit::Ciceros, 3), "1c0");
+        assert!(close(p(&format_measure_prec(11.9999, Unit::Picas, 3)), 12.0));
     }
 
     #[test]
