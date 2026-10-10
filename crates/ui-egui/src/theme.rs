@@ -452,3 +452,30 @@ mod ukrainian_font_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod russian_font_tests {
+    #[test]
+    fn every_catalog_cyrillic_glyph_exists_in_the_bundled_ui_fonts() {
+        // Same check as for Ukrainian: the installed face data only, without craft-fonts or system fonts.
+        let definitions = super::font_definitions(&[], "ru");
+        let db = designcraft_fonts::FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let characters: std::collections::HashSet<_> = crate::i18n::russian_catalog()
+            .iter()
+            .flat_map(|text| text.chars())
+            .chain("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя".chars())
+            .filter(|c| matches!(*c, '\u{0400}'..='\u{052f}'))
+            .collect();
+        for (name, family, style) in
+            [("ui", "Source Sans 3", "Regular"), ("ui-semibold", "Source Sans 3", "Semibold"), ("mono", "JetBrains Mono", "Regular")]
+        {
+            let data = &definitions.font_data[name].font;
+            let face = db.face(family, style);
+            assert_eq!(face.data(), data.as_ref(), "configured UI face {name}");
+            for character in &characters {
+                assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
+            }
+        }
+    }
+}

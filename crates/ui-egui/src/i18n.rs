@@ -7,6 +7,7 @@ mod ar;
 mod it;
 mod ja;
 mod pt_br;
+mod ru;
 mod uk;
 
 /// Supported interface languages: (code, name in that language).
@@ -21,6 +22,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("pt-br", "Português (Brasil)"),
     ("it", "Italiano"),
     ("uk", "Українська"),
+    ("ru", "Русский"),
 ];
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
@@ -2837,6 +2839,7 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static UKRAINIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static PORTUGUESE_BR: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static ITALIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static RUSSIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -2856,16 +2859,21 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     if lang == "uk" {
         return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
+    if lang == "ru" {
+        return RUSSIAN.get_or_init(|| ru::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     let Some(c) = column(lang) else { return s };
     TRANSLATIONS.get_or_init(|| TABLE.iter().copied().collect()).get(s).and_then(|row| row.get(c)).copied().unwrap_or(s)
 }
 
 /// Context-sensitive UI captions; unsupported contexts keep the shared translation.
 pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
-    if lang == "uk" {
-        return uk::CONTEXT.iter().find(|(key, scope, _)| *key == s && *scope == context).map_or_else(|| tr(lang, s), |(_, _, text)| text);
-    }
-    tr(lang, s)
+    let contexts = match lang {
+        "uk" => uk::CONTEXT,
+        "ru" => ru::CONTEXT,
+        _ => return tr(lang, s),
+    };
+    contexts.iter().find(|(key, scope, _)| *key == s && *scope == context).map_or_else(|| tr(lang, s), |(_, _, text)| text)
 }
 
 #[cfg(test)]
@@ -2873,10 +2881,21 @@ pub(crate) fn ukrainian_catalog() -> Vec<&'static str> {
     uk::TABLE.iter().map(|(_, text)| *text).chain(uk::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
 }
 
-/// Count captions in Ukrainian put the category before the value so every count uses
-/// a grammatical form; other languages keep the existing value-first caption.
+#[cfg(test)]
+pub(crate) fn russian_catalog() -> Vec<&'static str> {
+    ru::TABLE.iter().map(|(_, text)| *text).chain(ru::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
+}
+
+/// Ukrainian and Russian have several plural forms, so their count captions put the category
+/// before the value ("сторінок: 5", "страниц: 5") and every number stays grammatical; other
+/// languages keep the existing value-first caption.
+pub fn category_first(lang: &str) -> bool {
+    matches!(lang, "uk" | "ru")
+}
+
+/// Caption for a counted category, e.g. `count_label("ru", "pages", 5)` is "страниц: 5".
 pub fn count_label(lang: &str, noun: &str, count: usize) -> String {
-    if lang == "uk" { format!("{}: {count}", tr(lang, noun)) } else { format!("{count} {}", tr(lang, noun)) }
+    if category_first(lang) { format!("{}: {count}", tr(lang, noun)) } else { format!("{count} {}", tr(lang, noun)) }
 }
 
 /// Localize reserved built-in style names only; user-defined names are document data.
@@ -2922,8 +2941,11 @@ mod tests {
         for (key, expected) in uk::TABLE {
             assert_eq!(tr("uk", key), *expected, "uk: {key}");
         }
+        for (key, expected) in ru::TABLE {
+            assert_eq!(tr("ru", key), *expected, "ru: {key}");
+        }
         let unknown = String::from("A user-defined untranslated label");
-        for lang in ["uk", "ar", "pt-br", "it", "zh", "ja", "de", "fr", "es", "", "unknown"] {
+        for lang in ["uk", "ru", "ar", "pt-br", "it", "zh", "ja", "de", "fr", "es", "", "unknown"] {
             assert!(std::ptr::eq(tr(lang, &unknown), unknown.as_str()));
         }
     }
@@ -3018,6 +3040,74 @@ mod tests {
             assert_eq!(pages, format!("Сторінок: {n}; розворотів: {n}"));
         }
         assert_eq!(count_label("", "objects", 2), "2 objects");
+    }
+
+    #[test]
+    fn russian_catalog_covers_existing_keys_and_preserves_placeholders() {
+        let catalog: std::collections::HashMap<_, _> = ru::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), ru::TABLE.len(), "duplicate Russian keys");
+        let mut keys = std::collections::HashSet::new();
+        keys.extend(TABLE.iter().map(|(key, _)| *key));
+        keys.extend(ar::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(pt_br::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(it::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(ja::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(uk::TABLE.iter().map(|(key, _)| *key));
+        // A new English string falls back to English until it is translated, so only stale
+        // entries (keys no catalog knows any more) fail.
+        let stale: Vec<_> = catalog.keys().filter(|k| !keys.contains(*k)).collect();
+        assert!(stale.is_empty(), "Russian entries for unknown keys: {stale:?}");
+        let placeholders =
+            |s: &str| s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<Vec<_>>();
+        for (key, translation) in ru::TABLE {
+            assert!(!translation.trim().is_empty(), "empty {key}");
+            assert_eq!(key.starts_with(' '), translation.starts_with(' '), "leading space: {key}");
+            assert_eq!(key.ends_with(' '), translation.ends_with(' '), "trailing space: {key}");
+            assert!(!translation.contains(['ґ', 'є', 'і', 'ї', 'Ґ', 'Є', 'І', 'Ї']), "Ukrainian letter in {key}");
+            let mut source = placeholders(key);
+            let mut translated = placeholders(translation);
+            source.sort();
+            translated.sort();
+            assert_eq!(source, translated, "placeholders: {key}");
+        }
+    }
+
+    #[test]
+    fn russian_is_selectable_ltr_and_resolves_contexts_styles_and_menu_paths() {
+        assert!(LANGUAGES.contains(&("ru", "Русский")));
+        assert!(!is_rtl("ru"));
+        assert_eq!(tr("ru", "File"), "Файл");
+        assert_eq!(tr("ru", "Type"), "Текст");
+        assert_eq!(tr("ru", "Spread"), "Разворот");
+        assert_eq!(tr("ru", "Story"), "Материал");
+        assert_eq!(tr("ru", "Unknown label"), "Unknown label");
+        assert_eq!(tr_context("ru", "Columns", "table"), "Столбцы");
+        assert_eq!(tr("ru", "Columns"), "Колонки");
+        assert_eq!(tr_context("ru", "Group", "selection"), "Группа");
+        assert_eq!(tr("ru", "Group"), "Сгруппировать");
+        assert_eq!(tr_context("ru", "Custom caption", "custom"), "Custom caption");
+        assert_eq!(tr("ru", "through"), "включительно");
+        assert_eq!(tr("ru", "up to"), "не включая");
+        assert_eq!(tr("ru", "Edit/Spelling"), "Редактирование/Орфография");
+        assert_eq!(tr("ru", "Type/Insert Special Character/Quotation Marks"), "Текст/Вставить специальный символ/Кавычки");
+        assert_eq!(style_name("ru", "[Basic Paragraph]"), "[Основной абзац]");
+        assert_eq!(style_name("ru", "My layout style"), "My layout style");
+        assert_eq!(workspace_name("ru", "Essentials"), "Основное");
+        assert_eq!(workspace_name("ru", "My workspace"), "My workspace");
+        // Fixed standard names stay identical.
+        assert_eq!(tr("ru", "PDF/X-4"), "PDF/X-4");
+    }
+
+    #[test]
+    fn russian_counts_use_category_captions_for_every_number() {
+        assert!(category_first("ru") && category_first("uk") && !category_first("de") && !category_first(""));
+        for n in [0, 1, 2, 4, 5, 11, 12, 21, 22, 25, 101, 111] {
+            assert_eq!(count_label("ru", "pages", n), format!("страниц: {n}"));
+            assert_eq!(count_label("ru", "objects", n), format!("объектов: {n}"));
+            assert_eq!(count_label("ru", "errors", n), format!("ошибок: {n}"));
+            let pages = tr("ru", "{pages} Pages in {spreads} Spreads").replace("{pages}", &n.to_string()).replace("{spreads}", &n.to_string());
+            assert_eq!(pages, format!("Страниц: {n}; разворотов: {n}"));
+        }
     }
 
     #[test]

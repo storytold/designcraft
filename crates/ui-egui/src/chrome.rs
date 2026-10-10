@@ -608,7 +608,7 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                             "{} ▾",
                             crate::i18n::count_label(
                                 &app.ui.language,
-                                if errors == 1 && app.ui.language != "uk" { "error" } else { "errors" },
+                                if errors == 1 && !crate::i18n::category_first(&app.ui.language) { "error" } else { "errors" },
                                 errors
                             )
                         )

@@ -2328,15 +2328,15 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                                 *changed = true;
                             }
                         };
-                        if app.ui.language != "uk" {
+                        if !crate::i18n::category_first(&app.ui.language) {
                             count_value(ui, ns, &mut changed);
                         }
                         let kind = ns["until"]["kind"].as_str().unwrap_or("words").to_string();
                         egui::ComboBox::from_id_salt(("ns_until", i))
                             .selected_text(crate::rtl::widget(
                                 ui,
-                                if app.ui.language == "uk" {
-                                    format!("{}:", crate::i18n::tr("uk", &kind))
+                                if crate::i18n::category_first(&app.ui.language) {
+                                    format!("{}:", crate::i18n::tr(&app.ui.language, &kind))
                                 } else {
                                     crate::i18n::tr(&app.ui.language, &kind).to_owned()
                                 },
@@ -2352,7 +2352,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                                     }
                                 }
                             });
-                        if app.ui.language == "uk" {
+                        if crate::i18n::category_first(&app.ui.language) {
                             count_value(ui, ns, &mut changed);
                         }
                         if kind == "chars" {
@@ -2408,8 +2408,8 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                             });
                         crate::rtl::label(
                             ui,
-                            if app.ui.language == "uk" {
-                                format!("{}:", crate::i18n::tr("uk", "lines"))
+                            if crate::i18n::category_first(&app.ui.language) {
+                                format!("{}:", crate::i18n::tr(&app.ui.language, "lines"))
                             } else {
                                 crate::i18n::tr(&app.ui.language, "for").to_owned()
                             },
@@ -2419,7 +2419,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                             l["lines"] = json!(n);
                             changed = true;
                         }
-                        if app.ui.language != "uk" {
+                        if !crate::i18n::category_first(&app.ui.language) {
                             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, if n == 1 { "line" } else { "lines" }));
                         }
                         if ui
