@@ -1813,6 +1813,10 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
         crate::dialogs::open_print(app);
         return;
     }
+    if params.is_null() && id == "layout.section" {
+        crate::section_options::open(app);
+        return;
+    }
     if params.is_null() && id == "object.textFrameOptions" {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
         return;

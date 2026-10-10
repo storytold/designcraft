@@ -300,4 +300,5 @@ pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
 pub(crate) use datamerge::sync_placeholders;
 pub(crate) use file::load_document_fonts;
 pub use file::{base64_decode, base64_encode, from_bytes, to_bytes};
+pub use layout::chapter_numbering;
 pub(crate) use place_text::autoflow as place_text_autoflow;

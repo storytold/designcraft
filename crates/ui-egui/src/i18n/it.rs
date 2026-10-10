@@ -1492,4 +1492,17 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Paragraph Rules", "Filetti paragrafo"),
     ("Rule Below", "Filetto sotto"),
     ("Tint:", "Tinta:"),
+    // Layout › Numbering & Section Options
+    ("Start Section", "Inizia sezione"),
+    ("Automatic Page Numbering", "Numerazione automatica delle pagine"),
+    ("Start Page Numbering at:", "Inizia numerazione pagine da:"),
+    ("Section Prefix:", "Prefisso sezione:"),
+    ("Section Marker:", "Marcatore sezione:"),
+    ("Include Prefix when Numbering Pages", "Includi prefisso nella numerazione delle pagine"),
+    ("Document Chapter Numbering", "Numerazione capitoli del documento"),
+    ("Automatic Chapter Numbering", "Numerazione automatica dei capitoli"),
+    ("Start Chapter Numbering at:", "Inizia numerazione capitoli da:"),
+    ("Same as Previous Document in the Book", "Uguale al documento precedente nel libro"),
+    ("Book Name:", "Nome libro:"),
+    ("N/A", "N/D"),
 ];

@@ -2811,6 +2811,76 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Rule Below", ["Linie unterhalb", "Filet après", "Filete después", "後境界線", "下方横线"]),
     ("Tint:", ["Farbton:", "Teinte:", "Matiz:", "濃淡:", "色调："]),
     ("Column", ["Spalte", "Colonne", "Columna", "段", "栏"]),
+    // Layout › Numbering & Section Options
+    ("Start Section", ["Abschnittsanfang", "Début de section", "Iniciar sección", "セクション開始", "开始新章节"]),
+    (
+        "Automatic Page Numbering",
+        [
+            "Automatische Seitennummerierung",
+            "Numérotation automatique des pages",
+            "Numeración de páginas automática",
+            "自動ページ番号",
+            "自动编排页码",
+        ],
+    ),
+    (
+        "Start Page Numbering at:",
+        ["Seitennummerierung beginnen bei:", "Commencer la numérotation à :", "Iniciar numeración de páginas en:", "開始ページ番号:", "起始页码："],
+    ),
+    ("Section Prefix:", ["Abschnittspräfix:", "Préfixe de section :", "Prefijo de sección:", "セクションプレフィックス:", "章节前缀："]),
+    ("Section Marker:", ["Abschnittsmarke:", "Marqueur de section :", "Marcador de sección:", "セクションマーカー:", "章节标志符："]),
+    (
+        "Include Prefix when Numbering Pages",
+        [
+            "Präfix in Seitennummerierung einschließen",
+            "Inclure le préfixe lors de la numérotation des pages",
+            "Incluir prefijo al numerar páginas",
+            "ページ番号にプレフィックスを含める",
+            "编排页码时包含前缀",
+        ],
+    ),
+    (
+        "Document Chapter Numbering",
+        [
+            "Kapitelnummerierung des Dokuments",
+            "Numérotation des chapitres du document",
+            "Numeración de capítulos del documento",
+            "ドキュメントの章番号",
+            "文档章节编号",
+        ],
+    ),
+    (
+        "Automatic Chapter Numbering",
+        [
+            "Automatische Kapitelnummerierung",
+            "Numérotation automatique des chapitres",
+            "Numeración de capítulos automática",
+            "自動章番号",
+            "自动为章节编号",
+        ],
+    ),
+    (
+        "Start Chapter Numbering at:",
+        [
+            "Kapitelnummerierung beginnen bei:",
+            "Commencer la numérotation des chapitres à :",
+            "Iniciar numeración de capítulos en:",
+            "開始章番号:",
+            "起始章节编号：",
+        ],
+    ),
+    (
+        "Same as Previous Document in the Book",
+        [
+            "Wie vorheriges Dokument im Buch",
+            "Identique au document précédent du livre",
+            "Igual que el documento anterior del libro",
+            "ブック内の前のドキュメントと同じ",
+            "与书籍中的上一文档相同",
+        ],
+    ),
+    ("Book Name:", ["Buchname:", "Nom du livre :", "Nombre del libro:", "ブック名:", "书籍名称："]),
+    ("N/A", ["–", "S.O.", "N/D", "なし", "不适用"]),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.

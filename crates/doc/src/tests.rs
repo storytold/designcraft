@@ -116,6 +116,23 @@ fn hit_testing_respects_layers() {
 }
 
 #[test]
+fn page_numbers_saturate_at_the_largest_start() {
+    // A start number from a file or an old command: page 2 overflowed (a panic in debug builds).
+    let mut d = crate::Document::new(&crate::build::NewDocument { pages: 3, facing_pages: false, ..Default::default() });
+    d.sections = vec![crate::Section {
+        start: 0,
+        start_number: Some(u32::MAX),
+        style: Default::default(),
+        prefix: String::new(),
+        marker: String::new(),
+        include_prefix: false,
+    }];
+    assert_eq!((0..3).map(|i| d.page_number(i)).collect::<Vec<_>>(), [u32::MAX; 3]);
+    d.sections.push(crate::Section { start: 2, start_number: None, ..d.sections[0].clone() });
+    assert_eq!(d.page_number(2), u32::MAX, "a section continuing it saturates too");
+}
+
+#[test]
 fn page_names_follow_sections() {
     let mut d = Document::new(&NewDocument { pages: 6, ..Default::default() });
     assert_eq!(d.page_name(0), "1");

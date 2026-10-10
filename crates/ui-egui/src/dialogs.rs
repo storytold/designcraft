@@ -77,7 +77,7 @@ impl Dialog {
         }
         Dialog { id: id.into(), fields }
     }
-    fn s(&self, k: &str) -> String {
+    pub(crate) fn s(&self, k: &str) -> String {
         match self.fields.get(k) {
             Some(Value::String(s)) => s.clone(),
             Some(v) => v.to_string(),
@@ -99,10 +99,10 @@ impl Dialog {
             _ => None,
         }
     }
-    fn b(&self, k: &str) -> bool {
+    pub(crate) fn b(&self, k: &str) -> bool {
         self.fields.get(k).and_then(Value::as_bool).unwrap_or(false)
     }
-    fn n(&self, k: &str) -> Option<f64> {
+    pub(crate) fn n(&self, k: &str) -> Option<f64> {
         match self.fields.get(k) {
             Some(Value::Number(n)) => n.as_f64(),
             Some(Value::String(s)) => s.trim().parse().ok(),
@@ -1116,6 +1116,9 @@ fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
 
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.dialog.clone() else { return };
+    // Enter and Escape belong to an open popup (a Style menu…) rather than the dialog. Read before
+    // the dialog draws: a popup closed by this frame's Escape is still open here.
+    let popup_open = egui::Popup::is_any_open(ctx);
     let mut result: Option<bool> = None;
     let alert_title = d.s("title");
     let title = match d.id.as_str() {
@@ -1127,6 +1130,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "insertTable" => crate::i18n::tr(&app.ui.language, "Create Table"),
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
         "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
+        "numberingSection" => crate::i18n::tr(&app.ui.language, "Numbering & Section Options…").trim_end_matches('…'),
         "findChange" => crate::i18n::tr(&app.ui.language, "Find/Change"),
         "paragraphStyleOptions" => crate::i18n::tr(&app.ui.language, "Paragraph Style Options"),
         "characterStyleOptions" => crate::i18n::tr(&app.ui.language, "Character Style Options"),
@@ -1161,6 +1165,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
             "closeDocument" => 380.0,
+            "numberingSection" => 560.0,
             "newDocument" if crate::i18n::is_rtl(&app.ui.language) => 380.0,
             _ => 640.0,
         };
@@ -1179,9 +1184,38 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         ui.add_space(10.0);
         // Keep the title and action buttons outside the scrollable body. Oversized
         // forms remain reachable at large UI scales, without shrinking their text.
-        let footer_height = ui.spacing().interact_size.y.max(ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y);
+        // Numbering & Section Options keeps OK and Cancel in a column beside the options, as
+        // InDesign does; other dialogs have them in a footer.
+        let side_actions = d.id == "numberingSection";
+        let footer_height = if side_actions {
+            0.0
+        } else {
+            ui.spacing().interact_size.y.max(ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y)
+        };
         let body_height = (available.y - ui.min_size().y - footer_height - 12.0 - 2.0 * ui.spacing().item_spacing.y).max(1.0);
-        egui::ScrollArea::both().id_salt(("dialog_body", &d.id)).min_scrolled_width(1.0).min_scrolled_height(1.0).max_width(width).max_height(body_height).show(ui, |ui| {
+        let mut body_width = width;
+        if side_actions {
+            // The column is beside the options, not in the layout: keep the window wide enough.
+            ui.set_min_width(width);
+            body_width = (width - crate::section_options::ACTIONS_W - 12.0).max(1.0);
+            let top = ui.cursor().min;
+            // On the right in every language, like the other dialogs' OK.
+            let column = egui::Rect::from_min_size(egui::pos2(top.x + width - crate::section_options::ACTIONS_W, top.y), egui::vec2(crate::section_options::ACTIONS_W, 60.0));
+            let mut actions = ui.new_child(egui::UiBuilder::new().max_rect(column).layout(egui::Layout::top_down_justified(egui::Align::Center)));
+            if let Some(ok) = crate::section_options::actions(app, &mut actions) {
+                result = Some(ok);
+            }
+            if !popup_open && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                result = Some(true);
+            }
+            if !popup_open && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                result = Some(false);
+            }
+        }
+        // A centred window only offers its body last frame's height: let this one grow to its
+        // options' height (the screen still caps it).
+        let min_body = if side_actions { body_height.min(crate::section_options::BODY_H) } else { 1.0 };
+        egui::ScrollArea::both().id_salt(("dialog_body", &d.id)).min_scrolled_width(1.0).min_scrolled_height(min_body).max_width(body_width).max_height(body_height).show(ui, |ui| {
         match d.id.as_str() {
             "newDocument" => {
                 ui.horizontal(|ui| {
@@ -1690,6 +1724,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 text_frame_options_dialog(app, ui, &mut d);
             }
             "documentSetup" => document_setup(app, ui, &mut d),
+            "numberingSection" => crate::section_options::body(app, ui, &mut d),
             "pdfExport" => pdf_export(app, ui, &mut d),
             "alert" => {
                 let file = d.s("file");
@@ -1702,6 +1737,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             _ => {}
         }
         });
+        if side_actions {
+            return;
+        }
         ui.add_space(12.0);
         let ok_label = if d.id == "closeDocument" { "  Save  " } else { "  OK  " };
         ui.horizontal(|ui| {
@@ -1712,13 +1750,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     result = Some(true);
                 }
                 // An alert only has OK.
                 let cancel = d.id != "alert" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked();
-                if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if cancel || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
                     result = Some(false);
                 }
                 if d.id == "closeDocument" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Don't Save"))).clicked() {
@@ -1788,6 +1826,15 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             json!({"rows": d.n("bodyRows").unwrap_or(4.0).max(1.0) as u64, "cols": d.n("columns").unwrap_or(4.0).max(1.0) as u64,
                 "headerRows": d.n("headerRows").unwrap_or(0.0).max(0.0) as u64, "footerRows": d.n("footerRows").unwrap_or(0.0).max(0.0) as u64}),
         ),
+        "numberingSection" => {
+            // On an error the dialog stays open to be corrected.
+            let r = crate::section_options::confirm(app, &d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
         "textFrameOptions" => {
             // On an error the dialog stays open to be corrected.
             let mut d = d;
@@ -3833,6 +3880,70 @@ mod tests {
     }
 
     #[test]
+    fn enter_and_escape_close_the_style_menu_not_numbering_and_section_options() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2})).unwrap();
+        crate::menus::activate(&mut app, "layout.section", &Value::Null);
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        for pressed in [egui::Key::Enter, egui::Key::Escape] {
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            // The section's Style menu (the first of the two).
+            let style = labels.iter().filter(|(t, r, c)| t.trim() == "1, 2, 3, 4…" && c.contains_rect(*r)).map(|(_, r, _)| *r).next().unwrap();
+            click_dialog(&mut app, &ctx, screen, style.center());
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+            assert!(egui::Popup::is_any_open(&ctx), "the Style menu opened");
+            dialog_frame(&mut app, &ctx, screen, vec![key(pressed)]);
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+            assert!(app.ui.dialog.is_some(), "{pressed:?} with the menu open leaves the dialog open");
+            assert!(app.session.active().unwrap().doc.sections.iter().all(|s| s.start_number != Some(0)));
+            if egui::Popup::is_any_open(&ctx) {
+                egui::Popup::close_all(&ctx);
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+        }
+        // With no menu open, Escape closes the dialog.
+        dialog_frame(&mut app, &ctx, screen, vec![key(egui::Key::Escape)]);
+        assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn numbering_and_section_options_keep_their_actions_in_view() {
+        for language in ["en", "ar"] {
+            for size in [egui::vec2(1178.0, 814.0), egui::vec2(392.0, 271.0)] {
+                let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+                app.ui.language = language.into();
+                app.run("file.new", json!({"pages": 2})).unwrap();
+                crate::menus::activate(&mut app, "layout.section", &Value::Null);
+                let ctx = dialog_context(language);
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                for _ in 0..3 {
+                    dialog_frame(&mut app, &ctx, screen, vec![]);
+                }
+                let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+                let tr = |s| crate::i18n::tr(language, s);
+                for expected in [tr("Numbering & Section Options…").trim_end_matches('…'), tr("OK"), tr("Cancel"), tr("Start Section")] {
+                    visible_label(&labels, screen, expected);
+                }
+                if size.x > 1000.0 {
+                    // Every option fits without scrolling, and choosing one then OK applies it.
+                    visible_label(&labels, screen, &format!("{} {}", tr("Book Name:"), tr("N/A")));
+                    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, tr("Automatic Page Numbering")).center());
+                    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+                    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, tr("OK")).center());
+                    assert!(app.ui.dialog.is_none(), "{language}: OK closes the dialog");
+                    let doc = &app.session.active().unwrap().doc;
+                    assert!(doc.sections.iter().all(|s| s.start != 0 || s.start_number.is_none()), "{language}: page 1 numbers automatically");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn preferences_sidebar_scroll_keeps_selected_options_visible() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
@@ -4102,6 +4213,13 @@ mod tests {
             assert!(doc.spreads.iter().all(|s| s.items.is_empty()), "undocumented fields stay excluded");
             assert!(app.ui.dialog.is_none());
         }
+    }
+
+    #[test]
+    fn numbering_commands_document_their_fields() {
+        let names = |id: &str| command_fields(designcraft_engine::find_command(id).unwrap().params).into_iter().map(|f| f.key).collect::<Vec<_>>();
+        assert_eq!(names("layout.section"), ["page", "startNumber", "style", "prefix", "includePrefix", "marker", "remove"]);
+        assert_eq!(names("layout.chapterNumbering"), ["style", "start", "source"]);
     }
 
     #[test]
