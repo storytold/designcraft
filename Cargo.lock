@@ -870,6 +870,7 @@ dependencies = [
  "log",
  "muda",
  "rfd",
+ "serde",
  "serde_json",
  "winit",
  "winresource",
