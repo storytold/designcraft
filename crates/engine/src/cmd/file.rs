@@ -13,10 +13,31 @@ use crate::{DocState, EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.new", "Document…", ["File", "New"], Some("Cmd+N"),
-            "{preset?: \"Letter\"|\"A4\"|…, width?, height?, pages?, facingPages?, columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, title?}",
+            "{preset?: \"Letter\"|\"A4\"|… or a saved preset (file.savePreset), intent?: print|web|mobile, units?: points|picas|millimeters|…, width?, height?, pages?, startPage?, facingPages?, columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, slug?: n | [top, bottom, inside, outside], title?}",
             always, file_new),
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
-        cmd!(query "file.presets", "Document Presets", [], None, "{}", always, |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default())),
+        cmd!(query "file.presets", "Document Presets", [], None, "{} → the built-in presets [{name, intent, width, height, units}], then the saved ones (with `saved: true`)", always, |s, _| {
+            let mut presets: Vec<Value> = PRESETS.iter().map(|p| serde_json::to_value(p).unwrap_or_default()).collect();
+            presets.extend(
+                s.prefs
+                    .document_presets
+                    .iter()
+                    .map(|p| json!({"name": p.title, "intent": p.intent, "width": p.width, "height": p.height, "units": p.units, "saved": true})),
+            );
+            Ok(Value::Array(presets))
+        }),
+        cmd!(noundo "file.savePreset", "Save Document Preset", [], None,
+            "{name, …the settings file.new takes} — kept with the preferences; `file.new {preset: name}` uses it. A saved preset of that name is replaced; built-in names are refused",
+            always, save_preset),
+        cmd!(noundo "file.deletePreset", "Delete Document Preset", [], None, "{name} — a saved document preset", always, |s, p| {
+            let name = str_param(p, "name").unwrap_or_default().trim().to_string();
+            let before = s.prefs.document_presets.len();
+            s.prefs.document_presets.retain(|x| !x.title.eq_ignore_ascii_case(&name));
+            if s.prefs.document_presets.len() == before {
+                return Err(bad("file.deletePreset", format!("no saved preset `{name}`")));
+            }
+            ok()
+        }),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
             "{path} — .designcraft or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
             always, file_open),
@@ -115,18 +136,73 @@ pub fn from_bytes(b: &[u8]) -> Result<Document> {
     designcraft_format::load(b).map_err(|e| EngineError::Other(e.to_string()))
 }
 
+/// The longest saved preset name, and how many presets are kept.
+const MAX_PRESET_NAME: usize = 100;
+const MAX_PRESETS: usize = 500;
+
+/// A built-in document preset or a saved one, by name (case ignored).
+fn find_preset(s: &Session, name: &str) -> Option<NewDocument> {
+    NewDocument::from_preset(name).or_else(|| s.prefs.document_presets.iter().find(|p| p.title.eq_ignore_ascii_case(name.trim())).cloned())
+}
+
 fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
     let mut nd = match str_param(p, "preset") {
-        Some(name) => NewDocument::from_preset(name).ok_or_else(|| bad("file.new", format!("unknown preset `{name}`")))?,
+        Some(name) => find_preset(s, name).ok_or_else(|| bad("file.new", format!("unknown preset `{name}`")))?,
         None => NewDocument::default(),
     };
+    apply_settings(&mut nd, p);
+    check_size("file.new", &nd)?;
+    s.untitled += 1;
+    nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| format!("Untitled-{}", s.untitled));
+    let d = Document::new(&nd);
+    let i = s.add_document(DocState::new(d, None));
+    Ok(json!({"index": i}))
+}
+
+fn save_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad("file.savePreset", "missing `name`"))?.to_string();
+    if name.chars().count() > MAX_PRESET_NAME {
+        return Err(bad("file.savePreset", format!("a preset name has at most {MAX_PRESET_NAME} characters")));
+    }
+    if NewDocument::from_preset(&name).is_some() {
+        return Err(bad("file.savePreset", format!("`{name}` is a built-in preset")));
+    }
+    let mut nd = NewDocument::default();
+    apply_settings(&mut nd, p);
+    check_size("file.savePreset", &nd)?;
+    nd.title = name.clone();
+    let presets = &mut s.prefs.document_presets;
+    presets.retain(|x| !x.title.eq_ignore_ascii_case(&name));
+    if presets.len() >= MAX_PRESETS {
+        return Err(bad("file.savePreset", format!("at most {MAX_PRESETS} saved presets")));
+    }
+    presets.push(nd);
+    Ok(json!({"name": name}))
+}
+
+fn check_size(cmd: &str, nd: &NewDocument) -> Result<()> {
+    if !(nd.width > 0.0 && nd.height > 0.0 && nd.width <= 15552.0 && nd.height <= 15552.0) {
+        return Err(bad(cmd, "page size out of range (0 < size ≤ 216 in)"));
+    }
+    Ok(())
+}
+
+/// The document settings in `p` (as file.new takes them) over `nd`.
+fn apply_settings(nd: &mut NewDocument, p: &Value) {
+    if let Some(intent) = p.get("intent").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        nd.intent = intent;
+    }
+    if let Some(units) = p.get("units").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        nd.units = units;
+    }
     nd.width = f64_or(p, "width", nd.width);
     nd.height = f64_or(p, "height", nd.height);
     nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(nd.pages).clamp(1, 9999);
+    nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
     nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
     nd.gutter = f64_or(p, "gutter", nd.gutter);
-    nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(false);
+    nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(nd.primary_text_frame);
     match p.get("margins") {
         Some(Value::Number(n)) => nd.margins = designcraft_doc::Margins::uniform(n.as_f64().unwrap_or(36.0)),
         Some(v @ Value::Object(_)) => {
@@ -136,17 +212,24 @@ fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
         }
         _ => {}
     }
-    if let Some(b) = p.get("bleed").and_then(Value::as_f64) {
-        nd.bleed = [b; 4];
+    if let Some(b) = edges(p, "bleed") {
+        nd.bleed = b;
     }
-    s.untitled += 1;
-    nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| format!("Untitled-{}", s.untitled));
-    if nd.width <= 0.0 || nd.height <= 0.0 || nd.width > 15552.0 || nd.height > 15552.0 {
-        return Err(bad("file.new", "page size out of range (0 < size ≤ 216 in)"));
+    if let Some(b) = edges(p, "slug") {
+        nd.slug = b;
     }
-    let d = Document::new(&nd);
-    let i = s.add_document(DocState::new(d, None));
-    Ok(json!({"index": i}))
+}
+
+/// A bleed or slug parameter: one width for every edge, or [top, bottom, inside, outside].
+fn edges(p: &Value, key: &str) -> Option<[f64; 4]> {
+    let clean = |v: f64| if v.is_finite() { v.clamp(0.0, 1296.0) } else { 0.0 };
+    match p.get(key)? {
+        Value::Array(a) => match a.iter().map(Value::as_f64).collect::<Option<Vec<f64>>>()?.as_slice() {
+            [t, b, i, o] => Some([clean(*t), clean(*b), clean(*i), clean(*o)]),
+            _ => None,
+        },
+        v => v.as_f64().map(|b| [clean(b); 4]),
+    }
 }
 
 fn file_sample(s: &mut Session, _p: &Value) -> Result<Value> {
@@ -660,6 +743,66 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
     {
         let _ = (s, path);
         Err(EngineError::Other("revert isn't available on the web".into()))
+    }
+}
+
+#[cfg(test)]
+mod new_document_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn saved_presets_make_documents_by_name() {
+        let mut s = Session::new();
+        let newsletter = json!({"name": "Newsletter", "units": "millimeters", "width": 595.2755905511812, "height": 841.8897637795277,
+            "pages": 8, "facingPages": false, "columns": 3, "margins": {"top": 20, "bottom": 30, "inside": 40, "outside": 50},
+            "bleed": [9, 9, 0, 9], "primaryTextFrame": true});
+        assert_eq!(s.execute("file.savePreset", &newsletter).unwrap()["name"], "Newsletter");
+        let listed = s.execute("file.presets", &json!({})).unwrap();
+        let saved: Vec<_> = listed.as_array().unwrap().iter().filter(|p| p["saved"] == true).collect();
+        assert_eq!(saved.len(), 1);
+        assert_eq!((&saved[0]["name"], &saved[0]["units"]), (&json!("Newsletter"), &json!("millimeters")));
+        // By name, case ignored; parameters still override the preset.
+        s.execute("file.new", &json!({"preset": "newsletter", "pages": 4})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.page_count(), 4);
+        assert!(!d.settings.facing_pages && d.settings.primary_text_frame);
+        assert_eq!(d.settings.horizontal_units, designcraft_geom::Unit::Millimeters);
+        assert_eq!(d.settings.bleed, [9.0, 9.0, 0.0, 9.0]);
+        assert_eq!(d.page(0).unwrap().margins.outside, 50.0);
+        assert!(d.title.starts_with("Untitled-"), "the preset's name isn't the document's");
+        // The same name replaces it.
+        s.execute("file.savePreset", &json!({"name": "NEWSLETTER", "pages": 2})).unwrap();
+        assert_eq!(s.prefs.document_presets.len(), 1);
+        s.execute("file.new", &json!({"preset": "Newsletter"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page_count(), 2);
+        // Built-in names, empty and overlong names and impossible sizes are refused.
+        for bad in [json!({"name": "a4"}), json!({"name": "  "}), json!({}), json!({"name": "x".repeat(101)}), json!({"name": "Huge", "width": 1e9})]
+        {
+            assert!(s.execute("file.savePreset", &bad).is_err(), "{bad}");
+        }
+        s.execute("file.deletePreset", &json!({"name": "newsletter"})).unwrap();
+        assert!(s.execute("file.deletePreset", &json!({"name": "newsletter"})).is_err());
+        assert!(s.execute("file.new", &json!({"preset": "Newsletter"})).is_err());
+    }
+
+    #[test]
+    fn new_document_takes_intent_units_start_page_bleed_and_slug() {
+        let mut s = Session::new();
+        let p = json!({"preset": "A4", "intent": "web", "units": "pixels", "startPage": 4, "bleed": [9, 0, 3, 6], "slug": 18});
+        s.execute("file.new", &p).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.settings.intent, designcraft_doc::Intent::Web);
+        assert_eq!(d.settings.horizontal_units, designcraft_geom::Unit::Pixels);
+        assert_eq!(d.settings.bleed, [9.0, 0.0, 3.0, 6.0]);
+        assert_eq!(d.settings.slug, [18.0; 4]);
+        assert_eq!(d.page_name(0), "4");
+        // Malformed edges are ignored, hostile ones bounded.
+        s.execute("file.new", &json!({"bleed": [1, 2], "slug": [-5, 1e12, 0, 0]})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.settings.bleed, [0.0; 4]);
+        assert_eq!(d.settings.slug, [0.0, 1296.0, 0.0, 0.0]);
     }
 }
 

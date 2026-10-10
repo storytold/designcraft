@@ -496,6 +496,15 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             }
         }
         // ---- Properties panel glyphs (original drawings)
+        "clock" => {
+            pen.circle(10.0, 10.0, 7.5);
+            pen.line(&[(10.0, 5.5), (10.0, 10.0), (13.5, 12.5)]);
+        }
+        "preset-save" => {
+            pen.line(&[(3.0, 11.0), (3.0, 17.0), (17.0, 17.0), (17.0, 11.0)]);
+            pen.line(&[(10.0, 3.0), (10.0, 13.0)]);
+            pen.line(&[(6.5, 9.5), (10.0, 13.0), (13.5, 9.5)]);
+        }
         "orient-portrait" => {
             pen.rect(5.5, 3.0, 14.5, 17.0);
             pen.fcircle(10.0, 8.0, 1.8);

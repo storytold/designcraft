@@ -21,10 +21,7 @@ impl Dialog {
             _ => Map::new(),
         };
         let defaults = match id {
-            "newDocument" => {
-                json!({"preset": "Letter", "width": "51p0", "height": "66p0", "pages": 1, "facingPages": true, "columns": 1, "gutter": "1p0",
-                "marginTop": "3p0", "marginBottom": "3p0", "marginInside": "3p0", "marginOutside": "3p0", "bleed": "0p0", "primaryTextFrame": false})
-            }
+            "newDocument" => crate::new_document::defaults(),
             "goToPage" => json!({"page": "1"}),
             "qrCode" => json!({"type": "url", "content": "https://", "color": "[Black]"}),
             "insertTable" => json!({"bodyRows": 4, "columns": 4, "headerRows": 0, "footerRows": 0}),
@@ -77,7 +74,7 @@ impl Dialog {
         }
         Dialog { id: id.into(), fields }
     }
-    fn s(&self, k: &str) -> String {
+    pub(crate) fn s(&self, k: &str) -> String {
         match self.fields.get(k) {
             Some(Value::String(s)) => s.clone(),
             Some(v) => v.to_string(),
@@ -99,10 +96,10 @@ impl Dialog {
             _ => None,
         }
     }
-    fn b(&self, k: &str) -> bool {
+    pub(crate) fn b(&self, k: &str) -> bool {
         self.fields.get(k).and_then(Value::as_bool).unwrap_or(false)
     }
-    fn n(&self, k: &str) -> Option<f64> {
+    pub(crate) fn n(&self, k: &str) -> Option<f64> {
         match self.fields.get(k) {
             Some(Value::Number(n)) => n.as_f64(),
             Some(Value::String(s)) => s.trim().parse().ok(),
@@ -1116,6 +1113,9 @@ fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
 
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.dialog.clone() else { return };
+    // Enter and Escape belong to an open popup (a menu, a name field) rather than the dialog.
+    // Read before the dialog draws: a popup closed by this frame's Escape is still open here.
+    let popup_open = egui::Popup::is_any_open(ctx);
     let mut result: Option<bool> = None;
     let alert_title = d.s("title");
     let title = match d.id.as_str() {
@@ -1161,7 +1161,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
             "closeDocument" => 380.0,
-            "newDocument" if crate::i18n::is_rtl(&app.ui.language) => 380.0,
+            "newDocument" => 960.0,
             _ => 640.0,
         };
         let width = preferred_width.min(available.x);
@@ -1184,79 +1184,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         egui::ScrollArea::both().id_salt(("dialog_body", &d.id)).min_scrolled_width(1.0).min_scrolled_height(1.0).max_width(width).max_height(body_height).show(ui, |ui| {
         match d.id.as_str() {
             "newDocument" => {
-                ui.horizontal(|ui| {
-                    ui.with_layout(if crate::i18n::is_rtl(&app.ui.language) { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) }, |ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Preset"));
-                    let cur = d.s("preset");
-                    egui::ComboBox::from_id_salt("preset").selected_text(&cur).width(180.0).show_ui(ui, |ui| {
-                        for p in designcraft_doc::build::PRESETS {
-                            if ui.selectable_label(cur == p.name, p.name).clicked() {
-                                d.fields.insert("preset".into(), json!(p.name));
-                                d.fields.insert("width".into(), json!(format_measure(p.width, p.units)));
-                                d.fields.insert("height".into(), json!(format_measure(p.height, p.units)));
-                                d.fields.insert("facingPages".into(), json!(p.intent == designcraft_doc::Intent::Print));
-                            }
-                        }
-                    });
-                    });
-                });
-                if crate::i18n::is_rtl(&app.ui.language) {
-                    // egui Grid currently supports LTR only. Use explicit RTL rows;
-                    // the numeric editors retain LTR alignment and logical values.
-                    for (first, key, second, other, toggle) in [
-                        ("Width", "width", "Height", "height", false),
-                        ("Pages", "pages", "Facing Pages", "facingPages", true),
-                        ("Columns", "columns", "Gutter", "gutter", false),
-                        ("Top", "marginTop", "Bottom", "marginBottom", false),
-                        ("Inside", "marginInside", "Outside", "marginOutside", false),
-                        ("Bleed", "bleed", "Primary Text Frame", "primaryTextFrame", true),
-                    ] {
-                        ui.horizontal(|ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, first));
-                                text_field(ui, &mut d, key, 80.0);
-                                if toggle {
-                                    check(ui, &mut d, other, crate::i18n::tr(&app.ui.language, second));
-                                } else {
-                                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, second));
-                                    text_field(ui, &mut d, other, 80.0);
-                                }
-                            });
-                        });
-                    }
-                } else {
-                egui::Grid::new("nd").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Width"));
-                    text_field(ui, &mut d, "width", 80.0);
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Height"));
-                    text_field(ui, &mut d, "height", 80.0);
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pages"));
-                    text_field(ui, &mut d, "pages", 80.0);
-                    ui.label("");
-                    check(ui, &mut d, "facingPages", crate::i18n::tr(&app.ui.language, "Facing Pages"));
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Columns"));
-                    text_field(ui, &mut d, "columns", 80.0);
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Gutter"));
-                    text_field(ui, &mut d, "gutter", 80.0);
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Top"));
-                    text_field(ui, &mut d, "marginTop", 80.0);
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Bottom"));
-                    text_field(ui, &mut d, "marginBottom", 80.0);
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Inside"));
-                    text_field(ui, &mut d, "marginInside", 80.0);
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Outside"));
-                    text_field(ui, &mut d, "marginOutside", 80.0);
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Bleed"));
-                    text_field(ui, &mut d, "bleed", 80.0);
-                    ui.label("");
-                    check(ui, &mut d, "primaryTextFrame", crate::i18n::tr(&app.ui.language, "Primary Text Frame"));
-                    ui.end_row();
-                });
+                // A double-clicked preset creates the document at once.
+                let create = crate::new_document::body(app, ui, &mut d, width, body_height);
+                if create {
+                    result = Some(true);
                 }
             }
             "frameSize" => {
@@ -1703,22 +1634,27 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         }
         });
         ui.add_space(12.0);
-        let ok_label = if d.id == "closeDocument" { "  Save  " } else { "  OK  " };
+        let ok_label = match d.id.as_str() {
+            "closeDocument" => crate::i18n::tr(&app.ui.language, "  Save  ").to_string(),
+            "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
+            _ => crate::i18n::tr(&app.ui.language, "  OK  ").to_string(),
+        };
+        let cancel_label = if d.id == "newDocument" { "Close" } else { "Cancel" };
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, ok_label)).color(egui::Color32::WHITE)))
+                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(ok_label).color(egui::Color32::WHITE)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     result = Some(true);
                 }
                 // An alert only has OK.
-                let cancel = d.id != "alert" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked();
-                if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                let cancel = d.id != "alert" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, cancel_label))).clicked();
+                if cancel || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
                     result = Some(false);
                 }
                 if d.id == "closeDocument" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Don't Save"))).clicked() {
@@ -1749,13 +1685,12 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     }
     match d.id.as_str() {
         "newDocument" => {
-            let margins = json!({"top": d.m("marginTop").unwrap_or(36.0), "bottom": d.m("marginBottom").unwrap_or(36.0), "inside": d.m("marginInside").unwrap_or(36.0), "outside": d.m("marginOutside").unwrap_or(36.0)});
-            app.run(
-                "file.new",
-                json!({"width": d.m("width"), "height": d.m("height"), "pages": d.n("pages").unwrap_or(1.0) as u64, "facingPages": d.b("facingPages"),
-                    "columns": d.n("columns").unwrap_or(1.0) as u64, "gutter": d.m("gutter").unwrap_or(12.0), "margins": margins, "bleed": d.m("bleed").unwrap_or(0.0),
-                    "primaryTextFrame": d.b("primaryTextFrame")}),
-            )
+            let p = crate::new_document::params(&d);
+            let r = app.run("file.new", p.clone());
+            if r.is_ok() {
+                crate::new_document::remember(app, &p);
+            }
+            r
         }
         "frameSize" => {
             let x = d.fields.get("x").and_then(Value::as_f64).unwrap_or(0.0);
@@ -3813,7 +3748,9 @@ mod tests {
     fn dialog_title_and_actions_fit_scaled_viewports() {
         for language in ["en", "ar"] {
             for size in [egui::vec2(1178.0, 814.0), egui::vec2(589.0, 407.0), egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0)] {
-                for (command, title) in [("app.preferences", "Preferences"), ("app.newDocumentDialog", "New Document")] {
+                for (command, title, ok, cancel) in
+                    [("app.preferences", "Preferences", "OK", "Cancel"), ("app.newDocumentDialog", "New Document", "Create", "Close")]
+                {
                     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
                     app.ui.language = language.into();
                     app.run("file.new", json!({})).unwrap();
@@ -3824,7 +3761,7 @@ mod tests {
                         dialog_frame(&mut app, &ctx, screen, vec![]);
                     }
                     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-                    for expected in [title, "OK", "Cancel"] {
+                    for expected in [title, ok, cancel] {
                         visible_label(&labels, screen, crate::i18n::tr(language, expected));
                     }
                 }
@@ -3882,8 +3819,20 @@ mod tests {
         assert!(app.ui.dialog.as_ref().unwrap().b("absolutePageNumbers"));
     }
 
+    /// Scroll the dialog body down at `at` until `text` is painted unclipped on screen.
+    fn scroll_to_label(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, at: egui::Pos2, text: &str) -> egui::Rect {
+        for _ in 0..40 {
+            let labels = dialog_frame(app, ctx, screen, vec![]);
+            if let Some((_, rect, _)) = labels.iter().find(|(t, r, clip)| t.trim() == text && screen.contains_rect(*r) && clip.contains_rect(*r)) {
+                return *rect;
+            }
+            scroll_dialog(app, ctx, screen, at, egui::vec2(0.0, -60.0));
+        }
+        panic!("{text} never scrolled into view");
+    }
+
     #[test]
-    fn new_document_vertical_scroll_reaches_last_field() {
+    fn new_document_vertical_scroll_reaches_every_field_and_preset() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("app.newDocumentDialog", json!({})).unwrap();
         let ctx = dialog_context("en");
@@ -3893,20 +3842,23 @@ mod tests {
         }
         let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
         let body = visible_label(&labels, screen, "Width").center();
-        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == "Primary Text Frame").unwrap();
-        assert!(rect.bottom() > clip.bottom(), "last field starts vertically clipped");
-        scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(0.0, -600.0));
+        let shown =
+            |labels: &[(String, egui::Rect, egui::Rect)]| labels.iter().any(|(t, r, clip)| t == "Primary Text Frame" && clip.contains_rect(*r));
+        assert!(!shown(&labels), "the details start vertically clipped");
+        let ptf = scroll_to_label(&mut app, &ctx, screen, body, "Primary Text Frame");
         let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-        for expected in ["Primary Text Frame", "New Document", "OK", "Cancel"] {
+        for expected in ["New Document", "Create", "Close"] {
             visible_label(&labels, screen, expected);
         }
-        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Primary Text Frame").center());
-        assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"));
+        click_dialog(&mut app, &ctx, screen, ptf.center());
+        assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"), "the caption toggles its checkbox");
+        // Below the details: the preset tabs and cards.
+        scroll_to_label(&mut app, &ctx, screen, body, "[Default]");
     }
 
     #[test]
-    fn arabic_new_document_leftmost_fields_remain_reachable() {
-        for size in [egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0)] {
+    fn arabic_new_document_fields_remain_reachable_and_editable() {
+        for size in [egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0), egui::vec2(1178.0, 814.0)] {
             let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
             app.ui.language = "ar".into();
             app.run("app.newDocumentDialog", json!({})).unwrap();
@@ -3919,20 +3871,8 @@ mod tests {
             for _ in 0..3 {
                 dialog_frame(&mut app, &ctx, screen, vec![]);
             }
-            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-            for (_, value) in fields {
-                visible_label(&labels, screen, value);
-            }
-            let body = visible_label(&labels, screen, "66p1").center();
-            for x in [-600.0, 600.0] {
-                scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(x, 0.0));
-                let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-                for (_, value) in fields {
-                    visible_label(&labels, screen, value);
-                }
-            }
-            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "66p1").center());
+            let height = visible_label(&dialog_frame(&mut app, &ctx, screen, vec![]), screen, "66p1");
+            click_dialog(&mut app, &ctx, screen, height.center());
             dialog_frame(
                 &mut app,
                 &ctx,
@@ -3948,18 +3888,22 @@ mod tests {
                     egui::Event::Text("88p8".into()),
                 ],
             );
-            assert_eq!(app.ui.dialog.as_ref().unwrap().s("height"), "88p8", "leftmost numeric field accepts edits");
-            scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(0.0, -600.0));
-            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-            let label = crate::i18n::tr("ar", "Primary Text Frame");
-            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, label).center());
-            assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"), "leftmost checkbox remains clickable after scrolling");
+            assert_eq!(app.ui.dialog.as_ref().unwrap().s("height"), "88p8", "numeric fields accept edits");
+            let caption = scroll_to_label(&mut app, &ctx, screen, height.center(), crate::i18n::tr("ar", "Primary Text Frame"));
+            click_dialog(&mut app, &ctx, screen, caption.center());
+            assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"), "checkboxes remain clickable");
+            for (_, value) in &fields[1..] {
+                scroll_to_label(&mut app, &ctx, screen, height.center(), value);
+            }
         }
     }
 
     #[test]
     fn resized_dialogs_cancel_and_reopen_without_applying_edits() {
-        for (command, title, field) in [("app.preferences", "Preferences", "recoveryMinutes"), ("app.newDocumentDialog", "New Document", "pages")] {
+        for (command, title, field, ok, cancel) in [
+            ("app.preferences", "Preferences", "recoveryMinutes", "OK", "Cancel"),
+            ("app.newDocumentDialog", "New Document", "pages", "Create", "Close"),
+        ] {
             let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
             app.run(command, json!({})).unwrap();
             let original = app.ui.dialog.as_ref().unwrap().fields[field].clone();
@@ -3971,13 +3915,13 @@ mod tests {
                     dialog_frame(&mut app, &ctx, screen, vec![]);
                 }
                 let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-                for expected in [title, "OK", "Cancel"] {
+                for expected in [title, ok, cancel] {
                     visible_label(&labels, screen, expected);
                 }
             }
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(589.0, 407.0));
             let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Cancel").center());
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, cancel).center());
             assert!(app.ui.dialog.is_none());
             assert!(app.session.active().is_none(), "cancelling must not create a document");
             app.run(command, json!({})).unwrap();

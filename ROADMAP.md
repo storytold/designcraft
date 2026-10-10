@@ -129,6 +129,10 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-11** · New Document laid out like InDesign's (#325): Recent, Saved, Print, Web and
+  Mobile preset tabs beside the preset's details; saved document presets live in the engine
+  (`file.savePreset`, `file.deletePreset`, `file.new {preset}`); `file.new` takes intent, units,
+  start page and per-edge bleed and slug.
 - **2026-10-10** · Readiness per audience: full ~47% (method aligned with the standard, was
   42%), mainstream practitioner ~42%, essentials user ~54%, each with hours to ~95%.
 - **2026-10-10** · Stage re-normalized to **pre-alpha** under craftrules' core-workflow gate: text

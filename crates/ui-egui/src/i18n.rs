@@ -2811,6 +2811,65 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Rule Below", ["Linie unterhalb", "Filet après", "Filete después", "後境界線", "下方横线"]),
     ("Tint:", ["Farbton:", "Teinte:", "Matiz:", "濃淡:", "色调："]),
     ("Column", ["Spalte", "Colonne", "Columna", "段", "栏"]),
+    // File › New › Document
+    ("Recent", ["Zuletzt verwendet", "Récents", "Recientes", "最近使用", "最近"]),
+    ("Saved", ["Gespeichert", "Enregistrés", "Guardados", "保存済み", "已保存"]),
+    ("[Default]", ["[Standard]", "[Par défaut]", "[Predeterminado]", "[初期設定]", "[默认]"]),
+    ("Your Recent Items", ["Zuletzt verwendete Elemente", "Éléments récents", "Elementos recientes", "最近使用した項目", "最近使用的项目"]),
+    (
+        "Saved Presets",
+        ["Gespeicherte Vorgaben", "Paramètres prédéfinis enregistrés", "Ajustes preestablecidos guardados", "保存済みプリセット", "已保存的预设"],
+    ),
+    (
+        "Blank Document Presets",
+        [
+            "Vorgaben für leere Dokumente",
+            "Paramètres prédéfinis de document vierge",
+            "Ajustes preestablecidos de documento en blanco",
+            "空のドキュメントプリセット",
+            "空白文档预设",
+        ],
+    ),
+    (
+        "No saved presets yet. Set the details, then click Save Document Preset.",
+        [
+            "Noch keine gespeicherten Vorgaben. Legen Sie die Details fest und klicken Sie auf Dokumentvorgabe speichern.",
+            "Aucun paramètre prédéfini enregistré. Définissez les détails, puis cliquez sur Enregistrer le paramètre prédéfini de document.",
+            "Aún no hay ajustes preestablecidos guardados. Defina los detalles y haga clic en Guardar ajuste preestablecido de documento.",
+            "保存済みのプリセットはありません。詳細を設定してから「ドキュメントプリセットを保存」をクリックしてください。",
+            "尚无已保存的预设。请设置详细信息，然后单击“存储文档预设”。",
+        ],
+    ),
+    ("Delete Preset", ["Vorgabe löschen", "Supprimer le paramètre prédéfini", "Eliminar ajuste preestablecido", "プリセットを削除", "删除预设"]),
+    (
+        "Preset Details",
+        ["Vorgabedetails", "Détails du paramètre prédéfini", "Detalles del ajuste preestablecido", "プリセットの詳細", "预设详细信息"],
+    ),
+    ("Document Name", ["Dokumentname", "Nom du document", "Nombre del documento", "ドキュメント名", "文档名称"]),
+    (
+        "Save Document Preset",
+        [
+            "Dokumentvorgabe speichern",
+            "Enregistrer le paramètre prédéfini de document",
+            "Guardar ajuste preestablecido de documento",
+            "ドキュメントプリセットを保存",
+            "存储文档预设",
+        ],
+    ),
+    (
+        "Save Document Preset As:",
+        [
+            "Dokumentvorgabe speichern unter:",
+            "Enregistrer le paramètre prédéfini de document sous :",
+            "Guardar ajuste preestablecido de documento como:",
+            "ドキュメントプリセットの保存名:",
+            "存储文档预设为：",
+        ],
+    ),
+    ("Preset Name", ["Vorgabename", "Nom du paramètre prédéfini", "Nombre del ajuste preestablecido", "プリセット名", "预设名称"]),
+    ("Save Preset", ["Vorgabe speichern", "Enregistrer le paramètre prédéfini", "Guardar ajuste preestablecido", "プリセットを保存", "存储预设"]),
+    ("Start #", ["Startseitennr.", "N° de début", "N.º inicial", "開始ページ番号", "起始页码"]),
+    ("Column Gutter", ["Spaltenabstand", "Gouttière", "Medianil", "列間隔", "栏间距"]),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.
