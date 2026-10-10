@@ -4,6 +4,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::backend::Backend;
+use crate::guard::{Op, PathGuard};
 use crate::headless::NEEDS_APP;
 
 /// The result of `tools/call`: MCP content blocks plus the `isError` flag.
@@ -449,7 +450,7 @@ fn filter_commands(all: Value, a: &Args) -> Value {
     Value::Array(list.into_iter().filter(hit).collect())
 }
 
-fn batch(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
+fn batch(b: &mut dyn Backend, a: &Args, g: &PathGuard) -> Result<ToolResult, String> {
     use designcraft_engine::script;
     let steps = match (a.get("commands").and_then(Value::as_array), a.get("script").and_then(Value::as_str)) {
         (Some(c), _) if !c.is_empty() => script::parse(&Value::Array(c.clone()).to_string())?,
@@ -459,7 +460,10 @@ fn batch(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
     if steps.is_empty() {
         return Err("the script has no steps".into());
     }
-    let report = script::run(&steps, |id, p| exec(b, id, p));
+    let report = script::run(&steps, |id, mut p| {
+        g.guard_command(id, &mut p)?;
+        exec(b, id, p)
+    });
     let v = report.to_json();
     Ok(if report.failed.is_some() { ToolResult { is_error: true, ..ToolResult::json(&v) } } else { ToolResult::json(&v) })
 }
@@ -473,22 +477,27 @@ fn story_id(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     r.get("id").cloned().ok_or_else(|| "no story found (give `story` or a text `frame`)".into())
 }
 
-fn render_page(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
+fn render_page(b: &mut dyn Backend, g: &PathGuard, a: &Args) -> Result<ToolResult, String> {
     let r = b.call("ui.render", page_params(a, &["page", "scale", "bleed"]))?;
     let b64 = r.get("pngBase64").and_then(Value::as_str).ok_or("renderer returned no image")?.to_string();
     let path = a.get("path").and_then(Value::as_str);
     if let Some(path) = path {
+        let path = g.check(Op::Write, path)?;
         let png = designcraft_engine::cmd::base64_decode(&b64);
-        std::fs::write(path, png).map_err(|e| format!("write {path}: {e}"))?;
+        std::fs::write(&path, png).map_err(|e| format!("write {path}: {e}"))?;
     }
     Ok(ToolResult::image(b64, &json!({"width": r.get("width"), "height": r.get("height"), "path": path})))
 }
 
-fn screenshot(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
+fn screenshot(b: &mut dyn Backend, g: &PathGuard, a: &Args) -> Result<ToolResult, String> {
     need_ui(b, "screenshot")?;
     // The app writes the capture to disk (loopback: same machine), then we read it back.
-    let keep = a.get("path").and_then(Value::as_str);
-    let target = match keep {
+    let keep = match a.get("path").and_then(Value::as_str) {
+        // A user-chosen path is a write; the server's own temp file is not the client's.
+        Some(p) => Some(g.check(Op::Write, p)?),
+        None => None,
+    };
+    let target = match &keep {
         Some(p) => p.to_string(),
         None => std::env::temp_dir()
             .join(format!("designcraft-mcp-{}-{}.png", std::process::id(), std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_millis())))
@@ -520,7 +529,7 @@ fn pointer(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     b.call("ui.pointer", pick(a, &["events", "mods"]))
 }
 
-fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<ToolResult, String> {
+fn dispatch(b: &mut dyn Backend, name: &str, a: &Args, g: &PathGuard) -> Result<ToolResult, String> {
     let j = |v: Value| Ok(ToolResult::json(&v));
     match name {
         "list_commands" => {
@@ -530,10 +539,11 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<ToolResult, Str
         }
         "execute" => {
             let cmd = req_str(a, "command")?;
-            let params = command_params(a.get("params"))?;
+            let mut params = command_params(a.get("params"))?;
+            g.guard_command(cmd, &mut params)?;
             j(exec(b, cmd, params)?)
         }
-        "batch" => batch(b, a),
+        "batch" => batch(b, a, g),
         "inspect_document" => j(b.call("document.inspect", json!({}))?),
         "get_story" => j(exec(b, "story.get", pick(a, &["story", "frame"]))?),
         "set_story_text" => {
@@ -550,20 +560,31 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<ToolResult, Str
             p.remove("sample");
             j(exec(b, "file.new", Value::Object(p))?)
         }
-        "open_document" => j(b.call("app.open", json!({"path": req_str(a, "path")?}))?),
-        "save_document" => j(exec(b, "file.save", pick(a, &["path"]))?),
+        "open_document" => {
+            let path = g.check(Op::Read, req_str(a, "path")?)?;
+            j(b.call("app.open", json!({"path": path}))?)
+        }
+        "save_document" => {
+            let mut p = pick(a, &["path"]);
+            g.guard_command("file.save", &mut p)?;
+            j(exec(b, "file.save", p)?)
+        }
         "place_image" => {
             if !a.contains_key("path") && !a.contains_key("base64") {
                 return Err("give `path` or `base64`".into());
             }
-            j(exec(b, "file.place", pick(a, &["path", "base64", "name", "frame", "spread", "x", "y", "width"]))?)
+            let mut p = pick(a, &["path", "base64", "name", "frame", "spread", "x", "y", "width"]);
+            g.guard_command("file.place", &mut p)?;
+            j(exec(b, "file.place", p)?)
         }
-        "render_page" => render_page(b, a),
+        "render_page" => render_page(b, g, a),
         "export_png" => {
-            req_str(a, "path")?;
-            j(b.call("app.export", page_params(a, &["path", "page", "scale"]))?)
+            let path = g.check(Op::Write, req_str(a, "path")?)?;
+            let mut args = page_params(a, &["path", "page", "scale"]);
+            args["path"] = json!(path);
+            j(b.call("app.export", args)?)
         }
-        "screenshot" => screenshot(b, a),
+        "screenshot" => screenshot(b, g, a),
         "select_tool" => j(b.call("ui.tool.select", json!({"tool": req_str(a, "tool")?}))?),
         "pointer" => j(pointer(b, a)?),
         "key" => {
@@ -605,15 +626,16 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<ToolResult, Str
 }
 
 /// Run one tool. Failures (unknown tool, bad arguments, command errors) come back as an
-/// `isError` result so the model can read and correct them.
-pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> ToolResult {
+/// `isError` result so the model can read and correct them. `g` confines file paths when
+/// automation roots are set (`--automation-read-root` / `--automation-write-root`, #242).
+pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value, g: &PathGuard) -> ToolResult {
     let empty = Map::new();
     let a = match args {
         Value::Object(o) => o,
         Value::Null => &empty,
         _ => return ToolResult::error("tool arguments must be a JSON object"),
     };
-    match dispatch(b, name, a) {
+    match dispatch(b, name, a, g) {
         Ok(r) => r,
         Err(e) => ToolResult::error(format!("{name}: {e}")),
     }

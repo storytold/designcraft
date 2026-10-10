@@ -9,7 +9,8 @@
 //!                                      # run a command script (crates/engine/src/script.rs): `$N.path` references
 //! designcraft-cli app [--port PORT] COMMAND [JSON]   # run a command in the running app (designcraft --control PORT)
 //! designcraft-cli app [--port PORT] --method METHOD [JSON]   # any control-channel method (ui.screenshot, ui.render, …)
-//! designcraft-cli mcp [--connect PORT] [--sample]  # MCP server over stdio (docs/mcp.md)
+//! designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR] [--automation-write-root DIR]
+//!                                      # MCP server over stdio (docs/mcp.md); the roots confine file paths
 //! designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]  # budgets on a synthetic stress document
 //! designcraft-cli bench FILE [--runs N]  # the same measurements on one document
 //! designcraft-cli validate-pdf FILE.pdf    # run the built-in PDF/X-4 conformance checks
@@ -36,7 +37,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample]\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR] [--automation-write-root DIR]\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// The links line under the usage block.
 fn usage_footer() -> String {
@@ -128,16 +129,26 @@ fn validate_pdf(path: Option<&str>) -> Result<(), String> {
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
 /// started with `designcraft --control PORT`). JSON-RPC on stdin/stdout; logs on stderr.
+/// `--automation-read-root` / `--automation-write-root` confine file paths to a folder (#242).
 fn mcp(args: &[String]) -> Result<(), String> {
-    use designcraft_mcp::{Backend, Headless, Remote, Server, control_addr};
+    use designcraft_mcp::{Backend, Headless, PathGuard, Remote, Server, control_addr};
+    use std::path::Path;
     let mut connect: Option<String> = None;
     let mut sample = false;
+    let mut read_root: Option<String> = None;
+    let mut write_root: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--connect" => connect = Some(it.next().cloned().ok_or("--connect needs a port or host:port")?),
             "--sample" => sample = true,
-            other => return Err(format!("unknown mcp option `{other}` (usage: designcraft-cli mcp [--connect PORT] [--sample])")),
+            "--automation-read-root" => read_root = Some(it.next().cloned().ok_or("--automation-read-root needs a folder")?),
+            "--automation-write-root" => write_root = Some(it.next().cloned().ok_or("--automation-write-root needs a folder")?),
+            other => {
+                return Err(format!(
+                    "unknown mcp option `{other}` (usage: designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR] [--automation-write-root DIR])"
+                ));
+            }
         }
     }
     let backend: Box<dyn Backend> = match connect {
@@ -157,9 +168,10 @@ fn mcp(args: &[String]) -> Result<(), String> {
         }
     };
     eprintln!("designcraft-cli: MCP server on stdio ({})", backend.describe());
+    let guard = PathGuard::new(read_root.as_deref().map(Path::new), write_root.as_deref().map(Path::new))?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    Server::new(backend).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
+    Server::with_guard(backend, guard).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
 }
 
 /// The first `--page`, `--scale` or `--pdf-options` with no `--export` or `--all-pages` after it.

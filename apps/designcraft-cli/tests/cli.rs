@@ -87,6 +87,47 @@ fn help_goes_to_stdout_and_unknown_args_to_stderr() {
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: designcraft-cli"));
 }
 
+#[test]
+fn mcp_automation_roots_confine_paths() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-roots-{}", std::process::id()));
+    let (r, w) = (dir.join("read"), dir.join("write"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::create_dir_all(&w).unwrap();
+    let mut child = cli()
+        .args(["mcp", "--automation-read-root", r.to_str().unwrap(), "--automation-write-root", w.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"new_document","arguments":{}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"save_document","arguments":{"path":"out.designcraft"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"export_png","arguments":{"path":"/tmp/dc-cli-roots-escape.png"}}}"#,
+        "\n",
+    );
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let replies: Vec<serde_json::Value> =
+        String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect();
+    let reply = |id: u64| replies.iter().find(|r| r["id"] == id).unwrap_or_else(|| panic!("no reply {id}: {replies:?}")).clone();
+    // The relative path lands under the write root…
+    assert_eq!(reply(3)["result"]["isError"], false, "{}", reply(3));
+    assert!(w.join("out.designcraft").exists(), "saved under the write root");
+    // …and an absolute path outside every root is refused.
+    assert_eq!(reply(4)["result"]["isError"], true, "{}", reply(4));
+    assert!(reply(4)["result"]["content"][0]["text"].as_str().unwrap_or("").contains("outside the write root"), "{}", reply(4));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `designcraft-cli commands | head -1` panicked with "failed printing to
 /// stdout: Broken pipe (os error 32)" and exit status 101.
 #[test]

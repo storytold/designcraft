@@ -41,6 +41,29 @@ claude mcp add designcraft -- "C:\Program Files\DesignCraft\designcraft-cli.exe"
 claude mcp add designcraft -- designcraft-cli mcp
 ```
 
+## Automation roots
+
+By default the server's file tools take any path. To confine an agent to a folder, pass the same
+roots PhotoCraft uses, so one client config works across the suite:
+
+```sh
+designcraft-cli mcp --automation-read-root /work/project --automation-write-root /work/project
+```
+
+```json
+{"mcpServers": {"designcraft": {"command": "/path/to/designcraft-cli", "args": ["mcp", "--automation-read-root", "/work/project", "--automation-write-root", "/work/project"]}}}
+```
+
+- With at least one root the server is confined: reads only from the read root, writes only to
+  the write root. A root you omit is an authority you don't grant (that side is refused).
+- Request paths are **relative to the matching root** (`save_document {"path": "out.designcraft"}`
+  writes `<write root>/out.designcraft`); an absolute path is accepted only if it is already under
+  the root. `..`, `\` separators, drive prefixes and symlinks that leave the root are refused
+  before any I/O.
+- `script.run` (nested commands that would bypass the per-step check) and unmapped `file.*`
+  commands carrying a path are refused while roots are set; everything else works as usual.
+- Without either flag nothing changes: the server is unrestricted, as before.
+
 ## Modes
 
 | | Headless (`mcp`) | Connected (`mcp --connect PORT` or `HOST:PORT`) |

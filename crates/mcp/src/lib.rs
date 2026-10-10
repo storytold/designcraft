@@ -16,11 +16,13 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod guard;
 mod headless;
 mod server;
 mod tools;
 
 pub use backend::{Backend, Remote};
+pub use guard::{Op, PathGuard, command_authority};
 pub use headless::Headless;
 pub use server::{PROTOCOL_VERSION, Server};
 pub use tools::{ToolResult, call_tool, tool_definitions};

@@ -5,6 +5,7 @@ use std::io::{BufRead, Write};
 use serde_json::{Value, json};
 
 use crate::backend::Backend;
+use crate::guard::PathGuard;
 use crate::tools::{call_tool, tool_definitions};
 
 /// The MCP revision we implement.
@@ -32,6 +33,8 @@ pub const COMMANDS_URI: &str = "designcraft://commands";
 /// An MCP server bound to one backend.
 pub struct Server {
     backend: Box<dyn Backend>,
+    /// File authority from `--automation-read-root` / `--automation-write-root`.
+    guard: PathGuard,
     initialized: bool,
 }
 
@@ -44,8 +47,14 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
 }
 
 impl Server {
+    /// An unrestricted server (no automation roots): file tools take paths as given.
     pub fn new(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false }
+        Self::with_guard(backend, PathGuard::unrestricted())
+    }
+
+    /// A server whose file tools only reach paths under the guard's roots (#242).
+    pub fn with_guard(backend: Box<dyn Backend>, guard: PathGuard) -> Self {
+        Self { backend, guard, initialized: false }
     }
 
     pub fn backend(&mut self) -> &mut dyn Backend {
@@ -149,7 +158,7 @@ impl Server {
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "missing tool `name`".to_string()))?;
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-                Ok(call_tool(self.backend.as_mut(), name, &args).to_value())
+                Ok(call_tool(self.backend.as_mut(), name, &args, &self.guard).to_value())
             }
             "resources/list" => Ok(json!({"resources": [
                 {"uri": DOC_URI, "name": "document", "title": "Active document", "description": "Pages, spreads, items, stories, styles, swatches and selection of the active document (document.inspect)", "mimeType": "application/json"},
