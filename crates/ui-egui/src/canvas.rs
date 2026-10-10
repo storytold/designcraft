@@ -1336,7 +1336,7 @@ fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, key: &str, cur: desi
     }
 }
 
-fn fmt_tick(v: f64) -> String {
+pub(crate) fn fmt_tick(v: f64) -> String {
     let r = v.round();
     if (v - r).abs() < 1e-6 { format!("{}", r as i64) } else { format!("{v:.1}") }
 }

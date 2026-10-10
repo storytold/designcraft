@@ -1358,6 +1358,67 @@ fn split_columns_import_and_round_trip() {
 }
 
 #[test]
+fn paragraph_border_shading_span_and_list_options_import_and_round_trip() {
+    use designcraft_doc::{BoxBottom, BoxTop, BoxWidth, Cap, Join, ListAlign, StrokeType};
+    use designcraft_geom::corners::{Corner, CornerShape};
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" ParagraphBorderOn="true"
+        ParagraphBorderStrokeEndCap="RoundEndCap" ParagraphBorderStrokeEndJoin="BevelEndJoin"
+        ParagraphBorderTopLeftCornerOption="RoundedCorner" ParagraphBorderTopLeftCornerRadius="6"
+        ParagraphBorderTopRightCornerOption="BevelCorner" ParagraphBorderTopRightCornerRadius="4"
+        ParagraphBorderBottomRightCornerOption="None" ParagraphBorderBottomRightCornerRadius="12"
+        ParagraphBorderBottomLeftCornerOption="InsetCorner" ParagraphBorderBottomLeftCornerRadius="3"
+        ParagraphBorderWidth="TextWidth" ParagraphBorderTopOrigin="EmBoxTopOrigin" ParagraphBorderBottomOrigin="EmBoxBottomOrigin"
+        ParagraphBorderDisplayIfSplits="true" MergeConsecutiveParaBorders="false" ParagraphBorderGapTint="50"
+        ParagraphShadingOn="true" ParagraphShadingTopLeftCornerOption="RoundedCorner" ParagraphShadingTopLeftCornerRadius="8"
+        ParagraphShadingTopRightCornerOption="RoundedCorner" ParagraphShadingTopRightCornerRadius="8"
+        ParagraphShadingWidth="TextWidth" ParagraphShadingTopOrigin="BaselineTopOrigin" ParagraphShadingBottomOrigin="BaselineBottomOrigin"
+        ParagraphShadingClipToFrame="true" ParagraphShadingSuppressPrinting="true"
+        SpanColumnType="SpanColumns" SpanColumnMinSpaceBefore="6" SpanColumnMinSpaceAfter="9"
+        BulletsAndNumberingListType="NumberedList" NumberingLevel="2" NumberingAlignment="RightAlign" BulletsAlignment="CenterAlign"
+        NumberingApplyRestartPolicy="false">
+        <Properties>
+          <ParagraphBorderType type="object">StrokeStyle/$ID/Dashed</ParagraphBorderType>
+          <ParagraphBorderGapColor type="object">Swatch/None</ParagraphBorderGapColor>
+          <SpanSplitColumnCount type="enumeration">All</SpanSplitColumnCount>
+          <NumberingRestartPolicies RestartPolicy="SpecificPreviousLevel" LowerLevel="1" UpperLevel="1"/>
+          <BulletsFont type="string">Courier New</BulletsFont>
+          <BulletsFontStyle type="string">Bold</BulletsFontStyle>
+        </Properties>
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Boxed</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let doc = import_idml(&fixture_with_story(story)).unwrap();
+    let para = |d: &Document| d.stories.values().find(|s| s.text.contains("Boxed")).unwrap().paras[0].para.clone();
+    let a = para(&doc);
+    let corner = |shape, size| Corner { shape, size };
+    assert_eq!(a.border_type, Some(StrokeType::Dashed { pattern: vec![] }));
+    assert_eq!((a.border_cap, a.border_join), (Some(Cap::Round), Some(Join::Bevel)));
+    assert_eq!(
+        a.border_corners,
+        Some([corner(CornerShape::Rounded, 6.0), corner(CornerShape::Bevel, 4.0), corner(CornerShape::None, 12.0), corner(CornerShape::Inset, 3.0)])
+    );
+    assert_eq!((a.border_width, a.border_top, a.border_bottom), (Some(BoxWidth::Text), Some(BoxTop::EmBox), Some(BoxBottom::EmBox)));
+    assert_eq!((a.border_display_if_splits, a.border_merge, a.border_gap_tint), (Some(true), Some(false), Some(0.5)));
+    assert!(a.border_gap_color.is_some());
+    assert_eq!(a.shading_corners.map(|c| c[1]), Some(corner(CornerShape::Rounded, 8.0)));
+    assert_eq!((a.shading_width, a.shading_top, a.shading_bottom), (Some(BoxWidth::Text), Some(BoxTop::Baseline), Some(BoxBottom::Baseline)));
+    assert_eq!((a.shading_clip, a.shading_nonprinting), (Some(true), Some(true)));
+    assert_eq!((a.span_space_before, a.span_space_after), (Some(6.0), Some(9.0)));
+    assert_eq!((a.list_level, a.number_align, a.bullet_align), (Some(2), Some(ListAlign::Right), Some(ListAlign::Center)));
+    assert_eq!((a.restart_numbers, a.restart_after_level), (Some(false), Some(1)));
+    assert_eq!((a.bullet_font.as_deref(), a.bullet_font_style.as_deref()), (Some("Courier New"), Some("Bold")));
+    let b = para(&import_idml(&export_idml(&doc)).unwrap());
+    let pick = |p: &designcraft_doc::ParaAttrs| {
+        let border = (&p.border_type, p.border_cap, p.border_join, p.border_corners, p.border_width, p.border_top, p.border_bottom);
+        let more = (p.border_display_if_splits, p.border_merge, &p.border_gap_color, p.border_gap_tint);
+        let shading = (p.shading_corners, p.shading_width, p.shading_top, p.shading_bottom, p.shading_clip, p.shading_nonprinting);
+        let list = (p.span_space_before, p.span_space_after, p.list_level, p.number_align, p.bullet_align, p.restart_numbers);
+        format!("{:?}", (border, more, shading, list, p.restart_after_level, &p.bullet_font, &p.bullet_font_style))
+    };
+    assert_eq!(pick(&b), pick(&a), "the attributes survive export and import");
+}
+
+#[test]
 fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     let styles = STYLES.replace(
         "    </ParagraphStyleGroup>",
@@ -1398,4 +1459,42 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     let d = import_idml(&bytes).unwrap();
     check(&d);
     check(&import_idml(&export_idml(&d)).unwrap());
+}
+
+#[test]
+fn list_tab_position_round_trips_as_a_tab_stop() {
+    use designcraft_doc::{ListType, ParaAttrs, ParagraphStyle, TabAlign, TabStop};
+    let stop = |position, align| TabStop { position, align, leader: String::new(), align_on: String::new() };
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.styles).paragraph.push(ParagraphStyle {
+        name: "List".into(),
+        based_on: None,
+        next_style: None,
+        para: ParaAttrs { list_type: Some(ListType::Bullets), list_tab: Some(Some(24.0)), ..Default::default() },
+        chars: CharAttrs::default(),
+        shortcut: String::new(),
+    });
+    let local = ParaAttrs {
+        list_type: Some(ListType::Bullets),
+        list_tab: Some(Some(36.0)),
+        tabs: Some(vec![stop(100.0, TabAlign::Right)]),
+        ..Default::default()
+    };
+    let ended = ParaAttrs { list_type: Some(ListType::None), ..Default::default() };
+    let lid = d.default_layer();
+    for (i, (text, style, para)) in
+        [("Local\tx", "", local), ("Styled\ty", "List", ParaAttrs::default()), ("Ended\tz", "List", ended)].into_iter().enumerate()
+    {
+        let pf = ParaFormat { style: if style.is_empty() { ParaFormat::default().style } else { style.into() }, para, ..Default::default() };
+        let y = 40.0 + 100.0 * i as f64;
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, y, 300.0, y + 80.0), lid, text, pf).unwrap();
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let tabs = |prefix: &str| {
+        let s = back.stories.values().find(|s| s.text.starts_with(prefix)).unwrap();
+        back.styles.resolve_para(&s.paras[0]).0.tabs
+    };
+    assert_eq!(tabs("Local"), vec![stop(36.0, TabAlign::Left), stop(100.0, TabAlign::Right)]);
+    assert_eq!(tabs("Styled"), vec![stop(24.0, TabAlign::Left)]);
+    assert_eq!(tabs("Ended"), vec![], "a paragraph that ends the list has no list tab stop");
 }

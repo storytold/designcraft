@@ -112,7 +112,9 @@ impl Cache {
         sig.push(usize::from(doc.settings.glyph_fallback));
         // Named lists continue from earlier stories.
         for l in &doc.settings.lists {
-            sig.push(doc.list_start(sid, &l.name) as usize);
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&doc.list_start(sid, &l.name), &mut h);
+            sig.push(std::hash::Hasher::finish(&h) as usize);
         }
         {
             let mut g = self.map.lock().unwrap_or_else(|e| e.into_inner());

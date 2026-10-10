@@ -2771,3 +2771,191 @@ fn empty_paragraphs_get_no_bullet_or_number() {
         assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.", "", "2.", ""], "list `{name}`");
     }
 }
+
+// ---------- paragraph border and shading ----------
+
+fn bordered(text: &str, rect: Rect, para: ParaAttrs) -> ComposedStory {
+    let para = ParaAttrs { border_on: Some(true), border_weights: Some([1.0; 4]), ..para };
+    let (d, sid, _) = doc_with(text, rect, para);
+    compose_story(&d, sid, &ComposeOptions::default())
+}
+
+fn has_curves(bp: &designcraft_geom::BezPath) -> bool {
+    bp.elements().iter().any(|e| matches!(e, designcraft_geom::PathEl::CurveTo(..) | designcraft_geom::PathEl::QuadTo(..)))
+}
+
+#[test]
+fn rounded_border_corners_are_curves_and_dotted_borders_paint_their_gap_first() {
+    use designcraft_geom::corners::{Corner, CornerShape};
+    let rounded = [Corner { shape: CornerShape::Rounded, size: 6.0 }; 4];
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs { border_corners: Some(rounded), ..Default::default() });
+    let paths: Vec<_> = cs.frames[0].decos.iter().filter_map(|dc| dc.path.as_ref()).collect();
+    assert_eq!(paths.len(), 1, "one stroked outline");
+    assert!(has_curves(paths[0]));
+    // Square corners: plain edges, no curves.
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
+    assert!(cs.frames[0].decos.iter().all(|dc| dc.path.is_none()));
+    // A dotted border with a gap colour: the gap under the dots.
+    let dotted = ParaAttrs { border_type: Some(designcraft_doc::StrokeType::Dotted), border_gap_color: Some("[Paper]".into()), ..Default::default() };
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), dotted);
+    let colors: Vec<&str> = cs.frames[0].decos.iter().filter(|dc| dc.path.is_some()).map(|dc| dc.color.as_str()).collect();
+    assert_eq!(colors, ["[Paper]", "[Black]"]);
+}
+
+/// The width of the widest border edge (the top and bottom edges span the box).
+fn border_width(cs: &ComposedStory) -> f64 {
+    cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect.width()).fold(0.0, f64::max)
+}
+
+#[test]
+fn a_text_width_border_is_narrower_than_a_column_width_one() {
+    let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+    let column = border_width(&bordered("Short", rect, ParaAttrs::default()));
+    let text = border_width(&bordered("Short", rect, ParaAttrs { border_width: Some(designcraft_doc::BoxWidth::Text), ..Default::default() }));
+    assert!((column - 302.0).abs() < 1e-6, "column and both side strokes: {column}");
+    assert!(text > 2.0 && text < 60.0, "text: {text}");
+}
+
+/// Edges of a plain border by frame column: (column, count).
+fn edges_per_column(cs: &ComposedStory) -> Vec<usize> {
+    let cols = &cs.frames[0].columns;
+    cols.iter()
+        .map(|c| {
+            cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]" && dc.rect.center().x > c.x0 - 2.0 && dc.rect.center().x < c.x1 + 2.0).count()
+        })
+        .collect()
+}
+
+#[test]
+fn a_split_paragraph_closes_its_border_in_each_column_only_when_set_to() {
+    let text = format!("{LOREM} {LOREM}");
+    let compose = |display: bool| {
+        let para = ParaAttrs { border_on: Some(true), border_weights: Some([1.0; 4]), border_display_if_splits: Some(display), ..Default::default() };
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 90.0), para);
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let open = compose(false);
+    assert!(open.frames[0].lines.iter().any(|l| l.column == 1), "the paragraph reaches the second column");
+    // Open at the split: top and sides in the first column, sides and bottom in the second.
+    assert_eq!(edges_per_column(&open), [3, 3]);
+    assert_eq!(edges_per_column(&compose(true)), [4, 4]);
+}
+
+#[test]
+fn consecutive_paragraphs_with_the_same_border_share_one_box() {
+    let compose = |merge: bool| {
+        let para = ParaAttrs { space_after: Some(10.0), border_merge: Some(merge), ..Default::default() };
+        bordered("One\nTwo\nThree", Rect::new(0.0, 0.0, 300.0, 300.0), para)
+    };
+    let merged = compose(true);
+    let edges: Vec<Rect> = merged.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect).collect();
+    assert_eq!(edges.len(), 4, "one box: {edges:?}");
+    let lines = &merged.frames[0].lines;
+    let (first, last) = (&lines[0], &lines[lines.len() - 1]);
+    let left = edges.iter().find(|r| r.height() > r.width()).unwrap();
+    assert!((left.y0 - (first.baseline - first.ascent)).abs() < 1e-6 && (left.y1 - (last.baseline + last.descent)).abs() < 1e-6, "{left:?}");
+    assert_eq!(compose(false).frames[0].decos.iter().filter(|dc| dc.color == "[Black]").count(), 12, "a box each");
+}
+
+#[test]
+fn shading_clips_to_the_frame_and_can_stay_off_print() {
+    let para = ParaAttrs {
+        shading_on: Some(true),
+        shading_offsets: Some([50.0; 4]),
+        shading_clip: Some(true),
+        shading_nonprinting: Some(true),
+        ..Default::default()
+    };
+    let (d, sid, _) = doc_with("Shaded", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let area = cs.frames[0].columns[0];
+    let shade = &cs.frames[0].decos[0];
+    assert!(shade.nonprinting);
+    assert!(shade.rect.x0 >= area.x0 - 1e-6 && shade.rect.y0 >= area.y0 - 1e-6 && shade.rect.x1 <= area.x1 + 1e-6, "{:?} in {area:?}", shade.rect);
+}
+
+// ---------- span space, bullets and numbering ----------
+
+#[test]
+fn space_before_and_after_a_span_moves_the_span_and_the_text_below() {
+    let at = |before: f64, after: f64| {
+        let (mut d, sid, _, h) = span_doc(1, 1, Rect::new(0.0, 0.0, 600.0, 800.0));
+        let p = &mut d.story_mut(sid).unwrap().paras[h].para;
+        p.span_space_before = Some(before);
+        p.span_space_after = Some(after);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let first = |pi: usize| cs.frames[0].lines.iter().find(|l| l.para == pi).map(|l| l.baseline).unwrap();
+        (first(h), first(h + 1))
+    };
+    let (span0, below0) = at(0.0, 0.0);
+    let (span1, below1) = at(24.0, 0.0);
+    assert!((span1 - span0 - 24.0).abs() < 0.01, "{span0} → {span1}");
+    assert!((below1 - below0 - 24.0).abs() < 0.01, "the text below moves with it");
+    let (span2, below2) = at(0.0, 18.0);
+    assert!((span2 - span0).abs() < 0.01 && (below2 - below0 - 18.0).abs() < 0.01, "{below0} → {below2}");
+}
+
+/// The first line of each paragraph.
+fn first_lines(cs: &ComposedStory) -> Vec<&Line> {
+    all_lines(cs).into_iter().filter(|l| l.first_in_para).collect()
+}
+
+#[test]
+fn a_right_aligned_number_ends_at_the_line_start() {
+    use designcraft_doc::{ListAlign, ListType};
+    let compose = |align: ListAlign| {
+        let para = ParaAttrs {
+            list_type: Some(ListType::Numbers),
+            number_align: Some(align),
+            left_indent: Some(36.0),
+            first_line_indent: Some(-18.0),
+            ..Default::default()
+        };
+        let (d, sid, _) = doc_with("Item", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    // The label "1.\t": its first two glyphs are the number and the full stop.
+    let cs = compose(ListAlign::Left);
+    let col = cs.frames[0].columns[0];
+    let l = first_lines(&cs)[0];
+    assert!((l.glyphs[0].x - (col.x0 + 18.0)).abs() < 0.01, "left: starts at the line start");
+    let text_x = l.glyphs.iter().find(|g| g.len > 0).unwrap().x;
+    let cs = compose(ListAlign::Right);
+    let l = first_lines(&cs)[0];
+    let end = l.glyphs[1].x + l.glyphs[1].adv;
+    assert!((end - (col.x0 + 18.0)).abs() < 0.01, "right: ends at the line start ({end})");
+    assert!((l.glyphs.iter().find(|g| g.len > 0).unwrap().x - text_x).abs() < 0.01, "the text stays at the tab stop");
+}
+
+#[test]
+fn level_two_numbering_restarts_after_level_one() {
+    let para = numbered(designcraft_doc::NumberStyle::Arabic, "^1.^#");
+    let (mut d, sid, _) = doc_with("A\nB\nC\nD\nE", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+    for (p, level) in d.story_mut(sid).unwrap().paras.iter_mut().zip([1, 2, 2, 1, 2]) {
+        p.para.list_level = Some(level);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // `^1` is level 1's number, `^#` the paragraph's own level.
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.1", "1.1", "1.2", "2.2", "2.1"]);
+    // Without the restart, level 2 carries on.
+    for p in &mut d.story_mut(sid).unwrap().paras {
+        p.para.restart_numbers = Some(false);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.1", "1.1", "1.2", "2.2", "2.3"]);
+}
+
+#[test]
+fn the_tab_position_places_the_text_after_the_label() {
+    use designcraft_doc::ListType;
+    let compose = |tab: Option<f64>| {
+        let para = ParaAttrs { list_type: Some(ListType::Bullets), list_tab: Some(tab), ..Default::default() };
+        let (d, sid, _) = doc_with("Item", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let col = cs.frames[0].columns[0];
+        first_lines(&cs)[0].glyphs.iter().find(|g| g.len > 0).unwrap().x - col.x0
+    };
+    assert!((compose(Some(50.0)) - 50.0).abs() < 0.01);
+    assert!((compose(None) - 36.0).abs() < 0.01, "the default tab stop");
+}

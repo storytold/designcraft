@@ -94,6 +94,42 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Character", ["Zeichen", "Caractère", "Carácter", "文字", "字符"]),
     ("Paragraph", ["Absatz", "Paragraphe", "Párrafo", "段落", "段落"]),
     ("Tabs", ["Tabulatoren", "Tabulations", "Tabulaciones", "タブ", "制表符"]),
+    (
+        "Left-aligned tab",
+        ["Linksbündiger Tabulator", "Tabulation alignée à gauche", "Tabulación alineada a la izquierda", "左揃えタブ", "左对齐制表符"],
+    ),
+    ("Centered tab", ["Zentrierter Tabulator", "Tabulation centrée", "Tabulación centrada", "中央揃えタブ", "居中对齐制表符"]),
+    (
+        "Right-aligned tab",
+        ["Rechtsbündiger Tabulator", "Tabulation alignée à droite", "Tabulación alineada a la derecha", "右揃えタブ", "右对齐制表符"],
+    ),
+    (
+        "Tab aligned on a character",
+        [
+            "Am Zeichen ausgerichteter Tabulator",
+            "Tabulation alignée sur un caractère",
+            "Tabulación alineada en un carácter",
+            "文字揃えタブ",
+            "按字符对齐制表符",
+        ],
+    ),
+    ("X:", ["X:", "X :", "X:", "X:", "X:"]),
+    ("Leader:", ["Füllzeichen:", "Points de suite :", "Carácter de relleno:", "リーダー:", "前导符:"]),
+    ("Align On:", ["Ausrichten an:", "Aligner sur :", "Alinear en:", "揃える文字:", "对齐位置:"]),
+    (
+        "Position panel above text frame",
+        [
+            "Bedienfeld über dem Textrahmen platzieren",
+            "Placer le panneau au-dessus du bloc de texte",
+            "Colocar el panel sobre el marco de texto",
+            "パネルをテキストフレームの上に配置",
+            "将面板置于文本框上方",
+        ],
+    ),
+    ("Clear All", ["Alle löschen", "Tout effacer", "Borrar todo", "すべてを消去", "全部清除"]),
+    ("Delete Tab", ["Tabulator löschen", "Supprimer la tabulation", "Eliminar tabulación", "タブを削除", "删除制表符"]),
+    ("Repeat Tab", ["Tabulator wiederholen", "Répéter la tabulation", "Repetir tabulación", "タブを繰り返し", "重复制表符"]),
+    ("Reset Indents", ["Einzüge zurücksetzen", "Réinitialiser les retraits", "Restablecer sangrías", "インデントをリセット", "重置缩进"]),
     ("Glyphs", ["Glyphen", "Glyphes", "Glifos", "字形", "字形"]),
     ("Story", ["Textabschnitt", "Article", "Artículo", "ストーリー", "文章"]),
     ("Character Styles", ["Zeichenformate", "Styles de caractère", "Estilos de carácter", "文字スタイル", "字符样式"]),
@@ -2811,6 +2847,159 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Rule Below", ["Linie unterhalb", "Filet après", "Filete después", "後境界線", "下方横线"]),
     ("Tint:", ["Farbton:", "Teinte:", "Matiz:", "濃淡:", "色调："]),
     ("Column", ["Spalte", "Colonne", "Columna", "段", "栏"]),
+    // Paragraph Style Options: Paragraph Border, Paragraph Shading, Keep Options, Span Columns, Bullets and Numbering.
+    ("Paragraph Border", ["Absatzrahmen", "Contour de paragraphe", "Borde de párrafo", "段落囲み罫", "段落边框"]),
+    ("Paragraph Shading", ["Absatzschattierung", "Ombrage de paragraphe", "Sombreado de párrafo", "段落の背景色", "段落底纹"]),
+    ("Keep Options", ["Umbruchoptionen", "Options d'enchaînement", "Opciones de separación", "段落分離禁止オプション", "保持选项"]),
+    ("Span Columns", ["Spalten überspannen", "Étendre sur les colonnes", "Abarcar columnas", "段抜きと段分割", "跨栏"]),
+    ("Top:", ["Oben:", "Haut:", "Arriba:", "上:", "上："]),
+    ("Left:", ["Links:", "Gauche:", "Izquierda:", "左:", "左："]),
+    ("Bottom:", ["Unten:", "Bas:", "Abajo:", "下:", "下："]),
+    ("Right:", ["Rechts:", "Droite:", "Derecha:", "右:", "右："]),
+    ("Keep with Next:", ["Nicht trennen von nächsten:", "Lier aux suivantes:", "Conservar con siguientes:", "次の段落と分離禁止:", "与下一段保持："]),
+    ("Keep Lines Together", ["Zeilen nicht trennen", "Lignes solidaires", "Conservar líneas juntas", "行を分離しない", "保持各行同页"]),
+    (
+        "All Lines in Paragraph",
+        ["Alle Zeilen im Absatz", "Toutes les lignes du paragraphe", "Todas las líneas del párrafo", "段落のすべての行", "段落中所有行"],
+    ),
+    (
+        "At Start/End of Paragraph",
+        ["Am Anfang/Ende des Absatzes", "Au début/à la fin du paragraphe", "Al inicio/final del párrafo", "段落の始めと終わり", "在段落开头/结尾"],
+    ),
+    ("End:", ["Ende:", "Fin:", "Final:", "終了位置:", "结束："]),
+    ("Start Paragraph:", ["Absatzbeginn:", "Début de paragraphe:", "Inicio de párrafo:", "段落の開始位置:", "段落开始："]),
+    ("Anywhere", ["Überall", "N'importe où", "En cualquier lugar", "任意の位置", "任意位置"]),
+    ("In Next Column", ["In nächster Spalte", "Dans la colonne suivante", "En la siguiente columna", "次の段", "于下一栏"]),
+    ("In Next Frame", ["In nächstem Rahmen", "Dans le bloc suivant", "En el siguiente marco", "次のフレーム", "于下一框架"]),
+    ("On Next Page", ["Auf nächster Seite", "Sur la page suivante", "En la página siguiente", "次のページ", "于下一页"]),
+    (
+        "On Next Odd Page",
+        ["Auf nächster ungerader Seite", "Sur la page impaire suivante", "En la siguiente página impar", "次の奇数ページ", "于下一奇数页"],
+    ),
+    (
+        "On Next Even Page",
+        ["Auf nächster gerader Seite", "Sur la page paire suivante", "En la siguiente página par", "次の偶数ページ", "于下一偶数页"],
+    ),
+    ("Paragraph Layout:", ["Absatzlayout:", "Disposition du paragraphe:", "Diseño de párrafo:", "段落レイアウト:", "段落版面："]),
+    ("Single Column", ["Eine Spalte", "Colonne simple", "Una columna", "単一段", "单栏"]),
+    ("Split Column", ["Spalte unterteilen", "Diviser la colonne", "Dividir columna", "段分割", "拆分栏"]),
+    ("Columns:", ["Spalten:", "Colonnes:", "Columnas:", "段:", "栏数："]),
+    ("All", ["Alle", "Toutes", "Todas", "すべて", "全部"]),
+    ("Inside Gutter:", ["Innerer Spaltenabstand:", "Gouttière intérieure:", "Medianil interior:", "内側の間隔:", "内栏间距："]),
+    ("Outside Gutter:", ["Äußerer Spaltenabstand:", "Gouttière extérieure:", "Medianil exterior:", "外側の間隔:", "外栏间距："]),
+    ("List Type:", ["Listentyp:", "Type de liste:", "Tipo de lista:", "リストタイプ:", "列表类型："]),
+    ("Bullets", ["Aufzählungszeichen", "Puces", "Viñetas", "箇条書き記号", "项目符号"]),
+    ("Numbers", ["Nummerierung", "Numéros", "Números", "自動番号", "编号"]),
+    ("Bullet Character:", ["Aufzählungszeichen:", "Caractère de puce:", "Carácter de viñeta:", "箇条書き記号:", "项目符号字符："]),
+    ("Text After:", ["Text danach:", "Texte après:", "Texto después:", "後続テキスト:", "后续文本："]),
+    ("Gap Tint:", ["Lückenfarbton:", "Teinte de l'espace:", "Matiz del hueco:", "すき間の濃淡:", "间隙色调："]),
+    (
+        "Corner Size and Shape",
+        ["Eckengröße und -form", "Taille et forme des angles", "Tamaño y forma de esquinas", "角のサイズとシェイプ", "角大小和形状"],
+    ),
+    ("Top Left:", ["Oben links:", "En haut à gauche:", "Superior izquierda:", "左上:", "左上："]),
+    ("Top Right:", ["Oben rechts:", "En haut à droite:", "Superior derecha:", "右上:", "右上："]),
+    ("Bottom Right:", ["Unten rechts:", "En bas à droite:", "Inferior derecha:", "右下:", "右下："]),
+    ("Bottom Left:", ["Unten links:", "En bas à gauche:", "Inferior izquierda:", "左下:", "左下："]),
+    ("Rounded", ["Abgerundet", "Arrondi", "Redondeado", "角丸", "圆角"]),
+    ("Inverse Rounded", ["Umgekehrt abgerundet", "Arrondi inversé", "Redondeado inverso", "逆角丸", "反向圆角"]),
+    ("Inset", ["Eingezogen", "En retrait", "Hundido", "内側に切り欠き", "内凹"]),
+    ("Fancy", ["Verziert", "Fantaisie", "Decorativo", "装飾", "花式"]),
+    ("Top Edge:", ["Obere Kante:", "Bord supérieur:", "Borde superior:", "上端:", "上边缘："]),
+    ("Bottom Edge:", ["Untere Kante:", "Bord inférieur:", "Borde inferior:", "下端:", "下边缘："]),
+    ("Em Box Top", ["Geviert oben", "Haut du cadratin", "Parte superior del cuadratín", "仮想ボディの上", "全角框顶部"]),
+    ("Descent", ["Unterlänge", "Jambage inférieur", "Descendente", "ディセント", "下伸部"]),
+    ("Em Box Bottom", ["Geviert unten", "Bas du cadratin", "Parte inferior del cuadratín", "仮想ボディの下", "全角框底部"]),
+    (
+        "Display Border if Paragraph Splits Across Frames/Columns",
+        [
+            "Rahmen anzeigen, wenn der Absatz auf Rahmen/Spalten verteilt ist",
+            "Afficher le contour si le paragraphe est réparti sur plusieurs blocs/colonnes",
+            "Mostrar borde si el párrafo se divide entre marcos/columnas",
+            "段落がフレームや段をまたぐときに囲み罫を表示",
+            "段落跨框架/栏拆分时显示边框",
+        ],
+    ),
+    (
+        "Merge Consecutive Borders and Shading",
+        [
+            "Aufeinanderfolgende Rahmen und Schattierungen zusammenführen",
+            "Fusionner les contours et trames consécutifs",
+            "Combinar bordes y sombreados consecutivos",
+            "連続する囲み罫と背景色を結合",
+            "合并连续的边框和底纹",
+        ],
+    ),
+    ("Clip to Frame", ["Auf Rahmen beschneiden", "Découper selon le bloc", "Recortar al marco", "フレームでクリップ", "剪切到框架"]),
+    (
+        "Do not Print or Export",
+        ["Nicht drucken oder exportieren", "Ne pas imprimer ni exporter", "No imprimir ni exportar", "印刷・書き出ししない", "不打印或导出"],
+    ),
+    ("Space Before Span:", ["Abstand vor Überspannung:", "Espace avant l'étendue:", "Espacio antes de abarcar:", "段抜き前のアキ:", "跨栏前间距："]),
+    (
+        "Space After Span:",
+        ["Abstand nach Überspannung:", "Espace après l'étendue:", "Espacio después de abarcar:", "段抜き後のアキ:", "跨栏后间距："],
+    ),
+    ("Space Before Split:", ["Abstand vor Teilung:", "Espace avant la division:", "Espacio antes de dividir:", "段分割前のアキ:", "拆分前间距："]),
+    ("Space After Split:", ["Abstand nach Teilung:", "Espace après la division:", "Espacio después de dividir:", "段分割後のアキ:", "拆分后间距："]),
+    ("Level:", ["Ebene:", "Niveau:", "Nivel:", "レベル:", "级别："]),
+    ("Glyphs…", ["Glyphen…", "Glyphes…", "Glifos…", "字形…", "字形…"]),
+    ("(Paragraph Font)", ["(Absatzschrift)", "(Police du paragraphe)", "(Fuente del párrafo)", "(段落のフォント)", "(段落字体)"]),
+    (
+        "Restart Numbers at This Level After:",
+        [
+            "Nummerierung auf dieser Ebene neu beginnen nach:",
+            "Recommencer la numérotation à ce niveau après:",
+            "Reiniciar números en este nivel después de:",
+            "このレベルの番号を振り直すきっかけ:",
+            "在此级别后重新编号：",
+        ],
+    ),
+    (
+        "Any Previous Level",
+        ["Einer beliebigen höheren Ebene", "Tout niveau précédent", "Cualquier nivel anterior", "任意の上位レベル", "任何上一级别"],
+    ),
+    ("Tab Position:", ["Tabulatorposition:", "Position de la tabulation:", "Posición de tabulación:", "タブ位置:", "制表符位置："]),
+    (
+        "Paragraph Borders and Shading…",
+        [
+            "Absatzrahmen und -schattierung…",
+            "Contours et trames de paragraphe…",
+            "Bordes y sombreado de párrafo…",
+            "段落囲み罫と段落背景色…",
+            "段落边框和底纹…",
+        ],
+    ),
+    (
+        "Paragraph Borders and Shading",
+        [
+            "Absatzrahmen und -schattierung",
+            "Contours et trames de paragraphe",
+            "Bordes y sombreado de párrafo",
+            "段落囲み罫と段落背景色",
+            "段落边框和底纹",
+        ],
+    ),
+    ("Span Columns…", ["Spalten überspannen…", "Étendre sur les colonnes…", "Abarcar columnas…", "段抜きと段分割…", "跨栏…"]),
+    (
+        "Bullets and Numbering…",
+        ["Aufzählungszeichen und Nummerierung…", "Puces et numérotation…", "Viñetas y numeración…", "箇条書き記号と番号付け…", "项目符号和编号…"],
+    ),
+    ("List:", ["Liste:", "Liste:", "Lista:", "リスト:", "列表："]),
+    ("[Default]", ["[Standard]", "[Par défaut]", "[Predeterminado]", "[デフォルト]", "[默认]"]),
+    ("Number:", ["Zahl:", "Numéro:", "Número:", "番号:", "编号："]),
+    ("Mode:", ["Modus:", "Mode:", "Modo:", "モード:", "模式："]),
+    (
+        "Continue from Previous Number",
+        [
+            "Ab vorheriger Zahl fortfahren",
+            "Continuer à partir du numéro précédent",
+            "Continuar desde el número anterior",
+            "前の番号から継続",
+            "从上一编号继续",
+        ],
+    ),
+    ("Start At", ["Beginnen bei", "Commencer à", "Empezar en", "開始番号", "起始编号"]),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.
@@ -2864,6 +3053,9 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
 pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
     if lang == "uk" {
         return uk::CONTEXT.iter().find(|(key, scope, _)| *key == s && *scope == context).map_or_else(|| tr(lang, s), |(_, _, text)| text);
+    }
+    if lang == "ja" {
+        return ja::CONTEXT.iter().find(|(key, scope, _)| *key == s && *scope == context).map_or_else(|| tr(lang, s), |(_, _, text)| text);
     }
     tr(lang, s)
 }
@@ -2994,6 +3186,8 @@ mod tests {
         assert_eq!(tr_context("uk", "Group", "selection"), "Група");
         assert_eq!(tr("uk", "Group"), "Згрупувати");
         assert_eq!(tr_context("", "Columns", "table"), "Columns");
+        assert_eq!(tr_context("ja", "Span Columns", "paragraphLayout"), "段抜き");
+        assert_eq!(tr("ja", "Span Columns"), "段抜きと段分割");
         assert_eq!(tr_context("uk", "Custom caption", "custom"), "Custom caption");
         assert_eq!(tr("uk", "through"), "включно");
         assert_eq!(tr("uk", "up to"), "не включно");

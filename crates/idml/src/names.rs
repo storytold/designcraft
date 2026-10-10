@@ -331,6 +331,63 @@ pub fn arrow_in(s: &str) -> Arrowhead {
     .unwrap_or(Arrowhead::None)
 }
 
+pub fn box_width_out(w: designcraft_doc::BoxWidth) -> &'static str {
+    match w {
+        designcraft_doc::BoxWidth::Column => "ColumnWidth",
+        designcraft_doc::BoxWidth::Text => "TextWidth",
+    }
+}
+pub fn box_width_in(s: &str) -> designcraft_doc::BoxWidth {
+    if s == "TextWidth" { designcraft_doc::BoxWidth::Text } else { designcraft_doc::BoxWidth::Column }
+}
+
+pub fn box_top_out(t: designcraft_doc::BoxTop) -> &'static str {
+    match t {
+        designcraft_doc::BoxTop::Ascent => "AscentTopOrigin",
+        designcraft_doc::BoxTop::Baseline => "BaselineTopOrigin",
+        designcraft_doc::BoxTop::EmBox => "EmBoxTopOrigin",
+        designcraft_doc::BoxTop::Leading => "LeadingTopOrigin",
+    }
+}
+pub fn box_top_in(s: &str) -> designcraft_doc::BoxTop {
+    match s {
+        "BaselineTopOrigin" => designcraft_doc::BoxTop::Baseline,
+        "EmBoxTopOrigin" => designcraft_doc::BoxTop::EmBox,
+        "LeadingTopOrigin" => designcraft_doc::BoxTop::Leading,
+        _ => designcraft_doc::BoxTop::Ascent,
+    }
+}
+
+pub fn box_bottom_out(b: designcraft_doc::BoxBottom) -> &'static str {
+    match b {
+        designcraft_doc::BoxBottom::Descent => "DescentBottomOrigin",
+        designcraft_doc::BoxBottom::Baseline => "BaselineBottomOrigin",
+        designcraft_doc::BoxBottom::EmBox => "EmBoxBottomOrigin",
+    }
+}
+pub fn box_bottom_in(s: &str) -> designcraft_doc::BoxBottom {
+    match s {
+        "BaselineBottomOrigin" => designcraft_doc::BoxBottom::Baseline,
+        "EmBoxBottomOrigin" => designcraft_doc::BoxBottom::EmBox,
+        _ => designcraft_doc::BoxBottom::Descent,
+    }
+}
+
+pub fn list_align_out(a: designcraft_doc::ListAlign) -> &'static str {
+    match a {
+        designcraft_doc::ListAlign::Left => "LeftAlign",
+        designcraft_doc::ListAlign::Center => "CenterAlign",
+        designcraft_doc::ListAlign::Right => "RightAlign",
+    }
+}
+pub fn list_align_in(s: &str) -> designcraft_doc::ListAlign {
+    match s {
+        "CenterAlign" => designcraft_doc::ListAlign::Center,
+        "RightAlign" => designcraft_doc::ListAlign::Right,
+        _ => designcraft_doc::ListAlign::Left,
+    }
+}
+
 pub fn corner_out(c: CornerShape) -> &'static str {
     match c {
         CornerShape::None => "None",

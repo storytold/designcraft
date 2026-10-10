@@ -68,12 +68,21 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{rule?: ruleAbove|ruleBelow} — Rule Above / Rule Below of the selected paragraphs (type.para)",
     ),
+    (
+        "app.paragraphBordersDialog",
+        "Paragraph Borders and Shading…",
+        None,
+        "{tab?: border|shading} — border and shading of the selected paragraphs (type.para)",
+    ),
+    ("app.spanColumnsDialog", "Span Columns…", None, "{} — span or split columns of the selected paragraphs (type.para)"),
+    ("app.bulletsNumberingDialog", "Bullets and Numbering…", None, "{} — bullets or numbers of the selected paragraphs (type.para)"),
     ("app.findFontDialog", "Find/Replace Font…", None, "{} — fonts used (missing ones flagged) and replacing them"),
     ("app.insertXrefDialog", "Insert Cross-Reference…", None, "{} — New Cross-Reference dialog (paragraph or text anchor, format)"),
     ("app.deleteAllGuides", "Delete All Guides on Spread", None, "{} — the spread in view"),
     ("app.deletePage", "Delete Page", None, "{} — deletes the page in view"),
     ("app.duplicateSpread", "Duplicate Spread", None, "{} — duplicates the spread in view (pages and items)"),
     ("app.tablePanel", "Table Panel", Some("Shift+F9"), "{}"),
+    ("app.tabsPanel", "Tabs", Some("Cmd+Shift+T"), "{} — show or hide the Tabs panel (it opens above the selected text frame)"),
     ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{}"),
@@ -303,6 +312,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.pathOptions",
             "cmd:type.pathOptions|Delete Type from Path|{\"delete\": true}",
             "<",
+            "ui:app.tabsPanel",
             "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
             "cmd:type.fillWithPlaceholder",
             ">Insert Special Character",
@@ -376,6 +386,9 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.alignRight",
             "cmd:type.justify",
             "ui:app.paragraphRulesDialog",
+            "ui:app.paragraphBordersDialog",
+            "ui:app.spanColumnsDialog",
+            "ui:app.bulletsNumberingDialog",
             "-",
             "cmd:type.bold",
             "cmd:type.italic",
@@ -655,6 +668,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.panel",
             "-",
             ">Type & Tables",
+            "ui:app.tabsPanel",
             "ui:window.panel|Conditional Text|{\"panel\": \"conditions\"}",
             "ui:window.panel|Notes|{\"panel\": \"notes\"}",
             "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
@@ -703,6 +717,17 @@ pub const MENUS: &[(&str, &[&str])] = &[
 
 pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
     UI_COMMANDS.iter().find(|c| c.0 == id).map(|c| (c.1, c.2))
+}
+
+/// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
+fn toggle_tabs_panel(app: &mut DesignApp) {
+    if app.ui.floating.iter().any(|(p, _)| p == "tabs") {
+        crate::dock::dock_panel(app, "tabs");
+    } else {
+        let at = app.canvas_rect.map_or(egui::pos2(300.0, 140.0), |r| r.min + egui::vec2(80.0, 60.0));
+        crate::dock::float_panel(app, "tabs", at);
+        app.ui.tabs_panel.snap_request = 2;
+    }
 }
 
 /// Run a UI command; `None` if `id` isn't one.
@@ -932,6 +957,23 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphRules", json!({"rule": rule, "current": current})));
             Ok(Value::Null)
         }
+        "app.paragraphBordersDialog" | "app.spanColumnsDialog" | "app.bulletsNumberingDialog" => {
+            let Some(a) = crate::panels::text_attrs(app) else { return Some(Err("select text or a text frame".into())) };
+            let section = match id {
+                "app.spanColumnsDialog" => "span",
+                "app.bulletsNumberingDialog" => "bullets",
+                _ if p.get("tab").and_then(Value::as_str) == Some("shading") => "shading",
+                _ => "border",
+            };
+            let fields = json!({
+                "section": section,
+                "current": a["para"],
+                "family": a["chars"]["fontFamily"],
+                "style": a["chars"]["fontStyle"],
+            });
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphLocal", fields));
+            Ok(Value::Null)
+        }
         "app.footnoteOptionsDialog" => {
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
             let o = serde_json::to_value(&st.doc.footnote_options).unwrap_or_default();
@@ -971,6 +1013,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "app.tablePanel" => {
             app.ui.open_panel = if app.ui.open_panel.as_deref() == Some("table") { None } else { Some("table".into()) };
+            Ok(Value::Null)
+        }
+        "app.tabsPanel" => {
+            toggle_tabs_panel(app);
             Ok(Value::Null)
         }
         "app.exportPdf" => {
@@ -1204,7 +1250,9 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties").to_string();
-            if crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
+            if panel == "tabs" {
+                toggle_tabs_panel(app);
+            } else if crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
                 app.ui.dock_tab = panel;
                 app.ui.dock_expanded = true;
                 app.ui.open_panel = None;
@@ -1276,7 +1324,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "window.floatPanel" | "window.dockPanel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("");
-            if !crate::dock::ICON_PANELS.iter().any(|(id, _, _)| *id == panel) {
+            if !crate::dock::ICON_PANELS.iter().any(|(id, _, _)| *id == panel) && !crate::dock::FLOATING_PANELS.iter().any(|(id, _)| *id == panel) {
                 return Some(Err(format!("{id}: unknown panel `{panel}`")));
             }
             if id == "window.floatPanel" {

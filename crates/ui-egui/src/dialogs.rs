@@ -1132,6 +1132,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "characterStyleOptions" => crate::i18n::tr(&app.ui.language, "Character Style Options"),
         "footnoteOptions" => crate::i18n::tr(&app.ui.language, "Footnote Options"),
         "paragraphRules" => crate::i18n::tr(&app.ui.language, "Paragraph Rules"),
+        "paragraphLocal" => crate::i18n::tr(
+            &app.ui.language,
+            match d.s("section").as_str() {
+                "span" => "Span Columns",
+                "bullets" => "Bullets and Numbering",
+                _ => "Paragraph Borders and Shading",
+            },
+        ),
         "insertXref" => crate::i18n::tr(&app.ui.language, "New Cross-Reference"),
         "findFont" => crate::i18n::tr(&app.ui.language, "Find/Replace Font"),
         "polygonSettings" => crate::i18n::tr(&app.ui.language, "Polygon Settings"),
@@ -1393,6 +1401,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 let current = d.fields.get("current").cloned().unwrap_or_default();
                 paragraph_rules(app, ui, &mut d, "", &current);
             }
+            "paragraphLocal" => paragraph_local(app, ui, &mut d),
             "insertXref" => insert_xref(app, ui, &mut d),
             "findFont" => find_font(app, ui, &mut d),
             "colorPicker" => color_picker(ui, &mut d),
@@ -1855,6 +1864,13 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
             Ok(r)
         }
+        "paragraphLocal" => {
+            let attrs: Map<String, Value> = d.fields.iter().filter_map(|(k, v)| k.strip_prefix("p.").map(|a| (a.to_string(), v.clone()))).collect();
+            if attrs.is_empty() {
+                return Ok(Value::Null);
+            }
+            app.run("type.para", json!({"attrs": attrs}))
+        }
         "paragraphRules" => {
             let attrs = rule_edits(&d, "");
             if attrs.is_empty() {
@@ -2248,13 +2264,23 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             &[
                 ("general", "General"),
                 ("chars", "Basic Character Formats"),
+                ("advanced", "Advanced Character Formats"),
                 ("indents", "Indents and Spacing"),
+                ("tabs", "Tabs"),
                 ("rules", "Paragraph Rules"),
+                ("border", "Paragraph Border"),
+                ("shading", "Paragraph Shading"),
+                ("keep", "Keep Options"),
                 ("hyph", "Hyphenation"),
                 ("justify", "Justification"),
+                ("span", "Span Columns"),
                 ("nested", "Drop Caps and Nested Styles"),
                 ("grep", "GREP Style"),
+                ("bullets", "Bullets and Numbering"),
                 ("color", "Character Color"),
+                ("openType", "OpenType Features"),
+                ("underline", "Underline Options"),
+                ("strikethrough", "Strikethrough Options"),
                 ("export", "Export Tagging"),
             ],
         );
@@ -2535,6 +2561,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     }
                 });
             }
+            "tabs" => style_tabs(&app.ui.language, ui, d, &pv, &doc),
             "rules" => paragraph_rules(app, ui, d, "p.", &pv),
             "hyph" => {
                 let mut h = cur(d, "p.hyphenate", &pv["hyphenate"]).as_bool().unwrap_or(true);
@@ -2602,6 +2629,20 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                 });
             }
             "color" => character_color(&app.ui.language, ui, d, &CharFields { base: &cv, sparse: false }, &doc),
+            "advanced" => advanced_character_formats(&app.ui.language, ui, d, &CharFields { base: &cv, sparse: false }),
+            "openType" => open_type_features(&app.ui.language, ui, d, &CharFields { base: &cv, sparse: false }),
+            "underline" => line_options(&app.ui.language, ui, d, &CharFields { base: &cv, sparse: false }, &doc, "underline"),
+            "strikethrough" => line_options(&app.ui.language, ui, d, &CharFields { base: &cv, sparse: false }, &doc, "strikethrough"),
+            "border" => border_shading(&app.ui.language, ui, d, &pv, &doc, true),
+            "shading" => border_shading(&app.ui.language, ui, d, &pv, &doc, false),
+            "keep" => keep_options(&app.ui.language, ui, d, &pv),
+            "span" => span_columns(&app.ui.language, ui, d, &pv, &doc),
+            "bullets" => {
+                let (char_styles, families, fonts, scope) = ListUi::new_parts(app);
+                let lu =
+                    ListUi { char_styles: &char_styles, families: &families, fonts: &fonts, scope, family: &cp.font_family, style: &cp.font_style };
+                bullets_and_numbering(&app.ui.language, ui, d, &pv, &doc, &lu);
+            }
             _ => {
                 egui::Grid::new("psg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Style Name:"));
@@ -2648,6 +2689,777 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
         });
     });
+}
+
+/// Paragraph Style Options › Tabs: the style's stops on a ruler as wide as the first page's
+/// column, edited in `p.tabs` (and the indents in `p.leftIndent`…) until OK.
+fn style_tabs(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: &designcraft_doc::Document) {
+    use crate::panels::tabs::{Ruler, RulerEdit, align_buttons, ruler, text_commit};
+    use designcraft_engine::cmd::tabs;
+    let cur = |d: &Dialog, k: &str| d.fields.get(k).cloned().unwrap_or_else(|| pv[k.trim_start_matches("p.")].clone());
+    let mut list: Vec<designcraft_doc::TabStop> = serde_json::from_value(cur(d, "p.tabs")).unwrap_or_default();
+    tabs::sort(&mut list);
+    let num = |d: &Dialog, k: &str| cur(d, k).as_f64().filter(|v| v.is_finite()).unwrap_or(0.0);
+    let (left, first, right) = (num(d, "p.leftIndent"), num(d, "p.firstLineIndent"), num(d, "p.rightIndent"));
+    let width = doc.page(0).and_then(|p| p.column_rects().first().map(|r| r.width())).filter(|w| *w > 1.0).unwrap_or(468.0);
+    let unit = doc.settings.horizontal_units;
+    let mut sel = d.fields.get("tabsSelected").and_then(Value::as_u64).map(|i| i as usize).filter(|i| *i < list.len());
+    let mut align = d.fields.get("tabsAlign").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let stop = sel.and_then(|i| list.get(i)).cloned();
+    // Each control's edit, applied to the list below.
+    let mut result: Option<Result<Option<usize>, String>> = None;
+    let mut indent: Option<(&str, f64)> = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if let Some(a) = align_buttons(ui, lang, stop.as_ref().map_or(align, |s| s.align)) {
+            align = a;
+            if let Some(i) = sel {
+                result = Some(tabs::change(&mut list, i, Some(a), None, None));
+            }
+        }
+        ui.add_space(6.0);
+        crate::rtl::label(ui, crate::i18n::tr(lang, "X:"));
+        if let Some(x) = crate::widgets::measure(ui, "pstabx", stop.as_ref().map(|s| s.position), unit, 72.0) {
+            result = Some(match sel {
+                Some(i) => tabs::move_to(&mut list, i, x),
+                None => tabs::add(&mut list, designcraft_doc::TabStop { position: x, align, leader: String::new(), align_on: String::new() }),
+            });
+        }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Leader:"));
+        if let (Some(l), Some(i)) = (text_commit(ui, "psleader", stop.as_ref().map_or("", |s| s.leader.as_str()), 36.0, stop.is_some()), sel) {
+            result = Some(tabs::leader_value(&l, "tabs").map_err(|e| e.to_string()).and_then(|l| tabs::change(&mut list, i, None, Some(l), None)));
+        }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Align On:"));
+        let on_char = stop.as_ref().is_some_and(|s| s.align == designcraft_doc::TabAlign::Char);
+        if let (Some(c), Some(i)) = (text_commit(ui, "psalignon", stop.as_ref().map_or("", |s| s.align_on.as_str()), 18.0, on_char), sel) {
+            result = Some(tabs::align_on_value(&c, "tabs").map_err(|e| e.to_string()).and_then(|c| tabs::change(&mut list, i, None, None, Some(c))));
+        }
+        ui.add_space(6.0);
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(lang, "Clear All"))).clicked() {
+            list.clear();
+            result = Some(Ok(None));
+        }
+    });
+    ui.add_space(6.0);
+    let r = Ruler { tabs: &list, left, first, right, width, unit, selected: sel, scale: None };
+    match ruler(ui, "style", &r) {
+        Some(RulerEdit::Select(i)) => sel = Some(i),
+        Some(RulerEdit::Add(x)) => {
+            result = Some(tabs::add(&mut list, designcraft_doc::TabStop { position: x, align, leader: String::new(), align_on: String::new() }))
+        }
+        Some(RulerEdit::Move(i, x)) => result = Some(tabs::move_to(&mut list, i, x)),
+        Some(RulerEdit::Remove(i)) => result = Some(tabs::remove(&mut list, i)),
+        Some(RulerEdit::Indent(k, x)) => indent = Some((k, x)),
+        None => {}
+    }
+    match result {
+        Some(Ok(i)) => {
+            sel = i;
+            d.fields.insert("p.tabs".into(), serde_json::to_value(&list).unwrap_or_default());
+            d.fields.remove("status");
+        }
+        Some(Err(e)) => {
+            d.fields.insert("status".into(), json!(e));
+        }
+        None => {}
+    }
+    if let Some((k, x)) = indent {
+        d.fields.insert(format!("p.{k}"), json!(x));
+    }
+    d.fields.insert("tabsSelected".into(), sel.map_or(Value::Null, |i| json!(i)));
+    d.fields.insert("tabsAlign".into(), serde_json::to_value(align).unwrap_or_default());
+}
+
+/// A paragraph attribute as Paragraph Style Options shows it: the dialog's edit (`p.<key>`), else
+/// the style's resolved value in `pv`.
+fn para_value(d: &Dialog, pv: &Value, key: &str) -> Value {
+    d.fields.get(&format!("p.{key}")).cloned().unwrap_or_else(|| pv.get(key).cloned().unwrap_or(Value::Null))
+}
+
+/// Edit paragraph attribute `key`. The value is the whole attribute: `confirm` reads a dotted key
+/// as one field of a rule.
+fn para_set(d: &mut Dialog, key: &str, v: Value) {
+    d.fields.insert(format!("p.{key}"), v);
+}
+
+/// A count attribute (lines, columns), rounded and kept in `range`.
+fn para_count(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, range: (u32, u32)) {
+    let v = para_value(d, pv, key).as_f64();
+    if let Some(n) = crate::widgets::number(ui, &format!("ps{key}"), v, "", 50.0, 0) {
+        let n = if n.is_finite() { n.round().clamp(f64::from(range.0), f64::from(range.1)) as u32 } else { range.0 };
+        para_set(d, key, json!(n));
+    }
+}
+
+fn para_check(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, label: &str) {
+    let mut on = para_value(d, pv, key).as_bool().unwrap_or(false);
+    if ui.checkbox(&mut on, crate::rtl::widget(ui, label)).changed() {
+        para_set(d, key, json!(on));
+    }
+}
+
+fn para_measure(ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, unit: Unit) {
+    let v = para_value(d, pv, key).as_f64();
+    if let Some(n) = crate::widgets::measure(ui, &format!("ps{key}"), v, unit, 80.0) {
+        para_set(d, key, json!(n));
+    }
+}
+
+/// A paragraph attribute chosen from `opts` (serialized value, label).
+fn para_choice(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, opts: &[(&str, &str)]) {
+    let cur = para_value(d, pv, key);
+    let shown = opts.iter().find(|o| cur == o.0).map_or("", |o| crate::i18n::tr(lang, o.1));
+    egui::ComboBox::from_id_salt(("pschoice", key)).selected_text(crate::rtl::widget(ui, shown)).width(200.0).show_ui(ui, |ui| {
+        for (v, label) in opts {
+            if ui.selectable_label(cur == *v, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                para_set(d, key, json!(v));
+            }
+        }
+    });
+}
+
+/// Four per-side values in the order the attribute holds them: top, left, bottom, right. An
+/// edited side stores the whole array.
+fn para_sides(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, field: &dyn Fn(&mut egui::Ui, &str, Option<f64>) -> Option<f64>) {
+    let mut sides: [f64; 4] = serde_json::from_value(para_value(d, pv, key)).unwrap_or_default();
+    let mut changed = false;
+    egui::Grid::new(("pssides", key)).num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+        for (i, label) in ["Top:", "Left:", "Bottom:", "Right:"].into_iter().enumerate() {
+            crate::rtl::label(ui, crate::i18n::tr(lang, label));
+            if let Some(side) = sides.get_mut(i)
+                && let Some(v) = field(ui, &format!("ps{key}{i}"), Some(*side))
+            {
+                *side = v;
+                changed = true;
+            }
+            if i % 2 == 1 {
+                ui.end_row();
+            }
+        }
+    });
+    if changed {
+        para_set(d, key, json!(sides));
+    }
+}
+
+/// A swatch menu with a colour chip per swatch (hidden swatches left out); returns the swatch
+/// picked.
+fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(id).selected_text(current).width(width).show_ui(ui, |ui| {
+        for w in doc.swatches.iter().filter(|w| !w.hidden) {
+            let (c, g) = crate::widgets::swatch_colors(doc, &w.name, 1.0);
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                crate::widgets::paint_chip(ui.painter(), r, c, g);
+                if ui.selectable_label(w.name == current, &w.name).clicked() {
+                    picked = Some(w.name.clone());
+                }
+            });
+        }
+    });
+    picked
+}
+
+/// Built-in stroke types of the paragraph border's Type menu (serialized `StrokeType`s).
+const BORDER_TYPES: [&str; 11] =
+    ["solid", "dashed", "dotted", "thickThin", "thinThick", "thinThin", "thickThick", "thinThickThin", "thickThinThick", "wavy", "hashed"];
+
+/// The border's stroke type: a built-in type or one of the document's stroke styles.
+fn border_type_menu(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: &designcraft_doc::Document) {
+    use designcraft_doc::StrokeType;
+    let cur: StrokeType = serde_json::from_value(para_value(d, pv, "borderType")).unwrap_or_default();
+    let shown = match &cur {
+        StrokeType::Style { name } => name.clone(),
+        k => crate::i18n::tr(lang, k.label()).to_string(),
+    };
+    egui::ComboBox::from_id_salt("psbordertype").selected_text(crate::rtl::widget(ui, shown)).width(160.0).show_ui(ui, |ui| {
+        for k in BORDER_TYPES {
+            let ty = if k == "dashed" { json!({"kind": k, "pattern": []}) } else { json!({"kind": k}) };
+            let Ok(t) = serde_json::from_value::<StrokeType>(ty.clone()) else { continue };
+            let on = std::mem::discriminant(&t) == std::mem::discriminant(&cur);
+            if ui.selectable_label(on, crate::rtl::widget(ui, crate::i18n::tr(lang, t.label()))).clicked() && !on {
+                para_set(d, "borderType", ty);
+            }
+        }
+        for st in &doc.stroke_styles {
+            let on = matches!(&cur, StrokeType::Style { name } if *name == st.name);
+            if ui.selectable_label(on, &st.name).clicked() {
+                para_set(d, "borderType", json!({"kind": "style", "name": st.name}));
+            }
+        }
+    });
+}
+
+/// Corner size and shape of a border or shading (`key` holds top left, top right, bottom right,
+/// bottom left); an edited corner stores all four.
+fn para_corners(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, units: Unit) {
+    use designcraft_geom::corners::{Corner, CornerShape};
+    let mut corners: [Corner; 4] = serde_json::from_value(para_value(d, pv, key)).unwrap_or_default();
+    let mut changed = false;
+    egui::Grid::new(("pscorners", key)).num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
+        for (i, label) in ["Top Left:", "Top Right:", "Bottom Right:", "Bottom Left:"].into_iter().enumerate() {
+            let Some(c) = corners.get_mut(i) else { continue };
+            crate::rtl::label(ui, crate::i18n::tr(lang, label));
+            if let Some(v) = crate::widgets::measure(ui, &format!("ps{key}{i}"), Some(c.size), units, 70.0) {
+                c.size = if v.is_finite() { v.clamp(0.0, 10_000.0) } else { 0.0 };
+                changed = true;
+            }
+            egui::ComboBox::from_id_salt(("pscornershape", key, i))
+                .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, c.shape.label())))
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for shape in CornerShape::ALL {
+                        if ui.selectable_label(c.shape == shape, crate::rtl::widget(ui, crate::i18n::tr(lang, shape.label()))).clicked() {
+                            c.shape = shape;
+                            changed = true;
+                        }
+                    }
+                });
+            ui.end_row();
+        }
+    });
+    if changed {
+        para_set(d, key, serde_json::to_value(corners).unwrap_or_default());
+    }
+}
+
+/// The colour and tint rows of a border, its gap or shading (`keys`: colour, tint), in a grid.
+fn para_color_tint(
+    ui: &mut egui::Ui,
+    d: &mut Dialog,
+    pv: &Value,
+    doc: &designcraft_doc::Document,
+    keys: (&str, &str),
+    labels: (&str, &str),
+    enabled: bool,
+) {
+    let (color_key, tint_key) = keys;
+    crate::rtl::label(ui, labels.0);
+    let color = para_value(d, pv, color_key).as_str().unwrap_or("").to_string();
+    if let Some(w) = ui.add_enabled_ui(enabled, |ui| swatch_menu(ui, doc, ("pscolor", color_key), &color, 160.0)).inner {
+        para_set(d, color_key, json!(w));
+    }
+    ui.end_row();
+    crate::rtl::label(ui, labels.1);
+    let tint = para_value(d, pv, tint_key).as_f64().map(|t| t * 100.0);
+    if let Some(v) = ui.add_enabled_ui(enabled, |ui| crate::widgets::number(ui, &format!("ps{tint_key}"), tint, "%", 60.0, 0)).inner {
+        para_set(d, tint_key, json!(if v.is_finite() { (v / 100.0).clamp(0.0, 1.0) } else { 1.0 }));
+    }
+    ui.end_row();
+}
+
+/// Paragraph Style Options › Paragraph Border / Paragraph Shading (and the Paragraph Borders and
+/// Shading dialog): on or off, the stroke (border) or colour (shading), corners, offsets, the
+/// edges and width the box follows, and the options for split and consecutive paragraphs.
+fn border_shading(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: &designcraft_doc::Document, border: bool) {
+    let key = |field: &str| format!("{}{field}", if border { "border" } else { "shading" });
+    let on_key = key("On");
+    para_check(ui, d, pv, &on_key, crate::i18n::tr(lang, if border { "Border" } else { "Shading" }));
+    let on = para_value(d, pv, &on_key).as_bool().unwrap_or(false);
+    let units = doc.settings.horizontal_units;
+    let head = |ui: &mut egui::Ui, t: &str| {
+        ui.add_space(4.0);
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, t)).font(semibold(12.0)));
+    };
+    ui.add_space(4.0);
+    egui::ScrollArea::vertical().id_salt(("psbsscroll", border)).max_height(330.0).show(ui, |ui| {
+        ui.add_enabled_ui(on, |ui| {
+            if border {
+                head(ui, "Stroke");
+                para_sides(lang, ui, d, pv, &key("Weights"), &|ui: &mut egui::Ui, id: &str, v: Option<f64>| {
+                    crate::widgets::number(ui, id, v, " pt", 60.0, 2).map(|w| if w.is_finite() { w.clamp(0.0, 1000.0) } else { 0.0 })
+                });
+                ui.add_space(4.0);
+            } else {
+                head(ui, "Color");
+            }
+            egui::Grid::new(("psbs", border)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                if border {
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Type:"));
+                    border_type_menu(lang, ui, d, pv, doc);
+                    ui.end_row();
+                }
+                let (color, tint) = (crate::i18n::tr(lang, "Color:"), crate::i18n::tr(lang, "Tint:"));
+                para_color_tint(ui, d, pv, doc, (&key("Color"), &key("Tint")), (color, tint), true);
+                if border {
+                    // The gap colour shows between the dashes, dots or stripes.
+                    let solid = para_value(d, pv, "borderType").get("kind").and_then(Value::as_str).is_none_or(|k| k == "solid");
+                    let (gap, gap_tint) = (crate::i18n::tr(lang, "Gap Color:"), crate::i18n::tr(lang, "Gap Tint:"));
+                    para_color_tint(ui, d, pv, doc, ("borderGapColor", "borderGapTint"), (gap, gap_tint), !solid);
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Cap:"));
+                    para_choice(lang, ui, d, pv, "borderCap", &[("butt", "Butt"), ("round", "Round"), ("projecting", "Projecting")]);
+                    ui.end_row();
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Join:"));
+                    para_choice(lang, ui, d, pv, "borderJoin", &[("miter", "Miter"), ("round", "Round"), ("bevel", "Bevel")]);
+                    ui.end_row();
+                }
+            });
+            head(ui, "Corner Size and Shape");
+            para_corners(lang, ui, d, pv, &key("Corners"), units);
+            head(ui, "Offsets");
+            para_sides(lang, ui, d, pv, &key("Offsets"), &|ui: &mut egui::Ui, id: &str, v: Option<f64>| {
+                crate::widgets::measure(ui, id, v, units, 60.0)
+            });
+            ui.add_space(4.0);
+            egui::Grid::new(("psbsedges", border)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Top Edge:"));
+                para_choice(
+                    lang,
+                    ui,
+                    d,
+                    pv,
+                    &key("Top"),
+                    &[("ascent", "Ascent"), ("baseline", "Baseline"), ("emBox", "Em Box Top"), ("leading", "Leading")],
+                );
+                ui.end_row();
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Bottom Edge:"));
+                para_choice(lang, ui, d, pv, &key("Bottom"), &[("descent", "Descent"), ("baseline", "Baseline"), ("emBox", "Em Box Bottom")]);
+                ui.end_row();
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Width:"));
+                para_choice(lang, ui, d, pv, &key("Width"), &[("column", "Column"), ("text", "Text")]);
+                ui.end_row();
+            });
+            ui.add_space(4.0);
+            if border {
+                para_check(ui, d, pv, "borderDisplayIfSplits", crate::i18n::tr(lang, "Display Border if Paragraph Splits Across Frames/Columns"));
+                para_check(ui, d, pv, "borderMerge", crate::i18n::tr(lang, "Merge Consecutive Borders and Shading"));
+            } else {
+                para_check(ui, d, pv, "shadingClip", crate::i18n::tr(lang, "Clip to Frame"));
+                para_check(ui, d, pv, "shadingNonprinting", crate::i18n::tr(lang, "Do not Print or Export"));
+            }
+        });
+    });
+}
+
+/// Paragraph Style Options › Keep Options: lines kept with the next paragraph, the paragraph's
+/// lines kept together (all of them, or its first and last lines), and where it starts.
+fn keep_options(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value) {
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Keep with Next:"));
+        para_count(ui, d, pv, "keepWithNext", (0, 5));
+        crate::rtl::label(ui, crate::i18n::tr(lang, "lines"));
+    });
+    ui.add_space(4.0);
+    para_check(ui, d, pv, "keepLinesTogether", crate::i18n::tr(lang, "Keep Lines Together"));
+    let together = para_value(d, pv, "keepLinesTogether").as_bool().unwrap_or(false);
+    ui.add_enabled_ui(together, |ui| {
+        ui.indent("pskeepall", |ui| {
+            let all = para_value(d, pv, "keepAllLines").as_bool().unwrap_or(true);
+            if ui.radio(all, crate::rtl::widget(ui, crate::i18n::tr(lang, "All Lines in Paragraph"))).clicked() {
+                para_set(d, "keepAllLines", json!(true));
+            }
+            if ui.radio(!all, crate::rtl::widget(ui, crate::i18n::tr(lang, "At Start/End of Paragraph"))).clicked() {
+                para_set(d, "keepAllLines", json!(false));
+            }
+            ui.add_enabled_ui(!all, |ui| {
+                egui::Grid::new("pskeepends").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
+                    for (label, key) in [("Start:", "keepFirst"), ("End:", "keepLast")] {
+                        crate::rtl::label(ui, crate::i18n::tr(lang, label));
+                        para_count(ui, d, pv, key, (1, 50));
+                        crate::rtl::label(ui, crate::i18n::tr(lang, "lines"));
+                        ui.end_row();
+                    }
+                });
+            });
+        });
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Start Paragraph:"));
+        para_choice(
+            lang,
+            ui,
+            d,
+            pv,
+            "startParagraph",
+            &[
+                ("anywhere", "Anywhere"),
+                ("nextColumn", "In Next Column"),
+                ("nextFrame", "In Next Frame"),
+                ("nextPage", "On Next Page"),
+                ("nextOddPage", "On Next Odd Page"),
+                ("nextEvenPage", "On Next Even Page"),
+            ],
+        );
+    });
+}
+
+/// Paragraph Style Options › Span Columns (and the Span Columns dialog): one column, spanning
+/// columns (0 = all), or split into sub-columns with inside and outside gutters; the least space
+/// before and after a spanning or split paragraph.
+fn span_columns(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: &designcraft_doc::Document) {
+    use designcraft_doc::SpanColumns;
+    let cur: SpanColumns = serde_json::from_value(para_value(d, pv, "spanColumns")).unwrap_or_default();
+    let same = |a: &SpanColumns, b: &SpanColumns| std::mem::discriminant(a) == std::mem::discriminant(b);
+    let units = doc.settings.horizontal_units;
+    let mut next = None;
+    egui::Grid::new("psspan").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Paragraph Layout:"));
+        let kinds = [("Single Column", SpanColumns::Single), ("Span Columns", SpanColumns::Span(0)), ("Split Column", SpanColumns::Split(2))];
+        // "Span Columns" names both the section and this option, which some languages word differently.
+        let kind_label = |k: &'static str| -> &'static str { crate::i18n::tr_context(lang, k, "paragraphLayout") };
+        let shown = kinds.iter().find(|k| same(&k.1, &cur)).map_or("", |k| kind_label(k.0));
+        egui::ComboBox::from_id_salt("psspankind").selected_text(crate::rtl::widget(ui, shown)).width(200.0).show_ui(ui, |ui| {
+            for (label, v) in kinds {
+                if ui.selectable_label(same(&v, &cur), crate::rtl::widget(ui, kind_label(label))).clicked() && !same(&v, &cur) {
+                    next = Some(v);
+                }
+            }
+        });
+        ui.end_row();
+        match cur {
+            SpanColumns::Single => {}
+            SpanColumns::Span(n) => {
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Columns:"));
+                let shown = if n == 0 { crate::i18n::tr(lang, "All").to_string() } else { n.to_string() };
+                egui::ComboBox::from_id_salt("psspann").selected_text(crate::rtl::widget(ui, shown)).width(80.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(n == 0, crate::rtl::widget(ui, crate::i18n::tr(lang, "All"))).clicked() {
+                        next = Some(SpanColumns::Span(0));
+                    }
+                    for c in 2..=20u32 {
+                        if ui.selectable_label(n == c, c.to_string()).clicked() {
+                            next = Some(SpanColumns::Span(c));
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+            SpanColumns::Split(n) => {
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Columns:"));
+                if let Some(c) = crate::widgets::number(ui, "pssplitn", Some(f64::from(n)), "", 50.0, 0) {
+                    next = Some(SpanColumns::Split(if c.is_finite() { c.round().clamp(2.0, 20.0) as u32 } else { 2 }));
+                }
+                ui.end_row();
+            }
+        }
+        let v_units = doc.settings.vertical_units;
+        let spaces = match cur {
+            SpanColumns::Single => None,
+            SpanColumns::Span(_) => Some(("Space Before Span:", "Space After Span:")),
+            SpanColumns::Split(_) => Some(("Space Before Split:", "Space After Split:")),
+        };
+        if let Some((before, after)) = spaces {
+            for (label, key) in [(before, "spanSpaceBefore"), (after, "spanSpaceAfter")] {
+                crate::rtl::label(ui, crate::i18n::tr(lang, label));
+                para_measure(ui, d, pv, key, v_units);
+                ui.end_row();
+            }
+        }
+        if matches!(cur, SpanColumns::Split(_)) {
+            for (label, key) in [("Inside Gutter:", "splitInsideGutter"), ("Outside Gutter:", "splitOutsideGutter")] {
+                crate::rtl::label(ui, crate::i18n::tr(lang, label));
+                para_measure(ui, d, pv, key, units);
+                ui.end_row();
+            }
+        }
+    });
+    if let Some(v) = next {
+        para_set(d, "spanColumns", serde_json::to_value(v).unwrap_or_default());
+    }
+}
+
+/// Number styles as the list's Format menu shows them (`NumberStyle` values).
+const NUMBER_STYLES: [(&str, &str); 9] = [
+    ("arabic", "1, 2, 3, 4..."),
+    ("upperRoman", "I, II, III, IV..."),
+    ("lowerRoman", "i, ii, iii, iv..."),
+    ("upperLetters", "A, B, C, D..."),
+    ("lowerLetters", "a, b, c, d..."),
+    ("arabicLeadingZero", "01, 02, 03..."),
+    ("arabicThreeDigits", "001, 002, 003..."),
+    ("arabicFourDigits", "0001, 0002, 0003..."),
+    ("symbols", "*, †, ‡, §..."),
+];
+
+/// A list label text (Text After, Number), shown with its tab as `^t`; labels expand
+/// metacharacters, so the typed text is stored as it is.
+fn list_text(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, label: &str, key: &str) {
+    crate::rtl::label(ui, crate::i18n::tr(lang, label));
+    let mut s = para_value(d, pv, key).as_str().unwrap_or("").replace('\t', "^t");
+    if ui.add(egui::TextEdit::singleline(&mut s).desired_width(160.0)).changed() {
+        para_set(d, key, json!(s));
+    }
+    ui.end_row();
+}
+
+/// What the Bullets and Numbering section offers besides the paragraph's attributes: the
+/// document's character styles, the font families for the bullet, the fonts, and the paragraph's
+/// font (the bullet's when it has none of its own).
+struct ListUi<'a> {
+    char_styles: &'a [String],
+    families: &'a [String],
+    fonts: &'a designcraft_fonts::ScopedFonts<'static>,
+    scope: u32,
+    family: &'a str,
+    style: &'a str,
+}
+
+impl ListUi<'_> {
+    fn new_parts(app: &DesignApp) -> (Vec<String>, Vec<String>, designcraft_fonts::ScopedFonts<'static>, u32) {
+        let styles = app.session.active().map(|s| s.doc.styles.character.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
+        let families = crate::panels::font_menu(app).into_iter().map(|f| f.family).collect();
+        (styles, families, crate::panels::fonts(app), crate::panels::font_scope(app))
+    }
+}
+
+/// A character style for a bullet or number (`key`), [None] first.
+fn list_char_style(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, styles: &[String]) {
+    let cur = para_value(d, pv, key).as_str().unwrap_or(designcraft_doc::NO_CHAR_STYLE).to_string();
+    egui::ComboBox::from_id_salt(("pslistcs", key)).selected_text(crate::rtl::widget(ui, crate::i18n::style_name(lang, &cur))).width(200.0).show_ui(
+        ui,
+        |ui| {
+            for n in std::iter::once(designcraft_doc::NO_CHAR_STYLE)
+                .chain(styles.iter().map(String::as_str).filter(|n| *n != designcraft_doc::NO_CHAR_STYLE))
+            {
+                if ui.selectable_label(n == cur, crate::rtl::widget(ui, crate::i18n::style_name(lang, n))).clicked() {
+                    para_set(d, key, json!(n));
+                }
+            }
+        },
+    );
+}
+
+/// The bullet character: common bullets, a field, and the font's glyphs in a grid to pick from.
+fn bullet_char(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, lu: &ListUi<'_>) {
+    crate::rtl::label(ui, crate::i18n::tr(lang, "Bullet Character:"));
+    ui.horizontal(|ui| {
+        let cur = para_value(d, pv, "bulletChar").as_str().unwrap_or("").to_string();
+        for b in ["\u{2022}", "\u{2013}", "\u{2014}", "\u{00BB}", "*"] {
+            if ui.add_sized([24.0, 20.0], egui::Button::selectable(cur == b, b)).clicked() {
+                para_set(d, "bulletChar", json!(b));
+            }
+        }
+        let mut s = cur;
+        if ui.add(egui::TextEdit::singleline(&mut s).desired_width(36.0)).changed() {
+            para_set(d, "bulletChar", json!(s));
+        }
+        let open = d.b("bulletGlyphs");
+        if ui.selectable_label(open, crate::rtl::widget(ui, crate::i18n::tr(lang, "Glyphs…"))).clicked() {
+            d.fields.insert("bulletGlyphs".into(), json!(!open));
+        }
+    });
+    ui.end_row();
+    if d.b("bulletGlyphs") {
+        ui.label("");
+        ui.vertical(|ui| {
+            ui.set_width(300.0);
+            let font = para_value(d, pv, "bulletFont").as_str().unwrap_or("").to_string();
+            let (family, style) = if font.is_empty() {
+                (lu.family.to_string(), lu.style.to_string())
+            } else {
+                let st = para_value(d, pv, "bulletFontStyle").as_str().unwrap_or("").to_string();
+                let st = if st.is_empty() { lu.fonts.styles(&font).into_iter().next().unwrap_or_else(|| "Regular".into()) } else { st };
+                (font, st)
+            };
+            let mut q = d.s("bulletGlyphQuery");
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut q)
+                        .hint_text(crate::rtl::widget(ui, crate::i18n::tr(lang, "Search: character or U+code")))
+                        .desired_width(300.0),
+                )
+                .changed()
+            {
+                d.fields.insert("bulletGlyphQuery".into(), json!(q));
+            }
+            if let (Some(c), _) = crate::panels::glyphs::grid(ui, lu.fonts, lu.scope, &family, &style, &q, 160.0) {
+                para_set(d, "bulletChar", json!(c.to_string()));
+            }
+        });
+        ui.end_row();
+    }
+}
+
+/// The bullet's font family and style ("" = the paragraph's).
+fn bullet_font(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, lu: &ListUi<'_>) {
+    let font = para_value(d, pv, "bulletFont").as_str().unwrap_or("").to_string();
+    let inherit = crate::i18n::tr(lang, "(Paragraph Font)");
+    crate::rtl::label(ui, crate::i18n::tr(lang, "Font Family:"));
+    egui::ComboBox::from_id_salt("psbulletfont").selected_text(if font.is_empty() { inherit } else { font.as_str() }).width(200.0).show_ui(
+        ui,
+        |ui| {
+            if ui.selectable_label(font.is_empty(), inherit).clicked() {
+                para_set(d, "bulletFont", json!(""));
+                para_set(d, "bulletFontStyle", json!(""));
+            }
+            for f in lu.families {
+                if ui.selectable_label(*f == font, f).clicked() {
+                    para_set(d, "bulletFont", json!(f));
+                    para_set(d, "bulletFontStyle", json!(lu.fonts.styles(f).into_iter().next().unwrap_or_default()));
+                }
+            }
+        },
+    );
+    ui.end_row();
+    crate::rtl::label(ui, crate::i18n::tr(lang, "Font Style:"));
+    let style = para_value(d, pv, "bulletFontStyle").as_str().unwrap_or("").to_string();
+    ui.add_enabled_ui(!font.is_empty(), |ui| {
+        egui::ComboBox::from_id_salt("psbulletstyle").selected_text(style.as_str()).width(200.0).show_ui(ui, |ui| {
+            for st in lu.fonts.styles(&font) {
+                if ui.selectable_label(st == style, &st).clicked() {
+                    para_set(d, "bulletFontStyle", json!(st));
+                }
+            }
+        });
+    });
+    ui.end_row();
+}
+
+/// Paragraph Style Options › Bullets and Numbering (and the Bullets and Numbering dialog): the
+/// list type and level; the bullet, its font and the text after it, or the list, number style,
+/// number text and where numbering starts and restarts; the label's character style; then where
+/// the label goes (alignment, indents and the tab position of the text after it).
+fn bullets_and_numbering(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: &designcraft_doc::Document, lu: &ListUi<'_>) {
+    let units = doc.settings.horizontal_units;
+    let kind = para_value(d, pv, "listType").as_str().unwrap_or("none").to_string();
+    let level = para_value(d, pv, "listLevel").as_u64().unwrap_or(1).clamp(1, designcraft_doc::LIST_LEVELS as u64) as u32;
+    egui::ScrollArea::vertical().id_salt("psbnscroll").max_height(340.0).show(ui, |ui| {
+        egui::Grid::new("psbn").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            crate::rtl::label(ui, crate::i18n::tr(lang, "List Type:"));
+            para_choice(lang, ui, d, pv, "listType", &[("none", "None"), ("bullets", "Bullets"), ("numbers", "Numbers")]);
+            ui.end_row();
+            if kind != "none" {
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Level:"));
+                para_count(ui, d, pv, "listLevel", (1, designcraft_doc::LIST_LEVELS as u32));
+                ui.end_row();
+            }
+            match kind.as_str() {
+                "bullets" => {
+                    bullet_char(lang, ui, d, pv, lu);
+                    bullet_font(lang, ui, d, pv, lu);
+                    list_text(lang, ui, d, pv, "Text After:", "listSeparator");
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Character Style:"));
+                    list_char_style(lang, ui, d, pv, "bulletCharStyle", lu.char_styles);
+                    ui.end_row();
+                }
+                "numbers" => {
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "List:"));
+                    let list = para_value(d, pv, "listName").as_str().unwrap_or("").to_string();
+                    // "" is the story's own list.
+                    let name = |n: &str| if n.is_empty() { crate::i18n::tr(lang, "[Default]").to_string() } else { n.to_string() };
+                    egui::ComboBox::from_id_salt("pslist").selected_text(name(&list)).width(200.0).show_ui(ui, |ui| {
+                        for n in std::iter::once("").chain(doc.settings.lists.iter().map(|l| l.name.as_str())) {
+                            if ui.selectable_label(n == list, name(n)).clicked() {
+                                para_set(d, "listName", json!(n));
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Format:"));
+                    para_choice(lang, ui, d, pv, "numberStyle", &NUMBER_STYLES);
+                    ui.end_row();
+                    list_text(lang, ui, d, pv, "Number:", "numberExpression");
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Character Style:"));
+                    list_char_style(lang, ui, d, pv, "numberCharStyle", lu.char_styles);
+                    ui.end_row();
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Mode:"));
+                    let start = para_value(d, pv, "startAt").as_u64();
+                    ui.horizontal(|ui| {
+                        let shown = crate::i18n::tr(lang, if start.is_some() { "Start At" } else { "Continue from Previous Number" });
+                        egui::ComboBox::from_id_salt("psmode").selected_text(crate::rtl::widget(ui, shown)).width(200.0).show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(start.is_none(), crate::rtl::widget(ui, crate::i18n::tr(lang, "Continue from Previous Number")))
+                                .clicked()
+                            {
+                                para_set(d, "startAt", Value::Null);
+                            }
+                            if ui.selectable_label(start.is_some(), crate::rtl::widget(ui, crate::i18n::tr(lang, "Start At"))).clicked()
+                                && start.is_none()
+                            {
+                                para_set(d, "startAt", json!(1));
+                            }
+                        });
+                        if let Some(n) = start
+                            && let Some(v) = crate::widgets::number(ui, "psstartat", Some(n as f64), "", 60.0, 0)
+                        {
+                            para_set(d, "startAt", json!(if v.is_finite() { v.round().clamp(0.0, 1_000_000.0) as u32 } else { 1 }));
+                        }
+                    });
+                    ui.end_row();
+                    // Restart Numbers at This Level After: a higher level (any, or one of them).
+                    ui.label("");
+                    ui.add_enabled_ui(level > 1, |ui| {
+                        ui.horizontal(|ui| {
+                            para_check(ui, d, pv, "restartNumbers", crate::i18n::tr(lang, "Restart Numbers at This Level After:"));
+                            let after = para_value(d, pv, "restartAfterLevel").as_u64().unwrap_or(0) as u32;
+                            let label = |n: u32| if n == 0 { crate::i18n::tr(lang, "Any Previous Level").to_string() } else { n.to_string() };
+                            egui::ComboBox::from_id_salt("psrestartafter").selected_text(crate::rtl::widget(ui, label(after))).width(140.0).show_ui(
+                                ui,
+                                |ui| {
+                                    for n in 0..level {
+                                        if ui.selectable_label(n == after, crate::rtl::widget(ui, label(n))).clicked() {
+                                            para_set(d, "restartAfterLevel", json!(n));
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    });
+                    ui.end_row();
+                }
+                _ => {}
+            }
+            if kind != "none" {
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Alignment:"));
+                let key = if kind == "bullets" { "bulletAlign" } else { "numberAlign" };
+                para_choice(lang, ui, d, pv, key, &[("left", "Left"), ("center", "Center"), ("right", "Right")]);
+                ui.end_row();
+                for (label, key) in [("Left Indent:", "leftIndent"), ("First Line Indent:", "firstLineIndent")] {
+                    crate::rtl::label(ui, crate::i18n::tr(lang, label));
+                    para_measure(ui, d, pv, key, units);
+                    ui.end_row();
+                }
+                // Tab Position: none, or a stop for the text after the label.
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Tab Position:"));
+                ui.horizontal(|ui| {
+                    let tab = para_value(d, pv, "listTab").as_f64();
+                    let mut on = tab.is_some();
+                    if ui.checkbox(&mut on, "").changed() {
+                        let left = para_value(d, pv, "leftIndent").as_f64().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(18.0);
+                        para_set(d, "listTab", if on { json!(left) } else { Value::Null });
+                    }
+                    if let Some(t) = tab
+                        && let Some(v) = crate::widgets::measure(ui, "pslisttab", Some(t), units, 80.0)
+                    {
+                        para_set(d, "listTab", json!(if v.is_finite() { v.max(0.0) } else { 0.0 }));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    });
+}
+
+/// Paragraph Borders and Shading, Span Columns, and Bullets and Numbering for the selected
+/// paragraphs: the Paragraph Style Options sections over the paragraphs' attributes (`current`);
+/// OK applies the edits (`p.<key>`) as local formatting.
+fn paragraph_local(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let Some(doc) = app.session.active().map(|s| s.doc.clone()) else { return };
+    let pv = d.fields.get("current").cloned().unwrap_or_default();
+    let lang = app.ui.language.clone();
+    ui.set_min_width(480.0);
+    match d.s("section").as_str() {
+        "span" => span_columns(&lang, ui, d, &pv, &doc),
+        "bullets" => {
+            let (char_styles, families, fonts, scope) = ListUi::new_parts(app);
+            let (family, style) = (d.s("family"), d.s("style"));
+            let lu = ListUi { char_styles: &char_styles, families: &families, fonts: &fonts, scope, family: &family, style: &style };
+            bullets_and_numbering(&lang, ui, d, &pv, &doc, &lu);
+        }
+        section => {
+            let border = section != "shading";
+            ui.horizontal(|ui| {
+                for (tab, label) in [("border", "Border"), ("shading", "Shading")] {
+                    if ui.selectable_label(section == tab, crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).clicked() {
+                        d.fields.insert("section".into(), json!(tab));
+                    }
+                }
+            });
+            ui.separator();
+            border_shading(&lang, ui, d, &pv, &doc, border);
+        }
+    }
 }
 
 /// The section list on the left of the style options dialogs.
@@ -3207,14 +4019,8 @@ fn rule_edits(d: &Dialog, prefix: &str) -> Map<String, Value> {
 /// `{prefix}{rule}.{field}`, so OK changes only the fields edited.
 fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, current: &Value) {
     let lang = app.ui.language.as_str();
-    let (swatches, h_units, v_units) = app
-        .session
-        .active()
-        .map(|st| {
-            let sw: Vec<String> = st.doc.swatches.iter().filter(|w| !w.hidden).map(|w| w.name.clone()).collect();
-            (sw, st.doc.settings.horizontal_units, st.doc.settings.vertical_units)
-        })
-        .unwrap_or((Vec::new(), Unit::Points, Unit::Points));
+    let (h_units, v_units) =
+        app.session.active().map(|st| (st.doc.settings.horizontal_units, st.doc.settings.vertical_units)).unwrap_or((Unit::Points, Unit::Points));
     let which = if d.s("rule") == "ruleBelow" { "ruleBelow" } else { "ruleAbove" };
     let rule = shown_rule(d, prefix, which, current);
     let key = |field: &str| format!("{prefix}{which}.{field}");
@@ -3250,18 +4056,9 @@ fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &
             }
             crate::rtl::label(ui, crate::i18n::tr(lang, "Color:"));
             let color = rule["color"].as_str().unwrap_or("").to_string();
-            egui::ComboBox::from_id_salt(("rule_color", which)).selected_text(&color).width(130.0).show_ui(ui, |ui| {
-                for w in &swatches {
-                    let (c, g) = app.session.active().map_or((None, None), |st| crate::widgets::swatch_colors(&st.doc, w, 1.0));
-                    ui.horizontal(|ui| {
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                        crate::widgets::paint_chip(ui.painter(), r, c, g);
-                        if ui.selectable_label(*w == color, w).clicked() {
-                            d.fields.insert(key("color"), json!(w));
-                        }
-                    });
-                }
-            });
+            if let Some(w) = app.session.active().and_then(|st| swatch_menu(ui, &st.doc, ("rule_color", which), &color, 130.0)) {
+                d.fields.insert(key("color"), json!(w));
+            }
             ui.end_row();
             crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
             if let Some(v) = sized(ui, &mut |ui| crate::widgets::number(ui, &key("tint"), rule["tint"].as_f64().map(|t| t * 100.0), "%", 80.0, 0)) {
@@ -4070,6 +4867,92 @@ mod tests {
         assert_eq!(resolved(&app)["ruleBelow"], rule);
     }
 
+    #[test]
+    fn paragraph_style_options_tabs_section_adds_a_stop_on_its_ruler() {
+        use egui_kittest::kittest::Queryable;
+        let (app, _) = ruled_paragraph();
+        let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+        h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "tabs"})));
+        h.run_steps(4);
+        h.get_by_label("Clear All");
+        // The ruler sits below the row of alignment buttons; its strip takes the click.
+        let b = h.get_by_label("Right-aligned tab").rect();
+        h.get_by_label("Right-aligned tab").click();
+        h.run_steps(2);
+        let left = h.get_by_label("Left-aligned tab").rect();
+        let at = egui::pos2(left.min.x + crate::panels::tabs::PAD + 100.0, b.max.y + 14.0);
+        crate::test_window::click_at(&mut h, at);
+        let d = h.state().app.ui.dialog.clone().unwrap();
+        let tabs = d.fields.get("p.tabs").cloned().unwrap_or_default();
+        assert_eq!(tabs.as_array().map(Vec::len), Some(1), "{tabs}");
+        assert_eq!(tabs[0]["align"], "right");
+        confirm(&mut h.state_mut().app).unwrap();
+        let app = &mut h.state_mut().app;
+        let style = app.session.execute("type.tabs.get", &json!({"style": "Ruled Child"})).unwrap();
+        assert_eq!(style["tabs"], tabs);
+        assert_eq!(app.session.execute("type.tabs.get", &json!({})).unwrap()["tabs"], tabs, "the paragraph follows its style");
+    }
+
+    /// Opens Paragraph Style Options on "Ruled Child" at each of `sections`, sets `fields` and
+    /// clicks OK; returns the resolved attributes of the paragraph styled with it.
+    fn style_section_edit(sections: &[&str], fields: Value) -> Value {
+        let (mut app, _) = ruled_paragraph();
+        let ctx = egui::Context::default();
+        app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child"})));
+        for section in sections {
+            app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!(section));
+            draw(&mut app, &ctx);
+        }
+        for (k, v) in fields.as_object().unwrap() {
+            app.ui.dialog.as_mut().unwrap().fields.insert(k.clone(), v.clone());
+        }
+        draw(&mut app, &ctx);
+        let before = undo_steps(&app);
+        confirm(&mut app).unwrap();
+        assert_eq!(undo_steps(&app), before + 1, "one undo step");
+        let style = app.session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
+        let own = serde_json::to_value(&style.para).unwrap();
+        for (k, v) in fields.as_object().unwrap() {
+            assert_eq!(own[k.trim_start_matches("p.")], *v, "the style sets {k}");
+        }
+        app.run("type.selectionAttrs", json!({})).unwrap()["para"].clone()
+    }
+
+    #[test]
+    fn paragraph_style_options_keep_and_border_sections_reach_the_styled_paragraph() {
+        let para = style_section_edit(
+            &["keep", "border"],
+            json!({"p.keepWithNext": 2, "p.keepLinesTogether": true, "p.keepAllLines": false, "p.keepFirst": 3,
+                "p.startParagraph": "nextPage", "p.borderOn": true, "p.borderWeights": [2.0, 0.0, 2.0, 0.0]}),
+        );
+        assert_eq!(para["keepWithNext"], 2);
+        assert_eq!(para["keepLinesTogether"], true);
+        assert_eq!(para["keepAllLines"], false);
+        assert_eq!(para["keepFirst"], 3);
+        assert_eq!(para["startParagraph"], "nextPage");
+        assert_eq!(para["borderOn"], true);
+        assert_eq!(para["borderWeights"], json!([2.0, 0.0, 2.0, 0.0]));
+        // Fields not edited keep the resolved value.
+        assert_eq!(para["keepLast"], 2);
+        assert_eq!(para["ruleBelow"]["weight"], 3.0);
+    }
+
+    #[test]
+    fn paragraph_style_options_bullets_and_span_sections_reach_the_styled_paragraph() {
+        let para = style_section_edit(
+            &["bullets", "span"],
+            json!({"p.listType": "numbers", "p.numberStyle": "upperRoman", "p.numberExpression": "^#)^t", "p.startAt": 3,
+                "p.spanColumns": {"kind": "split", "columns": 3}}),
+        );
+        assert_eq!(para["listType"], "numbers");
+        assert_eq!(para["numberStyle"], "upperRoman");
+        assert_eq!(para["numberExpression"], "^#)^t");
+        assert_eq!(para["startAt"], 3);
+        assert_eq!(para["spanColumns"], json!({"kind": "split", "columns": 3}));
+        let props: designcraft_doc::ParaProps = serde_json::from_value(para).unwrap();
+        assert_eq!(props.number_label(3), "III)\t");
+    }
+
     fn command_app(id: &str, fields: Value) -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.ui.dialog = Some(Dialog::new(&format!("cmd:{id}"), fields));
@@ -4542,9 +5425,20 @@ mod tests {
                     assert!(app.ui.dialog.is_some(), "{section} stays open");
                 }
             }
-            for section in ["general", "chars", "color"] {
-                app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"new": true, "section": section})));
-                frame(&mut app);
+            for section in
+                ["general", "chars", "advanced", "border", "shading", "keep", "span", "bullets", "color", "openType", "underline", "strikethrough"]
+            {
+                for fields in [
+                    json!({"new": true}),
+                    json!({"new": true, "p.listType": "bullets", "p.spanColumns": {"kind": "span", "columns": 0}, "p.borderOn": true}),
+                    json!({"new": true, "p.listType": "numbers", "p.startAt": 1, "p.spanColumns": {"kind": "split", "columns": 2}, "p.keepLinesTogether": true}),
+                ] {
+                    let mut f = fields;
+                    f["section"] = json!(section);
+                    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", f));
+                    frame(&mut app);
+                    assert!(app.ui.dialog.is_some(), "{section} stays open");
+                }
             }
         }
     }

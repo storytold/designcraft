@@ -121,9 +121,12 @@ impl Exporter<'_> {
     pub(crate) fn frame_text(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, story: &str) {
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
-            for d in &ft.decos {
+            for d in ft.decos.iter().filter(|d| !d.nonprinting) {
                 if let Some(c) = me.swatch_color(&d.color, d.tint) {
-                    me.fill_rect(s, d.rect, c);
+                    match &d.path {
+                        Some(p) => me.fill_path(s, p, c),
+                        None => me.fill_rect(s, d.rect, c),
+                    }
                 }
             }
             if !ft.tables.is_empty() {
@@ -238,7 +241,11 @@ impl Exporter<'_> {
     }
 
     fn fill_rect(&self, s: &mut Surface, r: Rect, c: krilla::color::Color) {
-        if let Some(p) = to_path(&r.to_path(0.1)) {
+        self.fill_path(s, &r.to_path(0.1), c);
+    }
+
+    fn fill_path(&self, s: &mut Surface, bp: &designcraft_geom::BezPath, c: krilla::color::Color) {
+        if let Some(p) = to_path(bp) {
             s.set_stroke(None);
             s.set_fill(Some(solid_fill(c, 1.0)));
             s.draw_path(&p);

@@ -192,13 +192,16 @@ impl Renderer {
         let vis = xf.inverse().transform_rect_bbox(f.visible);
         // Decorations under text (shading) and rules.
         for d in &ft.decos {
-            if !rect_overlaps(d.rect, vis) {
+            if !rect_overlaps(d.rect, vis) || d.nonprinting && f.opts.printing_only {
                 continue;
             }
             if let Some(c) = doc.resolve_color(&d.color, d.tint) {
                 ctx.set_transform(m);
                 ctx.set_paint(color_of(&c, 1.0));
-                ctx.fill_rect(&d.rect);
+                match &d.path {
+                    Some(p) => ctx.fill_path(p),
+                    None => ctx.fill_rect(&d.rect),
+                }
             }
         }
         if !ft.tables.is_empty() {

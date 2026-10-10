@@ -450,6 +450,36 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 pen.line(&[(x0, y), (x1, y)]);
             }
         }
+        // Tab stops: a stem standing on a foot that runs the way the text runs from the stop.
+        "tab-left" | "tab-center" | "tab-right" | "tab-char" => {
+            pen.w = 1.8;
+            pen.line(&[(10.0, 4.0), (10.0, 15.0)]);
+            let (x0, x1) = match name {
+                "tab-left" => (10.0, 16.0),
+                "tab-right" => (4.0, 10.0),
+                _ => (5.0, 15.0),
+            };
+            pen.line(&[(x0, 15.0), (x1, 15.0)]);
+            if name == "tab-char" {
+                pen.fcircle(14.0, 10.0, 1.4);
+            }
+        }
+        // Position the panel above the text frame: a horseshoe magnet.
+        "tab-snap" => {
+            pen.w = 1.6;
+            let arc: Vec<(f32, f32)> = (0..=12)
+                .map(|i| {
+                    let a = i as f32 / 12.0 * std::f32::consts::PI;
+                    (10.0 + 5.5 * a.cos(), 10.0 + 5.5 * a.sin())
+                })
+                .collect();
+            let mut pts = vec![(15.5, 3.5)];
+            pts.extend(arc);
+            pts.push((4.5, 3.5));
+            pen.line(&pts);
+            pen.line(&[(3.0, 5.5), (6.0, 5.5)]);
+            pen.line(&[(14.0, 5.5), (17.0, 5.5)]);
+        }
         "ref-point" => {
             for i in 0..9 {
                 let (x, y) = (4.0 + (i % 3) as f32 * 6.0, 4.0 + (i / 3) as f32 * 6.0);

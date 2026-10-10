@@ -859,6 +859,11 @@ impl<'a> Ex<'a> {
                 }
                 (ps.para.clone(), ps.chars.clone())
             };
+            let parent = match ps.based_on.as_deref() {
+                Some(b) if ps.name != designcraft_doc::NO_PARA_STYLE => styles.resolve_para_style(b).0,
+                _ => designcraft_doc::ParaProps::default(),
+            };
+            let pa = with_list_tab(pa, || (styles.resolve_para_style(&ps.name).0, parent));
             self.para_attrs(&mut el, &mut props, &pa);
             self.char_attrs(&mut el, &mut props, &ca);
             pg.insert(&ps.name, with_props(el, props));
@@ -1510,6 +1515,80 @@ impl<'a> Ex<'a> {
             for (i, side) in SIDES.iter().enumerate() {
                 el.set(&format!("ParagraphBorder{side}Offset"), num(o[i]));
             }
+        }
+        if let Some(t) = &a.border_type {
+            props.push(p("ParagraphBorderType", "object", names::stroke_type_out(t)));
+        }
+        if let Some(c) = a.border_cap {
+            el.set("ParagraphBorderStrokeEndCap", names::cap_out(c));
+        }
+        if let Some(j) = a.border_join {
+            el.set("ParagraphBorderStrokeEndJoin", names::join_out(j));
+        }
+        const CORNERS: [&str; 4] = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
+        for (prefix, corners) in [("ParagraphBorder", a.border_corners), ("ParagraphShading", a.shading_corners)] {
+            if let Some(cs) = corners {
+                for (c, k) in cs.iter().zip(CORNERS) {
+                    el.set(&format!("{prefix}{k}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{prefix}{k}CornerRadius"), num(c.size));
+                }
+            }
+        }
+        if let Some(w) = a.border_width {
+            el.set("ParagraphBorderWidth", names::box_width_out(w));
+        }
+        if let Some(t) = a.border_top {
+            el.set("ParagraphBorderTopOrigin", names::box_top_out(t));
+        }
+        if let Some(b) = a.border_bottom {
+            el.set("ParagraphBorderBottomOrigin", names::box_bottom_out(b));
+        }
+        b!(border_display_if_splits, "ParagraphBorderDisplayIfSplits");
+        b!(border_merge, "MergeConsecutiveParaBorders");
+        if let Some(c) = &a.border_gap_color {
+            props.push(p("ParagraphBorderGapColor", "object", self.sw(c)));
+        }
+        n!(border_gap_tint, "ParagraphBorderGapTint", pct);
+        if let Some(w) = a.shading_width {
+            el.set("ParagraphShadingWidth", names::box_width_out(w));
+        }
+        if let Some(t) = a.shading_top {
+            el.set("ParagraphShadingTopOrigin", names::box_top_out(t));
+        }
+        if let Some(b) = a.shading_bottom {
+            el.set("ParagraphShadingBottomOrigin", names::box_bottom_out(b));
+        }
+        b!(shading_clip, "ParagraphShadingClipToFrame");
+        b!(shading_nonprinting, "ParagraphShadingSuppressPrinting");
+        n!(span_space_before, "SpanColumnMinSpaceBefore");
+        n!(span_space_after, "SpanColumnMinSpaceAfter");
+        n!(list_level, "NumberingLevel");
+        for (k, style) in [("BulletsCharacterStyle", &a.bullet_char_style), ("NumberingCharacterStyle", &a.number_char_style)] {
+            if let Some(st) = style {
+                props.push(p(k, "object", names::style_self("CharacterStyle", CHAR_BUILTINS, st)));
+            }
+        }
+        if let Some(v) = a.bullet_align {
+            el.set("BulletsAlignment", names::list_align_out(v));
+        }
+        if let Some(v) = a.number_align {
+            el.set("NumberingAlignment", names::list_align_out(v));
+        }
+        b!(restart_numbers, "NumberingApplyRestartPolicy");
+        if let Some(level) = a.restart_after_level {
+            let (policy, level) = if level == 0 { ("AnyPreviousLevel", 0) } else { ("SpecificPreviousLevel", level) };
+            props.push(
+                El::new("NumberingRestartPolicies")
+                    .attr("RestartPolicy", policy)
+                    .attr("LowerLevel", level.to_string())
+                    .attr("UpperLevel", level.to_string()),
+            );
+        }
+        if let Some(f) = &a.bullet_font {
+            props.push(p("BulletsFont", "string", if f.is_empty() { "$ID/".to_string() } else { f.clone() }));
+        }
+        if let Some(f) = a.bullet_font_style.as_ref().filter(|f| !f.is_empty()) {
+            props.push(p("BulletsFontStyle", "string", f.clone()));
         }
     }
 
@@ -2395,7 +2474,9 @@ impl<'a> Ex<'a> {
     fn psr_el(&mut self, pf: &ParaFormat) -> El {
         let mut el = El::new("ParagraphStyleRange").attr("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, &pf.style));
         let mut props = Vec::new();
-        self.para_attrs(&mut el, &mut props, &pf.para);
+        let styles = &self.d.styles;
+        let pa = with_list_tab(pf.para.clone(), || (styles.resolve_para(pf).0, styles.resolve_para_style(&pf.style).0));
+        self.para_attrs(&mut el, &mut props, &pa);
         self.char_attrs(&mut el, &mut props, &pf.chars);
         with_props(el, props)
     }
@@ -2411,6 +2492,37 @@ impl<'a> Ex<'a> {
         self.char_attrs(&mut el, &mut props, &f.over);
         with_props(el, props)
     }
+}
+
+/// The left stop the composer adds for a list's Tab Position, if it adds one.
+fn list_tab_stop(pp: &designcraft_doc::ParaProps) -> Option<f64> {
+    if !matches!(pp.list_type, ListType::Bullets | ListType::Numbers) {
+        return None;
+    }
+    pp.list_tab.filter(|t| t.is_finite() && *t >= 0.0 && !pp.tabs.iter().any(|s| (s.position - t).abs() < 1e-6))
+}
+
+/// IDML has no attribute for the bullets-and-numbering Tab Position, so it is written as the left
+/// stop the composer adds for it, in the TabList of each level (style or paragraph) that sets the
+/// list type, the tab position or the tabs. `resolved` gives this level's resolved attributes and
+/// those it inherits; the stop comes back on import as an ordinary tab stop.
+fn with_list_tab(mut a: ParaAttrs, resolved: impl FnOnce() -> (designcraft_doc::ParaProps, designcraft_doc::ParaProps)) -> ParaAttrs {
+    if a.list_tab.is_none() && a.tabs.is_none() && a.list_type.is_none() {
+        return a;
+    }
+    let (here, parent) = resolved();
+    let stop = list_tab_stop(&here);
+    // An inherited TabList holds the parent's stop; a level that ends the list writes its tabs without it.
+    if stop.is_none() && list_tab_stop(&parent).is_none() {
+        return a;
+    }
+    let mut tabs = here.tabs;
+    if let Some(t) = stop {
+        tabs.push(designcraft_doc::TabStop { position: t, align: designcraft_doc::TabAlign::Left, leader: String::new(), align_on: String::new() });
+        tabs.sort_by(|a, b| a.position.total_cmp(&b.position));
+    }
+    a.tabs = Some(tabs);
+    a
 }
 
 /// Style folder tree (names `A/B/C` → groups A, B).

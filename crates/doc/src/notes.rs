@@ -219,26 +219,26 @@ impl Story {
 }
 
 impl crate::Document {
-    /// How many numbers of list `name` stories before `sid` used (page order), so `sid`'s numbering
-    /// carries on — 0 for lists that don't continue across stories.
-    pub fn list_start(&self, sid: StoryId, name: &str) -> u32 {
+    /// The numbering of list `name` after the stories before `sid` (page order), so `sid`'s
+    /// numbering carries on; a fresh count for lists that don't continue across stories.
+    pub fn list_start(&self, sid: StoryId, name: &str) -> crate::ListCounter {
+        let mut n = crate::ListCounter::default();
         if !self.settings.lists.iter().any(|l| l.name == name && l.continue_across_stories) {
-            return 0;
+            return n;
         }
         let key = |st: &Story| -> (usize, u64) {
             let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
             (page, st.id.0)
         };
-        let Some(me) = self.story(sid) else { return 0 };
+        let Some(me) = self.story(sid) else { return n };
         let mine = key(me);
         let mut before: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|st| st.id != sid && key(st) < mine).collect();
         before.sort_by_key(|st| key(st));
-        let mut n = 0u32;
         for st in before {
             for (p, r) in st.paras.iter().zip(st.para_ranges()) {
                 let (pp, _) = self.styles.resolve_para(p);
                 if pp.list_type == crate::ListType::Numbers && pp.list_name == name && !r.is_empty() {
-                    n = pp.start_at.map_or(n.saturating_add(1), |s| s.max(1));
+                    n.advance(&pp);
                 }
             }
         }

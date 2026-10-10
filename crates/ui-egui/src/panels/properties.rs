@@ -1412,9 +1412,16 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             crate::menus::menu_button(ui, "☰", |ui| {
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph Rules…"))).clicked() {
-                    let _ = app.run("app.paragraphRulesDialog", json!({}));
-                    ui.close();
+                for (label, id) in [
+                    ("Paragraph Rules…", "app.paragraphRulesDialog"),
+                    ("Paragraph Borders and Shading…", "app.paragraphBordersDialog"),
+                    ("Span Columns…", "app.spanColumnsDialog"),
+                    ("Bullets and Numbering…", "app.bulletsNumberingDialog"),
+                ] {
+                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                        let _ = app.run(id, json!({}));
+                        ui.close();
+                    }
                 }
             });
         });

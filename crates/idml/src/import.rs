@@ -169,6 +169,23 @@ fn parse_point(s: Option<&str>) -> Option<Point> {
 }
 
 /// IDML tint (percent, `-1` = default) → 0..1.
+/// The four corners of a paragraph border or shading (`prefix` `ParagraphBorder` /
+/// `ParagraphShading`): top left, top right, bottom right, bottom left. Unset when none is given.
+fn corners(e: &El, prefix: &str) -> Option<[Corner; 4]> {
+    let keys = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
+    let shapes = keys.map(|n| e.prop(&format!("{prefix}{n}CornerOption")));
+    let sizes = keys.map(|n| e.num(&format!("{prefix}{n}CornerRadius")));
+    if shapes.iter().all(Option::is_none) && sizes.iter().all(Option::is_none) {
+        return None;
+    }
+    let mut out = [Corner::default(); 4];
+    for (c, (shape, size)) in out.iter_mut().zip(shapes.iter().zip(sizes)) {
+        c.shape = shape.as_deref().map_or(designcraft_geom::corners::CornerShape::None, |s| names::corner_in(s.trim()));
+        c.size = size.filter(|v| v.is_finite()).map_or(12.0, |v| v.max(0.0));
+    }
+    Some(out)
+}
+
 fn tint(v: Option<f64>) -> Option<f32> {
     v.map(|t| if t < 0.0 { 1.0 } else { (t / 100.0) as f32 })
 }
@@ -1378,6 +1395,50 @@ impl<'r> Importer<'r> {
         a.border_tint = tint(e.num("ParagraphBorderTint"));
         a.border_weights = sides(&|s| format!("ParagraphBorder{s}LineWeight"));
         a.border_offsets = sides(&|s| format!("ParagraphBorder{s}Offset"));
+        a.border_type = e.prop("ParagraphBorderType").map(|v| names::stroke_type_in(v.trim()));
+        a.border_cap = e.prop("ParagraphBorderStrokeEndCap").map(|v| names::cap_in(v.trim()));
+        a.border_join = e.prop("ParagraphBorderStrokeEndJoin").map(|v| names::join_in(v.trim()));
+        a.border_corners = corners(e, "ParagraphBorder");
+        a.border_width = e.prop("ParagraphBorderWidth").map(|v| names::box_width_in(v.trim()));
+        a.border_top = e.prop("ParagraphBorderTopOrigin").map(|v| names::box_top_in(v.trim()));
+        a.border_bottom = e.prop("ParagraphBorderBottomOrigin").map(|v| names::box_bottom_in(v.trim()));
+        a.border_display_if_splits = e.boolean("ParagraphBorderDisplayIfSplits");
+        a.border_merge = e.boolean("MergeConsecutiveParaBorders");
+        if let Some(c) = e.prop("ParagraphBorderGapColor") {
+            a.border_gap_color = Some(self.swatch_ref(c.trim()));
+        }
+        a.border_gap_tint = tint(e.num("ParagraphBorderGapTint"));
+        a.shading_corners = corners(e, "ParagraphShading");
+        a.shading_width = e.prop("ParagraphShadingWidth").map(|v| names::box_width_in(v.trim()));
+        a.shading_top = e.prop("ParagraphShadingTopOrigin").map(|v| names::box_top_in(v.trim()));
+        a.shading_bottom = e.prop("ParagraphShadingBottomOrigin").map(|v| names::box_bottom_in(v.trim()));
+        a.shading_clip = e.boolean("ParagraphShadingClipToFrame");
+        a.shading_nonprinting = e.boolean("ParagraphShadingSuppressPrinting");
+        a.span_space_before = e.num("SpanColumnMinSpaceBefore").filter(|v| v.is_finite());
+        a.span_space_after = e.num("SpanColumnMinSpaceAfter").filter(|v| v.is_finite());
+        a.list_level = e.num("NumberingLevel").filter(|v| v.is_finite()).map(|v| v.round().clamp(1.0, designcraft_doc::LIST_LEVELS as f64) as u32);
+        if let Some(c) = e.prop("BulletsCharacterStyle") {
+            a.bullet_char_style = Some(self.char_style_ref(c.trim()));
+        }
+        if let Some(c) = e.prop("NumberingCharacterStyle") {
+            a.number_char_style = Some(self.char_style_ref(c.trim()));
+        }
+        a.bullet_align = e.prop("BulletsAlignment").map(|v| names::list_align_in(v.trim()));
+        a.number_align = e.prop("NumberingAlignment").map(|v| names::list_align_in(v.trim()));
+        a.restart_numbers = e.boolean("NumberingApplyRestartPolicy");
+        if let Some(r) = e.prop_el("NumberingRestartPolicies") {
+            // A specific level restarts after that level; any other policy after any higher one.
+            let level = r.get("LowerLevel").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+            a.restart_after_level = Some(if r.get("RestartPolicy").map(str::trim) == Some("SpecificPreviousLevel") { level } else { 0 });
+        }
+        if let Some(f) = e.prop("BulletsFont") {
+            let f = f.trim();
+            a.bullet_font = Some(if f == "$ID/" { String::new() } else { f.split('\t').next().unwrap_or(f).to_string() });
+        }
+        if let Some(f) = e.prop("BulletsFontStyle") {
+            let f = f.trim();
+            a.bullet_font_style = Some(if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() });
+        }
         a
     }
 

@@ -551,6 +551,52 @@ impl Default for Rule {
     }
 }
 
+/// How wide a paragraph border or shading box is: the column, or the text's longest line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoxWidth {
+    #[default]
+    Column,
+    Text,
+}
+
+/// Where a paragraph border or shading box starts above the first line (before its top offset).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoxTop {
+    /// The tallest ascent on the line.
+    #[default]
+    Ascent,
+    Baseline,
+    /// The top of the em box.
+    EmBox,
+    /// The top of the line's leading.
+    Leading,
+}
+
+/// Where a paragraph border or shading box ends below the last line (before its bottom offset).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoxBottom {
+    /// The deepest descent on the line.
+    #[default]
+    Descent,
+    Baseline,
+    /// The bottom of the em box.
+    EmBox,
+}
+
+/// Where a bullet or number sits against the first line's start (the left and first-line
+/// indents): it starts there, is centred on it, or ends there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ListAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ListType {
@@ -615,6 +661,12 @@ impl NumberStyle {
 /// putting `number` in for `^#`. Level placeholders (`^1`…`^9`) and metacharacters with no
 /// meaning in a label are dropped; a label never holds a paragraph break.
 pub fn expand_list_text(s: &str, number: &str) -> String {
+    expand_list_levels(s, number, &[])
+}
+
+/// [`expand_list_text`] with `levels[k]` in for `^1`…`^9` (level k + 1's current number; a level
+/// past the end is dropped).
+pub fn expand_list_levels(s: &str, number: &str, levels: &[String]) -> String {
     let mut out = String::with_capacity(s.len() + number.len());
     let mut it = s.chars();
     while let Some(c) = it.next() {
@@ -631,6 +683,13 @@ pub fn expand_list_text(s: &str, number: &str) -> String {
         let r = match m {
             '#' => {
                 out.push_str(number);
+                continue;
+            }
+            d @ '1'..='9' => {
+                let k = d as usize - '1' as usize;
+                if let Some(l) = levels.get(k) {
+                    out.push_str(l);
+                }
                 continue;
             }
             '^' => '^',
@@ -902,6 +961,53 @@ attr_set! {
         border_color: String = "[Black]".into(),
         border_tint: f32 = 1.0,
         border_offsets: [f64; 4] = [0.0; 4],
+        /// The border's stroke type (a document stroke style by name, or a built-in type), cap and
+        /// join.
+        border_type: crate::item::StrokeType = crate::item::StrokeType::Solid,
+        border_cap: crate::item::Cap = crate::item::Cap::Butt,
+        border_join: crate::item::Join = crate::item::Join::Miter,
+        /// Corner shape and size: top left, top right, bottom right, bottom left.
+        border_corners: [designcraft_geom::corners::Corner; 4] = [designcraft_geom::corners::Corner::default(); 4],
+        border_width: BoxWidth = BoxWidth::Column,
+        border_top: BoxTop = BoxTop::Ascent,
+        border_bottom: BoxBottom = BoxBottom::Descent,
+        /// A paragraph split across frames or columns gets a closed box in each part (otherwise the
+        /// box is open where it splits).
+        border_display_if_splits: bool = false,
+        /// Consecutive paragraphs with the same border and shading share one box.
+        border_merge: bool = true,
+        /// The colour between the dashes, dots or stripes of a border that isn't solid.
+        border_gap_color: String = "[None]".into(),
+        border_gap_tint: f32 = 1.0,
+        /// Shading corners: top left, top right, bottom right, bottom left.
+        shading_corners: [designcraft_geom::corners::Corner; 4] = [designcraft_geom::corners::Corner::default(); 4],
+        shading_width: BoxWidth = BoxWidth::Column,
+        shading_top: BoxTop = BoxTop::Ascent,
+        shading_bottom: BoxBottom = BoxBottom::Descent,
+        /// The shading stops at the edges of the text frame.
+        shading_clip: bool = false,
+        /// The shading shows on screen only: not printed or exported.
+        shading_nonprinting: bool = false,
+        /// Least space between a spanning or split paragraph and the column text above and below it.
+        span_space_before: f64 = 0.0,
+        span_space_after: f64 = 0.0,
+        /// List level (1–9): each level numbers on its own, and `^1`…`^9` in a number's text are the
+        /// current numbers of those levels.
+        list_level: u32 = 1,
+        /// Character styles of the bullet and of the number.
+        bullet_char_style: String = crate::story::NO_CHAR_STYLE.into(),
+        number_char_style: String = crate::story::NO_CHAR_STYLE.into(),
+        bullet_align: ListAlign = ListAlign::Left,
+        number_align: ListAlign = ListAlign::Left,
+        /// A tab stop for the text after the bullet or number, from the column's left edge.
+        list_tab: Option<f64> = None,
+        /// Restart Numbers at This Level After: a paragraph at a higher level (0 = any; otherwise
+        /// that level) starts this level's numbering again.
+        restart_numbers: bool = true,
+        restart_after_level: u32 = 0,
+        /// The bullet's font family and style ("" = the paragraph's).
+        bullet_font: String = String::new(),
+        bullet_font_style: String = String::new(),
     }
 }
 
@@ -934,6 +1040,13 @@ impl ParaProps {
         expand_list_text(&self.number_expression, &self.number_style.format(n))
     }
 
+    /// The label of a numbered paragraph that `list` has just numbered ([`ListCounter::advance`]).
+    pub fn number_label_in(&self, list: &ListCounter) -> String {
+        let level = list_level_index(self.list_level);
+        let number = list.labels.get(level).map_or("", String::as_str);
+        expand_list_levels(&self.number_expression, number, &list.labels)
+    }
+
     /// The label of a bulleted paragraph.
     pub fn bullet_label(&self) -> String {
         let mut s: String = self.bullet_char.chars().filter(|c| *c != '\n' && *c != '\r').collect();
@@ -942,9 +1055,69 @@ impl ParaProps {
     }
 }
 
+/// Levels a list can have.
+pub const LIST_LEVELS: usize = 9;
+
+/// Index (0-based) of list level `level` (1-based, clamped to 1–[`LIST_LEVELS`]).
+fn list_level_index(level: u32) -> usize {
+    (level.clamp(1, LIST_LEVELS as u32) - 1) as usize
+}
+
+/// The numbering of one list as it goes: each level's last number and its text, and when each
+/// level last numbered a paragraph (for Restart Numbers at This Level After).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ListCounter {
+    numbers: [u32; LIST_LEVELS],
+    labels: [String; LIST_LEVELS],
+    seen: [u64; LIST_LEVELS],
+    tick: u64,
+}
+
+impl ListCounter {
+    /// Number the next paragraph of `pp` (a numbered paragraph with text) and return its number.
+    pub fn advance(&mut self, pp: &ParaProps) -> u32 {
+        let l = list_level_index(pp.list_level);
+        self.tick = self.tick.saturating_add(1);
+        let since = self.seen[l];
+        let restart = pp.restart_numbers
+            && match pp.restart_after_level {
+                0 => self.seen[..l].iter().any(|&t| t > since),
+                m => (m as usize) <= l && self.seen.get(m as usize - 1).is_some_and(|&t| t > since),
+            };
+        let n = match pp.start_at {
+            Some(s) => s.max(1),
+            None if restart => 1,
+            None => self.numbers[l].saturating_add(1),
+        };
+        self.numbers[l] = n;
+        self.labels[l] = pp.number_style.format(n);
+        self.seen[l] = self.tick;
+        n
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn levels_number_on_their_own_and_restart_after_a_higher_level() {
+        let at =
+            |level: u32| ParaProps { list_type: ListType::Numbers, list_level: level, number_expression: "^1.^#".into(), ..ParaProps::default() };
+        let mut c = ListCounter::default();
+        let mut labels = vec![];
+        for level in [1, 2, 2, 1, 2] {
+            let pp = at(level);
+            c.advance(&pp);
+            labels.push(pp.number_label_in(&c));
+        }
+        assert_eq!(labels, ["1.1", "1.1", "1.2", "2.2", "2.1"]);
+        // Without the restart, level 2 carries on.
+        let mut c = ListCounter::default();
+        let keep = |level: u32| ParaProps { restart_numbers: false, ..at(level) };
+        let n: Vec<u32> = [1, 2, 1, 2].into_iter().map(|l| c.advance(&keep(l))).collect();
+        assert_eq!(n, [1, 1, 2, 2]);
+    }
 
     #[test]
     fn a_partial_rule_keeps_the_other_fields() {
