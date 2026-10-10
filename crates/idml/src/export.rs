@@ -1187,8 +1187,11 @@ impl<'a> Ex<'a> {
             el.set("PositionalForm", v);
         }
         if let Some(r) = a.ruby.as_ref() {
-            el.set("RubyFlag", bool_s(!r.is_empty()));
+            el.set("RubyFlag", if r.is_empty() { "0" } else { "1" });
             el.set("RubyString", r.as_str());
+        }
+        if let Some((family, style)) = crate::ruby::write(el, props, a, |n| self.sw(n)) {
+            self.note_font(&family, &style);
         }
         if let Some(k) = a.kenten {
             el.set("KentenKind", if k { "KentenSesameDot" } else { "None" });
@@ -1229,6 +1232,7 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.warichu_chars_after_break {
             el.set("WarichuCharsAfterBreak", v);
         }
+        self.cjk_settings_chars(el, props, a);
         if let Some(list) = &a.conditions {
             el.set("AppliedConditions", list.iter().map(|c| format!("Condition/{}", escape_id(c))).collect::<Vec<_>>().join(" "));
         }
@@ -1263,6 +1267,7 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.treat_ideographic_space_as_space {
             el.set("TreatIdeographicSpaceAsSpace", bool_s(v));
         }
+        cjk_settings_para(el, a);
         if let Some(Some(k)) = &a.kinsoku {
             props.push(p(
                 "KinsokuSet",
@@ -1371,14 +1376,17 @@ impl<'a> Ex<'a> {
         n!(drop_cap_lines, "DropCapLines");
         n!(drop_cap_chars, "DropCapCharacters");
         if let Some(g) = a.grid_align {
+            // IDML has one attribute for on/off and the reference: a reference set without
+            // `grid_align` isn't written.
+            let reference = crate::cjk::grid_reference_out(a.grid_reference.unwrap_or_default());
             match g {
                 designcraft_doc::GridAlign::None => el.set("GridAlignment", "None"),
                 designcraft_doc::GridAlign::AllLines => {
-                    el.set("GridAlignment", "AlignToBaseline");
+                    el.set("GridAlignment", reference);
                     el.set("GridAlignFirstLineOnly", "false");
                 }
                 designcraft_doc::GridAlign::FirstLineOnly => {
-                    el.set("GridAlignment", "AlignToBaseline");
+                    el.set("GridAlignment", reference);
                     el.set("GridAlignFirstLineOnly", "true");
                 }
             }
@@ -2664,4 +2672,104 @@ fn topic_self(path: &[String]) -> String {
         s.push_str(&escape_id(n));
     }
     s
+}
+
+/// Auto tate-chu-yoko, Japanese composition and grid settings of a paragraph range or style.
+fn cjk_settings_para(el: &mut El, a: &ParaAttrs) {
+    if let Some(v) = a.auto_tcy {
+        el.set("AutoTcy", v);
+    }
+    if let Some(v) = a.auto_tcy_include_roman {
+        el.set("AutoTcyIncludeRoman", bool_s(v));
+    }
+    if let Some(v) = a.rotate_roman {
+        el.set("RotateSingleByteCharacters", bool_s(v));
+    }
+    if let Some(v) = a.roman_word_break {
+        el.set("AllowArbitraryHyphenation", bool_s(v));
+    }
+    if let Some(v) = a.grid_gyoudori {
+        el.set("GridGyoudori", v);
+    }
+    if let Some(v) = a.paragraph_gyoudori {
+        el.set("ParagraphGyoudori", bool_s(v));
+    }
+}
+
+impl Ex<'_> {
+    /// Kenten Settings, Kenten Color and Shatai of a character range or style.
+    fn cjk_settings_chars(&self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
+        use designcraft_doc::cjk_settings::KentenKind;
+        if let Some(k) = a.kenten_kind
+            && a.kenten != Some(false)
+        {
+            el.set("KentenKind", crate::cjk::kenten_kind_out(k));
+            if k != KentenKind::Custom {
+                el.attrs.retain(|(n, _)| n != "KentenCustomCharacter");
+            } else if let Some(c) = &a.kenten_character {
+                el.set("KentenCustomCharacter", c);
+            }
+        }
+        if let Some(f) = &a.kenten_font {
+            props.push(p("KentenFont", "string", if f.is_empty() { "$ID/".to_string() } else { f.clone() }));
+        }
+        if let Some(st) = &a.kenten_font_style {
+            props.push(if st.is_empty() { p("KentenFontStyle", "enumeration", "Nothing") } else { p("KentenFontStyle", "string", st.clone()) });
+        }
+        if let Some(Some(v)) = a.kenten_size {
+            el.set("KentenFontSize", num(v));
+        }
+        if let Some(v) = a.kenten_x_scale {
+            el.set("KentenXScale", num(v * 100.0));
+        }
+        if let Some(v) = a.kenten_y_scale {
+            el.set("KentenYScale", num(v * 100.0));
+        }
+        if let Some(v) = a.kenten_distance {
+            el.set("KentenPlacement", num(v));
+        }
+        if let Some(v) = a.kenten_position {
+            el.set("KentenPosition", crate::cjk::kenten_position_out(v));
+        }
+        if let Some(v) = a.kenten_alignment {
+            el.set("KentenAlignment", crate::cjk::kenten_alignment_out(v));
+        }
+        if let Some(v) = &a.kenten_character_set {
+            el.set("KentenCharacterSet", v);
+        }
+        // The text's own colour is the string "Text Color" (a property); a swatch is a reference.
+        for (key, color) in [("KentenFillColor", &a.kenten_fill), ("KentenStrokeColor", &a.kenten_stroke)] {
+            match color {
+                Some(c) if c.is_empty() => props.push(p(key, "string", "Text Color")),
+                Some(c) => el.set(key, self.sw(c)),
+                None => {}
+            }
+        }
+        for (key, tint) in [("KentenTint", a.kenten_fill_tint), ("KentenStrokeTint", a.kenten_stroke_tint)] {
+            if let Some(t) = tint {
+                el.set(key, t.map_or_else(|| "-1".to_string(), |t| num(f64::from(t) * 100.0)));
+            }
+        }
+        if let Some(w) = a.kenten_stroke_weight {
+            el.set("KentenWeight", w.map_or_else(|| "-1".to_string(), num));
+        }
+        if let Some(v) = a.kenten_overprint_fill {
+            el.set("KentenOverprintFill", crate::cjk::overprint_out(v));
+        }
+        if let Some(v) = a.kenten_overprint_stroke {
+            el.set("KentenOverprintStroke", crate::cjk::overprint_out(v));
+        }
+        if let Some(v) = a.shatai_magnification {
+            el.set("ShataiMagnification", num(v));
+        }
+        if let Some(v) = a.shatai_angle {
+            el.set("ShataiDegreeAngle", num(v * crate::cjk::SHATAI_ANGLE_UNITS));
+        }
+        if let Some(v) = a.shatai_adjust_rotation {
+            el.set("ShataiAdjustRotation", bool_s(v));
+        }
+        if let Some(v) = a.shatai_adjust_tsume {
+            el.set("ShataiAdjustTsume", bool_s(v));
+        }
+    }
 }

@@ -183,28 +183,63 @@ pub fn specs() -> Vec<CommandSpec> {
             "Ruby",
             [],
             None,
-            "{text} — the reading set over the selected text (one group); empty removes it",
+            "{text?, type?: group|perCharacter, alignment?: left|center|right|fullJustify|jis|equalAki|oneAki, position?: aboveRight|belowLeft, xOffset?, yOffset? (pt), font?, fontStyle? (\"\" = the text's), size? (pt; null = half the text size), xScale?, yScale? (%), openTypePro?: bool, autoTcyDigits?: 0-9, autoTcyIncludeRoman?: bool, autoTcyAutoScale?: bool, overhang?: none|oneRuby|halfRuby|oneChar|halfChar|noLimit, parentSpacing?: noAdjustment|bothSides|aki121|equalAki|fullJustify, autoAlign?: bool, autoScaling?: bool, scalingPercent? (%), fill?, stroke? (swatch; \"\" = the text's), fillTint?, strokeTint? (%; null = the text's), strokeWeight? (pt; null = the text's), overprintFill?, overprintStroke?: auto|on|off} — the reading set over the selected text and how it is placed; empty text removes it. Per-character ruby separates the readings with U+3000",
             has_text_or_frames,
-            |s, p| { format_chars(s, &json!({"ruby": str_param(p, "text").unwrap_or("")})) }
+            ruby_cmd
         ),
         cmd!(
             "type.kenten",
             "Kenten",
             [],
             None,
-            "{on?: bool} — emphasis dots over the selected characters (toggles by default)",
+            "{on?: bool, kind?: sesameDot|whiteSesameDot|fisheye|blackCircle|smallBlackCircle|bullseye|blackTriangle|whiteTriangle|whiteCircle|smallWhiteCircle|custom, character?: text (custom kind), font?: family (custom kind), fontStyle?, size?: pt (null: half the text size), distance?: pt, position?: aboveRight|belowLeft, alignment?: center|start, xScale?: %, yScale?: %, fill?: swatch (\"\": the text's), fillTint?: %, stroke?: swatch, strokeTint?: %, strokeWeight?: pt, overprintFill?: auto|on|off, overprintStroke?: auto|on|off} — emphasis marks beside the selected characters (toggles by default; any setting turns them on)",
             has_text_or_frames,
-            |s, p| {
-                let on = match p.get("on").and_then(Value::as_bool) {
-                    Some(v) => v,
-                    None => !format_targets(s).first().is_some_and(|t| {
-                        s.doc().ok().and_then(|d| d.doc.text_story(t.story, t.cell)).is_some_and(|st| {
-                            st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over.kenten == Some(true)
-                        })
-                    }),
-                };
-                format_chars(s, &json!({"kenten": on}))
-            }
+            kenten_cmd
+        ),
+        cmd!(
+            "type.shatai",
+            "Shatai",
+            [],
+            None,
+            "{magnification?: % (0 = off), angle?: degrees, adjustRotation?: bool, adjustTsume?: bool} — slant the selected characters by compressing them across a direction",
+            has_text_or_frames,
+            shatai_cmd
+        ),
+        cmd!(
+            "type.autoTateChuYoko",
+            "Auto Tate-Chu-Yoko",
+            [],
+            None,
+            "{digits?: 0..10 (0 = off), includeRoman?: bool} — in vertical text, set runs of up to `digits` half-width digits (and roman letters) across one em, for the selected paragraphs",
+            has_text_or_frames,
+            auto_tcy_cmd
+        ),
+        cmd!(
+            "type.gridSettings",
+            "Grid Settings",
+            [],
+            None,
+            "{alignment?: none|romanBaseline|emTop|emCenter|emBottom|icfTop|icfBottom, firstLineOnly?: bool, gyoudori?: 0..100 (0 = auto), paragraphGyoudori?: bool} — how the selected paragraphs sit on the baseline grid",
+            has_text_or_frames,
+            grid_settings_cmd
+        ),
+        cmd!(
+            "type.rotateRoman",
+            "Rotate Roman Characters in Vertical Text",
+            [],
+            None,
+            "{on?: bool} — half-width characters stand upright in vertical text, for the selected paragraphs (toggles by default)",
+            has_text_or_frames,
+            |s, p| para_toggle(s, p, "type.rotateRoman", "rotateRoman", |pp| pp.rotate_roman)
+        ),
+        cmd!(
+            "type.romanWordBreak",
+            "Roman Word Break",
+            [],
+            None,
+            "{on?: bool} — roman words in the selected paragraphs may break between any two letters, without a hyphen (toggles by default)",
+            has_text_or_frames,
+            |s, p| para_toggle(s, p, "type.romanWordBreak", "romanWordBreak", |pp| pp.roman_word_break)
         ),
         cmd!(
             "type.warichu",
@@ -814,6 +849,314 @@ fn warichu_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(v) = p.get("charsAfterBreak").and_then(Value::as_u64) {
             body.insert("warichuCharsAfterBreak".into(), json!(v.min(100)));
+        }
+    }
+    format_chars(s, &Value::Object(body))
+}
+
+// Kenten, shatai, auto tate-chu-yoko and grid settings: validated settings for the CJK commands.
+
+/// Longest font, style or swatch name taken from parameters, in characters.
+const NAME_MAX_CHARS: usize = 256;
+
+/// A number parameter: absent or `null` → `None`; anything but a finite number is an error.
+fn finite_param(p: &Value, key: &str, cmd: &str) -> Result<Option<f64>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_f64().filter(|v| v.is_finite()).map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be a finite number"))),
+    }
+}
+
+/// A text parameter, cut to `max` characters: absent or `null` → `None`; not text is an error.
+fn text_param(p: &Value, key: &str, cmd: &str, max: usize) -> Result<Option<String>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(t)) => Ok(Some(t.chars().take(max).collect())),
+        Some(_) => Err(bad(cmd, format!("`{key}` must be text"))),
+    }
+}
+
+/// A boolean parameter: absent or `null` → `None`; not a boolean is an error.
+fn bool_param(p: &Value, key: &str, cmd: &str) -> Result<Option<bool>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_bool().map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be true or false"))),
+    }
+}
+
+/// An enumeration parameter checked against `T`, as its JSON value.
+fn enum_param<T: serde::de::DeserializeOwned + serde::Serialize>(p: &Value, key: &str, cmd: &str) -> Result<Option<Value>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let t: T = serde_json::from_value(v.clone()).map_err(|e| bad(cmd, format!("`{key}`: {e}")))?;
+            serde_json::to_value(t).map(Some).map_err(|e| bad(cmd, format!("`{key}`: {e}")))
+        }
+    }
+}
+
+/// A ruby enum parameter, checked against its type.
+fn ruby_enum<T: serde::de::DeserializeOwned>(p: &Value, key: &str) -> Result<Option<Value>> {
+    let Some(v) = p.get(key) else { return Ok(None) };
+    serde_json::from_value::<T>(v.clone()).map_err(|e| bad("type.ruby", format!("{key}: {e}")))?;
+    Ok(Some(v.clone()))
+}
+
+/// A ruby number parameter clamped to `lo..=hi`, then divided by `div` (100 for percentages);
+/// `null` gives `Value::Null` (automatic).
+fn ruby_num(p: &Value, key: &str, lo: f64, hi: f64, div: f64) -> Result<Option<Value>> {
+    match p.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(Value::Null)),
+        Some(v) => {
+            let x = v.as_f64().filter(|x| x.is_finite()).ok_or_else(|| bad("type.ruby", format!("{key}: expected a finite number")))?;
+            Ok(Some(json!(x.clamp(lo, hi) / div)))
+        }
+    }
+}
+
+/// Is `flag` on in the character format at the start of the first formatting target?
+fn char_flag_on(s: &Session, flag: impl Fn(&CharAttrs) -> Option<bool>) -> bool {
+    format_targets(s).first().is_some_and(|t| {
+        s.doc()
+            .ok()
+            .and_then(|d| d.doc.text_story(t.story, t.cell))
+            .is_some_and(|st| flag(&st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over) == Some(true))
+    })
+}
+
+fn kenten_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    use designcraft_doc::cjk_settings::{AdornmentOverprint, KENTEN_MARK_MAX_CHARS, KentenAlignment, KentenKind, KentenPosition};
+    const CMD: &str = "type.kenten";
+    let mut body = serde_json::Map::new();
+    let mut set = |k: &str, v: Value| {
+        body.insert(k.to_string(), v);
+    };
+    // Validate every setting first, so a bad one changes nothing.
+    if let Some(v) = enum_param::<KentenKind>(p, "kind", CMD)? {
+        // A preset stores its mark as the character too, as IDML import does, so a custom
+        // character left from before isn't drawn in its place.
+        if let Some(mark) = serde_json::from_value::<KentenKind>(v.clone()).ok().and_then(KentenKind::mark) {
+            set("kentenCharacter", json!(mark));
+        }
+        set("kentenKind", v);
+    }
+    if let Some(c) = text_param(p, "character", CMD, KENTEN_MARK_MAX_CHARS)? {
+        set("kentenCharacter", json!(c.chars().filter(|c| !c.is_control()).collect::<String>()));
+    }
+    for (key, attr) in [("font", "kentenFont"), ("fontStyle", "kentenFontStyle"), ("fill", "kentenFill"), ("stroke", "kentenStroke")] {
+        if let Some(t) = text_param(p, key, CMD, NAME_MAX_CHARS)? {
+            set(attr, json!(t));
+        }
+    }
+    if let Some(v) = finite_param(p, "size", CMD)? {
+        set("kentenSize", json!(v.clamp(0.1, 1296.0)));
+    }
+    if let Some(v) = finite_param(p, "distance", CMD)? {
+        set("kentenDistance", json!(v.clamp(-1296.0, 1296.0)));
+    }
+    for (key, attr) in [("xScale", "kentenXScale"), ("yScale", "kentenYScale")] {
+        if let Some(v) = finite_param(p, key, CMD)? {
+            set(attr, json!(v.clamp(1.0, 1000.0) / 100.0));
+        }
+    }
+    for (key, attr) in [("fillTint", "kentenFillTint"), ("strokeTint", "kentenStrokeTint")] {
+        if let Some(v) = finite_param(p, key, CMD)? {
+            set(attr, json!(v.clamp(0.0, 100.0) / 100.0));
+        }
+    }
+    if let Some(v) = finite_param(p, "strokeWeight", CMD)? {
+        set("kentenStrokeWeight", json!(v.clamp(0.0, 1000.0)));
+    }
+    if let Some(v) = enum_param::<KentenPosition>(p, "position", CMD)? {
+        set("kentenPosition", v);
+    }
+    if let Some(v) = enum_param::<KentenAlignment>(p, "alignment", CMD)? {
+        set("kentenAlignment", v);
+    }
+    for (key, attr) in [("overprintFill", "kentenOverprintFill"), ("overprintStroke", "kentenOverprintStroke")] {
+        if let Some(v) = enum_param::<AdornmentOverprint>(p, key, CMD)? {
+            set(attr, v);
+        }
+    }
+    // `null` returns a setting to the style's (size: half the text size by default).
+    for (key, attr) in
+        [("size", "kentenSize"), ("fillTint", "kentenFillTint"), ("strokeTint", "kentenStrokeTint"), ("strokeWeight", "kentenStrokeWeight")]
+    {
+        if p.get(key).is_some_and(Value::is_null) {
+            set(attr, Value::Null);
+        }
+    }
+    let on = match bool_param(p, "on", CMD)? {
+        Some(v) => v,
+        None if !body.is_empty() => true,
+        None => !char_flag_on(s, |f| f.kenten),
+    };
+    if !on {
+        // Off keeps the settings for the next time kenten are switched on.
+        body = serde_json::Map::new();
+    }
+    body.insert("kenten".into(), json!(on));
+    format_chars(s, &Value::Object(body))
+}
+
+fn shatai_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "type.shatai";
+    let mut body = serde_json::Map::new();
+    if let Some(v) = finite_param(p, "magnification", CMD)? {
+        body.insert("shataiMagnification".into(), json!(v.clamp(0.0, 90.0)));
+    }
+    if let Some(v) = finite_param(p, "angle", CMD)? {
+        body.insert("shataiAngle".into(), json!(v.rem_euclid(180.0)));
+    }
+    if let Some(v) = bool_param(p, "adjustRotation", CMD)? {
+        body.insert("shataiAdjustRotation".into(), json!(v));
+    }
+    if let Some(v) = bool_param(p, "adjustTsume", CMD)? {
+        body.insert("shataiAdjustTsume".into(), json!(v));
+    }
+    if body.is_empty() {
+        return Err(bad(CMD, "nothing to set: magnification, angle, adjustRotation or adjustTsume"));
+    }
+    format_chars(s, &Value::Object(body))
+}
+
+fn auto_tcy_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "type.autoTateChuYoko";
+    let mut body = serde_json::Map::new();
+    if let Some(v) = finite_param(p, "digits", CMD)? {
+        let max = f64::from(designcraft_compose::shape::AUTO_TCY_MAX);
+        body.insert("autoTcy".into(), json!(v.round().clamp(0.0, max) as u32));
+    }
+    if let Some(v) = bool_param(p, "includeRoman", CMD)? {
+        body.insert("autoTcyIncludeRoman".into(), json!(v));
+    }
+    if body.is_empty() {
+        return Err(bad(CMD, "nothing to set: digits or includeRoman"));
+    }
+    format_paras(s, &Value::Object(body))
+}
+
+fn grid_settings_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    const CMD: &str = "type.gridSettings";
+    let mut body = serde_json::Map::new();
+    let first_only = bool_param(p, "firstLineOnly", CMD)?;
+    match text_param(p, "alignment", CMD, 32)?.as_deref() {
+        None => {
+            if let Some(f) = first_only {
+                body.insert("gridAlign".into(), json!(if f { "firstLineOnly" } else { "allLines" }));
+            }
+        }
+        Some("none") => {
+            body.insert("gridAlign".into(), json!("none"));
+        }
+        Some(name) => {
+            let reference = match name {
+                "romanBaseline" | "baseline" => R::Baseline,
+                "emTop" => R::EmTop,
+                "emCenter" => R::EmCenter,
+                "emBottom" => R::EmBottom,
+                "icfTop" => R::IcfTop,
+                "icfBottom" => R::IcfBottom,
+                other => return Err(bad(CMD, format!("unknown alignment `{other}`"))),
+            };
+            body.insert("gridAlign".into(), json!(if first_only == Some(true) { "firstLineOnly" } else { "allLines" }));
+            body.insert("gridReference".into(), json!(reference));
+        }
+    }
+    if let Some(v) = finite_param(p, "gyoudori", CMD)? {
+        let max = 100.0;
+        body.insert("gridGyoudori".into(), json!(v.round().clamp(0.0, max) as u32));
+    }
+    if let Some(v) = bool_param(p, "paragraphGyoudori", CMD)? {
+        body.insert("paragraphGyoudori".into(), json!(v));
+    }
+    if body.is_empty() {
+        return Err(bad(CMD, "nothing to set: alignment, firstLineOnly, gyoudori or paragraphGyoudori"));
+    }
+    format_paras(s, &Value::Object(body))
+}
+
+/// Switch a paragraph attribute of the selected paragraphs: `on`, else the opposite of the
+/// first one's.
+fn para_toggle(s: &mut Session, p: &Value, cmd: &str, attr: &str, get: impl Fn(&designcraft_doc::ParaProps) -> bool) -> Result<Value> {
+    let on = match bool_param(p, "on", cmd)? {
+        Some(v) => v,
+        None => !format_targets(s).first().is_some_and(|t| {
+            s.doc().ok().is_some_and(|d| {
+                d.doc
+                    .text_story(t.story, t.cell)
+                    .and_then(|st| st.paras.get(st.para_at(t.range.start)))
+                    .is_some_and(|pf| get(&d.doc.styles.resolve_para(pf).0))
+            })
+        }),
+    };
+    let mut body = serde_json::Map::new();
+    body.insert(attr.to_string(), json!(on));
+    format_paras(s, &Value::Object(body))
+}
+
+fn ruby_text<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>> {
+    let Some(v) = p.get(key) else { return Ok(None) };
+    let t = v.as_str().ok_or_else(|| bad("type.ruby", format!("{key}: expected a string")))?;
+    if t.chars().count() > designcraft_doc::ruby::MAX_RUBY_CHARS {
+        return Err(bad("type.ruby", format!("{key}: longer than {} characters", designcraft_doc::ruby::MAX_RUBY_CHARS)));
+    }
+    Ok(Some(t))
+}
+
+fn ruby_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    use designcraft_doc::cjk_settings::AdornmentOverprint;
+    use designcraft_doc::ruby::{RubyAlignment, RubyOverhang, RubyParentSpacing, RubyPosition, RubyType};
+    let mut body = serde_json::Map::new();
+    let mut put = |attr: &str, v: Option<Value>| {
+        if let Some(v) = v {
+            body.insert(attr.into(), v);
+        }
+    };
+    put("ruby", ruby_text(p, "text")?.map(|t| json!(t)));
+    put("rubyType", ruby_enum::<RubyType>(p, "type")?);
+    put("rubyAlignment", ruby_enum::<RubyAlignment>(p, "alignment")?);
+    put("rubyPosition", ruby_enum::<RubyPosition>(p, "position")?);
+    put("rubyOverhangAmount", ruby_enum::<RubyOverhang>(p, "overhang")?);
+    put("rubyParentSpacing", ruby_enum::<RubyParentSpacing>(p, "parentSpacing")?);
+    put("rubyOverprintFill", ruby_enum::<AdornmentOverprint>(p, "overprintFill")?);
+    put("rubyOverprintStroke", ruby_enum::<AdornmentOverprint>(p, "overprintStroke")?);
+    put("rubyXOffset", ruby_num(p, "xOffset", -1000.0, 1000.0, 1.0)?.filter(|v| !v.is_null()));
+    put("rubyYOffset", ruby_num(p, "yOffset", -1000.0, 1000.0, 1.0)?.filter(|v| !v.is_null()));
+    put("rubyFontSize", ruby_num(p, "size", 0.1, 1296.0, 1.0)?);
+    put("rubyXScale", ruby_num(p, "xScale", 1.0, 1000.0, 100.0)?.filter(|v| !v.is_null()));
+    put("rubyYScale", ruby_num(p, "yScale", 1.0, 1000.0, 100.0)?.filter(|v| !v.is_null()));
+    put("rubyScalingMin", ruby_num(p, "scalingPercent", 10.0, 100.0, 100.0)?.filter(|v| !v.is_null()));
+    put("rubyFillTint", ruby_num(p, "fillTint", 0.0, 100.0, 100.0)?);
+    put("rubyStrokeTint", ruby_num(p, "strokeTint", 0.0, 100.0, 100.0)?);
+    put("rubyStrokeWeight", ruby_num(p, "strokeWeight", 0.0, 800.0, 1.0)?);
+    put(
+        "rubyAutoTcyDigits",
+        ruby_num(p, "autoTcyDigits", 0.0, 9.0, 1.0)?.filter(|v| !v.is_null()).and_then(|v| v.as_f64()).map(|v| json!(v.round() as u32)),
+    );
+    for (key, attr) in [
+        ("openTypePro", "rubyOpenTypePro"),
+        ("autoTcyIncludeRoman", "rubyAutoTcyIncludeRoman"),
+        ("autoTcyAutoScale", "rubyAutoTcyAutoScale"),
+        ("autoAlign", "rubyAutoAlign"),
+        ("autoScaling", "rubyAutoScaling"),
+    ] {
+        if let Some(v) = p.get(key) {
+            let b = v.as_bool().ok_or_else(|| bad("type.ruby", format!("{key}: expected true or false")))?;
+            put(attr, Some(json!(b)));
+        }
+    }
+    put("rubyFont", ruby_text(p, "font")?.map(|t| json!(t)));
+    put("rubyFontStyle", ruby_text(p, "fontStyle")?.map(|t| json!(t)));
+    for (key, attr) in [("fill", "rubyFill"), ("stroke", "rubyStroke")] {
+        if let Some(name) = ruby_text(p, key)? {
+            let known = name.is_empty() || name == designcraft_doc::color::swatch::NONE || s.doc()?.doc.swatch(name).is_some();
+            if !known {
+                return Err(bad("type.ruby", format!("{key}: no swatch `{name}`")));
+            }
+            put(attr, Some(json!(name)));
         }
     }
     format_chars(s, &Value::Object(body))
@@ -1621,6 +1964,50 @@ mod tcy_tests {
     }
 
     #[test]
+    fn ruby_options_are_checked_and_clamped() {
+        use designcraft_doc::ruby::{RubyAlignment, RubyPosition, RubyType};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "漢字です"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": "漢字".len()})).unwrap();
+        let f = |s: &Session| s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].char_format_at(1).over.clone();
+        s.execute(
+            "type.ruby",
+            &json!({"text": "かん\u{3000}じ", "type": "perCharacter", "alignment": "oneAki", "position": "belowLeft", "size": 1e9, "xScale": -50, "scalingPercent": 5, "autoTcyDigits": 99, "fillTint": 250, "yOffset": -1e12, "fill": "[Black]"}),
+        )
+        .unwrap();
+        let a = f(&s);
+        assert_eq!(
+            (a.ruby.as_deref(), a.ruby_type, a.ruby_position),
+            (Some("かん\u{3000}じ"), Some(RubyType::PerCharacter), Some(RubyPosition::BelowLeft))
+        );
+        assert_eq!(a.ruby_font_size, Some(Some(1296.0)));
+        assert_eq!(a.ruby_x_scale, Some(0.01));
+        assert_eq!(a.ruby_scaling_min, Some(0.1));
+        assert_eq!(a.ruby_auto_tcy_digits, Some(9));
+        assert_eq!(a.ruby_fill_tint, Some(Some(1.0)));
+        assert_eq!(a.ruby_y_offset, Some(-1000.0));
+        // Options alone keep the reading.
+        s.execute("type.ruby", &json!({"alignment": "center"})).unwrap();
+        assert_eq!((f(&s).ruby, f(&s).ruby_alignment), (a.ruby.clone(), Some(RubyAlignment::Center)));
+        // Refused, and nothing changes: unknown names, non-numbers, overlong text, unknown swatches.
+        let long = "あ".repeat(designcraft_doc::ruby::MAX_RUBY_CHARS + 1);
+        for p in [
+            json!({"alignment": "sideways"}),
+            json!({"size": "big"}),
+            json!({"text": long}),
+            json!({"fill": "Nope"}),
+            json!({"autoAlign": 1}),
+            json!({"text": 5}),
+        ] {
+            assert!(s.execute("type.ruby", &p).is_err(), "{p}");
+        }
+        assert_eq!(f(&s).ruby_alignment, Some(RubyAlignment::Center));
+        assert_eq!(f(&s).ruby, a.ruby);
+    }
+
+    #[test]
     fn warichu_toggles_on_the_selection_and_undoes() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -1881,5 +2268,65 @@ mod story_query_contract_tests {
         assert_eq!(s.execute("story.get", &json!({"frame":f["id"]})).unwrap()["text"], "");
         s.execute("text.select", &json!({"story":f["story"],"anchor":0})).unwrap();
         assert_eq!(s.execute("story.get", &json!({})).unwrap()["text"], "");
+    }
+
+    #[test]
+    fn kenten_shatai_auto_tcy_and_grid_settings_take_checked_values() {
+        use designcraft_doc::cjk::CharacterAlignment;
+        use designcraft_doc::cjk_settings::{KentenKind, KentenPosition};
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 200, 400], "content": "text", "text": "縦書き12年", "vertical": true})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": "縦書き".len()})).unwrap();
+        let chars = |s: &crate::Session| s.doc().unwrap().doc.stories[&sid].char_format_at(1).over.clone();
+        let para = |s: &crate::Session| s.doc().unwrap().doc.stories[&sid].paras[0].para.clone();
+        // Any setting turns kenten on; values are clamped and text is capped.
+        let long = "★".repeat(10_000);
+        s.execute(
+            "type.kenten",
+            &json!({"kind": "custom", "character": long, "size": 1e300, "distance": -1e300, "xScale": 0, "fillTint": 250, "position": "belowLeft"}),
+        )
+        .unwrap();
+        let a = chars(&s);
+        assert_eq!((a.kenten, a.kenten_kind, a.kenten_position), (Some(true), Some(KentenKind::Custom), Some(KentenPosition::BelowLeft)));
+        assert_eq!(a.kenten_character.as_ref().map(|c| c.chars().count()), Some(designcraft_doc::cjk_settings::KENTEN_MARK_MAX_CHARS));
+        assert_eq!(
+            (a.kenten_size, a.kenten_distance, a.kenten_x_scale, a.kenten_fill_tint),
+            (Some(Some(1296.0)), Some(-1296.0), Some(0.01), Some(Some(1.0)))
+        );
+        // Bad values change nothing.
+        for bad in [json!({"kind": "sparkle"}), json!({"size": "big"}), json!({"character": 5}), json!({"on": "yes"}), json!({"overprintFill": 1})] {
+            assert!(s.execute("type.kenten", &bad).is_err(), "{bad}");
+        }
+        assert_eq!(chars(&s), a);
+        s.execute("type.kenten", &json!({"on": false})).unwrap();
+        assert_eq!((chars(&s).kenten, chars(&s).kenten_kind), (Some(false), Some(KentenKind::Custom)), "off keeps the settings");
+        // Shatai.
+        s.execute("type.shatai", &json!({"magnification": 1e9, "angle": -30, "adjustRotation": true})).unwrap();
+        let a = chars(&s);
+        assert_eq!((a.shatai_magnification, a.shatai_angle, a.shatai_adjust_rotation), (Some(90.0), Some(150.0), Some(true)));
+        assert!(s.execute("type.shatai", &json!({})).is_err());
+        assert!(s.execute("type.shatai", &json!({"angle": [45]})).is_err());
+        // Paragraph settings.
+        s.execute("type.autoTateChuYoko", &json!({"digits": 1e12, "includeRoman": true})).unwrap();
+        assert_eq!((para(&s).auto_tcy, para(&s).auto_tcy_include_roman), (Some(designcraft_compose::shape::AUTO_TCY_MAX), Some(true)));
+        s.execute("type.gridSettings", &json!({"alignment": "emCenter", "firstLineOnly": true, "gyoudori": 1e12, "paragraphGyoudori": true}))
+            .unwrap();
+        let p = para(&s);
+        assert_eq!((p.grid_align, p.grid_reference), (Some(designcraft_doc::GridAlign::FirstLineOnly), Some(CharacterAlignment::EmCenter)));
+        assert_eq!((p.grid_gyoudori, p.paragraph_gyoudori), (Some(100), Some(true)));
+        assert!(s.execute("type.gridSettings", &json!({"alignment": "middle"})).is_err());
+        s.execute("type.gridSettings", &json!({"alignment": "none"})).unwrap();
+        assert_eq!(para(&s).grid_align, Some(designcraft_doc::GridAlign::None));
+        s.execute("type.rotateRoman", &json!({})).unwrap();
+        assert_eq!(para(&s).rotate_roman, Some(true));
+        s.execute("type.rotateRoman", &json!({})).unwrap();
+        assert_eq!(para(&s).rotate_roman, Some(false));
+        s.execute("type.romanWordBreak", &json!({"on": true})).unwrap();
+        assert_eq!(para(&s).roman_word_break, Some(true));
+        // The story still composes with every setting at its limit.
+        let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        assert!(!cs.frames.is_empty());
     }
 }

@@ -136,6 +136,9 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
         }
         let skew = if style.skew != 0.0 { Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
         let mut a = Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+        if let Some(shatai) = style.shatai_xf(g, l.baseline) {
+            a = shatai * a;
+        }
         if vertical && let Some(turn) = g.vertical_xf(l.baseline) {
             // Upright in vertical text.
             a = turn * a;
@@ -360,7 +363,7 @@ impl Renderer {
                 for (si, bp) in &lg.runs {
                     if let Some(c) = fill_of(*si) {
                         let st = &cs.styles[*si as usize];
-                        let op = crate::overprints(f, &st.fill, st.fill_tint, false);
+                        let op = crate::overprints(f, &st.fill, st.fill_tint, st.overprint_fill);
                         if op {
                             ctx.push_layer(
                                 None,
@@ -380,9 +383,22 @@ impl Renderer {
                     if st.stroke != designcraft_color::swatch::NONE
                         && let Some(c) = doc.resolve_color(&st.stroke, st.stroke_tint)
                     {
+                        let op = crate::overprints(f, &st.stroke, st.stroke_tint, st.overprint_stroke);
+                        if op {
+                            ctx.push_layer(
+                                None,
+                                Some(vello_cpu::peniko::BlendMode::new(vello_cpu::peniko::Mix::Multiply, vello_cpu::peniko::Compose::SrcOver)),
+                                None,
+                                None,
+                                None,
+                            );
+                        }
                         ctx.set_paint(color_of(&c, 1.0));
                         ctx.set_stroke(kurbo::Stroke::new(st.stroke_weight));
                         ctx.stroke_path(bp);
+                        if op {
+                            ctx.pop_layer();
+                        }
                     }
                 }
             }

@@ -43,6 +43,7 @@ mod cjk;
 mod export;
 mod import;
 mod names;
+mod ruby;
 mod xml;
 
 #[cfg(test)]

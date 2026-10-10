@@ -446,3 +446,18 @@ fn column_rules_are_drawn() {
     assert!((xs[0] - 214.0).abs() < 0.01 && (xs[1] - 398.0).abs() < 0.01, "{xs:?}");
     assert!(rules(false).is_empty());
 }
+
+#[test]
+fn ruby_overprint_is_reported_as_not_exported() {
+    use designcraft_doc::cjk_settings::AdornmentOverprint;
+    let mut d = doc_with_text("漢字です");
+    let sid = *d.stories.keys().next().unwrap();
+    let clean = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(!clean.warnings.iter().any(|w| w.contains("overprint")), "{:?}", clean.warnings);
+    d.story_mut(sid).unwrap().format_chars(0.."漢字".len(), |f| {
+        f.over.ruby = Some("かんじ".into());
+        f.over.ruby_overprint_fill = Some(AdornmentOverprint::On);
+    });
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("overprint is not exported yet")), "{:?}", r.warnings);
+}

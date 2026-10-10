@@ -151,10 +151,12 @@ impl Exporter<'_> {
                     continue;
                 }
                 // Vertical type: an upright glyph turns back a quarter about its em box centre.
-                if ft.vertical
-                    && let Some(turn) = g.vertical_xf(l.baseline)
-                {
-                    s.push_transform(&crate::export::tf(turn));
+                // Shatai slants each glyph about its own em box centre first.
+                let turn = if ft.vertical { g.vertical_xf(l.baseline) } else { None };
+                let shatai = cs.styles.get(g.style as usize).and_then(|st| st.shatai_xf(g, l.baseline));
+                if turn.is_some() || shatai.is_some() {
+                    let m = turn.unwrap_or(Affine::IDENTITY) * shatai.unwrap_or(Affine::IDENTITY);
+                    s.push_transform(&crate::export::tf(m));
                     self.tagged_run(s, cs, &gs[i..i + 1], l.baseline, story);
                     s.pop();
                     i += 1;
@@ -294,6 +296,9 @@ impl Exporter<'_> {
             if st.stroke != designcraft_color::swatch::NONE && st.stroke_weight > 0.0 { self.swatch_color(&st.stroke, st.stroke_tint) } else { None };
         if fill.is_none() && stroke.is_none() {
             return;
+        }
+        if st.overprint_fill || st.overprint_stroke {
+            self.warn("overprint is not exported yet");
         }
         let face = g0.face;
         let size = g0.sy * face.upem;

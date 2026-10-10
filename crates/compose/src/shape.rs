@@ -105,7 +105,30 @@ pub struct SubstCtx {
     /// Set in a Vertical Type frame: upright runs are shaped top to bottom (vertical forms and
     /// metrics), the rest horizontally to be turned as a whole.
     pub vertical: bool,
+    /// Auto tate-chu-yoko in vertical text: runs of up to this many half-width digits (with
+    /// `auto_tcy_roman`, also roman letters) are set across one em (0 = off).
+    pub auto_tcy: u32,
+    pub auto_tcy_roman: bool,
+    /// Half-width characters stand upright in vertical text (Rotate Roman Characters).
+    pub rotate_roman: bool,
 }
+
+impl SubstCtx {
+    fn upright(&self) -> Upright {
+        Upright { vertical: self.vertical, rotate_roman: self.rotate_roman }
+    }
+}
+
+/// How a frame sets characters upright: in vertical text only, and with Rotate Roman also the
+/// half-width ones (see [`upright_runs`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Upright {
+    pub vertical: bool,
+    pub rotate_roman: bool,
+}
+
+/// Most characters auto tate-chu-yoko sets across one em (input-derived).
+pub const AUTO_TCY_MAX: u32 = 10;
 
 /// The stand-in character of hidden conditional text: no width, no break, not drawn.
 pub const HIDDEN: char = '\u{2060}';
@@ -132,6 +155,21 @@ pub(crate) struct StyleTable<'a> {
 
 impl StyleTable<'_> {
     fn intern(&mut self, db: &ScopedFonts<'_>, p: &CharProps) -> u32 {
+        // Kenten are drawn in a run style of their own (Kenten Color); it has no kenten itself.
+        let kenten_mark = if p.kenten {
+            use designcraft_doc::cjk_settings::AdornmentOverprint as O;
+            let mut style = self.intern(db, &crate::kenten::mark_props(p));
+            // Text has no overprint of its own, so `Auto` is off.
+            let (fill, stroke) = (p.kenten_overprint_fill == O::On, p.kenten_overprint_stroke == O::On);
+            if (fill || stroke)
+                && let Some(base) = self.styles.get(style as usize)
+            {
+                style = self.push_unique(RunStyle { overprint_fill: fill, overprint_stroke: stroke, ..base.clone() });
+            }
+            Some(crate::kenten::KentenMark::of(p, style))
+        } else {
+            None
+        };
         let rs = RunStyle {
             fill: p.fill.clone(),
             fill_tint: p.fill_tint,
@@ -159,9 +197,11 @@ impl StyleTable<'_> {
             condition: p.conditions.first().cloned(),
             inserted: p.change == designcraft_doc::ChangeMark::Inserted,
             xml_tag: (!p.xml_tag.is_empty()).then(|| p.xml_tag.clone()),
-            ruby: (!p.ruby.is_empty()).then(|| p.ruby.clone()),
-            kenten: p.kenten,
-            kenten_character: p.kenten_character.clone(),
+            ruby: (!p.ruby.is_empty()).then(|| crate::ruby::capped(&p.ruby).to_string()),
+            ruby_spec: (!p.ruby.is_empty()).then(|| designcraft_doc::ruby::RubySpec::of(p)),
+            ruby_unit: None,
+            overprint_fill: false,
+            overprint_stroke: false,
             warichu: p.warichu,
             warichu_lines: p.warichu_lines,
             warichu_size: p.warichu_size,
@@ -169,7 +209,14 @@ impl StyleTable<'_> {
             warichu_align: p.warichu_alignment,
             warichu_chars_before: p.warichu_chars_before_break,
             warichu_chars_after: p.warichu_chars_after_break,
+            kenten_mark,
+            shatai: crate::shatai::Shatai::of(p),
         };
+        self.push_unique(rs)
+    }
+
+    /// The index of `rs` in the table, added if it isn't there yet.
+    fn push_unique(&mut self, rs: RunStyle) -> u32 {
         if let Some(i) = self.styles.iter().rposition(|s| *s == rs) {
             return i as u32;
         }
@@ -258,6 +305,9 @@ pub(crate) fn shape_para(
             resolved.push((a, b, props, fmt, para_chars.clone()));
         }
     }
+    let auto_tcy =
+        if sub.vertical && sub.auto_tcy > 0 { auto_tcy_ranges(&story.text, range.clone(), sub.auto_tcy, sub.auto_tcy_roman) } else { Vec::new() };
+    let resolved = split_auto_tcy(resolved, &auto_tcy);
     for (a, b, props, fmt, resolved_base) in resolved {
         let style = table.intern(db, &props);
         // A missing font's substitute stands in for the whole font: fallback fonts help it.
@@ -316,7 +366,9 @@ pub(crate) fn shape_para(
             shape_run(db, &story.text, k..b, &props, auto_leading, style, sub, &mut glyphs);
         }
     }
+    fit_auto_tcy(&mut glyphs, &auto_tcy);
     collapse_tcy(&mut glyphs, sub.vertical);
+    crate::ruby::reserve(db, table.styles, &mut glyphs, auto_leading.glyph_fallback, sub.vertical);
     ShapedPara { glyphs, range }
 }
 
@@ -460,6 +512,7 @@ fn shape_run(
         g.dx += before - left * tsume;
         g.adv += before + after - (left + right) * tsume;
     }
+    crate::shatai::fit_advances(run, p);
     if p.jidori > 0 && !run.is_empty() && !run.iter().any(|g| g.ch.is_control()) {
         let clusters: Vec<usize> = run.iter().enumerate().filter(|(_, g)| g.len > 0).map(|(i, _)| i).collect();
         let natural: f64 = run.iter().map(|g| g.adv).sum();
@@ -513,7 +566,7 @@ fn shape_run_raw(
     let mut seg_face = primary.clone();
     let flush = |a: usize, b: usize, face: &Arc<FontFace>, out: &mut Vec<Glyph>| {
         if a < b {
-            shape_segment(db, text, a..b, None, p, face, auto_leading, style, out, sub.vertical);
+            shape_segment(db, text, a..b, None, p, face, auto_leading, style, out, sub.upright());
         }
     };
     for (i, c) in text[range.clone()].char_indices() {
@@ -538,7 +591,7 @@ fn shape_run_raw(
                 flush(seg_start, i, &seg_face, out);
                 seg_start = i + c.len_utf8();
                 let face = if primary.covers(d) { primary.clone() } else { fallback(d) };
-                shape_segment(db, text, i..i + c.len_utf8(), Some(d.encode_utf8(&mut [0; 4])), p, &face, auto_leading, style, out, sub.vertical);
+                shape_segment(db, text, i..i + c.len_utf8(), Some(d.encode_utf8(&mut [0; 4])), p, &face, auto_leading, style, out, sub.upright());
                 continue;
             }
         }
@@ -570,7 +623,7 @@ fn shape_run_raw(
             seg_start = i + c.len_utf8();
             if let Some(vi) = designcraft_doc::vars::var_index(c) {
                 match sub.vars.get(vi).filter(|v| !v.is_empty()) {
-                    Some(v) => shape_segment(db, text, i..i + c.len_utf8(), Some(v), p, &primary, auto_leading, style, out, sub.vertical),
+                    Some(v) => shape_segment(db, text, i..i + c.len_utf8(), Some(v), p, &primary, auto_leading, style, out, sub.upright()),
                     None => {
                         let mut g = control_glyph(&primary, p, auto_leading, style, i, c);
                         g.adv = 0.0;
@@ -586,7 +639,7 @@ fn shape_run_raw(
                     } else {
                         sub.page_name.clone().unwrap_or_else(|| "#".into())
                     };
-                    shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, style, out, sub.vertical);
+                    shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, style, out, sub.upright());
                 }
                 designcraft_doc::OBJECT_MARK => {
                     let mut g = control_glyph(&primary, p, auto_leading, style, i, c);
@@ -609,7 +662,7 @@ fn shape_run_raw(
                     out.push(g);
                 }
                 designcraft_doc::XREF_MARK => match sub.xrefs.get(&i).filter(|t| !t.is_empty()) {
-                    Some(t) => shape_segment(db, text, i..i + c.len_utf8(), Some(t), p, &primary, auto_leading, style, out, sub.vertical),
+                    Some(t) => shape_segment(db, text, i..i + c.len_utf8(), Some(t), p, &primary, auto_leading, style, out, sub.upright()),
                     None => {
                         let mut g = control_glyph(&primary, p, auto_leading, style, i, c);
                         g.adv = 0.0;
@@ -618,7 +671,7 @@ fn shape_run_raw(
                 },
                 designcraft_doc::FOOTNOTE_REF | designcraft_doc::ENDNOTE_REF => {
                     let s = sub.notes.get(&i).map_or("#", String::as_str);
-                    shape_segment(db, text, i..i + c.len_utf8(), Some(s), p, &primary, auto_leading, style, out, sub.vertical);
+                    shape_segment(db, text, i..i + c.len_utf8(), Some(s), p, &primary, auto_leading, style, out, sub.upright());
                 }
                 _ => {
                     // Zero-width control glyph carrying metrics (tabs get their width at line layout).
@@ -810,9 +863,10 @@ fn shape_segment(
     auto_leading: TypeEnv,
     style: u32,
     out: &mut Vec<Glyph>,
-    vertical: bool,
+    mode: Upright,
 ) {
     let _ = db;
+    let vertical = mode.vertical;
     let (size, k, ascent, descent, leading, cap, xh, shift) = metrics(face, p, auto_leading);
     let hs = p.h_scale;
     let tracking = p.tracking / 1000.0 * p.size;
@@ -834,7 +888,7 @@ fn shape_segment(
     // Tate-chu-yoko is set across the line, so it stays horizontal.
     let mut shaped: Vec<ShapedGlyph> = Vec::new();
     let mut upright: Vec<bool> = Vec::new();
-    for (r, up) in upright_runs(src, vertical && !p.tate_chu_yoko) {
+    for (r, up) in upright_runs(src, vertical && !p.tate_chu_yoko, mode.rotate_roman) {
         let around = match replacement {
             None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
             Some(_) => ("", ""),
@@ -922,19 +976,105 @@ fn shape_segment(
     }
 }
 
-/// `src` cut into runs set upright in vertical text (CJK) and runs that turn with the line, as
-/// (byte range, upright); combining marks stay with the run they follow. One horizontal run when
-/// `vertical` is false.
-fn upright_runs(src: &str, vertical: bool) -> Vec<(std::ops::Range<usize>, bool)> {
+/// `src` cut into runs set upright in vertical text (CJK, and with `rotate_roman` half-width
+/// characters too) and runs that turn with the line, as (byte range, upright); combining marks
+/// stay with the run they follow. One horizontal run when `vertical` is false.
+fn upright_runs(src: &str, vertical: bool, rotate_roman: bool) -> Vec<(std::ops::Range<usize>, bool)> {
     let mut runs: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
     for (i, c) in src.char_indices() {
-        let up = vertical && crate::upright_in_vertical(c);
+        let up = vertical && (crate::upright_in_vertical(c) || (rotate_roman && half_width_roman(c)));
         match runs.last_mut() {
             Some((r, u)) if *u == up || is_mark(c) => r.end = i + c.len_utf8(),
             _ => runs.push((i..i + c.len_utf8(), up)),
         }
     }
     runs
+}
+
+/// Half-width (single-byte) roman characters: what Rotate Roman Characters stands upright.
+fn half_width_roman(c: char) -> bool {
+    matches!(c, '!'..='~') || (matches!(c as u32, 0xC0..=0x24F) && c.is_alphabetic())
+}
+
+/// Auto tate-chu-yoko: the byte ranges in `range` of `text` that are runs of at most `max`
+/// half-width digits (with `roman`, digits and roman letters), each delimited by other characters.
+pub(crate) fn auto_tcy_ranges(text: &str, range: std::ops::Range<usize>, max: u32, roman: bool) -> Vec<std::ops::Range<usize>> {
+    let max = max.min(AUTO_TCY_MAX) as usize;
+    let takes = |c: char| c.is_ascii_digit() || (roman && c.is_ascii_alphabetic());
+    let mut out = Vec::new();
+    let Some(src) = text.get(range.clone()) else { return out };
+    let mut run: Option<(usize, usize)> = None; // (start byte, characters)
+    let close = |run: &mut Option<(usize, usize)>, end: usize, out: &mut Vec<std::ops::Range<usize>>| {
+        if let Some((start, n)) = run.take()
+            && n <= max
+        {
+            out.push(range.start + start..range.start + end);
+        }
+    };
+    for (i, c) in src.char_indices() {
+        if takes(c) {
+            run = Some(match run {
+                Some((start, n)) => (start, n + 1),
+                None => (i, 1),
+            });
+        } else {
+            close(&mut run, i, &mut out);
+        }
+    }
+    close(&mut run, src.len(), &mut out);
+    out
+}
+
+/// The resolved runs of a paragraph with auto tate-chu-yoko runs cut out and marked tate-chu-yoko
+/// (runs already tate-chu-yoko keep theirs).
+fn split_auto_tcy<'f>(
+    resolved: Vec<(usize, usize, CharProps, &'f designcraft_doc::CharFormat, CharProps)>,
+    auto: &[std::ops::Range<usize>],
+) -> Vec<(usize, usize, CharProps, &'f designcraft_doc::CharFormat, CharProps)> {
+    if auto.is_empty() {
+        return resolved;
+    }
+    let mut out = Vec::with_capacity(resolved.len() + 2 * auto.len());
+    for (a, b, props, fmt, base) in resolved {
+        if props.tate_chu_yoko {
+            out.push((a, b, props, fmt, base));
+            continue;
+        }
+        let mut at = a;
+        for r in auto.iter().filter(|r| r.start < b && r.end > a) {
+            let (s, e) = (r.start.max(a), r.end.min(b));
+            if at < s {
+                out.push((at, s, props.clone(), fmt, base.clone()));
+            }
+            let mut tcy = props.clone();
+            tcy.tate_chu_yoko = true;
+            out.push((s, e, tcy, fmt, base.clone()));
+            at = e;
+        }
+        if at < b {
+            out.push((at, b, props, fmt, base));
+        }
+    }
+    out
+}
+
+/// Auto tate-chu-yoko groups wider than their em are scaled across to fit it.
+fn fit_auto_tcy(glyphs: &mut [Glyph], auto: &[std::ops::Range<usize>]) {
+    for r in auto {
+        let group: Vec<usize> = glyphs.iter().enumerate().filter(|(_, g)| g.tcy.is_some() && r.contains(&g.byte)).map(|(i, _)| i).collect();
+        let width: f64 = group.iter().filter_map(|&i| glyphs.get(i)).map(|g| g.adv).sum();
+        let em = group.iter().filter_map(|&i| glyphs.get(i)).map(|g| g.size).fold(0.0, f64::max);
+        let k = if width > 0.0 { em / width } else { 1.0 };
+        if k > 0.0 && k < 1.0 {
+            for &i in &group {
+                if let Some(g) = glyphs.get_mut(i) {
+                    g.adv *= k;
+                    g.sx *= k;
+                    g.dx *= k;
+                }
+            }
+        }
+    }
 }
 
 /// A hyphen glyph in the face/size of `g`, placed after it (zero source length).

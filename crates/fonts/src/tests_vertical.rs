@@ -6,7 +6,7 @@
 use skrifa::raw::TableProvider;
 
 use super::*;
-use crate::testing::{font_mapping, font_with, with_table_len, with_table_u16, with_vmtx, with_vorg};
+use crate::testing::{font_mapping, font_with, with_base, with_table_len, with_table_u16, with_vmtx, with_vorg};
 use crate::{ShapeContext, feature, shape_vertical, shape_with_context};
 
 /// Text in Japanese.
@@ -122,6 +122,20 @@ fn fonts_without_vmtx_use_the_em_box() {
 }
 
 #[test]
+fn icf_box_comes_from_base_else_an_inset_em_box() {
+    let font = font_with("ICF", &['一']).unwrap();
+    let face = face_of(with_base(&font, &[(*b"ideo", -120), (*b"idtp", 880), (*b"icfb", -80), (*b"icft", 840)]).unwrap());
+    assert_eq!((face.em_box(), face.icf_box()), ((880.0, -120.0), (840.0, -80.0)));
+    // One of the two: mirrored inside the em box.
+    let face = face_of(with_base(&font, &[(*b"ideo", -120), (*b"icfb", -90)]).unwrap());
+    assert_eq!(face.icf_box(), (850.0, -90.0));
+    // No ICF baselines (Source Sans 3's BASE has only ideo and romn): the em box inset by 5% of the em.
+    let face = face_of(font);
+    assert_eq!(face.em_box(), (830.0, -170.0));
+    assert_eq!(face.icf_box(), (780.0, -120.0));
+}
+
+#[test]
 fn broken_vertical_tables_do_not_panic() {
     let mut fonts = vec![("synthetic", vertical_font())];
     if let Some(face) = shippori() {
@@ -146,6 +160,8 @@ fn broken_vertical_tables_do_not_panic() {
         let face = face_of(bytes);
         let (top, bottom) = face.em_box();
         assert!(top > bottom && (top - bottom - face.upem).abs() < 1e-9, "{what}: {top} {bottom}");
+        let (icf_top, icf_bottom) = face.icf_box();
+        assert!(icf_top > icf_bottom && icf_top.is_finite() && icf_bottom.is_finite(), "{what}: ICF {icf_top} {icf_bottom}");
         for gid in [0, face.glyph_for('一'), face.glyph_for('、'), u32::from(u16::MAX), u32::MAX] {
             let (adv, origin) = (face.v_advance(gid), face.v_origin(gid));
             assert!(adv.is_finite() && adv >= 0.0 && origin.is_finite(), "{what}: {gid} {adv} {origin}");

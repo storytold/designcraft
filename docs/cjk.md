@@ -37,10 +37,13 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Korean line breaking | at spaces (Hangul everywhere, hanja in Korean text); per-paragraph character-based breaking (`koreanCharBreaks`); DesignCraft-only, not in IDML |
 | Mojikumi | tables and paragraph references kept through IDML; not applied (Preflight says so) |
 | Aki, tsume, jidori | done ([cjk-typography.md](cjk-typography.md)) |
-| Character alignment, leading model | em box top / centre / bottom, ICF from ascender and descender, roman baseline; aki above / below, centre (centre down as centre) |
-| Tate-chu-yoko | manual, with offsets; no auto, 3+ digits overflow the em |
-| Ruby | group ruby only, fixed 50 % size, no options, doesn't affect leading |
-| Kenten | the IDML kinds and a custom character, drawn as characters; no position, size, alignment, colour or font |
+| Character alignment, leading model | em box top / centre / bottom, ICF top / bottom (`BASE` `icft`/`icfb`, else the em box inset by 5%), roman baseline; aki above / below, centre (centre down as centre) |
+| Tate-chu-yoko | manual, with offsets; auto tate-chu-yoko of short digit runs (with roman letters when asked) in vertical text, narrowed to fit the em (`type.autoTateChuYoko`, IDML `AutoTcy`, `AutoTcyIncludeRoman`); manual groups of 3+ digits overflow the em |
+| Ruby | group and per-character (jukugo) ruby; alignment (shoulder, centre, end, justify, JIS 1-2-1, equal aki, 1 ruby-character aki); above/right or below/left with offsets; font, size (½ by default), scales, OpenType `ruby` glyphs, auto tate-chu-yoko of digits; overhang onto kana and punctuation; parent spacing and automatic narrowing when the ruby is longer; flush with the line edge (a group stays on the line of each neighbour its ruby overhangs, so the reserved spacing holds at line edges); set beyond kenten on the same side; fill, stroke, tint, weight, and overprint in Overprint Preview; every setting through `type.ruby` and IDML. Doesn't affect leading; PDF export writes no overprint (Preflight and the export say so) |
+| Kenten | the kinds and a custom mark (up to 8 characters) in its own font; size, x/y scale, distance, above/right or below/left, centred or at the character's start; fill, stroke, tints, weight, and overprint in Overprint Preview (`type.kenten`, IDML `Kenten*`). The character set (input mode) is kept, not converted; PDF export writes no overprint |
+| Shatai | magnification, angle, adjust rotation and adjust tsume on screen, in PDF, outlines and type on a path (`type.shatai`, IDML `Shatai*`) |
+| Rotate roman, roman word break | half-width characters upright in vertical text (`type.rotateRoman`, IDML `RotateSingleByteCharacters`); breaks between Latin, Greek or Cyrillic letters without a hyphen (`type.romanWordBreak`, IDML `AllowArbitraryHyphenation`) |
+| Grid alignment | against the baseline grid: roman baseline, em box top / centre / bottom, ICF top / bottom; first line only; gyoudori (auto or N grid lines) and paragraph gyoudori (`type.gridSettings`, IDML `GridAlignment`, `GridGyoudori`, `ParagraphGyoudori`). No frame grid; vertical frames have no baseline grid |
 | Composite fonts | done: model, `style.compositeFont.*`, shaping, IDML, font list, replace and Preflight; no dialog |
 | Languages | Japanese, Korean, Simplified and Traditional Chinese reach the shaper (`locl`), font fallback, line breaking and typographer's quotes; IDML language names are kept as written; locale codes (`ja_JP`, `ko-KR`, `de_DE_2006`) are their language and region, and Chinese is also recognised in its common spellings ("Simplified Chinese", "Chinese (Traditional)", `zh_CN`, `zh-Hant`) |
 | Missing glyphs | as in InDesign: characters the applied font lacks are drawn as its missing-glyph box (screen and PDF) and listed by Preflight; the document setting Draw Missing Glyphs from Fallback Fonts (Preferences › Composition, off in new documents and IDML imports, on in documents saved before it existed) draws them from fallback fonts instead |
@@ -115,12 +118,7 @@ working (tsume removes the side bearings before mojikumi runs).
 
 All set after line layout like today's ruby, but able to affect line height:
 
-- **Ruby**: per-character (mono), group and jukugo ruby; alignment (1-2-1, centre, left/right,
-  equal space, JIS rule), position (above/right, below/left), size, font, colour, x/y scale,
-  offsets, overhang onto neighbours (none / ½ / 1 ruby character / ½ base / unlimited), automatic
-  scaling, spacing to the base, "ruby adjusts leading".
-- **Kenten**: position, size, alignment, colour, font (the kinds and a custom character are
-  there).
+- **Ruby**: "ruby adjusts leading" (every other setting is in place; see the table above).
 - **Warichu**: an inline run set in 2+ smaller lines inside one line height, with size, line
   spacing, alignment and breaking rules. Type › Warichu (`type.warichu`) does this after the
   line is broken: the run is scaled and stacked, and the rest of that line closes up. It does
@@ -134,13 +132,10 @@ All set after line layout like today's ruby, but able to affect line height:
   left as body text. IDML reads and writes `Warichu`, `WarichuLines`, `WarichuSize`,
   `WarichuLineSpacing`, `WarichuAlignment`, `WarichuCharsBeforeBreak` and
   `WarichuCharsAfterBreak`.
-- **Tate-chu-yoko**: scale-to-fit-em, automatic TCY for runs of N digits (with or without
-  Latin), rensuji (offsets are there).
-- **Shatai** (oblique in the CJK sense: angle and magnification, keeping the em box),
-  **character rotation**.
-- **Character alignment and leading model**: ICF top and bottom from the font's ideographic
-  character face (`BASE` `icft`/`icfb`) rather than its ascender and descender, and centre down
-  as its own model.
+- **Tate-chu-yoko**: scale-to-fit-em for manual groups, rensuji (offsets and automatic TCY are
+  there).
+- **Character rotation**.
+- **Leading model**: centre down as its own model.
 
 Jidori, tsume, aki before and after, em-box alignment and the other leading models are in place
 ([cjk-typography.md](cjk-typography.md)).
@@ -201,25 +196,29 @@ as a command regardless of the feature set (agents, MCP).
 
 ## IDML attributes to support
 
-Already read and written: `KentenKind`, `KentenCustomCharacter`, `RubyFlag`, `RubyString`,
+Already read and written: `KentenKind`, `KentenCustomCharacter`, `KentenFont`, `KentenFontStyle`,
+`KentenFontSize`, `KentenXScale`, `KentenYScale`, `KentenPlacement`, `KentenPosition`,
+`KentenAlignment`, `KentenCharacterSet`, `KentenFillColor`, `KentenStrokeColor`, `KentenTint`,
+`KentenStrokeTint`, `KentenWeight`, `KentenOverprintFill`, `KentenOverprintStroke`,
+`ShataiMagnification`, `ShataiDegreeAngle`, `ShataiAdjustRotation`, `ShataiAdjustTsume`,
+`RubyFlag` (written as `1`), `RubyString`, `RubyType`, `RubyAlignment`, `RubyPosition`,
+`RubyXOffset`, `RubyYOffset`, `RubyFont`, `RubyFontStyle`, `RubyFontSize`, `RubyXScale`,
+`RubyYScale`, `RubyOpenTypePro`, `RubyAutoTcyDigits`, `RubyAutoTcyIncludeRoman`,
+`RubyAutoTcyAutoScale`, `RubyOverhang`, `RubyParentOverhangAmount`, `RubyParentSpacing`,
+`RubyAutoAlign`, `RubyAutoScaling`, `RubyParentScalingPercent`, `RubyFill`, `RubyStroke`,
+`RubyTint`, `RubyStrokeTint`, `RubyWeight`, `RubyOverprintFill`, `RubyOverprintStroke`;
+paragraph `AutoTcy`, `AutoTcyIncludeRoman`, `RotateSingleByteCharacters`,
+`AllowArbitraryHyphenation`, `GridAlignment`, `GridAlignFirstLineOnly`, `GridGyoudori`,
+`ParagraphGyoudori`; the `Warichu*` attributes;
 `Tatechuyoko`, `TatechuyokoXOffset`, `TatechuyokoYOffset`, `Jidori`, `Tsume`, `LeadingAki`,
 `TrailingAki`, `CharacterAlignment`, `LeadingModel`, `GlyphForm`, `OTFProportionalMetrics`,
 `OTFHVKana`, `OTFRomanItalics`; paragraph `KinsokuSet`, `KinsokuType`, `KinsokuHangType`,
 `BunriKinshi`, `Rensuuji`, `MojikumiTable`, `TreatIdeographicSpaceAsSpace`; resources
 `KinsokuTable`, `MojikumiTable`, `CompositeFont`, `StoryPreference` direction.
 
-Character: `KentenFont`, `KentenFontStyle`, `KentenSize`, `KentenPosition`, `KentenAlignment`,
-`KentenCharacterSet`, `KentenXScale`, `KentenYScale`, `KentenFillColor`/`Tint`, `RubyType`,
-`RubyAlignment`, `RubyPosition`, `RubyFont`, `RubyFontStyle`, `RubyFontSize`, `RubyXScale`,
-`RubyYScale`, `RubyXOffset`, `RubyYOffset`, `RubyOverhang`, `RubyParentSpacing`,
-`RubyParentOverhangAmount`, `RubyAutoAlign`, `RubyAutoScaling`, `RubyAutoTcyDigits`, `Rensuji`,
-`CharacterRotation`, `ShataiMagnification`, `ShataiDegreeAngle`, `ShataiAdjustRotation`,
-`ShataiAdjustTsume`, `Warichu`, `WarichuLines`, `WarichuSize`, `WarichuLineSpacing`,
-`WarichuAlignment`, `WarichuCharsBeforeBreak`, `WarichuCharsAfterBreak`.
+Character: `Rensuji`, `CharacterRotation`.
 
-Paragraph: `Composer` (the Japanese composers), `GridAlignment` (all values),
-`GridAlignFirstLineOnly`, `GridGyoudori`, `ParagraphGyoudori`, `CjkGridTracking`, `AutoTcy`,
-`AutoTcyIncludeRoman`, `RotateSingleByteCharacters`, `ScaleAffectsLineHeight`.
+Paragraph: `Composer` (the Japanese composers), `CjkGridTracking`, `ScaleAffectsLineHeight`.
 
 Resources: `MojikumiTableSet`, `NamedGrid`, layout grid and frame grid preferences,
 `StoryPreference` orientation.

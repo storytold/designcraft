@@ -1144,7 +1144,8 @@ fn draw_inverse_highlight(
                     let outline = db.outline(&g.face, g.gid);
                     let skew =
                         if style.skew != 0.0 { Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
-                    let ga = Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    let shatai = style.shatai_xf(g, l.baseline).unwrap_or(Affine::IDENTITY);
+                    let ga = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
                     rc.set_transform(view * *m * ga);
                     rc.fill_path(&outline);
                 }

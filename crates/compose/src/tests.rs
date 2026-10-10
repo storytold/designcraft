@@ -1065,6 +1065,195 @@ fn ruby_and_kenten_sit_over_their_text() {
     assert!((dot.x + dot.adv / 2.0 - (de.x + de.adv / 2.0)).abs() < 1.0 && dot.y < 0.0);
 }
 
+/// `text` on one line, composed plain and then with the ruby attributes `set` on `range`: the
+/// plain glyphs, and the ruby line (its ruby glyphs follow the text's) with its story.
+fn ruby_compose(text: &str, range: std::ops::Range<usize>, set: impl Fn(&mut designcraft_doc::CharAttrs)) -> (Vec<PlacedGlyph>, Line, ComposedStory) {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+    let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    d.story_mut(sid).unwrap().format_chars(range, |f| set(&mut f.over));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = cs.frames[0].lines[0].clone();
+    (plain, line, cs)
+}
+
+#[test]
+fn group_ruby_spreads_1_2_1_over_the_word_and_mono_ruby_sits_over_each_character() {
+    let kanji = 0.."漢字".len();
+    // Group: three kana over two kanji, half a gap at each end (JIS 1-2-1).
+    let (plain, l, _) = ruby_compose("漢字です", kanji.clone(), |a| a.ruby = Some("かんじ".into()));
+    let ruby = &l.glyphs[plain.len()..];
+    assert_eq!(ruby.len(), 3);
+    let (x0, x1) = (l.glyphs[0].x, l.glyphs[1].x + l.glyphs[1].adv);
+    let w: f64 = ruby.iter().map(|g| g.adv).sum();
+    assert!(w < x1 - x0);
+    let gap = (x1 - x0 - w) / 3.0;
+    let mut x = x0 + gap / 2.0;
+    for g in ruby {
+        assert!((g.x - x).abs() < 1e-6, "{} != {x}", g.x);
+        x += g.adv + gap;
+    }
+    // Mono: かん over 漢 and じ centred on 字; the U+3000 separator isn't drawn.
+    let (plain, l, _) = ruby_compose("漢字です", kanji, |a| {
+        a.ruby = Some("かん\u{3000}じ".into());
+        a.ruby_type = Some(designcraft_doc::ruby::RubyType::PerCharacter);
+    });
+    let ruby = &l.glyphs[plain.len()..];
+    assert_eq!(ruby.len(), 3);
+    let (kan, ji) = (&l.glyphs[0], &l.glyphs[1]);
+    assert!((ruby[0].x - kan.x).abs() < 1e-6 && ruby[1].x + ruby[1].adv <= ji.x + 1e-6);
+    assert!((ruby[2].x + ruby[2].adv / 2.0 - (ji.x + ji.adv / 2.0)).abs() < 1e-6);
+}
+
+#[test]
+fn longer_ruby_overhangs_kana_and_spaces_out_kanji() {
+    let ji = "漢".len().."漢字".len();
+    // Over 字 before a kana: the ruby starts flush with 字 (never over the kanji before it) and
+    // hangs over で by one ruby character, so nothing moves.
+    let (plain, l, _) = ruby_compose("漢字で", ji.clone(), |a| a.ruby = Some("かんじ".into()));
+    let ruby = &l.glyphs[plain.len()..];
+    let w: f64 = ruby.iter().map(|g| g.adv).sum();
+    let parent = &l.glyphs[1];
+    assert!(w > parent.adv);
+    assert!((ruby[0].x - parent.x).abs() < 1e-6, "{} != {}", ruby[0].x, parent.x);
+    assert!((l.glyphs[2].x - plain[2].x).abs() < 1e-6, "で stays");
+    assert!(ruby[2].x + ruby[2].adv > l.glyphs[2].x, "over で");
+    // Between kanji there is nothing to overhang: 字 gets the difference as space on both sides
+    // and the ruby spans it.
+    let (plain, l, _) = ruby_compose("漢字漢", ji, |a| a.ruby = Some("かんじ".into()));
+    let ruby = &l.glyphs[plain.len()..];
+    let w: f64 = ruby.iter().map(|g| g.adv).sum();
+    let grow = l.glyphs[2].x - plain[2].x;
+    assert!((grow - (w - plain[1].adv)).abs() < 1e-6, "{grow} vs {w}");
+    assert!((l.glyphs[1].dx - grow / 2.0).abs() < 1e-6);
+    assert!((ruby[0].x - (l.glyphs[1].x - l.glyphs[1].dx)).abs() < 1e-6);
+}
+
+#[test]
+fn ruby_is_half_size_by_default_and_can_sit_below_in_its_own_colour() {
+    let kanji = 0.."漢字".len();
+    let (plain, l, cs) = ruby_compose("漢字です", kanji.clone(), |a| {
+        a.ruby = Some("かんじ".into());
+        a.ruby_position = Some(designcraft_doc::ruby::RubyPosition::BelowLeft);
+    });
+    let ruby = &l.glyphs[plain.len()..];
+    let size = cs.styles[l.glyphs[0].style as usize].size;
+    assert!(ruby.iter().all(|g| g.y > size * 0.12), "below the parent's em box");
+    assert!(ruby.iter().all(|g| (g.sy - l.glyphs[0].sy * 0.5).abs() < 1e-9), "half size");
+    assert!((cs.styles[ruby[0].style as usize].size - size * 0.5).abs() < 1e-9);
+    // Its own size and fill; the parent keeps its colour.
+    let (plain, l, cs) = ruby_compose("漢字です", kanji, |a| {
+        a.ruby = Some("かんじ".into());
+        a.ruby_font_size = Some(Some(4.0));
+        a.ruby_fill = Some("[Paper]".into());
+    });
+    let r = &l.glyphs[plain.len()];
+    assert!(r.y < -size * 0.8);
+    assert!((r.sy - l.glyphs[0].sy * 4.0 / size).abs() < 1e-9);
+    assert_eq!(cs.styles[r.style as usize].fill, "[Paper]");
+    assert_eq!(cs.styles[l.glyphs[0].style as usize].fill, "[Black]");
+}
+
+#[test]
+fn ruby_moves_out_past_kenten_on_the_same_side() {
+    use designcraft_doc::cjk_settings::KentenPosition;
+    use designcraft_doc::ruby::RubyPosition;
+    let kanji = 0.."漢字".len();
+    // The ruby glyphs' baseline, and the outer edge of the kenten's em box (y down).
+    let compose = |ruby: RubyPosition, kenten: Option<KentenPosition>| {
+        let (plain, l, cs) = ruby_compose("漢字です", kanji.clone(), |a| {
+            a.ruby = Some("かんじ".into());
+            a.ruby_position = Some(ruby);
+            if let Some(k) = kenten {
+                a.kenten = Some(true);
+                a.kenten_size = Some(Some(6.0));
+                a.kenten_distance = Some(1.0);
+                a.kenten_position = Some(k);
+            }
+        });
+        let parent = &l.glyphs[0];
+        let marks = cs.styles[parent.style as usize].kenten_mark.as_ref().map(|m| m.style);
+        let ruby: Vec<PlacedGlyph> = l.glyphs[plain.len()..].iter().filter(|g| Some(g.style) != marks).cloned().collect();
+        assert_eq!(ruby.len(), 3);
+        let (top, bottom) = parent.face.em_box();
+        let edge = match kenten {
+            Some(KentenPosition::BelowLeft) => parent.y - bottom * parent.sy + 1.0 + 6.0,
+            _ => parent.y - top * parent.sy - 1.0 - 6.0,
+        };
+        (ruby, edge)
+    };
+    for (position, kenten) in [(RubyPosition::AboveRight, KentenPosition::AboveRight), (RubyPosition::BelowLeft, KentenPosition::BelowLeft)] {
+        let (alone, _) = compose(position, None);
+        let (ruby, edge) = compose(position, Some(kenten));
+        for (r, a) in ruby.iter().zip(&alone) {
+            let (top, bottom) = r.face.em_box();
+            if position == RubyPosition::AboveRight {
+                assert!(r.y - bottom * r.sy <= edge + 1e-6, "the ruby's em box ends where the marks' starts");
+                assert!(r.y < a.y, "moved up");
+            } else {
+                assert!(r.y - top * r.sy >= edge - 1e-6, "the ruby's em box starts where the marks' ends");
+                assert!(r.y > a.y, "moved down");
+            }
+        }
+    }
+    // Kenten on the other side leave the ruby where it was.
+    let (alone, _) = compose(RubyPosition::AboveRight, None);
+    let (ruby, _) = compose(RubyPosition::AboveRight, Some(KentenPosition::BelowLeft));
+    assert!(ruby.iter().zip(&alone).all(|(r, a)| (r.y - a.y).abs() < 1e-9));
+}
+
+#[test]
+fn ruby_and_kenten_overprint_their_own_run_styles() {
+    use designcraft_doc::cjk_settings::AdornmentOverprint as O;
+    let kanji = 0.."漢字".len();
+    let (plain, l, cs) = ruby_compose("漢字です", kanji, |a| {
+        a.ruby = Some("かんじ".into());
+        a.ruby_overprint_stroke = Some(O::On);
+        a.kenten = Some(true);
+        a.kenten_overprint_fill = Some(O::On);
+    });
+    let parent = &cs.styles[l.glyphs[0].style as usize];
+    assert!(!parent.overprint_fill && !parent.overprint_stroke, "the text itself doesn't overprint");
+    let marks = parent.kenten_mark.as_ref().unwrap().style;
+    let mark = &cs.styles[marks as usize];
+    assert!(mark.overprint_fill && !mark.overprint_stroke);
+    let ruby = l.glyphs[plain.len()..].iter().find(|g| g.style != marks).unwrap();
+    let ruby = &cs.styles[ruby.style as usize];
+    assert!(!ruby.overprint_fill && ruby.overprint_stroke);
+}
+
+#[test]
+fn longer_ruby_never_overhangs_a_line_edge_or_more_than_its_neighbours_take() {
+    // Four 6 pt ruby characters over one 12 pt kanji: 12 pt longer, which the kana on each side
+    // take (one ruby character, 6 pt, each). A line edge takes none, so the group stays on the
+    // line of each kana it overhangs.
+    let text = "かな字".repeat(12);
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 190.0, 500.0), lid, &text, ParaFormat::default()).unwrap();
+    for (k, _) in text.match_indices('字') {
+        d.story_mut(sid).unwrap().format_chars(k..k + "字".len(), |f| f.over.ruby = Some("じじじじ".into()));
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!(lines.len() > 2, "the text wraps");
+    for l in lines {
+        let parents: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len > 0 && g.visible).collect();
+        let x0 = parents.iter().map(|g| g.x - g.dx).fold(f64::MAX, f64::min);
+        let x1 = parents.iter().map(|g| g.x - g.dx + g.adv).fold(f64::MIN, f64::max);
+        for p in parents.iter().filter(|g| text.get(g.byte..).is_some_and(|t| t.starts_with('字'))) {
+            let ruby: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len == 0 && g.byte == p.byte).collect();
+            assert_eq!(ruby.len(), 4);
+            let r0 = ruby.iter().map(|g| g.x).fold(f64::MAX, f64::min);
+            let r1 = ruby.iter().map(|g| g.x + g.adv).fold(f64::MIN, f64::max);
+            assert!(r0 >= x0 - 1e-6 && r1 <= x1 + 1e-6, "inside the line: {r0}..{r1} in {x0}..{x1}");
+            let (p0, p1) = (p.x - p.dx, p.x - p.dx + p.adv);
+            assert!(p0 - r0 <= 6.0 + 1e-6 && r1 - p1 <= 6.0 + 1e-6, "at most one ruby character over each kana: {r0}..{r1} over {p0}..{p1}");
+        }
+    }
+}
+
 #[test]
 fn warichu_stacks_the_run_inside_the_line_and_closes_up() {
     let text = "ABCDEFGHZ";
@@ -1487,6 +1676,31 @@ fn cjk_center_leading_measures_em_centers_across_different_sizes() {
     };
     assert!((center(lines[1]) - center(lines[0]) - 30.0).abs() < 1e-6);
     assert!((lines[1].baseline - lines[0].baseline - 30.0).abs() > 0.1);
+}
+
+#[test]
+fn cjk_aki_below_measures_em_tops_and_aki_above_em_bottoms() {
+    use designcraft_doc::cjk::LeadingModel;
+    for (model, top) in [(LeadingModel::AkiBelow, true), (LeadingModel::AkiAbove, false)] {
+        let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(0..3, |f| {
+            f.over.leading = Some(designcraft_doc::Leading::Points(30.0));
+            f.over.leading_model = Some(model);
+        });
+        d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 2);
+        // The em box edge below the baseline (y down): its top, or its bottom one em lower.
+        let edge = |l: &Line| {
+            let g = &l.glyphs[0];
+            let (a, b) = g.face.vertical_metrics();
+            let em = g.face.units_per_em() * g.sy;
+            let em_top = l.baseline - em * a / (a + b);
+            if top { em_top } else { em_top + em }
+        };
+        assert!((edge(lines[1]) - edge(lines[0]) - 30.0).abs() < 1e-6, "{model:?}");
+    }
 }
 
 #[test]
@@ -2769,5 +2983,286 @@ fn empty_paragraphs_get_no_bullet_or_number() {
         }
         let cs = compose_story(&d, sid, &ComposeOptions::default());
         assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.", "", "2.", ""], "list `{name}`");
+    }
+}
+
+// Kenten settings, shatai, auto tate-chu-yoko, rotate roman, roman word break and grid settings.
+
+/// The centre of a placed glyph's ink, relative to its line's baseline.
+fn ink_centre(g: &PlacedGlyph) -> Point {
+    let r = designcraft_geom::Shape::bounding_box(&*FontDb::global().outline(&g.face, g.gid));
+    Point::new(g.x + (r.x0 + r.x1) / 2.0 * g.sx, g.y + (r.y0 + r.y1) / 2.0 * g.sy)
+}
+
+#[test]
+fn kenten_sit_above_or_below_at_their_size_and_distance() {
+    use designcraft_doc::cjk_settings::{KentenKind, KentenPosition};
+    let (mut d, sid, _) = doc_with("AB", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.len();
+    let set = |d: &mut Document, position: KentenPosition| {
+        d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+            f.over.kenten = Some(true);
+            f.over.kenten_kind = Some(KentenKind::BlackCircle);
+            f.over.kenten_size = Some(Some(8.0));
+            f.over.kenten_x_scale = Some(1.5);
+            f.over.kenten_distance = Some(2.0);
+            f.over.kenten_position = Some(position);
+        });
+    };
+    for position in [KentenPosition::AboveRight, KentenPosition::BelowLeft] {
+        set(&mut d, position);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines[0];
+        let marks = &l.glyphs[plain..];
+        assert_eq!(marks.len(), 2, "one mark per character");
+        for (b, m) in l.glyphs[..plain].iter().zip(marks) {
+            // 8 pt, 150% wide, in a run style of its own.
+            assert!((m.sx - 8.0 / m.face.units_per_em() * 1.5).abs() < 1e-9 && (m.sy - 8.0 / m.face.units_per_em()).abs() < 1e-9);
+            assert_ne!(m.style, b.style);
+            assert_eq!(cs.styles[m.style as usize].size, 8.0);
+            let (top, bottom) = b.face.em_box();
+            let want_y = match position {
+                KentenPosition::AboveRight => b.y - top * b.sy - 2.0 - 4.0,
+                KentenPosition::BelowLeft => b.y - bottom * b.sy + 2.0 + 4.0,
+            };
+            let c = ink_centre(m);
+            assert!((c.y - want_y).abs() < 1e-6, "{position:?}: {} vs {want_y}", c.y);
+            assert!((c.x - (b.x + b.adv / 2.0)).abs() < 1e-6, "centred on its character");
+        }
+    }
+}
+
+#[test]
+fn kenten_colour_is_its_own_run_style() {
+    let (mut d, sid, _) = doc_with("AB", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+        f.over.kenten = Some(true);
+        f.over.kenten_fill = Some("[Registration]".into());
+        f.over.kenten_fill_tint = Some(Some(0.5));
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let mark = l.glyphs.last().unwrap();
+    let st = &cs.styles[mark.style as usize];
+    assert_eq!((st.fill.as_str(), st.fill_tint), ("[Registration]", 0.5));
+    assert!(st.kenten_mark.is_none() && !st.underline);
+    assert_eq!(cs.styles[l.glyphs[0].style as usize].fill, "[Black]", "the text keeps its colour");
+}
+
+#[test]
+fn shatai_matches_the_measured_matrices() {
+    use crate::shatai::Shatai;
+    let close = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
+    let plain = Shatai { magnification: 0.2, angle: 60.0, adjust_rotation: false, adjust_tsume: false };
+    assert!(close(plain.linear(true), [0.850, 0.0866, 0.0866, 0.950]), "{:?}", plain.linear(true));
+    let turned = Shatai { magnification: 0.1, angle: 60.0, adjust_rotation: true, adjust_tsume: false };
+    assert!(close(turned.linear(true), [0.9222, 0.0843, 0.0, 0.9759]), "{:?}", turned.linear(true));
+    // In horizontal text the turn keeps the glyph's horizontal axis horizontal.
+    assert!(turned.linear(false)[1].abs() < 1e-12);
+}
+
+#[test]
+fn shatai_slants_glyphs_about_their_em_centre_and_fits_the_advance() {
+    let (mut d, sid, _) = doc_with("AB", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+    let glyph = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        let l = cs.frames[0].lines[0].clone();
+        (cs.styles[l.glyphs[0].style as usize].clone(), l.glyphs[0].clone(), l.baseline)
+    };
+    let (_, before, _) = glyph(&d);
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+        f.over.shatai_magnification = Some(20.0);
+        f.over.shatai_angle = Some(60.0);
+        f.over.shatai_adjust_tsume = Some(false);
+    });
+    let (style, g, baseline) = glyph(&d);
+    assert!((g.adv - before.adv).abs() < 1e-9, "without Adjust Tsume the advance stays");
+    let xf = style.shatai_xf(&g, baseline).unwrap();
+    // y down: the off-diagonal terms change sign.
+    let [a, b, c, dd, _, _] = xf.as_coeffs();
+    assert!((a - 0.85).abs() < 1e-3 && (b + 0.0866).abs() < 1e-3 && (c + 0.0866).abs() < 1e-3 && (dd - 0.95).abs() < 1e-3);
+    let (top, bottom) = g.face.em_box();
+    let centre = Point::new(g.x + g.face.advance(g.gid) * g.sx / 2.0, baseline + g.y - (top + bottom) / 2.0 * g.sy);
+    assert!((xf * centre - centre).hypot() < 1e-9, "the em box centre stays put");
+    // Adjust Tsume: the advance becomes the compressed em box's width.
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.shatai_adjust_tsume = Some(true));
+    let (style, fitted, _) = glyph(&d);
+    let sh = style.shatai.unwrap();
+    let w = g.face.advance(g.gid) * g.sx;
+    let want = before.adv + w * (sh.extent(false, w, (top - bottom) * g.sy) - 1.0);
+    assert!((fitted.adv - want).abs() < 1e-9, "{} vs {want}", fitted.adv);
+    // No shatai without magnification.
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.shatai_magnification = Some(0.0));
+    assert!(glyph(&d).0.shatai.is_none());
+}
+
+#[test]
+fn auto_tate_chu_yoko_takes_short_digit_runs_in_vertical_text() {
+    let text = "令和12年と1234年と123";
+    let (mut d, sid, _) = doc_with(text, Rect::new(100.0, 100.0, 200.0, 400.0), ParaAttrs { auto_tcy: Some(3), ..Default::default() });
+    let glyphs = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    assert!(glyphs(&d).iter().all(|g| g.tcy.is_none()), "horizontal text has none");
+    d.story_mut(sid).unwrap().vertical = true;
+    let gs = glyphs(&d);
+    let at = |s: &str| text.find(s).unwrap();
+    let tcy: Vec<&PlacedGlyph> = gs.iter().filter(|g| g.tcy.is_some()).collect();
+    let two = at("12年");
+    let three = text.rfind("123").unwrap();
+    assert_eq!(tcy.iter().map(|g| g.byte).collect::<Vec<_>>(), [two, two + 1, three, three + 1, three + 2], "2 and 3 digits, not 4");
+    // Each group takes one em along the line; three digits are narrowed to fit across it.
+    let em = tcy[0].tcy.unwrap()[2];
+    assert!((tcy[..2].iter().map(|g| g.adv).sum::<f64>() - em).abs() < 1e-6);
+    let plain = gs.iter().find(|g| g.byte == at("1234")).unwrap();
+    assert!(tcy[2].sx < plain.sx, "{} {}", tcy[2].sx, plain.sx);
+    let [_, left, _] = tcy[2].tcy.unwrap();
+    assert!(left >= -em / 2.0 - 1e-6, "the narrowed group stays within the em");
+    // Roman letters too, with Include Roman.
+    let text2 = "縦AB横";
+    let (mut d, sid, _) = doc_with(text2, Rect::new(100.0, 100.0, 200.0, 400.0), ParaAttrs { auto_tcy: Some(2), ..Default::default() });
+    d.story_mut(sid).unwrap().vertical = true;
+    let count = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.iter().filter(|g| g.tcy.is_some()).count();
+    assert_eq!(count(&d), 0);
+    d.story_mut(sid).unwrap().paras[0].para.auto_tcy_include_roman = Some(true);
+    assert_eq!(count(&d), 2);
+}
+
+#[test]
+fn rotate_roman_stands_half_width_characters_upright() {
+    let (mut d, sid, _) = doc_with("縦書きLatin", Rect::new(100.0, 100.0, 200.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().vertical = true;
+    let latin_upright = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().filter(|g| g.len > 0 && g.byte >= "縦書き".len()).all(|g| g.upright)
+    };
+    assert!(!latin_upright(&d));
+    d.story_mut(sid).unwrap().paras[0].para.rotate_roman = Some(true);
+    assert!(latin_upright(&d));
+}
+
+#[test]
+fn roman_word_break_breaks_inside_words_without_hyphens() {
+    let para = ParaAttrs { composer: Some(designcraft_doc::Composer::SingleLine), hyphenate: Some(false), ..Default::default() };
+    let first_line = |rwb: bool| {
+        let (d, sid, _) = doc_with("ab cdefghijklm", Rect::new(0.0, 0.0, 40.0, 300.0), ParaAttrs { roman_word_break: Some(rwb), ..para.clone() });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert!(lines.iter().all(|l| !l.hyphenated && l.end_x <= l.x1 + 0.5));
+        lines[0].range.clone()
+    };
+    assert_eq!(first_line(false), 0..3, "the word moves down whole");
+    assert!(first_line(true).end > 3, "the line fills with part of the word");
+}
+
+/// Composed lines of a story in a frame with a 12 pt baseline grid; returns them and the grid.
+fn grid_doc(text: &str, para: ParaAttrs, edit: impl FnOnce(&mut Document, StoryId)) -> (Vec<Line>, (f64, f64)) {
+    let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), para);
+    if let Some(tf) = d.item_mut(fid).and_then(|i| i.text_frame_mut()) {
+        tf.options.baseline_grid = Some((12.0, 0.0));
+    }
+    edit(&mut d, sid);
+    // Vertical frames have no baseline grid.
+    let grid = frame_specs(&d, sid)[0].grid.unwrap_or((0.0, 12.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    (all_lines(&cs).into_iter().cloned().collect(), grid)
+}
+
+/// The em box centre of a line's first glyph (as the composer measures it), y down.
+fn em_centre(l: &Line) -> f64 {
+    let g = &l.glyphs[0];
+    let (a, b) = g.face.vertical_metrics();
+    l.baseline + g.y + (b - a) / (2.0 * (a + b)) * g.face.units_per_em() * g.sy
+}
+
+fn on_grid(y: f64, (start, inc): (f64, f64)) -> bool {
+    let n = (y - start) / inc;
+    (n - n.round()).abs() < 1e-6
+}
+
+#[test]
+fn grid_alignment_puts_the_chosen_point_on_the_grid() {
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    let para = |r: R| ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), grid_reference: Some(r), ..Default::default() };
+    let (roman, grid) = grid_doc("AB\nCD", para(R::Baseline), |_, _| {});
+    assert!(roman.iter().all(|l| on_grid(l.baseline, grid)));
+    let (centred, grid) = grid_doc("AB\nCD", para(R::EmCenter), |_, _| {});
+    assert!(centred.iter().all(|l| on_grid(em_centre(l), grid)));
+    assert!(!on_grid(centred[0].baseline, grid), "the baseline moves off the grid by the em centre's offset");
+    let offset = em_centre(&centred[0]) - centred[0].baseline;
+    let shift = centred[0].baseline - roman[0].baseline;
+    assert!(on_grid(shift + offset, (0.0, grid.1)), "{shift} {offset}");
+}
+
+#[test]
+fn gyoudori_two_lines_centres_a_heading_in_two_grid_lines() {
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    let para = ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), grid_reference: Some(R::EmCenter), ..Default::default() };
+    let (lines, grid) = grid_doc("Head\nBody text", para, |d, sid| {
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..4, |f| f.over.size = Some(18.0));
+        st.format_paras(0..4, |p| p.para.grid_gyoudori = Some(2));
+    });
+    let (head, body) = (em_centre(&lines[0]), em_centre(&lines[1]));
+    assert!(on_grid(head - grid.1 / 2.0, grid), "midway between two grid lines: {head}");
+    assert!(on_grid(body, grid));
+    assert!((body - head - 1.5 * grid.1).abs() < 1e-6, "the body takes the grid line after the heading's two: {head} {body}");
+}
+
+#[test]
+fn paragraph_gyoudori_centres_the_whole_paragraph() {
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    let para = ParaAttrs {
+        grid_align: Some(designcraft_doc::GridAlign::AllLines),
+        grid_reference: Some(R::EmCenter),
+        grid_gyoudori: Some(4),
+        paragraph_gyoudori: Some(true),
+        ..Default::default()
+    };
+    let (lines, grid) = grid_doc("One\u{2028}Two\nNext", para, |d, sid| {
+        d.story_mut(sid).unwrap().format_paras(10..14, |p| {
+            p.para.grid_gyoudori = Some(0);
+            p.para.paragraph_gyoudori = Some(false);
+        });
+    });
+    let firsts: Vec<f64> = lines.iter().map(em_centre).collect();
+    assert_eq!(lines.len(), 3, "{firsts:?}");
+    // Two lines a leading apart, centred as a block in four grid lines; the next paragraph on the fifth.
+    let middle = (firsts[0] + firsts[1]) / 2.0;
+    assert!(on_grid(middle - 1.5 * grid.1, grid), "{firsts:?}");
+    assert!((firsts[2] - (middle - 1.5 * grid.1) - 4.0 * grid.1).abs() < 1e-6, "{firsts:?}");
+}
+
+#[test]
+fn hostile_cjk_settings_compose_without_panicking() {
+    let para = ParaAttrs {
+        auto_tcy: Some(u32::MAX),
+        auto_tcy_include_roman: Some(true),
+        rotate_roman: Some(true),
+        roman_word_break: Some(true),
+        grid_align: Some(designcraft_doc::GridAlign::AllLines),
+        grid_reference: Some(designcraft_doc::cjk::CharacterAlignment::IcfBottom),
+        grid_gyoudori: Some(u32::MAX),
+        paragraph_gyoudori: Some(true),
+        ..Default::default()
+    };
+    for vertical in [false, true] {
+        let (_, _) = grid_doc("縦12AB書き\nmore text here", para.clone(), |d, sid| {
+            let st = d.story_mut(sid).unwrap();
+            st.vertical = vertical;
+            let len = st.len();
+            st.format_chars(0..len, |f| {
+                f.over.kenten = Some(true);
+                f.over.kenten_kind = Some(designcraft_doc::cjk_settings::KentenKind::Custom);
+                f.over.kenten_character = Some("★".repeat(100_000));
+                f.over.kenten_font = Some("No Such Font".into());
+                f.over.kenten_size = Some(Some(1e308));
+                f.over.kenten_x_scale = Some(-1e308);
+                f.over.kenten_y_scale = Some(f64::NAN);
+                f.over.kenten_distance = Some(f64::INFINITY);
+                f.over.kenten_fill_tint = Some(Some(f32::NAN));
+                f.over.kenten_stroke_weight = Some(Some(-1e308));
+                f.over.shatai_magnification = Some(1e308);
+                f.over.shatai_angle = Some(f64::NEG_INFINITY);
+            });
+        });
     }
 }

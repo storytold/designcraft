@@ -74,13 +74,42 @@ pub(crate) fn em_box(face: &FontFace) -> (f64, f64) {
         .unwrap_or((upem * 0.88, upem * -0.12))
 }
 
+/// The ideographic character face (ICF) box (top, bottom) in font units, y up: `BASE`
+/// `icft`/`icfb` (one of them alone is mirrored inside the em box), else the em box inset by 5% of
+/// the em at the top and bottom.
+pub(crate) fn icf_box(face: &FontFace) -> (f64, f64) {
+    let (top, bottom) = face.em_box();
+    let font = face.skrifa();
+    let base = match font.as_ref().and_then(|f| base_box(f, b"icfb", b"icft")) {
+        Some((Some(b), Some(t))) => Some((t, b)),
+        Some((Some(b), None)) => Some((top - (b - bottom), b)),
+        Some((None, Some(t))) => Some((t, bottom + (top - t))),
+        _ => None,
+    };
+    base.filter(|(t, b)| t.is_finite() && b.is_finite() && t > b).unwrap_or_else(|| {
+        let inset = (top - bottom) * 0.05;
+        (top - inset, bottom + inset)
+    })
+}
+
 /// The em box from the `BASE` table's horizontal axis: the Han script's values, else the default
 /// script's, else the first script's that has them.
 fn base_em_box(font: &skrifa::FontRef<'_>, upem: f64) -> Option<(f64, f64)> {
+    match base_box(font, b"ideo", b"idtp")? {
+        (Some(bottom), Some(top)) => (top > bottom).then_some((top, bottom)),
+        (Some(bottom), None) => Some((bottom + upem, bottom)),
+        (None, Some(top)) => Some((top, top - upem)),
+        (None, None) => None,
+    }
+}
+
+/// The `BASE` horizontal axis's `bottom` and `top` baselines in font units from the Han script's
+/// values, else the default script's, else the first script's that has either.
+fn base_box(font: &skrifa::FontRef<'_>, bottom_tag: &[u8; 4], top_tag: &[u8; 4]) -> Option<(Option<f64>, Option<f64>)> {
     let axis = font.base().ok()?.horiz_axis()?.ok()?;
     let tags = axis.base_tag_list()?.ok()?;
     let index = |tag: &[u8; 4]| tags.baseline_tags().iter().position(|t| t.get() == Tag::new(tag));
-    let (ideo, idtp) = (index(b"ideo"), index(b"idtp"));
+    let (ideo, idtp) = (index(bottom_tag), index(top_tag));
     if ideo.is_none() && idtp.is_none() {
         return None;
     }
@@ -92,12 +121,8 @@ fn base_em_box(font: &skrifa::FontRef<'_>, upem: f64) -> Option<(f64, f64)> {
     order.into_iter().find_map(|r| {
         let values = r.base_script(scripts.offset_data()).ok()?.base_values()?.ok()?;
         let coord = |i: Option<usize>| i.and_then(|i| values.base_coords().get(i).ok()).map(|c| f64::from(c.coordinate()));
-        match (coord(ideo), coord(idtp)) {
-            (Some(bottom), Some(top)) => (top > bottom).then_some((top, bottom)),
-            (Some(bottom), None) => Some((bottom + upem, bottom)),
-            (None, Some(top)) => Some((top, top - upem)),
-            (None, None) => None,
-        }
+        let pair = (coord(ideo), coord(idtp));
+        (pair.0.is_some() || pair.1.is_some()).then_some(pair)
     })
 }
 

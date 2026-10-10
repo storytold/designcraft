@@ -1165,9 +1165,11 @@ impl<'r> Importer<'r> {
         a.warichu_alignment = e.prop("WarichuAlignment").as_deref().and_then(crate::cjk::warichu_align_in);
         a.warichu_chars_before_break = e.num("WarichuCharsBeforeBreak").map(|v| v.max(0.0) as u32);
         a.warichu_chars_after_break = e.num("WarichuCharsAfterBreak").map(|v| v.max(0.0) as u32);
-        if let Some(on) = e.boolean("RubyFlag") {
+        // InDesign writes the flag as a number (1); older writers wrote a boolean.
+        if let Some(on) = e.boolean("RubyFlag").or_else(|| e.num("RubyFlag").map(|v| v != 0.0)) {
             a.ruby = Some(if on { e.prop("RubyString").unwrap_or_default() } else { String::new() });
         }
+        crate::ruby::read(e, &mut a, |r| self.swatch_ref(r));
         if let Some(k) = e.get("KentenKind") {
             a.kenten = Some(k != "None");
             a.kenten_character = crate::cjk::kenten_character(k).map(str::to_string);
@@ -1182,6 +1184,7 @@ impl<'r> Importer<'r> {
         a.diacritic_x_offset = e.num("XOffsetDiacritic").filter(|v| v.is_finite());
         a.diacritic_y_offset = e.num("YOffsetDiacritic").filter(|v| v.is_finite());
         a.positional_form = e.prop("PositionalForm");
+        self.cjk_settings_chars(e, &mut a);
         if let Some(v) = e.get("AppliedConditions").filter(|v| !v.trim().is_empty()) {
             let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();
             if !names.is_empty() {
@@ -1208,6 +1211,7 @@ impl<'r> Importer<'r> {
         a.bunri_kinshi = e.boolean("BunriKinshi");
         a.rensuuji = e.boolean("Rensuuji");
         a.treat_ideographic_space_as_space = e.boolean("TreatIdeographicSpaceAsSpace");
+        cjk_settings_para(e, &mut a);
         if let Some(k) = e.prop("KinsokuSet") {
             if k == "Nothing" || k == "None" {
                 a.kinsoku = Some(Some(Default::default()));
@@ -1281,13 +1285,16 @@ impl<'r> Importer<'r> {
         a.drop_cap_lines = u("DropCapLines");
         a.drop_cap_chars = u("DropCapCharacters");
         if let Some(g) = e.prop("GridAlignment") {
-            a.grid_align = Some(if g == "None" {
+            a.grid_align = Some(if g.trim() == "None" {
                 GridAlign::None
             } else if e.boolean("GridAlignFirstLineOnly") == Some(true) {
                 GridAlign::FirstLineOnly
             } else {
                 GridAlign::AllLines
             });
+            if g.trim() != "None" {
+                a.grid_reference = Some(crate::cjk::grid_reference_in(&g));
+            }
         }
         a.composer = e
             .prop("Composer")
@@ -2560,4 +2567,63 @@ pub(crate) fn uri_to_path(uri: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).to_string()
+}
+
+/// Auto tate-chu-yoko, Japanese composition and grid settings of a paragraph range or style.
+fn cjk_settings_para(e: &El, a: &mut ParaAttrs) {
+    let count = |k: &str| e.num(k).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1000.0) as u32);
+    a.auto_tcy = count("AutoTcy");
+    a.auto_tcy_include_roman = e.boolean("AutoTcyIncludeRoman");
+    a.rotate_roman = e.boolean("RotateSingleByteCharacters");
+    // 欧文泣き別れ: the name is inferred (it follows TreatIdeographicSpaceAsSpace).
+    a.roman_word_break = e.boolean("AllowArbitraryHyphenation");
+    a.grid_gyoudori = count("GridGyoudori");
+    a.paragraph_gyoudori = e.boolean("ParagraphGyoudori");
+}
+
+impl Importer<'_> {
+    /// Kenten Settings, Kenten Color and Shatai of a character range or style.
+    fn cjk_settings_chars(&mut self, e: &El, a: &mut CharAttrs) {
+        let finite = |k: &str| e.num(k).filter(|v| v.is_finite());
+        if let Some(kind) = e.get("KentenKind").and_then(crate::cjk::kenten_kind_in) {
+            a.kenten_kind = Some(kind);
+            if a.kenten_character.as_deref().is_none_or(str::is_empty)
+                && let Some(mark) = kind.mark()
+            {
+                a.kenten_character = Some(mark.to_string());
+            }
+        }
+        if let Some(f) = e.prop("KentenFont") {
+            let f = f.trim();
+            a.kenten_font = Some(if f == "$ID/" { String::new() } else { f.to_string() });
+        }
+        if let Some(st) = e.prop("KentenFontStyle") {
+            let st = st.trim();
+            a.kenten_font_style = Some(if st == "Nothing" { String::new() } else { st.to_string() });
+        }
+        a.kenten_size = finite("KentenFontSize").map(|v| (v > 0.0).then_some(v));
+        a.kenten_x_scale = finite("KentenXScale").map(|v| v / 100.0);
+        a.kenten_y_scale = finite("KentenYScale").map(|v| v / 100.0);
+        a.kenten_distance = finite("KentenPlacement");
+        a.kenten_position = e.prop("KentenPosition").and_then(|v| crate::cjk::kenten_position_in(&v));
+        a.kenten_alignment = e.prop("KentenAlignment").and_then(|v| crate::cjk::kenten_alignment_in(&v));
+        a.kenten_character_set = e.prop("KentenCharacterSet");
+        // "Text Color" is the text's own colour; it resets an inherited swatch.
+        if let Some(r) = e.prop("KentenFillColor") {
+            a.kenten_fill = Some(if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
+        }
+        if let Some(r) = e.prop("KentenStrokeColor") {
+            a.kenten_stroke = Some(if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
+        }
+        // Tints and weight: -1 is the text's.
+        a.kenten_fill_tint = finite("KentenTint").map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
+        a.kenten_stroke_tint = finite("KentenStrokeTint").map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
+        a.kenten_stroke_weight = finite("KentenWeight").map(|v| (v >= 0.0).then_some(v));
+        a.kenten_overprint_fill = e.prop("KentenOverprintFill").and_then(|v| crate::cjk::overprint_in(&v));
+        a.kenten_overprint_stroke = e.prop("KentenOverprintStroke").and_then(|v| crate::cjk::overprint_in(&v));
+        a.shatai_magnification = finite("ShataiMagnification");
+        a.shatai_angle = finite("ShataiDegreeAngle").map(|v| v / crate::cjk::SHATAI_ANGLE_UNITS);
+        a.shatai_adjust_rotation = e.boolean("ShataiAdjustRotation");
+        a.shatai_adjust_tsume = e.boolean("ShataiAdjustTsume");
+    }
 }
