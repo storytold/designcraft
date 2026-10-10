@@ -162,10 +162,6 @@ fn option_after_last_export(args: &[String]) -> Option<&str> {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
-    // First pass: collect all options
-    let mut input: Option<String> = None;
-    let mut sample = false;
-    let mut cmds: Vec<String> = Vec::new();
     if let Some(opt) = option_after_last_export(args) {
         return Err(format!(
             "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
@@ -174,77 +170,71 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut s = Session::new();
     let mut page = 0usize;
     let mut scale = 1.0f64;
+    let mut it = args.iter();
+    let mut opened = false;
     let mut pdf_opts = json!({});
-    let mut export_path: Option<String> = None;
-    let mut all_pages_dir: Option<String> = None;
-    let mut it = args.iter().peekable();
+    // Earlier --cmd results, for `$N.path` references.
+    let mut results: Vec<Value> = Vec::new();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
-            "--in" => input = Some(val()?),
-            "--sample" => sample = true,
-            "--cmd" => cmds.push(val()?),
+            "--in" => {
+                let p = val()?;
+                s.execute("file.open", &json!({"path": p})).map_err(|e| e.to_string())?;
+                opened = true;
+            }
+            "--sample" => {
+                s.execute("file.newSample", &json!({})).map_err(|e| e.to_string())?;
+                opened = true;
+            }
+            "--cmd" => {
+                if !opened {
+                    s.execute("file.new", &json!({})).map_err(|e| e.to_string())?;
+                    opened = true;
+                }
+                let c = val()?;
+                let (id, p) = c.split_once('=').unwrap_or((&c, "{}"));
+                let p: Value = serde_json::from_str(p).map_err(|e| format!("--cmd {id}: {e}"))?;
+                let p = designcraft_engine::script::resolve(&p, &results).map_err(|e| format!("--cmd {id}: {e}"))?;
+                let r = s.execute(id, &p).map_err(|e| e.to_string())?;
+                results.push(r.clone());
+                if !r.is_null() {
+                    outln!("{}", serde_json::to_string(&r).unwrap_or_default());
+                }
+            }
             "--page" => page = val()?.parse().map_err(|_| "bad --page")?,
             "--scale" => scale = val()?.parse().map_err(|_| "bad --scale")?,
-            "--pdf-options" => pdf_opts = serde_json::from_str(&val()?).map_err(|e| format!("--pdf-options: {e}"))?,
-            "--export" => export_path = Some(val()?),
-            "--all-pages" => all_pages_dir = Some(val()?),
+            "--pdf-options" => {
+                pdf_opts = serde_json::from_str(&val()?).map_err(|e| format!("--pdf-options: {e}"))?;
+            }
+            "--export" => {
+                let out = val()?;
+                if out.ends_with(".epub") {
+                    let r = s.execute("file.exportEpub", &json!({"path": out})).map_err(|e| e.to_string())?;
+                    eprintln!("wrote {out} ({} bytes)", r["bytes"]);
+                } else if out.ends_with(".pdf") {
+                    let mut p = pdf_opts.clone();
+                    p["path"] = json!(out);
+                    let r = s.execute("file.exportPdf", &p).map_err(|e| e.to_string())?;
+                    eprintln!("wrote {out} ({} pages, {} bytes)", r["pages"], r["bytes"]);
+                    for w in r["warnings"].as_array().into_iter().flatten() {
+                        eprintln!("warning: {}", w.as_str().unwrap_or_default());
+                    }
+                } else {
+                    export(&mut s, &out, page, scale)?;
+                }
+            }
+            "--all-pages" => {
+                let dir = val()?;
+                let n = s.doc().map_err(|e| e.to_string())?.doc.page_count();
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                for p in 0..n {
+                    export(&mut s, &format!("{dir}/page-{:03}.png", p + 1), p, scale)?;
+                }
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
-
-    // Second pass: execute
-    let mut s = Session::new();
-    let mut results: Vec<Value> = Vec::new();
-
-    // Open document
-    if let Some(p) = input {
-        s.execute("file.open", &json!({"path": p})).map_err(|e| e.to_string())?;
-    } else if sample {
-        s.execute("file.newSample", &json!({})).map_err(|e| e.to_string())?;
-    } else if !cmds.is_empty() || export_path.is_some() || all_pages_dir.is_some() {
-        s.execute("file.new", &json!({})).map_err(|e| e.to_string())?;
-    }
-
-    // Execute commands
-    for c in cmds {
-        let (id, p) = c.split_once('=').unwrap_or((&c, "{}"));
-        let p: Value = serde_json::from_str(p).map_err(|e| format!("--cmd {id}: {e}"))?;
-        let p = designcraft_engine::script::resolve(&p, &results).map_err(|e| format!("--cmd {id}: {e}"))?;
-        let r = s.execute(id, &p).map_err(|e| e.to_string())?;
-        results.push(r.clone());
-        if !r.is_null() {
-            outln!("{}", serde_json::to_string(&r).unwrap_or_default());
-        }
-    }
-
-    // Export
-    if let Some(out) = export_path {
-        if out.ends_with(".epub") {
-            let r = s.execute("file.exportEpub", &json!({"path": out})).map_err(|e| e.to_string())?;
-            eprintln!("wrote {out} ({} bytes)", r["bytes"]);
-        } else if out.ends_with(".pdf") {
-            let mut p = pdf_opts.clone();
-            p["path"] = json!(out);
-            let r = s.execute("file.exportPdf", &p).map_err(|e| e.to_string())?;
-            eprintln!("wrote {out} ({} pages, {} bytes)", r["pages"], r["bytes"]);
-            for w in r["warnings"].as_array().into_iter().flatten() {
-                eprintln!("warning: {}", w.as_str().unwrap_or_default());
-            }
-        } else {
-            export(&mut s, &out, page, scale)?;
-        }
-    }
-
-    // All pages
-    if let Some(dir) = all_pages_dir {
-        let n = s.doc().map_err(|e| e.to_string())?.doc.page_count();
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        for p in 0..n {
-            export(&mut s, &format!("{dir}/page-{:03}.png", p + 1), p, scale)?;
-        }
-    }
-
     Ok(())
 }
 

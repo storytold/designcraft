@@ -36,8 +36,6 @@ Other MCP clients use the same command line, e.g. in a JSON config:
 In connected mode every tool maps to a control-channel method (`engine.execute`, `ui.render`, `ui.pointer`, …), so
 what the agent does shows up live in the window. The connection is re-established once if the app restarts.
 
-Note: Some `app.*` commands are engine commands (e.g., `app.links`) and work in headless mode. Only UI-only commands (those that require the desktop app's UI) error in headless mode.
-
 ## Coordinates
 
 Points (1/72 in), y down, in **spread** space: on a single-page spread the page's top-left is (0, 0); on a facing
