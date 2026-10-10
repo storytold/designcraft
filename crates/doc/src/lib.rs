@@ -301,6 +301,9 @@ impl Default for AdvancedType {
 }
 
 /// File → Document Setup + the guide/grid/unit preferences stored with the document.
+/// The largest number a section can start page numbering at.
+pub const MAX_PAGE_NUMBER: u32 = 99_999;
+
 /// Where a document's chapter number comes from (Numbering & Section Options › Document Chapter
 /// Numbering). A book's Update Numbering resolves it in book order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -665,13 +668,15 @@ impl Document {
     /// The page number (before formatting) of absolute page `abs`, per sections. A section without
     /// a start number continues from the previous section.
     pub fn page_number(&self, abs: usize) -> u32 {
-        let Some(sec) = self.section_of(abs) else { return abs as u32 + 1 };
+        // Start numbers come from files and commands: saturate rather than overflow.
+        let offset = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let Some(sec) = self.section_of(abs) else { return offset(abs).saturating_add(1) };
         let start = match sec.start_number {
             Some(n) => n,
             None if sec.start == 0 => 1,
-            None => self.page_number(sec.start - 1) + 1,
+            None => self.page_number(sec.start - 1).saturating_add(1),
         };
-        start + (abs - sec.start) as u32
+        start.saturating_add(offset(abs.saturating_sub(sec.start)))
     }
 
     /// The displayed page name ("1", "iv", "A-3"…) for an absolute page index, per sections.

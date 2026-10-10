@@ -60,7 +60,8 @@ fn number(d: &Dialog, key: &str) -> Option<u64> {
     d.n(key).filter(|v| v.is_finite() && *v >= 1.0 && v.fract() == 0.0).map(|v| v as u64)
 }
 
-/// Apply the dialog: the section, then the chapter numbering. Refused values leave both as they were.
+/// Apply the dialog: the section and the chapter numbering together (`layout.numberingOptions`,
+/// one undo step). A refused value leaves both as they were.
 pub(crate) fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     let page = number(d, "page").ok_or("no page")?;
     let source: ChapterSource = d.fields.get("chapterSource").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
@@ -68,18 +69,15 @@ pub(crate) fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> 
     if source == ChapterSource::UserDefined {
         chapter["start"] = json!(number(d, "chapterStart").ok_or("Start Chapter Numbering at: a whole number from 1")?);
     }
-    if page != 1 && !d.b("startSection") {
-        app.run("layout.section", json!({"page": page, "remove": true}))?;
+    let params = if page != 1 && !d.b("startSection") {
+        json!({"page": page, "remove": true, "chapter": chapter})
     } else {
         let start =
             if d.b("automatic") { Value::Null } else { json!(number(d, "startNumber").ok_or("Start Page Numbering at: a whole number from 1")?) };
-        app.run(
-            "layout.section",
-            json!({"page": page, "startNumber": start, "style": d.fields.get("style").cloned().unwrap_or(json!("arabic")),
-                "prefix": d.s("prefix"), "marker": d.s("marker"), "includePrefix": d.b("includePrefix")}),
-        )?;
-    }
-    app.run("layout.chapterNumbering", chapter)
+        json!({"page": page, "startNumber": start, "style": d.fields.get("style").cloned().unwrap_or(json!("arabic")),
+            "prefix": d.s("prefix"), "marker": d.s("marker"), "includePrefix": d.b("includePrefix"), "chapter": chapter})
+    };
+    app.run("layout.numberingOptions", params)
 }
 
 /// A row that runs right to left in a right-to-left interface.
@@ -271,6 +269,14 @@ mod tests {
         let doc = &app.session.active().unwrap().doc;
         assert_eq!((0..4).map(|i| doc.page_name(i)).collect::<Vec<_>>(), ["1", "2", "A-v", "A-vi"]);
         assert_eq!(doc.chapter_label(), "IV");
+        // One OK is one undo step.
+        app.run("edit.undo", json!({})).unwrap();
+        let doc = &app.session.active().unwrap().doc;
+        assert_eq!(
+            ((0..4).map(|i| doc.page_name(i)).collect::<Vec<_>>(), doc.chapter_label()),
+            (vec!["1".to_string(), "2".into(), "3".into(), "4".into()], "1".into())
+        );
+        app.run("edit.redo", json!({})).unwrap();
         // Reopened on that page, it shows the section.
         crate::menus::activate(&mut app, "layout.section", &Value::Null);
         set(&mut app, json!({"page": 3, "startSection": false}));
@@ -281,7 +287,14 @@ mod tests {
 
     #[test]
     fn refused_values_keep_the_dialog_open_and_change_nothing() {
-        for (key, value) in [("prefix", json!("A+B")), ("prefix", json!("Appendix1")), ("startNumber", json!("0")), ("chapterStart", json!("x"))] {
+        for (key, value) in [
+            ("prefix", json!("A+B")),
+            ("prefix", json!("Appendix1")),
+            ("startNumber", json!("0")),
+            ("startNumber", json!("4294967295")),
+            ("chapterStart", json!("x")),
+            ("chapterStart", json!("100000")),
+        ] {
             let mut app = open_app();
             set(
                 &mut app,

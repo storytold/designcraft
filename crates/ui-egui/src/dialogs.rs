@@ -1116,6 +1116,9 @@ fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
 
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.dialog.clone() else { return };
+    // Enter and Escape belong to an open popup (a Style menu…) rather than the dialog. Read before
+    // the dialog draws: a popup closed by this frame's Escape is still open here.
+    let popup_open = egui::Popup::is_any_open(ctx);
     let mut result: Option<bool> = None;
     let alert_title = d.s("title");
     let title = match d.id.as_str() {
@@ -1202,10 +1205,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             if let Some(ok) = crate::section_options::actions(app, &mut actions) {
                 result = Some(ok);
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if !popup_open && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 result = Some(true);
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if !popup_open && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 result = Some(false);
             }
         }
@@ -1747,13 +1750,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     result = Some(true);
                 }
                 // An alert only has OK.
                 let cancel = d.id != "alert" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked();
-                if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if cancel || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
                     result = Some(false);
                 }
                 if d.id == "closeDocument" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Don't Save"))).clicked() {
@@ -3874,6 +3877,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn enter_and_escape_close_the_style_menu_not_numbering_and_section_options() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2})).unwrap();
+        crate::menus::activate(&mut app, "layout.section", &Value::Null);
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        for pressed in [egui::Key::Enter, egui::Key::Escape] {
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            // The section's Style menu (the first of the two).
+            let style = labels.iter().filter(|(t, r, c)| t.trim() == "1, 2, 3, 4…" && c.contains_rect(*r)).map(|(_, r, _)| *r).next().unwrap();
+            click_dialog(&mut app, &ctx, screen, style.center());
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+            assert!(egui::Popup::is_any_open(&ctx), "the Style menu opened");
+            dialog_frame(&mut app, &ctx, screen, vec![key(pressed)]);
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+            assert!(app.ui.dialog.is_some(), "{pressed:?} with the menu open leaves the dialog open");
+            assert!(app.session.active().unwrap().doc.sections.iter().all(|s| s.start_number != Some(0)));
+            if egui::Popup::is_any_open(&ctx) {
+                egui::Popup::close_all(&ctx);
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+        }
+        // With no menu open, Escape closes the dialog.
+        dialog_frame(&mut app, &ctx, screen, vec![key(egui::Key::Escape)]);
+        assert!(app.ui.dialog.is_none());
     }
 
     #[test]
