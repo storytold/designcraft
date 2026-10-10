@@ -1,0 +1,24 @@
+[package]
+name = "designcraft-pptx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft PowerPoint (PPTX) export: pages as slides of editable shapes, pictures and text"
+
+[lints]
+workspace = true
+
+[dependencies]
+designcraft-geom = { workspace = true }
+designcraft-color = { workspace = true }
+designcraft-doc = { workspace = true }
+designcraft-fonts = { workspace = true }
+designcraft-compose = { workspace = true }
+designcraft-images = { workspace = true }
+skrifa = { workspace = true }
+image = { workspace = true }
+thiserror = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+quick-xml = { workspace = true }

@@ -1,6 +1,7 @@
 //! Headless DesignCraft.
 //!
 //! ```text
+//! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub|.pptx] [--pdf-options JSON] [--all-pages DIR]
 //! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub] [--all-pages DIR]
 //!                                      # --page, --scale and --pdf-options apply to the exports that follow them
 //! designcraft-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
@@ -264,6 +265,14 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), String> {
+    if out.to_ascii_lowercase().ends_with(".pptx") {
+        let r = s.execute("file.exportPptx", &json!({"path": out})).map_err(|e| e.to_string())?;
+        eprintln!("wrote {out} ({} slides, {} bytes)", r["slides"], r["bytes"]);
+        for w in r["warnings"].as_array().into_iter().flatten() {
+            eprintln!("warning: {}", w.as_str().unwrap_or_default());
+        }
+        return Ok(());
+    }
     if out.to_ascii_lowercase().ends_with(".idml") {
         let r = s.execute("file.exportIdml", &json!({"path": out})).map_err(|e| e.to_string())?;
         eprintln!("wrote {out} ({} bytes)", r["bytes"]);
@@ -387,6 +396,8 @@ fn script(args: &[String]) -> Result<(), String> {
                 exec(b, "file.exportIdml", p)?;
             } else if lower.ends_with(".epub") {
                 exec(b, "file.exportEpub", p)?;
+            } else if lower.ends_with(".pptx") {
+                exec(b, "file.exportPptx", p)?;
             } else {
                 // PNG / JPEG of the first page.
                 b.call("app.export", p)?;

@@ -87,8 +87,9 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
   Line breaks are identical on screen and in PDF.
 - **Fast.** Multithreaded SIMD rendering (vello_cpu), copy-on-write documents with O(1) undo
   snapshots, and cached composition.
-- **Open.** A documented native format, IDML import and export, and PNG, PDF (PDF/X-4, PDF/A-2b)
+- **Open.** A documented native format, IDML import and export, editable PowerPoint export, and PNG, PDF (PDF/X-4, PDF/A-2b)
   and EPUB export.
+
   No subscription, no licence server, no telemetry.
 - **Agent-native.** Every menu item, tool gesture, panel control and dialog can be driven over a
   JSON control channel and an **MCP server**, so Claude and other agents can lay out and edit
