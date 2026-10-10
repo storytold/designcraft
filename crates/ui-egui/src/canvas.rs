@@ -118,7 +118,7 @@ pub fn fit(app: &mut DesignApp, rect: Rect, what: &str) {
     let zoom = ((rect.width() as f64 - 2.0 * pad) / b.width()).min((rect.height() as f64 - 2.0 * pad) / b.height()).clamp(0.05, 40.0);
     let origin = Point::new(b.center().x - rect.width() as f64 / 2.0 / zoom, b.center().y - rect.height() as f64 / 2.0 / zoom);
     if let Some(v) = app.view_mut() {
-        *v = View { zoom, origin, fitted: true, rotation: v.rotation };
+        *v = View { zoom, origin, fitted: true, rotation: v.rotation, ruler_origin: v.ruler_origin };
     }
 }
 
@@ -1226,14 +1226,22 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
     painter.rect_filled(Rect::from_min_max(full.min, rect.min), 0.0, t.ruler);
     painter.line_segment([pos2(rect.min.x, rect.min.y - 0.25), pos2(full.max.x, rect.min.y - 0.25)], Stroke::new(0.5, t.ruler_tick));
     painter.line_segment([pos2(rect.min.x - 0.25, rect.min.y), pos2(rect.min.x - 0.25, full.max.y)], Stroke::new(0.5, t.ruler_tick));
-    // Zero-point crosshair box.
+    // Origin: the custom zero point if one was dragged out, else the top-left of the current
+    // spread's first page.
+    let custom_origin = app.view().and_then(|v| v.ruler_origin);
+    let origin = match custom_origin {
+        Some(o) => o,
+        None => {
+            let Some(i) = current_slot(app, layout) else { return };
+            let slot = &layout.slots[i];
+            Point::new(slot.bounds.x0, slot.bounds.y0)
+        }
+    };
+    // Zero-point crosshair box: highlighted when a custom origin is set.
     let zc = Rect::from_min_max(full.min, rect.min).center();
-    painter.line_segment([zc - vec2(4.0, 0.0), zc + vec2(4.0, 0.0)], Stroke::new(1.0, t.ruler_tick));
-    painter.line_segment([zc - vec2(0.0, 4.0), zc + vec2(0.0, 4.0)], Stroke::new(1.0, t.ruler_tick));
-    // Origin: top-left of the current spread's first page.
-    let Some(i) = current_slot(app, layout) else { return };
-    let slot = &layout.slots[i];
-    let origin = Point::new(slot.bounds.x0, slot.bounds.y0);
+    let zc_stroke = Stroke::new(1.0, if custom_origin.is_some() { t.accent } else { t.ruler_tick });
+    painter.line_segment([zc - vec2(4.0, 0.0), zc + vec2(4.0, 0.0)], zc_stroke);
+    painter.line_segment([zc - vec2(0.0, 4.0), zc + vec2(0.0, 4.0)], zc_stroke);
     let font = egui::FontId::proportional(9.0);
     let tick = Stroke::new(1.0, t.ruler_tick);
     // Horizontal.
@@ -1373,7 +1381,10 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
         }
         return;
     }
-    // Ruler guides need the rulers (hidden while the view is rotated).
+    // Ruler zero-point and guides need the rulers (hidden while the view is rotated).
+    if !space && xf.rot == 0 && ruler_origin_drag(app, ui, resp, rect, &xf) {
+        return;
+    }
     if !space && xf.rot == 0 && guide_drag(app, ui, resp, rect, &xf) {
         return;
     }
@@ -1609,6 +1620,56 @@ fn hair(painter: &egui::Painter) -> f32 {
     1.0 / painter.ctx().pixels_per_point()
 }
 
+const RULER_ORIGIN_DRAG: &str = "canvas_ruler_origin_drag";
+
+/// Dragging the ruler zero-point crosshair (the corner box where the two rulers meet): sets a
+/// custom ruler origin live as the pointer moves. Double-clicking it resets to the default
+/// origin (the current spread's first page). Returns true while it owns the pointer.
+fn ruler_origin_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
+    let id = egui::Id::new(RULER_ORIGIN_DRAG);
+    let corner = Rect::from_min_max(resp.rect.min, rect.min);
+    if corner.width() <= 0.0 || corner.height() <= 0.0 {
+        return false;
+    }
+    let (pressed, released, press_origin, latest, dbl) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_released(),
+            i.pointer.press_origin(),
+            i.pointer.latest_pos(),
+            i.pointer.button_double_clicked(egui::PointerButton::Primary),
+        )
+    });
+    let dragging: bool = ui.data(|d| d.get_temp(id)).unwrap_or(false);
+    if !dragging {
+        if !pressed {
+            return false;
+        }
+        let Some(_) = press_origin.filter(|o| corner.contains(*o)) else { return false };
+    }
+    // Double-click completes (fires on release): reset to the default origin instead of
+    // leaving it at the clicked point.
+    if released && dbl {
+        if let Some(v) = app.view_mut() {
+            v.ruler_origin = None;
+        }
+        ui.data_mut(|d| d.remove::<bool>(id));
+        return true;
+    }
+    if let Some(p) = latest
+        && let Some(v) = app.view_mut()
+    {
+        v.ruler_origin = Some(xf.to_canvas(p));
+    }
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    if released {
+        ui.data_mut(|d| d.remove::<bool>(id));
+    } else {
+        ui.data_mut(|d| d.insert_temp(id, true));
+    }
+    true
+}
+
 const GUIDE_DRAG: &str = "canvas_guide_drag";
 
 /// A ruler guide being dragged: out of a ruler (`from` None) or an existing one.
@@ -1758,6 +1819,21 @@ mod tests {
         h
     }
 
+    /// Like `harness`, but with a tiny per-step time delta so a rapid click sequence stays
+    /// within egui's double-click window.
+    fn fast_harness(app: DesignApp) -> Harness<'static, DesignApp> {
+        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(0.001).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        h
+    }
+
     fn right_click(h: &mut Harness<'_, DesignApp>, p: Pos2) {
         h.hover_at(p);
         h.step();
@@ -1804,5 +1880,44 @@ mod tests {
         let Some(rect) = h.state().canvas_rect else { return };
         right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
         assert!(h.query_by_label("   Points").is_none());
+    }
+
+    fn drag(h: &mut Harness<'_, DesignApp>, from: Pos2, to: Pos2) {
+        h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.run_steps(2);
+        h.event(egui::Event::PointerMoved(to));
+        h.run_steps(2);
+        h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        h.run_steps(2);
+    }
+
+    fn double_click(h: &mut Harness<'_, DesignApp>, p: Pos2) {
+        for _ in 0..2 {
+            h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+            h.run_steps(1);
+            h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+            h.run_steps(1);
+        }
+        h.run_steps(2);
+    }
+
+    #[test]
+    fn dragging_the_ruler_corner_sets_a_custom_zero_point() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut h = fast_harness(app);
+        let rect = h.state().canvas_rect.unwrap();
+        assert!(h.state().view().unwrap().ruler_origin.is_none());
+        let corner = rect.min - vec2(RULER / 2.0, RULER / 2.0);
+        let dest = rect.min + vec2(60.0, 40.0);
+        drag(&mut h, corner, dest);
+        let origin = h.state().view().unwrap().ruler_origin.expect("drag should set a custom ruler origin");
+        let xf = Xf::new(rect, h.state().view().unwrap());
+        let expected = xf.to_canvas(dest);
+        assert!((origin.x - expected.x).abs() < 1.0, "origin.x = {}, expected = {}", origin.x, expected.x);
+        assert!((origin.y - expected.y).abs() < 1.0, "origin.y = {}, expected = {}", origin.y, expected.y);
+        // Double-clicking the corner resets it to the default origin.
+        double_click(&mut h, corner);
+        assert!(h.state().view().unwrap().ruler_origin.is_none());
     }
 }
