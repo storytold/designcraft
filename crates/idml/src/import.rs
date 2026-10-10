@@ -7,11 +7,10 @@ use std::sync::Arc;
 use designcraft_color::cms::lab;
 use designcraft_color::{Color, ColorType, Gradient, GradientKind, GradientStop, Swatch, SwatchValue, swatch};
 use designcraft_doc::{
-    AltFills, Asset, AssetId, BaselineGrid, Cell, CellRange, CellStroke, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind,
-    Content, DocSettings, Document, DropShadow, Effects, Fill, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer, LayerId,
-    ListType, Margins, ObjectStyle, Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode, Rule, Section, Shape,
-    SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap, VerticalJustification,
-    story as st,
+    Asset, AssetId, BaselineGrid, CellRange, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind, Content, DocSettings, Document,
+    DropShadow, Effects, Fill, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer, LayerId, ListType, Margins, ObjectStyle,
+    Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode, Rule, Section, Shape, SpanColumns, Spread, SpreadId,
+    Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap, story as st,
 };
 use designcraft_geom::corners::{Corner, CornerOptions};
 use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
@@ -19,6 +18,16 @@ use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, unescape_id};
 use crate::xml::{El, Node, parse};
 use crate::{IdmlError, MIMETYPE, Result, base64_decode, sniff_image};
+
+/// Preserve the legacy uniform field only when all four sides explicitly specify every
+/// property. Partial records must stay sparse so they can inherit from a parent style.
+fn uniform_cell_stroke(edges: &[designcraft_doc::CellStrokeAttrs; 4]) -> Option<designcraft_doc::CellStroke> {
+    let first = edges.first()?;
+    if edges.iter().any(|edge| edge != first) {
+        return None;
+    }
+    Some(designcraft_doc::CellStroke { weight: first.weight?, color: first.color.clone()?, tint: first.tint?, kind: first.kind.clone()? })
+}
 
 /// Import an IDML package. Linked images are read from disk when available (not on wasm).
 pub fn import_idml(bytes: &[u8]) -> Result<Document> {
@@ -109,6 +118,8 @@ struct Importer<'r> {
     char_names: HashMap<String, String>,
     lists: Vec<designcraft_doc::NumberedList>,
     object_names: HashMap<String, String>,
+    cell_names: HashMap<String, String>,
+    table_names: HashMap<String, String>,
     /// Object style Self → element (attribute fallback for page items).
     object_els: HashMap<String, El>,
     layers: Vec<Layer>,
@@ -193,6 +204,8 @@ impl<'r> Importer<'r> {
             char_names: HashMap::new(),
             lists: Vec::new(),
             object_names: HashMap::new(),
+            cell_names: HashMap::new(),
+            table_names: HashMap::new(),
             object_els: HashMap::new(),
             layers: Vec::new(),
             layer_ids: HashMap::new(),
@@ -356,6 +369,8 @@ impl<'r> Importer<'r> {
                 self.layer_ids.insert(s.to_string(), id);
             }
         }
+        // IDML lists layers back to front; `Document::layers` is front to back.
+        self.layers.reverse();
         if self.layers.is_empty() {
             let id = LayerId(self.alloc());
             self.layers.push(Layer {
@@ -686,6 +701,15 @@ impl<'r> Importer<'r> {
     }
 
     /// A swatch reference (Self id) → our swatch name; unnamed colours become value-named swatches.
+    /// A `TextFramePreference`, with its column rule colour resolved to a swatch.
+    fn frame_options(&mut self, e: &El) -> TextFrameOptions {
+        let mut o = text_frame_options(e);
+        if let Some(r) = e.get("ColumnRuleStrokeColor") {
+            o.column_rule_color = self.swatch_ref(r);
+        }
+        o
+    }
+
     fn swatch_ref(&mut self, r: &str) -> String {
         if let Some(n) = self.swatch_names.get(r) {
             return n.clone();
@@ -804,30 +828,31 @@ impl<'r> Importer<'r> {
                 None => self.styles.character.push(s),
             }
         }
-        // Cell and table styles (the built-ins stay as they are).
-        let cell_ref = |r: &str| names::style_name_in(names::CELL_BUILTINS, &unescape_id(r.trim_start_matches("CellStyle/")));
+        // Keep built-ins as well: [Basic Table] is editable, and [No table style]
+        // supplies the defaults used by named styles in ordinary IDML files.
+        for (id, e) in &cell_styles {
+            self.cell_names.insert(id.clone(), names::style_name_in(names::CELL_BUILTINS, e.get("Name").unwrap_or("")));
+        }
+        for (id, e) in &table_styles {
+            self.table_names.insert(id.clone(), names::style_name_in(names::TABLE_BUILTINS, e.get("Name").unwrap_or("")));
+        }
         for (_, e) in &cell_styles {
             let name = names::style_name_in(names::CELL_BUILTINS, e.get("Name").unwrap_or(""));
-            if name == designcraft_doc::NO_CELL_STYLE {
-                continue;
-            }
             let mut cs = designcraft_doc::CellStyle { name: name.clone(), ..Default::default() };
-            cs.fill = e.get("FillColor").map(|c| self.swatch_ref(c));
-            cs.fill_tint = e.num("FillTint").and_then(|v| tint(Some(v)));
-            let ins: Vec<Option<f64>> = ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().map(|k| e.num(k)).collect();
-            if ins.iter().all(Option::is_some) {
-                cs.insets = Some([ins[0].unwrap_or(0.0), ins[1].unwrap_or(0.0), ins[2].unwrap_or(0.0), ins[3].unwrap_or(0.0)]);
+            cs.based_on =
+                e.prop("BasedOn").map(|r| self.cell_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_CELL_STYLE.into())).filter(|n| *n != name);
+            cs.fill = e.prop("FillColor").map(|c| self.swatch_ref(&c));
+            cs.fill_tint = tint(e.num("FillTint"));
+            cs.inset_overrides = ["TopInset", "LeftInset", "BottomInset", "RightInset"].map(|k| e.num(k).map(|v| v.max(0.0)));
+            if let [Some(top), Some(left), Some(bottom), Some(right)] = cs.inset_overrides {
+                cs.insets = Some([top, left, bottom, right]);
+                cs.inset_overrides = [None; 4];
             }
             cs.vj = e.get("VerticalJustification").map(names::vj_in);
-            if e.get("TopEdgeStrokeWeight").is_some() || e.get("TopEdgeStrokeColor").is_some() {
-                let mut st = CellStroke::default();
-                if let Some(w) = e.num("TopEdgeStrokeWeight") {
-                    st.weight = w.max(0.0);
-                }
-                if let Some(c) = e.get("TopEdgeStrokeColor") {
-                    st.color = self.swatch_ref(c);
-                }
-                cs.stroke = Some(st);
+            cs.strokes = ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].map(|side| self.cell_stroke_attrs(e, side));
+            if let Some(stroke) = uniform_cell_stroke(&cs.strokes) {
+                cs.stroke = Some(stroke);
+                cs.strokes = Default::default();
             }
             cs.paragraph_style = e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).filter(|n| n != designcraft_doc::NO_PARA_STYLE);
             match self.styles.cell.iter_mut().find(|c| c.name == name) {
@@ -837,37 +862,29 @@ impl<'r> Importer<'r> {
         }
         for (_, e) in &table_styles {
             let name = names::style_name_in(names::TABLE_BUILTINS, e.get("Name").unwrap_or(""));
-            if name == designcraft_doc::BASIC_TABLE || name == "[No table style]" {
-                continue;
-            }
             let mut ts = designcraft_doc::TableStyle { name: name.clone(), ..Default::default() };
-            ts.header = e.get("HeaderRegionCellStyle").map(cell_ref).filter(|n| n != designcraft_doc::NO_CELL_STYLE);
-            ts.body = e.get("BodyRegionCellStyle").map(cell_ref).filter(|n| n != designcraft_doc::NO_CELL_STYLE);
-            ts.footer = e.get("FooterRegionCellStyle").map(cell_ref).filter(|n| n != designcraft_doc::NO_CELL_STYLE);
-            ts.left_column = e.get("LeftColumnRegionCellStyle").map(cell_ref).filter(|n| n != designcraft_doc::NO_CELL_STYLE);
-            ts.right_column = e.get("RightColumnRegionCellStyle").map(cell_ref).filter(|n| n != designcraft_doc::NO_CELL_STYLE);
-            if e.get("TopBorderStrokeWeight").is_some() {
-                let mut b = CellStroke::default();
-                if let Some(w) = e.num("TopBorderStrokeWeight") {
-                    b.weight = w.max(0.0);
-                }
-                if let Some(c) = e.get("TopBorderStrokeColor") {
-                    b.color = self.swatch_ref(c);
-                }
-                ts.border = Some(b);
+            ts.based_on =
+                e.prop("BasedOn").map(|r| self.table_style_ref(&r)).or_else(|| Some(designcraft_doc::NO_TABLE_STYLE.into())).filter(|n| *n != name);
+            ts.header = e.get("HeaderRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.body = e.get("BodyRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.footer = e.get("FooterRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.left_column =
+                e.get("LeftColumnRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.right_column =
+                e.get("RightColumnRegionCellStyle").map(|r| if r == "n" { designcraft_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.header_same_as_body = e.boolean("HeaderRegionSameAsBodyRegion");
+            ts.footer_same_as_body = e.boolean("FooterRegionSameAsBodyRegion");
+            ts.left_column_same_as_body = e.boolean("LeftColumnRegionSameAsBodyRegion");
+            ts.right_column_same_as_body = e.boolean("RightColumnRegionSameAsBodyRegion");
+            ts.borders = ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].map(|side| self.cell_stroke_attrs(e, side));
+            if let Some(border) = uniform_cell_stroke(&ts.borders) {
+                ts.border = Some(border);
+                ts.borders = Default::default();
             }
-            if let Some(first) = e.num("StartRowFillCount").filter(|n| *n > 0.0) {
-                ts.alt_rows = Some(AltFills {
-                    first: first as u32,
-                    first_color: e.get("StartRowFillColor").map(|c| self.swatch_ref(c)).unwrap_or_else(|| swatch::NONE.into()),
-                    first_tint: tint(e.num("StartRowFillTint")).unwrap_or(1.0),
-                    next: e.num("EndRowFillCount").unwrap_or(1.0) as u32,
-                    next_color: e.get("EndRowFillColor").map(|c| self.swatch_ref(c)).unwrap_or_else(|| swatch::NONE.into()),
-                    next_tint: tint(e.num("EndRowFillTint")).unwrap_or(1.0),
-                    skip_first: 0,
-                    skip_last: 0,
-                });
-            }
+            ts.row_fills = self.alt_fill_attrs(e, "Row");
+            ts.column_fills = self.alt_fill_attrs(e, "Column");
+            ts.row_strokes = self.alt_stroke_attrs(e, "Row");
+            ts.column_strokes = self.alt_stroke_attrs(e, "Column");
             ts.space_before = e.num("SpaceBefore");
             ts.space_after = e.num("SpaceAfter");
             match self.styles.table.iter_mut().find(|c| c.name == name) {
@@ -896,8 +913,11 @@ impl<'r> Importer<'r> {
             let paragraph_style = enabled("EnableParagraphStyle", "AppliedParagraphStyle")
                 .then(|| e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)))
                 .flatten();
-            let text_frame =
-                if e.get("EnableTextFrameGeneralOptions") == Some("true") { e.find("TextFramePreference").map(text_frame_options) } else { None };
+            let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
+                e.find("TextFramePreference").map(|t| self.frame_options(t))
+            } else {
+                None
+            };
             let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, text_frame };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
@@ -1095,7 +1115,9 @@ impl<'r> Importer<'r> {
         // Underline / strikethrough options (-9999 = automatic).
         for k in ["Underline", "StrikeThru"] {
             let num = |n: &str| e.num(&format!("{k}{n}")).filter(|v| *v > -9000.0);
-            let color = e.prop(&format!("{k}Color")).map(|r| self.swatch_ref(r.trim())).filter(|r| r != "Text Color" && !r.is_empty());
+            // An explicit Text Color resets an inherited swatch; absence still inherits.
+            // Resolve the sentinel before swatch_ref, which maps unknown names to [None].
+            let color = e.prop(&format!("{k}Color")).map(|r| if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
             let tint = e.num(&format!("{k}Tint")).filter(|v| *v >= 0.0).map(|v| (v / 100.0) as f32);
             if k == "Underline" {
                 a.underline_weight = num("Weight").map(Some);
@@ -1136,6 +1158,13 @@ impl<'r> Importer<'r> {
         a.tate_chu_yoko = e.boolean("Tatechuyoko");
         a.tate_chu_yoko_x_offset = e.num("TatechuyokoXOffset");
         a.tate_chu_yoko_y_offset = e.num("TatechuyokoYOffset");
+        a.warichu = e.boolean("Warichu");
+        a.warichu_lines = e.num("WarichuLines").map(|v| v.max(2.0) as u32);
+        a.warichu_size = e.num("WarichuSize");
+        a.warichu_line_spacing = e.num("WarichuLineSpacing");
+        a.warichu_alignment = e.prop("WarichuAlignment").as_deref().and_then(crate::cjk::warichu_align_in);
+        a.warichu_chars_before_break = e.num("WarichuCharsBeforeBreak").map(|v| v.max(0.0) as u32);
+        a.warichu_chars_after_break = e.num("WarichuCharsAfterBreak").map(|v| v.max(0.0) as u32);
         if let Some(on) = e.boolean("RubyFlag") {
             a.ruby = Some(if on { e.prop("RubyString").unwrap_or_default() } else { String::new() });
         }
@@ -1318,6 +1347,17 @@ impl<'r> Importer<'r> {
             "NumberedList" => ListType::Numbers,
             _ => ListType::None,
         });
+        // A format with no counterpart (CJK, Arabic, Hebrew numbering) is left unset: decimal.
+        a.number_style = e.prop("NumberingFormat").and_then(|v| names::numbering_format_in(&v));
+        a.number_expression = e.prop("NumberingExpression");
+        a.list_separator = e.prop("BulletsTextAfter");
+        if let Some(b) = e.prop_el("BulletChar") {
+            // A glyph of a named font (`GlyphWithFont`) has no character to map to.
+            let unicode = matches!(b.get("BulletCharacterType"), Some("UnicodeOnly" | "UnicodeWithFont"));
+            if let Some(c) = b.get("BulletCharacterValue").and_then(|v| v.trim().parse::<u32>().ok()).and_then(char::from_u32).filter(|_| unicode) {
+                a.bullet_char = Some(c.to_string());
+            }
+        }
         a.balance_ragged = e.prop("BalanceRaggedLines").map(|v| v.trim() != "NoBalancing" && v.trim() != "false");
         a.shading_on = e.boolean("ParagraphShadingOn");
         if let Some(c) = e.prop("ParagraphShadingColor") {
@@ -1363,12 +1403,73 @@ impl<'r> Importer<'r> {
         Some(r)
     }
 
+    fn cell_style_ref(&self, reference: &str) -> String {
+        let reference = reference.trim();
+        self.cell_names
+            .get(reference)
+            .cloned()
+            .unwrap_or_else(|| names::style_name_in(names::CELL_BUILTINS, &unescape_id(reference.trim_start_matches("CellStyle/"))))
+    }
+
+    fn table_style_ref(&self, reference: &str) -> String {
+        let reference = reference.trim();
+        self.table_names
+            .get(reference)
+            .cloned()
+            .unwrap_or_else(|| names::style_name_in(names::TABLE_BUILTINS, &unescape_id(reference.trim_start_matches("TableStyle/"))))
+    }
+
+    fn cell_stroke_attrs(&mut self, el: &El, prefix: &str) -> designcraft_doc::CellStrokeAttrs {
+        designcraft_doc::CellStrokeAttrs {
+            weight: el.num(&format!("{prefix}StrokeWeight")).map(|v| v.max(0.0)),
+            color: el.prop(&format!("{prefix}StrokeColor")).map(|v| self.swatch_ref(&v)),
+            tint: tint(el.num(&format!("{prefix}StrokeTint"))),
+            kind: el.prop(&format!("{prefix}StrokeType")).map(|v| names::stroke_type_in(&v)),
+        }
+    }
+
+    fn alt_fill_attrs(&mut self, el: &El, kind: &str) -> designcraft_doc::AltFillsAttrs {
+        designcraft_doc::AltFillsAttrs {
+            first: el.num(&format!("Start{kind}FillCount")).map(|v| v.max(0.0) as u32),
+            first_color: el.prop(&format!("Start{kind}FillColor")).map(|v| self.swatch_ref(&v)),
+            first_tint: tint(el.num(&format!("Start{kind}FillTint"))),
+            next: el.num(&format!("End{kind}FillCount")).map(|v| v.max(0.0) as u32),
+            next_color: el.prop(&format!("End{kind}FillColor")).map(|v| self.swatch_ref(&v)),
+            next_tint: tint(el.num(&format!("End{kind}FillTint"))),
+            skip_first: el.num(&format!("SkipFirstAlternatingFill{kind}s")).map(|v| v.max(0.0) as u32),
+            skip_last: el.num(&format!("SkipLastAlternatingFill{kind}s")).map(|v| v.max(0.0) as u32),
+        }
+    }
+
+    fn alt_stroke_attrs(&mut self, el: &El, kind: &str) -> designcraft_doc::AltStrokesAttrs {
+        let first_stroke = self.cell_stroke_attrs(el, &format!("Start{kind}"));
+        let mut next_stroke = self.cell_stroke_attrs(el, &format!("End{kind}"));
+        // IDML uses LineStyle for this one attribute (rather than StrokeType).
+        if kind == "Column"
+            && let Some(value) = el.prop("EndColumnLineStyle")
+        {
+            next_stroke.kind = Some(names::stroke_type_in(&value));
+        }
+        designcraft_doc::AltStrokesAttrs {
+            first: el.num(&format!("Start{kind}StrokeCount")).map(|v| v.max(0.0) as u32),
+            next: el.num(&format!("End{kind}StrokeCount")).map(|v| v.max(0.0) as u32),
+            first_stroke,
+            next_stroke,
+            skip_first: el.num(&format!("SkipFirstAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
+            skip_last: el.num(&format!("SkipLastAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
+        }
+    }
+
     // ---------- stories ----------
 
     fn story(&mut self, id: StoryId, e: &El) -> Story {
+        self.story_with_para(id, e, ParaFormat::default())
+    }
+
+    fn story_with_para(&mut self, id: StoryId, e: &El, default_para: ParaFormat) -> Story {
         let mut b = StoryBuilder {
             text: String::new(),
-            paras: vec![ParaFormat::default()],
+            paras: vec![default_para.clone()],
             runs: Vec::new(),
             fresh: true,
             last: CharFormat::default(),
@@ -1380,7 +1481,7 @@ impl<'r> Importer<'r> {
             index_refs: Vec::new(),
             objects: Vec::new(),
         };
-        self.walk_story(e, &mut b, &ParaFormat::default(), &CharAttrs::default(), &CharFormat::default(), None);
+        self.walk_story(e, &mut b, &default_para, &CharAttrs::default(), &CharFormat::default(), None);
         let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, .. } = b;
         let mut chars: Vec<CharRun> = runs.into_iter().filter(|r| r.len > 0).collect();
         if chars.is_empty() {
@@ -1467,50 +1568,39 @@ impl<'r> Importer<'r> {
         if h.saturating_add(f) < nr {
             t.set_header_footer(h, f);
         }
-        let stroke = |me: &mut Self, el: &El, prefix: &str, base: &CellStroke| -> CellStroke {
-            let mut s = base.clone();
-            if let Some(w) = el.num(&format!("{prefix}StrokeWeight")) {
-                s.weight = w.max(0.0);
-            }
-            if let Some(c) = el.get(&format!("{prefix}StrokeColor")) {
-                s.color = me.swatch_ref(c);
-            }
-            if let Some(v) = el.num(&format!("{prefix}StrokeTint")) {
-                s.tint = tint(Some(v)).unwrap_or(1.0);
-            }
-            if let Some(v) = el.get(&format!("{prefix}StrokeType")) {
-                s.kind = names::stroke_type_in(v);
-            }
-            s
-        };
-        t.options.border = stroke(self, e, "TopBorder", &t.options.border);
+        let style_name = e.get("AppliedTableStyle").map(|r| self.table_style_ref(r)).unwrap_or_else(|| designcraft_doc::BASIC_TABLE.into());
+        let style = self.styles.resolve_table_style(&style_name);
+        style.apply_to(&mut t, &self.styles.cell);
+        // IDML distinguishes an explicit AppliedCellStyle from the effective region style.
+        for cell in &mut t.cells {
+            cell.style.clear();
+        }
+        // Table-local options override the named table style. Cell styles are already
+        // materialized independently, so their edges retain their higher precedence.
+        let mut borders = std::array::from_fn::<_, 4, _>(|i| t.options.border_for(i).clone());
+        for (side, border) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&mut borders) {
+            self.cell_stroke_attrs(e, side).apply_to(border);
+        }
+        t.options.border = borders[0].clone();
+        t.options.borders = borders.map(Some);
         t.options.space_before = e.num("SpaceBefore").unwrap_or(t.options.space_before);
         t.options.space_after = e.num("SpaceAfter").unwrap_or(t.options.space_after);
         t.options.repeat_header = e.get("HeaderBehavior") != Some("RepeatOnce");
         t.options.repeat_footer = e.get("FooterBehavior") != Some("RepeatOnce");
-        for kind in ["Row", "Column"] {
-            let Some(first) = e.num(&format!("Start{kind}FillCount")).filter(|n| *n > 0.0) else { continue };
-            let alt = AltFills {
-                first: first as u32,
-                first_color: e.get(&format!("Start{kind}FillColor")).map(|c| self.swatch_ref(c)).unwrap_or_else(|| swatch::NONE.into()),
-                first_tint: tint(e.num(&format!("Start{kind}FillTint"))).unwrap_or(1.0),
-                next: e.num(&format!("End{kind}FillCount")).unwrap_or(1.0) as u32,
-                next_color: e.get(&format!("End{kind}FillColor")).map(|c| self.swatch_ref(c)).unwrap_or_else(|| swatch::NONE.into()),
-                next_tint: tint(e.num(&format!("End{kind}FillTint"))).unwrap_or(1.0),
-                skip_first: e.num(&format!("SkipFirstAlternatingFill{kind}s")).unwrap_or(0.0) as u32,
-                skip_last: e.num(&format!("SkipLastAlternatingFill{kind}s")).unwrap_or(0.0) as u32,
-            };
-            if kind == "Row" {
-                t.options.alt_rows = Some(alt);
-            } else {
-                t.options.alt_cols = Some(alt);
-            }
-        }
-        t.style = e
-            .get("AppliedTableStyle")
-            .map(|r| names::style_name_in(names::TABLE_BUILTINS, &unescape_id(r.trim_start_matches("TableStyle/"))))
-            .filter(|n| n != designcraft_doc::BASIC_TABLE && n != "[No table style]")
-            .unwrap_or_default();
+        // A local count may enable a pattern disabled by its parent style. Merge before
+        // materialization so the parent's colors/tints are still available in that case.
+        let mut row_fills = style.row_fills.clone();
+        row_fills.merge(&self.alt_fill_attrs(e, "Row"));
+        row_fills.apply_to(&mut t.options.alt_rows);
+        let mut column_fills = style.column_fills.clone();
+        column_fills.merge(&self.alt_fill_attrs(e, "Column"));
+        column_fills.apply_to(&mut t.options.alt_cols);
+        let mut row_strokes = style.row_strokes.clone();
+        row_strokes.merge(&self.alt_stroke_attrs(e, "Row"));
+        row_strokes.apply_to(&mut t.options.row_strokes);
+        let mut column_strokes = style.column_strokes.clone();
+        column_strokes.merge(&self.alt_stroke_attrs(e, "Column"));
+        column_strokes.apply_to(&mut t.options.column_strokes);
         let mut regions = Vec::new();
         for ce in e.find_all("Cell") {
             let Some((c, r)) =
@@ -1521,36 +1611,39 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            let rs = ce.num("RowSpan").unwrap_or(1.0).max(1.0) as usize;
-            let cs = ce.num("ColumnSpan").unwrap_or(1.0).max(1.0) as usize;
-            let text = self.story(StoryId(0), ce);
-            let mut cell = Cell { text, ..Default::default() };
-            cell.style = ce
-                .get("AppliedCellStyle")
-                .map(|r| names::style_name_in(names::CELL_BUILTINS, &unescape_id(r.trim_start_matches("CellStyle/"))))
-                .filter(|n| n != designcraft_doc::NO_CELL_STYLE)
-                .unwrap_or_default();
+            let rs = (ce.num("RowSpan").unwrap_or(1.0).max(1.0) as usize).min(nr - r);
+            let cs = (ce.num("ColumnSpan").unwrap_or(1.0).max(1.0) as usize).min(nc - c);
+            let mut cell = t.cell(r, c).cloned().unwrap_or_default();
+            let cell_style = ce.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| designcraft_doc::NO_CELL_STYLE.into());
+            if cell_style != designcraft_doc::NO_CELL_STYLE {
+                designcraft_doc::resolve_cell_style(&self.styles.cell, &cell_style).apply_to(&mut cell);
+            }
+            cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
+            let default_para = cell.text.paras.first().cloned().unwrap_or_default();
+            cell.text = self.story_with_para(StoryId(0), ce, default_para);
             if let Some(fc) = ce.get("FillColor") {
                 cell.fill = self.swatch_ref(fc);
             }
-            cell.fill_tint = tint(ce.num("FillTint")).unwrap_or(1.0);
+            if let Some(tint) = tint(ce.num("FillTint")) {
+                cell.fill_tint = tint;
+            }
             for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
                 if let Some(v) = ce.num(k) {
                     cell.insets[i] = v.max(0.0);
                 }
             }
-            cell.vj = match ce.get("VerticalJustification") {
-                Some("CenterAlign") => VerticalJustification::Center,
-                Some("BottomAlign") => VerticalJustification::Bottom,
-                Some("JustifyAlign") => VerticalJustification::Justify,
-                _ => VerticalJustification::Top,
-            };
+            if let Some(vj) = ce.get("VerticalJustification") {
+                cell.vj = names::vj_in(vj);
+            }
+            cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
             for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
-                let base = cell.strokes[i].clone();
-                cell.strokes[i] = stroke(self, ce, side, &base);
-                // A positive edge priority records a local cell override, including an
-                // explicit None stroke. Keep it when this edge meets the table perimeter.
-                cell.border_overrides[i] = ce.num(&format!("{side}StrokePriority")).is_some_and(|priority| priority > 0.0);
+                let attrs = self.cell_stroke_attrs(ce, side);
+                attrs.apply_to(&mut cell.strokes[i]);
+                cell.stroke_defined[i] |= !attrs.is_empty();
+                let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+                cell.stroke_priorities[i] = priority;
+                // Preserve style-defined edges and #102's positive-priority local overrides.
+                cell.border_overrides[i] |= priority > 0;
             }
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
@@ -1570,7 +1663,7 @@ impl<'r> Importer<'r> {
             match n {
                 Node::El(c) => match c.local() {
                     "ParagraphStyleRange" => {
-                        let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| st::BASIC_PARAGRAPH.into());
+                        let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
                         let para = self.para_attrs(c);
                         let chars = self.char_attrs(c);
                         let npf = ParaFormat { style, para, chars: CharAttrs::default(), table: None };
@@ -1610,21 +1703,22 @@ impl<'r> Importer<'r> {
                             }
                         }
                     }
-                    "Br" => match brk {
-                        Some(t) => {
+                    "Br" => {
+                        // A column, frame or page break ends its paragraph like a return does.
+                        if let Some(t) = brk {
                             let ch = match t {
                                 "NextColumn" => st::COLUMN_BREAK,
                                 "NextFrame" => st::FRAME_BREAK,
+                                "NextOddPage" => st::ODD_PAGE_BREAK,
+                                "NextEvenPage" => st::EVEN_PAGE_BREAK,
                                 _ => st::PAGE_BREAK,
                             };
                             b.push(&ch.to_string(), cf);
                         }
-                        None => {
-                            b.push("\n", cf);
-                            b.paras.push(pf.clone());
-                            b.fresh = true;
-                        }
-                    },
+                        b.push("\n", cf);
+                        b.paras.push(pf.clone());
+                        b.fresh = true;
+                    }
                     "Table" => {
                         let t = self.table(c);
                         b.push_table(t, pf, cf);
@@ -2042,7 +2136,7 @@ impl<'r> Importer<'r> {
                         sid
                     }
                 };
-                let mut options = e.find("TextFramePreference").map(text_frame_options).unwrap_or_default();
+                let mut options = e.find("TextFramePreference").map(|t| self.frame_options(t)).unwrap_or_default();
                 if let Some(g) = e.find("BaselineFrameGridOption")
                     && g.get("UseCustomBaselineFrameGrid") == Some("true")
                 {
@@ -2375,6 +2469,24 @@ fn text_frame_options(e: &El) -> TextFrameOptions {
     }
     if let Some(v) = e.get("AutoSizingReferencePoint") {
         o.auto_size_ref = names::REF_POINTS.iter().position(|p| *p == v).unwrap_or(1) as u8;
+    }
+    // Column rules (the colour is a swatch reference: see `Importer::frame_options`).
+    o.column_rule = e.get("ColumnRuleOverride") == Some("true");
+    let finite = |k: &str| e.num(k).filter(|v| v.is_finite());
+    if let Some(v) = finite("ColumnRuleStrokeWidth") {
+        o.column_rule_weight = v.clamp(0.0, 1000.0);
+    }
+    if let Some(t) = tint(finite("ColumnRuleStrokeTint")) {
+        o.column_rule_tint = t.clamp(0.0, 1.0);
+    }
+    for (k, v) in [
+        ("ColumnRuleOffset", &mut o.column_rule_offset),
+        ("ColumnRuleTopInset", &mut o.column_rule_top_inset),
+        ("ColumnRuleBottomInset", &mut o.column_rule_bottom_inset),
+    ] {
+        if let Some(x) = finite(k) {
+            *v = x.clamp(-1440.0, 1440.0);
+        }
     }
     o
 }

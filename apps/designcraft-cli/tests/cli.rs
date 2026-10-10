@@ -67,6 +67,26 @@ fn run_cmd_references_and_describe() {
     assert!(v.as_array().unwrap().iter().all(|c| c.to_string().contains("footnote")));
 }
 
+/// `designcraft-cli --help` printed usage to stderr and exited 1; asking for help is not an
+/// error (#243). It now goes to stdout and succeeds, while an unknown command keeps the same
+/// usage on stderr and fails.
+#[test]
+fn help_goes_to_stdout_and_unknown_args_to_stderr() {
+    for flag in ["--help", "-h", "help"] {
+        let out = cli().arg(flag).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{flag}: {:?}", out.status);
+        assert!(stdout.starts_with("usage: designcraft-cli"), "{flag}: {stdout:?}");
+        assert!(stdout.contains("designcraft-cli --version"), "{flag}: {stdout:?}");
+        assert!(out.stderr.is_empty(), "{flag} wrote to stderr: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    // An unknown option is still an error: usage on stderr, nothing on stdout, non-zero exit.
+    let out = cli().arg("--no-such-option").output().unwrap();
+    assert!(!out.status.success(), "{:?}", out.status);
+    assert!(out.stdout.is_empty(), "unexpected stdout: {}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: designcraft-cli"));
+}
+
 /// `designcraft-cli commands | head -1` panicked with "failed printing to
 /// stdout: Broken pipe (os error 32)" and exit status 101.
 #[test]
@@ -79,4 +99,26 @@ fn closed_stdout_ends_quietly() {
     let out = child.wait_with_output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success() && !err.contains("panicked"), "{:?}: {err}", out.status);
+}
+
+/// `--scale`, `--page` and `--pdf-options` apply to the exports after them; one with no export
+/// after it was silently ignored.
+#[test]
+fn run_export_options_come_before_their_export() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-order-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (dir.join("a.png"), dir.join("b.png"));
+    let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+    for (opt, val) in [("--scale", "0.5"), ("--page", "1"), ("--pdf-options", r#"{"pages":"1"}"#)] {
+        let out = cli().args(["run", "--sample", "--export", a, opt, val]).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{opt} after the last --export: {err}");
+        assert!(err.contains(opt) && err.contains("before"), "{err}");
+    }
+    assert!(!std::path::Path::new(a).exists(), "nothing is exported when the arguments are wrong");
+    let out = cli().args(["run", "--sample", "--scale", "0.5", "--export", a, "--scale", "0.25", "--export", b]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("wrote") && std::path::Path::new(a).exists() && std::path::Path::new(b).exists(), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

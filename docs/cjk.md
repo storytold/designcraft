@@ -122,7 +122,18 @@ All set after line layout like today's ruby, but able to affect line height:
 - **Kenten**: position, size, alignment, colour, font (the kinds and a custom character are
   there).
 - **Warichu**: an inline run set in 2+ smaller lines inside one line height, with size, line
-  spacing, alignment and breaking rules.
+  spacing, alignment and breaking rules. Type › Warichu (`type.warichu`) does this after the
+  line is broken: the run is scaled and stacked, and the rest of that line closes up. It does
+  not pull more characters onto the line. The first small line keeps at least
+  `WarichuCharsBeforeBreak` glyphs and the last at least `WarichuCharsAfterBreak`; the glyphs
+  are split so those lines are as close in width as the minimums allow. Line spacing of 0 keeps
+  the baselines one small em apart, a positive value adds to that em, and a negative value
+  tightens it down to a shared baseline. The caret, the selection, and hit testing follow the
+  small line the character sits on, and Up and Down move between those lines before leaving the
+  parent line. Underlines follow the small baseline. Right-to-left and tate-chu-yoko runs are
+  left as body text. IDML reads and writes `Warichu`, `WarichuLines`, `WarichuSize`,
+  `WarichuLineSpacing`, `WarichuAlignment`, `WarichuCharsBeforeBreak` and
+  `WarichuCharsAfterBreak`.
 - **Tate-chu-yoko**: scale-to-fit-em, automatic TCY for runs of N digits (with or without
   Latin), rensuji (offsets are there).
 - **Shatai** (oblique in the CJK sense: angle and magnification, keeping the em box),

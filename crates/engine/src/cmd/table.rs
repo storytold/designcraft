@@ -204,6 +204,15 @@ fn table_specs() -> Vec<CommandSpec> {
         cmd!("table.setColumnWidth", "Column Width", [], None, "{width}", in_table, set_col_width),
         cmd!("table.distributeColumns", "Distribute Columns Evenly", ["Table"], None, "{}", in_table, distribute_cols),
         cmd!(
+            "table.distributeRows",
+            "Distribute Rows Evenly",
+            ["Table"],
+            None,
+            "{story?, table?, rows?: [a,b]} — equal fixed heights preserving the selected rows' composed total height; may overset cell text; unmerge row-spanning cells first",
+            in_table,
+            distribute_rows
+        ),
+        cmd!(
             "table.options",
             "Table Options",
             [],
@@ -372,6 +381,14 @@ fn column_width(s: &Session, t: &TextSel) -> f64 {
     spec.and_then(|f| f.columns().first().map(|c| c.width())).unwrap_or(300.0)
 }
 
+/// The direction of the paragraph at `offset` in `story`, as composition resolves it (its style
+/// chain, then local overrides). A table created there takes it.
+fn para_direction(d: &Document, story: StoryId, offset: usize) -> designcraft_doc::TextDirection {
+    d.story(story)
+        .and_then(|st| st.paras.get(st.para_at(offset)))
+        .map_or(designcraft_doc::TextDirection::LeftToRight, |pf| d.styles.resolve_para(pf).0.direction)
+}
+
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| bad("table.insert", "no insertion point"))?;
     if t.cell.is_some() {
@@ -385,6 +402,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         let id = d.alloc();
         let mut table = Table::new(id, rows, cols, header, footer, width);
+        table.options.direction = para_direction(d, t.story, t.range().start);
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.insert", "no story"))?;
         // Cells start with the paragraph format at the caret.
         let pf = st.paras[st.para_at(t.range().start)].clone();
@@ -410,6 +428,7 @@ fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
     let width = p.get("width").and_then(Value::as_f64).unwrap_or_else(|| column_width(s, &t));
     s.edit(|d, sel| {
         let id = d.alloc();
+        let direction = para_direction(d, t.story, t.range().start);
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.convertFromText", "no story"))?;
         let ranges = st.para_ranges();
         let (pa, pb) = (st.para_at(t.range().start), st.para_at(t.range().end));
@@ -420,7 +439,8 @@ fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
         let data: Vec<Vec<String>> = st.text[a..b].split('\n').map(|line| line.split(sep).map(|c| c.trim().to_string()).collect()).collect();
         let pf = st.paras[pa].clone();
         let cf = st.format_after(a).clone();
-        let table = Table::from_strings(id, &data, width, &pf, &cf);
+        let mut table = Table::from_strings(id, &data, width, &pf, &cf);
+        table.options.direction = direction;
         st.delete(a..b);
         let anchor = st.insert_table(a, table);
         *sel = Selection::text(TextSel::caret(t.story, anchor));
@@ -630,6 +650,11 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
     edit_table(s, &g, "table.setCell", |t| {
         let owners = t.owners();
         let nc = t.ncols();
+        let nr = t.nrows();
+        let rtl = t.options.direction == designcraft_doc::TextDirection::RightToLeft;
+        let borders: [CellStroke; 4] = std::array::from_fn(|side| t.options.border_for(side).clone());
+        // Local edits outrank previously imported edges, including explicit zero/None.
+        let priority = if stroke.is_some() { next_cell_stroke_priority(t) } else { 0 };
         let rg = g.range;
         for r in rg.r0..=rg.r1 {
             for c in rg.c0..=rg.c1 {
@@ -655,45 +680,109 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 if let Some(sv) = &stroke {
                     let edges = str_param(sv, "edges").unwrap_or("all");
+                    let at_bottom = r.saturating_add(cell.row_span.max(1) as usize);
+                    let at_right = c.saturating_add(cell.col_span.max(1) as usize);
+                    let perimeter = [r == 0, if rtl { at_right == nc } else { c == 0 }, at_bottom == nr, if rtl { c == 0 } else { at_right == nc }];
                     for (i, on) in [
                         ("top", r == rg.r0),
-                        ("left", c == rg.c0),
-                        ("bottom", r + cell.row_span as usize - 1 == rg.r1),
-                        ("right", c + cell.col_span as usize - 1 == rg.c1),
+                        ("left", if rtl { at_right.saturating_sub(1) == rg.c1 } else { c == rg.c0 }),
+                        ("bottom", at_bottom.saturating_sub(1) == rg.r1),
+                        ("right", if rtl { c == rg.c0 } else { at_right.saturating_sub(1) == rg.c1 }),
                     ]
                     .iter()
                     .enumerate()
                     .map(|(i, (name, outer))| (i, edges == "all" || edges == *name || (edges == "outer" && *outer) || (edges == "inner" && !*outer)))
                     {
                         if on {
-                            cell.strokes[i] = parse_stroke(sv, cell.strokes[i].clone());
+                            let base = if perimeter[i] && !cell.border_overrides[i] { &borders[i] } else { &cell.strokes[i] };
+                            cell.strokes[i] = parse_stroke(sv, base.clone());
+                            cell.stroke_defined[i] = true;
+                            cell.stroke_priorities[i] = priority;
+                            cell.border_overrides[i] = true;
                         }
                     }
                 }
             }
         }
-        // Neighbouring cells share edges: mirror the edges along the range boundary.
+        // Keep both copies of unmerged shared boundaries consistent. Left/right name
+        // physical sides, also in RTL tables.
         if let Some(sv) = &stroke {
             let edges = str_param(sv, "edges").unwrap_or("all");
-            if matches!(edges, "all" | "outer" | "bottom") && rg.r1 + 1 < t.nrows() {
+            let selected = |side: &str| edges == "all" || edges == "outer" || edges == side;
+            if selected("top")
+                && let Some(row) = rg.r0.checked_sub(1)
+            {
                 for c in rg.c0..=rg.c1 {
-                    let s0 = t.cell(rg.r1, c).map(|x| x.strokes[2].clone());
-                    if let (Some(s0), Some(n)) = (s0, t.cell_mut(rg.r1 + 1, c)) {
-                        n.strokes[0] = s0;
-                    }
+                    mirror_cell_edge(t, &owners, (rg.r0, c), 0, (row, c), 2);
                 }
             }
-            if matches!(edges, "all" | "outer" | "right") && rg.c1 + 1 < t.ncols() {
+            if selected("bottom") && rg.r1.saturating_add(1) < nr {
+                for c in rg.c0..=rg.c1 {
+                    mirror_cell_edge(t, &owners, (rg.r1, c), 2, (rg.r1 + 1, c), 0);
+                }
+            }
+            if selected(if rtl { "right" } else { "left" })
+                && let Some(col) = rg.c0.checked_sub(1)
+            {
                 for r in rg.r0..=rg.r1 {
-                    let s0 = t.cell(r, rg.c1).map(|x| x.strokes[3].clone());
-                    if let (Some(s0), Some(n)) = (s0, t.cell_mut(r, rg.c1 + 1)) {
-                        n.strokes[1] = s0;
-                    }
+                    mirror_cell_edge(t, &owners, (r, rg.c0), if rtl { 3 } else { 1 }, (r, col), if rtl { 1 } else { 3 });
+                }
+            }
+            if selected(if rtl { "left" } else { "right" }) && rg.c1.saturating_add(1) < nc {
+                for r in rg.r0..=rg.r1 {
+                    mirror_cell_edge(t, &owners, (r, rg.c1), if rtl { 1 } else { 3 }, (r, rg.c1 + 1), if rtl { 3 } else { 1 });
                 }
             }
         }
         ok()
     })
+}
+
+/// Only saturation needs rebasing. Preserve every distinct priority's order and keep
+/// zero/negative priorities untouched; the work is bounded by the table's edges.
+fn next_cell_stroke_priority(t: &mut Table) -> i32 {
+    let highest = t.cells.iter().flat_map(|cell| cell.stroke_priorities).max().unwrap_or(0).max(0);
+    if highest < i32::MAX {
+        return highest + 1;
+    }
+    let values: std::collections::BTreeSet<_> = t.cells.iter().flat_map(|cell| cell.stroke_priorities).filter(|p| *p > 0).collect();
+    let mut ranks = std::collections::BTreeMap::new();
+    let mut highest = 0i32;
+    for value in values {
+        highest = highest.saturating_add(1);
+        ranks.insert(value, highest);
+    }
+    for cell in &mut t.cells {
+        for priority in &mut cell.stroke_priorities {
+            if let Some(rank) = ranks.get(priority) {
+                *priority = *rank;
+            }
+        }
+    }
+    highest.saturating_add(1)
+}
+
+fn mirror_cell_edge(t: &mut Table, owners: &[(usize, usize)], from: (usize, usize), edge: usize, to: (usize, usize), opposite: usize) {
+    let owner = |pos: (usize, usize)| owners.get(pos.0.checked_mul(t.ncols())?.checked_add(pos.1)?).copied();
+    if owner(from) != Some(from) || owner(to) != Some(to) {
+        return;
+    }
+    // A merged cell's edge may border several separately editable cells. Mirroring
+    // a segment onto that whole edge would change unselected neighbors; priorities
+    // instead resolve each segment without altering the merged cell's formatting.
+    let merged = |cell: &designcraft_doc::Cell| cell.row_span > 1 || cell.col_span > 1;
+    if t.cell(from.0, from.1).is_some_and(merged) || t.cell(to.0, to.1).is_some_and(merged) {
+        return;
+    }
+    let source = t
+        .cell(from.0, from.1)
+        .map(|cell| (cell.strokes[edge].clone(), cell.stroke_defined[edge], cell.stroke_priorities[edge], cell.border_overrides[edge]));
+    if let (Some((stroke, defined, priority, border_override)), Some(neighbor)) = (source, t.cell_mut(to.0, to.1)) {
+        neighbor.strokes[opposite] = stroke;
+        neighbor.stroke_defined[opposite] = defined;
+        neighbor.stroke_priorities[opposite] = priority;
+        neighbor.border_overrides[opposite] = border_override;
+    }
 }
 
 fn set_row_height(s: &mut Session, p: &Value) -> Result<Value> {
@@ -729,6 +818,63 @@ fn set_col_width(s: &mut Session, p: &Value) -> Result<Value> {
             c.width = w;
         }
         ok()
+    })
+}
+
+fn distribute_rows(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "table.distributeRows";
+    if !p.is_object() {
+        return Err(bad(ID, "parameters must be an object"));
+    }
+    if let Some(rows) = p.get("rows") {
+        let valid = rows.as_array().is_some_and(|a| a.len() == 2 && a.iter().all(|v| v.as_u64().is_some_and(|n| usize::try_from(n).is_ok())));
+        if !valid {
+            return Err(bad(ID, "rows must be two non-negative row indices"));
+        }
+    }
+    for key in ["row", "story", "table"] {
+        if let Some(v) = p.get(key)
+            && !v.as_u64().is_some_and(|n| usize::try_from(n).is_ok())
+        {
+            return Err(bad(ID, format!("{key} must be a non-negative integer")));
+        }
+    }
+    let g = target(s, p, ID)?;
+    let st = s.doc()?;
+    let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    if t.cells.iter().any(|c| c.row_span > 1) {
+        return Err(bad(ID, "unmerge cells that span rows first"));
+    }
+    let cs = s.cache.get(&st.doc, g.story, None);
+    let mut total = 0.0;
+    for row in g.range.r0..=g.range.r1 {
+        let height = cs
+            .frames
+            .iter()
+            .flat_map(|f| &f.tables)
+            .filter(|f| f.table == g.table)
+            .flat_map(|f| &f.cells)
+            .filter(|c| c.row == row)
+            .map(|c| c.rect.height())
+            .reduce(f64::max)
+            .ok_or_else(|| bad(ID, "all selected rows must be laid out; enlarge or thread the text frame first"))?;
+        if !height.is_finite() || height <= 0.0 {
+            return Err(bad(ID, "invalid composed row height"));
+        }
+        total += height;
+    }
+    let count = g.range.r1 - g.range.r0 + 1;
+    let height = total / count as f64;
+    if !height.is_finite() {
+        return Err(bad(ID, "invalid total row height"));
+    }
+    edit_table(s, &g, ID, |t| {
+        let rows = t.rows.get_mut(g.range.r0..=g.range.r1).ok_or_else(|| bad(ID, "invalid row range"))?;
+        for row in rows {
+            row.height = height;
+            row.mode = RowHeightMode::Exactly;
+        }
+        Ok(json!({"rows": count, "height": height}))
     })
 }
 
@@ -769,6 +915,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(b) = p.get("border") {
             o.border = parse_stroke(b, o.border.clone());
+            o.borders = Default::default();
         }
         o.space_before = f64_or(&p, "spaceBefore", o.space_before);
         o.space_after = f64_or(&p, "spaceAfter", o.space_after);
@@ -905,6 +1052,9 @@ fn stroke_param(v: Option<&Value>) -> Option<designcraft_doc::CellStroke> {
 
 /// Fill in the cell style fields given in `p`.
 fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, cmd: &str) -> Result<()> {
+    if let Some(v) = p.get("basedOn") {
+        cs.based_on = v.as_str().map(str::to_string);
+    }
     if let Some(f) = color_param(p, "fill") {
         cs.fill = Some(f);
     }
@@ -912,10 +1062,14 @@ fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, cmd: &str) 
         cs.fill_tint = Some(t.clamp(0.0, 1.0) as f32);
     }
     match p.get("insets") {
-        Some(Value::Number(n)) => cs.insets = n.as_f64().map(|v| [v.max(0.0); 4]),
+        Some(Value::Number(n)) => {
+            cs.insets = n.as_f64().map(|v| [v.max(0.0); 4]);
+            cs.inset_overrides = Default::default();
+        }
         Some(Value::Array(a)) if a.len() == 4 => {
             let v: Vec<f64> = a.iter().map(|x| x.as_f64().unwrap_or(0.0).max(0.0)).collect();
             cs.insets = Some([v[0], v[1], v[2], v[3]]);
+            cs.inset_overrides = Default::default();
         }
         _ => {}
     }
@@ -924,6 +1078,7 @@ fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, cmd: &str) 
     }
     if let Some(st) = stroke_param(p.get("stroke")) {
         cs.stroke = Some(st);
+        cs.strokes = Default::default();
     }
     if let Some(ps) = str_param(p, "paragraphStyle") {
         cs.paragraph_style = Some(ps.to_string());
@@ -960,15 +1115,11 @@ fn cell_style_create(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn cell_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.cell.apply", "missing name"))?.to_string();
-    let cs = s
-        .doc()?
-        .doc
-        .styles
-        .cell
-        .iter()
-        .find(|c| c.name == name)
-        .cloned()
-        .ok_or_else(|| bad("style.cell.apply", format!("no cell style `{name}`")))?;
+    let styles = &s.doc()?.doc.styles.cell;
+    if !styles.iter().any(|c| c.name == name) {
+        return Err(bad("style.cell.apply", format!("no cell style `{name}`")));
+    }
+    let cs = designcraft_doc::resolve_cell_style(styles, &name);
     let g = target(s, p, "style.cell.apply")?;
     edit_table(s, &g, "style.cell.apply", |t| {
         let owners = t.owners();
@@ -990,7 +1141,7 @@ fn cell_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Re-apply cell styles named in `names` to every cell using them (after a style edit).
 fn reapply_cell_styles(d: &mut Document, names: &[String]) {
-    let styles = d.styles.cell.clone();
+    let styles: Vec<_> = names.iter().map(|name| designcraft_doc::resolve_cell_style(&d.styles.cell, name)).collect();
     for sid in d.stories.keys().copied().collect::<Vec<_>>() {
         let Some(st) = d.story_mut(sid) else { continue };
         for t in st.tables.values_mut() {
@@ -1009,18 +1160,42 @@ fn reapply_cell_styles(d: &mut Document, names: &[String]) {
     }
 }
 
+/// Include descendants when editing an inherited style, with the resolver's depth limit.
+fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Vec<String> {
+    let styles: Vec<_> = styles.collect();
+    styles
+        .iter()
+        .filter(|(candidate, _)| {
+            let mut current = Some(*candidate);
+            for _ in 0..32 {
+                let Some(current_name) = current else { return false };
+                if current_name == name {
+                    return true;
+                }
+                current = styles.iter().find(|(n, _)| *n == current_name).and_then(|(_, base)| *base);
+            }
+            false
+        })
+        .map(|(name, _)| (*name).to_string())
+        .collect()
+}
+
 fn cell_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.cell.edit", "missing name"))?.to_string();
     let p = p.clone();
     s.edit(|d, _| {
         let cs = d.styles_mut().cell.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.cell.edit", format!("no cell style `{name}`")))?;
         cell_style_fields(cs, &p, "style.cell.edit")?;
-        reapply_cell_styles(d, std::slice::from_ref(&name));
+        let names = dependent_styles(&name, d.styles.cell.iter().map(|cs| (cs.name.as_str(), cs.based_on.as_deref())));
+        reapply_cell_styles(d, &names);
         ok()
     })
 }
 
 fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value) {
+    if let Some(v) = p.get("basedOn") {
+        ts.based_on = v.as_str().map(str::to_string);
+    }
     for (k, f) in [
         ("header", &mut ts.header),
         ("body", &mut ts.body),
@@ -1034,6 +1209,7 @@ fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value) {
     }
     if let Some(b) = stroke_param(p.get("border")) {
         ts.border = Some(b);
+        ts.borders = Default::default();
     }
     if let Some(a) = p.get("altRows").and_then(Value::as_object) {
         let n = |k: &str, d: u32| a.get(k).and_then(Value::as_u64).map_or(d, |v| v as u32);
@@ -1073,7 +1249,10 @@ fn table_style_create(s: &mut Session, p: &Value) -> Result<Value> {
 fn table_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.table.apply", "missing name"))?.to_string();
     let doc = &s.doc()?.doc;
-    let ts = doc.styles.table.iter().find(|c| c.name == name).cloned().ok_or_else(|| bad("style.table.apply", format!("no table style `{name}`")))?;
+    if !doc.styles.table.iter().any(|c| c.name == name) {
+        return Err(bad("style.table.apply", format!("no table style `{name}`")));
+    }
+    let ts = doc.styles.resolve_table_style(&name);
     let cells = doc.styles.cell.clone();
     let g = target(s, p, "style.table.apply")?;
     edit_table(s, &g, "style.table.apply", |t| {
@@ -1089,11 +1268,13 @@ fn table_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
         let ts =
             d.styles_mut().table.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.table.edit", format!("no table style `{name}`")))?;
         table_style_fields(ts, &p);
-        let (ts, cells) = (ts.clone(), d.styles.cell.clone());
+        let names = dependent_styles(&name, d.styles.table.iter().map(|ts| (ts.name.as_str(), ts.based_on.as_deref())));
+        let styles: Vec<_> = names.iter().map(|name| d.styles.resolve_table_style(name)).collect();
+        let cells = d.styles.cell.clone();
         for sid in d.stories.keys().copied().collect::<Vec<_>>() {
             let Some(st) = d.story_mut(sid) else { continue };
             for t in st.tables.values_mut() {
-                if t.style == name {
+                if let Some(ts) = styles.iter().find(|ts| ts.name == t.style) {
                     ts.apply_to(std::sync::Arc::make_mut(t), &cells);
                 }
             }
@@ -1315,6 +1496,105 @@ mod sort_tests {
 
     use crate::Session;
 
+    fn distribution_session() -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 700], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
+        for (row, height) in [(0, 25), (1, 40), (2, 80), (3, 30)] {
+            s.execute("table.setRowHeight", &json!({"row": row, "height": height, "mode": "exactly"})).unwrap();
+            s.execute("table.setCell", &json!({"row": row, "col": 0, "text": format!("row {row}")})).unwrap();
+        }
+        s
+    }
+
+    fn table(s: &Session) -> designcraft_doc::Table {
+        (**s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap()).clone()
+    }
+
+    #[test]
+    fn distribute_selected_rows_preserves_height_content_and_undo() {
+        let mut s = distribution_session();
+        s.execute("table.select", &json!({"rows": [1, 2], "what": "row"})).unwrap();
+        let before = table(&s);
+        let selection = s.doc().unwrap().selection.cells;
+        let result = s.execute("table.distributeRows", &json!({})).unwrap();
+        assert_eq!(result, json!({"rows": 2, "height": 60.0}));
+        let after = table(&s);
+        assert_eq!(after.rows.iter().map(|r| r.height).collect::<Vec<_>>(), [25.0, 60.0, 60.0, 30.0]);
+        assert_eq!(after.cells, before.cells);
+        assert_eq!(after.rows[0].kind, before.rows[0].kind);
+        assert_eq!(s.doc().unwrap().selection.cells, selection);
+        let st = s.doc().unwrap();
+        let sid = st.doc.stories.values().find(|st| !st.tables.is_empty()).unwrap().id;
+        let cs = s.cache.get(&st.doc, sid, None);
+        let heights: Vec<_> =
+            cs.frames.iter().flat_map(|f| &f.tables).flat_map(|f| &f.cells).filter(|c| c.col == 0).map(|c| c.rect.height()).collect();
+        assert_eq!(heights, [25.0, 60.0, 60.0, 30.0]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(table(&s), before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(table(&s), after);
+    }
+
+    #[test]
+    fn distribution_uses_content_grown_heights_and_explicit_table() {
+        let mut s = distribution_session();
+        s.execute("table.setRowHeight", &json!({"rows": [1, 2], "height": 3, "mode": "atLeast"})).unwrap();
+        s.execute("table.setCell", &json!({"row": 2, "col": 0, "text": "one\ntwo\nthree"})).unwrap();
+        let st = s.doc().unwrap();
+        let story = st.doc.stories.values().find(|st| !st.tables.is_empty()).unwrap();
+        let (sid, tid) = (story.id, *story.tables.keys().next().unwrap());
+        let cs = s.cache.get(&st.doc, sid, None);
+        let total: f64 = cs
+            .frames
+            .iter()
+            .flat_map(|f| &f.tables)
+            .flat_map(|f| &f.cells)
+            .filter(|c| c.col == 0 && (1..=2).contains(&c.row))
+            .map(|c| c.rect.height())
+            .sum();
+        let result = s.execute("table.distributeRows", &json!({"story": sid.0, "table": tid, "rows": [1, 2]})).unwrap();
+        assert!((result["height"].as_f64().unwrap() * 2.0 - total).abs() < 1e-6);
+        assert!(table(&s).rows[1].height > 3.0);
+        assert_eq!(table(&s).rows[1].mode, designcraft_doc::RowHeightMode::Exactly);
+    }
+
+    #[test]
+    fn distribution_keeps_column_spans_and_caret() {
+        let mut s = distribution_session();
+        s.execute("table.merge", &json!({"rows": [1, 1], "cols": [0, 1]})).unwrap();
+        let before = table(&s);
+        let caret = s.doc().unwrap().selection.text;
+        let result = s.execute("table.distributeRows", &json!({"rows": [2, 1]})).unwrap();
+        assert_eq!(result["height"], 60.0);
+        assert_eq!(table(&s).cell(1, 0).unwrap().col_span, 2);
+        assert_eq!(table(&s).cells, before.cells);
+        assert_eq!(s.doc().unwrap().selection.text, caret);
+    }
+
+    #[test]
+    fn distribution_rejects_merges_and_missing_rows_without_changes() {
+        let mut s = distribution_session();
+        s.execute("table.merge", &json!({"rows": [1, 2], "cols": [0, 0]})).unwrap();
+        let before = table(&s);
+        assert!(s.execute("table.distributeRows", &json!({"rows": [1, 2]})).is_err());
+        assert_eq!(table(&s), before);
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("table.setRowHeight", &json!({"rows": [0, 3], "height": 10000, "mode": "exactly"})).unwrap();
+        let before = table(&s);
+        assert!(s.execute("table.distributeRows", &json!({"rows": [0, 3]})).is_err());
+        assert_eq!(table(&s), before);
+        assert!(s.execute("table.distributeRows", &json!({"rows": [0, 99]})).is_err());
+        for params in
+            [json!({"rows": "all"}), json!({"rows": [0]}), json!({"rows": [-1, 2]}), json!({"row": 1.5}), json!({"table": "bad"}), json!([])]
+        {
+            assert!(s.execute("table.distributeRows", &params).is_err(), "{params}");
+            assert_eq!(table(&s), before);
+        }
+    }
+
     #[test]
     fn sort_body_rows_by_a_column() {
         let mut s = Session::new();
@@ -1434,5 +1714,47 @@ mod arabic_tests {
         let t = s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap();
         assert_eq!(t.ncols(), 2);
         assert_eq!(t.options.direction, designcraft_doc::TextDirection::RightToLeft);
+    }
+
+    /// A text frame whose paragraphs have a paragraph style with `direction`, with the story's
+    /// text selected. Returns the session and the story id.
+    fn styled_frame(direction: &str, text: &str) -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "A4", "pages": 1})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Dir", "para": {"direction": direction}})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [40, 330, 555, 420], "content": "text", "text": text, "caret": true})).unwrap();
+        s.execute("edit.selectAll", &json!({})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Dir"})).unwrap();
+        s.execute("edit.selectAll", &json!({})).unwrap();
+        (s, r["story"].as_u64().unwrap())
+    }
+
+    fn only_table(s: &Session) -> std::sync::Arc<designcraft_doc::Table> {
+        s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap().clone()
+    }
+
+    /// Text converted to a table in a right-to-left paragraph laid its columns out left to right
+    /// (#100): the first column belongs on the right.
+    #[test]
+    fn tables_take_the_direction_of_their_paragraph() {
+        use designcraft_doc::TextDirection::{LeftToRight, RightToLeft};
+        let (mut s, sid) = styled_frame("rightToLeft", "١\t٢\t٣\nأ\tب\tج");
+        s.execute("table.convertFromText", &json!({"columnSeparator": "tab"})).unwrap();
+        assert_eq!(only_table(&s).options.direction, RightToLeft);
+        let st = s.doc().unwrap();
+        let cs = s.cache.get(&st.doc, designcraft_doc::StoryId(sid), None);
+        let placed = &cs.frames[0].tables[0];
+        let (first, last) = (placed.cell(0, 0).unwrap().rect, placed.cell(0, 2).unwrap().rect);
+        assert!(first.x0 > last.x0, "cell ١ is the rightmost: {first:?} {last:?}");
+
+        let (mut s, _) = styled_frame("leftToRight", "1\t2\t3\na\tb\tc");
+        s.execute("table.convertFromText", &json!({"columnSeparator": "tab"})).unwrap();
+        assert_eq!(only_table(&s).options.direction, LeftToRight);
+
+        for (direction, expected) in [("rightToLeft", RightToLeft), ("leftToRight", LeftToRight)] {
+            let (mut s, _) = styled_frame(direction, "x");
+            s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+            assert_eq!(only_table(&s).options.direction, expected, "table.insert in a {direction} paragraph");
+        }
     }
 }

@@ -84,7 +84,7 @@ pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
             i
         }
     };
-    // XMP: the PDF/X identification schema.
+    // XMP: the PDF/X identification schema, and the trapping state that Info also states.
     if let Some(meta) = int_after(&cat, "/Metadata") {
         let r = object(pdf, meta)?;
         let body = &pdf[r];
@@ -96,7 +96,10 @@ pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
         if dict.contains("/Filter") {
             return None;
         }
-        let add = "<rdf:Description rdf:about=\"\" xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\"><pdfxid:GTS_PDFXVersion>PDF/X-4</pdfxid:GTS_PDFXVersion></rdf:Description>";
+        let add = concat!(
+            "<rdf:Description rdf:about=\"\" xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\"><pdfxid:GTS_PDFXVersion>PDF/X-4</pdfxid:GTS_PDFXVersion></rdf:Description>",
+            "<rdf:Description rdf:about=\"\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"><pdf:Trapped>False</pdf:Trapped></rdf:Description>"
+        );
         let xml = xml.replacen("</rdf:RDF>", &format!("{add}</rdf:RDF>"), 1);
         let dict = {
             let i = dict.find("/Length")?;
@@ -212,6 +215,9 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     }
     if !text.contains("pdfxid:GTS_PDFXVersion>PDF/X-4<") {
         issues.push("the XMP metadata doesn't name PDF/X-4".into());
+    }
+    if text.contains("/Interpolate true") {
+        issues.push("an image asks for interpolation".into());
     }
     if text.contains("/Encrypt") {
         issues.push("the file is encrypted".into());
@@ -538,12 +544,16 @@ mod tests {
 
     /// A one-page PDF 1.6 holding a CMYK image, as another app would hand over a placed graphic.
     fn pdf_with_cmyk_image() -> Vec<u8> {
+        pdf_with_image(krilla::image::Image::from_custom(CmykImage([0u8, 0, 0, 255].repeat(8)), false).unwrap())
+    }
+
+    /// A one-page PDF 1.6 holding `img`.
+    fn pdf_with_image(img: krilla::image::Image) -> Vec<u8> {
         let configuration = krilla::configure::ConfigurationBuilder::new().with_version(krilla::configure::PdfVersion::Pdf16).finish().unwrap();
         let mut pdf = krilla::Document::new_with(krilla::SerializeSettings { configuration, ..Default::default() });
         let size = krilla::geom::Size::from_wh(100.0, 50.0).unwrap();
         let mut page = pdf.start_page_with(krilla::page::PageSettings::new(size));
         let mut s = page.surface();
-        let img = krilla::image::Image::from_custom(CmykImage([0u8, 0, 0, 255].repeat(8)), false).unwrap();
         s.draw_image(img, size);
         s.finish();
         page.finish();
@@ -572,12 +582,13 @@ mod tests {
         out
     }
 
-    /// A placed RGB PNG went into PDF/X-4 as DeviceRGB under the CMYK output intent with no
-    /// warning (#35's fallback).
+    /// A DeviceRGB image under the CMYK output intent is reported. A placed PDF carries its
+    /// images into the export unchanged.
     #[test]
     fn device_rgb_image_is_flagged() {
         let mut d = Document::new(&NewDocument::default());
-        place(&mut d, "photo.png", png(false, None), (4.0, 2.0), (72.0, 72.0));
+        let photo = krilla::image::Image::from_png(png(false, None).into(), false).unwrap();
+        place(&mut d, "photo.pdf", pdf_with_image(photo), (100.0, 50.0), (72.0, 72.0));
         let r = x4(&d);
         assert_eq!(image_spaces(&r.bytes), ["DeviceRGB"]);
         let rgb: Vec<&String> = r.warnings.iter().filter(|w| w.contains("RGB")).collect();
@@ -664,5 +675,122 @@ mod tests {
         assert!(inline.iter().any(|i| i.starts_with("an RGB inline image on page 1")), "{inline:?}");
         let grey = check_pdfx4(&tiny_pdf("/Resources<<>>", "q BI /W 1 /H 1 /CS /G /BPC 8 /F /AHx ID 80> EI Q"));
         assert!(!grey.iter().any(|i| i.contains("RGB")), "{grey:?}");
+    }
+
+    /// A 4 × 2 RGB image in every raster path the exporter has, none with a profile. Each has
+    /// its own colour, so no two share an image XObject.
+    fn rgb_rasters() -> Vec<(&'static str, Vec<u8>)> {
+        let px = |c: [u8; 3]| c.repeat(8);
+        let encode = |f: &dyn Fn(&mut Vec<u8>)| {
+            let mut b = Vec::new();
+            f(&mut b);
+            b
+        };
+        let jpeg = encode(&|b| image::codecs::jpeg::JpegEncoder::new(b).write_image(&px([0, 0, 255]), 4, 2, ExtendedColorType::Rgb8).unwrap());
+        let gif = encode(&|b| image::codecs::gif::GifEncoder::new(b).encode(&[0u8, 255, 0, 255].repeat(8), 4, 2, ExtendedColorType::Rgba8).unwrap());
+        let webp =
+            encode(&|b| image::codecs::webp::WebPEncoder::new_lossless(b).write_image(&px([255, 255, 0]), 4, 2, ExtendedColorType::Rgb8).unwrap());
+        let tiff = encode(&|b| {
+            image::codecs::tiff::TiffEncoder::new(std::io::Cursor::new(b)).write_image(&px([0, 255, 255]), 4, 2, ExtendedColorType::Rgb8).unwrap()
+        });
+        vec![("photo.png", png(false, None)), ("photo.jpg", jpeg), ("photo.gif", gif), ("photo.webp", webp), ("photo.tif", tiff)]
+    }
+
+    /// The decoded `/ICCBased` profile of every image XObject that has one.
+    fn image_profiles(bytes: &[u8]) -> Vec<Vec<u8>> {
+        let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+        pdf.objects()
+            .into_iter()
+            .filter_map(|o| o.into_stream())
+            .filter(|s| s.dict().get::<Name>(b"Subtype").is_some_and(|n| n.as_str() == "Image"))
+            .filter_map(|s| match s.dict().get::<hayro_syntax::object::Array>(b"ColorSpace")?.iter::<Object>().nth(1)? {
+                Object::Stream(p) => Some(p.decoded().ok()?.into_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// PDF/X-4 wrote placed RGB images as DeviceRGB under the CMYK output intent, and only warned.
+    /// Each raster path now tags them with sRGB, re-encoded as JPEG or not. A plain export keeps
+    /// DeviceRGB.
+    #[test]
+    fn rgb_images_carry_srgb_in_pdfx4() {
+        let mut d = Document::new(&NewDocument::default());
+        for (i, (name, data)) in rgb_rasters().into_iter().enumerate() {
+            place(&mut d, name, data, (4.0, 2.0), (72.0, 72.0 + 60.0 * i as f64));
+        }
+        for compress_images in [false, true] {
+            let opts = PdfOptions { standard: Standard::PdfX4, compress_images, ..Default::default() };
+            let r = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+            assert!(r.warnings.is_empty(), "compress_images {compress_images}: {:?}", r.warnings);
+            assert_eq!(image_spaces(&r.bytes), ["[ICCBased"; 5], "compress_images {compress_images}");
+            let profiles = image_profiles(&r.bytes);
+            assert_eq!(profiles.len(), 5);
+            assert!(profiles.iter().all(|p| p == crate::export::SRGB_ICC), "every image carries the sRGB profile");
+        }
+        let plain = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+        assert_eq!(image_spaces(&plain.bytes), ["DeviceRGB"; 5]);
+    }
+
+    /// An image's own profile and a grey image are left as they are in PDF/X-4.
+    #[test]
+    fn own_profiles_and_grey_stay() {
+        let mut d = Document::new(&NewDocument::default());
+        place(&mut d, "grey.png", png(true, None), (4.0, 2.0), (72.0, 72.0));
+        place(&mut d, "tagged.png", png(false, Some(rgb_icc())), (4.0, 2.0), (72.0, 172.0));
+        let r = x4(&d);
+        assert_eq!(image_spaces(&r.bytes), ["DeviceGray", "[ICCBased"]);
+        assert_eq!(image_profiles(&r.bytes), [rgb_icc()]);
+    }
+
+    /// Every image constructor asked for interpolation, which PDF/X-4 and PDF/A forbid: PDF/A
+    /// exports with a placed image failed (#71). Plain exports keep it.
+    #[test]
+    fn no_interpolation_in_pdfx4_or_pdfa() {
+        let mut d = Document::new(&NewDocument::default());
+        for (i, (name, data)) in rgb_rasters().into_iter().enumerate() {
+            place(&mut d, name, data, (4.0, 2.0), (72.0, 72.0 + 60.0 * i as f64));
+        }
+        let interpolated = |b: &[u8]| String::from_utf8_lossy(b).matches("/Interpolate true").count();
+        for compress_images in [false, true] {
+            for standard in [Standard::PdfX4, Standard::PdfA2b] {
+                let opts = PdfOptions { standard, compress_images, ..Default::default() };
+                let r = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap_or_else(|e| panic!("{standard:?}: {e:?}"));
+                assert_eq!(interpolated(&r.bytes), 0, "{standard:?}, compress_images {compress_images}");
+            }
+            let plain = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images, ..Default::default() }).unwrap();
+            // The TIFF goes through the decoded fallback, which never asked for interpolation,
+            // unless it is re-encoded as JPEG.
+            assert_eq!(interpolated(&plain.bytes), if compress_images { 5 } else { 4 }, "compress_images {compress_images}");
+            assert!(check_pdfx4(&plain.bytes).iter().any(|i| i == "an image asks for interpolation"));
+        }
+        let tif = cmyk_tiff();
+        let mut c = Document::new(&NewDocument::default());
+        place(&mut c, "scan.tif", tif, (4.0, 2.0), (72.0, 72.0));
+        assert_eq!(interpolated(&x4(&c).bytes), 0, "CMYK TIFF");
+    }
+
+    /// A 4 × 2 CMYK TIFF, 100% K.
+    fn cmyk_tiff() -> Vec<u8> {
+        let mut b = Vec::new();
+        tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut b))
+            .unwrap()
+            .write_image::<tiff::encoder::colortype::CMYK8>(4, 2, &[0u8, 0, 0, 255].repeat(8))
+            .unwrap();
+        b
+    }
+
+    /// The XMP states the trapping state as the document information does.
+    #[test]
+    fn xmp_states_trapped() {
+        let r = x4(&Document::new(&NewDocument::default()));
+        let pdf = hayro_syntax::Pdf::new(r.bytes.clone()).unwrap();
+        let xref = pdf.xref();
+        let catalog = xref.get::<hayro_syntax::object::Dict>(xref.root_id()).unwrap();
+        let xmp = catalog.get::<hayro_syntax::object::Stream>(b"Metadata").unwrap().decoded().unwrap().into_owned();
+        let xmp = String::from_utf8_lossy(&xmp);
+        assert!(xmp.contains("xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"><pdf:Trapped>False</pdf:Trapped>"), "{xmp}");
+        assert!(String::from_utf8_lossy(&r.bytes).contains("/Trapped/False"));
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
     }
 }

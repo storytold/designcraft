@@ -326,6 +326,13 @@ pub struct TextFrameOptions {
     pub column_rule: bool,
     pub column_rule_weight: f64,
     pub column_rule_color: String,
+    /// 0..1.
+    pub column_rule_tint: f32,
+    /// Horizontal offset of each rule from the middle of its gutter.
+    pub column_rule_offset: f64,
+    /// The rule starts this far below the column top and ends this far above its bottom.
+    pub column_rule_top_inset: f64,
+    pub column_rule_bottom_inset: f64,
     /// Use a custom baseline grid for this frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_grid: Option<(f64, f64)>,
@@ -375,6 +382,10 @@ impl Default for TextFrameOptions {
             column_rule: false,
             column_rule_weight: 1.0,
             column_rule_color: designcraft_color::swatch::BLACK.into(),
+            column_rule_tint: 1.0,
+            column_rule_offset: 0.0,
+            column_rule_top_inset: 0.0,
+            column_rule_bottom_inset: 0.0,
             baseline_grid: None,
             path: None,
         }

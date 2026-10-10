@@ -147,6 +147,9 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         clip: Rect::ZERO,
         warnings,
         images: HashMap::new(),
+        images_by_content: ImageContentCache::default(),
+        #[cfg(test)]
+        image_conversions: 0,
         pdfs: HashMap::new(),
         version,
         too_new: Vec::new(),
@@ -154,6 +157,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: archival.is_some(),
+        interpolate: archival.is_none(),
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,
@@ -319,6 +323,9 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
         clip: Rect::ZERO,
         warnings: Vec::new(),
         images: HashMap::new(),
+        images_by_content: ImageContentCache::default(),
+        #[cfg(test)]
+        image_conversions: 0,
         pdfs: HashMap::new(),
         // krilla's default.
         version: PdfVersion::Pdf17,
@@ -327,6 +334,7 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: false,
+        interpolate: true,
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,
@@ -401,6 +409,32 @@ pub(crate) fn civil(t: i64) -> (i64, u8, u8, u8, u8, u8) {
     (year, month as u8, day as u8, (secs / 3600) as u8, (secs / 60 % 60) as u8, (secs % 60) as u8)
 }
 
+/// A successful conversion and its name-independent diagnostic. Replayed once for each asset.
+#[derive(Clone)]
+struct ConvertedImage {
+    image: Image,
+    warning: Option<&'static str>,
+}
+
+const CMYK_FALLBACK_WARNING: &str = "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
+
+#[cfg(not(test))]
+type ImageContentCache = HashMap<Arc<Vec<u8>>, ConvertedImage>;
+
+// Unit tests force collisions through the real cache path; production keeps RandomState.
+#[cfg(test)]
+type ImageContentCache = HashMap<Arc<Vec<u8>>, ConvertedImage, std::hash::BuildHasherDefault<ConstantImageHasher>>;
+#[cfg(test)]
+#[derive(Default)]
+struct ConstantImageHasher;
+#[cfg(test)]
+impl std::hash::Hasher for ConstantImageHasher {
+    fn finish(&self) -> u64 {
+        0
+    }
+    fn write(&mut self, _: &[u8]) {}
+}
+
 pub(crate) struct Exporter<'a> {
     pub doc: &'a Document,
     pub cache: &'a Cache,
@@ -409,6 +443,11 @@ pub(crate) struct Exporter<'a> {
     pub clip: Rect,
     pub warnings: Vec<String>,
     images: HashMap<AssetId, Option<Image>>,
+    // Immutable export options (including rgb_only) make bytes the complete conversion key.
+    // PDF-page/SVG/media routing precedes this path. Failures remain per AssetId.
+    images_by_content: ImageContentCache,
+    #[cfg(test)]
+    image_conversions: usize,
     /// Placed PDFs (embedded as vector pages).
     pdfs: HashMap<AssetId, Option<krilla::pdf::PdfDocument>>,
     /// The PDF version written; placed PDFs must not be newer.
@@ -421,6 +460,8 @@ pub(crate) struct Exporter<'a> {
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
     pub rgb_only: bool,
+    /// Ask viewers to smooth upscaled images (`/Interpolate`). Off for PDF/A, which forbids it.
+    interpolate: bool,
     /// Tagged PDF: the structure in reading order (stories gather their frames' content).
     tags: Vec<TagEntry>,
     story_tags: HashMap<designcraft_doc::StoryId, Vec<Identifier>>,
@@ -937,22 +978,43 @@ impl Exporter<'_> {
     }
 
     /// A swatch fill (solid or gradient) in the item's inner space. `None` for [None]/unknown.
-    fn fill_paint(&self, fill: &designcraft_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
+    fn fill_paint(&mut self, fill: &designcraft_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
         let (swatch, tint, angle) = (fill.swatch.as_str(), fill.tint, fill.gradient_angle);
         if let Some(g) = designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
+            let kind = g.kind;
+            let expanded = g.expanded_stops();
+            // A PDF shading needs one colour space. Midpoint expansion can introduce RGB even
+            // when every authored stop is CMYK/Gray; PDF/A can also change the output space.
+            let components = |c: &Color| match c {
+                Color::Cmyk { .. } if !self.rgb_only => 4,
+                Color::Gray { .. } => 1,
+                _ => 3,
+            };
+            let mixed = expanded.first().is_some_and(|(_, first, _)| expanded.iter().any(|(_, c, _)| components(c) != components(first)));
+            if mixed {
+                self.warn(format!("gradient '{swatch}': mixed color spaces converted to RGB (colour appearance and separations may change)"));
+            }
             let mut stops: Vec<Stop> = Vec::new();
             let mut last = 0.0f32;
-            for (o, c, a) in g.expanded_stops() {
+            for (o, c, a) in expanded {
                 let o = o.clamp(last, 1.0);
                 last = o;
-                stops.push(Stop { offset: norm(o), color: device(&c, self.rgb_only), opacity: norm(a) });
+                let color = if mixed && !matches!(c, Color::Rgb { .. }) {
+                    let [r, g, b] = c.to_rgb();
+                    rgb::Color::new(q(r), q(g), q(b)).into()
+                } else {
+                    // Preserve RGB values, including already-interpolated display RGB, and
+                    // leave every homogeneous gradient on its existing device-space path.
+                    device(&c, self.rgb_only)
+                };
+                stops.push(Stop { offset: norm(o), color, opacity: norm(a) });
             }
             if stops.is_empty() {
                 return None;
             }
             let c = bounds.center();
             let v = fill.gradient_vector;
-            return Some(match g.kind {
+            return Some(match kind {
                 GradientKind::Radial => {
                     let (c, r) = match v {
                         Some([x0, y0, x1, y1]) => (designcraft_geom::Point::new(x0, y0), Vec2::new(x1 - x0, y1 - y0).hypot()),
@@ -1166,26 +1228,49 @@ impl Exporter<'_> {
         }
         let asset = self.doc.assets.get(&id)?.clone();
         let data = asset.data.clone();
+        if let Some(converted) = self.images_by_content.get(&data).cloned() {
+            if let Some(warning) = converted.warning {
+                self.warn(format!("{}: {warning}", asset.name));
+            }
+            self.images.insert(id, Some(converted.image.clone()));
+            return Some(converted.image);
+        }
         let fmt = image::guess_format(&data).ok();
+        #[cfg(test)]
+        {
+            self.image_conversions += 1;
+        }
+        let mut warning = None;
+        let mut mode = RasterMode::for_standard(self.opts.standard);
+        mode.interpolate &= self.interpolate;
         let img = match fmt {
-            Some(image::ImageFormat::Jpeg) => Image::from_jpeg(data.clone().into(), true).ok(),
+            Some(image::ImageFormat::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
             // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
             // as four-colour black). PDF/A exports are RGB only.
-            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data) {
+            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
                 Some(img) => Some(img),
                 None => {
-                    self.warn(format!(
-                        "{}: converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)",
-                        asset.name
-                    ));
-                    lossless(&data, fmt)
+                    warning = Some(CMYK_FALLBACK_WARNING);
+                    self.warn(format!("{}: {CMYK_FALLBACK_WARNING}", asset.name));
+                    lossless(&data, fmt, mode)
                 }
             },
-            _ if self.opts.compress_images => recompress(&data).or_else(|| lossless(&data, fmt)),
-            _ => lossless(&data, fmt),
+            _ if self.opts.compress_images => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
+            _ => lossless(&data, fmt, mode),
         };
         if img.is_none() {
-            self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
+            if data.is_empty() {
+                // A linked file that wasn't found when the document was opened: nothing to decode.
+                let at = asset.link.as_deref().map(|l| format!(" ({l})")).unwrap_or_default();
+                self.warn(format!("image `{}` is missing{at} and was skipped", asset.name));
+            } else {
+                self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
+            }
+        }
+        if let Some(image) = &img {
+            // Share the original encoded payload. HashMap checks exact bytes after hashing,
+            // so collisions cannot merge distinct images or their diagnostics.
+            self.images_by_content.insert(data, ConvertedImage { image: image.clone(), warning });
         }
         self.images.insert(id, img.clone());
         img
@@ -1276,19 +1361,128 @@ fn relabel_pdf_header(data: &[u8], from: &[u8], to: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn lossless(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>) -> Option<Image> {
+/// The sRGB profile (ICC v2.1) that untagged RGB images carry in PDF/X-4.
+pub(crate) static SRGB_ICC: &[u8] = include_bytes!("../../../assets/icc/sRGB-v2-magic.icc");
+
+/// How raster images are written for the export's standard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RasterMode {
+    /// `/Interpolate true`: smoother upscaling in viewers. PDF/X-4 and PDF/A don't allow it.
+    interpolate: bool,
+    /// Give RGB images with no ICC profile of their own the sRGB profile: under PDF/X-4's CMYK
+    /// output intent, RGB must be colour-managed.
+    tag_rgb: bool,
+}
+
+impl RasterMode {
+    fn for_standard(standard: Standard) -> Self {
+        Self { interpolate: standard == Standard::None, tag_rgb: standard == Standard::PdfX4 }
+    }
+}
+
+/// The ICC profile embedded in an image file, if it has one.
+fn embedded_icc(data: &[u8]) -> Option<Vec<u8>> {
+    use image::ImageDecoder;
+    let mut dec = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?.into_decoder().ok()?;
+    dec.icc_profile().ok().flatten()
+}
+
+/// Whether an ICC profile describes RGB (its colour space signature, header bytes 16 to 20).
+fn is_rgb_icc(icc: &[u8]) -> bool {
+    icc.get(16..20) == Some(b"RGB ".as_slice())
+}
+
+/// A JPEG, passed through. With `tag_rgb`, a JPEG keeps its own profile, and one without gets
+/// sRGB. krilla uses a profile only when its channels match the JPEG's, so a grey or CMYK JPEG
+/// without a profile stays DeviceGray or DeviceCMYK.
+fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mode: RasterMode) -> Option<Image> {
+    if !mode.tag_rgb {
+        return Image::from_jpeg(data, mode.interpolate).ok();
+    }
+    let icc: krilla::Data = match icc() {
+        Some(own) => own.into(),
+        None => SRGB_ICC.into(),
+    };
+    Image::from_jpeg_with_icc(data, Some(icc), mode.interpolate).ok()
+}
+
+/// Whether krilla would write this PNG, GIF or WebP as untagged RGB: not grey, and no profile of
+/// its own.
+fn untagged_rgb(data: &[u8]) -> bool {
+    use image::ImageDecoder;
+    let Some(mut dec) = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok().and_then(|r| r.into_decoder().ok()) else {
+        return false;
+    };
+    let grey = matches!(dec.color_type(), image::ColorType::L8 | image::ColorType::La8 | image::ColorType::L16 | image::ColorType::La16);
+    !grey && dec.icc_profile().ok().flatten().is_none()
+}
+
+fn lossless(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>, mode: RasterMode) -> Option<Image> {
+    let i = mode.interpolate;
+    // krilla reads PNG, GIF and WebP lazily: a damaged file is accepted here and fails the whole
+    // export when the PDF is written. Decoding it first means it is skipped, like any other
+    // image that can't be decoded.
+    let rgba = designcraft_images::decode_rgba(data)?;
     let direct = match fmt {
-        Some(image::ImageFormat::Png) => Image::from_png(data.clone().into(), true).ok(),
-        Some(image::ImageFormat::Gif) => Image::from_gif(data.clone().into(), true).ok(),
-        Some(image::ImageFormat::WebP) => Image::from_webp(data.clone().into(), true).ok(),
+        Some(image::ImageFormat::Png | image::ImageFormat::Gif | image::ImageFormat::WebP) if mode.tag_rgb && untagged_rgb(data) => None,
+        Some(image::ImageFormat::Png) => Image::from_png(data.clone().into(), i).ok(),
+        Some(image::ImageFormat::Gif) => Image::from_gif(data.clone().into(), i).ok(),
+        Some(image::ImageFormat::WebP) => Image::from_webp(data.clone().into(), i).ok(),
         _ => None,
     };
     direct.or_else(|| {
-        // TIFF, BMP, PSD composites…
-        let rgba = designcraft_images::decode_rgba(data)?;
+        // TIFF, BMP, PSD composites… and, with `tag_rgb`, untagged RGB.
+        if mode.tag_rgb {
+            return SrgbImage::new(rgba).and_then(|img| Image::from_custom(img, i).ok());
+        }
         let (w, h) = rgba.dimensions();
         Some(Image::from_rgba8(rgba.into_raw(), w, h))
     })
+}
+
+/// An RGB raster tagged with the sRGB profile, for PDF/X-4.
+#[derive(Clone, Hash)]
+struct SrgbImage {
+    rgb: Arc<Vec<u8>>,
+    /// Only when some pixel is not opaque.
+    alpha: Option<Arc<Vec<u8>>>,
+    size: (u32, u32),
+}
+
+impl SrgbImage {
+    fn new(rgba: image::RgbaImage) -> Option<Self> {
+        let size = rgba.dimensions();
+        let pixels = usize::try_from(size.0).ok()?.checked_mul(usize::try_from(size.1).ok()?)?;
+        let mut rgb = Vec::with_capacity(pixels.checked_mul(3)?);
+        let mut alpha = Vec::with_capacity(pixels);
+        for p in rgba.pixels() {
+            rgb.extend_from_slice(&p.0[..3]);
+            alpha.push(p.0[3]);
+        }
+        let alpha = alpha.iter().any(|a| *a < 255).then(|| Arc::new(alpha));
+        Some(Self { rgb: Arc::new(rgb), alpha, size })
+    }
+}
+
+impl krilla::image::CustomImage for SrgbImage {
+    fn color_channel(&self) -> &[u8] {
+        &self.rgb
+    }
+    fn alpha_channel(&self) -> Option<&[u8]> {
+        self.alpha.as_deref().map(Vec::as_slice)
+    }
+    fn bits_per_component(&self) -> krilla::image::BitsPerComponent {
+        krilla::image::BitsPerComponent::Eight
+    }
+    fn size(&self) -> (u32, u32) {
+        self.size
+    }
+    fn icc_profile(&self) -> Option<&[u8]> {
+        Some(SRGB_ICC)
+    }
+    fn color_space(&self) -> krilla::image::ImageColorspace {
+        krilla::image::ImageColorspace::Rgb
+    }
 }
 
 /// A CMYK raster as a krilla image: its samples are written unchanged as DeviceCMYK, like a
@@ -1320,18 +1514,19 @@ impl krilla::image::CustomImage for CmykImage {
 }
 
 /// A CMYK TIFF as a DeviceCMYK image. `None` when it can't be read as CMYK.
-fn cmyk_tiff(data: &[u8]) -> Option<Image> {
+fn cmyk_tiff(data: &[u8], mode: RasterMode) -> Option<Image> {
     let r = designcraft_images::decode_cmyk_tiff(data)?;
     // krilla panics when the channel lengths don't match the size.
     let pixels = usize::try_from(r.width).ok()?.checked_mul(usize::try_from(r.height).ok()?)?;
     if r.cmyk.len() != pixels.checked_mul(4)? || r.alpha.as_ref().is_some_and(|a| a.len() != pixels) {
         return None;
     }
-    Image::from_custom(CmykImage(Arc::new(r)), true).ok()
+    Image::from_custom(CmykImage(Arc::new(r)), mode.interpolate).ok()
 }
 
 /// Opaque raster → JPEG (quality 90). `None` when the image has transparency or can't be decoded.
-fn recompress(data: &[u8]) -> Option<Image> {
+/// With `tag_rgb`, the JPEG keeps the source's RGB profile, or gets sRGB.
+fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
     let img = image::load_from_memory(data).ok()?;
     if img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255) {
         return None;
@@ -1340,5 +1535,220 @@ fn recompress(data: &[u8]) -> Option<Image> {
     let mut buf = Vec::new();
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
     image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
-    Image::from_jpeg(buf.into(), true).ok()
+    jpeg(buf.into(), || embedded_icc(data).filter(|p| is_rgb_icc(p)), mode)
+}
+
+#[cfg(test)]
+mod image_content_cache_tests {
+    use super::*;
+    use designcraft_doc::Asset;
+
+    fn png(w: u32, h: u32, color: [u8; 4]) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(w, h, image::Rgba(color));
+        let mut bytes = Vec::new();
+        image.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+        bytes
+    }
+    fn asset(doc: &mut Document, bytes: Vec<u8>, name: &str) -> AssetId {
+        let id = AssetId(doc.alloc());
+        doc.assets.insert(
+            id,
+            Arc::new(Asset { id, name: name.into(), mime: "image/png".into(), link: None, data: Arc::new(bytes), pixels: None, page: 0 }),
+        );
+        id
+    }
+    fn exporter<'a>(doc: &'a Document, cache: &'a Cache, opts: &'a PdfOptions) -> Exporter<'a> {
+        Exporter {
+            doc,
+            cache,
+            opts,
+            clip: Rect::ZERO,
+            warnings: Vec::new(),
+            images: HashMap::new(),
+            images_by_content: ImageContentCache::default(),
+            image_conversions: 0,
+            pdfs: HashMap::new(),
+            version: PdfVersion::Pdf17,
+            too_new: Vec::new(),
+            svgs: HashMap::new(),
+            fonts: HashMap::new(),
+            reverse_cmaps: HashMap::new(),
+            rgb_only: false,
+            interpolate: true,
+            tags: Vec::new(),
+            story_tags: HashMap::new(),
+            tag_story: None,
+            para_tags: HashMap::new(),
+        }
+    }
+    #[test]
+    fn exact_bytes_reuse_conversion_under_real_hash_collisions() {
+        use std::hash::{BuildHasher, Hasher};
+        let mut d = Document::new(&Default::default());
+        let red = png(2, 1, [255, 0, 0, 255]);
+        let blue = png(1, 2, [0, 0, 255, 128]);
+        let a1 = asset(&mut d, red.clone(), "a1");
+        let b1 = asset(&mut d, blue.clone(), "b1");
+        let a2 = asset(&mut d, red, "a2");
+        let b2 = asset(&mut d, blue, "b2");
+        assert!(!Arc::ptr_eq(&d.assets[&a1].data, &d.assets[&a2].data));
+        let cache = Cache::new();
+        let opts = PdfOptions::default();
+        let mut ex = exporter(&d, &cache, &opts);
+        let mut h1 = ex.images_by_content.hasher().build_hasher();
+        h1.write(&d.assets[&a1].data);
+        let mut h2 = ex.images_by_content.hasher().build_hasher();
+        h2.write(&d.assets[&b1].data);
+        assert_eq!(h1.finish(), h2.finish());
+        assert_ne!(d.assets[&a1].data, d.assets[&b1].data);
+        for (id, count, size) in [(a1, 1, (2, 1)), (b1, 2, (1, 2)), (a2, 2, (2, 1)), (a1, 2, (2, 1)), (b2, 2, (1, 2))] {
+            assert_eq!(ex.load_image(id).unwrap().size(), size);
+            assert_eq!(ex.image_conversions, count, "count actual converter executions, not krilla resource equality");
+        }
+        assert_eq!(ex.images.len(), 4);
+        assert_eq!(ex.images_by_content.len(), 2);
+        let first_key = ex.images_by_content.keys().find(|key| key.as_slice() == d.assets[&a1].data.as_slice()).unwrap();
+        assert!(Arc::ptr_eq(first_key, &d.assets[&a1].data), "cache keys share the original encoded payload");
+        ex.images_by_content.clear();
+        assert_eq!(ex.load_image(a1).unwrap().size(), (2, 1));
+        assert_eq!(ex.image_conversions, 2, "the AssetId cache remains the first lookup");
+        assert!(ex.images_by_content.is_empty());
+    }
+    #[test]
+    fn successful_content_cache_does_not_suppress_failure_names() {
+        let mut d = Document::new(&Default::default());
+        let a = asset(&mut d, vec![0, 1, 2, 3], "broken-a.png");
+        let b = asset(&mut d, vec![0, 1, 2, 3], "broken-b.png");
+        let cache = Cache::new();
+        let opts = PdfOptions::default();
+        let mut ex = exporter(&d, &cache, &opts);
+        assert!(ex.load_image(a).is_none());
+        assert!(ex.load_image(b).is_none());
+        assert!(ex.load_image(a).is_none());
+        assert_eq!(ex.image_conversions, 2);
+        assert!(ex.images_by_content.is_empty());
+        assert_eq!(ex.warnings.len(), 2);
+        assert!(ex.warnings[0].contains("broken-a.png"));
+        assert!(ex.warnings[1].contains("broken-b.png"));
+    }
+    #[test]
+    fn content_cache_is_scoped_to_each_immutable_options_context() {
+        let mut d = Document::new(&Default::default());
+        let data = png(2, 2, [240, 20, 30, 255]);
+        let a = asset(&mut d, data.clone(), "a");
+        let b = asset(&mut d, data, "b");
+        let cache = Cache::new();
+        for compress_images in [false, true, false] {
+            let opts = PdfOptions { compress_images, ..Default::default() };
+            let mut ex = exporter(&d, &cache, &opts);
+            assert!(ex.load_image(a).is_some());
+            assert!(ex.load_image(b).is_some());
+            assert_eq!(ex.image_conversions, 1);
+            assert_eq!(ex.images_by_content.len(), 1);
+        }
+    }
+
+    #[test]
+    fn successful_cmyk_fallback_replays_each_asset_name_once_and_converts_once() {
+        let bytes = crate::image_fixtures::cmyk_tiff(None, true);
+        assert!(designcraft_images::is_cmyk_tiff(&bytes));
+        assert!(designcraft_images::decode_cmyk_tiff(&bytes).is_none());
+        assert!(designcraft_images::decode_rgba(&bytes).is_some());
+        let mut d = Document::new(&Default::default());
+        let a = asset(&mut d, bytes.clone(), "ink-a.tif");
+        let b = asset(&mut d, bytes, "ink-b.tif");
+        let cache = Cache::new();
+        for compress_images in [false, true] {
+            let opts = PdfOptions { compress_images, ..Default::default() };
+            let mut ex = exporter(&d, &cache, &opts);
+            for id in [a, b, a, b] {
+                assert_eq!(ex.load_image(id).unwrap().size(), (2, 1));
+            }
+            assert_eq!(ex.image_conversions, 1);
+            assert_eq!(ex.images_by_content.len(), 1);
+            assert_eq!(ex.warnings, [format!("ink-a.tif: {CMYK_FALLBACK_WARNING}"), format!("ink-b.tif: {CMYK_FALLBACK_WARNING}")]);
+        }
+    }
+
+    #[test]
+    fn cmyk_alpha_and_rgb_only_context_keep_conversion_counts_and_failures() {
+        let cache = Cache::new();
+        for alpha in [None, Some(2), Some(1)] {
+            let mut d = Document::new(&Default::default());
+            let bytes = crate::image_fixtures::cmyk_tiff(alpha, false);
+            let a = asset(&mut d, bytes.clone(), "a.tif");
+            let b = asset(&mut d, bytes, "b.tif");
+            for standard in [Standard::None, Standard::PdfA2b, Standard::PdfX4, Standard::PdfA2b, Standard::None] {
+                let opts = PdfOptions { standard, ..Default::default() };
+                let mut ex = exporter(&d, &cache, &opts);
+                ex.rgb_only = standard == Standard::PdfA2b;
+                // The pinned image decoder does not support CMYKA as RGB. Associated alpha
+                // is also rejected by the ink-preserving path: retain both failure names.
+                let succeeds = alpha.is_none() || (alpha == Some(2) && !ex.rgb_only);
+                let first = ex.load_image(a);
+                assert_eq!(first.is_some(), succeeds, "{alpha:?} {standard:?}");
+                if alpha.is_none() {
+                    let (space, samples) = image_color_samples(first.unwrap());
+                    assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" });
+                    assert_eq!(samples, if ex.rgb_only { vec![0, 0, 0, 255, 0, 0] } else { crate::image_fixtures::INKS.to_vec() });
+                }
+                assert_eq!(ex.load_image(b).is_some(), succeeds, "{alpha:?} {standard:?}");
+                assert_eq!(ex.load_image(a).is_some(), succeeds);
+                assert_eq!(ex.image_conversions, if succeeds { 1 } else { 2 });
+                assert_eq!(ex.images_by_content.len(), usize::from(succeeds));
+                if succeeds {
+                    assert!(ex.warnings.is_empty());
+                } else {
+                    for name in ["a.tif", "b.tif"] {
+                        assert!(ex.warnings.contains(&format!("image `{name}` could not be decoded and was skipped")));
+                        assert_eq!(ex.warnings.contains(&format!("{name}: {CMYK_FALLBACK_WARNING}")), !ex.rgb_only);
+                    }
+                }
+            }
+        }
+    }
+
+    // Serialize the converted raster without an archival validator so the RGB-only pixel
+    // contract stays independent of main's existing PDF/A interpolation validation failure.
+    fn image_color_samples(image: Image) -> (String, Vec<u8>) {
+        use hayro_syntax::object::Name;
+        let mut pdf = krilla::Document::new();
+        let size = Size::from_wh(20.0, 20.0).unwrap();
+        let mut page = pdf.start_page_with(PageSettings::new(size));
+        let mut surface = page.surface();
+        surface.draw_image(image, size);
+        surface.finish();
+        page.finish();
+        let bytes = pdf.finish().unwrap();
+        let pdf = hayro_syntax::Pdf::new(bytes).unwrap();
+        let stream = pdf
+            .objects()
+            .into_iter()
+            .filter_map(|o| o.into_stream())
+            .find(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+            .unwrap();
+        (stream.dict().get::<Name>("ColorSpace").unwrap().as_str().to_owned(), stream.decoded().unwrap().into_owned())
+    }
+
+    #[test]
+    fn content_cache_owns_only_existing_payloads_and_drops_with_exporter() {
+        let mut d = Document::new(&Default::default());
+        let bytes = png(2, 1, [20, 30, 40, 255]);
+        let a = asset(&mut d, bytes.clone(), "a.png");
+        let b = asset(&mut d, bytes, "b.png");
+        let payload = Arc::downgrade(&d.assets[&a].data);
+        let duplicate = Arc::downgrade(&d.assets[&b].data);
+        let cache = Cache::new();
+        let opts = PdfOptions::default();
+        let mut ex = exporter(&d, &cache, &opts);
+        assert!(ex.load_image(a).is_some());
+        assert!(ex.load_image(b).is_some());
+        assert_eq!(duplicate.strong_count(), 1, "a content hit must not retain the second encoded allocation");
+        let key = ex.images_by_content.keys().next().unwrap();
+        assert!(Arc::ptr_eq(key, &d.assets[&a].data));
+        drop(ex);
+        drop(d);
+        assert!(payload.upgrade().is_none(), "no converted image or encoded key outlives this exporter");
+        assert!(duplicate.upgrade().is_none());
+    }
 }

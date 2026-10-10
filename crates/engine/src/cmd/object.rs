@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use designcraft_color::BlendMode;
 use designcraft_doc::{
     Content, Document, Fill, Item, ItemId, ParaFormat, Selection, Shape, SpreadRef, Story, StoryId, Stroke, TextFrame, TextFrameOptions, TextSel,
 };
@@ -219,7 +220,16 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("object.opacity", "Opacity", [], None, "{opacity: 0..1, blend?: normal|multiply|…, ids?}", has_selection, |s, p| {
             let o = f64_or(p, "opacity", 1.0).clamp(0.0, 1.0) as f32;
-            let blend = p.get("blend").and_then(|b| serde_json::from_value(b.clone()).ok());
+            // `BlendMode::parse` takes the documented lowercase forms (`multiply`), the panel
+            // labels (`Color Burn`) and the serialized names (`Multiply`). An unknown value is
+            // an error rather than a silent no-op that still reports `changed` (#260).
+            let blend = match p.get("blend") {
+                None | Some(Value::Null) => None,
+                Some(v) => {
+                    let raw = v.as_str().ok_or_else(|| bad("object.opacity", "blend must be a string"))?;
+                    Some(BlendMode::parse(raw).ok_or_else(|| bad("object.opacity", format!("unknown blend mode `{raw}`")))?)
+                }
+            };
             set_flag(
                 s,
                 p,
@@ -479,7 +489,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns?, gutter?, inset?: number|[t,l,b,r], verticalJustification?: top|center|bottom|justify, firstBaseline?, autoSize?, ignoreWrap?, balanceColumns?, vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
+            "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, firstBaseline?, autoSize?, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
             has_selection,
             text_frame_options
         ),
@@ -1379,6 +1389,7 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
                 ("text", Some(Content::Unassigned | Content::Graphic(_))) => {
                     let sid = StoryId(d.alloc());
                     let mut st = Story::new(sid);
+                    st.direction = d.new_story_direction();
                     st.frames.push(*id);
                     d.stories.insert(sid, Arc::new(st));
                     if let Some(it) = d.item_mut(*id) {
@@ -1410,6 +1421,7 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
     let mut ids = targets(s, p)?;
     if ids.is_empty()
@@ -1417,6 +1429,23 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     {
         ids = st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default();
     }
+    let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(x) if x.is_finite() && (lo..=hi).contains(&x) => Ok(Some(x)),
+            _ => Err(bad(ID, format!("{key} must be {what} from {lo} to {hi}, not {v}"))),
+        },
+    };
+    let rule_weight = ranged("columnRuleWeight", 0.0, 1000.0, "a number of points")?;
+    let rule_tint = ranged("columnRuleTint", 0.0, 1.0, "a tint")?;
+    let rule_offset = ranged("columnRuleOffset", -1440.0, 1440.0, "a number of points")?;
+    let rule_top = ranged("columnRuleTopInset", -1440.0, 1440.0, "a number of points")?;
+    let rule_bottom = ranged("columnRuleBottomInset", -1440.0, 1440.0, "a number of points")?;
+    let rule_color = match p.get("columnRuleColor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(c)) if st.doc.swatch(c).is_some() => Some(c.clone()),
+        Some(v) => return Err(bad(ID, format!("no swatch {v}"))),
+    };
     let p = p.clone();
     s.edit(|d, _| {
         for id in &ids {
@@ -1431,8 +1460,12 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             match p.get("inset") {
                 Some(Value::Number(n)) => o.inset = [n.as_f64().unwrap_or(0.0); 4],
                 Some(v @ Value::Array(_)) => {
-                    if let Ok(a) = serde_json::from_value(v.clone()) {
-                        o.inset = a;
+                    if let Ok(a) = serde_json::from_value::<[Option<f64>; 4]>(v.clone()) {
+                        for (side, v) in o.inset.iter_mut().zip(a) {
+                            if let Some(v) = v {
+                                *side = v;
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1455,6 +1488,24 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(v) = p.get("columnRule").and_then(Value::as_bool) {
                 o.column_rule = v;
+            }
+            if let Some(w) = rule_weight {
+                o.column_rule_weight = w;
+            }
+            if let Some(c) = &rule_color {
+                o.column_rule_color = c.clone();
+            }
+            if let Some(t) = rule_tint {
+                o.column_rule_tint = t as f32;
+            }
+            if let Some(v) = rule_offset {
+                o.column_rule_offset = v;
+            }
+            if let Some(v) = rule_top {
+                o.column_rule_top_inset = v;
+            }
+            if let Some(v) = rule_bottom {
+                o.column_rule_bottom_inset = v;
             }
         }
         // Story direction belongs to the story: every frame of the thread turns.
@@ -1918,7 +1969,7 @@ fn step_and_repeat(s: &mut Session, p: &Value) -> Result<Value> {
     let cols = p.get("columns").and_then(Value::as_u64).map(|v| v as usize);
     let count = p.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 1000) as usize;
     let offsets: Vec<Vec2> = match (rows, cols) {
-        (Some(r), Some(c)) if r * c <= 1000 => (0..r)
+        (Some(r), Some(c)) if r.checked_mul(c).is_some_and(|n| n <= 1000) => (0..r)
             .flat_map(|i| (0..c).map(move |j| (i, j)))
             .filter(|&(i, j)| i + j > 0)
             .map(|(i, j)| Vec2::new(j as f64 * dx, i as f64 * dy))
@@ -2419,5 +2470,120 @@ mod named_target_tests {
         assert_eq!(columns(&s), Some(2));
         // Commands documented with `ids` honour `id` too.
         assert_eq!(s.execute("conveyor.collect", &json!({"id": r["id"]})).unwrap()["count"], 1);
+    }
+}
+
+#[cfg(test)]
+mod column_rule_tests {
+    use super::*;
+
+    #[test]
+    fn column_rules_set_validate_undo_and_inspect() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let opts = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": 3, "inset": [1, 2, 3, 4]})).unwrap();
+        let before = opts(&s);
+        // An unknown swatch or a bad weight is an error and changes nothing.
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRule": true, "columnRuleColor": "Mauve"})).unwrap_err();
+        assert!(e.to_string().contains("Mauve"), "{e}");
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleWeight": -1})).is_err());
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleTint": 2})).is_err());
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleTopInset": "x"})).is_err());
+        assert_eq!(opts(&s), before);
+        s.execute(
+            "object.textFrameOptions",
+            &json!({"ids": [id.0], "columnRule": true, "columnRuleWeight": 0.5, "columnRuleColor": "C=100 M=0 Y=0 K=0", "columnRuleTint": 0.5,
+                "columnRuleOffset": -2, "columnRuleTopInset": 4, "columnRuleBottomInset": 6}),
+        )
+        .unwrap();
+        let o = opts(&s);
+        assert!(o.column_rule && o.column_rule_weight == 0.5 && o.column_rule_color == "C=100 M=0 Y=0 K=0");
+        assert_eq!(o.inset, [1.0, 2.0, 3.0, 4.0], "untouched options stay");
+        assert_eq!((o.column_rule_tint, o.column_rule_offset, o.column_rule_top_inset, o.column_rule_bottom_inset), (0.5, -2.0, 4.0, 6.0));
+        let item = s.execute("document.inspect", &json!({})).unwrap()["spreads"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == json!(id.0))
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            (&item["columnRule"], &item["columnRuleWeight"], &item["columnRuleColor"]),
+            (&json!(true), &json!(0.5), &json!("C=100 M=0 Y=0 K=0"))
+        );
+        assert_eq!(
+            (&item["columnRuleTint"], &item["columnRuleOffset"], &item["columnRuleTopInset"], &item["columnRuleBottomInset"]),
+            (&json!(0.5), &json!(-2.0), &json!(4.0), &json!(6.0))
+        );
+        // One undo step.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(opts(&s), before);
+    }
+}
+
+#[cfg(test)]
+mod blend_mode_tests {
+    use designcraft_color::BlendMode;
+
+    use super::*;
+
+    /// `object.opacity` documents `blend?: normal|multiply|…`, but deserializing the value
+    /// against the enum only accepted the PascalCase variant names, so the documented
+    /// lowercase forms were silently dropped: the command reported `changed: 1` while the
+    /// stored blend stayed as it was (#260).
+    #[test]
+    fn lowercase_documented_blend_modes_apply() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let blend = |s: &Session| s.doc().unwrap().doc.item(id).map(|i| i.blend);
+
+        for (given, want) in [
+            ("multiply", BlendMode::Multiply),
+            ("screen", BlendMode::Screen),
+            ("MULTIPLY", BlendMode::Multiply),
+            ("Color Burn", BlendMode::ColorBurn),
+            ("color-burn", BlendMode::ColorBurn),
+            ("soft_light", BlendMode::SoftLight),
+            ("normal", BlendMode::Normal),
+        ] {
+            let out = s.execute("object.opacity", &json!({"opacity": 1, "blend": given})).unwrap();
+            assert_eq!(out["changed"], 1, "{given}");
+            assert_eq!(blend(&s), Some(want), "blend mode {given:?} must be applied");
+        }
+    }
+
+    /// The PascalCase names keep working, so the Properties panel's own submissions are
+    /// unaffected.
+    #[test]
+    fn pascal_case_blend_modes_still_apply() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        s.execute("object.opacity", &json!({"opacity": 0.5, "blend": "Multiply"})).unwrap();
+        let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
+        assert_eq!(it.blend, BlendMode::Multiply);
+        assert!((it.opacity - 0.5).abs() < 1e-6, "opacity must still be set");
+    }
+
+    /// A blend mode the command doesn't know is an error, not a silent success that leaves
+    /// the previous appearance in place.
+    #[test]
+    fn an_unknown_blend_mode_is_an_error() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        s.execute("object.opacity", &json!({"opacity": 1, "blend": "Multiply"})).unwrap();
+        let e = s.execute("object.opacity", &json!({"opacity": 1, "blend": "sparkle"})).unwrap_err().to_string();
+        assert!(e.contains("sparkle") && e.contains("blend"), "{e}");
+        let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
+        assert_eq!(it.blend, BlendMode::Multiply, "a rejected value changes nothing");
+        assert_eq!(it.opacity, 1.0);
     }
 }
