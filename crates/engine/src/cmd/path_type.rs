@@ -54,6 +54,7 @@ fn on_path(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let sid = StoryId(d.alloc());
         let mut st = Story::with_text(sid, &text, Default::default());
+        st.direction = d.new_story_direction();
         st.frames = vec![id];
         d.stories.insert(sid, std::sync::Arc::new(st));
         let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;

@@ -39,7 +39,7 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
     let io = |e: std::io::Error| EpubError(e.to_string());
     let zerr = |e: zip::result::ZipError| EpubError(e.to_string());
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let lang = &opts.language;
+    let lang = language_tag(&opts.language);
     let id = opts.identifier.clone().unwrap_or_else(|| format!("urn:designcraft:{}", slug(&title)));
     let mut manifest = String::from("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n");
     let mut spine = String::new();
@@ -50,8 +50,8 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
         let (w, h) = (p.width.round().max(1.0) as u32, p.height.round().max(1.0) as u32);
         let xhtml = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"{lang}\" lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width={w}, height={h}\"/><title>{} — {n}</title>\n<style>body{{margin:0;width:{w}px;height:{h}px;position:relative}} img{{position:absolute;left:0;top:0;width:{w}px;height:{h}px}} .t{{position:absolute;left:0;top:0;width:{w}px;color:transparent;font-size:1px;overflow:hidden}}</style></head>\n<body><img src=\"pages/p{n}.png\" alt=\"\"/><div class=\"t\">{}</div></body>\n</html>\n",
-            esc(&title),
-            esc(&p.text).replace('\n', "<br/>")
+            xml_text(&title),
+            story_markup(&p.text).replace('\n', "<br/>")
         );
         let _ = writeln!(
             manifest,
@@ -66,13 +66,13 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
     let (vw, vh) = pages.first().map_or((612, 792), |p| (p.width.round() as u32, p.height.round() as u32));
     let nav = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title></head>\n<body><nav epub:type=\"page-list\" id=\"toc\"><h1>Pages</h1><ol>{nav_items}</ol></nav></body>\n</html>\n",
-        esc(&title)
+        xml_text(&title)
     );
-    let author = opts.author.as_deref().map(|a| format!("<dc:creator>{}</dc:creator>", esc(a))).unwrap_or_default();
+    let author = opts.author.as_deref().map(|a| format!("<dc:creator>{}</dc:creator>", xml_text(a))).unwrap_or_default();
     let opf = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\" xml:lang=\"{lang}\" prefix=\"rendition: http://www.idpf.org/vocab/rendition/#\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dc:identifier id=\"bookid\">{}</dc:identifier>\n<dc:title>{}</dc:title>\n<dc:language>{lang}</dc:language>{author}\n<meta property=\"dcterms:modified\">2026-01-01T00:00:00Z</meta>\n<meta property=\"rendition:layout\">pre-paginated</meta>\n<meta property=\"rendition:spread\">auto</meta>\n<meta name=\"original-resolution\" content=\"{vw}x{vh}\"/>\n<meta name=\"generator\" content=\"DesignCraft\"/>\n</metadata>\n<manifest>\n{manifest}</manifest>\n<spine>\n{spine}</spine>\n</package>\n",
-        esc(&id),
-        esc(&title)
+        xml_text(&id),
+        xml_text(&title)
     );
     let container = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\"><rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles></container>\n";
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -114,7 +114,11 @@ impl std::fmt::Display for EpubError {
 }
 impl std::error::Error for EpubError {}
 
-fn esc(s: &str) -> String {
+fn valid_xml_char(c: char) -> bool {
+    matches!(c, '\u{9}' | '\u{A}' | '\u{D}' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
+}
+
+fn escape_markup(s: &str, attr: bool, story_breaks: bool) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -122,13 +126,79 @@ fn esc(s: &str) -> String {
             '<' => o.push_str("&lt;"),
             '>' => o.push_str("&gt;"),
             '"' => o.push_str("&quot;"),
+            '\'' if attr => o.push_str("&apos;"),
             '\u{E000}'..='\u{E1FF}' => {}
-            '\u{2028}' => o.push_str("<br/>"),
+            '\u{2028}' if story_breaks => o.push_str("<br/>"),
             '\u{AD}' => o.push_str("&#173;"),
-            c => o.push(c),
+            c if valid_xml_char(c) => o.push(c),
+            _ => {}
         }
     }
     o
+}
+
+fn xml_text(s: &str) -> String {
+    escape_markup(s, false, false)
+}
+
+fn xml_attr(s: &str) -> String {
+    escape_markup(s, true, false)
+}
+
+/// Story content permits the document's discretionary line-separator marker to become markup.
+/// Other contexts always serialize it as ordinary text.
+fn story_markup(s: &str) -> String {
+    escape_markup(s, false, true)
+}
+
+/// A conservative BCP 47 subset suitable for both HTML and EPUB language attributes.
+fn language_tag(s: &str) -> &str {
+    if s.len() > 63 {
+        return "und";
+    }
+    let mut parts = s.split('-');
+    let Some(first) = parts.next() else { return "und" };
+    if !(2..=8).contains(&first.len()) || !first.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return "und";
+    }
+    if parts.any(|p| p.is_empty() || p.len() > 8 || !p.bytes().all(|b| b.is_ascii_alphanumeric())) {
+        return "und";
+    }
+    s
+}
+
+/// Return a MIME type that is safe to place in an attribute and a data URL. Parameters are omitted
+/// because exported assets are always represented as their original binary bytes.
+fn safe_mime(mime: &str) -> &str {
+    fn token(s: &str) -> bool {
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'+' | b'-'))
+    }
+
+    let mime = mime.split_once(';').map_or(mime, |(essence, _)| essence).trim();
+    if mime.len() <= 127
+        && let Some((kind, subtype)) = mime.split_once('/')
+        && !subtype.contains('/')
+        && token(kind)
+        && token(subtype)
+    {
+        mime
+    } else {
+        "image/png"
+    }
+}
+
+/// Quote arbitrary document metadata as one CSS string token. Escaping `<` is important because
+/// HTML parses the contents of a `style` element before CSS parsing sees it.
+fn css_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '"' | '\\' | '<' | '>' | '&') || c.is_control() {
+            let _ = write!(out, "\\{:x} ", c as u32);
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// CSS class name for a style name.
@@ -177,7 +247,7 @@ fn hex(doc: &Document, swatch: &str, tint: f32) -> Option<String> {
 }
 
 fn char_css(doc: &Document, c: &CharProps, base_size: f64, out: &mut String) {
-    let _ = write!(out, "font-family: \"{}\", serif; ", c.font_family);
+    let _ = write!(out, "font-family: \"{}\", serif; ", css_string(&c.font_family));
     let st = c.font_style.to_lowercase();
     if st.contains("bold") {
         out.push_str("font-weight: bold; ");
@@ -330,7 +400,7 @@ pub fn story_html(doc: &Document, sid: StoryId) -> String {
             et.map(|e| e.class.clone()).filter(|c| !c.is_empty()).or_else(|| pc.get(pf.style.as_str()).cloned()).unwrap_or_else(|| slug(&pf.style));
         let text_empty = st.text[r.clone()].trim().is_empty();
         let rtl = doc.styles.resolve_para(pf).0.direction == designcraft_doc::TextDirection::RightToLeft;
-        let _ = write!(out, "<{tag} class=\"{class}\"{}>", if rtl { " dir=\"rtl\"" } else { "" });
+        let _ = write!(out, "<{tag} class=\"{}\"{}>", xml_attr(&class), if rtl { " dir=\"rtl\"" } else { "" });
         if text_empty {
             out.push_str("&#160;");
         }
@@ -353,9 +423,9 @@ pub fn story_html(doc: &Document, sid: StoryId) -> String {
                         None => c.to_string(),
                     })
                     .collect();
-                esc(&sub)
+                story_markup(&sub)
             } else {
-                esc(raw)
+                story_markup(raw)
             };
             let et = (f.style != story::NO_CHAR_STYLE).then(|| doc.styles.export_tag(&f.style, true)).flatten();
             let ctag = et.map(|e| e.tag.as_str()).filter(|t| is_tag(t, true)).unwrap_or("span");
@@ -365,12 +435,12 @@ pub fn story_html(doc: &Document, sid: StoryId) -> String {
                     .filter(|c| !c.is_empty())
                     .or_else(|| cc.get(f.style.as_str()).cloned())
                     .unwrap_or_else(|| slug(&f.style));
-                format!(" class=\"{class}\"")
+                format!(" class=\"{}\"", xml_attr(&class))
             } else {
                 String::new()
             };
             let style = override_css(doc, &f.over);
-            let style_attr = if style.is_empty() { String::new() } else { format!(" style=\"{style}\"") };
+            let style_attr = if style.is_empty() { String::new() } else { format!(" style=\"{}\"", xml_attr(&style)) };
             if cls.is_empty() && style_attr.is_empty() {
                 out.push_str(&t);
             } else {
@@ -495,10 +565,11 @@ fn body_html<'a>(
                 if a.data.is_empty() {
                     continue;
                 }
+                let mime = safe_mime(&a.mime);
                 // Video and sound: an HTML5 player (with the poster, when there is one).
-                if let Some(kind) = designcraft_doc::media_kind(&a.mime) {
-                    let name = format!("media/{}.{}", g.asset.0, ext(&a.mime));
-                    images.insert(name.clone(), (a.mime.as_str(), a.data.as_slice()));
+                if let Some(kind) = designcraft_doc::media_kind(mime) {
+                    let name = format!("media/{}.{}", g.asset.0, ext(mime));
+                    images.insert(name.clone(), (mime, a.data.as_slice()));
                     let m = doc.item(*iid).and_then(|i| i.media.clone()).unwrap_or_default();
                     let mut attrs = String::new();
                     for (on, attr) in
@@ -509,17 +580,23 @@ fn body_html<'a>(
                         }
                     }
                     if let Some(pa) = m.poster.and_then(|p| doc.assets.get(&p)) {
-                        let pn = format!("images/{}.{}", pa.id.0, ext(&pa.mime));
-                        images.insert(pn.clone(), (pa.mime.as_str(), pa.data.as_slice()));
+                        let poster_mime = safe_mime(&pa.mime);
+                        let pn = format!("images/{}.{}", pa.id.0, ext(poster_mime));
+                        images.insert(pn.clone(), (poster_mime, pa.data.as_slice()));
                         if kind == "video" {
-                            attrs.push_str(&format!(" poster=\"{}\"", img_src(&pn, &pa.mime, &pa.data)));
+                            attrs.push_str(&format!(" poster=\"{}\"", xml_attr(&img_src(&pn, poster_mime, &pa.data))));
                         }
                     }
-                    let _ = writeln!(body, "<figure><{kind} src=\"{}\"{attrs}>{}</{kind}></figure>", img_src(&name, &a.mime, &a.data), esc(&a.name));
+                    let _ = writeln!(
+                        body,
+                        "<figure><{kind} src=\"{}\"{attrs}>{}</{kind}></figure>",
+                        xml_attr(&img_src(&name, mime, &a.data)),
+                        xml_text(&a.name)
+                    );
                     continue;
                 }
-                let name = format!("images/{}.{}", g.asset.0, ext(&a.mime));
-                images.insert(name.clone(), (a.mime.as_str(), a.data.as_slice()));
+                let name = format!("images/{}.{}", g.asset.0, ext(mime));
+                images.insert(name.clone(), (mime, a.data.as_slice()));
                 // Alt text from Object Export Options, else the file name.
                 let alt = doc.item(*iid).map(|i| i.alt_text.as_str()).filter(|t| !t.is_empty()).unwrap_or(&a.name);
                 // Object Export Options: alignment and a page break before.
@@ -531,8 +608,9 @@ fn body_html<'a>(
                 if eo.page_break_before {
                     css.push_str("page-break-before:always;break-before:page;");
                 }
-                let style = if css.is_empty() { String::new() } else { format!(" style=\"{css}\"") };
-                let _ = writeln!(body, "<figure{style}><img src=\"{}\" alt=\"{}\"/></figure>", img_src(&name, &a.mime, &a.data), esc(alt));
+                let style = if css.is_empty() { String::new() } else { format!(" style=\"{}\"", xml_attr(&css)) };
+                let _ =
+                    writeln!(body, "<figure{style}><img src=\"{}\" alt=\"{}\"/></figure>", xml_attr(&img_src(&name, mime, &a.data)), xml_attr(alt));
             }
         }
     }
@@ -550,11 +628,12 @@ pub struct HtmlOptions {
 /// document's stories and graphics in reading order.
 pub fn export_html(doc: &Document, opts: &HtmlOptions) -> String {
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let lang = opts.language.clone().unwrap_or_else(|| "en".into());
+    let language = opts.language.as_deref().unwrap_or("en");
+    let lang = language_tag(language);
     let (body, _, _) = body_html(doc, &|_, mime, data| format!("data:{mime};base64,{}", base64(data)));
     format!(
         "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DesignCraft\">\n<title>{}</title>\n<style>\nbody {{ max-width: 40em; margin: 2em auto; padding: 0 1em; }}\nfigure {{ margin: 1em 0; }} figure img {{ max-width: 100%; height: auto; }}\n{}</style>\n</head>\n<body>\n{body}</body>\n</html>\n",
-        esc(&title),
+        xml_text(&title),
         stylesheet(doc)
     )
 }
@@ -578,38 +657,38 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let id = opts.identifier.clone().unwrap_or_else(|| format!("urn:designcraft:{}", slug(&title)));
     let (body, images, toc) = body_html(doc, &|name, _, _| name.to_string());
-    let lang = &opts.language;
+    let lang = language_tag(&opts.language);
     let chapter = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\" lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title><link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\"/></head>\n<body>\n{body}</body>\n</html>\n",
-        esc(&title)
+        xml_text(&title)
     );
     let mut nav_items = String::new();
     for (a, label) in &toc {
-        let _ = write!(nav_items, "<li><a href=\"content.xhtml#{a}\">{}</a></li>", esc(label));
+        let _ = write!(nav_items, "<li><a href=\"content.xhtml#{a}\">{}</a></li>", xml_text(label));
     }
     if nav_items.is_empty() {
-        nav_items = format!("<li><a href=\"content.xhtml\">{}</a></li>", esc(&title));
+        nav_items = format!("<li><a href=\"content.xhtml\">{}</a></li>", xml_text(&title));
     }
     let nav = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title></head>\n<body><nav epub:type=\"toc\" id=\"toc\"><h1>Contents</h1><ol>{nav_items}</ol></nav></body>\n</html>\n",
-        esc(&title)
+        xml_text(&title)
     );
     let mut manifest = String::from(
         "<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n<item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n<item id=\"content\" href=\"content.xhtml\" media-type=\"application/xhtml+xml\"/>\n",
     );
     for (k, (name, (mime, _))) in images.iter().enumerate() {
-        let _ = writeln!(manifest, "<item id=\"img{k}\" href=\"{name}\" media-type=\"{mime}\"/>");
+        let _ = writeln!(manifest, "<item id=\"img{k}\" href=\"{}\" media-type=\"{}\"/>", xml_attr(name), xml_attr(mime));
     }
     // Cover: an image page first in reading order.
     if opts.cover.is_some() {
         manifest.push_str("<item id=\"cover-img\" href=\"images/cover.png\" media-type=\"image/png\" properties=\"cover-image\"/>\n<item id=\"cover\" href=\"cover.xhtml\" media-type=\"application/xhtml+xml\"/>\n");
     }
     let cover_spine = if opts.cover.is_some() { "<itemref idref=\"cover\"/>\n" } else { "" };
-    let author = opts.author.as_deref().map(|a| format!("<dc:creator>{}</dc:creator>", esc(a))).unwrap_or_default();
+    let author = opts.author.as_deref().map(|a| format!("<dc:creator>{}</dc:creator>", xml_text(a))).unwrap_or_default();
     let opf = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\" xml:lang=\"{lang}\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dc:identifier id=\"bookid\">{}</dc:identifier>\n<dc:title>{}</dc:title>\n<dc:language>{lang}</dc:language>{author}\n<meta property=\"dcterms:modified\">2026-01-01T00:00:00Z</meta>\n<meta name=\"generator\" content=\"DesignCraft\"/>\n</metadata>\n<manifest>\n{manifest}</manifest>\n<spine>\n{cover_spine}<itemref idref=\"content\"/>\n</spine>\n</package>\n",
-        esc(&id),
-        esc(&title)
+        xml_text(&id),
+        xml_text(&title)
     );
     let container = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\"><rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles></container>\n";
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -638,8 +717,8 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
             z.write_all(c).map_err(io)?;
             let xhtml = format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title><style>body{{margin:0;text-align:center}} img{{max-width:100%;max-height:100vh}}</style></head>\n<body epub:type=\"cover\"><img src=\"images/cover.png\" alt=\"{}\"/></body>\n</html>\n",
-                esc(&title),
-                esc(&title)
+                xml_text(&title),
+                xml_attr(&title)
             );
             z.start_file("OEBPS/cover.xhtml", deflate).map_err(zerr)?;
             z.write_all(xhtml.as_bytes()).map_err(io)?;
@@ -653,9 +732,10 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
 mod tests {
     use super::*;
     use designcraft_doc::build::NewDocument;
-    use designcraft_doc::geom::Rect;
-    use designcraft_doc::{ParaFormat, SpreadRef};
+    use designcraft_doc::geom::{Affine, Rect, shapes};
+    use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, ParaFormat, Shape, SpreadRef};
     use std::io::Read;
+    use std::sync::Arc;
 
     #[test]
     fn exports_valid_package_in_reading_order() {
@@ -733,5 +813,74 @@ mod tests {
         assert_eq!(base64(b"Man"), "TWFu");
         assert_eq!(base64(b"Ma"), "TWE=");
         assert_eq!(base64(b"M"), "TQ==");
+    }
+
+    #[test]
+    fn metadata_is_serialized_for_its_output_context() {
+        let mut d = Document::new(&NewDocument::default());
+        d.title = "Field Notes & <Edition>".into();
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "A&B <C> \"D\"", ParaFormat::default()).unwrap();
+        d.styles_mut()
+            .export_tags
+            .insert(format!("p:{}", story::BASIC_PARAGRAPH), designcraft_doc::ExportTag { tag: "h2".into(), class: "Primary \"Copy\"".into() });
+        if let Some(basic) = d.styles_mut().paragraph.iter_mut().find(|s| s.name == story::BASIC_PARAGRAPH) {
+            basic.chars.font_family = Some("Quoted \"Serif\" <Alt>".into());
+        }
+
+        let aid = AssetId(d.alloc());
+        d.assets.insert(
+            aid,
+            Arc::new(Asset {
+                page: 0,
+                id: aid,
+                name: "Cover & Notes".into(),
+                mime: "image/png; profile=screen".into(),
+                link: None,
+                data: Arc::new(vec![1]),
+                pixels: Some((1, 1)),
+            }),
+        );
+        let mut item = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(36.0, 120.0, 72.0, 156.0)));
+        item.alt_text = "Cover \"A\" & B".into();
+        item.content = Content::Graphic(Graphic {
+            asset: aid,
+            size: (1.0, 1.0),
+            xf: Affine::IDENTITY,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+        });
+        d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+
+        let story = story_html(&d, sid);
+        assert!(story.contains("<h2 class=\"Primary &quot;Copy&quot;\">A&amp;B &lt;C&gt; &quot;D&quot;</h2>"));
+        let html = export_html(&d, &HtmlOptions { title: None, language: Some("English (US)".into()) });
+        assert!(html.contains("<html lang=\"und\">"));
+        assert!(html.contains("<title>Field Notes &amp; &lt;Edition&gt;</title>"));
+        assert!(html.contains("alt=\"Cover &quot;A&quot; &amp; B\""));
+        assert!(html.contains("src=\"data:image/png;base64,AQ==\""));
+        assert!(!html.contains("image/png; profile=screen"));
+        assert!(!stylesheet(&d).contains("<Alt>"));
+        assert!(stylesheet(&d).contains("\\3c Alt\\3e "));
+
+        let bytes = export_epub(
+            &d,
+            &EpubOptions {
+                title: None,
+                author: Some("A & B".into()),
+                language: "English (US)".into(),
+                identifier: Some("notes&edition".into()),
+                cover: None,
+            },
+        )
+        .unwrap();
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut opf = String::new();
+        z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
+        assert!(opf.contains("xml:lang=\"und\""));
+        assert!(opf.contains("<dc:identifier id=\"bookid\">notes&amp;edition</dc:identifier>"));
+        assert!(opf.contains("<dc:creator>A &amp; B</dc:creator>"));
+        assert!(opf.contains("media-type=\"image/png\""));
     }
 }

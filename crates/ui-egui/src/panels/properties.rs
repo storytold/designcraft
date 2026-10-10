@@ -1070,6 +1070,18 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     }) {
         let _ = app.run("type.char", json!({"attrs": {"tracking": v}}));
     }
+    // Language: hyphenation, spelling and typographer's quotes follow it.
+    ui.add_space(1.0);
+    let lang = c["language"].as_str().unwrap_or("English: USA").to_string();
+    let label = crate::i18n::tr(&app.ui.language, "Language");
+    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &lang), fw).on_hover_ui(|ui| {
+        crate::rtl::label(ui, label);
+    });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, label));
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(fw);
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| language_menu(app, ui, &lang));
+    });
     if more_options(ui, &app.ui.language).clicked() {
         app.ui.open_panel = Some("character".into());
     }
@@ -1212,6 +1224,17 @@ const LANGUAGES: &[&str] = &[
     "Hebrew",
 ];
 
+/// The Language list (Character panel, Properties ▸ Character): picking one sets the language of
+/// the selected text.
+fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
+    for l in LANGUAGES {
+        if ui.selectable_label(*l == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+            let _ = app.run("type.char", json!({"attrs": {"language": l}}));
+            ui.close();
+        }
+    }
+}
+
 pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(a) = text_attrs(app) else {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select text or a text frame."));
@@ -1231,13 +1254,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         egui::ComboBox::from_id_salt("char_language")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &lang)))
             .width(170.0)
-            .show_ui(ui, |ui| {
-                for l in LANGUAGES {
-                    if ui.selectable_label(*l == lang, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
-                        let _ = app.run("type.char", json!({"attrs": {"language": l}}));
-                    }
-                }
-            });
+            .show_ui(ui, |ui| language_menu(app, ui, &lang));
     });
     // Digits (World-Ready): shown for right-to-left paragraphs or once set.
     let digits = c["digits"].as_str().unwrap_or("default").to_string();
@@ -2118,5 +2135,44 @@ fn variable_font_axes(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, styl
     if changed {
         let spec = values.iter().map(|(t, v)| format!("{t}:{}", v.round())).collect::<Vec<_>>().join(",");
         let _ = app.run("type.char", json!({"attrs": {"fontStyle": format!("{base} {{{spec}}}")}}));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    use super::*;
+
+    fn language(app: &mut DesignApp) -> Value {
+        text_attrs(app).unwrap()["chars"]["language"].clone()
+    }
+
+    #[test]
+    fn properties_character_section_sets_the_language() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "bunun", "caret": true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        assert_ne!(language(&mut app), "French");
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                // The panel's fonts are installed before its first frame.
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("Language").click();
+        h.run_steps(2);
+        h.get_by_label("French").click();
+        h.run_steps(2);
+        assert_eq!(language(h.state_mut()), "French");
     }
 }
