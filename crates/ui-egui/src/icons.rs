@@ -310,6 +310,54 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.frect(5.0, 5.0, 15.0, 9.0);
             pen.frect(5.0, 11.0, 11.0, 15.0);
         }
+        "object-align-left" => {
+            pen.line(&[(4.0, 3.0), (4.0, 17.0)]);
+            pen.frect(6.0, 4.0, 14.0, 8.5);
+            pen.frect(6.0, 11.5, 17.0, 16.0);
+        }
+        "object-align-hcenter" => {
+            pen.frect(3.0, 4.0, 17.0, 8.5);
+            pen.frect(5.0, 11.5, 15.0, 16.0);
+            pen.line(&[(10.0, 2.5), (10.0, 17.5)]);
+        }
+        "object-align-right" => {
+            pen.line(&[(16.0, 3.0), (16.0, 17.0)]);
+            pen.frect(6.0, 4.0, 14.0, 8.5);
+            pen.frect(3.0, 11.5, 14.0, 16.0);
+        }
+        "object-align-top" => {
+            pen.line(&[(3.0, 4.0), (17.0, 4.0)]);
+            pen.frect(4.0, 6.0, 8.5, 14.0);
+            pen.frect(11.5, 6.0, 16.0, 17.0);
+        }
+        "object-align-vcenter" => {
+            pen.frect(4.0, 3.0, 8.5, 17.0);
+            pen.frect(11.5, 5.0, 16.0, 15.0);
+            pen.line(&[(2.5, 10.0), (17.5, 10.0)]);
+        }
+        "object-align-bottom" => {
+            pen.line(&[(3.0, 16.0), (17.0, 16.0)]);
+            pen.frect(4.0, 6.0, 8.5, 14.0);
+            pen.frect(11.5, 3.0, 16.0, 14.0);
+        }
+        "object-distribute-h" => {
+            pen.frect(2.5, 5.0, 6.0, 15.0);
+            pen.frect(14.0, 5.0, 17.5, 15.0);
+            pen.line(&[(7.5, 10.0), (12.5, 10.0)]);
+            pen.line(&[(7.5, 10.0), (9.0, 8.5)]);
+            pen.line(&[(7.5, 10.0), (9.0, 11.5)]);
+            pen.line(&[(12.5, 10.0), (11.0, 8.5)]);
+            pen.line(&[(12.5, 10.0), (11.0, 11.5)]);
+        }
+        "object-distribute-v" => {
+            pen.frect(5.0, 2.5, 15.0, 6.0);
+            pen.frect(5.0, 14.0, 15.0, 17.5);
+            pen.line(&[(10.0, 7.5), (10.0, 12.5)]);
+            pen.line(&[(10.0, 7.5), (8.5, 9.0)]);
+            pen.line(&[(10.0, 7.5), (11.5, 9.0)]);
+            pen.line(&[(10.0, 12.5), (8.5, 11.0)]);
+            pen.line(&[(10.0, 12.5), (11.5, 11.0)]);
+        }
         "panel-transform" => {
             pen.rect(4.0, 4.0, 16.0, 16.0);
             for (x, y) in [(4.0, 4.0), (16.0, 4.0), (4.0, 16.0), (16.0, 16.0), (10.0, 10.0)] {
@@ -841,5 +889,29 @@ mod tests {
         assert_ne!(drawn[0], drawn[1], "Scale draws like Free Transform");
         assert_ne!(drawn[0], drawn[2], "Shear draws like Free Transform");
         assert_ne!(drawn[1], drawn[2], "Scale and Shear draw alike");
+    }
+
+    #[test]
+    fn align_and_distribute_buttons_have_their_own_icons() {
+        let names = [
+            "object-align-left",
+            "object-align-hcenter",
+            "object-align-right",
+            "object-align-top",
+            "object-align-vcenter",
+            "object-align-bottom",
+            "object-distribute-h",
+            "object-distribute-v",
+        ];
+        let unknown = drawing("no-such-icon");
+        let drawn: Vec<String> = names.iter().map(|n| drawing(n)).collect();
+        for (n, d) in names.iter().zip(&drawn) {
+            assert_ne!(*d, unknown, "{n} falls back to the placeholder");
+        }
+        for i in 0..names.len() {
+            for j in i + 1..names.len() {
+                assert_ne!(drawn[i], drawn[j], "{} draws like {}", names[i], names[j]);
+            }
+        }
     }
 }
