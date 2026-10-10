@@ -12,7 +12,9 @@ format + IDML), scriptable by agents (MCP), and available on the web.
 | | Value | Kind |
 |---|---|---|
 | **Feature breadth** | **~80%** (69% of InDesign 21.6's in-scope menu items matched; 99% of our 275-row checklist) | measured bounds, estimate between |
-| **Ready for real work** | **~42%** (range 38–48%) | estimated, weighted by dimension |
+| **Ready for real work** | **~42%** (range 38–48%) | estimated: dimension weights 47.2% × 0.9 core-path discount |
+| Mainstream practitioner | **~42%** (weekly core 60.7% × 0.88 interaction × 0.92 stability × 0.85 file exchange) | estimated |
+| Essentials user | **~54%** (core features 72% × 0.90 launch × 0.88 discoverability × 0.95 files received) | estimated |
 | Remaining to **beta** | **420–750 Opus 5.5 agent-hours** (~120–200 wall-clock hours with 4–5 agents) | estimated |
 | Remaining to **full parity** | **1,150–1,950 Opus 5.5 agent-hours** | estimated |
 
@@ -153,6 +155,7 @@ Newest first.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Headline adds mainstream practitioner (~42%) and essentials user (~54%); method in docs/target-app-parity.md |
 | 2026-10-10 | minor | Stage alpha → pre-alpha under the new core-workflow gate: manual text threading is missing; alpha gate table added to docs/roadmap.md |
 | 2026-10-10 | major | Restructured to the progress-docs standard; full re-measure; the "Working today" inventory moved to docs/target-app-parity.md, milestones to docs/roadmap.md, the CLI/MCP section left to docs/agents.md (which already covered it) |
 | 2026-10-04 | major | Parity estimate: breadth 99%, depth ~83%, ~170 h |

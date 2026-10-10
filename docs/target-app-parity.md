@@ -12,6 +12,8 @@ presence checklist is [parity-checklist.md](parity-checklist.md) (`cargo xtask p
 |---|---|---|
 | **Feature breadth** (does each InDesign feature exist?) | **~80%** (range 69–99%) | measured lower and upper bounds, estimate between them (below) |
 | **Ready for real work** (could an InDesign professional switch for real jobs?) | **~42%** (range 38–48%) | estimated, weighted (below) |
+| Mainstream practitioner (weekly core of a typical InDesign pro) | **~42%** | estimated, [method below](#mainstream-practitioner-42) |
+| Essentials user (flyers, newsletters: the core only) | **~54%** | estimated, [method below](#essentials-user-54) |
 | Remaining effort to **beta** (~75% ready, main format reliable) | **420–750 Opus 5.5 agent-hours** | estimated |
 | Remaining effort to **full parity** | **1,150–1,950 Opus 5.5 agent-hours** | estimated |
 | Stage | **pre-alpha** (fails the core-workflow gate: no manual text threading); ~15–25 h to alpha | see [roadmap.md](roadmap.md#alpha-gate) |
@@ -69,9 +71,110 @@ they receive, setting type exactly, and basic editing that never fails.
 | AI features | 0% (not weighted) | 15% | 60–120 | Agent control through MCP goes beyond InDesign; no generative features (InDesign 2026: Generative Expand, Text to Image, Auto Style) | [gaps.md](gaps.md) |
 | **Weighted** | 100% | 47% computed; reported as **~42%** (range 38–48%) | **1,150–1,950** | | |
 
-The weighted sum is 47%. It is reported as 42% because the basic-editing failures reported by users
-(copy/paste, threading, context menus, startup) cut across every dimension: a layout artist who
-can't paste a frame or thread a story can't finish a job, however deep the rest is.
+**How the 42% is built (written down 2026-10-10, unchanged value):** the weighted sum of the
+table is 47.2%. One multiplicative discount is then applied, **×0.9 for core-path failures that
+cut across dimensions**: manual threading is missing (alpha gate), and object copy/paste, context
+menus, caret formatting and start-up fail for users (44 of 81 open issues are core-path bugs, see
+the sentiment count below). These hit the Features, Typography and Stability rows as well as UI,
+so the UI row alone understates them. 47.2% × 0.9 = 42.5% → **~42%**. The range 38–48% spans the
+discount at ×0.8 to none.
+
+## Mainstream practitioner and essentials user
+
+Two narrower questions, computed with the craftrules method so every app's numbers compare. The
+stage still follows the full number (~42%) and the core-workflow gate. All three are estimates.
+
+| Number | Value |
+|---|---|
+| Ready for real work (full InDesign) | **~42%** |
+| Mainstream practitioner | **~42%** |
+| Essentials user | **~54%** |
+
+### Mainstream practitioner: ~42%
+
+The typical InDesign professional (magazine, book, brochure, packaging-adjacent layout artist)
+uses these weekly: the alpha-gate workflows plus their everyday tools. Excluded: plug-ins and
+scripting compatibility, generative/cloud AI, InCopy and team workflows, specialist hardware,
+interface languages other than the user's own. Depth here is what the feature does when it
+works; interaction, stability and exchange problems are the discounts, so they aren't counted
+twice.
+
+| Area | Weight | Depth | Evidence |
+|---|---|---|---|
+| Document setup: pages, margins, columns, parents, sections | 10% | 65% | features area table |
+| Text frames: type, select, edit, thread, autoflow | 15% | 45% | manual threading missing; autoflow and Primary Text Frame only |
+| Typography: composer, H&J, OpenType, tabs, lists, keeps | 15% | 65% | typography-parity.md: 18 ✓ / 16 ~; Tabs panel missing; InDesign-identical breaks counted under exchange |
+| Paragraph, character and object styles | 10% | 65% | dialogs, based-on, nested/GREP, Quick Apply |
+| Frames, shapes, transform, arrange, align | 10% | 70% | full tool set; copy/paste problems counted under interaction |
+| Colour, swatches, stroke | 8% | 60% | hex entry, CMS depth |
+| Images: place, fit, links, wrap | 10% | 60% | EPS preview only, Edit Original missing |
+| Tables | 5% | 55% | anchored objects in cells, Table Options submenus |
+| Layers | 3% | 75% | |
+| Effects and transparency | 3% | 50% | fidelity unmeasured |
+| Output: PDF export, print, package | 8% | 60% | PDF/X-4 strong; no X-1a, presets, Windows printing |
+| View, navigation, undo, save | 3% | 70% | |
+| **Weighted depth** | 100% | **60.7%** | |
+
+Discounts (multiplicative):
+
+| Discount | Factor | Evidence |
+|---|---|---|
+| Interaction fidelity | ×0.88 | right-click menus fail for some macOS users (#160, #238) and on Linux (#354); Paste in Place lands on page 1 (#348); formatting at a caret discarded (#289); font search focus (#335, #86) |
+| Stability on real machines | ×0.92 | start-up failures on Intel Mac Metal (#334) and Windows drivers (#167, #273, #220, #192, #166); no CI on pull requests; macOS on Apple silicon is solid |
+| File exchange with InDesign users | ×0.85 | `.indd` can't be opened (#21); IDML import/export bugs (#193, #338, #339, #340, #211); opened text reflows: optical kerning (#181), overset rule (#180). Harsher than VectorCraft's ×0.92 because InDesign pros receive and send native files daily |
+
+60.7% × 0.88 × 0.92 × 0.85 = 41.8% → **~42%**. It isn't higher than the full number because
+DesignCraft's long tail is broad (99% checklist presence), so leaving it out doesn't lift the
+score, while the everyday core is where the gaps are (threading, editing bugs, INDD).
+
+### Essentials user: ~54%
+
+Someone making a flyer, poster, newsletter or simple booklet: they touch only the core.
+Excluded: advanced options, pro workflows (preflight, separations, books, long-document
+features), exchange edge cases, and everything excluded above.
+
+| Core feature | Weight | Depth | Evidence |
+|---|---|---|---|
+| Launch, welcome screen, new document from a preset | 10% | 80% | presets incl. A6 (#248) |
+| Type text in a frame, select and edit it | 15% | 65% | caret formatting (#289), double-click selection in fields (#189) |
+| Font, size, colour, alignment | 15% | 65% | installed fonts not always found (#161, #110, #107) |
+| Place an image and fit it | 10% | 75% | place gun, fitting |
+| Draw shapes and lines, fill and stroke | 10% | 80% | |
+| Move, resize, rotate, align, duplicate | 10% | 75% | |
+| Copy and paste | 5% | 60% | works on macOS; Paste in Place to the wrong page (#348) |
+| Undo / redo | 5% | 85% | |
+| Save and reopen | 5% | 85% | `.designcraft` round trip, recovery |
+| Export PDF / PNG | 10% | 80% | |
+| Print | 5% | 40% | PDF to `lpr` only, nothing on Windows |
+| **Weighted depth** | 100% | **72.0%** | |
+
+| Discount | Factor | Evidence |
+|---|---|---|
+| Launch and stability | ×0.90 | the start-up failures above hit casual users first and they don't know `WGPU_BACKEND` |
+| Discoverability and UI clarity | ×0.88 | a faithful, dense InDesign UI; right-click menus don't open for some users; the out port looks clickable but does nothing; Windows installer confusing (#64) |
+| Opening files people send them | ×0.95 | casual users get Word, images and PDFs, which place well (docx/rtf/xlsx, PDF pages); INDD is rare for them |
+
+72.0% × 0.90 × 0.88 × 0.95 = 54.2% → **~54%**.
+
+### User evidence (GitHub issues and comments, 2026-10-10)
+
+126 issues and 94 comments; no issues were filed by the maintainer (echelon).
+
+- **Praise:** 7 people in 6 threads (#32 "so damn impressive… InDesign open source for Linux",
+  #77, #107, #113, #197, #328).
+- **Switched-from-InDesign reports:** 0 completed switches. 2 former InDesign users trying real
+  work: #348, a retired designer who lost an Adobe licence, laying out 18 pages; #140. Both were
+  blocked by core-path bugs (paste to page, threading). #320 is an art director with 10 years of
+  daily InDesign asking for a feature.
+- **Open issues (81):**
+  - 44 are core-path bugs (54%), clustering into a few root causes: copy/paste (8),
+    context menus (5), threading (4), launch (6), fonts (5).
+  - 9 are InDesign file-exchange bugs.
+  - 26 are niche requests or polish (HTML export, QuarkXPress import, MCP gateway, theme options).
+  - 2 are meta.
+
+So the user evidence matches the numbers: interest and goodwill are high, and real work is
+stopped by a short list of core-path bugs.
 
 ### Why the number went down
 
@@ -331,6 +434,7 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Added mainstream practitioner (~42%) and essentials user (~54%) numbers with written weights and discounts and a user-evidence count; full number (42%) now written as 47.2% × 0.9, value unchanged |
 | 2026-10-10 | minor | Stage alpha → pre-alpha under the core-workflow gate (manual threading missing); Type & text frames row updated |
 | 2026-10-10 | major | Created from ROADMAP.md's "How far from full parity" (2026-10-04) and "Working today"; full re-measure against InDesign 2026 21.6: menu coverage measured against InDesign 21.6's menu dump (69%) and the documented tree (75%), breadth set at ~80%, ready-for-real-work re-estimated 83% → 42% on user-reported evidence and the INDD gap; hours recalibrated from git history |
 | 2026-10-04 | major | (in ROADMAP.md) breadth 99% weighted over 275 rows, ~83% including depth, ~170 h remaining |
