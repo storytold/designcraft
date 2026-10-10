@@ -1917,6 +1917,40 @@ fn drop_cap_spans_its_lines() {
 }
 
 #[test]
+fn drop_cap_measures_against_the_body_text_not_the_style() {
+    // Body text with a local size override (18 pt, auto leading 21.6 pt, while the paragraph style
+    // is 12 / 14.4), and cap characters set larger still (30 pt): the cap must still reach from the
+    // body's cap height on the first line to the second line's baseline, and must not push the
+    // first lines apart.
+    let rect = Rect::new(0.0, 0.0, 300.0, 2000.0);
+    let (mut d, sid, _) = doc_with(LOREM, rect, drop_cap(2, 2));
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..LOREM.len(), |f| f.over.size = Some(18.0));
+    story.format_chars(0..2, |f| f.over.size = Some(30.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs);
+    // The first line sits where it would without a drop cap.
+    let (mut plain, psid, _) = doc_with(LOREM, rect, ParaAttrs::default());
+    plain.story_mut(psid).unwrap().format_chars(0..LOREM.len(), |f| f.over.size = Some(18.0));
+    let pcs = compose_story(&plain, psid, &ComposeOptions::default());
+    let first = all_lines(&pcs)[0].baseline;
+    assert!((l[0].baseline - first).abs() < 1e-6, "first baseline {} vs {first} without a drop cap", l[0].baseline);
+    // Every line is one body leading below the last: the 30 pt cap adds nothing.
+    for w in l.windows(2) {
+        assert!((w[1].baseline - w[0].baseline - 21.6).abs() < 1e-6, "line gap {}", w[1].baseline - w[0].baseline);
+    }
+    let cap = cap_glyphs(l[0], 2);
+    assert_eq!(cap.len(), 2);
+    let body = l[0].glyphs.iter().find(|g| g.len > 0 && g.byte >= 2).unwrap();
+    let body_cap = body.face.cap_height * body.sy;
+    let c = cap[0];
+    let cap_bottom = l[0].baseline + c.y;
+    let cap_top = cap_bottom - c.face.cap_height * c.sy;
+    assert!((cap_bottom - l[1].baseline).abs() < 1e-6, "cap baseline {cap_bottom} vs line 2 {}", l[1].baseline);
+    assert!((cap_top - (l[0].baseline - body_cap)).abs() < 1e-6, "cap top {cap_top} vs first line cap height {}", l[0].baseline - body_cap);
+}
+
+#[test]
 fn drop_cap_text_is_not_duplicated_or_lost() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 240.0, 2000.0), drop_cap(4, 3));
     let cs = compose_story(&d, sid, &ComposeOptions::default());

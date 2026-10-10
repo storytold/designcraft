@@ -1203,9 +1203,14 @@ impl DropCap {
     }
 }
 
-/// Enlarges the paragraph's first glyphs into a drop cap, when it has one that can be set:
-/// horizontal, left-to-right text starting with its characters (not a list label or a control
-/// character). Returns None, leaving the glyphs alone, otherwise.
+/// Sizes the paragraph's first glyphs as a drop cap, when it has one that can be set: horizontal,
+/// left-to-right text starting with its characters (not a list label or a control character).
+/// Returns None, leaving the glyphs alone, otherwise.
+///
+/// The cap is measured against the body text after it, not the paragraph style: its leading
+/// (local size and leading overrides included) sets how far the lines below sit, and its cap
+/// height is where the cap's top lines up. `leading` is the fallback when no body text follows.
+/// The cap's own size and font only decide its shape: it is scaled up or down to fit.
 fn drop_cap(glyphs: &mut [Glyph], pp: &ParaProps, text: &str, prange: Range<usize>, leading: f64, vertical: bool) -> Option<DropCap> {
     let lines = pp.drop_cap_lines.min(DROP_CAP_MAX_LINES) as usize;
     let chars = pp.drop_cap_chars.min(DROP_CAP_MAX_CHARS) as usize;
@@ -1215,25 +1220,38 @@ fn drop_cap(glyphs: &mut [Glyph], pp: &ParaProps, text: &str, prange: Range<usiz
     let para = text.get(prange.clone())?;
     let end = prange.start + para.char_indices().nth(chars).map_or(para.len(), |(i, _)| i);
     let n = glyphs.iter().take_while(|g| g.len > 0 && g.byte >= prange.start && g.byte < end && !g.ch.is_control()).count();
-    let cap = glyphs.first().map(|g| g.cap)?;
-    // Both must be finite and positive (NaN fails `is_finite`).
-    if n == 0 || !cap.is_finite() || cap <= 0.0 || !leading.is_finite() || leading <= 0.0 {
+    let cap_glyph = glyphs.first()?;
+    let own_cap = cap_glyph.cap;
+    let body = glyphs.get(n..).and_then(|rest| rest.iter().find(|g| g.len > 0 && g.byte < prange.end && !g.ch.is_control()));
+    // Body metrics: (cap height, ascent, descent, leading). A paragraph that is all cap measures
+    // against the cap's own font at the paragraph's leading.
+    let (cap, ascent, descent, leading) = match body {
+        Some(b) => (b.cap, b.ascent, b.descent, b.leading),
+        None => (own_cap, cap_glyph.ascent, cap_glyph.descent, leading),
+    };
+    let finite_pos = |v: f64| v.is_finite() && v > 0.0;
+    if n == 0 || !finite_pos(own_cap) || !finite_pos(cap) || !finite_pos(leading) {
         return None;
     }
     let drop = (lines - 1) as f64 * leading;
-    let k = (drop + cap) / cap;
-    if !k.is_finite() || k <= 1.0 {
+    // The cap's cap height becomes the drop plus the body's cap height.
+    let k = (drop + cap) / own_cap;
+    if !finite_pos(k) {
         return None;
     }
     let mut width = 0.0;
     for g in glyphs.iter_mut().take(n) {
-        // Only the drawing grows: ascent, descent and leading stay the body's, so the first line
-        // keeps its place and the cap hangs beside the lines below.
+        // Only the drawing changes size. Ascent, descent and leading become the body's, so the
+        // cap never pushes the first lines apart (even when its characters are set larger) and
+        // it hangs beside the lines below.
         g.adv *= k;
         g.dx *= k;
         g.dy *= k;
         g.sx *= k;
         g.sy *= k;
+        g.ascent = ascent;
+        g.descent = descent;
+        g.leading = leading;
         g.locked_advance = true;
         g.no_break = true;
         width += g.adv;

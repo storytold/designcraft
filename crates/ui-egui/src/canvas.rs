@@ -1011,10 +1011,22 @@ fn draw_text_selection(
                 let x1 = if e == l.range.end && range.end > l.range.end { l.end_x.max(x0 + 3.0) } else { compose::caret_x(l, e) };
                 quads.push(quad(x0, x1));
             }
+            // Selected glyphs set below the line's baseline (a drop cap hangs beside the lines under
+            // it): one box across them, from the line's top to their baseline plus the line's
+            // descent, so the whole cap is highlighted without reaching into the next line's text.
+            let mut dropped: Option<(f64, f64, f64)> = None;
             for (gi, g) in l.glyphs.iter().enumerate() {
                 if g.visible && g.len > 0 && g.byte >= s && g.byte < e {
                     glyphs.push((li, gi));
+                    if g.y > 0.5 {
+                        let (x0, x1, y) = dropped.unwrap_or((g.x, g.x + g.adv, g.y));
+                        dropped = Some((x0.min(g.x), x1.max(g.x + g.adv), y.max(g.y)));
+                    }
                 }
+            }
+            if let Some((x0, x1, y)) = dropped {
+                let (top, bottom) = (l.baseline - l.ascent, l.baseline + y + l.descent);
+                quads.push([Point::new(x0, top), Point::new(x1, top), Point::new(x1, bottom), Point::new(x0, bottom)]);
             }
         }
         if !quads.is_empty() {
