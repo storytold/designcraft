@@ -321,6 +321,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     draw_tool_overlays(app, &painter, &xf);
     if rulers {
         draw_rulers(app, ui, full, rect, &xf, &doc, &layout, &t);
+        ruler_units_menus(app, &resp, full, rect, &doc);
     }
     if let Some(r) = sel_rect
         && !preview
@@ -1014,10 +1015,29 @@ fn draw_text_selection(
                 let x1 = if e == l.range.end && range.end > l.range.end { l.end_x.max(x0 + 3.0) } else { compose::caret_x(l, e) };
                 quads.push(quad(x0, x1));
             }
+            // Selected glyphs set below the line's baseline (a drop cap hangs beside the lines under
+            // it): one box across them, from the line's top (or the cap's top, when a cap set larger
+            // than the body rises above the line) to their baseline plus the line's descent (or the
+            // cap's lowest point), so the whole cap is highlighted: selected glyphs are drawn
+            // inverted, and any part outside the box would vanish.
+            let mut dropped: Option<(f64, f64, f64, f64)> = None;
             for (gi, g) in l.glyphs.iter().enumerate() {
                 if g.visible && g.len > 0 && g.byte >= s && g.byte < e {
                     glyphs.push((li, gi));
+                    if g.y > 0.5 {
+                        let gb = l.baseline + g.y;
+                        // The outline is in font units, y down.
+                        use designcraft_render::vello_cpu::kurbo::Shape as _;
+                        let bb = designcraft_fonts::FontDb::global().outline(&g.face, g.gid).bounding_box();
+                        let (top, bottom) = if bb.is_finite() && bb.height() > 0.0 { (gb + bb.y0 * g.sy, gb + bb.y1 * g.sy) } else { (gb, gb) };
+                        let (top, bottom) = (top.min(l.baseline - l.ascent), bottom.max(gb + l.descent));
+                        let (x0, x1, t, b) = dropped.unwrap_or((g.x, g.x + g.adv, top, bottom));
+                        dropped = Some((x0.min(g.x), x1.max(g.x + g.adv), t.min(top), b.max(bottom)));
+                    }
                 }
+            }
+            if let Some((x0, x1, top, bottom)) = dropped {
+                quads.push([Point::new(x0, top), Point::new(x1, top), Point::new(x1, bottom), Point::new(x0, bottom)]);
             }
         }
         if !quads.is_empty() {
@@ -1250,8 +1270,7 @@ fn draw_tool_overlays(app: &mut DesignApp, painter: &egui::Painter, xf: &Xf) {
 #[allow(clippy::too_many_arguments)]
 fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, doc: &Document, layout: &CanvasLayout, t: &Tokens) {
     let painter = ui.painter_at(full);
-    let top = Rect::from_min_max(pos2(rect.min.x, full.min.y), pos2(full.max.x, rect.min.y));
-    let left = Rect::from_min_max(pos2(full.min.x, rect.min.y), pos2(rect.min.x, full.max.y));
+    let (top, left) = ruler_rects(full, rect);
     painter.rect_filled(top, 0.0, t.ruler);
     painter.rect_filled(left, 0.0, t.ruler);
     painter.rect_filled(Rect::from_min_max(full.min, rect.min), 0.0, t.ruler);
@@ -1265,11 +1284,11 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
     let Some(i) = current_slot(app, layout) else { return };
     let slot = &layout.slots[i];
     let origin = Point::new(slot.bounds.x0, slot.bounds.y0);
-    let unit = doc.settings.horizontal_units;
-    let (major, sub) = unit.ruler_ticks(xf.zoom);
     let font = egui::FontId::proportional(9.0);
     let tick = Stroke::new(1.0, t.ruler_tick);
     // Horizontal.
+    let unit = doc.settings.horizontal_units;
+    let (major, sub) = unit.ruler_ticks(xf.zoom);
     let c0 = xf.to_canvas(top.min).x - origin.x;
     let c1 = xf.to_canvas(pos2(top.max.x, 0.0)).x - origin.x;
     let mut k = (c0 / major).floor() as i64;
@@ -1294,6 +1313,8 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
         k += 1;
     }
     // Vertical.
+    let unit = doc.settings.vertical_units;
+    let (major, sub) = unit.ruler_ticks(xf.zoom);
     let c0 = xf.to_canvas(pos2(0.0, left.min.y)).y - origin.y;
     let c1 = xf.to_canvas(pos2(0.0, left.max.y)).y - origin.y;
     let mut k = (c0 / major).floor() as i64;
@@ -1325,6 +1346,43 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
         let m = Stroke::new(1.0, t.text_dim);
         dashed(&painter, pos2(p.x, top.min.y), pos2(p.x, top.max.y), m, 1.5, 1.5);
         dashed(&painter, pos2(left.min.x, p.y), pos2(left.max.x, p.y), m, 1.5, 1.5);
+    }
+}
+
+/// The horizontal (top) and vertical (left) rulers around the view `rect` in `full`.
+fn ruler_rects(full: Rect, rect: Rect) -> (Rect, Rect) {
+    (
+        Rect::from_min_max(pos2(rect.min.x, full.min.y), pos2(full.max.x, rect.min.y)),
+        Rect::from_min_max(pos2(full.min.x, rect.min.y), pos2(rect.min.x, full.max.y)),
+    )
+}
+
+/// Right-clicking a ruler opens a menu of units for that ruler.
+fn ruler_units_menus(app: &mut DesignApp, resp: &egui::Response, full: Rect, rect: Rect, doc: &Document) {
+    let (top, left) = ruler_rects(full, rect);
+    let at = resp.interact_pointer_pos();
+    for (ruler, key, cur) in [(top, "horizontalUnits", doc.settings.horizontal_units), (left, "verticalUnits", doc.settings.vertical_units)] {
+        let open = if resp.secondary_clicked() {
+            Some(egui::SetOpenCommand::Bool(at.is_some_and(|p| ruler.contains(p))))
+        } else if resp.clicked() {
+            Some(egui::SetOpenCommand::Bool(false))
+        } else {
+            None
+        };
+        egui::Popup::context_menu(resp).id(resp.id.with(("ruler_units", key))).open_memory(open).show(|ui| ruler_units_menu(app, ui, key, cur));
+    }
+}
+
+/// Every unit, the current one checked; picking one sets `key` (`horizontalUnits` or
+/// `verticalUnits`) through `document.preferences`.
+fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, key: &str, cur: designcraft_geom::Unit) {
+    for u in designcraft_geom::Unit::ALL {
+        let label = crate::i18n::tr(&app.ui.language, u.label());
+        let text = if u == cur { format!("✓ {label}") } else { format!("   {label}") };
+        if ui.button(crate::rtl::widget(ui, text)).clicked() {
+            let _ = app.run("document.preferences", json!({ key: u }));
+            ui.close();
+        }
     }
 }
 

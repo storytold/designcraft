@@ -80,3 +80,25 @@ fn closed_stdout_ends_quietly() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success() && !err.contains("panicked"), "{:?}: {err}", out.status);
 }
+
+/// `--scale`, `--page` and `--pdf-options` apply to the exports after them; one with no export
+/// after it was silently ignored.
+#[test]
+fn run_export_options_come_before_their_export() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-order-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (dir.join("a.png"), dir.join("b.png"));
+    let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+    for (opt, val) in [("--scale", "0.5"), ("--page", "1"), ("--pdf-options", r#"{"pages":"1"}"#)] {
+        let out = cli().args(["run", "--sample", "--export", a, opt, val]).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{opt} after the last --export: {err}");
+        assert!(err.contains(opt) && err.contains("before"), "{err}");
+    }
+    assert!(!std::path::Path::new(a).exists(), "nothing is exported when the arguments are wrong");
+    let out = cli().args(["run", "--sample", "--scale", "0.5", "--export", a, "--scale", "0.25", "--export", b]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("wrote") && std::path::Path::new(a).exists() && std::path::Path::new(b).exists(), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
