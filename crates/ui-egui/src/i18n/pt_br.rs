@@ -957,6 +957,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Relative To:", "Em relação a:"),
     ("Relink to Folder…", "Vincular novamente à pasta…"),
     ("Relink…", "Vincular novamente…"),
+    ("Update Links Changed on Disk", "Atualizar links alterados no disco"),
     ("Remove Conditions from Selection", "Remover condições da seleção"),
     ("Repeat Header Rows", "Repetir linhas de cabeçalho"),
     ("Replace With", "Substituir por"),

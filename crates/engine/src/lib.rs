@@ -10,6 +10,7 @@
 pub mod cmd;
 pub mod dtd;
 pub mod guard;
+pub mod link_watch;
 pub mod links;
 pub mod math;
 pub mod recovery;
@@ -193,6 +194,9 @@ pub struct Prefs {
     pub show_note_anchors: bool,
     /// Preferences › File Handling: minutes between document recovery saves.
     pub recovery_minutes: f64,
+    /// Preferences › File Handling › Update Links Changed on Disk: a placed file another app
+    /// saves is updated by itself ([`link_watch`]).
+    pub update_changed_links: bool,
 }
 
 /// A starter autocorrect list (common English typing slips).
@@ -240,6 +244,7 @@ impl Default for Prefs {
             show_added_text: true,
             show_note_anchors: true,
             recovery_minutes: 0.5,
+            update_changed_links: true,
         }
     }
 }
@@ -273,6 +278,11 @@ pub struct Session {
     pub book: Option<cmd::book::Book>,
     /// Content Collector conveyor: collected objects as snippets (name, bytes).
     pub conveyor: Vec<(String, Vec<u8>)>,
+    /// Each open document's linked files' size and modification time when last seen
+    /// (Preferences › File Handling › Update Links Changed on Disk, [`link_watch`]).
+    pub link_stamps: std::collections::HashMap<(u64, String), link_watch::Stamp>,
+    /// The stamps being taken on a worker thread ([`Session::start_link_scan`]).
+    pub link_scan: Option<link_watch::LinkScan>,
 }
 
 impl Default for Session {
@@ -302,6 +312,8 @@ impl Session {
             conveyor: Vec::new(),
             book: None,
             untitled: 0,
+            link_stamps: Default::default(),
+            link_scan: None,
         }
     }
 

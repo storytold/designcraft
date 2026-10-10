@@ -685,6 +685,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Typical Display", "Visualizzazione tipica"),
     ("UI Scaling", "Scala dell'interfaccia"),
     ("Update Link", "Aggiorna collegamento"),
+    ("Update Links Changed on Disk", "Aggiorna i collegamenti modificati su disco"),
     ("User Dictionary Words", "Parole del dizionario utente"),
     ("User Dictionary…", "Dizionario utente…"),
     ("Zoom To", "Zoom a"),

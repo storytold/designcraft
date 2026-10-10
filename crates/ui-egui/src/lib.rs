@@ -559,6 +559,37 @@ impl DesignApp {
         self.ui.status = s.into();
     }
 
+    /// Preferences › File Handling › Update Links Changed on Disk: every two seconds, and as
+    /// soon as the window comes back to the front (after saving in another app), stamp the
+    /// active document's linked files on a worker thread and update the ones that changed.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tick_link_updates(&mut self, ctx: &egui::Context, now: f64) {
+        match self.session.poll_link_scan() {
+            Some(Ok(r)) => {
+                if let Some(n) = r["updated"].as_u64().filter(|n| *n > 0) {
+                    self.status(format!("Updated {n} link(s) changed on disk"));
+                }
+            }
+            Some(Err(e)) => self.status(e.to_string()),
+            None => {}
+        }
+        let (last_key, focus_key) = (egui::Id::new("linkWatch.lastScan"), egui::Id::new("linkWatch.focused"));
+        let focused = ctx.input(|i| i.focused);
+        let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
+        ctx.data_mut(|d| d.insert_temp(focus_key, focused));
+        let has_links = self.session.active().is_some_and(|d| d.doc.assets.values().any(|a| a.link.is_some()));
+        if !self.session.prefs.update_changed_links || !has_links {
+            return;
+        }
+        let last: f64 = ctx.data(|d| d.get_temp(last_key)).unwrap_or(f64::NEG_INFINITY);
+        if now - last >= 2.0 || (focused && !was_focused) {
+            ctx.data_mut(|d| d.insert_temp(last_key, now));
+            self.session.start_link_scan();
+        }
+        let wait = if self.session.link_scan.is_some() { 100 } else { 2000 };
+        ctx.request_repaint_after(std::time::Duration::from_millis(wait));
+    }
+
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         if let Some(r) = menus::run_ui(self, id, &params) {
@@ -752,6 +783,8 @@ impl DesignApp {
                 self.status(format!("Couldn't write recovery data: {e}"));
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_link_updates(ctx, now);
         let dt = now - self.last_time;
         if dt > 0.0 {
             self.perf.fps = self.perf.fps * 0.9 + (1.0 / dt).min(240.0) * 0.1;

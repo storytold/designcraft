@@ -828,6 +828,9 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                             d.fields.insert("recoveryMinutes".into(), json!(v));
                         }
                     });
+                    ui.add_space(6.0);
+                    ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Links")).font(semibold(12.0))));
+                    check(ui, d, "updateChangedLinks", crate::i18n::tr(&app.ui.language, "Update Links Changed on Disk"));
                 }
                 "type" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Type Options")).font(semibold(12.0)));

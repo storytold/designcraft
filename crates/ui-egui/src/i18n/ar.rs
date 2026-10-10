@@ -1342,6 +1342,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Type on a Path Options…", "خيارات الكتابة على مسار…"),
     ("Typical Display", "عرض قياسي"),
     ("Update Link", "تحديث الرابط"),
+    ("Update Links Changed on Disk", "تحديث الروابط التي تغيّرت على القرص"),
     ("User Dictionary Words", "كلمات قاموس المستخدم"),
     ("User Dictionary…", "قاموس المستخدم…"),
     ("Zoom To", "تكبير إلى"),

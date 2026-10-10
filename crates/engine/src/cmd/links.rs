@@ -45,6 +45,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             update
         ),
+        cmd!(
+            noundo "links.updateChanged",
+            "Update Changed Links",
+            [],
+            None,
+            "{} — update the active document's links whose files changed on disk since they were last seen (size or modification time; Preferences › File Handling › Update Links Changed on Disk does this by itself). Each update is an Update Link undo step; files seen for the first time are only remembered → {updated}",
+            has_doc,
+            crate::link_watch::update_changed
+        ),
         cmd!("links.embed", "Embed Link", ["Window", "Links"], None, "{asset} — keep only the copy in the document", has_doc, |s, p| {
             let aid = asset_param(p, "links.embed")?;
             s.edit(|d, _| {
