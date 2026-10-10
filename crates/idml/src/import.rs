@@ -291,7 +291,7 @@ impl<'r> Importer<'r> {
                 .map(|c| designcraft_doc::cjk::CompositeFontEntry {
                     name: c.get("Name").unwrap_or("").into(),
                     characters: c.get("CustomCharacters").unwrap_or("").into(),
-                    family: c.prop("AppliedFont").unwrap_or_default(),
+                    family: c.prop("AppliedFont").unwrap_or_default().trim_start_matches("$ID/").into(),
                     style: c.get("FontStyle").unwrap_or("Regular").trim_start_matches("$ID/").into(),
                     relative_size: c.num("RelativeSize").unwrap_or(100.0) / 100.0,
                     horizontal_scale: c.num("HorizontalScale").unwrap_or(100.0) / 100.0,
@@ -1066,10 +1066,11 @@ impl<'r> Importer<'r> {
     fn char_attrs(&mut self, e: &El) -> CharAttrs {
         let mut a = CharAttrs::default();
         if let Some(f) = e.prop("AppliedFont") {
-            let f = f.trim();
+            // InDesign prefixes some names with `$ID/`; alone it names no font.
+            let f = f.trim().trim_start_matches("$ID/");
             // Some writers append the style after a tab.
             let fam = f.split('\t').next().unwrap_or(f);
-            if !fam.is_empty() && fam != "$ID/" {
+            if !fam.is_empty() {
                 a.font_family = Some(fam.to_string());
             }
         }

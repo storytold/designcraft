@@ -833,6 +833,31 @@ fn automatic_kerning_does_not_import_inactive_numeric_values() {
     }
 }
 
+/// InDesign writes some font names with its `$ID/` prefix (`$ID/Arial`); the family is the name
+/// without it. A bare `$ID/` names no font.
+#[test]
+fn a_font_name_with_the_id_prefix_imports_as_the_plain_family() {
+    for (font, expected) in [("Source Serif 4", Some("Source Serif 4")), ("$ID/Source Serif 4", Some("Source Serif 4")), ("$ID/", None)] {
+        let story = format!(
+            r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+        <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Properties><AppliedFont type="string">{font}</AppliedFont></Properties><Content>甲乙</Content></CharacterStyleRange>
+        </ParagraphStyleRange></Story></idPkg:Story>"#
+        );
+        let d = import_idml(&fixture_with_story(&story)).unwrap();
+        let s = d.stories.values().find(|s| s.text.contains("甲乙")).unwrap();
+        assert_eq!(s.runs().next().unwrap().1.over.font_family.as_deref(), expected, "{font}");
+    }
+
+    let map = DESIGNMAP.replace(
+        "</Document>",
+        r#"<CompositeFont Self="CompositeFont/Mixed" Name="Mixed"><CompositeFontEntry Self="cf1" Name="Base" FontStyle="$ID/Regular">
+        <Properties><AppliedFont type="string">$ID/Source Serif 4</AppliedFont></Properties></CompositeFontEntry></CompositeFont></Document>"#,
+    );
+    let d = import_idml(&zip_files(&[("designmap.xml", &map), ("Spreads/Spread_sp1.xml", SPREAD)])).unwrap();
+    assert_eq!(d.styles.composite_fonts[0].entries[0].family, "Source Serif 4");
+}
+
 #[test]
 fn cjk_composite_fonts_and_custom_kinsoku_are_document_resources() {
     let map = DESIGNMAP.replace("</Document>", r#"
