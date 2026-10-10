@@ -669,6 +669,49 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 pen.line(&[(15.5, 2.0), (15.5, 18.0)]);
             }
         }
+        "grid-line-align" => {
+            // Lines of cells along a double arrow: where a line starts in the grid.
+            for j in 0..3 {
+                let y = 3.5 + j as f32 * 4.5;
+                pen.rect(9.0, y, 13.0, y + 3.5);
+                pen.rect(13.0, y, 17.0, y + 3.5);
+            }
+            pen.line(&[(4.0, 3.0), (4.0, 17.0)]);
+            pen.line(&[(2.5, 5.0), (4.0, 3.0), (5.5, 5.0)]);
+            pen.line(&[(2.5, 15.0), (4.0, 17.0), (5.5, 15.0)]);
+        }
+        "grid-align" => {
+            // A row of cells over a double arrow: where a line sits in its row.
+            for k in 0..3 {
+                let x = 4.0 + k as f32 * 4.0;
+                pen.rect(x, 3.0, x + 4.0, 11.0);
+            }
+            pen.line(&[(3.0, 15.5), (17.0, 15.5)]);
+            pen.line(&[(5.0, 14.0), (3.0, 15.5), (5.0, 17.0)]);
+            pen.line(&[(15.0, 14.0), (17.0, 15.5), (15.0, 17.0)]);
+        }
+        "grid-char-align" => {
+            // A character in its cell over a double arrow: where a small character sits.
+            pen.rect(5.0, 2.5, 15.0, 12.0);
+            pen.text(10.0, 7.5, "A", 8.0);
+            pen.line(&[(3.0, 15.5), (17.0, 15.5)]);
+            pen.line(&[(5.0, 14.0), (3.0, 15.5), (5.0, 17.0)]);
+            pen.line(&[(15.0, 14.0), (17.0, 15.5), (15.0, 17.0)]);
+        }
+        "grid-chars" => {
+            // Characters per line: one row of cells.
+            for k in 0..3 {
+                let x = 2.5 + k as f32 * 5.0;
+                pen.rect(x, 7.5, x + 5.0, 12.5);
+            }
+        }
+        "grid-lines" => {
+            // Lines: stacked rows.
+            for j in 0..3 {
+                let y = 3.0 + j as f32 * 5.0;
+                pen.rect(3.5, y, 16.5, y + 4.0);
+            }
+        }
         "text-columns" => {
             pen.rect(2.5, 3.5, 17.5, 16.5);
             pen.line(&[(7.5, 3.5), (7.5, 16.5)]);

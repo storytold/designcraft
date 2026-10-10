@@ -1709,4 +1709,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Username", "使用者名稱"),
     ("Real name", "真實姓名"),
     ("Export a PDF, IDML or package to share — no cloud account needed.", "轉存 PDF、IDML 或封裝檔即可分享，無需雲端帳號。"),
+    ("Grid Format Attributes", "格點格式屬性"),
+    ("Lines and Columns", "行與分欄"),
+    ("Line Alignment", "行對齊"),
+    ("Grid Alignment", "格點對齊"),
+    ("Character Alignment", "字元對齊"),
+    ("Lines", "行數"),
 ];

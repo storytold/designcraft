@@ -1721,4 +1721,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
         "Export a PDF, IDML or package to share — no cloud account needed.",
         "PDF, IDML 또는 패키지를 내보내 공유하십시오. 클라우드 계정이 필요 없습니다.",
     ),
+    ("Grid Format Attributes", "격자 서식 속성"),
+    ("Lines and Columns", "행 및 단"),
+    ("Line Alignment", "행 정렬"),
+    ("Grid Alignment", "격자 정렬"),
+    ("Character Alignment", "문자 정렬"),
+    ("Lines", "행 수"),
 ];

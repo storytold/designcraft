@@ -180,6 +180,12 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
   Roman baseline, none). Space before/after rounds up to rows. Overset follows the rows. Text in
   the grid uses the grid's mojikumi set unless its paragraph has one (default: `lineEndHalf`; none sets it solid,
   punctuation taking whole cells), and the grid's line alignment when set.
+- Properties panel, frame grid selected: Grid Format Attributes (font, style, size, ••• for the
+  dialog), Alignment Options (line, grid and character alignment) and Lines and Columns
+  (characters, lines, columns, gutter), all through `object.frameGridOptions`. A new size
+  resizes the grid to the same counts of the new cells, and the text that follows the grid
+  (characters with the old grid's font, size or scale) takes the new format; characters given
+  their own keep it (`applyFormat: true` gives it to all the text).
 - Commands: `frame.create {grid}`, `object.frameGridOptions`, `object.frameGridInfo`,
   `object.frameType`, `type.applyGridFormat`, `document.frameGridDefaults`; tools
   `horizontalGrid` (Y) and `verticalGrid` (Q); Object › Frame Grid Options… (⌘B on a frame grid),

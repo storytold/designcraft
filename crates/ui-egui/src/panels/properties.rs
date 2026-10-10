@@ -55,7 +55,16 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
         None => crate::i18n::tr(&app.ui.language, "No Selection").into(),
         Some(i) if i.count > 1 => crate::i18n::tr(&app.ui.language, "Multiple Objects").into(),
         Some(i) => match i.kind {
-            "<text frame>" => crate::i18n::tr(&app.ui.language, "Text Frame").into(),
+            "<text frame>" => {
+                let grid = st
+                    .selection
+                    .items
+                    .first()
+                    .and_then(|id| st.doc.item(*id))
+                    .and_then(|it| it.text_frame())
+                    .is_some_and(|t| t.options.frame_grid.is_some());
+                crate::i18n::tr(&app.ui.language, if grid { "Frame Grid" } else { "Text Frame" }).into()
+            }
             "<group>" => crate::i18n::tr(&app.ui.language, "Group").into(),
             "<image>" => crate::i18n::tr(&app.ui.language, "Image").into(),
             "<rectangle>" => crate::i18n::tr(&app.ui.language, "Rectangle").into(),
@@ -110,7 +119,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
     appearance_section(app, ui, &i);
     divider(ui);
-    if i.is_text && i.count == 1 {
+    // A frame grid shows its own format, alignment and counts instead of the text's.
+    let grid = if i.is_text && i.count == 1 { selected_grid(app) } else { None };
+    if let Some(g) = &grid {
+        grid_sections(app, ui, g);
+    } else if i.is_text && i.count == 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Character"), true);
         character_section(app, ui);
         divider(ui);
@@ -121,7 +134,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(&app.ui.language, "Align"), true);
     align_row(app, ui);
     divider(ui);
-    if i.is_text && i.count == 1 {
+    if grid.is_some() {
+        // (Columns and gutter are in Lines and Columns.)
+    } else if i.is_text && i.count == 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Text Frame"), true);
         text_frame_section(app, ui);
         divider(ui);
@@ -1177,6 +1192,157 @@ fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     }
 }
 
+/// The selected frame grid, as `object.frameGridInfo` describes it.
+fn selected_grid(app: &mut DesignApp) -> Option<Value> {
+    let st = app.session.active()?;
+    let fid = st.selection.items.first().copied()?;
+    st.doc.item(fid).and_then(|i| i.text_frame()).and_then(|t| t.options.frame_grid.as_ref())?;
+    let info = app.run("object.frameGridInfo", json!({"ids": [fid.0]})).ok()?;
+    info["grids"].get(0).cloned()
+}
+
+/// Line alignments of a frame grid: (`lineAlign` value, label); "" leaves it to the paragraphs.
+const GRID_LINE_ALIGNMENTS: &[(&str, &str)] = &[
+    ("", "Paragraph Alignment"),
+    ("left", "Align Left"),
+    ("center", "Align Center"),
+    ("right", "Align Right"),
+    ("leftJustified", "Justify with Last Line Aligned Left"),
+    ("centerJustified", "Justify with Last Line Aligned Center"),
+    ("rightJustified", "Justify with Last Line Aligned Right"),
+    ("fullyJustified", "Justify All Lines"),
+];
+
+/// Grid and character alignments of a frame grid: (value, label).
+const GRID_ALIGNMENTS: &[(&str, &str)] = &[
+    ("none", "None"),
+    ("romanBaseline", "Roman Baseline"),
+    ("emTop", "Em Box Top"),
+    ("emCenter", "Em Box Center"),
+    ("emBottom", "Em Box Bottom"),
+    ("icfTop", "ICF Top"),
+    ("icfBottom", "ICF Bottom"),
+];
+
+/// A dropdown over `(value, label)` options; the picked value.
+fn option_dropdown(app: &DesignApp, ui: &mut Ui, options: &[(&'static str, &'static str)], cur: &str, w: f32) -> Option<&'static str> {
+    let labels: Vec<String> = options.iter().map(|o| crate::i18n::tr(&app.ui.language, o.1).to_string()).collect();
+    let at = options.iter().position(|o| o.0 == cur);
+    let shown = at.and_then(|k| labels.get(k)).cloned().unwrap_or_else(|| "—".into());
+    widgets::dropdown_list(ui, &shown, w, &labels, at).and_then(|k| options.get(k)).map(|o| o.0)
+}
+
+/// A frame grid's sections: Grid Format Attributes (the font and size its cells are made for:
+/// changing the size resizes the grid, and its text follows), Alignment Options, and Lines and
+/// Columns (characters per line, lines, columns, gutter). All through `object.frameGridOptions`.
+fn grid_sections(app: &mut DesignApp, ui: &mut Ui, info: &Value) {
+    const CMD: &str = "object.frameGridOptions";
+    let t = Tokens::get(ui.ctx());
+    let u = units(app);
+    let g = &info["grid"];
+    let fam = g["fontFamily"].as_str().unwrap_or("").to_string();
+    let sty = g["fontStyle"].as_str().unwrap_or("").to_string();
+    let fw = full_width(ui);
+    let half = (fw - 10.0) / 2.0;
+
+    section(ui, crate::i18n::tr(&app.ui.language, "Grid Format Attributes"), true);
+    let fonts = super::fonts(app);
+    let menu = super::font_menu(app);
+    let resp = widgets::dropdown(ui, "", fw);
+    let r = resp.rect;
+    ui.painter().text(
+        r.min + vec2(6.0, 10.5),
+        egui::Align2::LEFT_CENTER,
+        if fam.is_empty() { "—".to_string() } else { super::font_label(app, &menu, &fam) },
+        egui::FontId::proportional(11.5),
+        t.text,
+    );
+    let mut pick_fam = None;
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(fw);
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            if let Some(f) = super::font_menu_rows(app, ui, &menu, &fam) {
+                pick_fam = Some(f);
+                ui.close();
+            }
+        });
+    });
+    if let Some(f) = pick_fam {
+        let styles = fonts.styles(&f);
+        let style = if styles.iter().any(|s| s == "Regular") { "Regular".to_string() } else { styles.first().cloned().unwrap_or_default() };
+        let _ = app.run(CMD, json!({"fontFamily": f, "fontStyle": style}));
+    }
+    ui.add_space(1.0);
+    let b = block(ui, FIELD_H);
+    let styles = fonts.styles(&fam);
+    let cur = styles.iter().position(|s| *s == sty);
+    if let Some(k) =
+        place(ui, sub(b, 0.0, 0.0, half, FIELD_H), |ui| widgets::dropdown_list(ui, if sty.is_empty() { "—" } else { &sty }, half, &styles, cur))
+        && let Some(style) = styles.get(k)
+    {
+        let _ = app.run(CMD, json!({"fontStyle": style}));
+    }
+    const SIZES: &[f64] = &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 32.0, 36.0, 48.0, 60.0, 72.0];
+    icons::paint(ui.painter(), sub(b, half + 10.0, 1.0, 19.0, 19.0), "font-size", t.icon);
+    if let Some(v) = place(ui, sub(b, half + 34.0, 0.0, half - 24.0, FIELD_H), |ui| {
+        NumField::number("gridsize", g["size"].as_f64(), " pt", 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
+    }) {
+        let _ = app.run(CMD, json!({"size": v}));
+    }
+    if more_options(ui, &app.ui.language).clicked() {
+        crate::menus::activate(app, CMD, &Value::Null);
+    }
+    divider(ui);
+
+    section(ui, crate::i18n::tr(&app.ui.language, "Alignment Options"), true);
+    let dw = half - 24.0;
+    let b = block(ui, 2.0 * FIELD_H + 5.0);
+    for (icon, key, options, x, y, tip) in [
+        ("grid-line-align", "lineAlign", GRID_LINE_ALIGNMENTS, 0.0, 0.0, "Line Alignment"),
+        ("grid-align", "gridAlign", GRID_ALIGNMENTS, half + 10.0, 0.0, "Grid Alignment"),
+        ("grid-char-align", "charAlign", GRID_ALIGNMENTS, 0.0, FIELD_H + 5.0, "Character Alignment"),
+    ] {
+        let ir = sub(b, x, y + 1.0, 19.0, 19.0);
+        icons::paint(ui.painter(), ir, icon, t.icon);
+        ui.interact(ir, ui.id().with(("gridopt", key)), egui::Sense::hover()).on_hover_text(crate::i18n::tr(&app.ui.language, tip));
+        let cur = g[key].as_str().unwrap_or("").to_string();
+        if let Some(v) = place(ui, sub(b, x + 24.0, y, dw, FIELD_H), |ui| option_dropdown(app, ui, options, &cur, dw)) {
+            // No line alignment: the paragraphs' own.
+            let v = if key == "lineAlign" && v.is_empty() { Value::Null } else { json!(v) };
+            let _ = app.run(CMD, json!({ key: v }));
+        }
+    }
+    divider(ui);
+
+    section(ui, crate::i18n::tr(&app.ui.language, "Lines and Columns"), true);
+    let b = block(ui, 2.0 * FIELD_H + 5.0);
+    let max = f64::from(designcraft_doc::framegrid::MAX_GRID_COUNT);
+    for (icon, key, x, y, hi, tip) in [
+        ("grid-chars", "chars", 0.0, 0.0, max, "Characters"),
+        ("grid-lines", "lines", half + 10.0, 0.0, max, "Lines"),
+        ("text-columns", "columns", 0.0, FIELD_H + 5.0, 40.0, "Columns"),
+    ] {
+        let ir = sub(b, x, y + 1.0, 19.0, 19.0);
+        icons::paint(ui.painter(), ir, icon, t.icon);
+        ui.interact(ir, ui.id().with(("gridopt", key)), egui::Sense::hover()).on_hover_text(crate::i18n::tr(&app.ui.language, tip));
+        let id = format!("grid{key}");
+        if let Some(v) = place(ui, sub(b, x + 24.0, y, dw, FIELD_H), |ui| {
+            NumField::number(&id, info[key].as_f64(), "", 0).width(dw).spinner().range(1.0, hi).show(ui)
+        }) {
+            let _ = app.run(CMD, json!({ key: v.round().clamp(1.0, hi) }));
+        }
+    }
+    let ir = sub(b, half + 10.0, FIELD_H + 6.0, 19.0, 19.0);
+    icons::paint(ui.painter(), ir, "text-gutter", t.icon);
+    ui.interact(ir, ui.id().with(("gridopt", "gutter")), egui::Sense::hover()).on_hover_text(crate::i18n::tr(&app.ui.language, "Gutter"));
+    if let Some(v) = place(ui, sub(b, half + 34.0, FIELD_H + 5.0, dw, FIELD_H), |ui| {
+        NumField::measure("gridgutter", info["gutter"].as_f64(), u).width(dw).spinner().range(0.0, 1440.0).show(ui)
+    }) {
+        let _ = app.run(CMD, json!({"gutter": v}));
+    }
+    divider(ui);
+}
+
 /// Languages offered for text (InDesign-style names).
 const LANGUAGES: &[&str] = &[
     "[No Language]",
@@ -2164,5 +2330,44 @@ fn variable_font_axes(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, styl
     if changed {
         let spec = values.iter().map(|(t, v)| format!("{t}:{}", v.round())).collect::<Vec<_>>().join(",");
         let _ = app.run("type.char", json!({"attrs": {"fontStyle": format!("{base} {{{spec}}}")}}));
+    }
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use serde_json::json;
+
+    /// A selected frame grid gets the grid sections (drawn without a panic in every CJK
+    /// interface); a plain text frame doesn't.
+    #[test]
+    fn a_selected_frame_grid_shows_its_grid_sections() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let grid = app
+            .run("frame.create", json!({"rect": [60, 60, 300, 200], "content": "text", "caret": false, "text": "漢字", "grid": {"size": 12}}))
+            .unwrap();
+        let info = super::selected_grid(&mut app).unwrap();
+        assert_eq!(info["id"], grid["id"]);
+        assert_eq!(info["grid"]["size"], 12.0);
+        let ctx = egui::Context::default();
+        for lang in ["", "ja", "zh", "zh-hant", "ko"] {
+            app.run("app.language", json!({"lang": lang})).unwrap();
+            for _ in 0..3 {
+                let mut out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+                        max_texture_side: Some(8192),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        app.logic(&ui.ctx().clone());
+                        app.ui(ui);
+                    },
+                );
+                out.textures_delta.clear();
+            }
+        }
+        app.run("frame.create", json!({"rect": [60, 260, 300, 400], "content": "text", "caret": false})).unwrap();
+        assert!(super::selected_grid(&mut app).is_none());
     }
 }

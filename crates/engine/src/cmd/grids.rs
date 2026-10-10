@@ -16,7 +16,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Frame Grid Options…",
             ["Object"],
             None,
-            "{fontFamily?, fontStyle?, size?, hScale?, vScale?, charAki?, lineAki?, lineAlign?: left|center|right|leftJustified|…|null (paragraphs' own), gridAlign?: none|romanBaseline|emTop|emCenter|emBottom|icfTop|icfBottom, charAlign? (same values), count?: none|top|bottom|left|right, countSize?, view?: grid|nZ|outline, mojikumi?, chars?, lines?, columns?, gutter?, applyFormat?: bool (default: when the font, size or scale change), ids?} → {grids} — text frames become frame grids; the frame is resized to its cells",
+            "{fontFamily?, fontStyle?, size?, hScale?, vScale?, charAki?, lineAki?, lineAlign?: left|center|right|leftJustified|…|null (paragraphs' own), gridAlign?: none|romanBaseline|emTop|emCenter|emBottom|icfTop|icfBottom, charAlign? (same values), count?: none|top|bottom|left|right, countSize?, view?: grid|nZ|outline, mojikumi?, chars?, lines?, columns?, gutter?, applyFormat?: bool (true: all the text takes the grid's font, size and scale; default: the text that follows the grid does, characters with their own font or size keep them), ids?} → {grids} — text frames become frame grids; the frame is resized to its cells",
             has_text_or_frames,
             frame_grid_options
         ),
@@ -178,6 +178,38 @@ pub(crate) fn format_story_chars(st: &mut Story, range: std::ops::Range<usize>, 
     }
 }
 
+/// Text that follows grid `old` takes the format of `new`: the characters whose font, size or
+/// scale is the old grid's. Characters and paragraphs given their own keep it.
+pub(crate) fn follow_grid_format(st: &mut Story, old: &FrameGrid, new: &FrameGrid) {
+    let same = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() < 1e-6);
+    let (old, new) = (old.clone(), new.clone());
+    let follow = move |over: &mut CharAttrs| {
+        let (fam, sty) = (over.font_family.as_deref().unwrap_or(""), over.font_style.as_deref().unwrap_or(""));
+        if fam == old.font_family && (sty == old.font_style || over.font_style.is_none()) && !new.font_family.is_empty() {
+            over.font_family = Some(new.font_family.clone());
+            over.font_style = (!new.font_style.is_empty()).then(|| new.font_style.clone());
+        }
+        if same(over.size, old.size) {
+            over.size = Some(new.size);
+        }
+        if same(over.h_scale, old.h_scale) {
+            over.h_scale = Some(new.h_scale);
+        }
+        if same(over.v_scale, old.v_scale) {
+            over.v_scale = Some(new.v_scale);
+        }
+    };
+    if st.is_empty() {
+        if let Some(r) = st.chars.first_mut() {
+            follow(&mut r.format.over);
+        }
+        st.rev += 1;
+    } else {
+        let n = st.len();
+        st.format_chars(0..n, |f| follow(&mut f.over));
+    }
+}
+
 /// The text area of a frame in composition space (lines along x): the turned box of a vertical
 /// frame.
 fn composition_area(d: &Document, it: &Item) -> (Rect, bool) {
@@ -254,7 +286,10 @@ fn frame_grid_options(s: &mut Session, p: &Value) -> Result<Value> {
             let chars = count_param(&p, "chars").unwrap_or(c0.max(1));
             let lines = count_param(&p, "lines").unwrap_or(l0.max(1));
             let resize = had.is_none() || resize_keys.iter().any(|k| p.get(*k).is_some());
-            let apply = p.get("applyFormat").and_then(Value::as_bool).unwrap_or(had.is_none() || format_keys.iter().any(|k| p.get(*k).is_some()));
+            // A grid's own text follows its format; `applyFormat` gives it to all the text
+            // (a text frame becoming a grid: by default), or to none.
+            let changed = format_keys.iter().any(|k| p.get(*k).is_some());
+            let apply = p.get("applyFormat").and_then(Value::as_bool).or((had.is_none()).then_some(true));
             let story = tf.story;
             let Some(it) = d.item_mut(*id) else { continue };
             if let Some(tf) = it.text_frame_mut() {
@@ -265,9 +300,15 @@ fn frame_grid_options(s: &mut Session, p: &Value) -> Result<Value> {
             if resize {
                 fit_frame(it, &g, chars, lines, columns, gutter, vertical);
             }
-            if apply && let Some(st) = d.story_mut(story) {
-                let n = st.len();
-                format_story_chars(st, 0..n, &grid_format(&g));
+            if let Some(st) = d.story_mut(story) {
+                match apply {
+                    Some(true) => {
+                        let n = st.len();
+                        format_story_chars(st, 0..n, &grid_format(&g));
+                    }
+                    None if changed => follow_grid_format(st, &old, &g),
+                    _ => {}
+                }
             }
             out.push(json!({"id": id.0, "grid": g, "chars": chars, "lines": lines, "columns": columns, "gutter": gutter, "vertical": vertical}));
         }
@@ -458,6 +499,45 @@ mod tests {
         let st = d.story(designcraft_doc::StoryId(r["story"].as_u64().unwrap())).unwrap();
         let f = d.styles.resolve_char(&d.styles.resolve_para(&st.paras[0]).1, st.char_format_at(1));
         assert_eq!((f.size, f.font_family.as_str()), (10.0, "Source Serif 4"));
+    }
+
+    /// Changing a grid's size resizes its cells and the text that follows the grid; characters
+    /// given their own size keep it, unless the format is applied to all the text.
+    #[test]
+    fn grid_format_changes_spare_text_with_its_own_format() {
+        let mut s = session();
+        let r = s
+            .execute(
+                "frame.create",
+                &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "漢字仮名交じり", "grid": {"size": 10, "lineAki": 5, "charAki": 0}}),
+            )
+            .unwrap();
+        let (id, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        let (chars, lines) = {
+            let info = s.execute("object.frameGridInfo", &json!({"ids": [id]})).unwrap();
+            (info["grids"][0]["chars"].as_u64().unwrap(), info["grids"][0]["lines"].as_u64().unwrap())
+        };
+        // 仮名 (bytes 6..12) gets its own size.
+        s.execute("text.select", &json!({"story": sid, "anchor": 6, "focus": 12})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 20}})).unwrap();
+        let size_at = |s: &Session, at: usize| {
+            let d = &s.active().unwrap().doc;
+            let st = d.story(designcraft_doc::StoryId(sid)).unwrap();
+            d.styles.resolve_char(&d.styles.resolve_para(&st.paras[0]).1, st.char_format_at(at)).size
+        };
+        assert_eq!((size_at(&s, 1), size_at(&s, 7)), (10.0, 20.0));
+        s.execute("object.frameGridOptions", &json!({"ids": [id], "size": 13})).unwrap();
+        assert_eq!((size_at(&s, 1), size_at(&s, 7), size_at(&s, 13)), (13.0, 20.0, 13.0));
+        // The same cells, at the new size.
+        let info = s.execute("object.frameGridInfo", &json!({"ids": [id]})).unwrap();
+        assert_eq!((info["grids"][0]["chars"].as_u64().unwrap(), info["grids"][0]["lines"].as_u64().unwrap()), (chars, lines));
+        let b = s.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds();
+        assert!((b.width() - chars as f64 * 13.0).abs() < 1e-6, "{b:?}");
+        // Alignment or counts alone leave the text's format alone.
+        s.execute("object.frameGridOptions", &json!({"ids": [id], "lineAlign": "center", "chars": 12})).unwrap();
+        assert_eq!((size_at(&s, 1), size_at(&s, 7)), (13.0, 20.0));
+        s.execute("object.frameGridOptions", &json!({"ids": [id], "size": 14, "applyFormat": true})).unwrap();
+        assert_eq!((size_at(&s, 1), size_at(&s, 7)), (14.0, 14.0));
     }
 
     #[test]
