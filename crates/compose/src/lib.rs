@@ -768,6 +768,18 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             designcraft_doc::Leading::Auto => base_size * pp.auto_leading,
             designcraft_doc::Leading::Points(v) => v,
         };
+        // The paragraph mark is a character of the last line: its leading counts there like any
+        // other character's. It doesn't set the line's ascent or descent. A hidden or deleted
+        // mark takes no room.
+        let mark_leading = story.text.get(prange.end..).filter(|t| t.starts_with('\n')).and_then(|_| {
+            let props = doc.styles.resolve_char(&base_chars, story.format_after(prange.end));
+            let hidden = props.change == designcraft_doc::ChangeMark::Deleted
+                || (!props.conditions.is_empty() && props.conditions.iter().all(|c| sub.hidden_conditions.contains(c)));
+            (!hidden).then_some(match props.leading {
+                designcraft_doc::Leading::Auto => props.size * pp.auto_leading,
+                designcraft_doc::Leading::Points(v) => v,
+            })
+        });
         let spacing = spacing_for(&pp, base_size);
         // A paragraph set across the columns moves on to the next frame where others move on to
         // the next column.
@@ -914,6 +926,10 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let (s, e) = (g0 + b.start, g0 + b.end);
                 let line_glyphs = &glyphs[s..e.max(s)];
                 let (asc, desc, lead) = line_metrics(line_glyphs, &glyphs, s, base_leading, base_chars.size, db, &base_chars);
+                let lead = match mark_leading {
+                    Some(m) if k + 1 == breaks.len() => lead.max(m),
+                    _ => lead,
+                };
                 let reference = cjk_line_reference(line_glyphs);
                 let mut baseline = cur.next_baseline(f, col, lead, asc, &pp);
                 if cur.last_baseline.is_some() {

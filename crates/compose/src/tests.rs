@@ -2771,3 +2771,22 @@ fn empty_paragraphs_get_no_bullet_or_number() {
         assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.", "", "2.", ""], "list `{name}`");
     }
 }
+
+#[test]
+fn paragraph_mark_size_counts_in_its_line_auto_leading() {
+    let gaps = |mark_size: f64| {
+        let (mut d, sid, _) = doc_with("One\nTwo\nThree", Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(7..8, |f| f.over.size = Some(mark_size));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let b: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+        assert_eq!(b.len(), 3);
+        (b[1] - b[0], b[2] - b[1])
+    };
+    // A 12 pt line ending in a 14 pt return: 14 × 120% above it, the next line unchanged.
+    let (above, below) = gaps(14.0);
+    assert!((above - 16.8).abs() < 1e-6, "{above}");
+    assert!((below - 14.4).abs() < 1e-6, "{below}");
+    let (above, below) = gaps(12.0);
+    assert!((above - 14.4).abs() < 1e-6, "{above}");
+    assert!((below - 14.4).abs() < 1e-6, "{below}");
+}
