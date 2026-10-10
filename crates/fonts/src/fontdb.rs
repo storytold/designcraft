@@ -668,6 +668,36 @@ pub(crate) fn last_resort_face() -> Arc<FontFace> {
     .clone()
 }
 
+/// The top of the first of `chars` the font has, in font units: the highest point of its outline
+/// (no hinting, at `location`). For flat-topped letters that is the cap height (`H`) or x-height
+/// (`x`). None when the font has none of them, or their outlines are empty.
+fn measured_top(f: &skrifa::FontRef, location: &Location, chars: &[char]) -> Option<f64> {
+    struct Top(f32);
+    impl OutlinePen for Top {
+        fn move_to(&mut self, _x: f32, y: f32) {
+            self.0 = self.0.max(y);
+        }
+        fn line_to(&mut self, _x: f32, y: f32) {
+            self.0 = self.0.max(y);
+        }
+        fn quad_to(&mut self, _cx: f32, _cy: f32, _x: f32, y: f32) {
+            self.0 = self.0.max(y);
+        }
+        fn curve_to(&mut self, _cx0: f32, _cy0: f32, _cx1: f32, _cy1: f32, _x: f32, y: f32) {
+            self.0 = self.0.max(y);
+        }
+        fn close(&mut self) {}
+    }
+    let cmap = f.charmap();
+    let glyphs = f.outline_glyphs();
+    chars.iter().find_map(|&c| {
+        let g = glyphs.get(cmap.map(c)?)?;
+        let mut pen = Top(f32::NEG_INFINITY);
+        g.draw(DrawSettings::unhinted(Size::unscaled(), location), &mut pen).ok()?;
+        Some(pen.0 as f64).filter(|v| v.is_finite() && *v > 0.0)
+    })
+}
+
 fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, style: String, coords: Vec<([u8; 4], f32)>) -> Option<FontFace> {
     let data: &[u8] = match &bytes {
         FontBytes::Static(b) => b,
@@ -697,8 +727,21 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         upem: m.units_per_em.max(1) as f64,
         ascent: m.ascent as f64,
         descent: -(m.descent as f64),
-        cap_height: m.cap_height.map(|v| v as f64).filter(|v| *v > 0.0).unwrap_or(m.ascent as f64 * 0.72),
-        x_height: m.x_height.map(|v| v as f64).filter(|v| *v > 0.0).unwrap_or(m.ascent as f64 * 0.5),
+        // Older fonts (OS/2 before version 2, e.g. some system Palatino and Times builds) don't
+        // declare these. Measure them from flat-topped letters before falling back to a share of
+        // the ascent, which can be far off (drop caps are sized from the cap height).
+        cap_height: m
+            .cap_height
+            .map(|v| v as f64)
+            .filter(|v| *v > 0.0)
+            .or_else(|| measured_top(&f, &location, &['H', 'I', 'E', 'T']))
+            .unwrap_or(m.ascent as f64 * 0.72),
+        x_height: m
+            .x_height
+            .map(|v| v as f64)
+            .filter(|v| *v > 0.0)
+            .or_else(|| measured_top(&f, &location, &['x', 'z', 'v']))
+            .unwrap_or(m.ascent as f64 * 0.5),
         shaper,
         coords,
         location,
@@ -1453,3 +1496,32 @@ mod tests_docfonts;
 #[cfg(test)]
 #[path = "tests_vertical.rs"]
 mod tests_vertical;
+
+#[cfg(test)]
+mod tests_measured_top {
+    use super::*;
+
+    /// Measuring `H` and `x` gives the cap height and x-height the bundled fonts declare (all
+    /// declare them in OS/2), so fonts that don't declare them get the real values too, not a
+    /// share of the ascent.
+    #[test]
+    fn measured_heights_match_the_declared_ones() {
+        for (i, bytes) in BUNDLED.iter().enumerate() {
+            let f = skrifa::FontRef::new(bytes).unwrap();
+            let loc = Location::default();
+            let m = f.metrics(Size::unscaled(), &loc);
+            let (cap, x) = (m.cap_height.unwrap() as f64, m.x_height.unwrap() as f64);
+            let mcap = measured_top(&f, &loc, &['H', 'I', 'E', 'T']).unwrap();
+            let mx = measured_top(&f, &loc, &['x', 'z', 'v']).unwrap();
+            assert!((mcap - cap).abs() <= cap * 0.02, "font {i}: measured cap height {mcap} vs declared {cap}");
+            // Italic x serifs can rise a little above the x-height (Source Serif Bold Italic: +3%).
+            assert!((mx - x).abs() <= x * 0.04, "font {i}: measured x-height {mx} vs declared {x}");
+        }
+    }
+
+    #[test]
+    fn measuring_a_letter_the_font_lacks_gives_none() {
+        let f = skrifa::FontRef::new(BUNDLED[0]).unwrap();
+        assert_eq!(measured_top(&f, &Location::default(), &['\u{E000}']), None);
+    }
+}

@@ -1014,10 +1014,29 @@ fn draw_text_selection(
                 let x1 = if e == l.range.end && range.end > l.range.end { l.end_x.max(x0 + 3.0) } else { compose::caret_x(l, e) };
                 quads.push(quad(x0, x1));
             }
+            // Selected glyphs set below the line's baseline (a drop cap hangs beside the lines under
+            // it): one box across them, from the line's top (or the cap's top, when a cap set larger
+            // than the body rises above the line) to their baseline plus the line's descent (or the
+            // cap's lowest point), so the whole cap is highlighted: selected glyphs are drawn
+            // inverted, and any part outside the box would vanish.
+            let mut dropped: Option<(f64, f64, f64, f64)> = None;
             for (gi, g) in l.glyphs.iter().enumerate() {
                 if g.visible && g.len > 0 && g.byte >= s && g.byte < e {
                     glyphs.push((li, gi));
+                    if g.y > 0.5 {
+                        let gb = l.baseline + g.y;
+                        // The outline is in font units, y down.
+                        use designcraft_render::vello_cpu::kurbo::Shape as _;
+                        let bb = designcraft_fonts::FontDb::global().outline(&g.face, g.gid).bounding_box();
+                        let (top, bottom) = if bb.is_finite() && bb.height() > 0.0 { (gb + bb.y0 * g.sy, gb + bb.y1 * g.sy) } else { (gb, gb) };
+                        let (top, bottom) = (top.min(l.baseline - l.ascent), bottom.max(gb + l.descent));
+                        let (x0, x1, t, b) = dropped.unwrap_or((g.x, g.x + g.adv, top, bottom));
+                        dropped = Some((x0.min(g.x), x1.max(g.x + g.adv), t.min(top), b.max(bottom)));
+                    }
                 }
+            }
+            if let Some((x0, x1, top, bottom)) = dropped {
+                quads.push([Point::new(x0, top), Point::new(x1, top), Point::new(x1, bottom), Point::new(x0, bottom)]);
             }
         }
         if !quads.is_empty() {
