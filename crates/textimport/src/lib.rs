@@ -12,6 +12,7 @@ mod docx;
 pub mod export;
 mod rtf;
 pub mod tagged;
+mod xls;
 mod xlsx;
 
 /// Data-merge row cap (header not included). More than this is an error.
@@ -25,6 +26,20 @@ pub const DATA_MERGE_MAX_COLS: usize = 200;
 pub fn xlsx_records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, ImportError> {
     xlsx::records(bytes, sheet)
 }
+
+/// Data-merge worksheet rows, with formula values and date text. Warnings are per cell.
+/// [`xlsx_records`] and [`import`] stay on the cached value only.
+pub fn xlsx_merge_records(bytes: &[u8], sheet: Option<&str>) -> Result<(Vec<Vec<String>>, Vec<String>), ImportError> {
+    xlsx::merge_records(bytes, sheet)
+}
+
+/// Data-merge rows from a BIFF `.xls` workbook. `.xlsm` is not read here.
+pub fn xls_records(bytes: &[u8]) -> Result<Vec<Vec<String>>, ImportError> {
+    xls::records(bytes)
+}
+
+/// A small `.xls` workbook for tests. Data merge reads it with [`xls_records`].
+pub use xls::{XlsCell, xls_fixture};
 
 use designcraft_doc::{CharAttrs, ParaAttrs, Story};
 

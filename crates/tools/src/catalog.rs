@@ -54,6 +54,7 @@ pub const TOOL_GROUPS: &[&[ToolInfo]] = &[
         t("ellipse", "Ellipse Tool", Some("L"), "tool-ellipse"),
         t("polygon", "Polygon Tool", None, "tool-polygon"),
     ],
+    &[t("dataGrid", "Data Merge Grid Tool", None, "tool-data-grid")],
     &[],
     &[t("scissors", "Scissors Tool", Some("C"), "tool-scissors")],
     &[

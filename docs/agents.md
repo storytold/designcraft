@@ -43,13 +43,23 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 
 ## Data merge
 
-`data.source.select {path, sheet?}` links a CSV/TSV/`.xlsx` file to the document (`data.source.update` re-reads it,
-`data.source.remove` drops it); `data.fields` lists its fields. `data.placeholder.add {field, role?, story?, at?, end?, item?}`
-marks text or a frame as a field (`role`: text, image, qr, hyperlink); `data.options` sets records, tiling and image
-fitting; `data.preview {record}` / `data.preview.stop` show one record without saving it.
+`data.source.select {path | bytes, name?, sheet?}` links a CSV, TSV, JSON, `.xlsx`, or `.xls` file
+(`data.source.update` re-reads it, `data.source.remove` drops it). `.xlsm` is refused. `data.fields` lists the
+columns plus the virtual fields `Source filename` and `Merge index`. `data.placeholder.add {field, role?, story?, at?, end?, item?}`
+marks text or a frame (`role`: text, image, qr, hyperlink). An image placeholder can sit inside a story.
+`object.qrCode {field?, source?, rect?}` can bind a QR frame to any column, including one that is not marked `#`.
 
-`data.merge` now **creates a new document** and leaves the template unchanged (the old `spread` parameter, which
-appended pages to the template, is an error). It uses the linked source, or inline `csv` / `rows` / `path` / `bytes`:
+`data.options` sets records, tiling, image fitting, and `skipWarnings` (off unless set). `data.source.affix` stores
+prefix and postfix rules. `data.join` names a driving source and key links; with no driving source, records are
+concatenated. `data.sort` sorts the combined list after that join or concatenation. `data.preview {record}` and
+`data.preview.stop` show one record without saving it. Excel formulas and date formats are applied for data merge.
+Placing a workbook as a table still uses cached `.xlsx` values and does not place `.xls`.
+
+`data.merge` creates a new document and leaves the template unchanged (the old `spread` parameter, which appended
+pages to the template, is an error). It uses the linked source, or inline `csv`, `rows`, `json`, `path`, or `bytes`.
+`pdf` writes that merged document with the existing PDF export in the same run. Omitting `pdf` writes no file.
+The Data Merge Grid tool drags a rectangle and calls `data.grid.create` with that rectangle and the spread. The
+Create Grid button still calls that command for the page margin rectangle.
 
 ```sh
 echo 'data.merge {"path": "people.csv", "records": "range", "range": "1-20"}' | designcraft-cli script - --in template.designcraft --save merged.designcraft

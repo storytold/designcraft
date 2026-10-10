@@ -271,6 +271,11 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(mime) = designcraft_doc::media_mime(&name) {
         return super::media::place_media(s, p, name, mime, bytes, link);
     }
+    // Data merge reads .xls. Place keeps .xlsx tables and does not grow a table from .xls or .xlsm.
+    if lname.ends_with(".xls") || lname.ends_with(".xlsm") {
+        let ext = if lname.ends_with(".xlsm") { "xlsm" } else { "xls" };
+        return Err(bad("file.place", format!("{ext} workbooks are not placed as a table")));
+    }
     // Text files (plain, Word, RTF) flow into frames.
     if designcraft_textimport::is_text_file(&name) {
         return super::place_text::place_text(s, p, &name, &bytes);

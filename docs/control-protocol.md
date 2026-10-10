@@ -38,8 +38,10 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `app.open` / `app.save` / `app.export` / `app.quit` | | Files |
 
 Data merge runs through `engine.execute` like any command: `data.source.select`, `data.fields`, `data.placeholder.add` /
-`.remove`, `data.options`, `data.preview` / `data.preview.stop`, `data.merge`. `data.merge` creates and activates a new
-merged document; the template stays as it was ([agents.md](agents.md#data-merge)).
+`.remove`, `data.source.affix`, `data.join`, `data.sort`, `data.options` (including `skipWarnings`), `data.preview` /
+`data.preview.stop`, `data.grid.create`, `data.merge`. `data.merge` creates and activates a new merged document; the
+template stays as it was. `pdf` on that command writes the merged pages with the existing PDF export. Sources are CSV,
+TSV, JSON, `.xlsx`, and `.xls` ([agents.md](agents.md#data-merge)).
 
 Headless window screenshots (locked screen, hidden window): `cargo run -p designcraft-ui-egui --example ui_shot -- script.jsonl`, where each line is one of the requests above, `{"shot": "/abs/out.png"}` or `{"steps": n}` (renders the whole UI offscreen with wgpu).
 

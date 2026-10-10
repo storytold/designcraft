@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Generate QR Code…",
         ["Object"],
         None,
-        "{type?: url|text|sms|email|vcard (default url), content (url/text), number?, message?, to?, subject?, body?, name?, phone?, email?, org?, url?, color? (swatch, [Black]), rect? (new object; else into the selected frame, or re-encode a selected code), spread?} → {id, content}",
+        "{type?: url|text|sms|email|vcard (default url), content (url/text), field? (data-merge column to bind as a qr placeholder; the column kind stays as stored), source? (source id), number?, message?, to?, subject?, body?, name?, phone?, email?, org?, url?, color? (swatch, [Black]), rect? (new object; else into the selected frame, or re-encode a selected code), spread?} → {id, content}",
         has_doc,
         qr_code
     )]
@@ -53,9 +53,21 @@ fn qr_item(id: ItemId, layer: designcraft_doc::LayerId, text: &str, r: Rect, col
     Ok(it)
 }
 
+fn empty_frame(id: ItemId, layer: designcraft_doc::LayerId, r: Rect) -> Item {
+    let mut it = Item::new(id, layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+    it.content = Content::Unassigned;
+    it
+}
+
 fn qr_code(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.qrCode";
-    let text = encode(p).map_err(|e| bad(ID, e))?;
+    let field = str_param(p, "field").map(str::to_string);
+    let source = p.get("source").and_then(Value::as_u64);
+    let text = match encode(p) {
+        Ok(text) => Some(text),
+        Err(e) if field.is_some() && e == "nothing to encode" => None,
+        Err(e) => return Err(bad(ID, e)),
+    };
     let color = str_param(p, "color").unwrap_or(designcraft_color::swatch::BLACK).to_string();
     let rect = rect_param(p, "rect");
     let sr = spread_param(p, "spread");
@@ -63,17 +75,22 @@ fn qr_code(s: &mut Session, p: &Value) -> Result<Value> {
     let lid = st.active_layer;
     let sel = st.selection.items.clone();
     s.edit(|d, selection| {
-        if d.swatch(&color).is_none() {
+        if text.is_some() && d.swatch(&color).is_none() {
             return Err(bad(ID, format!("no swatch `{color}`")));
         }
         let target = if rect.is_some() { None } else { sel.first().copied() };
-        let id = match (rect, target) {
-            (Some(r), _) => {
+        let id = match (text.as_deref(), rect, target) {
+            (Some(text), Some(r), _) => {
                 let id = ItemId(d.alloc());
-                d.insert_item(sr, qr_item(id, lid, &text, r, &color).map_err(|e| bad(ID, e))?, None)?;
+                d.insert_item(sr, qr_item(id, lid, text, r, &color).map_err(|e| bad(ID, e))?, None)?;
                 id
             }
-            (None, Some(t)) => {
+            (None, Some(r), _) => {
+                let id = ItemId(d.alloc());
+                d.insert_item(sr, empty_frame(id, lid, r), None)?;
+                id
+            }
+            (Some(text), None, Some(t)) => {
                 let it = d.item(t).ok_or_else(|| bad(ID, "no such object"))?.clone();
                 if it.alt_text.starts_with(MARK) {
                     // Edit QR Code: same place and size.
@@ -82,7 +99,7 @@ fn qr_code(s: &mut Session, p: &Value) -> Result<Value> {
                     let n = designcraft_geom::qr::qr_size(it.alt_text.trim_start_matches(MARK)).unwrap_or(21);
                     let quiet = side / (n + 4) as f64 * 2.0;
                     let r = Rect::from_center_size(b.center(), (side + 2.0 * quiet, side + 2.0 * quiet));
-                    let fresh = qr_item(t, it.layer, &text, r, &color).map_err(|e| bad(ID, e))?;
+                    let fresh = qr_item(t, it.layer, text, r, &color).map_err(|e| bad(ID, e))?;
                     let it = d.item_mut(t).ok_or(designcraft_doc::DocError::NoItem(t))?;
                     it.path = fresh.path;
                     it.fill = fresh.fill;
@@ -94,16 +111,26 @@ fn qr_code(s: &mut Session, p: &Value) -> Result<Value> {
                         return Err(bad(ID, "select an empty frame, a QR code, or give `rect`"));
                     }
                     let id = ItemId(d.alloc());
-                    let code = qr_item(id, it.layer, &text, it.inner_bounds(), &color).map_err(|e| bad(ID, e))?;
+                    let code = qr_item(id, it.layer, text, it.inner_bounds(), &color).map_err(|e| bad(ID, e))?;
                     let f = d.item_mut(t).ok_or(designcraft_doc::DocError::NoItem(t))?;
                     f.content = Content::Group { items: vec![std::sync::Arc::new(code)] };
                     t
                 }
             }
-            (None, None) => return Err(bad(ID, "give `rect` or select a frame")),
+            (None, None, Some(t)) => {
+                let it = d.item(t).ok_or_else(|| bad(ID, "no such object"))?;
+                if !matches!(it.content, Content::Unassigned | Content::Group { .. }) || it.shape == Shape::Group {
+                    return Err(bad(ID, "select an empty frame, a QR code, or give `rect`"));
+                }
+                t
+            }
+            (None, None, None) | (Some(_), None, None) => return Err(bad(ID, "give `rect` or select a frame")),
         };
+        if let Some(field) = field.as_deref() {
+            super::datamerge::bind_qr_field(d, id, field, source).map_err(|e| bad(ID, e))?;
+        }
         *selection = Selection::items(vec![id]);
-        Ok(json!({"id": id.0, "content": text}))
+        Ok(json!({"id": id.0, "content": text.unwrap_or_default()}))
     })
 }
 
