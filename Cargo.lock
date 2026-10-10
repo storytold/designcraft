@@ -1126,6 +1126,7 @@ name = "designcraft-web"
 version = "0.5.0"
 dependencies = [
  "designcraft-engine",
+ "designcraft-format",
  "designcraft-ui-egui",
  "eframe",
  "egui",

@@ -18,6 +18,10 @@
 #[cfg(target_arch = "wasm32")]
 mod web;
 
+// Pure helpers: compiled for the browser and for the host's unit tests.
+#[cfg(any(target_arch = "wasm32", test))]
+mod mime;
+
 #[cfg(target_arch = "wasm32")]
 fn main() {
     web::start();
