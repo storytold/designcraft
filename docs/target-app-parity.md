@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against InDesign 2026 21.6; replaces the 2026-10-04 estimate in ROADMAP.md) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, full re-measure against InDesign 2026 21.6; replaces the 2026-10-04 estimate in ROADMAP.md) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -14,7 +14,7 @@ presence checklist is [parity-checklist.md](parity-checklist.md) (`cargo xtask p
 | **Ready for real work** (could an InDesign professional switch for real jobs?) | **~42%** (range 38–48%) | estimated, weighted (below) |
 | Remaining effort to **beta** (~75% ready, main format reliable) | **420–750 Opus 5.5 agent-hours** | estimated |
 | Remaining effort to **full parity** | **1,150–1,950 Opus 5.5 agent-hours** | estimated |
-| Stage | **alpha** | see [ROADMAP.md](../ROADMAP.md) |
+| Stage | **pre-alpha** (fails the core-workflow gate: no manual text threading); ~15–25 h to alpha | see [roadmap.md](roadmap.md#alpha-gate) |
 
 ## How breadth was measured
 
@@ -101,7 +101,7 @@ table is the one summed.
 | Fill, stroke, colour | 100% | 60% | 20–35 | hex entry (#323); Assign Profiles / Convert to Profile; color-managed proofing depth; Adobe Color Themes OOS |
 | Effects & transparency | 100% | 50% | 20–30 | effects fidelity vs InDesign unmeasured; Clear Effects / Clear All Transparency; flattener depth |
 | Placing & links | 93% | 55% | 20–35 | EPS is preview-only (no PostScript interpreter); Edit Original; placed PDF layer visibility; INDD page place |
-| Type & text frames | 99% | 45% | 40–60 | out-port threading clicks (#352, #194); caret formatting discarded (#289); canvas IME (#322); Notes/Track Changes menus; frame grids |
+| Type & text frames | 99% | 45% | 40–60 | **no manual threading** (ports drawn, no out-port click, no thread/unthread command: alpha blocker; #352, #194, #165, #140); caret formatting discarded (#289); canvas IME (#322); Notes/Track Changes menus; frame grids |
 | Typography | 100% | 45% | (typography dimension) | see [typography-parity.md](typography-parity.md) |
 | Styles | 100% | 60% | 15–25 | Paragraph Styles edit/delete reported failing (#169); style options depth |
 | Tables | 100% | 55% | 25–40 | anchored objects in cells not drawn (#163); Table ▸ Table Options submenus, Diagonal Lines, Convert Rows, Edit Header/Footer |
@@ -331,5 +331,6 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Stage alpha → pre-alpha under the core-workflow gate (manual threading missing); Type & text frames row updated |
 | 2026-10-10 | major | Created from ROADMAP.md's "How far from full parity" (2026-10-04) and "Working today"; full re-measure against InDesign 2026 21.6: menu coverage measured against InDesign 21.6's menu dump (69%) and the documented tree (75%), breadth set at ~80%, ready-for-real-work re-estimated 83% → 42% on user-reported evidence and the INDD gap; hours recalibrated from git history |
 | 2026-10-04 | major | (in ROADMAP.md) breadth 99% weighted over 275 rows, ~83% including depth, ~170 h remaining |

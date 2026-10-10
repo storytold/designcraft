@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first version) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, first version) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -36,7 +36,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
 | Gridify while drawing, Gap tool, Live Distribute | ✓ | ✓ | ✓ | |
 | Type tool: caret, selection, double/triple click, drag-and-drop text | ✓ | ✓ | ~ | formatting at a caret discarded (#289); text editing complaints (#23, #174) |
-| Threading: click out port, load text cursor, click frame | ✓ | ✓ (and Primary Text Frame) | ~ | **not working for users** (#352, #194, #165, #140) |
+| Threading: click out port, load text cursor, click frame | ✓ | ✗ ports drawn only; no thread/unthread command; Primary Text Frame and autoflow on Place | ✗ | **alpha blocker** (#352, #194, #165, #140) |
 | Copy / cut / paste objects and text, Paste Into / in Place | ✓ | ✓ on macOS | ~ | **failing on Windows/Linux** (#351, #348, #312, #185, #164, #201, #212) |
 | Context menus (canvas, panels, rulers) | ✓ everywhere | 9 context-menu sites, ruler units by right-click | ~ | **not opening for several users** (#238, #187, #160) |
 | IME text input on the canvas | ✓ | ✗ | ✗ | #322 |
@@ -54,9 +54,9 @@ basics of editing fail for too many users on Windows and Linux.
 | UI scaling, System appearance | ✓ | scaling ✓ (#281); follows macOS light/dark ✗ (#237) | ~ | |
 | Window controls, full screen | ✓ | ~ | ~ | misaligned on macOS (#333) |
 
-Counted 2026-10-10: 27 rows, 11 ✓, 15 ~, 1 ✗ → **69% presence**, scoring ✓ = 1, ~ = 0.5. Ready
-for real work is lower, ~45%, because four of the ~ rows (copy/paste, threading, context menus,
-typing at a caret) are things a layout artist does every minute, and their failures stop work.
+Counted 2026-10-10: 27 rows, 11 ✓, 14 ~, 2 ✗ → **67% presence**, scoring ✓ = 1, ~ = 0.5. Ready
+for real work is lower, ~45%, because threading is missing and three of the ~ rows (copy/paste,
+context menus, typing at a caret) are things a layout artist does every minute, and their failures stop work.
 
 ## Remaining effort
 
@@ -73,4 +73,5 @@ typing at a caret) are things a layout artist does every minute, and their failu
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Threading row corrected to ✗ after checking the code (no out-port interaction, no thread command) |
 | 2026-10-10 | major | Created: measured menu coverage, 27-row interaction checklist from the code and issues |

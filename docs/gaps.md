@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first version: gaps from the full re-measure and the issue tracker) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, first version: gaps from the full re-measure and the issue tracker) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -12,12 +12,30 @@ ROADMAP progress log and update the timestamps.
 Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · **H** hardware ·
 **L** localization · **P** performance · **S** stability · **E** ecosystem · **A** AI.
 
+## Alpha blocker (the core-workflow gate in [roadmap.md](roadmap.md#alpha-gate))
+
+### 0. Text can't be threaded by hand (F, U) · **ALPHA BLOCKER**
+- **Missing:** threading a story from one frame to another. The canvas draws in and out ports
+  (`crates/ui-egui/src/canvas.rs`), but clicking the out port does nothing: no loaded text
+  cursor, no click-a-frame or draw-a-frame to continue the story, no unthread by double-clicking
+  a port, and no `frame.thread` / `frame.unthread` command for the control channel or MCP
+  (`Document::thread` exists in `crates/doc/src/edit.rs` but only autoflow, IDML import and the
+  sample call it). Long text flows only through autoflow on Place and Primary Text Frame, which
+  users report adding pages they can't delete (#165).
+- **Evidence:** #352, #194, #165, #140 (Windows and unspecified platforms; the code shows it's
+  missing everywhere).
+- **Impact:** a story can't run from page 2 to page 7, or from one column frame to the next
+  that the designer drew. That is InDesign's core text workflow.
+- **Estimate:** 15–25 h (commands with undo and tests 4–6, out-port loaded cursor and
+  click/draw/unthread 6–12, Primary Text Frame page add/delete fixes 5–7).
+- **Doc:** [ui-parity.md](ui-parity.md)
+
 ## Blocking (beta can't be declared while these are open)
 
 ### 1. Basic editing fails for many users (U, S)
 - **Missing:** object copy/paste on Windows and Linux (#351, #348, #312, #185, #164, #201, text RTF
-  paste #212); right-click context menus that don't open (#238, #187, #160, #312); threading by
-  clicking a frame's out port (#352, #194, #165, #140); double-click word selection in fields
+  paste #212); Paste in Place onto the selected page (#348); right-click context menus that don't
+  open (#238, #187, #160, #312); threading (gap 0); double-click word selection in fields
   (#189); character formatting set at a caret is discarded (#289).
 - **Evidence:** 16 issues from 2026-10-05 to 2026-10-10, mostly against the 0.4/0.5 release builds.
 - **Impact:** a layout artist can't finish the simplest job. This dominates the
@@ -204,4 +222,5 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Gap 0 added and marked alpha blocker: manual text threading is missing (stage re-normalized to pre-alpha) |
 | 2026-10-10 | major | Created: 25 ranked gaps from the full re-measure against InDesign 2026 21.6 and issues #1–#352 |

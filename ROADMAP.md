@@ -1,8 +1,8 @@
 # DesignCraft roadmap
 
-**Stage: alpha** · next: beta, ~33 points and ~420–750 h away
+**Stage: pre-alpha** · next: alpha, ~0% and ~15–25 h away (the core-workflow gate, not the percentage: ready for real work is already ~42%)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against InDesign 2026 21.6; restructured to the craftrules progress-docs standard) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, full re-measure against InDesign 2026 21.6; restructured to the craftrules progress-docs standard) · **Target:** Adobe InDesign 2026
 
 DesignCraft aims at full Adobe InDesign parity, and to be better: faster, open (documented JSON
 format + IDML), scriptable by agents (MCP), and available on the web.
@@ -16,12 +16,16 @@ format + IDML), scriptable by agents (MCP), and available on the web.
 | Remaining to **beta** | **420–750 Opus 5.5 agent-hours** (~120–200 wall-clock hours with 4–5 agents) | estimated |
 | Remaining to **full parity** | **1,150–1,950 Opus 5.5 agent-hours** | estimated |
 
-**Why alpha:** the core workflows exist end to end (new document, frames, threaded text with a
-real paragraph composer, styles, tables, long-document features, IDML both ways, PDF/X-4), so it
-is past pre-alpha. It is not beta: InDesign's own documents (`.indd`) can't be opened, IDML is
-unproven on real files, composition hasn't been compared with InDesign's, and users on Windows
-and Linux report basic editing failures (copy/paste, context menus, threading). Details:
-[docs/target-app-parity.md](docs/target-app-parity.md).
+**Why pre-alpha:** it fails one of InDesign's core workflows, the alpha gate in
+[docs/roadmap.md](docs/roadmap.md#alpha-gate). A user can't thread a story from one frame to
+another: the in and out ports are drawn, but clicking the out port does nothing and there is no
+thread or unthread command. Long text flows only through autoflow on Place and Primary Text
+Frame, which users report adding and keeping pages wrongly (#165, #140, #194, #352). Everything
+else in the gate works end to end on macOS (document setup, styles, images, object editing, PDF
+export, save and reopen), and ready for real work (~42%) is above the alpha bar, so manual
+threading is the whole distance to alpha. Beyond that, beta needs INDD opening, IDML proven on
+real files, composition compared with InDesign's, and basic editing fixed on Windows and Linux.
+Details: [docs/target-app-parity.md](docs/target-app-parity.md).
 
 ## By dimension
 
@@ -94,12 +98,13 @@ Also shipped: Italian (85%), Ukrainian (83%).
 Ranked; detail and estimates in [docs/roadmap.md](docs/roadmap.md), the full list in
 [docs/gaps.md](docs/gaps.md).
 
-1. Basic editing on every platform: copy/paste, context menus, threading, caret formatting (30–50 h)
-2. CI running `cargo xtask ci` on pull requests (4–8 h)
-3. Open INDD through a clean-room converter, owner decision on #114 (20–60 h)
-4. IDML real-file corpus and fixes (60–100 h)
-5. Composition oracle against InDesign; optical kerning; overset rule (80–140 h)
-6. Start on any GPU; find every installed font (25–50 h)
+1. **Alpha gate:** manual text threading (out-port click, thread/unthread commands) and Primary Text Frame fixes (#165) (15–25 h)
+2. Basic editing on every platform: copy/paste, context menus, caret formatting (30–50 h)
+3. CI running `cargo xtask ci` on pull requests (4–8 h)
+4. Open INDD through a clean-room converter, owner decision on #114 (20–60 h)
+5. IDML real-file corpus and fixes (60–100 h)
+6. Composition oracle against InDesign; optical kerning; overset rule (80–140 h)
+7. Start on any GPU; find every installed font (25–50 h)
 
 ## Documents
 
@@ -116,6 +121,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-10** · Stage re-normalized to **pre-alpha** under craftrules' core-workflow gate: text
+  can't be threaded by hand (no out-port click, no thread command).
 - **2026-10-10** · Full re-measure against InDesign 2026 21.6 (menu dump, bundle formats and
   localizations, 124 issues): breadth ~80%, ready ~42% (down from the ~83% "including depth" of
   2026-10-04, on user evidence and the INDD gap); progress docs restructured to the craftrules
@@ -146,6 +153,7 @@ Newest first.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Stage alpha → pre-alpha under the new core-workflow gate: manual text threading is missing; alpha gate table added to docs/roadmap.md |
 | 2026-10-10 | major | Restructured to the progress-docs standard; full re-measure; the "Working today" inventory moved to docs/target-app-parity.md, milestones to docs/roadmap.md, the CLI/MCP section left to docs/agents.md (which already covered it) |
 | 2026-10-04 | major | Parity estimate: breadth 99%, depth ~83%, ~170 h |
 | 2026-10-01 | major | First roadmap: status, milestones |
