@@ -227,7 +227,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste",
             ["Edit"],
             Some("Cmd+V"),
-            "{inPlace?: bool, text?: the system clipboard's text (pastes it unless it is what was copied here)}",
+            "{inPlace?: bool, spread?: index (0), text?: the system clipboard's text (pastes it unless it is what was copied here)}",
             has_clip_or_text,
             |s, p| {
                 if s.doc()?.selection.text.is_some() {
@@ -238,8 +238,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let off = if bool_or(p, "inPlace", false) { 0.0 } else { 12.0 };
                 let ids: Vec<ItemId> = clip.spreads.first().map(|sp| sp.items.iter().map(|i| i.id).collect()).unwrap_or_default();
+                let spread = super::spread_param(p, "spread");
                 s.edit(|d, sel| {
-                    let new = super::object::duplicate_from(d, &clip, &ids, SpreadRef::Doc(0), designcraft_geom::Vec2::new(off, off))?;
+                    let new = super::object::duplicate_from(d, &clip, &ids, spread, designcraft_geom::Vec2::new(off, off))?;
                     *sel = Selection::items(new.clone());
                     Ok(json!({"ids": new.iter().map(|i| i.0).collect::<Vec<_>>()}))
                 })
@@ -254,8 +255,13 @@ pub fn specs() -> Vec<CommandSpec> {
             has_clip,
             paste_into
         ),
-        cmd!("edit.pasteInPlace", "Paste in Place", ["Edit"], Some("Cmd+Alt+Shift+V"), "{}", has_clip, |s, _| s
-            .execute("edit.paste", &json!({"inPlace": true}))),
+        cmd!("edit.pasteInPlace", "Paste in Place", ["Edit"], Some("Cmd+Alt+Shift+V"), "{spread?}", has_clip, |s, p| {
+            let mut q = json!({"inPlace": true});
+            if let Some(sp) = p.get("spread") {
+                q["spread"] = sp.clone();
+            }
+            s.execute("edit.paste", &q)
+        }),
         cmd!("edit.duplicate", "Duplicate", ["Edit"], Some("Cmd+Alt+Shift+D"), "{}", has_selection, |s, _| s
             .execute("transform.move", &json!({"dx": 12.0, "dy": 12.0, "copy": true}))),
     ]
@@ -453,5 +459,21 @@ mod paste_into_tests {
         assert!(img.pixel(200, 200)[0] < 90, "{:?}", img.pixel(200, 200));
         assert!(img.pixel(120, 120)[0] > 200, "{:?}", img.pixel(120, 120));
         s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn paste_lands_on_the_requested_spread() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.spreads.len() >= 2);
+        let r = s.execute("edit.pasteInPlace", &json!({"spread": 1})).unwrap();
+        let id = ItemId(r["ids"][0].as_u64().unwrap());
+        assert_eq!(s.doc().unwrap().doc.find(id).unwrap().spread, SpreadRef::Doc(1));
+        let r = s.execute("edit.paste", &json!({})).unwrap();
+        let id = ItemId(r["ids"][0].as_u64().unwrap());
+        assert_eq!(s.doc().unwrap().doc.find(id).unwrap().spread, SpreadRef::Doc(0));
     }
 }

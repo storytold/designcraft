@@ -958,6 +958,17 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             let spread = if st.editing_parents { json!({"kind": "parent", "index": 0}) } else { json!(st.doc.page_loc(page).map_or(0, |l| l.0)) };
             return Some(app.run("guide.deleteAll", json!({"spread": spread})));
         }
+        // Paste onto the page in view, not always the first spread.
+        "edit.paste" | "edit.pasteInPlace" if p.get("spread").is_none() && app.session.active().is_some_and(|d| !d.editing_parents) => {
+            let page = crate::canvas::current_page(app).unwrap_or(0);
+            let spread = app.session.active().and_then(|st| st.doc.page_loc(page)).map_or(0, |l| l.0);
+            let mut q = p.clone();
+            if !q.is_object() {
+                q = json!({});
+            }
+            q["spread"] = json!(spread);
+            return Some(app.run(id, q));
+        }
         "app.deletePage" | "app.duplicateSpread" => {
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
             let page = crate::canvas::current_page(app).unwrap_or(0);
@@ -3301,5 +3312,23 @@ mod tests {
         assert!(open, "hovering the visible portion still opens the submenu");
         let (_, Some((_, _, open))) = frame(500.0, vec![]) else { panic!("test menu remains open") };
         assert!(!open, "an open submenu closes when its row becomes fully clipped");
+    }
+
+    #[test]
+    fn paste_lands_on_the_page_in_view() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let a = app.session.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].clone();
+        app.session.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        app.session.execute("edit.copy", &json!({})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        crate::canvas::go_to_page(&mut app, 1);
+        assert_eq!(crate::canvas::current_page(&app), Some(1));
+        for id in ["edit.paste", "edit.pasteInPlace"] {
+            let r = app.run(id, json!({})).unwrap();
+            let new = designcraft_doc::ItemId(r["ids"][0].as_u64().unwrap());
+            let spread = app.session.active().and_then(|st| st.doc.find(new)).map(|l| l.spread);
+            assert_eq!(spread, Some(designcraft_doc::SpreadRef::Doc(1)), "{id}");
+        }
     }
 }
