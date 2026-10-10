@@ -895,6 +895,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Replace With", "Sostituisci con"),
     ("Right-click: stroke, groups", "Clic destro: traccia, gruppi"),
     ("Ruler Units", "Unità righello"),
+    ("Origin:", "Origine:"),
+    ("Spine", "Dorso"),
+    ("Lock Zero Point", "Blocca punto zero"),
+    ("Unlock Zero Point", "Sblocca punto zero"),
     ("Saves which bars show and where the panels are.", "Salva quali barre sono visibili e dove si trovano i pannelli."),
     (
         "Select a placed video or sound (File › Place a .mp4, .mov, .mp3, .wav …).",

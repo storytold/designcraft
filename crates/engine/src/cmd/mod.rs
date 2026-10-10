@@ -42,6 +42,7 @@ pub mod preflight;
 mod prefs;
 mod print;
 mod qr;
+mod rulers;
 mod scripts;
 mod select;
 pub mod spelling;
@@ -198,6 +199,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(index::specs());
         v.extend(anchored::specs());
         v.extend(guides::specs());
+        v.extend(rulers::specs());
         v.extend(links::specs());
         v.extend(fonts::specs());
         v.extend(spelling::specs());

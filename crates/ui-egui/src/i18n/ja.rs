@@ -894,6 +894,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Replace With", "置換後"),
     ("Right-click: stroke, groups", "右クリック: 線・グループ"),
     ("Ruler Units", "定規の単位"),
+    ("Origin:", "原点:"),
+    ("Spine", "ノド"),
+    ("Lock Zero Point", "ゼロ点をロック"),
+    ("Unlock Zero Point", "ゼロ点のロックを解除"),
     ("Saves which bars show and where the panels are.", "バーの表示状態とパネルの位置を保存します。"),
     (
         "Select a placed video or sound (File › Place a .mp4, .mov, .mp3, .wav …).",

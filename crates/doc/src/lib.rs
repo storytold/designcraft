@@ -90,6 +90,20 @@ pub enum BlendSpace {
     Rgb,
 }
 
+/// Preferences › Units & Increments › Origin: what the rulers and X/Y fields measure from
+/// (before the zero point moves it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RulerOrigin {
+    /// The top-left corner of the spread's pages.
+    #[default]
+    Spread,
+    /// The top-left corner of each page.
+    Page,
+    /// The spine, at the top of the spread.
+    Spine,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Intent {
@@ -351,6 +365,20 @@ pub struct DocSettings {
     /// Documents saved before the setting existed read as on, the way they were drawn.
     #[serde(default = "yes")]
     pub glyph_fallback: bool,
+    /// What the rulers measure from before the zero point moves it.
+    pub ruler_origin: RulerOrigin,
+    /// The rulers' zero point: points right of and below the ruler origin (`ruler_origin`).
+    /// One per document, at the same place on every spread (and page, for a page origin). X/Y
+    /// fields measure from it.
+    #[serde(skip_serializing_if = "is_origin")]
+    pub zero_point: [f64; 2],
+    /// Lock Zero Point: dragging from the ruler corner leaves it where it is.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub zero_point_locked: bool,
+}
+
+fn is_origin(p: &[f64; 2]) -> bool {
+    p[0] == 0.0 && p[1] == 0.0
 }
 
 impl Default for DocSettings {
@@ -383,6 +411,9 @@ impl Default for DocSettings {
             overprint_black: true,
             track_changes: false,
             glyph_fallback: false,
+            ruler_origin: RulerOrigin::Spread,
+            zero_point: [0.0, 0.0],
+            zero_point_locked: false,
         }
     }
 }

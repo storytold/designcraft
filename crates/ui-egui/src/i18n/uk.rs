@@ -892,6 +892,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Replace With", "Замінити на"),
     ("Right-click: stroke, groups", "Права кнопка миші: обведення, групи"),
     ("Ruler Units", "Одиниці лінійки"),
+    ("Origin:", "Початок координат:"),
+    ("Spine", "Корінець"),
+    ("Lock Zero Point", "Заблокувати нульову точку"),
+    ("Unlock Zero Point", "Розблокувати нульову точку"),
     ("Saves which bars show and where the panels are.", "Зберігає видимість панелей і їхнє розташування."),
     (
         "Select a placed video or sound (File › Place a .mp4, .mov, .mp3, .wav …).",

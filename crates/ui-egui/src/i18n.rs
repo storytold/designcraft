@@ -1734,6 +1734,10 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Ruler Units", ["Ruler Units", "Ruler Units", "Ruler Units", "Ruler Units", "标尺单位"]),
+    ("Origin:", ["Ursprung:", "Origine :", "Origen:", "原点:", "原点:"]),
+    ("Spine", ["Bund", "Dos", "Lomo", "ノド", "书脊"]),
+    ("Lock Zero Point", ["Nullpunkt fixieren", "Verrouiller le point zéro", "Bloquear punto cero", "ゼロ点をロック", "锁定零点"]),
+    ("Unlock Zero Point", ["Nullpunkt lösen", "Déverrouiller le point zéro", "Desbloquear punto cero", "ゼロ点のロックを解除", "解锁零点"]),
     (
         "Saves which bars show and where the panels are.",
         [

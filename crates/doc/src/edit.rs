@@ -61,6 +61,74 @@ impl Document {
         }
     }
 
+    /// Where the rulers of spread `r` start before the zero point moves them, for something at
+    /// spread x `x` (a page origin is the page there, or the nearest page): spread coordinates.
+    pub fn ruler_base(&self, r: SpreadRef, x: f64) -> Option<Point> {
+        let sp = self.spread(r)?;
+        let b = sp.bounds();
+        Some(match self.settings.ruler_origin {
+            crate::RulerOrigin::Spread => Point::new(b.x0, b.y0),
+            crate::RulerOrigin::Spine => Point::new(sp.spine_x(), b.y0),
+            crate::RulerOrigin::Page => {
+                let pg = sp.pages.get(sp.page_at_x(x)?)?;
+                Point::new(pg.x, b.y0)
+            }
+        })
+    }
+
+    /// Where the rulers and X/Y fields of spread `r` measure from, for something at spread x
+    /// `x`: the ruler origin moved by the document's zero point.
+    pub fn ruler_origin(&self, r: SpreadRef, x: f64) -> Option<Point> {
+        let o = self.ruler_base(r, x)?;
+        let [zx, zy] = self.zero_point();
+        Some(Point::new(o.x + zx, o.y + zy))
+    }
+
+    /// The horizontal ruler of spread `r` in pieces `(from x, to x, base)`, spread coordinates,
+    /// covering every x: one piece, or one per page for a page origin.
+    pub fn ruler_pieces(&self, r: SpreadRef) -> Vec<(f64, f64, Point)> {
+        let Some(sp) = self.spread(r) else { return Vec::new() };
+        if self.settings.ruler_origin != crate::RulerOrigin::Page || sp.pages.len() < 2 {
+            return self.ruler_base(r, 0.0).map(|o| (f64::NEG_INFINITY, f64::INFINITY, o)).into_iter().collect();
+        }
+        let mut pages: Vec<&crate::Page> = sp.pages.iter().collect();
+        pages.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let y = sp.bounds().y0;
+        pages
+            .iter()
+            .enumerate()
+            .map(|(i, pg)| {
+                let from = if i == 0 { f64::NEG_INFINITY } else { pg.x };
+                let to = pages.get(i + 1).map_or(f64::INFINITY, |next| next.x);
+                (from, to, Point::new(pg.x, y))
+            })
+            .collect()
+    }
+
+    /// The document's zero point, kept on the pasteboard (a file may hold any numbers).
+    pub fn zero_point(&self) -> [f64; 2] {
+        self.clamp_zero_point(self.settings.zero_point).unwrap_or([0.0, 0.0])
+    }
+
+    /// `p` (a zero point) kept on the pasteboard around the largest spread, the area the canvas
+    /// shows; `None` when it isn't a finite point.
+    pub fn clamp_zero_point(&self, [x, y]: [f64; 2]) -> Option<[f64; 2]> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let (w, h) = self
+            .spreads
+            .iter()
+            .chain(&self.parents)
+            .map(|sp| sp.bounds())
+            .fold((0.0_f64, 0.0_f64), |(w, h), b| (w.max(b.width()), h.max(b.height())));
+        let finite = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let (px, py) = (finite(self.settings.pasteboard.0), finite(self.settings.pasteboard.1));
+        // From any ruler origin (a spine or a page can be at the spread's right edge).
+        let side = px.max(w);
+        Some([x.clamp(-(w + side), w + side), y.clamp(-py, h + py)])
+    }
+
     /// All spread refs: document spreads then parents.
     pub fn spread_refs(&self) -> impl Iterator<Item = SpreadRef> {
         (0..self.spreads.len()).map(SpreadRef::Doc).chain((0..self.parents.len()).map(SpreadRef::Parent))

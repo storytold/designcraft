@@ -21,7 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Guide",
             [],
             None,
-            "{orientation: horizontal|vertical, position (spread coordinate), spread?, page? (index in the spread; default: the page under `at` or the position), at? (the other coordinate), spreadGuide?: bool} → {page, index}",
+            "{orientation: horizontal|vertical, position (spread coordinate), spread?, page? (index in the spread; default: the page under `at` or the position), at? (the other coordinate), spreadGuide?: bool} → {page, index}; {orientation: both, point: [x, y], …} adds a horizontal guide through y and a vertical guide through x as one undo step → {guides: [{page, index}, {page, index}]}",
             has_doc,
             add
         ),
@@ -111,28 +111,51 @@ fn page_at(d: &Document, r: SpreadRef, x: f64) -> usize {
 }
 
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
-    let o = orientation(p)?;
-    let pos = finite_number(p, "position", "guide.add")?.ok_or_else(|| bad("guide.add", "missing position"))?;
     let r = guide_spread(p, "guide.add")?;
     let spread_guide = p.get("spreadGuide").and_then(Value::as_bool).unwrap_or(false);
-    let d = &s.doc()?.doc;
-    let pi = match optional_usize(p, "page", "guide.add")? {
-        Some(pi) => pi,
-        None if spread_guide => 0,
-        None => {
-            let x = match o {
-                Orientation::Vertical => pos,
-                Orientation::Horizontal => finite_number(p, "at", "guide.add")?.unwrap_or(0.0),
-            };
-            page_at(d, r, x)
-        }
+    let page = optional_usize(p, "page", "guide.add")?;
+    // (orientation, position, x used to find the page)
+    let guides: Vec<(Orientation, f64, f64)> = if str_param(p, "orientation") == Some("both") {
+        let point = p.get("point").and_then(Value::as_array).ok_or_else(|| bad("guide.add", "orientation `both` needs point: [x, y]"))?;
+        let coord = |i: usize| point.get(i).and_then(Value::as_f64).filter(|v| v.is_finite());
+        let (Some(x), Some(y), 2) = (coord(0), coord(1), point.len()) else {
+            return Err(bad("guide.add", "`point` must be two finite numbers [x, y]"));
+        };
+        vec![(Orientation::Horizontal, y, x), (Orientation::Vertical, x, x)]
+    } else {
+        let o = orientation(p)?;
+        let pos = finite_number(p, "position", "guide.add")?.ok_or_else(|| bad("guide.add", "missing position"))?;
+        let x = match o {
+            Orientation::Vertical => pos,
+            Orientation::Horizontal => finite_number(p, "at", "guide.add")?.unwrap_or(0.0),
+        };
+        vec![(o, pos, x)]
     };
+    let d = &s.doc()?.doc;
+    let placed: Vec<(Orientation, f64, usize)> = guides
+        .into_iter()
+        .map(|(o, pos, x)| {
+            let pi = match page {
+                Some(pi) => pi,
+                None if spread_guide => 0,
+                None => page_at(d, r, x),
+            };
+            (o, pos, pi)
+        })
+        .collect();
     let layer = s.doc()?.active_layer;
     s.edit(|d, _| {
         let sp = d.spread_mut(r).ok_or_else(|| bad("guide.add", "no such spread"))?;
-        let pg = sp.pages.get_mut(pi).ok_or_else(|| bad("guide.add", "no such page"))?;
-        pg.guides.push(Guide { orientation: o, position: pos, spread: spread_guide, locked: false, layer: Some(layer), liquid: false });
-        Ok(json!({"page": pi, "index": pg.guides.len() - 1}))
+        let mut out = Vec::new();
+        for (o, pos, pi) in placed {
+            let pg = sp.pages.get_mut(pi).ok_or_else(|| bad("guide.add", "no such page"))?;
+            pg.guides.push(Guide { orientation: o, position: pos, spread: spread_guide, locked: false, layer: Some(layer), liquid: false });
+            out.push(json!({"page": pi, "index": pg.guides.len() - 1}));
+        }
+        match <[Value; 1]>::try_from(out) {
+            Ok([one]) => Ok(one),
+            Err(out) => Ok(json!({"guides": out})),
+        }
     })
 }
 
@@ -329,6 +352,21 @@ mod tests {
         assert!(s.doc().unwrap().doc.spreads[0].pages[0].guides.is_empty());
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.spreads[0].pages[0].guides.len(), 5);
+    }
+
+    #[test]
+    fn both_orientations_are_one_undo_step() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("guide.add", &json!({"orientation": "both", "point": [120.0, 80.0], "spreadGuide": true})).unwrap();
+        assert_eq!(r["guides"].as_array().unwrap().len(), 2);
+        let l = s.execute("guide.list", &json!({})).unwrap();
+        assert_eq!((l[0]["orientation"].as_str(), l[0]["position"].as_f64()), (Some("horizontal"), Some(80.0)));
+        assert_eq!((l[1]["orientation"].as_str(), l[1]["position"].as_f64()), (Some("vertical"), Some(120.0)));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("guide.list", &json!({})).unwrap(), json!([]));
+        assert!(s.execute("guide.add", &json!({"orientation": "both", "point": [1.0]})).is_err());
+        assert!(s.execute("guide.add", &json!({"orientation": "both", "position": 1.0})).is_err());
     }
 
     #[test]

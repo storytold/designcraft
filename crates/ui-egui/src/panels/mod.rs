@@ -24,7 +24,7 @@ use crate::theme::Tokens;
 /// Summary of the current object selection (for the Control panel and Properties).
 #[derive(Clone, Debug)]
 pub struct SelInfo {
-    /// Bounds relative to the page the selection is on.
+    /// Bounds measured from the rulers' zero point (as the X/Y fields show them).
     pub page_rect: Rect,
     pub count: usize,
     pub fill: String,
@@ -68,9 +68,7 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
     let b = b?;
     let first = d.item(st.selection.items[0])?;
     let loc = d.find(first.id)?;
-    let sp = d.spread(loc.spread)?;
-    let pi = sp.page_at_x(b.center().x).unwrap_or(0);
-    let px = sp.pages.get(pi).map(|p| p.x).unwrap_or(0.0);
+    let o = d.ruler_origin(loc.spread, b.center().x)?;
     let wrap = match first.wrap.mode {
         WrapMode::None => "none",
         WrapMode::BoundingBox => "boundingBox",
@@ -79,7 +77,7 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
         WrapMode::JumpToNextColumn => "jumpToNextColumn",
     };
     Some(SelInfo {
-        page_rect: Rect::new(b.x0 - px, b.y0, b.x1 - px, b.y1),
+        page_rect: Rect::new(b.x0 - o.x, b.y0 - o.y, b.x1 - o.x, b.y1 - o.y),
         count: st.selection.items.len(),
         fill: first.fill.swatch.clone(),
         stroke: first.stroke.swatch.clone(),

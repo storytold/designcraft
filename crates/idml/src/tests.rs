@@ -1399,3 +1399,31 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     check(&d);
     check(&import_idml(&export_idml(&d)).unwrap());
 }
+
+#[test]
+fn round_trips_the_zero_point_and_ruler_origin() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    d.settings.zero_point = [36.0, 18.5];
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.settings.zero_point, [36.0, 18.5]);
+    for origin in [designcraft_doc::RulerOrigin::Page, designcraft_doc::RulerOrigin::Spine, designcraft_doc::RulerOrigin::Spread] {
+        d.settings.ruler_origin = origin;
+        assert_eq!(import_idml(&export_idml(&d)).unwrap().settings.ruler_origin, origin);
+    }
+    // A hostile ZeroPoint lands on the pasteboard; a malformed one is ignored.
+    let fixture = |zp: &str| {
+        let designmap = format!(
+            r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d" ZeroPoint="{zp}">
+              <idPkg:Spread src="Spreads/Spread_s.xml"/>
+            </Document>"#
+        );
+        let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+              <Spread Self="s"><Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/></Spread>
+            </idPkg:Spread>"#;
+        import_idml(&zip_files(&[("designmap.xml", &designmap), ("Spreads/Spread_s.xml", spread)])).unwrap()
+    };
+    let [x, y] = fixture("1e300 -1e300").settings.zero_point;
+    assert!(x.is_finite() && y.is_finite() && x < 1e4 && y > -1e4, "{x} {y}");
+    assert_eq!(fixture("12").settings.zero_point, [0.0, 0.0]);
+    assert_eq!(fixture("NaN 4").settings.zero_point, [0.0, 0.0]);
+}

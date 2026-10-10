@@ -1053,6 +1053,21 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                 "units" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Ruler Units")).font(semibold(12.0)));
                     egui::Grid::new("pref_units").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Origin:"));
+                        let cur = d.fields.get("rulerOrigin").and_then(Value::as_str).unwrap_or("spread").to_string();
+                        const ORIGINS: [(&str, &str); 3] = [("spread", "Spread"), ("page", "Page"), ("spine", "Spine")];
+                        let shown = ORIGINS.iter().find(|o| o.0 == cur).map_or("Spread", |o| o.1);
+                        egui::ComboBox::from_id_salt("rulerOrigin")
+                            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, shown)))
+                            .width(140.0)
+                            .show_ui(ui, |ui| {
+                                for (v, l) in ORIGINS {
+                                    if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                                        d.fields.insert("rulerOrigin".into(), json!(v));
+                                    }
+                                }
+                            });
+                        ui.end_row();
                         for (key, label) in [("horizontalUnits", "Horizontal:"), ("verticalUnits", "Vertical:")] {
                             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
                             let cur: Unit = d.fields.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
@@ -2031,6 +2046,9 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 return Ok(Value::Null);
             }
             let mut doc = json!({"horizontalUnits": d.fields["horizontalUnits"], "verticalUnits": d.fields["verticalUnits"]});
+            if let Some(o) = d.fields.get("rulerOrigin").filter(|o| o.is_string()) {
+                doc["rulerOrigin"] = o.clone();
+            }
             let mut bg = json!({"relativeTo": d.s("bg.relativeTo"), "color": d.fields.get("bg.color").cloned().unwrap_or(json!([140, 205, 230]))});
             if let Some(v) = d.m("bg.start") {
                 bg["start"] = json!(v.max(0.0));

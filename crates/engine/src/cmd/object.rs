@@ -115,7 +115,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Transform Panel",
             [],
             None,
-            "{x?, y?, width?, height?, scaleX? (%), scaleY? (%), rotation? (°), shear? (°), ref?: 0..8, ids?} — reference-point based geometry; rotation and shear are absolute (Transformations are Totals decides whether nested objects measure them on the pasteboard)",
+            "{x?, y? (measured from the rulers' zero point, view.zeroPoint), width?, height?, scaleX? (%), scaleY? (%), rotation? (°), shear? (°), ref?: 0..8, ids?} — reference-point based geometry; rotation and shear are absolute (Transformations are Totals decides whether nested objects measure them on the pasteboard)",
             has_selection,
             transform_set
         ),
@@ -1242,22 +1242,13 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
         let fx = [0.0, 0.5, 1.0][rf % 3];
         let fy = [0.0, 0.5, 1.0][(rf / 3).min(2)];
         let mut to = Rect::new(anchor.x - fx * w, anchor.y - fy * h, anchor.x - fx * w + w, anchor.y - fy * h + h);
-        // x/y are the reference point position relative to the page origin of the first page in the spread.
-        let page_x = ids
-            .first()
-            .and_then(|i| d.find(*i))
-            .and_then(|l| {
-                d.spread(l.spread).map(|sp| {
-                    let pi = sp.page_at_x(from.center().x).unwrap_or(0);
-                    sp.pages[pi].x
-                })
-            })
-            .unwrap_or(0.0);
-        if let Some(x) = p.get("x").and_then(Value::as_f64) {
-            to = to + Vec2::new(x + page_x - anchor.x, 0.0);
+        // x/y are the reference point's position measured from the rulers' zero point.
+        let origin = ids.first().and_then(|i| d.find(*i)).and_then(|l| d.ruler_origin(l.spread, from.center().x)).unwrap_or(Point::ORIGIN);
+        if let Some(x) = p.get("x").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+            to = to + Vec2::new(x + origin.x - anchor.x, 0.0);
         }
-        if let Some(y) = p.get("y").and_then(Value::as_f64) {
-            to = to + Vec2::new(0.0, y - anchor.y);
+        if let Some(y) = p.get("y").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+            to = to + Vec2::new(0.0, y + origin.y - anchor.y);
         }
         let to = Rect::new(to.x0 + pad.0, to.y0 + pad.1, (to.x1 - pad.2).max(to.x0 + pad.0 + 0.01), (to.y1 - pad.3).max(to.y0 + pad.1 + 0.01));
         let m = Affine::translate((to.x0, to.y0))

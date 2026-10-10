@@ -990,6 +990,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             if app.session.active().is_some() {
                 let doc = app.session.execute("document.preferences", &json!({})).unwrap_or_default();
                 f["horizontalUnits"] = doc["horizontalUnits"].clone();
+                f["rulerOrigin"] = doc["rulerOrigin"].clone();
                 f["overprintBlack"] = doc["overprintBlack"].clone();
                 f["glyphFallback"] = doc["glyphFallback"].clone();
                 for k in ["superscriptSize", "superscriptPosition", "subscriptSize", "subscriptPosition"] {

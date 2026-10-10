@@ -250,7 +250,10 @@ impl<'a> Ex<'a> {
             .attr("Self", "d")
             .attr("StoryList", story_list.join(" "))
             .attr("Name", format!("{}.indd", d.title))
-            .attr("ZeroPoint", "0 0")
+            .attr("ZeroPoint", {
+                let [x, y] = d.zero_point();
+                format!("{} {}", num(x), num(y))
+            })
             .attr("ActiveLayer", d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()));
         root.push(
             El::new("Language")
@@ -765,7 +768,14 @@ impl<'a> Ex<'a> {
             El::new("ViewPreference")
                 .attr("HorizontalMeasurementUnits", names::unit_out(s.horizontal_units))
                 .attr("VerticalMeasurementUnits", names::unit_out(s.vertical_units))
-                .attr("RulerOrigin", "SpreadOrigin")
+                .attr(
+                    "RulerOrigin",
+                    match s.ruler_origin {
+                        designcraft_doc::RulerOrigin::Spread => "SpreadOrigin",
+                        designcraft_doc::RulerOrigin::Page => "PageOrigin",
+                        designcraft_doc::RulerOrigin::Spine => "SpineOrigin",
+                    },
+                )
                 .attr("CursorKeyIncrement", num(s.keyboard_increment))
                 .attr("PointsPerInch", "72"),
         );
