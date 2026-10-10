@@ -301,6 +301,20 @@ impl Default for AdvancedType {
 }
 
 /// File → Document Setup + the guide/grid/unit preferences stored with the document.
+/// Where a document's chapter number comes from (Numbering & Section Options › Document Chapter
+/// Numbering). A book's Update Numbering resolves it in book order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChapterSource {
+    /// Automatic Chapter Numbering: one more than the previous document in the book (1 first).
+    #[default]
+    Automatic,
+    /// Start Chapter Numbering at `chapter_number`.
+    UserDefined,
+    /// Same as Previous Document in the Book: the document continues its chapter.
+    SameAsPrevious,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DocSettings {
@@ -332,8 +346,13 @@ pub struct DocSettings {
     /// The story in the primary text frames (Smart Text Reflow adds and removes pages for it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_story: Option<StoryId>,
-    /// Chapter number (Numbering & Section Options › Document Chapter Numbering).
+    /// Chapter number (Numbering & Section Options › Document Chapter Numbering): the one set by
+    /// Start Chapter Numbering at, or the one a book last gave the document.
     pub chapter_number: u32,
+    /// The chapter number's style (Chapter Number variables, cross-references).
+    pub chapter_style: NumberStyle,
+    /// Where the chapter number comes from.
+    pub chapter_source: ChapterSource,
     /// Object › Effects › Global Light: the angle (degrees) shadows that use it share.
     pub global_light: f64,
     /// Preferences › Advanced Type: superscript and subscript size and position (percent of the
@@ -377,6 +396,8 @@ impl Default for DocSettings {
             primary_story: None,
             lists: Vec::new(),
             chapter_number: 1,
+            chapter_style: NumberStyle::Arabic,
+            chapter_source: ChapterSource::Automatic,
             global_light: 120.0,
             advanced_type: AdvancedType::default(),
             blend_space: BlendSpace::Cmyk,
@@ -654,6 +675,11 @@ impl Document {
     }
 
     /// The displayed page name ("1", "iv", "A-3"…) for an absolute page index, per sections.
+    /// The chapter number in its style (`3`, `III`, `c`, `03`).
+    pub fn chapter_label(&self) -> String {
+        self.settings.chapter_style.format(self.settings.chapter_number.max(1))
+    }
+
     pub fn page_name(&self, abs: usize) -> String {
         let Some(sec) = self.section_of(abs) else { return (abs + 1).to_string() };
         let num = sec.style.format(self.page_number(abs));

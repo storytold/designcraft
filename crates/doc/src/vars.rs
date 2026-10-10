@@ -186,7 +186,7 @@ impl Document {
                 };
                 self.page_name(last)
             }
-            VarKind::ChapterNumber => self.settings.chapter_number.max(1).to_string(),
+            VarKind::ChapterNumber => self.chapter_label(),
             VarKind::FileName { extension } => {
                 if *extension {
                     format!("{}.designcraft", self.title)

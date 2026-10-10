@@ -148,16 +148,25 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"path": b.path, "styleSource": b.style_source, "documents": docs}))
         }),
-        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended (files are saved)", has_book, |s, _| {
+        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended, and takes its chapter number (automatic: one more than the previous document's; same as previous; or its own start) (files are saved) → {pages, chapters}", has_book, |s, _| {
             let b = s.book.clone().ok_or_else(no_book)?;
             let mut next = 1u32;
+            let mut chapter = 0u32;
+            let mut chapters = Vec::new();
             for p in &b.documents {
                 let mut d = load(p)?;
                 start_at(&mut d, next);
-                next += d.page_count() as u32;
+                next = next.saturating_add(d.page_count() as u32);
+                chapter = match d.settings.chapter_source {
+                    designcraft_doc::ChapterSource::Automatic => chapter.saturating_add(1),
+                    designcraft_doc::ChapterSource::UserDefined => d.settings.chapter_number.max(1),
+                    designcraft_doc::ChapterSource::SameAsPrevious => chapter.max(1),
+                };
+                d.settings.chapter_number = chapter;
+                chapters.push(d.chapter_label());
                 store(p, &d)?;
             }
-            Ok(json!({"pages": next - 1}))
+            Ok(json!({"pages": next - 1, "chapters": chapters}))
         }),
         cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{} — paragraph and character styles and swatches of the style source go into every document (by name)", has_book, |s, _| {
             let b = s.book.clone().ok_or_else(no_book)?;
@@ -224,6 +233,37 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn book_numbering_resolves_chapter_numbers_in_order() {
+        let dir = std::env::temp_dir().join(format!("dc-book-chapters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = |n: &str| dir.join(n).to_string_lossy().to_string();
+        let mut s = Session::new();
+        s.execute("book.new", &json!({"path": p("Field Guide.dcbook")})).unwrap();
+        let chapters = [
+            ("a.designcraft", json!({"style": "upperRoman"})),
+            ("b.designcraft", json!({"source": "sameAsPrevious"})),
+            ("c.designcraft", json!({})),
+            ("d.designcraft", json!({"start": 7, "style": "lowerLetters"})),
+            ("e.designcraft", json!({})),
+        ];
+        for (name, numbering) in &chapters {
+            s.execute("file.new", &json!({})).unwrap();
+            if numbering.as_object().is_some_and(|o| !o.is_empty()) {
+                s.execute("layout.chapterNumbering", numbering).unwrap();
+            }
+            s.execute("file.saveAs", &json!({"path": p(name)})).unwrap();
+            s.execute("book.add", &json!({"path": p(name)})).unwrap();
+        }
+        let r = s.execute("book.paginate", &json!({})).unwrap();
+        // Same as previous takes the number, written in the document's own style.
+        assert_eq!(r["chapters"], json!(["I", "1", "2", "g", "8"]));
+        assert_eq!(super::load(&p("e.designcraft")).unwrap().settings.chapter_number, 8);
+        // The open document (e) names its book.
+        assert_eq!(s.execute("layout.chapterNumbering", &json!({})).unwrap()["book"], "Field Guide");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn book_paginates_syncs_and_exports() {
