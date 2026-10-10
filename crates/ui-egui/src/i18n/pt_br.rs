@@ -1047,5 +1047,4 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Paragraph Rules…", "Linhas de parágrafo…"),
     ("Paragraph Rules", "Linhas de parágrafo"),
     ("Rule Below", "Linha abaixo"),
-    ("Tint:", "Matiz:"),
 ];

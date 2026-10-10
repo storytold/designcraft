@@ -2289,7 +2289,6 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Baseline Shift:", ["Baseline Shift:", "Baseline Shift:", "Baseline Shift:", "Baseline Shift:", "基线偏移："]),
     ("Skew:", ["Skew:", "Skew:", "Skew:", "Skew:", "倾斜："]),
     ("Language:", ["Language:", "Language:", "Language:", "Language:", "语言："]),
-    ("Tint:", ["Tint:", "Tint:", "Tint:", "Tint:", "色调："]),
     ("Figure Style:", ["Figure Style:", "Figure Style:", "Figure Style:", "Figure Style:", "数字样式："]),
     ("Underline On", ["Underline On", "Underline On", "Underline On", "Underline On", "启用下划线"]),
     ("Strikethrough On", ["Strikethrough On", "Strikethrough On", "Strikethrough On", "Strikethrough On", "启用删除线"]),
