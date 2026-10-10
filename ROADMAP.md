@@ -9,6 +9,10 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+## Recent improvements (2026-10-08)
+
+- MCP1: Headless command errors distinguish exact registered UI commands from unknown IDs and case typos using the shared command catalog.
+
 ## Status (2026-10-01)
 
 **Working today**
