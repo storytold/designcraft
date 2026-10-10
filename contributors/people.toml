@@ -25,6 +25,9 @@ sync_github_name = false
 [people.emanuelebonaventura]
 display_name = "insanityxoff"
 
+[people.kubuntugamer]
+sync_github_name = true
+
 [people.moppeeer]
 sync_github_name = true
 
