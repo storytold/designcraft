@@ -236,6 +236,9 @@ impl Document {
         if n == 2 {
             pages[0].side = PageSide::Left;
             pages[1].side = PageSide::Right;
+            if self.settings.right_to_left_binding {
+                pages.reverse();
+            }
         }
         let id = SpreadId(self.alloc());
         let mut sp = Spread {
@@ -248,6 +251,18 @@ impl Document {
         sp.relayout();
         self.parents.push(Arc::new(sp));
         id
+    }
+
+    /// List the pages of each facing parent spread in binding order: left then right, or right
+    /// then left when bound right to left. Positions stay, so the parent items keep their pages.
+    pub fn order_parent_pages(&mut self) {
+        let first = if self.settings.right_to_left_binding { PageSide::Right } else { PageSide::Left };
+        for sp in &mut self.parents {
+            let pair = matches!(sp.pages.as_slice(), [a, b] if a.side != b.side && a.side != PageSide::Single && b.side != PageSide::Single);
+            if pair && sp.pages.first().is_some_and(|p| p.side != first) {
+                Arc::make_mut(sp).pages.reverse();
+            }
+        }
     }
 
     pub fn parent_index(&self, id: SpreadId) -> Option<usize> {
@@ -549,8 +564,7 @@ impl Document {
         let pi = self.parent_index(page.parent?)?;
         let ps = &self.parents[pi];
         // A parent spread can come without pages from a file.
-        let idx = if ps.pages.len() >= 2 && page.side == PageSide::Left { 0 } else { ps.pages.len().checked_sub(1)? };
-        Some((pi, idx))
+        Some((pi, ps.parent_page_for_side(page.side)?))
     }
 }
 

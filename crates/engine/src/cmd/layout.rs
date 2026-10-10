@@ -259,6 +259,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     if let Some(b) = p.get("binding").and_then(Value::as_str) {
                         d.settings.right_to_left_binding = b == "rightToLeft";
+                        d.order_parent_pages();
                     }
                     if let Some(b) = bleed {
                         d.settings.bleed = b;
@@ -758,6 +759,38 @@ mod setup_tests {
         s.execute("layout.documentSetup", &json!({"binding": "leftToRight"})).unwrap();
         let d = &s.doc().unwrap().doc;
         assert_eq!(d.spreads[1].pages.iter().map(|p| (p.side, p.x)).collect::<Vec<_>>(), vec![(Left, 0.0), (Right, w)]);
+    }
+
+    /// Bound right to left, a parent spread lists its right page first; each document page still
+    /// shows the parent page on its own side, at its own position, also after an IDML round trip.
+    #[test]
+    fn right_to_left_binding_shows_the_parent_page_of_the_same_side() {
+        use designcraft_doc::PageSide::{Left, Right};
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 4})).unwrap();
+        s.execute("layout.documentSetup", &json!({"binding": "rightToLeft"})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        let parent = json!({"kind": "parent", "index": 0});
+        for (rect, text) in [(json!([72, 36, 200, 60]), "left head"), (json!([w + 72.0, 36, w + 200.0, 60]), "right head")] {
+            s.execute("frame.create", &json!({"spread": parent, "rect": rect, "content": "text", "text": text})).unwrap();
+        }
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.parents[0].pages.iter().map(|p| (p.side, p.x)).collect::<Vec<_>>(), vec![(Right, w), (Left, 0.0)]);
+        let docs = [(*d).clone(), designcraft_idml::import_idml(&designcraft_idml::export_idml(&d)).unwrap()];
+        for d in docs {
+            let mut s = crate::Session::new();
+            s.add_document(crate::DocState::new(d, None));
+            for (page, side, text) in [(0, Left, "left head"), (1, Right, "right head"), (2, Left, "left head"), (3, Right, "right head")] {
+                let r = s.execute("layout.overrideParentItems", &json!({"page": page})).unwrap();
+                let d = &s.doc().unwrap().doc;
+                let ids = r["ids"].as_array().unwrap();
+                assert_eq!(ids.len(), 1, "page {}", page + 1);
+                let it = d.item(designcraft_doc::ItemId(ids[0].as_u64().unwrap())).unwrap();
+                let story = d.story(it.text_frame().unwrap().story).unwrap();
+                assert_eq!((d.page(page).unwrap().side, story.text.trim_end()), (side, text), "page {}", page + 1);
+                assert_eq!(d.page_of_item(it.id), Some(page), "page {}", page + 1);
+            }
+        }
     }
 
     /// Multi-column frames filled the left column first in a right-to-left document (#100):

@@ -73,8 +73,10 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
             }
             seen_spreads.push(si);
             let first = doc.first_page_of_spread(si);
-            let (l, _) = sp.pages.first().map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
-            let (_, r) = sp.pages.last().map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            // The outer edges by position: a right-to-left spread lists its right page first.
+            let outer = sp.outer_page_indices();
+            let (l, _) = outer.and_then(|(l, _)| sp.pages.get(l)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            let (_, r) = outer.and_then(|(_, r)| sp.pages.get(r)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
             let names: Vec<String> = (0..sp.pages.len()).map(|i| doc.page_name(first + i)).collect();
             (sp.bounds(), l, r, names.join("–"))
         } else {

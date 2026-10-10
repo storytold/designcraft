@@ -593,9 +593,10 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
         let rect = |r: DRect| xf.rect(m.transform_rect_bbox(r));
         // Bleed: one rectangle around the spread (inside bleed only applies at the spread's outer edges).
         let b = s.bleed;
-        if app.ui.guides && b.iter().any(|v| *v > 0.0) && !sp.pages.is_empty() {
-            let first = &sp.pages[0];
-            let last = &sp.pages[sp.pages.len() - 1];
+        if app.ui.guides
+            && b.iter().any(|v| *v > 0.0)
+            && let Some((first, last)) = sp.outer_page_indices().and_then(|(l, r)| Some((sp.pages.get(l)?, sp.pages.get(r)?)))
+        {
             let l = if first.side == PageSide::Left { b[3] } else { b[2] };
             let r = if last.side == PageSide::Right || last.side == PageSide::Single { b[3] } else { b[2] };
             let sb = sp.bounds();

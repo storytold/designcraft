@@ -255,7 +255,7 @@ fn push_parent_rotation_chain(
         return;
     }
     let next = parent.parent.as_ref().and_then(|info| info.based_on);
-    if let Some(page_idx) = shown_parent_page_index(parent.pages.len(), doc_side) {
+    if let Some(page_idx) = parent.parent_page_for_side(doc_side) {
         for item in &parent.items {
             if overridden.contains(&item.id) {
                 continue;
@@ -1053,7 +1053,7 @@ fn push_parent_length_chain(
         return;
     }
     let next = parent.parent.as_ref().and_then(|info| info.based_on);
-    if let Some(page_idx) = shown_parent_page_index(parent.pages.len(), doc_side) {
+    if let Some(page_idx) = parent.parent_page_for_side(doc_side) {
         for item in &parent.items {
             if overridden.contains(&item.id) {
                 continue;
@@ -1267,7 +1267,7 @@ fn offer_parent_chain(
         return;
     }
     let next = parent.parent.as_ref().and_then(|info| info.based_on);
-    if let Some(page_idx) = shown_parent_page_index(parent.pages.len(), doc_side)
+    if let Some(page_idx) = parent.parent_page_for_side(doc_side)
         && let Some(parent_page) = parent.pages.get(page_idx)
     {
         let dx = doc_x - parent_page.x;
@@ -1289,11 +1289,6 @@ fn offer_parent_chain(
     let Some(next_id) = next else { return };
     let Some(next_index) = cx.doc.parent_index(next_id) else { return };
     offer_parent_chain(best, cx, req, flags, axis, tol, doc_x, doc_side, overridden, next_index, seen);
-}
-
-/// Left page of a facing parent, otherwise the last page. Same choice as `Document::parent_page_for`.
-fn shown_parent_page_index(page_count: usize, side: PageSide) -> Option<usize> {
-    if page_count >= 2 && side == PageSide::Left { Some(0) } else { page_count.checked_sub(1) }
 }
 
 fn shift_x(r: Rect, dx: f64) -> Rect {
