@@ -41,6 +41,10 @@ The result is JSON: `{"completed": n, "results": [...]}`, plus `failedIndex` / `
 fails (the exit status is non-zero; `--keep-going` records errors and continues). `run --cmd ID=JSON` accepts the
 same references, and MCP's `batch` tool takes `commands` or `script` text with them.
 
+`run` works through its arguments in order. `--page`, `--scale` and `--pdf-options` apply to the `--export` /
+`--all-pages` that follow them, so one run can write several sizes
+(`run --sample --scale 0.5 --export small.png --scale 2 --export large.png`); one with no export after it is an error.
+
 ## Data merge
 
 `data.source.select {path, sheet?}` links a CSV/TSV/`.xlsx` file to the document (`data.source.update` re-reads it,

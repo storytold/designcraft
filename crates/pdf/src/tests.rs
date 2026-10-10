@@ -296,6 +296,55 @@ fn cmyk_tiff_keeps_its_inks() {
     }
 }
 
+/// An 8×8 raster encoded as `fmt`; `alpha` gives it a transparent corner.
+fn raster(fmt: image::ImageFormat, alpha: bool) -> Vec<u8> {
+    let img =
+        image::RgbaImage::from_fn(8, 8, |x, y| image::Rgba([(x * 30) as u8, (y * 30) as u8, 128, if alpha && x == 0 && y == 0 { 0 } else { 255 }]));
+    let img = if fmt == image::ImageFormat::Jpeg {
+        image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(img).to_rgb8())
+    } else {
+        image::DynamicImage::ImageRgba8(img)
+    };
+    let mut b = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut b, fmt).unwrap();
+    b.into_inner()
+}
+
+/// Each image XObject's /Interpolate value (`None` when absent).
+fn interpolate_flags(bytes: &[u8]) -> Vec<Option<bool>> {
+    use hayro_syntax::object::Name;
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    pdf.objects()
+        .into_iter()
+        .filter_map(|o| o.into_stream())
+        .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+        .map(|s| s.dict().get::<bool>("Interpolate"))
+        .collect()
+}
+
+/// PDF/A-2b rejected placed PNG, JPEG, GIF and WebP images (#71): they were written with
+/// /Interpolate true, which PDF/A forbids. Ordinary exports keep interpolation.
+#[test]
+fn archival_exports_keep_placed_images_without_interpolation() {
+    use image::ImageFormat as F;
+    let mut d = doc_with_text("x");
+    for (fmt, alpha) in [(F::Png, true), (F::Png, false), (F::Jpeg, false), (F::Gif, true), (F::WebP, true)] {
+        place(&mut d, raster(fmt, alpha), (8, 8));
+    }
+    for compress_images in [false, true] {
+        let opts = PdfOptions { compress_images, created: Some(1_700_000_000), ..Default::default() };
+        let a = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, ..opts.clone() });
+        let a = a.unwrap_or_else(|e| panic!("PDF/A-2b with images (compress {compress_images}): {e:?}"));
+        let flags = interpolate_flags(&a.bytes);
+        assert!(flags.len() >= 5, "every placed image is in the PDF/A file: {flags:?}");
+        assert!(flags.iter().all(|f| *f != Some(true)), "{flags:?}");
+        let plain = export_pdf(&d, &Cache::new(), &opts).unwrap();
+        let flags = interpolate_flags(&plain);
+        assert!(flags.len() >= 5, "{flags:?}");
+        assert!(flags.contains(&Some(true)), "ordinary exports interpolate: {flags:?}");
+    }
+}
+
 /// What a page draws: each glyph (its text and outline bounds) and each filled path's bounds.
 fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
     use hayro_interpret::font::Glyph;

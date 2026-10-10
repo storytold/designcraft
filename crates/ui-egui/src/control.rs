@@ -8,7 +8,8 @@
 //! - `ui.tool.select {tool}`, `ui.tool.list`
 //! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick, x, y, space?: "doc"|"screen"}], mods?}`:
 //!   drive the active tool through the same path as the mouse
-//! - `ui.key {key, shift?, alt?, cmd?}` / `ui.text {text}`: synthetic keyboard input
+//! - `ui.key {key, shift?, alt?, cmd?}`: synthetic keyboard input
+//! - `ui.text {text}`: insert at the explicit caret, or type into a focused UI field
 //! - `ui.move {x, y}` / `ui.click {x, y, button?, count?, shift?…}` / `ui.drag {x, y, toX, toY, steps?}`:
 //!   real egui pointer input in screen points (reaches every widget: panels, flyouts, dialogs)
 //! - `ui.set {brightness?, panel?, dockTab?, rulers?, outline?, …}`
@@ -216,9 +217,19 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             ok(Value::Null)
         }
         "ui.text" => {
-            app.synthetic.push(egui::Event::Text(s("text").unwrap_or("").to_string()));
-            ctx.request_repaint();
-            ok(Value::Null)
+            let Some(text) = s("text") else { return err("missing `text`") };
+            // Focused widgets retain the synthetic keyboard route. Document automation uses
+            // the explicit caret independently of the active tool, unlike ordinary typing.
+            if ctx.text_edit_focused() || app.ui.dialog.is_some() || app.ui.palette.is_some() {
+                app.synthetic.push(egui::Event::Text(text.to_string()));
+                ctx.request_repaint();
+                ok(Value::Null)
+            } else {
+                if app.session.active().is_none_or(|st| st.selection.text.is_none_or(|t| st.doc.text_story(t.story, t.cell).is_none())) {
+                    return err("no valid text insertion point: use text.select or text.placeCaret first");
+                }
+                wrap(app.run("text.insert", json!({"text": text})))
+            }
         }
         "ui.set" => {
             let mut r = Ok(Value::Null);
@@ -313,7 +324,10 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         }
         "ui.render" => {
             let Some(st) = app.session.active() else { return err("no document") };
-            let page = p.get("page").and_then(Value::as_u64).map(|v| v as usize).or_else(|| crate::canvas::current_page(app)).unwrap_or(0);
+            let page = match page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count()) {
+                Ok(page) => page,
+                Err(e) => return err(e),
+            };
             let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
             let Some(img) = app.canvas.renderer.render_page(
                 &st.doc,
@@ -336,7 +350,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         }
         "app.open" => wrap(app.run("file.open", json!({"path": s("path")}))),
         "app.save" => wrap(app.run("file.save", json!({"path": s("path")}))),
-        "app.export" => wrap(app.run("app.exportPng", json!({"path": s("path"), "page": p.get("page"), "scale": p.get("scale")}))),
+        "app.export" => wrap(app.run("app.exportPng", p.clone())),
         "app.quit" => {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             ok(Value::Null)
@@ -359,5 +373,104 @@ pub fn save_screenshot(app: &mut DesignApp, image: &egui::ColorImage, path: Opti
             Err(e) => json!({"ok": false, "error": e}),
         },
         None => json!({"ok": false, "error": "no writer configured"}),
+    }
+}
+
+/// Parse explicit page indices without treating invalid values as omission.
+pub(crate) fn page_index(p: &Value, default: usize, count: usize) -> Result<usize, String> {
+    let page = match p.get("page") {
+        None => default,
+        Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or("`page` must be a nonnegative integer representable as a page index")?,
+    };
+    if page >= count {
+        return Err(format!("no page {page} (the document has {count} pages, indices are 0-based)"));
+    }
+    Ok(page)
+}
+
+#[cfg(test)]
+mod automation_contract_tests {
+    use super::*;
+    fn app() -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({"pages":2})).unwrap();
+        app
+    }
+    fn call(app: &mut DesignApp, ctx: &egui::Context, method: &str, params: Value) -> Value {
+        let (req, _) = ControlRequest::new(method, params);
+        match handle(app, ctx, &req) {
+            Outcome::Done(v) => v,
+            Outcome::Screenshot { .. } => panic!("unexpected screenshot"),
+        }
+    }
+    fn frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+        );
+        output.textures_delta.clear();
+    }
+    #[test]
+    fn control_typing_uses_explicit_caret_but_retains_widget_events() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        assert_eq!(call(&mut app, &ctx, "ui.text", json!({"text":"X"}))["ok"], false);
+        let f = app.session.execute("frame.create", &json!({"rect":[36,36,300,200],"content":"text","text":"Hello"})).unwrap();
+        app.session.execute("text.select", &json!({"story":f["story"],"anchor":5})).unwrap();
+        assert_eq!(app.session.tool_id(), "selection");
+        assert_eq!(call(&mut app, &ctx, "ui.text", json!({"text":"X"}))["ok"], true);
+        assert_eq!(app.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "HelloX");
+        app.session.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(app.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
+        app.select_tool("type");
+        assert!(app.session.wants_text(), "the document would receive ordinary typing without widget focus");
+        app.ui.palette = Some(String::new());
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        assert!(ctx.text_edit_focused());
+        assert_eq!(call(&mut app, &ctx, "ui.text", json!({"text":"field"}))["ok"], true);
+        let events = std::mem::take(&mut app.synthetic);
+        frame(&mut app, &ctx, events);
+        assert_eq!(app.ui.palette.as_deref(), Some("field"));
+        assert_eq!(app.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
+    }
+    #[test]
+    fn control_pages_validate_before_writer_and_preserve_omission() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = writes.clone();
+        app.services.write = Some(Box::new(move |_, bytes| {
+            sink.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }));
+        app.session.execute("frame.create", &json!({"rect":[36,36,300,200]})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        crate::canvas::go_to_page(&mut app, 1);
+        assert_eq!(crate::canvas::current_page(&app), Some(1));
+        for method in ["ui.render", "app.export"] {
+            for page in
+                [json!(-1), json!(-2), json!(1.5), Value::Null, json!("0"), json!(true), json!(u64::MAX), json!(18446744073709551616_f64), json!(99)]
+            {
+                assert_eq!(call(&mut app, &ctx, method, json!({"page":page,"path":"unchanged.png","scale":0.1}))["ok"], false, "{method}: {page}");
+                assert!(writes.lock().unwrap().is_empty());
+            }
+            assert_eq!(call(&mut app, &ctx, method, json!({"path":"omitted.png","scale":0.1}))["ok"], true);
+            assert_eq!(call(&mut app, &ctx, method, json!({"page":1,"path":"explicit.png","scale":0.1}))["ok"], true);
+            let mut bytes = writes.lock().unwrap();
+            assert_eq!(bytes.len(), 2);
+            assert_eq!(bytes[0], bytes[1]);
+            bytes.clear();
+        }
+        assert!(app.run("app.exportPng", json!({"page":Value::Null,"path":"unchanged.png"})).is_err());
+        assert!(writes.lock().unwrap().is_empty());
     }
 }

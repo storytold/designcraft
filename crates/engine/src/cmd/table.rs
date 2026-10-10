@@ -372,6 +372,14 @@ fn column_width(s: &Session, t: &TextSel) -> f64 {
     spec.and_then(|f| f.columns().first().map(|c| c.width())).unwrap_or(300.0)
 }
 
+/// The direction of the paragraph at `offset` in `story`, as composition resolves it (its style
+/// chain, then local overrides). A table created there takes it.
+fn para_direction(d: &Document, story: StoryId, offset: usize) -> designcraft_doc::TextDirection {
+    d.story(story)
+        .and_then(|st| st.paras.get(st.para_at(offset)))
+        .map_or(designcraft_doc::TextDirection::LeftToRight, |pf| d.styles.resolve_para(pf).0.direction)
+}
+
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| bad("table.insert", "no insertion point"))?;
     if t.cell.is_some() {
@@ -385,6 +393,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         let id = d.alloc();
         let mut table = Table::new(id, rows, cols, header, footer, width);
+        table.options.direction = para_direction(d, t.story, t.range().start);
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.insert", "no story"))?;
         // Cells start with the paragraph format at the caret.
         let pf = st.paras[st.para_at(t.range().start)].clone();
@@ -410,6 +419,7 @@ fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
     let width = p.get("width").and_then(Value::as_f64).unwrap_or_else(|| column_width(s, &t));
     s.edit(|d, sel| {
         let id = d.alloc();
+        let direction = para_direction(d, t.story, t.range().start);
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.convertFromText", "no story"))?;
         let ranges = st.para_ranges();
         let (pa, pb) = (st.para_at(t.range().start), st.para_at(t.range().end));
@@ -420,7 +430,8 @@ fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
         let data: Vec<Vec<String>> = st.text[a..b].split('\n').map(|line| line.split(sep).map(|c| c.trim().to_string()).collect()).collect();
         let pf = st.paras[pa].clone();
         let cf = st.format_after(a).clone();
-        let table = Table::from_strings(id, &data, width, &pf, &cf);
+        let mut table = Table::from_strings(id, &data, width, &pf, &cf);
+        table.options.direction = direction;
         st.delete(a..b);
         let anchor = st.insert_table(a, table);
         *sel = Selection::text(TextSel::caret(t.story, anchor));
@@ -1434,5 +1445,47 @@ mod arabic_tests {
         let t = s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap();
         assert_eq!(t.ncols(), 2);
         assert_eq!(t.options.direction, designcraft_doc::TextDirection::RightToLeft);
+    }
+
+    /// A text frame whose paragraphs have a paragraph style with `direction`, with the story's
+    /// text selected. Returns the session and the story id.
+    fn styled_frame(direction: &str, text: &str) -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "A4", "pages": 1})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Dir", "para": {"direction": direction}})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [40, 330, 555, 420], "content": "text", "text": text, "caret": true})).unwrap();
+        s.execute("edit.selectAll", &json!({})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Dir"})).unwrap();
+        s.execute("edit.selectAll", &json!({})).unwrap();
+        (s, r["story"].as_u64().unwrap())
+    }
+
+    fn only_table(s: &Session) -> std::sync::Arc<designcraft_doc::Table> {
+        s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap().clone()
+    }
+
+    /// Text converted to a table in a right-to-left paragraph laid its columns out left to right
+    /// (#100): the first column belongs on the right.
+    #[test]
+    fn tables_take_the_direction_of_their_paragraph() {
+        use designcraft_doc::TextDirection::{LeftToRight, RightToLeft};
+        let (mut s, sid) = styled_frame("rightToLeft", "١\t٢\t٣\nأ\tب\tج");
+        s.execute("table.convertFromText", &json!({"columnSeparator": "tab"})).unwrap();
+        assert_eq!(only_table(&s).options.direction, RightToLeft);
+        let st = s.doc().unwrap();
+        let cs = s.cache.get(&st.doc, designcraft_doc::StoryId(sid), None);
+        let placed = &cs.frames[0].tables[0];
+        let (first, last) = (placed.cell(0, 0).unwrap().rect, placed.cell(0, 2).unwrap().rect);
+        assert!(first.x0 > last.x0, "cell ١ is the rightmost: {first:?} {last:?}");
+
+        let (mut s, _) = styled_frame("leftToRight", "1\t2\t3\na\tb\tc");
+        s.execute("table.convertFromText", &json!({"columnSeparator": "tab"})).unwrap();
+        assert_eq!(only_table(&s).options.direction, LeftToRight);
+
+        for (direction, expected) in [("rightToLeft", RightToLeft), ("leftToRight", LeftToRight)] {
+            let (mut s, _) = styled_frame(direction, "x");
+            s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+            assert_eq!(only_table(&s).options.direction, expected, "table.insert in a {direction} paragraph");
+        }
     }
 }

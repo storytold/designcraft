@@ -805,6 +805,8 @@ pub fn button(ui: &mut egui::Ui, name: &str, size: f32, selected: bool, tip: &st
     }
     let pad = size * 0.16;
     paint(ui.painter(), r.shrink(pad), name, if selected { t.text_strong } else { t.icon });
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, tip));
     if tip.is_empty() {
         resp
     } else {
