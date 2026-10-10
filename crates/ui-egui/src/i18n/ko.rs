@@ -1735,4 +1735,5 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Distribute Rows Evenly", "행을 균등하게 분배"),
     ("Pin Bar Position", "막대 위치 고정"),
     ("Reset Bar Position", "막대 위치 재설정"),
+    ("Show CJK Features", "CJK 기능 표시"),
 ];

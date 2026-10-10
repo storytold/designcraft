@@ -1655,42 +1655,45 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             _ => "custom",
         },
     };
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Kinsoku Set"));
-        let options = [("default", "Default"), ("hard", "Hard Kinsoku"), ("soft", "Soft Kinsoku"), ("none", "No Kinsoku")];
-        let shown = options.iter().find(|o| o.0 == kinsoku).map_or("Custom", |o| o.1);
-        egui::ComboBox::from_id_salt("para_kinsoku")
-            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, shown)))
-            .width(150.0)
-            .show_ui(ui, |ui| {
-                for (v, l) in options {
-                    if ui.selectable_label(kinsoku == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
-                        let _ = app.run("type.kinsoku", json!({"set": v}));
+    // CJK-only fields (Preferences › Type › Show CJK Features).
+    if crate::cjk_features(app) {
+        ui.horizontal(|ui| {
+            caption(ui, crate::i18n::tr(&app.ui.language, "Kinsoku Set"));
+            let options = [("default", "Default"), ("hard", "Hard Kinsoku"), ("soft", "Soft Kinsoku"), ("none", "No Kinsoku")];
+            let shown = options.iter().find(|o| o.0 == kinsoku).map_or("Custom", |o| o.1);
+            egui::ComboBox::from_id_salt("para_kinsoku")
+                .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, shown)))
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for (v, l) in options {
+                        if ui.selectable_label(kinsoku == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                            let _ = app.run("type.kinsoku", json!({"set": v}));
+                        }
+                    }
+                });
+        });
+        let mojikumi = p["mojikumi"].as_str().unwrap_or("").to_string();
+        ui.horizontal(|ui| {
+            caption(ui, crate::i18n::tr(&app.ui.language, "Mojikumi Set"));
+            let sets = designcraft_compose::jlreq::MOJIKUMI_SETS;
+            let shown = match designcraft_compose::jlreq::mojikumi_set(&mojikumi) {
+                Some(m) => crate::i18n::tr(&app.ui.language, m.label).to_string(),
+                None if matches!(mojikumi.as_str(), "" | "None" | "Nothing") => crate::i18n::tr(&app.ui.language, "None (Solid)").to_string(),
+                // An imported table this composer doesn't run (Preflight lists it).
+                None => mojikumi.clone(),
+            };
+            egui::ComboBox::from_id_salt("para_mojikumi").selected_text(crate::rtl::widget(ui, shown)).width(150.0).show_ui(ui, |ui| {
+                if ui.selectable_label(mojikumi.is_empty(), crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "None (Solid)"))).clicked() {
+                    let _ = app.run("type.mojikumi", json!({"set": ""}));
+                }
+                for m in sets {
+                    if ui.selectable_label(mojikumi == m.id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, m.label))).clicked() {
+                        let _ = app.run("type.mojikumi", json!({"set": m.id}));
                     }
                 }
             });
-    });
-    let mojikumi = p["mojikumi"].as_str().unwrap_or("").to_string();
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Mojikumi Set"));
-        let sets = designcraft_compose::jlreq::MOJIKUMI_SETS;
-        let shown = match designcraft_compose::jlreq::mojikumi_set(&mojikumi) {
-            Some(m) => crate::i18n::tr(&app.ui.language, m.label).to_string(),
-            None if matches!(mojikumi.as_str(), "" | "None" | "Nothing") => crate::i18n::tr(&app.ui.language, "None (Solid)").to_string(),
-            // An imported table this composer doesn't run (Preflight lists it).
-            None => mojikumi.clone(),
-        };
-        egui::ComboBox::from_id_salt("para_mojikumi").selected_text(crate::rtl::widget(ui, shown)).width(150.0).show_ui(ui, |ui| {
-            if ui.selectable_label(mojikumi.is_empty(), crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "None (Solid)"))).clicked() {
-                let _ = app.run("type.mojikumi", json!({"set": ""}));
-            }
-            for m in sets {
-                if ui.selectable_label(mojikumi == m.id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, m.label))).clicked() {
-                    let _ = app.run("type.mojikumi", json!({"set": m.id}));
-                }
-            }
         });
-    });
+    }
     // Paragraph Border and Shading.
     let swatches: Vec<String> =
         app.session.active().map(|d| d.doc.swatches.iter().filter(|w| !w.hidden).map(|w| w.name.clone()).collect()).unwrap_or_default();
@@ -2337,6 +2340,53 @@ fn variable_font_axes(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, styl
 #[cfg(test)]
 mod grid_tests {
     use serde_json::json;
+
+    /// The text the Paragraph panel draws.
+    fn paragraph_panel_text(app: &mut crate::DesignApp) -> String {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 4000.0));
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| super::paragraph_panel(app, ui));
+        out.textures_delta.clear();
+        fn collect(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    out.push_str(&t.galley.job.text);
+                    out.push('\n');
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        out.shapes.iter().for_each(|s| collect(&s.shape, &mut text));
+        text
+    }
+
+    /// Kinsoku Set and Mojikumi Set are CJK-only fields: shown with Show CJK Features, which
+    /// follows the interface language (Traditional Chinese and Korean included) until it is set.
+    #[test]
+    fn kinsoku_and_mojikumi_fields_follow_show_cjk_features() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [60, 60, 300, 200], "content": "text", "text": "漢字"})).unwrap();
+        let shows = |app: &mut crate::DesignApp| {
+            let text = paragraph_panel_text(app);
+            assert!(!text.is_empty());
+            (text.contains(crate::i18n::tr(&app.ui.language, "Kinsoku Set")), text.contains(crate::i18n::tr(&app.ui.language, "Mojikumi Set")))
+        };
+        for (lang, on) in [("", false), ("de", false), ("ja", true), ("zh", true), ("zh-hant", true), ("ko", true)] {
+            app.run("app.language", json!({"lang": lang})).unwrap();
+            assert_eq!(shows(&mut app), (on, on), "{lang}");
+        }
+        app.run("app.language", json!({"lang": ""})).unwrap();
+        app.run("prefs.set", json!({"cjkFeatures": true})).unwrap();
+        assert_eq!(shows(&mut app), (true, true));
+        app.run("app.language", json!({"lang": "ja"})).unwrap();
+        app.run("prefs.set", json!({"cjkFeatures": false})).unwrap();
+        assert_eq!(shows(&mut app), (false, false));
+        // Hidden, the commands still run.
+        app.run("type.mojikumi", json!({"set": "lineEndHalf"})).unwrap();
+    }
 
     /// A selected frame grid gets the grid sections (drawn without a panic in every CJK
     /// interface); a plain text frame doesn't.

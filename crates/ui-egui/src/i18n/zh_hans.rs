@@ -1717,4 +1717,5 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Distribute Rows Evenly", "平均分布行"),
     ("Pin Bar Position", "固定任务栏位置"),
     ("Reset Bar Position", "重置任务栏位置"),
+    ("Show CJK Features", "显示中日韩功能"),
 ];
