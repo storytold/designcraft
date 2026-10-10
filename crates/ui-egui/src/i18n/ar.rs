@@ -1469,4 +1469,13 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Paragraph Rules…", "خطوط الفقرة…"),
     ("Paragraph Rules", "خطوط الفقرة"),
     ("Rule Below", "خط سفلي"),
+    ("Gap Tint:", "صبغة الفجوة:"),
+    ("Strokes and Fills…", "الحدود والتعبئة…"),
+    ("Cell Stroke", "حد الخلية"),
+    ("Cell Fill", "تعبئة الخلية"),
+    ("Cell edges", "حواف الخلية"),
+    (
+        "Click a line to include or exclude it. Double-click selects all outer or all inner lines; triple-click selects or clears all.",
+        "انقر على خط لتضمينه أو استبعاده. النقر المزدوج يحدد كل الخطوط الخارجية أو كل الخطوط الداخلية؛ والنقر الثلاثي يحدد الكل أو يلغي تحديده.",
+    ),
 ];

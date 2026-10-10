@@ -60,6 +60,23 @@ pub struct TableFrag {
 }
 
 impl TableFrag {
+    /// The ends of `s`, each moved outwards by half the weight where it is a corner of the
+    /// fragment. Edge types drawn as butt-ended fills (stripes, wavy, hash, the gap colour)
+    /// then close the table's corners as square-capped solid edges do.
+    pub fn corner_capped(&self, s: &StrokeSeg) -> (Point, Point) {
+        let d = s.b - s.a;
+        let len = d.hypot();
+        let half = s.stroke.weight / 2.0;
+        if !(len > 0.0 && half.is_finite() && half > 0.0) {
+            return (s.a, s.b);
+        }
+        let r = self.rect;
+        let near = |v: f64, edge: f64| (v - edge).abs() < 1e-6;
+        let corner = |p: Point| (near(p.x, r.x0) || near(p.x, r.x1)) && (near(p.y, r.y0) || near(p.y, r.y1));
+        let out = d * (half / len);
+        (if corner(s.a) { s.a - out } else { s.a }, if corner(s.b) { s.b + out } else { s.b })
+    }
+
     pub(crate) fn shift(&mut self, dy: f64) {
         if dy == 0.0 {
             return;
@@ -504,6 +521,80 @@ fn boundary_stroke<'a>(
     }
 }
 
+/// The table's alternating row and column strokes, as drawn on body edges no cell supplies.
+/// Uniform active groups do not depend on which shared edge starts the pattern. Nonuniform
+/// and skipped patterns stay intact in the model until their phase is verified.
+fn table_patterns(table: &Table) -> (Option<&CellStroke>, Option<&CellStroke>) {
+    fn uniform(p: &Option<designcraft_doc::AltStrokes>) -> Option<&CellStroke> {
+        p.as_ref().filter(|p| p.skip_first == 0 && p.skip_last == 0).and_then(|p| p.uniform_stroke())
+    }
+    (uniform(&table.options.row_strokes), uniform(&table.options.column_strokes))
+}
+
+/// One stretch of a cell side, against one neighbouring cell or the outside of the table.
+#[derive(Clone, Copy, Debug)]
+pub struct SideStroke<'a> {
+    /// The neighbouring owner cell; `None` on the table's perimeter.
+    pub neighbor: Option<(usize, usize)>,
+    /// The grid line it lies on: a row boundary (0 = top) for top and bottom sides, a logical
+    /// column boundary (0 = start) for left and right sides.
+    pub boundary: usize,
+    /// The stroke drawn there.
+    pub stroke: &'a CellStroke,
+}
+
+/// The strokes drawn along side `side` (top, left, bottom, right; physical) of the owner cell
+/// at `(r, c)`, one per neighbouring cell, resolved as rendering resolves them: the winning
+/// copy of a shared edge, the table's row or column pattern where neither cell supplies the
+/// edge, and the table border on unoverridden perimeter edges. `owners` is [`Table::owners`].
+pub fn cell_side_strokes<'a>(table: &'a Table, owners: &[(usize, usize)], (r, c): (usize, usize), side: usize) -> Vec<SideStroke<'a>> {
+    let Some(cell) = table.cell(r, c) else { return Vec::new() };
+    let (nr, nc) = (table.nrows(), table.ncols());
+    let rtl = table.options.direction == designcraft_doc::TextDirection::RightToLeft;
+    let end_row = r.saturating_add(cell.row_span.max(1) as usize).min(nr);
+    let end_col = c.saturating_add(cell.col_span.max(1) as usize).min(nc);
+    let owner = |rr: usize, cc: usize| {
+        if rr >= nr || cc >= nc {
+            return None;
+        }
+        let &(orr, occ) = owners.get(rr.checked_mul(nc)?.checked_add(cc)?)?;
+        Some(((orr, occ), table.cell(orr, occ)?))
+    };
+    let me = Some(((r, c), cell));
+    let (row_pattern, column_pattern) = table_patterns(table);
+    let body = table.body_rows();
+    let mut out = Vec::new();
+    match side {
+        0 | 2 => {
+            let boundary = if side == 0 { r } else { end_row };
+            let above = boundary.checked_sub(1);
+            let pattern = if above.is_some_and(|a| body.contains(&a)) && body.contains(&boundary) { row_pattern } else { None };
+            for cc in c..end_col {
+                let other = if side == 0 { above.and_then(|a| owner(a, cc)) } else { owner(boundary, cc) };
+                let (a, b) = if side == 0 { (other, me) } else { (me, other) };
+                if let Some((stroke, _, _)) = boundary_stroke(table, a, b, 2, 0, pattern) {
+                    out.push(SideStroke { neighbor: other.map(|o| o.0), boundary, stroke });
+                }
+            }
+        }
+        1 | 3 => {
+            // Physical left is the logical start in left-to-right tables.
+            let start = (side == 1) != rtl;
+            let (boundary, other_col) = if start { (c, c.checked_sub(1)) } else { (end_col, Some(end_col)) };
+            for rr in r..end_row {
+                let other = other_col.and_then(|oc| owner(rr, oc));
+                let (left, right) = if side == 1 { (other, me) } else { (me, other) };
+                let pattern = if body.contains(&rr) { column_pattern } else { None };
+                if let Some((stroke, _, _)) = boundary_stroke(table, left, right, 3, 1, pattern) {
+                    out.push(SideStroke { neighbor: other.map(|o| o.0), boundary, stroke });
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// Keep an unchanged winning cell edge continuous across different losing neighbors. In
 /// particular, splitting a merged dashed edge would restart its dash phase at every cell.
 fn push_boundary_stroke(
@@ -549,10 +640,7 @@ fn fragment_strokes(
         Some(((r, c), table.cell(r, c)?))
     };
     let x = |c: usize| colx.get(c).map(|&offset| if rtl { right - offset } else { x0 + offset });
-    // Uniform active groups do not depend on which shared edge starts the pattern. Keep
-    // nonuniform and skipped patterns intact in the model until their phase is verified.
-    let row_stroke = table.options.row_strokes.as_ref().filter(|p| p.skip_first == 0 && p.skip_last == 0).and_then(|p| p.uniform_stroke());
-    let column_stroke = table.options.column_strokes.as_ref().filter(|p| p.skip_first == 0 && p.skip_last == 0).and_then(|p| p.uniform_stroke());
+    let (row_stroke, column_stroke) = table_patterns(table);
     let body = table.body_rows();
     let mut strokes = Vec::new();
     for boundary in 0..=rows.len() {

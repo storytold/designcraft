@@ -637,9 +637,14 @@ impl Renderer {
             })
             .with_miter_limit(st.miter_limit);
         let kind = f.doc.stroke_kind(&st.kind);
+        let length = designcraft_doc::path_length_bound(bp);
         match &kind {
-            StrokeType::Dashed { pattern } if !pattern.is_empty() => stroke = stroke.with_dashes(0.0, pattern.iter().copied()),
-            StrokeType::Dotted => stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round),
+            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
+                stroke = stroke.with_dashes(0.0, pattern.iter().copied())
+            }
+            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
+                stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round)
+            }
             _ => {}
         }
         ctx.set_transform(f.view * xf);
@@ -1481,6 +1486,79 @@ mod tests {
         assert_eq!(plain.pixel(x, y)[1], 255, "no highlight in output");
         let p = shown.pixel(x, y);
         assert!(p[0] > 240 && p[1] < 200, "pink on screen: {p:?}");
+    }
+
+    #[test]
+    fn table_edges_paint_gap_colour_between_dashes_and_stripes() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(1, 1, 1, 0, 0, 200.0);
+        t.rows[0].height = 60.0;
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        let gap = |kind| designcraft_doc::CellStroke { weight: 8.0, kind, gap_color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
+        let cell = t.cell_mut(0, 0).unwrap();
+        cell.strokes[0] = gap(designcraft_doc::StrokeType::Dashed { pattern: vec![12.0, 6.0] });
+        cell.strokes[2] = gap(designcraft_doc::StrokeType::ThickThin);
+        cell.border_overrides = [true; 4];
+        cell.stroke_defined = [true; 4];
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cache = Cache::new();
+        let rect = cache.get(&d, sid, None).frames[0].tables[0].cell(0, 0).unwrap().rect;
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let ink = |p: [u8; 4]| p[0] < 80 && p[2] < 80;
+        let cyan = |p: [u8; 4]| p[0] < 80 && p[2] > 150;
+        let y = rect.y0.round() as u32;
+        let (dash, space) = (img.pixel((rect.x0 + 6.0) as u32, y), img.pixel((rect.x0 + 15.0) as u32, y));
+        assert!(ink(dash), "dash {dash:?}");
+        assert!(cyan(space), "gap {space:?}");
+        let column: Vec<_> = (rect.y1 as u32 - 5..=rect.y1 as u32 + 5).map(|y| img.pixel(rect.center().x as u32, y)).collect();
+        assert!(column.iter().any(|p| ink(*p)) && column.iter().any(|p| cyan(*p)), "stripes and gap: {column:?}");
+    }
+
+    #[test]
+    fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
+        let fine = designcraft_doc::StrokeType::Dashed { pattern: vec![1e-6, 1e-6] };
+        // Expanding these would take ~10^8 dashes per edge.
+        assert!(text::cell_stroke(&fine, 4.0, 200.0).dash_pattern.is_empty());
+        assert!(text::cell_stroke(&designcraft_doc::StrokeType::Dotted, 1e-6, 200.0).dash_pattern.is_empty());
+        assert!(!text::cell_stroke(&designcraft_doc::StrokeType::Dashed { pattern: vec![3.0, 2.0] }, 1.0, 200.0).dash_pattern.is_empty());
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        d.item_mut(fid).unwrap().stroke = designcraft_doc::Stroke { weight: 2.0, kind: fine.clone(), ..Default::default() };
+        let mut t = designcraft_doc::Table::new(1, 2, 2, 0, 0, 200.0);
+        for r in 0..2 {
+            t.rows[r].height = 60.0;
+            t.rows[r].mode = designcraft_doc::RowHeightMode::Exactly;
+        }
+        let stroke = |kind| designcraft_doc::CellStroke { weight: 8.0, kind, gap_color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
+        for cell in &mut t.cells {
+            cell.strokes = std::array::from_fn(|_| stroke(designcraft_doc::StrokeType::ThickThin));
+            cell.border_overrides = [true; 4];
+            cell.stroke_defined = [true; 4];
+        }
+        if let Some(cell) = t.cell_mut(1, 0) {
+            cell.strokes[2] = stroke(fine);
+        }
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cache = Cache::new();
+        let frag = cache.get(&d, sid, None).frames[0].tables[0].clone();
+        let (top, bottom) = (frag.cell(0, 0).unwrap().rect, frag.cell(1, 0).unwrap().rect);
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let ink = |p: [u8; 4]| p[0] < 80;
+        let solid: Vec<_> = (2..10).map(|i| img.pixel((bottom.x0 + 20.0 + i as f64 * 0.5) as u32, bottom.y1.round() as u32)).collect();
+        assert!(solid.iter().all(|p| ink(*p)), "the degenerate dashed edge draws solid: {solid:?}");
+        // Outside the table's top-left corner, inside both edges' reach.
+        let corner = img.pixel((top.x0 - 3.0) as u32, (top.y0 - 3.0) as u32);
+        assert!(ink(corner), "corner closed: {corner:?}");
+        let edge = frag.strokes.iter().find(|s| s.a == designcraft_geom::Point::new(top.x0, top.y0) && s.a.y == s.b.y).unwrap();
+        let (a, b) = frag.corner_capped(edge);
+        assert_eq!((a, b), (designcraft_geom::Point::new(top.x0 - 4.0, top.y0), edge.b), "only table corners extend");
     }
 
     #[test]

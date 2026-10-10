@@ -1670,6 +1670,16 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Vertical:", "垂直方向:"),
     ("Working CMYK", "作業用 CMYK"),
     ("Yellow", "イエロー"),
+    ("Gap Tint:", "すき間の濃淡:"),
+    ("Strokes and Fills…", "線と塗り…"),
+    ("Cell Stroke", "セルの線"),
+    ("Cell Fill", "セルの塗り"),
+    ("Cell edges", "セルの境界線"),
+    (
+        "Click a line to include or exclude it. Double-click selects all outer or all inner lines; triple-click selects or clears all.",
+        "線をクリックすると、含めるか除外するかを切り替えます。ダブルクリックで外側または内側の線をすべて選択し、トリプルクリックですべてを選択または解除します。",
+    ),
+    ("Tint:", "濃淡:"),
 ];
 
 #[cfg(test)]

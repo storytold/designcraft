@@ -1,5 +1,6 @@
 //! Panels and shared panel helpers.
 
+pub mod cell_stroke;
 pub mod conditions;
 pub mod datamerge;
 pub mod glyphs;

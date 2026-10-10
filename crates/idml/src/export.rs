@@ -2192,6 +2192,10 @@ impl<'a> Ex<'a> {
         el.set(&format!("{prefix}StrokeColor"), self.sw(&s.color));
         el.set(&format!("{prefix}StrokeTint"), pct(s.tint as f64));
         el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(&s.kind));
+        if s.gap_color != designcraft_color::swatch::NONE || s.gap_tint != 1.0 {
+            el.set(&format!("{prefix}StrokeGapColor"), self.sw(&s.gap_color));
+            el.set(&format!("{prefix}StrokeGapTint"), pct(s.gap_tint as f64));
+        }
     }
 
     fn partial_cell_stroke_attrs(&self, el: &mut El, prefix: &str, attrs: &designcraft_doc::CellStrokeAttrs) {
@@ -2206,6 +2210,12 @@ impl<'a> Ex<'a> {
         }
         if let Some(value) = &attrs.kind {
             el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(value));
+        }
+        if let Some(value) = &attrs.gap_color {
+            el.set(&format!("{prefix}StrokeGapColor"), self.sw(value));
+        }
+        if let Some(value) = attrs.gap_tint {
+            el.set(&format!("{prefix}StrokeGapTint"), pct(value as f64));
         }
     }
 

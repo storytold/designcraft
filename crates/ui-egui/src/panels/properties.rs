@@ -1537,6 +1537,10 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// Stroke panel: weight, cap, miter limit, join, alignment, type, arrowheads, gap colour.
 pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    if super::cell_stroke::in_cells(app) {
+        super::cell_stroke::panel(app, ui);
+        return;
+    }
     let Some(i) = sel_info(app) else {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
         return;

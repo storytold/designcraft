@@ -163,11 +163,20 @@ pub struct CellStrokeAttrs {
     pub tint: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<crate::item::StrokeType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap_color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap_tint: Option<f32>,
 }
 
 impl CellStrokeAttrs {
     pub fn is_empty(&self) -> bool {
-        self.weight.is_none() && self.color.is_none() && self.tint.is_none() && self.kind.is_none()
+        self.weight.is_none()
+            && self.color.is_none()
+            && self.tint.is_none()
+            && self.kind.is_none()
+            && self.gap_color.is_none()
+            && self.gap_tint.is_none()
     }
 
     pub fn apply_to(&self, stroke: &mut crate::table::CellStroke) {
@@ -182,6 +191,12 @@ impl CellStrokeAttrs {
         }
         if let Some(v) = &self.kind {
             stroke.kind = v.clone();
+        }
+        if let Some(v) = &self.gap_color {
+            stroke.gap_color = v.clone();
+        }
+        if let Some(v) = self.gap_tint {
+            stroke.gap_tint = v;
         }
     }
 
@@ -198,10 +213,23 @@ impl CellStrokeAttrs {
         if other.kind.is_some() {
             self.kind = other.kind.clone();
         }
+        if other.gap_color.is_some() {
+            self.gap_color = other.gap_color.clone();
+        }
+        if other.gap_tint.is_some() {
+            self.gap_tint = other.gap_tint;
+        }
     }
 
     fn from_stroke(stroke: &crate::table::CellStroke) -> Self {
-        Self { weight: Some(stroke.weight), color: Some(stroke.color.clone()), tint: Some(stroke.tint), kind: Some(stroke.kind.clone()) }
+        Self {
+            weight: Some(stroke.weight),
+            color: Some(stroke.color.clone()),
+            tint: Some(stroke.tint),
+            kind: Some(stroke.kind.clone()),
+            gap_color: Some(stroke.gap_color.clone()),
+            gap_tint: Some(stroke.gap_tint),
+        }
     }
 }
 

@@ -1125,6 +1125,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Create Table"),
+        "cellOptions" => crate::i18n::tr(&app.ui.language, "Cell Options"),
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
         "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
         "findChange" => crate::i18n::tr(&app.ui.language, "Find/Change"),
@@ -1430,8 +1431,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 }
                 for l in &mut layers {
                     let mut on = l["visible"].as_bool().unwrap_or(true);
-                    if ui.checkbox(&mut on, l["name"].as_str().unwrap_or("")).changed() {
-                        l["visible"] = json!(on);
+                    if ui.checkbox(&mut on, l["name"].as_str().unwrap_or("")).changed()
+                        && let Some(o) = l.as_object_mut()
+                    {
+                        o.insert("visible".into(), json!(on));
                     }
                 }
                 d.fields.insert("layers".into(), json!(layers));
@@ -1685,6 +1688,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     ui.end_row();
                 });
             }
+            "cellOptions" => cell_options(app, ui, &mut d),
             "textFrameOptions" => {
                 seed_text_frame_options(app, &mut d);
                 text_frame_options_dialog(app, ui, &mut d);
@@ -1741,6 +1745,110 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     }
 }
 
+/// Cell Options keys (`table.getCellStroke` names) and whether each belongs to the stroke.
+const CELL_OPTION_KEYS: [(&str, bool); 8] =
+    [("weight", true), ("type", true), ("color", true), ("tint", true), ("gapColor", true), ("gapTint", true), ("fill", false), ("fillTint", false)];
+
+/// Table › Cell Options › Strokes and Fills… for the target cells. The fields start from the
+/// cells' values (`seed`); OK applies the fields that differ from it.
+pub fn open_cell_options(app: &mut DesignApp) -> Result<Value, String> {
+    let edges = crate::panels::cell_stroke::edges_param(&[true; 6]);
+    let cur = app.session.execute("table.getCellStroke", &json!({"edges": edges})).map_err(|e| e.to_string())?;
+    let mut fields = Map::new();
+    for (k, _) in CELL_OPTION_KEYS {
+        fields.insert(k.into(), cur[k].clone());
+    }
+    fields.insert("seed".into(), Value::Object(fields.clone()));
+    fields.insert("edges".into(), edges);
+    app.ui.dialog = Some(Dialog::new("cellOptions", Value::Object(fields)));
+    Ok(Value::Null)
+}
+
+/// Cell Options › Strokes and Fills: the edge proxy and stroke fields, then the cell fill.
+fn cell_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    use crate::panels::cell_stroke;
+    let lang = app.ui.language.clone();
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Cell Stroke")).font(semibold(12.0)));
+    let mut edges = cell_stroke::edges_from(d.fields.get("edges").unwrap_or(&Value::Null));
+    if cell_stroke::edge_proxy(ui, "cell_options", &mut edges, &lang) {
+        cell_options_edges_changed(app, d, &edges);
+    }
+    ui.add_space(6.0);
+    let values = Value::Object(d.fields.clone());
+    let any = edges.iter().any(|on| *on);
+    if let Some((k, v)) = ui.add_enabled_ui(any, |ui| cell_stroke::stroke_fields(app, ui, "cell_options", &values)).inner {
+        d.fields.insert(k.into(), v);
+    }
+    ui.add_space(10.0);
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Cell Fill")).font(semibold(12.0)));
+    egui::Grid::new("cell_fill").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Color:"));
+        let mut picked = None;
+        crate::panels::swatch_picker(app, ui, "cell_fill_color", values["fill"].as_str().map(str::to_string), |_, n| picked = Some(n));
+        if let Some(n) = picked {
+            d.fields.insert("fill".into(), json!(n));
+        }
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Tint:"));
+        let tint = values["fillTint"].as_f64().map(|t| (t * 100.0).round());
+        if let Some(t) = crate::widgets::NumField::number("cell_fill_tint", tint, "%", 0).width(60.0).range(0.0, 100.0).show(ui) {
+            d.fields.insert("fillTint".into(), json!(t / 100.0));
+        }
+        ui.end_row();
+    });
+}
+
+/// Cell Options with a new edge choice: the stroke fields the user hasn't changed show the
+/// chosen edges' values, and every stroke field's seed becomes those values, so OK applies
+/// exactly the fields that differ from what the chosen edges show.
+fn cell_options_edges_changed(app: &mut DesignApp, d: &mut Dialog, edges: &crate::panels::cell_stroke::Edges) {
+    d.fields.insert("edges".into(), crate::panels::cell_stroke::edges_param(edges));
+    let cur = crate::panels::cell_stroke::current(app, edges);
+    let mut seed = d.fields.get("seed").and_then(Value::as_object).cloned().unwrap_or_default();
+    for (k, stroke) in CELL_OPTION_KEYS {
+        if !stroke {
+            continue;
+        }
+        let v = cur.get(k).cloned().unwrap_or(Value::Null);
+        // Null shows mixed values; the user can't type it.
+        let field = d.fields.get(k).filter(|f| !f.is_null());
+        if field.is_none() || field == seed.get(k) {
+            d.fields.insert(k.into(), v.clone());
+        }
+        seed.insert(k.into(), v);
+    }
+    d.fields.insert("seed".into(), Value::Object(seed));
+}
+
+/// Apply the Cell Options fields that differ from the cells' values, as one `table.setCell`.
+fn confirm_cell_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    let seed = d.fields.get("seed").cloned().unwrap_or(Value::Null);
+    let mut stroke = Map::new();
+    let mut params = Map::new();
+    for (k, is_stroke) in CELL_OPTION_KEYS {
+        let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && seed.get(k) != Some(*v)) else { continue };
+        match (is_stroke, k) {
+            (true, _) => {
+                stroke.insert(k.into(), v.clone());
+            }
+            (false, "fillTint") => {
+                params.insert("tint".into(), v.clone());
+            }
+            _ => {
+                params.insert(k.into(), v.clone());
+            }
+        }
+    }
+    if !stroke.is_empty() {
+        stroke.insert("edges".into(), d.fields.get("edges").cloned().unwrap_or(json!("all")));
+        params.insert("stroke".into(), Value::Object(stroke));
+    }
+    if params.is_empty() {
+        return Ok(Value::Null);
+    }
+    app.run("table.setCell", Value::Object(params))
+}
+
 /// Apply the open dialog.
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
@@ -1788,6 +1896,15 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             json!({"rows": d.n("bodyRows").unwrap_or(4.0).max(1.0) as u64, "cols": d.n("columns").unwrap_or(4.0).max(1.0) as u64,
                 "headerRows": d.n("headerRows").unwrap_or(0.0).max(0.0) as u64, "footerRows": d.n("footerRows").unwrap_or(0.0).max(0.0) as u64}),
         ),
+        "cellOptions" => {
+            // On an error the dialog stays open to be corrected.
+            let r = confirm_cell_options(app, &d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
         "textFrameOptions" => {
             // On an error the dialog stays open to be corrected.
             let mut d = d;
@@ -3740,6 +3857,60 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_options_dialog_draws_and_applies_only_changed_values_to_the_chosen_edges() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+        let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        app.run("table.select", json!({"what": "table"})).unwrap();
+        app.run("app.cellOptionsDialog", json!({})).unwrap();
+        let ctx = dialog_context("");
+        dialog_frame(&mut app, &ctx, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0)), vec![]);
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.id, "cellOptions");
+        assert_eq!(d.fields["weight"], json!(1.0));
+        d.fields.insert("edges".into(), json!(["top", "bottom", "left", "right"]));
+        d.fields.insert("gapColor".into(), json!("[Paper]"));
+        d.fields.insert("fill".into(), json!("[Black]"));
+        d.fields.insert("fillTint".into(), json!(0.2));
+        confirm(&mut app).unwrap();
+        let st = app.session.active().unwrap();
+        let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+        let gap = |r: usize, c: usize, side: usize| t.cell(r, c).unwrap().strokes[side].gap_color.clone();
+        assert_eq!([gap(0, 0, 0), gap(0, 0, 1), gap(1, 1, 2), gap(1, 1, 3)], ["[Paper]"; 4].map(String::from), "outer edges");
+        assert_eq!([gap(0, 0, 2), gap(0, 0, 3)], ["[None]"; 2].map(String::from), "inner edges keep theirs");
+        assert!(t.cells.iter().all(|c| c.fill == "[Black]" && (c.fill_tint - 0.2).abs() < 1e-6));
+        assert!(t.cells.iter().all(|c| c.strokes.iter().all(|e| e.weight == 1.0)), "unchanged values are not applied");
+    }
+
+    #[test]
+    fn cell_options_edge_changes_reseed_every_stroke_field_and_survive_a_bad_seed() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+        let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        app.run("table.select", json!({"what": "table"})).unwrap();
+        app.run("table.setCell", json!({"stroke": {"weight": 3, "edges": "innerHorizontal"}})).unwrap();
+        app.run("app.cellOptionsDialog", json!({})).unwrap();
+        let mut d = app.ui.dialog.take().unwrap();
+        d.fields.insert("seed".into(), json!(5));
+        let outer = [true, true, true, true, false, false];
+        cell_options_edges_changed(&mut app, &mut d, &outer);
+        assert_eq!((&d.fields["weight"], &d.fields["seed"]["weight"]), (&json!(1.0), &json!(1.0)));
+        // A weight typed for the outer edges, then the inner horizontal edges (3 pt) chosen
+        // and 1 pt typed: 1 pt differs from what those edges show, so OK applies it.
+        d.fields.insert("weight".into(), json!(5.0));
+        cell_options_edges_changed(&mut app, &mut d, &[false, false, false, false, true, false]);
+        assert_eq!((&d.fields["weight"], &d.fields["seed"]["weight"]), (&json!(5.0), &json!(3.0)));
+        d.fields.insert("weight".into(), json!(1.0));
+        app.ui.dialog = Some(d);
+        confirm(&mut app).unwrap();
+        let st = app.session.active().unwrap();
+        let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+        assert_eq!([t.cell(0, 0).unwrap().strokes[2].weight, t.cell(1, 1).unwrap().strokes[0].weight], [1.0; 2]);
+    }
 
     fn dialog_context(language: &str) -> egui::Context {
         let ctx = egui::Context::default();

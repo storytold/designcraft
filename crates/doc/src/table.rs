@@ -62,11 +62,30 @@ pub struct CellStroke {
     pub color: String,
     pub tint: f32,
     pub kind: StrokeType,
+    /// Painted in the gaps of dashed, dotted and striped types.
+    #[serde(skip_serializing_if = "is_no_swatch")]
+    pub gap_color: String,
+    #[serde(skip_serializing_if = "is_full")]
+    pub gap_tint: f32,
+}
+
+fn is_no_swatch(s: &str) -> bool {
+    s == designcraft_color::swatch::NONE
+}
+fn is_full(t: &f32) -> bool {
+    *t == 1.0
 }
 
 impl Default for CellStroke {
     fn default() -> Self {
-        CellStroke { weight: 1.0, color: designcraft_color::swatch::BLACK.into(), tint: 1.0, kind: StrokeType::Solid }
+        CellStroke {
+            weight: 1.0,
+            color: designcraft_color::swatch::BLACK.into(),
+            tint: 1.0,
+            kind: StrokeType::Solid,
+            gap_color: designcraft_color::swatch::NONE.into(),
+            gap_tint: 1.0,
+        }
     }
 }
 

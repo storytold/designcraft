@@ -70,6 +70,27 @@ pub enum Join {
     Bevel,
 }
 
+/// The shortest non-zero dash or gap a command accepts, in points.
+pub const MIN_DASH: f64 = 0.1;
+/// The longest dash or gap a command accepts, in points.
+pub const MAX_DASH: f64 = 10_000.0;
+/// The most lengths a dash pattern holds.
+pub const MAX_DASH_ENTRIES: usize = 64;
+/// The most pattern repeats a renderer expands along one path; finer patterns draw solid.
+pub const MAX_DASH_PERIODS: f64 = 20_000.0;
+
+/// An upper bound of the length of `bp`: the length of its control polygon.
+pub fn path_length_bound(bp: &designcraft_geom::BezPath) -> f64 {
+    use designcraft_geom::PathSeg;
+    bp.segments()
+        .map(|s| match s {
+            PathSeg::Line(l) => l.p0.distance(l.p1),
+            PathSeg::Quad(q) => q.p0.distance(q.p1) + q.p1.distance(q.p2),
+            PathSeg::Cubic(c) => c.p0.distance(c.p1) + c.p1.distance(c.p2) + c.p2.distance(c.p3),
+        })
+        .sum()
+}
+
 /// Stroke types (Stroke panel → Type). Dash/gap arrays are in points.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
@@ -115,6 +136,28 @@ impl StrokeType {
             StrokeType::Stripes { .. } => "Stripes",
             StrokeType::Style { .. } => "Custom",
         }
+    }
+
+    /// Whether `pattern` is a dash pattern commands accept: 1 to [`MAX_DASH_ENTRIES`] lengths,
+    /// each 0 or from [`MIN_DASH`] to [`MAX_DASH`] points, not all 0.
+    pub fn valid_dash_pattern(pattern: &[f64]) -> bool {
+        !pattern.is_empty()
+            && pattern.len() <= MAX_DASH_ENTRIES
+            && pattern.iter().all(|x| *x == 0.0 || (MIN_DASH..=MAX_DASH).contains(x))
+            && pattern.iter().any(|x| *x > 0.0)
+    }
+
+    /// Whether a renderer may expand `pattern` along a path at most `length` points long: at
+    /// most [`MAX_DASH_ENTRIES`] finite, non-negative lengths that repeat at most
+    /// [`MAX_DASH_PERIODS`] times. Otherwise the stroke draws solid, so a degenerate pattern
+    /// from a file can't stall rendering.
+    pub fn expandable_dashes(pattern: &[f64], length: f64) -> bool {
+        let period: f64 = pattern.iter().sum();
+        pattern.len() <= MAX_DASH_ENTRIES
+            && pattern.iter().all(|x| x.is_finite() && *x >= 0.0)
+            && period > 0.0
+            && length.is_finite()
+            && length / period <= MAX_DASH_PERIODS
     }
 
     /// The bands of a striped type (start, width as fractions of the weight).

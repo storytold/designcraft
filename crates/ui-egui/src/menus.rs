@@ -60,6 +60,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("window.resetShortcuts", "Reset Shortcuts", None, "{} — every command back to its default shortcut"),
     ("app.findChange", "Find/Change…", Some("Cmd+F"), "{}"),
     ("app.insertTableDialog", "Create Table…", None, "{} — Insert Table dialog (body/header/footer rows, columns)"),
+    (
+        "app.cellOptionsDialog",
+        "Strokes and Fills…",
+        None,
+        "{} — Cell Options › Strokes and Fills of the target cells: edge proxy, stroke weight, type, colour, tint, gap colour, gap tint, and cell fill (table.setCell)",
+    ),
     ("app.footnoteOptionsDialog", "Document Footnote Options…", None, "{} — numbering, formatting and layout of footnotes"),
     ("app.rubyDialog", "Ruby…", None, "{} — the reading set over the selected text"),
     (
@@ -586,6 +592,9 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:table.selectTable",
             "<",
             "-",
+            ">Cell Options",
+            "ui:app.cellOptionsDialog",
+            "<",
             "cmd:table.merge",
             "cmd:table.unmerge",
             ">Convert Cell Type",
@@ -779,6 +788,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.dialog = Some(crate::dialogs::Dialog::new("menus", json!({"query": ""})));
             Ok(Value::Null)
         }
+        "app.cellOptionsDialog" => crate::dialogs::open_cell_options(app),
         "window.hideMenuItem" => {
             let Some(item) = p.get("item").and_then(Value::as_str) else { return Some(Err("missing item".into())) };
             let hide = p.get("hidden").and_then(Value::as_bool).unwrap_or(true);

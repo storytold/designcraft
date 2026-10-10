@@ -399,3 +399,134 @@ fn editing_beside_a_merged_cell_only_changes_the_selected_edge_segment() {
         }
     }
 }
+
+#[test]
+fn cell_stroke_gap_colour_on_inner_horizontal_edges_of_a_selection_undoes_and_saves() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.execute("table.select", &json!({"what": "table"})).unwrap();
+    let before = table_for(&s, sid, tid).clone();
+    let cyan = "C=100 M=0 Y=0 K=0";
+    let stroke = json!({"weight": 3, "type": "dashed", "gapColor": cyan, "gapTint": 0.5, "edges": ["innerHorizontal"]});
+    s.execute("table.setCell", &json!({ "stroke": stroke })).unwrap();
+    let t = table_for(&s, sid, tid).clone();
+    let edge = |r: usize, c: usize, side: usize| t.cell(r, c).unwrap().strokes[side].clone();
+    for (r, c, side) in [(0, 0, 2), (0, 1, 2), (1, 0, 0), (1, 1, 0)] {
+        let e = edge(r, c, side);
+        assert_eq!((e.weight, e.gap_color.as_str(), e.gap_tint), (3.0, cyan, 0.5), "inner horizontal {r},{c} side {side}");
+        assert!(matches!(e.kind, doc::StrokeType::Dashed { .. }));
+    }
+    for (r, c, side) in [(0, 0, 0), (0, 0, 1), (0, 0, 3), (1, 1, 2), (1, 1, 1), (0, 1, 3)] {
+        assert_eq!(&edge(r, c, side), &before.cell(r, c).unwrap().strokes[side], "{r},{c} side {side} keeps its stroke");
+    }
+    // The query reports the chosen edges, and mixed values as null.
+    let inner = s.execute("table.getCellStroke", &json!({"edges": "innerHorizontal"})).unwrap();
+    assert_eq!((inner["weight"].as_f64(), inner["gapColor"].as_str(), inner["edges"].as_u64()), (Some(3.0), Some(cyan), Some(2)));
+    let all = s.execute("table.getCellStroke", &json!({})).unwrap();
+    assert!(all["weight"].is_null() && all["gapColor"].is_null());
+    // Bad values are errors and change nothing.
+    for bad in
+        [json!({"gapTint": 2}), json!({"gapColor": "No Such Swatch"}), json!({"weight": -1}), json!({"type": "zigzag"}), json!({"edges": "middle"})]
+    {
+        assert!(s.execute("table.setCell", &json!({ "stroke": bad })).is_err(), "{bad}");
+        assert_eq!(table_for(&s, sid, tid), &t);
+    }
+    let bytes = crate::cmd::file_bytes(&s.doc().unwrap().doc);
+    let back = crate::cmd::file_from(&bytes).unwrap();
+    assert_eq!(back.story(doc::StoryId(sid)).unwrap().tables.get(&tid).unwrap().as_ref(), &t);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(table_for(&s, sid, tid), &before);
+}
+
+#[test]
+fn shared_edge_edits_and_queries_start_from_the_drawn_stroke() {
+    let cyan = "C=100 M=0 Y=0 K=0";
+    let thin = doc::CellStroke { weight: 0.25, color: cyan.into(), ..Default::default() };
+    // The higher-priority copy of a shared edge is drawn: 2 pt cyan over 0.5 pt black.
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+    s.edit(|d, _| {
+        let t = d.story_mut(doc::StoryId(sid)).unwrap().table_mut(tid).unwrap();
+        let upper = t.cell_mut(0, 0).unwrap();
+        upper.strokes[2] = doc::CellStroke { weight: 2.0, color: cyan.into(), ..Default::default() };
+        (upper.stroke_defined[2], upper.stroke_priorities[2]) = (true, 5);
+        let lower = t.cell_mut(1, 0).unwrap();
+        lower.strokes[0] = doc::CellStroke { weight: 0.5, ..Default::default() };
+        (lower.stroke_defined[0], lower.stroke_priorities[0]) = (true, 1);
+        Ok(())
+    })
+    .unwrap();
+    let q = s.execute("table.getCellStroke", &json!({"table": tid, "edges": "innerHorizontal"})).unwrap();
+    assert_eq!((q["weight"].as_f64(), q["color"].as_str(), q["edges"].as_u64()), (Some(2.0), Some(cyan), Some(1)));
+    s.execute("table.setCell", &json!({"table": tid, "stroke": {"color": "[Paper]", "edges": "innerHorizontal"}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    for e in [&t.cell(0, 0).unwrap().strokes[2], &t.cell(1, 0).unwrap().strokes[0]] {
+        assert_eq!((e.weight, e.color.as_str()), (2.0, "[Paper]"));
+    }
+    let composed = s.cache.get(&s.doc().unwrap().doc, doc::StoryId(sid), None);
+    let frag = composed.frames.iter().flat_map(|f| &f.tables).next().unwrap();
+    assert!(frag.strokes.iter().any(|x| x.stroke.weight == 2.0 && x.stroke.color == "[Paper]"));
+    assert!(!frag.strokes.iter().any(|x| x.stroke.weight == 0.5), "the edge stays 2 pt");
+
+    // An interior edge no cell supplies is drawn from the table's row pattern.
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.edit(|d, _| {
+        let t = d.story_mut(doc::StoryId(sid)).unwrap().table_mut(tid).unwrap();
+        t.options.row_strokes = Some(doc::AltStrokes { first: 1, next: 0, first_stroke: thin.clone(), ..Default::default() });
+        for cell in &mut t.cells {
+            (cell.stroke_defined, cell.border_overrides, cell.stroke_priorities) = ([false; 4], [false; 4], [0; 4]);
+        }
+        Ok(())
+    })
+    .unwrap();
+    let q = s.execute("table.getCellStroke", &json!({"table": tid, "edges": "innerHorizontal"})).unwrap();
+    assert_eq!((q["weight"].as_f64(), q["color"].as_str(), q["edges"].as_u64()), (Some(0.25), Some(cyan), Some(2)));
+    s.execute("table.setCell", &json!({"table": tid, "stroke": {"color": "[Paper]", "edges": "innerHorizontal"}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    for (r, c, side) in [(0, 0, 2), (0, 1, 2), (1, 0, 0), (1, 1, 0)] {
+        let e = &t.cell(r, c).unwrap().strokes[side];
+        assert_eq!((e.weight, e.color.as_str()), (0.25, "[Paper]"), "{r},{c} side {side}");
+    }
+}
+
+#[test]
+fn degenerate_dash_patterns_are_rejected() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let before = table_for(&s, sid, tid).clone();
+    for pattern in [json!([1e-6, 1e-6]), json!([0.05, 3]), json!([]), json!([0, 0]), json!(vec![1.0; 65]), json!([20000, 1])] {
+        let stroke = json!({"table": tid, "stroke": {"type": {"kind": "dashed", "pattern": pattern}}});
+        assert!(s.execute("table.setCell", &stroke).is_err(), "{pattern}");
+        assert_eq!(table_for(&s, sid, tid), &before);
+        assert!(s.execute("strokeStyle.new", &json!({"name": "Fine", "type": "dash", "pattern": pattern})).is_err(), "{pattern}");
+    }
+    s.execute("table.setCell", &json!({"table": tid, "stroke": {"type": {"kind": "dashed", "pattern": [0.1, 0, 3]}}})).unwrap();
+}
+
+#[test]
+fn cell_and_table_style_strokes_take_type_and_gap_colour_with_validation() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let stroke = json!({"weight": 2, "type": "dotted", "gapColor": "[Paper]", "gapTint": 0.4});
+    s.execute("style.cell.create", &json!({"name": "Dotted", "stroke": stroke})).unwrap();
+    s.execute("style.cell.apply", &json!({"name": "Dotted", "table": tid})).unwrap();
+    let edges = s.execute("table.getCellStroke", &json!({"table": tid})).unwrap();
+    assert_eq!((edges["weight"].as_f64(), edges["type"]["kind"].as_str()), (Some(2.0), Some("dotted")));
+    assert_eq!((edges["gapColor"].as_str(), edges["gapTint"].as_f64().map(|t| (t * 10.0).round())), (Some("[Paper]"), Some(4.0)));
+    s.execute("style.table.create", &json!({"name": "Framed", "border": {"type": "thickThin", "gapSwatch": "[Black]"}})).unwrap();
+    let framed = s.doc().unwrap().doc.styles.table.iter().find(|t| t.name == "Framed").unwrap().border.clone().unwrap();
+    assert_eq!((framed.kind, framed.gap_color.as_str()), (doc::StrokeType::ThickThin, "[Black]"));
+    let styles = s.doc().unwrap().doc.styles.clone();
+    let table = table_for(&s, sid, tid).clone();
+    for (cmd, p) in [
+        ("style.cell.edit", json!({"name": "Dotted", "stroke": {"gapTint": 3}})),
+        ("style.cell.create", json!({"name": "Bad", "stroke": {"type": "zigzag"}})),
+        ("style.table.edit", json!({"name": "Framed", "border": {"gapColor": "No Such Swatch"}})),
+        ("style.table.create", json!({"name": "Bad", "border": {"weight": -2}})),
+    ] {
+        assert!(s.execute(cmd, &p).is_err(), "{cmd} {p}");
+        assert_eq!(s.doc().unwrap().doc.styles, styles, "{cmd} changed the styles");
+        assert_eq!(table_for(&s, sid, tid), &table);
+    }
+}

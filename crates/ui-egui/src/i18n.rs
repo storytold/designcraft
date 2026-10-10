@@ -2811,6 +2811,22 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Rule Below", ["Linie unterhalb", "Filet après", "Filete después", "後境界線", "下方横线"]),
     ("Tint:", ["Farbton:", "Teinte:", "Matiz:", "濃淡:", "色调："]),
     ("Column", ["Spalte", "Colonne", "Columna", "段", "栏"]),
+    // Cell strokes.
+    ("Gap Tint:", ["Lückenfarbton:", "Teinte de l'espace:", "Matiz del hueco:", "すき間の濃淡:", "间隙色调："]),
+    ("Strokes and Fills…", ["Konturen und Flächen …", "Contours et fonds…", "Trazos y rellenos…", "線と塗り…", "描边和填色…"]),
+    ("Cell Stroke", ["Zellkontur", "Contour de cellule", "Trazo de celda", "セルの線", "单元格描边"]),
+    ("Cell Fill", ["Zellfläche", "Fond de cellule", "Relleno de celda", "セルの塗り", "单元格填色"]),
+    ("Cell edges", ["Zellkanten", "Bords de cellule", "Bordes de celda", "セルの境界線", "单元格边缘"]),
+    (
+        "Click a line to include or exclude it. Double-click selects all outer or all inner lines; triple-click selects or clears all.",
+        [
+            "Klicken Sie auf eine Linie, um sie ein- oder auszuschließen. Doppelklick wählt alle äußeren oder alle inneren Linien; Dreifachklick wählt alle aus oder hebt die Auswahl auf.",
+            "Cliquez sur une ligne pour l'inclure ou l'exclure. Un double-clic sélectionne toutes les lignes extérieures ou intérieures ; un triple-clic sélectionne ou désélectionne tout.",
+            "Haga clic en una línea para incluirla o excluirla. Doble clic selecciona todas las líneas exteriores o interiores; triple clic selecciona o borra todas.",
+            "線をクリックすると、含めるか除外するかを切り替えます。ダブルクリックで外側または内側の線をすべて選択し、トリプルクリックですべてを選択または解除します。",
+            "单击线条可将其包含或排除。双击选择所有外侧或所有内侧线条；三击选择或清除全部。",
+        ],
+    ),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.

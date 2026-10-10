@@ -1399,3 +1399,32 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     check(&d);
     check(&import_idml(&export_idml(&d)).unwrap());
 }
+
+#[test]
+fn cell_edge_gap_colours_and_tints_import_and_round_trip_per_edge() {
+    let styles = CASCADE_STYLES.replace(
+        r#"TopEdgeStrokeType="StrokeStyle/$ID/Dashed""#,
+        r#"TopEdgeStrokeType="StrokeStyle/$ID/Dashed" TopEdgeStrokeGapColor="Color/Paper" TopEdgeStrokeGapTint="60" BottomEdgeStrokeGapColor="Color/Brand""#,
+    );
+    let story = CASCADE_STORY.replace(
+        r#"<Cell Name="1:1">"#,
+        r#"<Cell Name="1:1" LeftEdgeStrokeType="StrokeStyle/$ID/Dotted" LeftEdgeStrokeGapColor="Color/Brand" LeftEdgeStrokeGapTint="30" RightEdgeStrokeGapColor="Color/Paper">"#,
+    );
+    let gaps = |d: &Document| {
+        let base = d.styles.cell.iter().find(|s| s.name == "Base").unwrap().strokes.clone();
+        let table = d.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        let cell = table.cell(1, 1).unwrap().strokes.clone();
+        (base.map(|e| (e.gap_color, e.gap_tint)), cell.map(|e| (e.gap_color, e.gap_tint)))
+    };
+    let d = import_idml(&fixture_with_table_styles(&styles, &story)).unwrap();
+    d.check().unwrap();
+    let (style, cell) = gaps(&d);
+    assert_eq!(style[0], (Some("[Paper]".to_string()), Some(0.6)));
+    assert_eq!(style[2], (Some("Brand".to_string()), None));
+    assert_eq!((style[1].clone(), style[3].clone()), ((None, None), (None, None)));
+    assert_eq!(cell[1], ("Brand".to_string(), 0.3), "left");
+    assert_eq!(cell[3], ("[Paper]".to_string(), 1.0), "right");
+    assert_eq!(cell[0].0, "[Paper]", "the Base style's top gap colour reaches the cell");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(gaps(&back), (style, cell));
+}

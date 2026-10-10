@@ -212,23 +212,59 @@ impl Exporter<'_> {
             for seg in &t.strokes {
                 let st = &seg.stroke;
                 let Some(col) = self.swatch_color(&st.color, st.tint) else { continue };
-                let (cap, dash) = match &st.kind {
-                    designcraft_doc::StrokeType::Dashed { pattern } if pattern.iter().any(|v| *v > 0.0) => {
+                let kind = self.doc.stroke_kind(&st.kind);
+                let mut bp = BezPath::new();
+                bp.move_to(seg.a);
+                bp.line_to(seg.b);
+                let Some(p) = to_path(&bp) else { continue };
+                // Butt-ended fills close the table's corners the way square caps do.
+                let (ca, cb) = t.corner_capped(seg);
+                let mut capped = BezPath::new();
+                capped.move_to(ca);
+                capped.line_to(cb);
+                let Some(cp) = to_path(&capped) else { continue };
+                // Gap colour under dashes, dots and stripes: the whole edge, solid.
+                if !matches!(kind, designcraft_doc::StrokeType::Solid)
+                    && st.gap_color != designcraft_color::swatch::NONE
+                    && let Some(gap) = self.swatch_color(&st.gap_color, st.gap_tint)
+                {
+                    s.set_fill(None);
+                    s.set_stroke(Some(Stroke {
+                        paint: gap.into(),
+                        width: st.weight as f32,
+                        line_cap: krilla::paint::LineCap::Butt,
+                        ..Default::default()
+                    }));
+                    s.draw_path(&cp);
+                    s.set_stroke(None);
+                }
+                // Stripes, wavy and hash types are fills along the edge.
+                if let Some(o) = kind.outline(&capped, st.weight, 0.05)
+                    && let Some(op) = to_path(&o)
+                {
+                    s.set_stroke(None);
+                    s.set_fill(Some(solid_fill(col, 1.0)));
+                    s.draw_path(&op);
+                    s.set_fill(None);
+                    continue;
+                }
+                let (cap, dash) = match &kind {
+                    designcraft_doc::StrokeType::Dashed { pattern }
+                        if designcraft_doc::StrokeType::expandable_dashes(pattern, seg.a.distance(seg.b)) =>
+                    {
                         let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
                         if pat.len() % 2 == 1 {
                             pat.extend(pat.clone());
                         }
                         (krilla::paint::LineCap::Butt, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
                     }
-                    designcraft_doc::StrokeType::Dotted => {
+                    designcraft_doc::StrokeType::Dotted
+                        if designcraft_doc::StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], seg.a.distance(seg.b)) =>
+                    {
                         (krilla::paint::LineCap::Round, Some(krilla::paint::StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 }))
                     }
                     _ => (krilla::paint::LineCap::Square, None),
                 };
-                let mut bp = BezPath::new();
-                bp.move_to(seg.a);
-                bp.line_to(seg.b);
-                let Some(p) = to_path(&bp) else { continue };
                 s.set_fill(None);
                 s.set_stroke(Some(Stroke { paint: col.into(), width: st.weight as f32, line_cap: cap, dash, ..Default::default() }));
                 s.draw_path(&p);

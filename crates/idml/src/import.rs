@@ -26,7 +26,15 @@ fn uniform_cell_stroke(edges: &[designcraft_doc::CellStrokeAttrs; 4]) -> Option<
     if edges.iter().any(|edge| edge != first) {
         return None;
     }
-    Some(designcraft_doc::CellStroke { weight: first.weight?, color: first.color.clone()?, tint: first.tint?, kind: first.kind.clone()? })
+    let mut stroke = designcraft_doc::CellStroke {
+        weight: first.weight?,
+        color: first.color.clone()?,
+        tint: first.tint?,
+        kind: first.kind.clone()?,
+        ..Default::default()
+    };
+    first.apply_to(&mut stroke);
+    Some(stroke)
 }
 
 /// Import an IDML package. Linked images are read from disk when available (not on wasm).
@@ -1427,6 +1435,8 @@ impl<'r> Importer<'r> {
             color: el.prop(&format!("{prefix}StrokeColor")).map(|v| self.swatch_ref(&v)),
             tint: tint(el.num(&format!("{prefix}StrokeTint"))),
             kind: el.prop(&format!("{prefix}StrokeType")).map(|v| names::stroke_type_in(&v)),
+            gap_color: el.prop(&format!("{prefix}StrokeGapColor")).map(|v| self.swatch_ref(&v)),
+            gap_tint: tint(el.num(&format!("{prefix}StrokeGapTint"))),
         }
     }
 

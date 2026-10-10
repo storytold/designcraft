@@ -447,22 +447,43 @@ impl Renderer {
             ctx.set_transform(f.view * xf);
             for s in &t.strokes {
                 let Some(col) = doc.resolve_color(&s.stroke.color, s.stroke.tint) else { continue };
+                let kind = doc.stroke_kind(&s.stroke.kind);
+                let line = kurbo::Line::new(s.a, s.b).to_path(0.1);
+                // Butt-ended fills close the table's corners the way square caps do.
+                let (ca, cb) = t.corner_capped(s);
+                let capped = kurbo::Line::new(ca, cb).to_path(0.1);
+                // Gap colour under dashes, dots and stripes: the whole edge, solid.
+                if !matches!(kind, designcraft_doc::StrokeType::Solid)
+                    && let Some(gap) = doc.resolve_color(&s.stroke.gap_color, s.stroke.gap_tint)
+                {
+                    ctx.set_paint(color_of(&gap, 1.0));
+                    ctx.set_stroke(kurbo::Stroke::new(s.stroke.weight).with_caps(kurbo::Cap::Butt));
+                    ctx.stroke_path(&capped);
+                }
                 ctx.set_paint(color_of(&col, 1.0));
-                ctx.set_stroke(cell_stroke(&s.stroke));
-                ctx.stroke_path(&kurbo::Line::new(s.a, s.b).to_path(0.1));
+                // Stripes, wavy and hash types are fills along the edge.
+                if let Some(o) = kind.outline(&capped, s.stroke.weight, 0.05 * f.px) {
+                    ctx.fill_path(&o);
+                    continue;
+                }
+                ctx.set_stroke(cell_stroke(&kind, s.stroke.weight, s.a.distance(s.b)));
+                ctx.stroke_path(&line);
             }
         }
     }
 }
 
-/// Kurbo stroke for a table edge.
-fn cell_stroke(s: &designcraft_doc::CellStroke) -> kurbo::Stroke {
-    let st = kurbo::Stroke::new(s.weight).with_caps(kurbo::Cap::Square);
-    match &s.kind {
-        designcraft_doc::StrokeType::Dashed { pattern } if !pattern.is_empty() => {
+/// Kurbo stroke for a table edge `length` points long of a resolved stroke type.
+pub(crate) fn cell_stroke(kind: &designcraft_doc::StrokeType, weight: f64, length: f64) -> kurbo::Stroke {
+    use designcraft_doc::StrokeType;
+    let st = kurbo::Stroke::new(weight).with_caps(kurbo::Cap::Square);
+    match kind {
+        StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
             st.with_caps(kurbo::Cap::Butt).with_dashes(0.0, pattern.iter().copied())
         }
-        designcraft_doc::StrokeType::Dotted => st.with_dashes(0.0, [0.0, s.weight * 2.0]).with_caps(kurbo::Cap::Round),
+        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => {
+            st.with_dashes(0.0, [0.0, weight * 2.0]).with_caps(kurbo::Cap::Round)
+        }
         _ => st,
     }
 }
