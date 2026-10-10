@@ -168,15 +168,26 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(7.0, 4.0), (16.0, 4.0)]);
             pen.line(&[(13.5, 2.0), (16.0, 4.0), (13.5, 6.0)]);
         }
-        "tool-rotate" => {
+        "tool-rotate" | "rotate-clockwise" => {
+            let direction = if name == "rotate-clockwise" { -1.0 } else { 1.0 };
             let pts: Vec<(f32, f32)> = (0..24)
                 .map(|i| {
                     let a = (i as f32 / 23.0) * 4.6 - 0.6;
-                    (10.0 + 6.5 * a.cos(), 10.0 - 6.5 * a.sin())
+                    (10.0 + direction * 6.5 * a.cos(), 10.0 - 6.5 * a.sin())
                 })
                 .collect();
             pen.line(&pts);
-            pen.line(&[(13.0, 4.0), (15.5, 6.0), (16.5, 2.8)]);
+            pen.line(&[(10.0 + direction * 3.0, 4.0), (10.0 + direction * 5.5, 6.0), (10.0 + direction * 6.5, 2.8)]);
+        }
+        "flip-horizontal" => {
+            pen.line(&[(10.0, 2.0), (10.0, 18.0)]);
+            pen.fill(&[(3.0, 4.0), (8.0, 10.0), (3.0, 16.0)]);
+            pen.closed(&[(17.0, 4.0), (12.0, 10.0), (17.0, 16.0)]);
+        }
+        "flip-vertical" => {
+            pen.line(&[(2.0, 10.0), (18.0, 10.0)]);
+            pen.fill(&[(4.0, 3.0), (10.0, 8.0), (16.0, 3.0)]);
+            pen.closed(&[(4.0, 17.0), (10.0, 12.0), (16.0, 17.0)]);
         }
         "tool-gradient" | "tool-gradient-feather" => {
             for i in 0..6 {

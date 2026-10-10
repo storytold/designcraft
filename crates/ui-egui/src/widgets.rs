@@ -201,9 +201,15 @@ impl<'a> NumField<'a> {
             .text_color(fg)
             .margin(egui::Margin::ZERO)
             .vertical_align(egui::Align::Center);
-        let r = ui
-            .add_enabled_ui(self.enabled, |ui| ui.put(Rect::from_min_max(text_rect.min + vec2(5.0, 1.0), text_rect.max - vec2(1.0, 1.0)), te))
-            .inner;
+        // The field already allocated its slot. A scoped allocation here would consume another
+        // grid cell and enlarge toolbar rows; the value editor must stay inside that same slot.
+        let value_rect = Rect::from_min_max(text_rect.min + vec2(5.0, 1.0), text_rect.max - vec2(1.0, 1.0));
+        let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(value_rect));
+        editor_ui.set_clip_rect(editor_ui.clip_rect().intersect(text_rect));
+        if !self.enabled {
+            editor_ui.disable();
+        }
+        let r = editor_ui.put(value_rect, te);
         if r.has_focus() {
             // ↑/↓ step the value while typing.
             let (up, down, shift) = ui.input_mut(|i| {
@@ -390,7 +396,9 @@ pub fn caption(ui: &mut Ui, s: &str) {
 /// A right-aligned caption of a fixed width (`W:` before a spinner).
 pub fn caption_w(ui: &mut Ui, s: &str, w: f32) {
     let t = Tokens::get(ui.ctx());
-    let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
+    let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
+    // Painted, so tell screen readers (and UI tests) what it says.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, s));
     crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, egui::FontId::proportional(11.5), t.text);
 }
 
@@ -699,6 +707,34 @@ mod tests {
             });
         }
         assert_eq!(got, vec![None]);
+    }
+
+    #[test]
+    fn numeric_fields_use_one_cell_in_a_two_row_grid() {
+        let ctx = egui::Context::default();
+        let mut bounds = Rect::NOTHING;
+        let mut draw = |ui: &mut Ui| {
+            bounds = egui::Grid::new("numeric_field_grid")
+                .num_columns(4)
+                .min_col_width(0.0)
+                .spacing(vec2(4.0, 4.0))
+                .show(ui, |ui| {
+                    for row in 0..2 {
+                        for column in 0..2 {
+                            caption_w(ui, if column == 0 { "X:" } else { "W:" }, 14.0);
+                            let id = [["grid_x", "grid_w"], ["grid_y", "grid_h"]][row][column];
+                            NumField::number(id, Some(100.0), "%", 0).width(72.0).show(ui);
+                        }
+                        ui.end_row();
+                    }
+                })
+                .response
+                .rect;
+        };
+        run(&ctx, vec![], egui::Modifiers::NONE, &mut draw);
+        run(&ctx, vec![], egui::Modifiers::NONE, &mut draw);
+        assert!(bounds.height() <= 2.0 * FIELD_H + 4.0, "both rows fit their allocated height: {bounds:?}");
+        assert!(bounds.width() <= 190.0, "editors do not add extra grid columns: {bounds:?}");
     }
 
     #[test]
