@@ -98,6 +98,8 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 
 ## Quick start
 
+The egui frontend requires Rust 1.95 or newer (including its shared `craft-ui` components).
+
 ```sh
 cargo run --release -p designcraft                         # desktop app (start screen)
 cargo run --release -p designcraft -- --sample             # open the sample magazine

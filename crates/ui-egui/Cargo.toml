@@ -9,6 +9,7 @@ description = "DesignCraft egui frontend (InDesign-style UI); swappable — noth
 workspace = true
 
 [dependencies]
+craft-ui = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }

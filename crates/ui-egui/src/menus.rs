@@ -130,6 +130,22 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{panel: properties|pages|layers|swatches|paragraphStyles|characterStyles|stroke|character|paragraph|textWrap|links|table}",
     ),
     ("window.floatPanel", "Float Panel", None, "{panel, x?, y?} — the panel in its own movable window"),
+    (
+        "window.panel.layout",
+        "Change Panel Layout",
+        None,
+        "{action} — serialized docking action, including floating geometry, divider sizes and accordion state",
+    ),
+    (
+        "window.panel.move",
+        "Move Panel",
+        None,
+        "{panel, anchor, zone?: tab|center|left|right|top|bottom, before?: panel} — group, split or reorder a panel",
+    ),
+    ("window.panel.float", "Float Panel", None, "{panel, x?, y?, width?, height?} — detach a panel inside the application window"),
+    ("window.panel.dock", "Dock Panel", None, "{panel, anchor?, zone?, before?} — return a floating panel to a dock group"),
+    ("window.panel.activate", "Activate Panel", None, "{panel} — show and select a panel in its current group"),
+    ("window.panel.close", "Close Panel", None, "{panel} — hide a panel"),
     ("window.dockPanel", "Dock Panel", None, "{panel} — back into the dock's icon column"),
     ("window.controlBar", "Control", Some("Cmd+Alt+6"), "{}"),
     ("window.split", "Split Window", None, "{on?: bool} — two views of the document side by side, each with its own zoom and scroll"),
@@ -707,6 +723,9 @@ pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
 
 /// Run a UI command; `None` if `id` isn't one.
 pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if let Some(result) = crate::panel_docking::command(app, id, p) {
+        return Some(result);
+    }
     let rect = app.canvas_rect;
     let flag = |b: &mut bool| {
         *b = !*b;
@@ -1379,6 +1398,8 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 dock_expanded: u.dock_expanded,
                 open_panel: u.open_panel.clone(),
                 floating: u.floating.clone(),
+                docking: u.docking.clone(),
+                docking_hidden: u.docking_hidden.clone(),
             };
             app.ui.custom_workspaces.retain(|x| x.name != name);
             app.ui.custom_workspaces.push(w);
@@ -1402,6 +1423,9 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             return run_ui(app, "window.workspace", &json!({"name": name}));
         }
         "window.workspace" => {
+            app.ui.docking_generation = app.ui.docking_generation.wrapping_add(1);
+            app.ui.docking_raise = None;
+            app.ui.docking_opened = None;
             let name = p.get("name").and_then(Value::as_str).unwrap_or("Essentials");
             if let Some(w) = app.ui.custom_workspaces.iter().find(|w| w.name == name).cloned() {
                 app.ui.control_bar = w.control_bar;
@@ -1412,10 +1436,17 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 app.ui.dock_expanded = w.dock_expanded;
                 app.ui.open_panel = w.open_panel;
                 app.ui.floating = w.floating;
+                app.ui.docking = w.docking;
+                app.ui.docking_hidden = w.docking_hidden;
                 app.ui.workspace = w.name;
                 return Some(Ok(Value::Null));
             }
             // Workspaces choose which bars and panels are visible.
+            if app.ui.docking.is_some() {
+                app.ui.floating.clear();
+            }
+            app.ui.docking = None;
+            app.ui.docking_hidden.clear();
             app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book");
             let dock_tab = match name {
                 "Typography" => Some("properties"),
@@ -2438,6 +2469,170 @@ mod tests {
         assert_eq!(run_ui(&mut app, "window.split", &json!({})).unwrap().unwrap(), json!(false));
         assert_eq!(app.pane, 0);
         frame(&mut app);
+    }
+
+    #[test]
+    fn split_window_dispatches_text_once_to_the_shared_document() {
+        for focus_pane in [0, 1] {
+            let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let made = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+            let story = made["story"].as_u64().unwrap();
+            app.session.set_tool("type");
+            app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+            assert!(app.session.wants_text());
+            app.run("window.split", json!({"on": true})).unwrap();
+            app.focus_pane = focus_pane;
+
+            let ctx = egui::Context::default();
+            let frame = |app: &mut crate::DesignApp, events| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                });
+                out.textures_delta.clear();
+            };
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            let undo_before = app.session.active().unwrap().history.undo.len();
+            frame(&mut app, vec![egui::Event::Text("A".into())]);
+            let text = app.run("story.get", json!({"story": story})).unwrap();
+            assert_eq!(text["text"], "A", "one key press with pane {focus_pane} focused");
+            assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "");
+
+            // A press and key arriving together must use the newly focused pane, whichever
+            // canvas is drawn first. Middle-click changes pane focus without moving the caret.
+            let other = app.other_pane.as_ref().and_then(|p| p.1).unwrap().center();
+            frame(&mut app, vec![egui::Event::PointerMoved(other)]);
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerButton { pos: other, button: egui::PointerButton::Middle, pressed: true, modifiers: egui::Modifiers::NONE },
+                    egui::Event::Text("B".into()),
+                ],
+            );
+            assert_eq!(app.focus_pane, 1 - focus_pane);
+            assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "B", "a key in the pane-switch frame is dispatched once");
+            assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
+        }
+    }
+
+    #[test]
+    fn split_window_click_focus_routes_menu_zoom_but_hover_scroll_stays_local() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("window.split", json!({"on": true})).unwrap();
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let mut frame = |app: &mut crate::DesignApp, events| {
+            time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let left = app.canvas_rect.unwrap().center();
+        let right = app.other_pane.as_ref().and_then(|p| p.1).unwrap().center();
+        let cameras = |app: &mut crate::DesignApp| {
+            let current = app.pane;
+            app.switch_pane(0);
+            let left = *app.view().unwrap();
+            app.switch_pane(1);
+            let right = *app.view().unwrap();
+            app.switch_pane(current);
+            [left, right]
+        };
+        let button =
+            |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut app, vec![egui::Event::PointerMoved(right)]);
+        frame(&mut app, vec![button(right, true)]);
+        frame(&mut app, vec![button(right, false)]);
+        assert_eq!((app.pane, app.focus_pane), (1, 1));
+        let before = cameras(&mut app);
+        app.run("view.zoom", json!({"zoom": 2.0})).unwrap();
+        let zoomed = cameras(&mut app);
+        assert_eq!(zoomed[0], before[0], "menu zoom leaves the other camera alone");
+        assert!((zoomed[1].zoom - 2.0).abs() < 1e-9);
+
+        frame(&mut app, vec![egui::Event::PointerMoved(left)]);
+        frame(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -40.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let scrolled = cameras(&mut app);
+        assert_eq!(scrolled[1], zoomed[1], "hover scroll leaves the focused camera alone");
+        assert_ne!(scrolled[0].origin, zoomed[0].origin);
+        assert_eq!((app.pane, app.focus_pane), (1, 1), "hovering does not move menu focus");
+
+        frame(&mut app, vec![button(left, true)]);
+        frame(&mut app, vec![button(left, false)]);
+        assert_eq!((app.pane, app.focus_pane), (0, 0));
+        app.run("view.zoom", json!({"zoom": 1.0})).unwrap();
+        let final_views = cameras(&mut app);
+        assert!((final_views[0].zoom - 1.0).abs() < 1e-9);
+        assert_eq!(final_views[1], scrolled[1]);
+    }
+
+    #[test]
+    fn split_window_contextual_bars_have_independent_widget_ids() {
+        fn id_warnings(shape: &egui::Shape, found: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| id_warnings(shape, found)),
+                egui::Shape::Text(text) if text.galley.text().contains("use of widget ID") => found.push(text.galley.text().to_string()),
+                _ => {}
+            }
+        }
+
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        for rect in [[36, 36, 280, 180], [300, 36, 550, 180]] {
+            app.run("frame.create", json!({"rect": rect, "content": "unassigned"})).unwrap();
+        }
+        app.run("edit.selectAll", json!({})).unwrap();
+        app.run("window.split", json!({"on": true})).unwrap();
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.warn_on_id_clash = true);
+        let mut warnings = Vec::new();
+        for _ in 0..4 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            warnings.clear();
+            for shape in &output.shapes {
+                id_warnings(&shape.shape, &mut warnings);
+            }
+            output.textures_delta.clear();
+        }
+        assert!(warnings.is_empty(), "both bars reused the same interactive widget IDs: {warnings:?}");
+        let bars: Vec<_> =
+            (0_u8..2).map(|pane| ctx.memory(|memory| memory.area_rect(egui::Id::new(("task_bar", egui::ViewportId::ROOT, pane)))).unwrap()).collect();
+        assert!(!bars[0].intersects(bars[1]), "each pane keeps its own bar: {bars:?}");
     }
 
     #[test]

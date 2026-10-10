@@ -1,6 +1,9 @@
 # DesignCraft roadmap
 
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
+- UI.5: Panel tabs can move into other groups, split the dock, float, resize and return to their saved locations through shared docking transactions. Layouts persist in custom workspaces; UI and control commands share the same validated action path.
+
+- UI.4: Shared pane geometry and widget-state theme application through `craft-ui`, retaining all five palettes and local fonts. Split panes send keyboard input only to the focused canvas and scope contextual toolbar IDs per pane.
 
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 

@@ -3,6 +3,17 @@
 Start the app with `--control <port>` (or `DESIGNCRAFT_CONTROL_PORT`). The server listens on
 `127.0.0.1` only and speaks JSON lines: one request object per line, one reply per line.
 
+For an isolated native test profile, set `DESIGNCRAFT_CONFIG_DIR` to a dedicated directory before
+launch. UI/engine preferences and the `Recovery` directory then live under that root. An unset
+override preserves the usual platform paths; an explicitly empty override disables those paths.
+`DESIGNCRAFT_NO_PREFS` still disables preference reads/writes independently of recovery.
+
+Control pointer and key input is queued across native frames. After a drag, wait for both the
+expected document state and `document.inspect.canUndo` before testing undo; an object can appear
+in the preview before its undo entry is committed. On macOS, default shortcuts owned by the native
+menu (including Command-Z) are skipped by the egui shortcut handler. `ui.key` does not send a Cocoa
+menu event; use `ui.menu.invoke` for a menu-command test and test physical accelerators separately.
+
 **Only requests are read.** Every line must be a JSON object with a string `method` (`id` and `params`
 are optional; blank lines are skipped). Anything else gets one error reply
 (`{"ok": false, "error": "… closing the connection"}`) and the server **closes the connection**, so
@@ -44,3 +55,40 @@ merged document; the template stays as it was ([agents.md](agents.md#data-merge)
 Headless window screenshots (locked screen, hidden window): `cargo run -p designcraft-ui-egui --example ui_shot -- script.jsonl`, where each line is one of the requests above, `{"shot": "/abs/out.png"}` or `{"steps": n}` (renders the whole UI offscreen with wgpu).
 
 The MCP server (`designcraft-cli mcp`) wraps the same methods for Claude and other agents.
+
+## Shared panel docking
+
+Panel arrangements support tab grouping and reordering, horizontal and vertical splits,
+and movable, resizable floating groups inside the application window. Drag a panel tab,
+or use its context menu. Floating groups remain within the application viewport.
+
+The shared layout begins with the existing workspace on the first docking operation.
+Workspace saves retain its groups, active tabs, split sizes, floating geometry, and the
+positions of hidden panels. Resetting a built-in workspace restores its default dock.
+
+- `window.panel.move {panel, anchor, zone?, before?}` moves a panel into the target group.
+  `zone` is `tab` (default), `center`, `left`, `right`, `top`, or `bottom`; `before` reorders
+  tabs by panel ID. The destination must already be visible.
+- `window.panel.float {panel, x?, y?, width?, height?}` detaches a panel.
+- `window.panel.dock {panel, anchor?, zone?, before?}` returns a panel to its previous
+  dock placement when possible, or to the supplied destination.
+- `window.panel.activate {panel}` reveals and selects a panel, restoring its saved
+  position when possible. `window.panel.close {panel}` hides it.
+
+Panel IDs are stable across themes. Invalid IDs, non-finite or invalid geometry, and
+invalid destinations return an error without changing the arrangement.
+
+`window.panel.layout {action}` also accepts the shared, externally tagged action schema.
+For example, `{"action":{"MoveFloating":{"panel":"properties","rect":[44,66,360,450]}}}`
+updates a floating group's position and size; `{"action":{"ResizeSplit":{"path":[],"size":{"Ratio":0.35}}}}`
+resizes the root divider (`false`/`true` path entries select first/second children).
+`Move` with `placement: {"Tab":{"before":"swatches"}}` reorders tabs, and
+`SetStackOpen {panel,open}` / `ResizeStack {panel,height}` control accordion entries.
+The UI dispatches these same commands. Unknown panel IDs, invalid geometry, and stale
+split paths return an error without changing the workspace.
+
+After panel customization, `app.tablePanel` (including Shift+F9) still toggles the
+Table panel. `ui.set` with `closePanel` closes the last explicitly opened panel;
+`dockExpanded:false` hides the root dock while floating groups remain visible.
+The icon rail can reopen a collapsed dock through any root panel. Activating a
+floating panel also raises its group. These operations change only UI layout.
