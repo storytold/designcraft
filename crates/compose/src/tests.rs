@@ -2180,6 +2180,59 @@ fn vertical_lines_fit_the_em_box() {
     }
 }
 
+/// Lines of `text` set in a frame `width` wide, with `tracking` on every character.
+fn tracked_lines(text: &str, width: f64, para: ParaAttrs, tracking: f64) -> Vec<Line> {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 4000.0), para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.tracking = Some(tracking));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "overset at width {width}");
+    all_lines(&cs).into_iter().cloned().collect()
+}
+
+#[test]
+fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
+    use designcraft_doc::Composer;
+    let word = "n".repeat(60);
+    let long = format!("Then {word} and on");
+    for tracking in [0.0, 740.0] {
+        // Natural advances, from one unbroken line.
+        let natural: HashMap<usize, f64> =
+            tracked_lines(&long, 1e5, ParaAttrs::default(), tracking)[0].glyphs.iter().map(|g| (g.byte, g.adv)).collect();
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            for align in [Align::Left, Align::LeftJustified] {
+                let para = ParaAttrs { composer: Some(composer), align: Some(align), hyphenate: Some(false), ..Default::default() };
+                let lines = tracked_lines(&long, 72.0, para, tracking);
+                let what = format!("{composer:?} {align:?} tracking {tracking}");
+                assert!(lines.len() >= 4, "{what}: {} lines", lines.len());
+                for l in &lines {
+                    let ink: Vec<_> = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).collect();
+                    let right = ink.iter().map(|g| g.x + g.adv.min(natural[&g.byte])).fold(l.x0, f64::max);
+                    assert!(l.end_x <= l.x1 + 0.02 && right <= l.x1 + 0.02, "{what}: line {:?} ends at {} past {}", l.range, l.end_x, l.x1);
+                    for w in ink.windows(2) {
+                        assert!(w[1].x >= w[0].x + natural[&w[0].byte] - 1e-6, "{what}: glyphs overlap at {}", w[1].byte);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_line_that_exactly_fills_the_measure_fits() {
+    use designcraft_doc::Composer;
+    let text = "#knowyourplastic";
+    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    // The measure a rounding error short of the natural width.
+    let width = one.end_x - one.x0 - 0.005;
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for align in [Align::Left, Align::LeftJustified] {
+            let para = ParaAttrs { composer: Some(composer), align: Some(align), ..Default::default() };
+            let lines = tracked_lines(text, width, para, 0.0);
+            assert_eq!(lines.len(), 1, "{composer:?} {align:?}: {:?}", lines.iter().map(|l| l.range.clone()).collect::<Vec<_>>());
+        }
+    }
+}
+
 #[test]
 fn justified_line_with_a_tab_justifies_the_text_after_its_last_tab() {
     // InDesign justifies only the text after a line's last (left) tab; tab stops stay aligned.
@@ -2547,4 +2600,174 @@ fn spanning_paragraph_in_rtl_and_vertical_frames() {
     assert!(!cs.frames[0].lines.is_empty());
     assert_no_overlap(&cs.frames[0]);
     assert!(cs.frames[0].lines.iter().any(|l| l.para == h));
+}
+
+// ---------- split columns ----------
+
+/// A story of a body paragraph, `split` paragraphs in split columns and `after` body paragraphs.
+/// Returns the index of the first split paragraph.
+fn split_doc(split: usize, after: usize, rect: Rect, cfg: (u32, f64, f64)) -> (Document, StoryId, ItemId, usize) {
+    let mut paras: Vec<&str> = vec![LOREM; 1 + split + after];
+    paras[0] = "An introduction set at the full measure of the column, before the split block.";
+    let (mut d, sid, fid) = doc_with(&paras.join("\n"), rect, ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    for p in &mut st.paras[1..=split] {
+        p.para.span_columns = Some(SpanColumns::Split(cfg.0));
+        p.para.split_inside_gutter = Some(cfg.1);
+        p.para.split_outside_gutter = Some(cfg.2);
+    }
+    (d, sid, fid, 1)
+}
+
+/// The sub-columns of `col`: (x0, x1) of each.
+fn sub_columns(col: Rect, (n, inside, outside): (u32, f64, f64)) -> Vec<(f64, f64)> {
+    let w = (col.width() - 2.0 * outside - inside * (n - 1) as f64) / n as f64;
+    (0..n).map(|k| col.x0 + outside + k as f64 * (w + inside)).map(|x| (x, x + w)).collect()
+}
+
+/// The split paragraphs' lines, by sub-column.
+fn split_lines<'a>(ft: &'a FrameText, paras: std::ops::Range<usize>, subs: &[(f64, f64)]) -> Vec<Vec<&'a Line>> {
+    let mut by_sub = vec![Vec::new(); subs.len()];
+    for l in ft.lines.iter().filter(|l| paras.contains(&l.para)) {
+        let k = subs.iter().position(|&(x0, x1)| (l.x0 - x0).abs() < 1e-6 && (l.x1 - x1).abs() < 1e-6);
+        let k = k.unwrap_or_else(|| panic!("line of para {} at {}..{} is in no sub-column of {subs:?}", l.para, l.x0, l.x1));
+        by_sub[k].push(l);
+    }
+    by_sub
+}
+
+#[test]
+fn split_paragraphs_are_set_in_balanced_sub_columns() {
+    for cfg in [(2, 12.0, 10.0), (3, 6.0, 0.0)] {
+        let (d, sid, _, s) = split_doc(2, 1, Rect::new(0.0, 0.0, 400.0, 700.0), cfg);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        let ft = &cs.frames[0];
+        assert_no_overlap(ft);
+        let by_sub = split_lines(ft, s..s + 2, &sub_columns(ft.columns[0], cfg));
+        let counts: Vec<usize> = by_sub.iter().map(Vec::len).collect();
+        assert!(counts.iter().all(|&n| n > 0), "{cfg:?}: {counts:?}");
+        assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1, "{cfg:?}: balanced {counts:?}");
+        // Every sub-column starts on the same baseline, below the paragraph before the block.
+        let firsts: Vec<f64> = by_sub.iter().map(|v| v[0].baseline).collect();
+        assert!(firsts.iter().all(|b| (b - firsts[0]).abs() < 1e-6), "{cfg:?}: {firsts:?}");
+        let intro = ft.lines.iter().filter(|l| l.para == 0).map(|l| line_box(l).1).fold(f64::NEG_INFINITY, f64::max);
+        assert!(firsts[0] > intro && firsts[0] < intro + 20.0, "{cfg:?}: block at {} after {intro}", firsts[0]);
+        // The text after the block continues at the full measure below its deepest sub-column.
+        let bottom = by_sub.iter().flatten().map(|l| line_box(l).1).fold(f64::NEG_INFINITY, f64::max);
+        let next = ft.lines.iter().find(|l| l.para == s + 2).unwrap();
+        assert!(line_box(next).0 >= bottom - 0.5 && line_box(next).0 < bottom + 20.0, "{cfg:?}: {} after {bottom}", line_box(next).0);
+        assert!((next.x0 - ft.columns[0].x0).abs() < 1e-6 && (next.x1 - ft.columns[0].x1).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn split_block_in_the_second_column_and_at_the_story_end() {
+    let cfg = (2, 12.0, 0.0);
+    let (mut d, sid, fid, s) = split_doc(3, 0, Rect::new(0.0, 0.0, 540.0, 400.0), cfg);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.story_mut(sid).unwrap().paras[s].para.start_paragraph = Some(StartParagraph::NextColumn);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    assert!(ft.lines.iter().filter(|l| l.para >= s).all(|l| l.column == 1));
+    let by_sub = split_lines(ft, s..s + 3, &sub_columns(ft.columns[1], cfg));
+    // Nothing follows the block: it fills its first sub-column to the bottom of the frame, then
+    // the next.
+    let (a, b) = (&by_sub[0], &by_sub[1]);
+    assert!(!a.is_empty() && !b.is_empty() && a.len() > b.len() + 1, "{} and {} lines", a.len(), b.len());
+    let low = a.last().unwrap();
+    assert!(low.baseline + low.descent > 400.0 - low.leading, "the first sub-column ends at {}", low.baseline);
+    assert!((a[0].baseline - b[0].baseline).abs() < 1e-6);
+}
+
+#[test]
+fn split_block_flows_into_the_next_column() {
+    let cfg = (2, 12.0, 0.0);
+    let (mut d, sid, fid, s) = split_doc(6, 1, Rect::new(0.0, 0.0, 540.0, 200.0), cfg);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    for c in 0..2 {
+        let in_col: Vec<&Line> = ft.lines.iter().filter(|l| l.column == c as u32).collect();
+        let lines: Vec<&Line> = in_col.iter().copied().filter(|l| (s..s + 6).contains(&l.para)).collect();
+        let subs = sub_columns(ft.columns[c], cfg);
+        assert!(subs.iter().all(|&(x0, x1)| lines.iter().any(|l| (l.x0 - x0).abs() < 1e-6 && (l.x1 - x1).abs() < 1e-6)), "column {c}");
+    }
+    // The block continues at the top of the second column.
+    let top = ft.lines.iter().find(|l| l.column == 1).unwrap();
+    assert!((s..s + 6).contains(&top.para) && top.baseline < 20.0);
+}
+
+/// Each paragraph's list label as text: its label glyphs (laid before the paragraph's own text)
+/// matched back to characters of the label font; tabs and other invisible glyphs are skipped.
+fn list_labels(cs: &ComposedStory, alphabet: &str) -> Vec<String> {
+    all_lines(cs)
+        .iter()
+        .filter(|l| l.first_in_para)
+        .map(|l| {
+            l.glyphs
+                .iter()
+                .take_while(|g| g.len == 0)
+                .filter(|g| g.visible)
+                .map(|g| alphabet.chars().find(|c| g.face.glyph_for(*c) == g.gid).unwrap_or('?'))
+                .collect()
+        })
+        .collect()
+}
+
+const LABEL_CHARS: &str = "0123456789ABCDIVXabcdivx.\u{2022} Tabel";
+
+fn numbered(style: designcraft_doc::NumberStyle, expression: &str) -> ParaAttrs {
+    ParaAttrs {
+        list_type: Some(designcraft_doc::ListType::Numbers),
+        number_style: Some(style),
+        number_expression: Some(expression.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn numbered_lists_follow_their_format_and_expression() {
+    use designcraft_doc::NumberStyle as N;
+    let cases: [(N, &str, [&str; 3]); 4] = [
+        (N::UpperLetters, "^#.^t", ["A.", "B.", "C."]),
+        (N::LowerRoman, "^#.^t", ["i.", "ii.", "iii."]),
+        (N::ArabicThreeDigits, "^#.^t", ["001.", "002.", "003."]),
+        (N::Arabic, "Tabel ^#^t", ["Tabel 1", "Tabel 2", "Tabel 3"]),
+    ];
+    for (style, expression, want) in cases {
+        let (d, sid, _) = doc_with("One\nTwo\nThree", Rect::new(0.0, 0.0, 300.0, 300.0), numbered(style, expression));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(list_labels(&cs, LABEL_CHARS), want, "{style:?} {expression}");
+    }
+}
+
+#[test]
+fn numbering_from_the_largest_start_number_does_not_overflow() {
+    let (mut d, sid, _) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 300.0), numbered(designcraft_doc::NumberStyle::Arabic, "^#."));
+    d.story_mut(sid).unwrap().paras[0].para.start_at = Some(Some(u32::MAX));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let max = format!("{}.", u32::MAX);
+    assert_eq!(list_labels(&cs, LABEL_CHARS), [max.clone(), max]);
+}
+
+#[test]
+fn empty_paragraphs_get_no_bullet_or_number() {
+    let bullets = ParaAttrs { list_type: Some(designcraft_doc::ListType::Bullets), ..Default::default() };
+    let (d, sid, _) = doc_with("One\n\nTwo\n", Rect::new(0.0, 0.0, 300.0, 300.0), bullets);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["\u{2022}", "", "\u{2022}", ""]);
+    // An empty paragraph doesn't use up a number, in a story's own list or a named one.
+    for name in ["", "Steps"] {
+        let attrs = ParaAttrs { list_name: Some(name.into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.^t") };
+        let (mut d, sid, _) = doc_with("One\n\nTwo\n", Rect::new(0.0, 0.0, 300.0, 300.0), attrs);
+        if !name.is_empty() {
+            d.settings.lists.push(designcraft_doc::NumberedList { name: name.into(), continue_across_stories: false });
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.", "", "2.", ""], "list `{name}`");
+    }
 }

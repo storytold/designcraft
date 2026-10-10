@@ -886,6 +886,11 @@ impl<'a> Ex<'a> {
                     el.set(k, num(v));
                 }
             }
+            for (key, value) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(cs.inset_overrides) {
+                if let Some(value) = value {
+                    el.set(key, num(value));
+                }
+            }
             if let Some(vj) = cs.vj {
                 el.set("VerticalJustification", names::vj_out(vj));
             }
@@ -894,20 +899,32 @@ impl<'a> Ex<'a> {
                     self.cell_stroke_attrs(&mut el, side, st);
                 }
             }
+            for (side, attrs) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().zip(&cs.strokes) {
+                self.partial_cell_stroke_attrs(&mut el, side, attrs);
+            }
             if let Some(ps) = &cs.paragraph_style {
                 el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
             }
-            cells = cells.child(with_props(el, vec![p("BasedOn", "string", "$ID/[None]")]));
+            let base = cs.based_on.as_deref().unwrap_or(designcraft_doc::NO_CELL_STYLE);
+            let based_on = if base == designcraft_doc::NO_CELL_STYLE {
+                p("BasedOn", "string", "$ID/[None]")
+            } else {
+                p("BasedOn", "object", names::style_self("CellStyle", names::CELL_BUILTINS, base))
+            };
+            cells = cells.child(with_props(el, vec![based_on]));
         }
         root.push(cells);
-        let mut tables = El::new("RootTableStyleGroup")
-            .attr("Self", self.fresh())
-            .child(El::new("TableStyle").attr("Self", "TableStyle/$ID/[No table style]").attr("Name", "$ID/[No table style]"))
-            .child(with_props(
+        let mut tables = El::new("RootTableStyleGroup").attr("Self", self.fresh());
+        if !styles.table.iter().any(|s| s.name == designcraft_doc::NO_TABLE_STYLE) {
+            tables.push(El::new("TableStyle").attr("Self", "TableStyle/$ID/[No table style]").attr("Name", "$ID/[No table style]"));
+        }
+        if !styles.table.iter().any(|s| s.name == designcraft_doc::BASIC_TABLE) {
+            tables.push(with_props(
                 El::new("TableStyle").attr("Self", "TableStyle/$ID/[Basic Table]").attr("Name", "$ID/[Basic Table]"),
                 vec![p("BasedOn", "string", "$ID/[No table style]")],
             ));
-        for ts in styles.table.iter().filter(|t| t.name != designcraft_doc::BASIC_TABLE) {
+        }
+        for ts in &styles.table {
             let mut el = El::new("TableStyle")
                 .attr("Self", names::style_self("TableStyle", names::TABLE_BUILTINS, &ts.name))
                 .attr("Name", names::style_name_out(names::TABLE_BUILTINS, &ts.name));
@@ -922,10 +939,23 @@ impl<'a> Ex<'a> {
                     el.set(k, names::style_self("CellStyle", names::CELL_BUILTINS, n));
                 }
             }
+            for (key, value) in [
+                ("HeaderRegionSameAsBodyRegion", ts.header_same_as_body),
+                ("FooterRegionSameAsBodyRegion", ts.footer_same_as_body),
+                ("LeftColumnRegionSameAsBodyRegion", ts.left_column_same_as_body),
+                ("RightColumnRegionSameAsBodyRegion", ts.right_column_same_as_body),
+            ] {
+                if let Some(value) = value {
+                    el.set(key, value);
+                }
+            }
             if let Some(b) = &ts.border {
                 for side in ["Top", "Left", "Bottom", "Right"] {
                     self.cell_stroke_attrs(&mut el, &format!("{side}Border"), b);
                 }
+            }
+            for (side, attrs) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&ts.borders) {
+                self.partial_cell_stroke_attrs(&mut el, side, attrs);
             }
             if let Some(a) = &ts.alt_rows {
                 el.set("StartRowFillColor", self.sw(&a.first_color));
@@ -935,13 +965,26 @@ impl<'a> Ex<'a> {
                 el.set("EndRowFillCount", a.next);
                 el.set("EndRowFillTint", pct(a.next_tint as f64));
             }
+            self.partial_alt_fill_attrs(&mut el, "Row", &ts.row_fills);
+            self.partial_alt_fill_attrs(&mut el, "Column", &ts.column_fills);
+            self.partial_alt_stroke_attrs(&mut el, "Row", &ts.row_strokes);
+            self.partial_alt_stroke_attrs(&mut el, "Column", &ts.column_strokes);
             if let Some(v) = ts.space_before {
                 el.set("SpaceBefore", num(v));
             }
             if let Some(v) = ts.space_after {
                 el.set("SpaceAfter", num(v));
             }
-            tables = tables.child(with_props(el, vec![p("BasedOn", "string", "$ID/[Basic Table]")]));
+            let mut props = Vec::new();
+            if ts.name != designcraft_doc::NO_TABLE_STYLE {
+                let base = ts.based_on.as_deref().unwrap_or(designcraft_doc::NO_TABLE_STYLE);
+                props.push(if base == designcraft_doc::NO_TABLE_STYLE {
+                    p("BasedOn", "string", "$ID/[No table style]")
+                } else {
+                    p("BasedOn", "object", names::style_self("TableStyle", names::TABLE_BUILTINS, base))
+                });
+            }
+            tables = tables.child(with_props(el, props));
         }
         root.push(tables);
         // Named numbered lists.
@@ -1395,6 +1438,8 @@ impl<'a> Ex<'a> {
                 }
             }
         }
+        n!(split_inside_gutter, "SplitColumnInsideGutter");
+        n!(split_outside_gutter, "SplitColumnOutsideGutter");
         if let Some(r) = &a.rule_above {
             self.rule(el, props, "RuleAbove", r);
         }
@@ -1424,6 +1469,18 @@ impl<'a> Ex<'a> {
                     ListType::Numbers => "NumberedList",
                 },
             );
+        }
+        if let Some(n) = a.number_style {
+            props.push(p("NumberingFormat", "string", names::numbering_format_out(n)));
+        }
+        if let Some(x) = &a.number_expression {
+            el.set("NumberingExpression", names::list_text_out(x));
+        }
+        if let Some(x) = &a.list_separator {
+            el.set("BulletsTextAfter", names::list_text_out(x));
+        }
+        if let Some(c) = a.bullet_char.as_deref().and_then(|s| s.chars().next()) {
+            props.push(El::new("BulletChar").attr("BulletCharacterType", "UnicodeOnly").attr("BulletCharacterValue", u32::from(c).to_string()));
         }
         if let Some(b) = a.balance_ragged {
             props.push(p("BalanceRaggedLines", "enumeration", if b { "FullyBalanced" } else { "NoBalancing" }));
@@ -2137,6 +2194,71 @@ impl<'a> Ex<'a> {
         el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(&s.kind));
     }
 
+    fn partial_cell_stroke_attrs(&self, el: &mut El, prefix: &str, attrs: &designcraft_doc::CellStrokeAttrs) {
+        if let Some(value) = attrs.weight {
+            el.set(&format!("{prefix}StrokeWeight"), num(value));
+        }
+        if let Some(value) = &attrs.color {
+            el.set(&format!("{prefix}StrokeColor"), self.sw(value));
+        }
+        if let Some(value) = attrs.tint {
+            el.set(&format!("{prefix}StrokeTint"), pct(value as f64));
+        }
+        if let Some(value) = &attrs.kind {
+            el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(value));
+        }
+    }
+
+    fn partial_alt_fill_attrs(&self, el: &mut El, kind: &str, attrs: &designcraft_doc::AltFillsAttrs) {
+        if let Some(value) = attrs.first {
+            el.set(&format!("Start{kind}FillCount"), value);
+        }
+        if let Some(value) = &attrs.first_color {
+            el.set(&format!("Start{kind}FillColor"), self.sw(value));
+        }
+        if let Some(value) = attrs.first_tint {
+            el.set(&format!("Start{kind}FillTint"), pct(value as f64));
+        }
+        if let Some(value) = attrs.next {
+            el.set(&format!("End{kind}FillCount"), value);
+        }
+        if let Some(value) = &attrs.next_color {
+            el.set(&format!("End{kind}FillColor"), self.sw(value));
+        }
+        if let Some(value) = attrs.next_tint {
+            el.set(&format!("End{kind}FillTint"), pct(value as f64));
+        }
+        if let Some(value) = attrs.skip_first {
+            el.set(&format!("SkipFirstAlternatingFill{kind}s"), value);
+        }
+        if let Some(value) = attrs.skip_last {
+            el.set(&format!("SkipLastAlternatingFill{kind}s"), value);
+        }
+    }
+
+    fn partial_alt_stroke_attrs(&self, el: &mut El, kind: &str, attrs: &designcraft_doc::AltStrokesAttrs) {
+        if let Some(value) = attrs.first {
+            el.set(&format!("Start{kind}StrokeCount"), value);
+        }
+        if let Some(value) = attrs.next {
+            el.set(&format!("End{kind}StrokeCount"), value);
+        }
+        self.partial_cell_stroke_attrs(el, &format!("Start{kind}"), &attrs.first_stroke);
+        self.partial_cell_stroke_attrs(el, &format!("End{kind}"), &attrs.next_stroke);
+        if kind == "Column"
+            && let Some(value) = &attrs.next_stroke.kind
+        {
+            el.attrs.retain(|(key, _)| key != "EndColumnStrokeType");
+            el.set("EndColumnLineStyle", names::stroke_type_out(value));
+        }
+        if let Some(value) = attrs.skip_first {
+            el.set(&format!("SkipFirstAlternatingStroke{kind}s"), value);
+        }
+        if let Some(value) = attrs.skip_last {
+            el.set(&format!("SkipLastAlternatingStroke{kind}s"), value);
+        }
+    }
+
     /// `<Table>` with rows, columns and cells (cell names are `column:row`).
     fn table_el(&mut self, t: &designcraft_doc::Table) -> El {
         let id = uid(t.id);
@@ -2159,8 +2281,8 @@ impl<'a> Ex<'a> {
             .attr("SpaceAfter", num(t.options.space_after))
             .attr("HeaderBehavior", if t.options.repeat_header { "RepeatOnEachTextColumn" } else { "RepeatOnce" })
             .attr("FooterBehavior", if t.options.repeat_footer { "RepeatOnEachTextColumn" } else { "RepeatOnce" });
-        for side in ["Top", "Left", "Bottom", "Right"] {
-            self.cell_stroke_attrs(&mut el, &format!("{side}Border"), &t.options.border);
+        for (i, side) in ["Top", "Left", "Bottom", "Right"].iter().enumerate() {
+            self.cell_stroke_attrs(&mut el, &format!("{side}Border"), t.options.border_for(i));
         }
         for (kind, alt) in [("Row", &t.options.alt_rows), ("Column", &t.options.alt_cols)] {
             if let Some(a) = alt {
@@ -2172,6 +2294,27 @@ impl<'a> Ex<'a> {
                 el.set(&format!("End{kind}FillTint"), pct(a.next_tint as f64));
                 el.set(&format!("SkipFirstAlternatingFill{kind}s"), a.skip_first);
                 el.set(&format!("SkipLastAlternatingFill{kind}s"), a.skip_last);
+            } else {
+                // A local off value must override any enabled pattern in the named style.
+                el.set(&format!("Start{kind}FillCount"), 0);
+                el.set(&format!("End{kind}FillCount"), 0);
+            }
+        }
+        for (kind, strokes) in [("Row", &t.options.row_strokes), ("Column", &t.options.column_strokes)] {
+            if let Some(strokes) = strokes {
+                el.set(&format!("Start{kind}StrokeCount"), strokes.first);
+                el.set(&format!("End{kind}StrokeCount"), strokes.next);
+                self.cell_stroke_attrs(&mut el, &format!("Start{kind}"), &strokes.first_stroke);
+                self.cell_stroke_attrs(&mut el, &format!("End{kind}"), &strokes.next_stroke);
+                if kind == "Column" {
+                    el.attrs.retain(|(key, _)| key != "EndColumnStrokeType");
+                    el.set("EndColumnLineStyle", names::stroke_type_out(&strokes.next_stroke.kind));
+                }
+                el.set(&format!("SkipFirstAlternatingStroke{kind}s"), strokes.skip_first);
+                el.set(&format!("SkipLastAlternatingStroke{kind}s"), strokes.skip_last);
+            } else {
+                el.set(&format!("Start{kind}StrokeCount"), 0);
+                el.set(&format!("End{kind}StrokeCount"), 0);
             }
         }
         for (r, row) in t.rows.iter().enumerate() {
@@ -2223,9 +2366,21 @@ impl<'a> Ex<'a> {
                     .attr("VerticalJustification", vj)
                     .attr("RotationAngle", num(cell.rotation));
                 for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
-                    self.cell_stroke_attrs(&mut ce, side, &cell.strokes[i]);
-                    if cell.border_overrides[i] {
-                        ce.set(&format!("{side}StrokePriority"), 1);
+                    // Do not turn absent native defaults into explicit shared-edge candidates.
+                    if cell.stroke_defined[i]
+                        || cell.border_overrides[i]
+                        || cell.stroke_priorities[i] != 0
+                        || cell.strokes[i] != designcraft_doc::CellStroke::default()
+                    {
+                        self.cell_stroke_attrs(&mut ce, side, &cell.strokes[i]);
+                    }
+                    let priority = if cell.border_overrides[i] && !cell.stroke_defined[i] {
+                        cell.stroke_priorities[i].max(1)
+                    } else {
+                        cell.stroke_priorities[i]
+                    };
+                    if priority != 0 {
+                        ce.set(&format!("{side}StrokePriority"), priority);
                     }
                 }
                 for psr in self.story_paras(&cell.text) {

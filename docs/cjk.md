@@ -1,5 +1,7 @@
 # CJK typesetting plan
 
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
 DesignCraft document can be set to the standard of a Japanese, Chinese or Korean publisher,
@@ -285,3 +287,11 @@ Each follows what an InDesign user expects.
    Chinese, since the exact names InDesign writes are unconfirmed without a sample file.
 8. **Missing glyphs** are drawn as the font's box and reported, as in InDesign; drawing them from
    fallback fonts is a per-document choice, on only for documents saved before it existed.
+
+## Revision history
+
+| Date | Change | Summary |
+|---|---|---|
+| 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
+| 2026-10-10 | minor | Updated (see git history) |
+| 2026-10-06 | major | Created: CJK typesetting plan and status (the Japanese/CJK feature set) |

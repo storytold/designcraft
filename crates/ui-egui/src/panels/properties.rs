@@ -1333,7 +1333,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         let features: Vec<String> =
             c["otfFeatures"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        ui.menu_button("OpenType", |ui| open_type_menu(app, ui, &features));
+        crate::menus::menu_button(ui, "OpenType", |ui| open_type_menu(app, ui, &features));
     });
     // Underline / Strikethrough Options.
     for (key, title) in [("underline", "Underline Options"), ("strikethrough", "Strikethrough Options")] {
@@ -1388,13 +1388,14 @@ pub fn open_type_menu(app: &mut DesignApp, ui: &mut egui::Ui, features: &[String
         }
     }
     ui.separator();
-    ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stylistic Sets")), |ui| {
+    crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stylistic Sets")), |ui| {
         let mask = otf::stylistic_sets(features);
         for n in 1..=20u32 {
             let mut on = mask & (1 << (n - 1)) != 0;
             if ui.checkbox(&mut on, crate::rtl::widget(ui, format!("{} {n}", crate::i18n::tr(&app.ui.language, "Set")))).clicked() {
                 let sets: Vec<u32> = (1..=20).filter(|k| if *k == n { on } else { mask & (1 << (k - 1)) != 0 }).collect();
                 let _ = app.run("type.openType", json!({"stylisticSets": sets}));
+                ui.close();
             }
         }
     });
@@ -1410,7 +1411,7 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button("☰", |ui| {
+            crate::menus::menu_button(ui, "☰", |ui| {
                 if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph Rules…"))).clicked() {
                     let _ = app.run("app.paragraphRulesDialog", json!({}));
                     ui.close();

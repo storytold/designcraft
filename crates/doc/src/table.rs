@@ -79,6 +79,58 @@ impl CellStroke {
     }
 }
 
+/// Table-level alternating row/column strokes. Retained independently of cell formatting
+/// so an explicit cell style or local edge continues to take precedence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AltStrokes {
+    pub first: u32,
+    pub next: u32,
+    pub first_stroke: CellStroke,
+    pub next_stroke: CellStroke,
+    pub skip_first: u32,
+    pub skip_last: u32,
+}
+
+impl Default for AltStrokes {
+    fn default() -> Self {
+        Self {
+            first: 0,
+            next: 0,
+            first_stroke: CellStroke::default(),
+            next_stroke: CellStroke { weight: 0.25, ..Default::default() },
+            skip_first: 0,
+            skip_last: 0,
+        }
+    }
+}
+
+impl AltStrokes {
+    /// A phase-independent stroke for unskipped, visually uniform patterns. Unequal
+    /// patterns and skip settings are preserved for round trips until their boundary
+    /// phase is supported; they must not be rendered with a guessed phase.
+    pub fn uniform_stroke(&self) -> Option<&CellStroke> {
+        if self.skip_first > 0 || self.skip_last > 0 {
+            return None;
+        }
+        match (self.first > 0, self.next > 0) {
+            (true, false) => Some(&self.first_stroke),
+            (false, true) => Some(&self.next_stroke),
+            (true, true) if self.first_stroke == self.next_stroke || (!self.first_stroke.is_visible() && !self.next_stroke.is_visible()) => {
+                Some(&self.first_stroke)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn no_flags(flags: &[bool; 4]) -> bool {
+    !flags.iter().any(|v| *v)
+}
+fn no_priorities(priorities: &[i32; 4]) -> bool {
+    priorities.iter().all(|v| *v == 0)
+}
+
 fn one() -> u32 {
     1
 }
@@ -120,6 +172,12 @@ pub struct Cell {
     /// top, left, bottom, right order as `strokes`. Older documents keep their table border.
     #[serde(default)]
     pub border_overrides: [bool; 4],
+    /// Whether an edge has supplied cell/style attributes, independently of perimeter priority.
+    #[serde(default, skip_serializing_if = "no_flags")]
+    pub stroke_defined: [bool; 4],
+    /// IDML edge-conflict priorities, in top, left, bottom, right order.
+    #[serde(default, skip_serializing_if = "no_priorities")]
+    pub stroke_priorities: [i32; 4],
     /// Applied cell style ("" = [None]).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub style: String,
@@ -142,6 +200,8 @@ impl Default for Cell {
             rotation: 0.0,
             strokes: Default::default(),
             border_overrides: [false; 4],
+            stroke_priorities: [0; 4],
+            stroke_defined: [false; 4],
             style: String::new(),
             graphic: None,
         }
@@ -200,12 +260,12 @@ impl AltFills {
     /// Fill for the `i`-th of `n` body rows/columns, if the pattern paints it.
     pub fn fill_for(&self, i: usize, n: usize) -> Option<(&str, f32)> {
         let (sf, sl) = (self.skip_first as usize, self.skip_last as usize);
-        if i < sf || i + sl >= n {
+        if i < sf || i >= n.saturating_sub(sl) {
             return None;
         }
-        let period = (self.first + self.next).max(1) as usize;
-        let k = (i - sf) % period;
-        let (c, t) = if k < self.first as usize { (&self.first_color, self.first_tint) } else { (&self.next_color, self.next_tint) };
+        let period = (u64::from(self.first) + u64::from(self.next)).max(1);
+        let k = (i - sf) as u64 % period;
+        let (c, t) = if k < u64::from(self.first) { (&self.first_color, self.first_tint) } else { (&self.next_color, self.next_tint) };
         (c != designcraft_color::swatch::NONE).then_some((c.as_str(), t))
     }
 }
@@ -217,6 +277,9 @@ pub struct TableOptions {
     pub direction: crate::TextDirection,
     /// Outer border (overrides the outer cell edges).
     pub border: CellStroke,
+    /// Per-side borders; absent sides use the legacy uniform `border`.
+    #[serde(skip_serializing_if = "no_borders")]
+    pub borders: [Option<CellStroke>; 4],
     pub space_before: f64,
     pub space_after: f64,
     /// Header rows repeat at the top of every text column / frame the table continues into.
@@ -226,6 +289,20 @@ pub struct TableOptions {
     pub alt_rows: Option<AltFills>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt_cols: Option<AltFills>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_strokes: Option<AltStrokes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column_strokes: Option<AltStrokes>,
+}
+
+fn no_borders(borders: &[Option<CellStroke>; 4]) -> bool {
+    borders.iter().all(Option::is_none)
+}
+
+impl TableOptions {
+    pub fn border_for(&self, side: usize) -> &CellStroke {
+        self.borders.get(side).and_then(Option::as_ref).unwrap_or(&self.border)
+    }
 }
 
 impl Default for TableOptions {
@@ -233,12 +310,15 @@ impl Default for TableOptions {
         TableOptions {
             direction: crate::TextDirection::LeftToRight,
             border: CellStroke::default(),
+            borders: Default::default(),
             space_before: 4.0,
             space_after: -4.0,
             repeat_header: true,
             repeat_footer: true,
             alt_rows: None,
             alt_cols: None,
+            row_strokes: None,
+            column_strokes: None,
         }
     }
 }
@@ -1098,6 +1178,16 @@ mod tests {
     }
 
     #[test]
+    fn alternating_fill_counts_cannot_overflow() {
+        let fills = AltFills { first: u32::MAX, next: 1, ..Default::default() };
+        assert!(fills.fill_for(0, 2).is_some());
+        assert!(fills.fill_for(1, 2).is_some());
+        let skipped = AltFills { skip_last: u32::MAX, ..fills };
+        assert!(skipped.fill_for(1, 2).is_none());
+        assert!(skipped.fill_for(usize::MAX, usize::MAX).is_none());
+    }
+
+    #[test]
     fn serde_roundtrip() {
         let mut s = story("x");
         s.insert_table(1, Table::new(4, 2, 2, 1, 0, 100.0));
@@ -1118,8 +1208,22 @@ mod tests {
         old.as_object_mut().unwrap().remove("borderOverrides");
         let back: Cell = serde_json::from_value(old).unwrap();
         assert_eq!(back.border_overrides, [false; 4]);
+        assert_eq!(back.stroke_defined, [false; 4]);
+        assert_eq!(back.stroke_priorities, [0; 4]);
+        let legacy_options: TableOptions = serde_json::from_str(r#"{"border":{"weight":3}}"#).unwrap();
+        assert!(legacy_options.borders.iter().all(Option::is_none));
+        assert!(legacy_options.row_strokes.is_none());
+        assert!(legacy_options.column_strokes.is_none());
+        for side in 0..4 {
+            assert_eq!(legacy_options.border_for(side).weight, 3.0);
+        }
 
-        let explicit = Cell { border_overrides: [true, false, true, false], ..cell };
+        let explicit = Cell {
+            border_overrides: [true, false, true, false],
+            stroke_defined: [true, true, false, false],
+            stroke_priorities: [3, 0, 7, 0],
+            ..cell
+        };
         let back: Cell = serde_json::from_str(&serde_json::to_string(&explicit).unwrap()).unwrap();
         assert_eq!(back, explicit);
         assert_eq!(back.blank_like().border_overrides, explicit.border_overrides);

@@ -240,6 +240,20 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
 }
 
+/// A placed image whose linked file wasn't found has no data: the warning says it is missing,
+/// not that it could not be decoded.
+#[test]
+fn a_missing_linked_image_is_reported_as_missing() {
+    let mut d = doc_with_text("still here");
+    place(&mut d, Vec::new(), (64, 64));
+    if let Some(a) = d.assets.values_mut().next() {
+        std::sync::Arc::make_mut(a).link = Some("/gone/curtains.jpeg".into());
+    }
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("is missing (/gone/curtains.jpeg) and was skipped")), "{:?}", r.warnings);
+    assert!(!r.warnings.iter().any(|w| w.contains("could not be decoded")), "{:?}", r.warnings);
+}
+
 /// krilla reads PNG, GIF and WebP lazily, so a damaged one passed the exporter's "does it decode"
 /// check and failed the whole export when the PDF was written ("PDF writer error: … unexpected
 /// end of file"). A cut-off download must be skipped with a warning, as a damaged TIFF is.

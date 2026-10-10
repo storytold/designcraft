@@ -493,6 +493,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         pi: 0,
         band: Band::default(),
         limits: Rc::default(),
+        split: None,
+        split_limits: Rc::default(),
     };
     let para_ranges = story.para_ranges();
     let np = para_ranges.len();
@@ -504,13 +506,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         story
             .paras
             .iter()
-            .map(|p| {
+            .zip(&para_ranges)
+            .map(|(p, r)| {
                 let (pp, _) = doc.styles.resolve_para(p);
-                if pp.list_type != designcraft_doc::ListType::Numbers || pp.list_name.is_empty() {
+                if pp.list_type != designcraft_doc::ListType::Numbers || pp.list_name.is_empty() || r.is_empty() {
                     return None;
                 }
                 let c = counters.entry(pp.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &pp.list_name));
-                *c = pp.start_at.map_or(*c + 1, |s| s.max(1));
+                *c = pp.start_at.map_or(c.saturating_add(1), |s| s.max(1));
                 Some(*c)
             })
             .collect()
@@ -533,12 +536,20 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut trial: Option<Trial> = None;
     let mut balance_runs = 0usize;
     let balance_budget = 20 * story.paras.iter().filter(|p| matches!(doc.styles.resolve_para(p).0.span_columns, SpanColumns::Span(_))).count();
-    // Paragraphs set across columns (vertical justification moves their frames' lines together).
+    // Balancing split-column blocks that text follows.
+    let mut split_limits: Rc<Vec<(SplitKey, f64)>> = Rc::default();
+    let mut split_trial: Option<Trial<SplitKey>> = None;
+    let mut split_runs = 0usize;
+    let split_budget = 20 * story.paras.iter().filter(|p| matches!(doc.styles.resolve_para(p).0.span_columns, SpanColumns::Split(_))).count();
+    // Paragraphs set across columns (vertical justification moves their frames' lines together),
+    // and in split columns.
     let mut span_paras = vec![false; np];
+    let mut split_paras = vec![false; np];
     'paras: while pi < np {
         let prange = para_ranges[pi].clone();
         cur.pi = pi;
         cur.limits = Rc::clone(&limits);
+        cur.split_limits = Rc::clone(&split_limits);
         let snap = Snapshot::take(&out, &cur, list_counter);
         snaps.truncate(pi);
         snaps.push(snap);
@@ -661,6 +672,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             // look again (the style changes the widths) until the lines settle.
             let cols_here = &cols[cur.fi];
             let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
+            let col = SplitCfg::of(&pp).map_or(col, |c| c.sub_rect(col, 0));
             let spacing = spacing_for(&pp, base_chars.size);
             let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
             for _ in 0..3 {
@@ -718,19 +730,21 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         // List labels take the default super/subscript settings.
         let label_env = shape::TypeEnv { adv: Default::default(), ..env };
         match pp.list_type {
+            // An empty paragraph has no bullet or number, and the numbering carries on past it.
+            designcraft_doc::ListType::Numbers | designcraft_doc::ListType::Bullets if prange.is_empty() => {}
             designcraft_doc::ListType::Numbers if !pp.list_name.is_empty() => {
                 // A named list: carries on past other paragraphs (and from earlier stories).
                 let n = named_numbers.get(pi).copied().flatten().unwrap_or(1);
-                let label = format!("{}.{}", pp.number_style.format(n), pp.list_separator);
+                let label = pp.number_label(n);
                 prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
             }
             designcraft_doc::ListType::Numbers => {
-                list_counter = pp.start_at.map_or(list_counter + 1, |s| s.max(1));
-                let label = format!("{}.{}", pp.number_style.format(list_counter), pp.list_separator);
+                list_counter = pp.start_at.map_or(list_counter.saturating_add(1), |s| s.max(1));
+                let label = pp.number_label(list_counter);
                 prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
             }
             designcraft_doc::ListType::Bullets => {
-                let label = format!("{}{}", pp.bullet_char, pp.list_separator);
+                let label = pp.bullet_label();
                 prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
             }
             designcraft_doc::ListType::None => list_counter = 0,
@@ -759,7 +773,22 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         // the next column.
         let spanning = matches!(pp.span_columns, SpanColumns::Span(n) if n != 1);
         span_paras[pi] = spanning;
-        let next_column = |cur: &mut Cursor| if spanning { cur.next_frame() } else { cur.next_column(&cols) };
+        // Consecutive paragraphs with the same Split Columns settings share a split block; within
+        // it, a paragraph moves on to the next sub-column.
+        let split_cfg = SplitCfg::of(&pp);
+        split_paras[pi] = split_cfg.is_some();
+        if cur.split.is_some_and(|s| Some(s.cfg) != split_cfg) {
+            cur.split = None;
+        }
+        let next_column = |cur: &mut Cursor| {
+            if spanning {
+                cur.next_frame()
+            } else if cur.can_next_sub() {
+                cur.next_sub()
+            } else {
+                cur.next_column(&cols)
+            }
+        };
         // A paragraph start or a break character; Next Column while a paragraph spans columns is
         // the next frame, as above.
         let begin_at = |cur: &mut Cursor, start: StartParagraph| match start {
@@ -822,6 +851,13 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         if cur.last_baseline.is_some() {
             cur.pending += pp.space_before;
         }
+        if let Some(cfg) = split_cfg
+            && cur.split.is_none()
+        {
+            let start = cur.state();
+            cur.split = Some(SplitBlock { cfg, sub: 0, sub_lines: 0, part_lines: 0, line0: None, para: pi, start, top: None });
+            cur.split_part();
+        }
         let at_top = cur.last_baseline.is_none();
         let start_at = (cur.fi, cur.col);
         // Rule above / shading track the paragraph's first line.
@@ -849,6 +885,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let col = cur.clip(base);
             // A spanning paragraph isn't held to the balanced bottom of the columns above it.
             let col = if spanning { span_rect(&cols[cur.fi], Rect::new(col.x0, col.y0, col.x1, base.y1), pp.span_columns) } else { col };
+            let col = cur.split_rect(col);
             // Estimate slots for the breaker with the paragraph's base leading.
             let est_first = cur.next_baseline(f, col, base_leading, base_chars.size * 0.75, &pp);
             let slots = estimate_slots(f, col, est_first, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
@@ -911,7 +948,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         }
                     }
                 }
-                let capped = line_cap[pi] == Some(line_no) && line_no > col_first_line;
+                let capped = cur.split.is_none() && line_cap[pi] == Some(line_no) && line_no > col_first_line;
                 // Footnotes referenced on this line need room at the bottom of the column too
                 // (a line at the top of a column is set anyway).
                 let line_notes = if notes.active() { notes.refs_in(line_glyphs) } else { Vec::new() };
@@ -920,7 +957,32 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, cur.fi, cur.col, &[], col_w, f, opts) } else { reserve };
                 let fits = baseline + desc <= col.y1 - reserve + 0.01 && !capped;
                 if !fits {
-                    if !capped {
+                    if cur.can_next_sub() {
+                        g0 = s;
+                        cur.next_sub();
+                        col_first_line = line_no;
+                        moved = true;
+                        break;
+                    }
+                    // A split block that doesn't fit above its trial bottom: re-lay it lower.
+                    if let Some(key) = cur.split_key()
+                        && limit_of(&split_limits, key).is_some_and(f64::is_finite)
+                    {
+                        let j = if split_trial.as_ref().is_some_and(|t| t.key == key) {
+                            trial_failed(&mut split_trial, &mut split_limits, split_runs < split_budget)
+                        } else {
+                            set_limit(&mut split_limits, key, Some(f64::INFINITY));
+                            Some(key.2)
+                        };
+                        if let Some(j) = j {
+                            split_runs += 1;
+                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            pi = j;
+                            continue 'paras;
+                        }
+                    }
+                    // Keep options don't apply between a split block's lines.
+                    if !capped && cur.split.is_none_or(|s| s.part_lines == 0) {
                         let ctx = KeepCtx {
                             pi,
                             line_no,
@@ -984,6 +1046,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let ft = &mut out.frames[cur.fi];
                 if line_no == 0 {
                     first_line_rect = Some((cur.fi, baseline, asc, x0));
+                }
+                if let Some(sb) = cur.split.as_mut() {
+                    sb.line0.get_or_insert(ft.lines.len());
+                    sb.sub_lines += 1;
+                    sb.part_lines += 1;
                 }
                 ft.lines.push(Line {
                     column: cur.col as u32,
@@ -1096,6 +1163,47 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let (x0, x1) = if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) };
             ft.decos.push(Deco { rect: Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), color: r.color.clone(), tint: r.tint });
         }
+        // The end of a split block: text after it continues below its deepest sub-column, which
+        // are balanced first. A block that ends the story fills its sub-columns in turn.
+        if let Some(sb) = cur.split {
+            let next =
+                story.paras.get(pi + 1).filter(|_| story.para_table(pi + 1).is_none()).and_then(|p| SplitCfg::of(&doc.styles.resolve_para(p).0));
+            if next != Some(sb.cfg) {
+                cur.split = None;
+                let part = out.frames.get(cur.fi).and_then(|ft| {
+                    let lines = ft.lines.get(sb.line0?..)?;
+                    let top = lines.first().map(|l| l.baseline - l.ascent)?;
+                    let deepest = lines.iter().map(|l| (l.baseline, l.descent)).max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)))?;
+                    Some((sb.top.unwrap_or(top), deepest))
+                });
+                if pi + 1 < np
+                    && let Some((top, (baseline, descent))) = part
+                {
+                    let key = (cur.fi, cur.col, sb.para);
+                    let active = split_trial.as_ref().is_some_and(|t| t.key == key);
+                    if !active && let Some(t) = split_trial.take() {
+                        set_limit(&mut split_limits, t.key, None);
+                    }
+                    if sb.part_lines > 1 && (active || limit_of(&split_limits, key).is_none() && split_runs < split_budget) {
+                        let bottom = baseline + descent;
+                        let mut t = split_trial.take().unwrap_or(Trial { key, span: pi, lo: top, hi: bottom, tries: 0, done: false });
+                        // This layout fits: its bottom is the best so far.
+                        t.hi = t.hi.min(bottom);
+                        let next = if t.done { t.hi } else { t.next() };
+                        set_limit(&mut split_limits, key, Some(next));
+                        if !t.done {
+                            split_trial = Some(t);
+                            split_runs += 1;
+                            rewind(key.2, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            pi = key.2;
+                            continue 'paras;
+                        }
+                    }
+                    cur.last_baseline = Some(baseline);
+                    cur.last_descent = descent;
+                }
+            }
+        }
         cur.pending += pp.space_after;
         pi += 1;
     }
@@ -1105,13 +1213,16 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let f = &frames[fi];
         if let (Some(a), Some(z)) = (ft.lines.first(), ft.lines.last()) {
             ft.range = a.range.start..z.range.end;
-            ft.content_height = z.baseline + z.descent - f.area.y0;
+            // The deepest line of the last column (split columns can end higher up).
+            let bottom = ft.lines.iter().filter(|l| l.column == z.column).map(|l| l.baseline + l.descent).fold(z.baseline + z.descent, f64::max);
+            ft.content_height = bottom - f.area.y0;
         } else {
             let p = ft_prev_end(&out.overset_at, story.text.len());
             ft.range = p..p;
         }
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
-        let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true));
+        let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true))
+            || ft.lines.iter().any(|l| split_paras.get(l.para) == Some(&true));
         vertical_justify(ft, f, spanned);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
@@ -1250,11 +1361,10 @@ fn para_box_decos(out: &mut ComposedStory, pi: usize, pp: &ParaProps) {
     }
     let mut parts: Vec<(usize, Rect)> = Vec::new();
     for (fi, ft) in out.frames.iter().enumerate() {
-        let mut cols_seen: Vec<u32> = ft.lines.iter().filter(|l| l.para == pi).map(|l| l.column).collect();
-        cols_seen.dedup();
-        for c in cols_seen {
-            let lines: Vec<&Line> = ft.lines.iter().filter(|l| l.para == pi && l.column == c).collect();
-            if let (Some(a), Some(z)) = (lines.first(), lines.last()) {
+        // A part ends where the next line moves to another column or sub-column.
+        let lines: Vec<&Line> = ft.lines.iter().filter(|l| l.para == pi).collect();
+        for part in lines.chunk_by(|a, b| a.column == b.column && b.baseline > a.baseline) {
+            if let (Some(a), Some(z)) = (part.first(), part.last()) {
                 parts.push((fi, Rect::new(a.x0, a.baseline - a.ascent, a.x1, z.baseline + z.descent)));
             }
         }
@@ -1618,10 +1728,87 @@ struct Cursor {
     band: Band,
     /// Column bottoms that balance bands, by band key (kept by the compose loop).
     limits: Rc<Vec<(BandKey, f64)>>,
+    /// The split-column block the text is in.
+    split: Option<SplitBlock>,
+    /// Bottoms that balance split blocks, by block part (kept by the compose loop).
+    split_limits: Rc<Vec<(SplitKey, f64)>>,
 }
 
 /// A band's frame and first paragraph.
 type BandKey = (usize, usize);
+
+/// A split block's part in one column: frame, column and the paragraph it starts in.
+type SplitKey = (usize, usize, usize);
+
+/// What a balancing trial re-lays from.
+trait TrialKey: Copy + PartialEq {
+    fn para(&self) -> usize;
+}
+
+impl TrialKey for BandKey {
+    fn para(&self) -> usize {
+        self.1
+    }
+}
+
+impl TrialKey for SplitKey {
+    fn para(&self) -> usize {
+        self.2
+    }
+}
+
+/// Split Columns settings: sub-columns, inside and outside gutters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SplitCfg {
+    n: usize,
+    inside: f64,
+    outside: f64,
+}
+
+impl SplitCfg {
+    fn of(pp: &ParaProps) -> Option<SplitCfg> {
+        let SpanColumns::Split(n) = pp.span_columns else { return None };
+        let gutter = |g: f64| if g.is_finite() { g.max(0.0) } else { 0.0 };
+        Some(SplitCfg { n: (n as usize).clamp(2, 64), inside: gutter(pp.split_inside_gutter), outside: gutter(pp.split_outside_gutter) })
+    }
+    /// Sub-column `sub` of `col`.
+    fn sub_rect(&self, col: Rect, sub: usize) -> Rect {
+        let (x0, x1) = (col.x0 + self.outside, col.x1 - self.outside);
+        let w = ((x1 - x0 - self.inside * (self.n - 1) as f64) / self.n as f64).max(1.0);
+        let x = x0 + sub.min(self.n - 1) as f64 * (w + self.inside);
+        Rect::new(x, col.y0, x + w, col.y1)
+    }
+}
+
+/// Where the cursor resumes: the line above (if any) and the space waiting below it.
+#[derive(Clone, Copy, Debug)]
+struct Resume {
+    last_baseline: Option<f64>,
+    last_descent: f64,
+    last_reference: f64,
+    pending: f64,
+}
+
+/// Consecutive paragraphs with the same Split Columns settings, set in sub-columns of their
+/// column: text fills the sub-columns one after the other from the block's top, then moves on to
+/// the next column. Text after the block continues below its deepest sub-column.
+#[derive(Clone, Copy, Debug)]
+struct SplitBlock {
+    cfg: SplitCfg,
+    /// The sub-column the text is in.
+    sub: usize,
+    /// Lines set in the current sub-column, and in the block's part in this column.
+    sub_lines: usize,
+    part_lines: usize,
+    /// The part's first line in its frame.
+    line0: Option<usize>,
+    /// The paragraph the part starts in (balancing re-lays from there).
+    para: usize,
+    /// Every sub-column starts from here.
+    start: Resume,
+    /// The part's top.
+    top: Option<f64>,
+}
 
 /// A run of the frame's columns: the whole frame, or the part between spanning paragraphs.
 /// Text fills its columns one after the other; a spanning paragraph closes it.
@@ -1649,8 +1836,8 @@ struct Above {
 /// Balancing the columns above a spanning paragraph: a search for the lowest column bottom at
 /// which the band's text still fits its frame, re-laying the band at each trial bottom.
 #[derive(Debug)]
-struct Trial {
-    key: BandKey,
+struct Trial<K = BandKey> {
+    key: K,
     /// The spanning paragraph that closes the band.
     span: usize,
     /// Highest bottom known not to fit / lowest known to fit.
@@ -1661,7 +1848,7 @@ struct Trial {
     done: bool,
 }
 
-impl Trial {
+impl<K> Trial<K> {
     /// The next bottom to try: half way, or `hi` once settled.
     fn next(&mut self) -> f64 {
         self.tries += 1;
@@ -1677,7 +1864,7 @@ impl Trial {
 /// A balancing trial whose band didn't fit its frame: records the next bottom to try in
 /// `limits` (or, when even the settled bottom fails or the budget is spent, leaves the band
 /// unbalanced) and returns the paragraph to re-lay from.
-fn trial_failed(trial: &mut Option<Trial>, limits: &mut Rc<Vec<(BandKey, f64)>>, budget_left: bool) -> Option<usize> {
+fn trial_failed<K: TrialKey>(trial: &mut Option<Trial<K>>, limits: &mut Rc<Vec<(K, f64)>>, budget_left: bool) -> Option<usize> {
     let t = trial.as_mut()?;
     let key = t.key;
     let bottom = if t.done || !budget_left {
@@ -1688,10 +1875,10 @@ fn trial_failed(trial: &mut Option<Trial>, limits: &mut Rc<Vec<(BandKey, f64)>>,
         t.next()
     };
     set_limit(limits, key, Some(bottom));
-    Some(key.1)
+    Some(key.para())
 }
 
-fn set_limit(limits: &mut Rc<Vec<(BandKey, f64)>>, key: BandKey, bottom: Option<f64>) {
+fn set_limit<K: TrialKey>(limits: &mut Rc<Vec<(K, f64)>>, key: K, bottom: Option<f64>) {
     let v = Rc::make_mut(limits);
     v.retain(|(k, _)| *k != key);
     if let Some(b) = bottom {
@@ -1699,7 +1886,7 @@ fn set_limit(limits: &mut Rc<Vec<(BandKey, f64)>>, key: BandKey, bottom: Option<
     }
 }
 
-fn limit_of(limits: &[(BandKey, f64)], key: BandKey) -> Option<f64> {
+fn limit_of<K: TrialKey>(limits: &[(K, f64)], key: K) -> Option<f64> {
     limits.iter().find(|(k, _)| *k == key).map(|&(_, b)| b)
 }
 
@@ -1710,6 +1897,7 @@ impl Cursor {
             self.next_frame();
         } else {
             self.resume();
+            self.split_part();
         }
     }
     fn next_frame(&mut self) {
@@ -1717,6 +1905,44 @@ impl Cursor {
         self.col = 0;
         self.band = Band { para: self.pi, ..Band::default() };
         self.resume();
+        self.split_part();
+    }
+    fn state(&self) -> Resume {
+        Resume { last_baseline: self.last_baseline, last_descent: self.last_descent, last_reference: self.last_reference, pending: self.pending }
+    }
+    /// Start a split block (or its part in a new column) here.
+    fn split_part(&mut self) {
+        let start = self.state();
+        let top = start.last_baseline.map(|b| b + start.last_descent);
+        let para = self.pi;
+        if let Some(s) = self.split.as_mut() {
+            *s = SplitBlock { sub: 0, sub_lines: 0, part_lines: 0, line0: None, para, start, top, ..*s };
+        }
+    }
+    /// Move on to the next sub-column of the split block, back at the block's top.
+    fn next_sub(&mut self) {
+        let Some(s) = self.split.as_mut() else { return };
+        s.sub += 1;
+        s.sub_lines = 0;
+        let r = s.start;
+        self.last_baseline = r.last_baseline;
+        self.last_descent = r.last_descent;
+        self.last_reference = r.last_reference;
+        self.pending = r.pending;
+    }
+    /// Within a split block, the next sub-column when there's one to go to.
+    fn can_next_sub(&self) -> bool {
+        self.split.is_some_and(|s| s.sub_lines > 0 && s.sub + 1 < s.cfg.n)
+    }
+    fn split_key(&self) -> Option<SplitKey> {
+        self.split.map(|s| (self.fi, self.col, s.para))
+    }
+    /// The sub-column the split block's text is in, within `col` and above its balanced bottom.
+    fn split_rect(&self, col: Rect) -> Rect {
+        let Some(s) = self.split else { return col };
+        let r = s.cfg.sub_rect(col, s.sub);
+        let y1 = self.split_key().and_then(|k| limit_of(&self.split_limits, k)).map_or(col.y1, |b| b.min(col.y1).max(col.y0));
+        Rect::new(r.x0, r.y0, r.x1, y1)
     }
     /// Start the current column at the top of the band.
     fn resume(&mut self) {
@@ -2078,6 +2304,11 @@ fn layout_line(
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &rebased, extra, sp, seg_add, seg_scale);
+    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last && extra < 0.0 {
+        // An overfull single word shrinks only as far as the minimum letter spacing and glyph scaling allow.
+        let (seg_line, seg_add, seg_scale) =
+            (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
+        distribute(seg_line, &[], extra, sp, seg_add, seg_scale);
     } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last {
         // Single word: Single Word Justification.
         match pp.single_word_justify {
@@ -2361,10 +2592,12 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     let tg = rem.min(yg);
     rem -= tg;
     let sign = if stretch { 1.0 } else { -1.0 };
+    // Stretch left over beyond every limit is shared equally by the word spaces; shrink never goes
+    // past the minimums (that would overlap glyphs), so an overfull line stays overfull.
+    let over = if stretch && !spaces.is_empty() { rem / spaces.len() as f64 } else { 0.0 };
     for (k, &i) in spaces.iter().enumerate() {
         let share = if yw > 1e-9 { tw * word[k] / yw } else { 0.0 };
-        // Left over beyond every limit: shared equally by the word spaces.
-        add[i] += sign * (share + rem / spaces.len() as f64);
+        add[i] += sign * share + over;
     }
     if yl > 1e-9 && tl > 0.0 {
         for (i, l) in letter.iter().enumerate() {

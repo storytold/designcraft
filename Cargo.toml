@@ -42,6 +42,7 @@ unicode-bidi = "0.3"
 unicode-script = "0.5"
 unicode-bidi-mirroring = "0.4"
 unicode-segmentation = "1"
+caseless = "0.2"
 regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
 tempfile = "3"
 

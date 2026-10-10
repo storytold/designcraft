@@ -109,6 +109,49 @@ fn default_zone() -> f64 {
     4.0
 }
 
+/// File › Export PDF… options: the values persisted in `UiState.pdf_export` and used as the
+/// dialog's defaults. Serialised as `pdfExport` with camelCase field names.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PdfExportSettings {
+    /// Preset (one of the five presets, or "Custom" after a manual edit).
+    pub preset: String,
+    /// PDF standard (`none`, `x4`, `a2b`).
+    pub standard: String,
+    /// Compression › Compress images (JPEG).
+    pub compress_images: bool,
+    /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
+    pub flatten: String,
+    pub spreads: bool,
+    pub bleed: bool,
+    pub marks_crop: bool,
+    pub marks_bleed: bool,
+    pub marks_page_info: bool,
+    pub marks_weight: String,
+    pub marks_offset: String,
+    /// File › Export PDF › Advanced › Tagged PDF.
+    pub tagged: bool,
+}
+
+impl Default for PdfExportSettings {
+    fn default() -> Self {
+        PdfExportSettings {
+            preset: "Desktop Printing".into(),
+            standard: "none".into(),
+            compress_images: false,
+            flatten: "".into(),
+            spreads: false,
+            bleed: true,
+            marks_crop: false,
+            marks_bleed: false,
+            marks_page_info: false,
+            marks_weight: "0.25".into(),
+            marks_offset: "6".into(),
+            tagged: true,
+        }
+    }
+}
+
 /// Persisted UI state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -149,6 +192,8 @@ pub struct UiState {
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
     pub flattener: String,
+    /// File › Export PDF… options (persisted; see `PdfExportSettings`).
+    pub pdf_export: PdfExportSettings,
     /// View › Separations Preview: a process plate (0–3) and/or an ink limit (total, 0–4).
     #[serde(skip)]
     pub separation: Option<u8>,
@@ -252,6 +297,7 @@ impl Default for UiState {
             dynamic_spelling: false,
             language: String::new(),
             flattener: String::new(),
+            pdf_export: PdfExportSettings::default(),
             separation: None,
             ink_limit: None,
             display_quality: designcraft_render::DisplayQuality::High,
@@ -1122,6 +1168,38 @@ mod tests {
         ui.snap_zone = 0.0;
         assert!(!ui.snap_view().snap_to_guides);
         assert_eq!(ui.snap_view().zone_px, 0.0);
+    }
+
+    #[test]
+    fn pdf_export_settings_round_trip() {
+        let ui = UiState::default();
+        let json = serde_json::to_string(&ui).unwrap();
+        let parsed: UiState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.pdf_export, PdfExportSettings::default());
+    }
+
+    #[test]
+    fn pdf_export_settings_defaults() {
+        let settings = PdfExportSettings::default();
+        assert_eq!(settings.preset, "Desktop Printing");
+        assert_eq!(settings.standard, "none");
+        assert!(!settings.compress_images);
+        assert_eq!(settings.flatten, "");
+        assert!(!settings.spreads);
+        assert!(settings.bleed);
+        assert!(!settings.marks_crop);
+        assert!(!settings.marks_bleed);
+        assert!(!settings.marks_page_info);
+        assert_eq!(settings.marks_weight, "0.25");
+        assert_eq!(settings.marks_offset, "6");
+        assert!(settings.tagged);
+    }
+
+    #[test]
+    fn pdf_export_settings_survive_missing_key() {
+        let json = r#"{ "language": "en" }"#;
+        let ui: UiState = serde_json::from_str(json).unwrap();
+        assert_eq!(ui.pdf_export, PdfExportSettings::default());
     }
 
     /// A temporary file named `name` whose bytes aren't a document or a graphic.
