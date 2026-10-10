@@ -692,6 +692,18 @@ attr_set! {
         ruby: String = String::new(),
         /// Kenten: an emphasis dot above each character.
         kenten: bool = false,
+        /// Warichu: the run is set in smaller lines stacked inside one line height.
+        warichu: bool = false,
+        /// How many warichu lines (InDesign's minimum is 2).
+        warichu_lines: u32 = 2,
+        /// Warichu size as a percentage of the parent size.
+        warichu_size: f64 = 50.0,
+        /// Extra points between warichu baselines. 0 is automatic (one small em).
+        warichu_line_spacing: f64 = 0.0,
+        warichu_alignment: crate::cjk::WarichuAlignment = crate::cjk::WarichuAlignment::Auto,
+        /// Minimum characters on a warichu line before a break, and on the line after it.
+        warichu_chars_before_break: u32 = 1,
+        warichu_chars_after_break: u32 = 1,
         /// Digits (World-Ready): how 0–9 are drawn.
         digits: Digits = Digits::Default,
         character_direction: crate::arabic::CharacterDirection = crate::arabic::CharacterDirection::Default,

@@ -162,6 +162,13 @@ impl StyleTable<'_> {
             ruby: (!p.ruby.is_empty()).then(|| p.ruby.clone()),
             kenten: p.kenten,
             kenten_character: p.kenten_character.clone(),
+            warichu: p.warichu,
+            warichu_lines: p.warichu_lines,
+            warichu_size: p.warichu_size,
+            warichu_line_spacing: p.warichu_line_spacing,
+            warichu_align: p.warichu_alignment,
+            warichu_chars_before: p.warichu_chars_before_break,
+            warichu_chars_after: p.warichu_chars_after_break,
         };
         if let Some(i) = self.styles.iter().rposition(|s| *s == rs) {
             return i as u32;

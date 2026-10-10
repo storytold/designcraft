@@ -419,6 +419,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.tateChuYoko",
             "ui:app.rubyDialog",
             "cmd:type.kenten",
+            "cmd:type.warichu",
             ">Track Changes",
             "cmd:changes.track",
             "cmd:changes.acceptAll",

@@ -971,6 +971,54 @@ fn ruby_and_kenten_sit_over_their_text() {
 }
 
 #[test]
+fn warichu_stacks_the_run_inside_the_line_and_closes_up() {
+    let text = "ABCDEFGHZ";
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+    let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    let z0 = plain.iter().find(|g| g.byte == 8 && g.len > 0).unwrap().x;
+    let sx0 = plain.iter().find(|g| g.byte == 0 && g.len > 0).unwrap().sx;
+    d.story_mut(sid).unwrap().format_chars(0..8, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let run: Vec<_> = l.glyphs.iter().filter(|g| g.byte < 8 && g.len > 0).collect();
+    assert_eq!(run.len(), 8, "the note keeps one glyph per letter");
+    let size = cs.styles[run[0].style as usize].size;
+    assert!((run[0].sx - sx0 * 0.5).abs() < 1e-6, "half the parent size");
+    let y_of = |slice: &[&PlacedGlyph]| slice.iter().map(|g| g.y).sum::<f64>() / slice.len() as f64;
+    let (y_top, y_bot) = (y_of(&run[..4]), y_of(&run[4..]));
+    assert!((y_bot - y_top - size * 0.5).abs() < 0.05 * size, "two lines one small em apart: {y_top} {y_bot} {size}");
+    assert!((run[0].x - run[4].x).abs() < 1e-6, "left alignment shares the start");
+    let z = l.glyphs.iter().find(|g| g.byte == 8 && g.len > 0).unwrap();
+    let right = run.iter().map(|g| g.x + g.adv).fold(f64::MIN, f64::max);
+    assert!((z.x - right).abs() < 1e-3, "the next character follows the note: {} {right}", z.x);
+    assert!(z.x < z0 - 1.0, "the note is narrower than the full-size run: {} {z0}", z.x);
+    assert!((l.end_x - (z.x + z.adv)).abs() < 1e-3, "the line-end caret follows the close-up");
+}
+
+#[test]
+fn warichu_break_minimum_keeps_a_short_run_on_one_line() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, "ABCD", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_lines = Some(2);
+        f.over.warichu_chars_before_break = Some(3);
+        f.over.warichu_chars_after_break = Some(3);
+    });
+    let l = &compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0];
+    let run: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte < 4).collect();
+    assert_eq!(run.len(), 4);
+    let y0 = run[0].y;
+    assert!(run.iter().all(|g| (g.y - y0).abs() < 1e-6), "not enough characters to break");
+}
+
+#[test]
 fn tate_chu_yoko_sets_digits_across_one_em() {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
     let lid = d.default_layer();

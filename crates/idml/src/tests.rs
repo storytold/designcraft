@@ -743,6 +743,32 @@ fn cjk_character_attributes_import_from_independent_xml_and_round_trip() {
 }
 
 #[test]
+fn warichu_imports_from_idml_and_round_trips() {
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" Warichu="true" WarichuLines="3" WarichuSize="40" WarichuLineSpacing="1" WarichuAlignment="Left" WarichuCharsBeforeBreak="2" WarichuCharsAfterBreak="2"><Content>注釈</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let doc = import_idml(&fixture_with_story(story)).unwrap();
+    let st = doc.stories.values().find(|s| s.text.contains("注釈")).unwrap();
+    let a = &st.runs().next().unwrap().1.over;
+    assert_eq!(a.warichu, Some(true));
+    assert_eq!(a.warichu_lines, Some(3));
+    assert_eq!(a.warichu_size, Some(40.0));
+    assert_eq!(a.warichu_line_spacing, Some(1.0));
+    assert_eq!(a.warichu_alignment, Some(designcraft_doc::cjk::WarichuAlignment::Left));
+    assert_eq!(a.warichu_chars_before_break, Some(2));
+    assert_eq!(a.warichu_chars_after_break, Some(2));
+    let back = import_idml(&export_idml(&doc)).unwrap();
+    let b = &back.stories.values().find(|s| s.text.contains("注釈")).unwrap().runs().next().unwrap().1.over;
+    assert_eq!(a.warichu, b.warichu);
+    assert_eq!(a.warichu_lines, b.warichu_lines);
+    assert_eq!(a.warichu_size, b.warichu_size);
+    assert_eq!(a.warichu_alignment, b.warichu_alignment);
+    assert_eq!(a.warichu_chars_before_break, b.warichu_chars_before_break);
+    assert_eq!(a.warichu_chars_after_break, b.warichu_chars_after_break);
+}
+
+#[test]
 fn automatic_kerning_does_not_import_inactive_numeric_values() {
     for (attributes, expected) in [
         (r#"KerningMethod="$ID/Optical" KerningValue="1e+11""#, Some(designcraft_doc::Kerning::Optical)),

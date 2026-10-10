@@ -207,6 +207,15 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "type.warichu",
+            "Warichu",
+            [],
+            None,
+            "{on?: bool, lines?: int, size?: number, lineSpacing?: number, align?: auto|left|center|right|justify, charsBeforeBreak?: int, charsAfterBreak?: int} — set the selection as an inline note in smaller lines inside one line height (toggles by default)",
+            has_text_or_frames,
+            warichu_cmd
+        ),
+        cmd!(
             "type.storyDirection",
             "Story Direction",
             [],
@@ -734,6 +743,43 @@ pub(crate) fn format_targets(s: &Session) -> Vec<Target> {
         }
     }
     v
+}
+
+fn warichu_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let has_opts = ["lines", "size", "lineSpacing", "align", "charsBeforeBreak", "charsAfterBreak"].iter().any(|k| p.get(k).is_some());
+    let on = match p.get("on").and_then(Value::as_bool) {
+        Some(v) => v,
+        None if has_opts => true,
+        None => !format_targets(s).first().is_some_and(|t| {
+            s.doc()
+                .ok()
+                .and_then(|d| d.doc.text_story(t.story, t.cell))
+                .is_some_and(|st| st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over.warichu == Some(true))
+        }),
+    };
+    let mut body = serde_json::Map::new();
+    body.insert("warichu".into(), json!(on));
+    if on {
+        if let Some(v) = p.get("lines").and_then(Value::as_u64) {
+            body.insert("warichuLines".into(), json!(v.clamp(2, 16)));
+        }
+        if let Some(v) = p.get("size").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+            body.insert("warichuSize".into(), json!(v.clamp(1.0, 1000.0)));
+        }
+        if let Some(v) = p.get("lineSpacing").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+            body.insert("warichuLineSpacing".into(), json!(v));
+        }
+        if let Some(v) = p.get("align").and_then(Value::as_str) {
+            body.insert("warichuAlignment".into(), json!(v));
+        }
+        if let Some(v) = p.get("charsBeforeBreak").and_then(Value::as_u64) {
+            body.insert("warichuCharsBeforeBreak".into(), json!(v.min(100)));
+        }
+        if let Some(v) = p.get("charsAfterBreak").and_then(Value::as_u64) {
+            body.insert("warichuCharsAfterBreak".into(), json!(v.min(100)));
+        }
+    }
+    format_chars(s, &Value::Object(body))
 }
 
 pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
@@ -1436,6 +1482,35 @@ mod tcy_tests {
         s.execute("type.ruby", &json!({"text": ""})).unwrap();
         assert_eq!(f(&s).kenten, Some(false));
         assert_eq!(f(&s).ruby.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn warichu_toggles_on_the_selection_and_undoes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "注釈です"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        let n = "注釈".len();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": n})).unwrap();
+        s.execute("type.warichu", &json!({"lines": 2, "size": 40, "align": "left", "lineSpacing": 1, "charsBeforeBreak": 2, "charsAfterBreak": 2}))
+            .unwrap();
+        let f = |s: &Session| s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].char_format_at(1).over.clone();
+        let a = f(&s);
+        assert_eq!(a.warichu, Some(true));
+        assert_eq!(a.warichu_lines, Some(2));
+        assert_eq!(a.warichu_size, Some(40.0));
+        assert_eq!(a.warichu_line_spacing, Some(1.0));
+        assert_eq!(a.warichu_alignment, Some(designcraft_doc::cjk::WarichuAlignment::Left));
+        assert_eq!(a.warichu_chars_before_break, Some(2));
+        assert_eq!(a.warichu_chars_after_break, Some(2));
+        // The characters after the selection are not part of the note.
+        assert_eq!(s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].char_format_at(n + 1).over.warichu, None);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(f(&s).warichu, None);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(f(&s).warichu, Some(true));
+        s.execute("type.warichu", &json!({})).unwrap();
+        assert_eq!(f(&s).warichu, Some(false));
     }
 }
 

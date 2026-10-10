@@ -1164,6 +1164,27 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.tate_chu_yoko {
             el.set("Tatechuyoko", bool_s(v));
         }
+        if let Some(v) = a.warichu {
+            el.set("Warichu", bool_s(v));
+        }
+        if let Some(v) = a.warichu_lines {
+            el.set("WarichuLines", v);
+        }
+        if let Some(v) = a.warichu_size {
+            el.set("WarichuSize", num(v));
+        }
+        if let Some(v) = a.warichu_line_spacing {
+            el.set("WarichuLineSpacing", num(v));
+        }
+        if let Some(v) = a.warichu_alignment {
+            el.set("WarichuAlignment", crate::cjk::warichu_align_out(v));
+        }
+        if let Some(v) = a.warichu_chars_before_break {
+            el.set("WarichuCharsBeforeBreak", v);
+        }
+        if let Some(v) = a.warichu_chars_after_break {
+            el.set("WarichuCharsAfterBreak", v);
+        }
         if let Some(list) = &a.conditions {
             el.set("AppliedConditions", list.iter().map(|c| format!("Condition/{}", escape_id(c))).collect::<Vec<_>>().join(" "));
         }

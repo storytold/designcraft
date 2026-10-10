@@ -1136,6 +1136,13 @@ impl<'r> Importer<'r> {
         a.tate_chu_yoko = e.boolean("Tatechuyoko");
         a.tate_chu_yoko_x_offset = e.num("TatechuyokoXOffset");
         a.tate_chu_yoko_y_offset = e.num("TatechuyokoYOffset");
+        a.warichu = e.boolean("Warichu");
+        a.warichu_lines = e.num("WarichuLines").map(|v| v.max(2.0) as u32);
+        a.warichu_size = e.num("WarichuSize");
+        a.warichu_line_spacing = e.num("WarichuLineSpacing");
+        a.warichu_alignment = e.prop("WarichuAlignment").as_deref().and_then(crate::cjk::warichu_align_in);
+        a.warichu_chars_before_break = e.num("WarichuCharsBeforeBreak").map(|v| v.max(0.0) as u32);
+        a.warichu_chars_after_break = e.num("WarichuCharsAfterBreak").map(|v| v.max(0.0) as u32);
         if let Some(on) = e.boolean("RubyFlag") {
             a.ruby = Some(if on { e.prop("RubyString").unwrap_or_default() } else { String::new() });
         }

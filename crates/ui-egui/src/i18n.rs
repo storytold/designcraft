@@ -83,6 +83,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Tate-Chu-Yoko", ["Tate-Chu-Yoko", "Tate-Chu-Yoko", "Tate-Chu-Yoko", "縦中横", "纵中横"]),
     ("Ruby…", ["Ruby …", "Ruby…", "Ruby…", "ルビ…", "旁注…"]),
     ("Kenten", ["Kenten", "Kenten", "Kenten", "圏点", "圈点"]),
+    ("Warichu", ["Warichu", "Warichu", "Warichu", "割り注", "割注"]),
     ("Font", ["Schriftart", "Police", "Fuente", "フォント", "字体"]),
     ("Size", ["Schriftgrad", "Corps", "Tamaño", "サイズ", "大小"]),
     ("Character", ["Zeichen", "Caractère", "Carácter", "文字", "字符"]),
@@ -2819,6 +2820,7 @@ mod tests {
             ("Tate-Chu-Yoko", "縦中横"),
             ("Ruby…", "ルビ…"),
             ("Kenten", "圏点"),
+            ("Warichu", "割り注"),
         ] {
             assert_eq!(tr("ja", en), ja);
         }
