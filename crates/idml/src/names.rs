@@ -460,23 +460,32 @@ pub const REF_POINTS: [&str; 9] = [
     "BottomRightPoint",
 ];
 
+/// IDML `PageNumberStyle` of a section, also written for `FootnoteNumberingStyle`.
 pub fn number_style_out(n: NumberStyle) -> &'static str {
     match n {
-        NumberStyle::Arabic | NumberStyle::ArabicLeadingZero | NumberStyle::ArabicThreeDigits | NumberStyle::ArabicFourDigits => "Arabic",
+        NumberStyle::Arabic => "Arabic",
+        NumberStyle::ArabicLeadingZero => "SingleLeadingZeros",
+        NumberStyle::ArabicThreeDigits => "DoubleLeadingZeros",
+        NumberStyle::ArabicFourDigits => "TripleLeadingZeros",
         NumberStyle::UpperRoman => "UpperRoman",
         NumberStyle::LowerRoman => "LowerRoman",
         NumberStyle::UpperLetters => "UpperLetters",
         NumberStyle::LowerLetters => "LowerLetters",
         NumberStyle::Symbols => "Symbols",
+        NumberStyle::Kanji => "Kanji",
     }
 }
 pub fn number_style_in(s: &str) -> NumberStyle {
     match s {
+        "SingleLeadingZeros" => NumberStyle::ArabicLeadingZero,
+        "DoubleLeadingZeros" => NumberStyle::ArabicThreeDigits,
+        "TripleLeadingZeros" => NumberStyle::ArabicFourDigits,
         "UpperRoman" => NumberStyle::UpperRoman,
         "LowerRoman" => NumberStyle::LowerRoman,
         "UpperLetters" => NumberStyle::UpperLetters,
         "LowerLetters" => NumberStyle::LowerLetters,
         "Symbols" => NumberStyle::Symbols,
+        "Kanji" => NumberStyle::Kanji,
         _ => NumberStyle::Arabic,
     }
 }
@@ -544,7 +553,7 @@ pub fn pt(x: f64, y: f64) -> String {
 // ---------- list numbering ----------
 
 /// A paragraph's `NumberingFormat` ("A, B, C, D...", "001, 002, 003...", …), told apart by its
-/// first item. None for formats with no counterpart (CJK, Arabic, Hebrew, …).
+/// first item. None for formats with no counterpart (other CJK forms, Arabic, Hebrew, …).
 pub fn numbering_format_in(s: &str) -> Option<NumberStyle> {
     Some(match s.split(',').next().unwrap_or("").trim() {
         "1" => NumberStyle::Arabic,
@@ -555,6 +564,7 @@ pub fn numbering_format_in(s: &str) -> Option<NumberStyle> {
         "i" => NumberStyle::LowerRoman,
         "A" => NumberStyle::UpperLetters,
         "a" => NumberStyle::LowerLetters,
+        "一" => NumberStyle::Kanji,
         _ => return None,
     })
 }
@@ -568,6 +578,7 @@ pub fn numbering_format_out(n: NumberStyle) -> &'static str {
         NumberStyle::LowerRoman => "i, ii, iii, iv...",
         NumberStyle::UpperLetters => "A, B, C, D...",
         NumberStyle::LowerLetters => "a, b, c, d...",
+        NumberStyle::Kanji => "一, 二, 三, 四...",
     }
 }
 /// Label text in IDML metacharacters (a tab is `^t`).
@@ -577,19 +588,9 @@ pub fn list_text_out(s: &str) -> String {
 
 // ---------- footnote options ----------
 
-pub fn note_style_out(n: NumberStyle) -> &'static str {
-    match n {
-        NumberStyle::ArabicLeadingZero => "SingleLeadingZeros",
-        NumberStyle::ArabicThreeDigits => "DoubleLeadingZeros",
-        NumberStyle::ArabicFourDigits => "TripleLeadingZeros",
-        n => number_style_out(n),
-    }
-}
+/// IDML `FootnoteNumberingStyle`: the page number styles and `Asterisks`.
 pub fn note_style_in(s: &str) -> NumberStyle {
     match s {
-        "SingleLeadingZeros" => NumberStyle::ArabicLeadingZero,
-        "DoubleLeadingZeros" => NumberStyle::ArabicThreeDigits,
-        "TripleLeadingZeros" => NumberStyle::ArabicFourDigits,
         "Asterisks" => NumberStyle::Symbols,
         s => number_style_in(s),
     }

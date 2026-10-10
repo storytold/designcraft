@@ -1205,6 +1205,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Linear", "Лінійний"),
     ("Radial", "Радіальний"),
     ("Arabic", "Арабська"),
+    ("Kanji", "Кандзі"),
     ("Beveled Rectangle", "Прямокутник зі скошеними кутами"),
     ("Chinese", "Китайська"),
     ("Constrain proportions for width and height", "Зберігати співвідношення ширини та висоти"),

@@ -1207,6 +1207,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Linear", "線形"),
     ("Radial", "放射状"),
     ("Arabic", "アラビア語"),
+    ("Kanji", "漢数字"),
     ("Beveled Rectangle", "角を面取りした長方形"),
     ("Chinese", "中国語"),
     ("Constrain proportions for width and height", "幅と高さの比率を固定"),

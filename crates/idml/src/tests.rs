@@ -239,6 +239,48 @@ fn odd_page_break_ends_its_paragraph_and_keeps_its_parity() {
     assert_eq!(cs.frames[1].lines.iter().map(|l| l.para).collect::<Vec<_>>(), vec![1]);
 }
 
+/// A section numbered in Kanji: page names, the folio a page-number marker draws, and a round trip.
+#[test]
+fn kanji_page_numbers() {
+    let designmap = DESIGNMAP.replace(">LowerRoman<", ">Kanji<");
+    let bytes = zip_files(&[
+        ("designmap.xml", &designmap),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let mut d = import_idml(&bytes).unwrap();
+    assert_eq!(d.sections[0].style, designcraft_doc::NumberStyle::Kanji);
+    assert_eq!((d.page_name(0), d.page_name(1)), ("五".to_string(), "六".to_string()));
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.sections[0].style, designcraft_doc::NumberStyle::Kanji);
+    assert_eq!(back.page_name(1), "六");
+
+    // The marker draws the same glyphs as the page name typed in its place.
+    let sid = *d.stories.keys().next().unwrap();
+    let at = d.story(sid).unwrap().text.find(st::PAGE_NUMBER).unwrap();
+    let marker = |d: &Document| {
+        let cs = designcraft_compose::compose_story(d, sid, &Default::default());
+        cs.frames
+            .iter()
+            .enumerate()
+            .find_map(|(fi, f)| {
+                let gids: Vec<u32> = f.lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.byte == at).map(|g| g.gid).collect();
+                (!gids.is_empty()).then_some((fi, gids))
+            })
+            .unwrap()
+    };
+    let (frame, folio) = marker(&d);
+    let name = d.page_name(frame);
+    assert_eq!(name.len(), st::PAGE_NUMBER.len_utf8(), "same byte length keeps the story's ranges");
+    let story = d.story_mut(sid).unwrap();
+    story.text.replace_range(at..at + name.len(), &name);
+    assert_eq!(marker(&d), (frame, folio));
+}
+
 #[test]
 fn imports_hand_written_fixture() {
     let d = import_idml_with(&fixture(), &|_| None).unwrap();
@@ -1391,7 +1433,7 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
         let (table, _) = d.styles.resolve_para_style("Text/Table");
         assert_eq!(table.number_label(7), "Tabel 007\t");
         let (kanji, _) = d.styles.resolve_para_style("Text/Kanji");
-        assert_eq!(kanji.number_style, designcraft_doc::NumberStyle::Arabic);
+        assert_eq!(kanji.number_style, designcraft_doc::NumberStyle::Kanji);
         let (point, _) = d.styles.resolve_para_style("Text/Point");
         assert_eq!(point.bullet_label(), "\u{25A0}\u{2002}");
     };

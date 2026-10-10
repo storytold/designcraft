@@ -3373,6 +3373,7 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 ("lowerLetters", "a, b, c, d..."),
                 ("arabicLeadingZero", "01, 02, 03..."),
                 ("symbols", "*, †, ‡, §..."),
+                ("kanji", "一, 二, 三, 四..."),
             ],
         );
         ui.end_row();

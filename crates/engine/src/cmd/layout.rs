@@ -385,7 +385,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Numbering & Section Options…",
             ["Layout"],
             None,
-            "{page (1-based; starts a section there), startNumber?: n|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters, prefix?, includePrefix?, marker?, remove?: bool}",
+            "{page (1-based; starts a section there), startNumber?: n|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|kanji, prefix?, includePrefix?, marker?, remove?: bool}",
             has_doc,
             |s, p| {
                 let page = p.get("page").and_then(Value::as_u64).ok_or_else(|| bad("layout.section", "missing page"))? as usize;

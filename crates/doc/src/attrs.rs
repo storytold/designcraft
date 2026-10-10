@@ -577,6 +577,8 @@ pub enum NumberStyle {
     ArabicFourDigits,
     /// *, †, ‡, §, ¶, ‖, then doubled (**, ††, …): footnotes.
     Symbols,
+    /// 一, 二, 三, …: Chinese numerals written digit by digit, so 10 is 一〇 and 38 is 三八.
+    Kanji,
 }
 
 /// Numbers past this are written in Arabic digits by the styles that repeat characters (roman
@@ -607,6 +609,7 @@ impl NumberStyle {
                 let n = n.max(1) as usize - 1;
                 std::iter::repeat_n(SYM[n % SYM.len()], n / SYM.len() + 1).collect()
             }
+            NumberStyle::Kanji => kanji_digits(n),
         }
     }
 }
@@ -661,6 +664,11 @@ pub fn expand_list_text(s: &str, number: &str) -> String {
         out.push(r);
     }
     out
+}
+
+fn kanji_digits(n: u32) -> String {
+    const DIGITS: [char; 10] = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+    n.to_string().chars().map(|c| c.to_digit(10).and_then(|d| DIGITS.get(d as usize)).copied().unwrap_or(c)).collect()
 }
 
 fn roman(mut n: u32) -> String {
@@ -1131,6 +1139,27 @@ mod tests {
         assert_eq!(NumberStyle::UpperRoman.format(u32::MAX), u32::MAX.to_string());
         assert_eq!(NumberStyle::LowerLetters.format(u32::MAX), u32::MAX.to_string());
         assert_eq!(NumberStyle::Symbols.format(u32::MAX), u32::MAX.to_string());
+    }
+
+    #[test]
+    fn kanji_numbers_are_written_digit_by_digit() {
+        for (n, s) in [
+            (0, "〇"),
+            (1, "一"),
+            (5, "五"),
+            (10, "一〇"),
+            (11, "一一"),
+            (20, "二〇"),
+            (38, "三八"),
+            (99, "九九"),
+            (100, "一〇〇"),
+            (105, "一〇五"),
+            (1000, "一〇〇〇"),
+            (2026, "二〇二六"),
+            (u32::MAX, "四二九四九六七二九五"),
+        ] {
+            assert_eq!(NumberStyle::Kanji.format(n), s, "{n}");
+        }
     }
 
     #[test]

@@ -2378,6 +2378,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Linear", ["Linear", "Linear", "Linear", "Linear", "线性"]),
     ("Radial", ["Radial", "Radial", "Radial", "Radial", "径向"]),
     ("Arabic", ["Arabic", "Arabic", "Arabic", "Arabic", "阿拉伯语"]),
+    ("Kanji", ["Kanji", "Kanji", "Kanji", "漢数字", "汉字数字"]),
     ("Beveled Rectangle", ["Beveled Rectangle", "Beveled Rectangle", "Beveled Rectangle", "Beveled Rectangle", "斜角矩形"]),
     ("Chinese", ["Chinese", "Chinese", "Chinese", "Chinese", "中文"]),
     (

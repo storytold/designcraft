@@ -1875,7 +1875,7 @@ impl<'a> Ex<'a> {
         let restart = names::NOTE_RESTART.iter().find(|r| r.0 == o.restart).map_or("DontRestart", |r| r.1);
         let affix = names::NOTE_AFFIX.iter().find(|r| r.0 == o.affix_in).map_or("NoPrefixSuffix", |r| r.1);
         let mut props = El::new("Properties");
-        props.push(enumv("FootnoteNumberingStyle", names::note_style_out(o.style)));
+        props.push(enumv("FootnoteNumberingStyle", names::number_style_out(o.style)));
         props.push(enumv("RestartNumbering", restart));
         props.push(enumv("ShowPrefixSuffix", affix));
         props.push(enumv("MarkerPositioning", names::note_marker_out(o.ref_position)));
