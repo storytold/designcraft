@@ -230,6 +230,26 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Business Card", ["Business Card", "Business Card", "Business Card", "Business Card", "名片"]),
     ("CMYK", ["CMYK", "CMYK", "CMYK", "CMYK", "CMYK"]),
     ("Cancel", ["Cancel", "Cancel", "Cancel", "Cancel", "取消"]),
+    (
+        "Can't Open the File",
+        [
+            "Datei kann nicht geöffnet werden",
+            "Impossible d'ouvrir le fichier",
+            "No se puede abrir el archivo",
+            "ファイルを開けません",
+            "无法打开文件",
+        ],
+    ),
+    (
+        "Can't Place the File",
+        [
+            "Datei kann nicht platziert werden",
+            "Impossible d'importer le fichier",
+            "No se puede colocar el archivo",
+            "ファイルを配置できません",
+            "无法置入文件",
+        ],
+    ),
     ("Center Content", ["Center Content", "Center Content", "Center Content", "Center Content", "内容居中"]),
     ("Change All", ["Change All", "Change All", "Change All", "Change All", "全部更改"]),
     ("Change to:", ["Change to:", "Change to:", "Change to:", "Change to:", "更改为："]),

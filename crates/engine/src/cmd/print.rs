@@ -2,8 +2,12 @@
 
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_doc, str_param};
-use crate::{EngineError, Result, Session};
+#[cfg(not(target_arch = "wasm32"))]
+use super::str_param;
+use super::{CommandSpec, bad, cmd, has_doc};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::EngineError;
+use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -39,31 +43,32 @@ fn printers() -> Value {
 fn print(s: &mut Session, p: &Value) -> Result<Value> {
     let d = &s.doc()?.doc;
     let opts = super::export::options(p, d.page_count())?;
-    let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999);
-    let printer = str_param(p, "printer").map(str::to_string);
-    let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-    let pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
-    let file = std::env::temp_dir().join(format!("designcraft-print-{}-{}.pdf", std::process::id(), d.title.replace(['/', '\\'], "_")));
-    let mut cmd: Vec<String> = vec!["lpr".into()];
-    if let Some(pr) = &printer {
-        cmd.extend(["-P".into(), pr.clone()]);
-    }
-    if copies > 1 {
-        cmd.extend(["-#".into(), copies.to_string()]);
-    }
-    cmd.extend(["-T".into(), d.title.clone(), file.to_string_lossy().to_string()]);
-    let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
-    let out = json!({"printer": printer, "copies": copies, "pages": pages, "command": cmd, "bytes": pdf.len()});
-    if dry {
-        return Ok(out);
-    }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = pdf;
+        // Even a dry run cannot construct a native spool command in the browser.
+        let _ = opts;
         Err(bad("file.print", "printing isn't available on the web: export a PDF and print it"))
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999);
+        let printer = str_param(p, "printer").map(str::to_string);
+        let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
+        let pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+        let file = std::env::temp_dir().join(format!("designcraft-print-{}-{}.pdf", std::process::id(), d.title.replace(['/', '\\'], "_")));
+        let mut cmd: Vec<String> = vec!["lpr".into()];
+        if let Some(pr) = &printer {
+            cmd.extend(["-P".into(), pr.clone()]);
+        }
+        if copies > 1 {
+            cmd.extend(["-#".into(), copies.to_string()]);
+        }
+        cmd.extend(["-T".into(), d.title.clone(), file.to_string_lossy().to_string()]);
+        let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
+        let out = json!({"printer": printer, "copies": copies, "pages": pages, "command": cmd, "bytes": pdf.len()});
+        if dry {
+            return Ok(out);
+        }
         std::fs::write(&file, &pdf).map_err(|e| EngineError::Other(format!("{}: {e}", file.display())))?;
         let st = std::process::Command::new(&cmd[0]).args(&cmd[1..]).output().map_err(|e| bad("file.print", format!("lpr: {e}")))?;
         if !st.status.success() {
@@ -73,7 +78,7 @@ fn print(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use serde_json::json;
 

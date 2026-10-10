@@ -25,7 +25,7 @@ impl eframe::App for App {
                 self.1 = Some(native_menu::NativeMenu::install(&mut self.0));
             }
             if let Some(m) = &mut self.1 {
-                m.poll(&mut self.0);
+                m.poll(&mut self.0, ctx);
             }
             // Files opened from Finder or the Dock (double-click, drop on the app icon, Open With).
             for p in designcraft_macos_open::take_pending() {
@@ -260,7 +260,7 @@ fn main() -> eframe::Result {
                 let _ = app.run("file.newSample", serde_json::json!({}));
             }
             for f in files {
-                if let Err(e) = app.run("file.open", serde_json::json!({"path": f})) {
+                if let Err(e) = app.open_file("file.open", serde_json::json!({"path": f})) {
                     eprintln!("designcraft: {f}: {e}");
                 }
             }

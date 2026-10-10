@@ -180,7 +180,7 @@ impl Headless {
 
     fn text(&mut self, p: &Value) -> Result<Value, String> {
         let t = s(p, "text").ok_or("missing `text`")?;
-        if !self.session.wants_text() {
+        if self.session.active().is_none_or(|st| st.selection.text.is_none_or(|t| st.doc.text_story(t.story, t.cell).is_none())) {
             return Err("no text insertion point: click into a text frame with the type tool first (pointer with tool \"type\"), \
                 or select text with execute text.select, or use set_story_text"
                 .into());
@@ -191,7 +191,7 @@ impl Headless {
 
     fn render(&mut self, p: &Value) -> Result<Value, String> {
         let st = self.session.active().ok_or("no document open")?;
-        let page = p.get("page").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let page = page_index(p, st.doc.page_count())?;
         let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(1.0).clamp(0.05, 16.0);
         let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(false);
         let img = self
@@ -213,7 +213,7 @@ impl Headless {
     fn export(&mut self, p: &Value) -> Result<Value, String> {
         let path = s(p, "path").ok_or("missing `path`")?;
         let st = self.session.active().ok_or("no document open")?;
-        let page = p.get("page").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let page = page_index(p, st.doc.page_count())?;
         let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(2.0).clamp(0.05, 16.0);
         let img = self
             .renderer
@@ -262,4 +262,16 @@ impl Backend for Headless {
     fn describe(&self) -> String {
         "headless (in-process engine, no window)".into()
     }
+}
+
+/// A supplied page must be a representable unsigned index; only omission selects page zero.
+fn page_index(p: &Value, count: usize) -> Result<usize, String> {
+    let page = match p.get("page") {
+        None => 0,
+        Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or("`page` must be a nonnegative integer representable as a page index")?,
+    };
+    if page >= count {
+        return Err(format!("no page {page} (the document has {count} pages, indices are 0-based)"));
+    }
+    Ok(page)
 }

@@ -124,7 +124,7 @@ fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
     nd.height = f64_or(p, "height", nd.height);
     nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(nd.pages).clamp(1, 9999);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
-    nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(nd.columns);
+    nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
     nd.gutter = f64_or(p, "gutter", nd.gutter);
     nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(false);
     match p.get("margins") {
@@ -185,7 +185,7 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
     #[cfg(not(target_arch = "wasm32"))]
     {
         use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
-        let Some(folder) = std::path::Path::new(path).parent().map(|d| d.join(DOCUMENT_FONTS_FOLDER)) else { return (None, 0, Vec::new()) };
+        let Some(folder) = std::path::Path::new(path).parent().map(document_fonts_folder) else { return (None, 0, Vec::new()) };
         let r = designcraft_fonts::FontDb::global().load_document_fonts(&folder);
         d.font_scope = r.scope;
         let scope = (r.scope != 0).then(|| Arc::new(crate::FontScope(r.scope)));
@@ -196,6 +196,23 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
         let _ = (d, path);
         (None, 0, Vec::new())
     }
+}
+
+/// The `Document Fonts` folder in `dir`, matched without regard to case: packages name it
+/// `Document fonts`, and file systems on Linux are case-sensitive. The exact name wins.
+#[cfg(not(target_arch = "wasm32"))]
+fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
+    use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
+    let exact = dir.join(DOCUMENT_FONTS_FOLDER);
+    if exact.is_dir() {
+        return exact;
+    }
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find(|e| e.file_name().to_str().is_some_and(|n| n.eq_ignore_ascii_case(DOCUMENT_FONTS_FOLDER)) && e.path().is_dir())
+        .map_or(exact, |e| e.path())
 }
 
 fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
@@ -790,6 +807,24 @@ mod document_fonts_tests {
 
         let mut s = Session::new();
         let r = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(r["documentFonts"], 1, "{r}");
+        assert_eq!(font_entry(&mut s, FAMILY)["missing"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_document_fonts_folder_is_found_whatever_its_case() {
+        const FAMILY: &str = "DocFont Case Test";
+        let dir = std::env::temp_dir().join(format!("dc-open-docfonts-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let fonts = dir.join("Document fonts");
+        std::fs::create_dir_all(&fonts).unwrap();
+        std::fs::write(fonts.join("case.ttf"), font_with(FAMILY, &['H']).unwrap()).unwrap();
+        let path = dir.join("Brochure.idml");
+        write_document(&path, FAMILY);
+
+        let mut s = Session::new();
+        let r = open(&mut s, &path);
         assert_eq!(r["documentFonts"], 1, "{r}");
         assert_eq!(font_entry(&mut s, FAMILY)["missing"], false);
         let _ = std::fs::remove_dir_all(&dir);

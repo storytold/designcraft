@@ -1,5 +1,6 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
+use super::browser_policy::{has_query_flag, mime_for};
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Inbox, Services};
 use wasm_bindgen::JsCast as _;
@@ -41,7 +42,7 @@ pub fn start() {
             return;
         };
         let mut options = eframe::WebOptions::default();
-        if query().contains("webgl")
+        if has_query_flag(&query(), "webgl")
             && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
         {
             create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
@@ -56,7 +57,7 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
-                    if query().contains("sample") {
+                    if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
                     Ok(Box::new(WebShell { app, inbox }))
@@ -103,7 +104,8 @@ impl eframe::App for WebShell {
         self.app.logic(ctx);
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused());
         self.app.raw_input_hook(raw);
     }
 
@@ -172,15 +174,4 @@ fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
     });
     window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 10_000).map_err(js)?;
     Ok(())
-}
-
-fn mime_for(name: &str) -> &'static str {
-    match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("pdf") => "application/pdf",
-        Some("designcraft") => "application/json",
-        Some("idml") => "application/vnd.adobe.indesign-idml-package",
-        _ => "application/octet-stream",
-    }
 }

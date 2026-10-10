@@ -313,6 +313,18 @@ fn discretionary_hyphen_replaces_automatic_points() {
     assert!(lines.iter().filter(|l| l.hyphenated).count() <= 1);
 }
 
+#[test]
+fn hyphenation_skips_a_no_break_word_at_the_start() {
+    // Used to index before the first glyph and panic.
+    let text = "Extraordinarily long words wrap in a narrow column";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 60.0, 1000.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..15, |f| f.over.no_break = Some(true));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // The no-break word stays whole on the first line.
+    let first = all_lines(&cs)[0];
+    assert!(!first.hyphenated && first.range.end >= 15, "{:?}", &text[first.range.clone()]);
+}
+
 /// Story of `n` one-line filler paragraphs followed by `extra` paragraphs, in a 2-column frame.
 fn keep_doc(fillers: usize, extra: &[&str], height: f64) -> (Document, StoryId, Vec<usize>) {
     let mut parts: Vec<String> = (0..fillers).map(|k| format!("Filler {k}")).collect();
