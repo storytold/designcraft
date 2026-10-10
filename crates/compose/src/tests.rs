@@ -1951,6 +1951,43 @@ fn drop_cap_measures_against_the_body_text_not_the_style() {
 }
 
 #[test]
+fn drop_cap_ignores_cjk_character_alignment() {
+    // Documents from InDesign set Character Alignment to Em Center and the Aki Below leading
+    // model on every paragraph. The cap's em box is its scaled drawing's, so Em Center lowered it
+    // by half its growth (below the second baseline, its top under the first line's caps), and a
+    // cap set larger than the body became the line's reference and moved the first line.
+    use designcraft_doc::cjk::{CharacterAlignment, LeadingModel};
+    let rect = Rect::new(0.0, 0.0, 300.0, 2000.0);
+    let cjk = |f: &mut designcraft_doc::CharFormat| {
+        f.over.character_alignment = Some(CharacterAlignment::EmCenter);
+        f.over.leading_model = Some(LeadingModel::AkiBelow);
+    };
+    let (mut plain, psid, _) = doc_with(LOREM, rect, ParaAttrs::default());
+    plain.story_mut(psid).unwrap().format_chars(0..LOREM.len(), cjk);
+    let pcs = compose_story(&plain, psid, &ComposeOptions::default());
+    let p = all_lines(&pcs);
+    for cap_size in [None, Some(30.0)] {
+        let (mut d, sid, _) = doc_with(LOREM, rect, drop_cap(2, 1));
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..LOREM.len(), cjk);
+        if let Some(s) = cap_size {
+            story.format_chars(0..1, |f| f.over.size = Some(s));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs);
+        assert!((l[0].baseline - p[0].baseline).abs() < 1e-6, "{cap_size:?}: first baseline {} vs {}", l[0].baseline, p[0].baseline);
+        let c = cap_glyphs(l[0], 1)[0];
+        let body = l[0].glyphs.iter().find(|g| g.len > 0 && g.byte >= 1).unwrap();
+        assert!(body.y.abs() < 1e-6, "{cap_size:?}: body text moved by {}", body.y);
+        let cap_bottom = l[0].baseline + c.y;
+        let cap_top = cap_bottom - c.face.cap_height * c.sy;
+        let body_top = l[0].baseline - body.face.cap_height * body.sy;
+        assert!((cap_bottom - l[1].baseline).abs() < 1e-6, "{cap_size:?}: cap baseline {cap_bottom} vs line 2 {}", l[1].baseline);
+        assert!((cap_top - body_top).abs() < 1e-6, "{cap_size:?}: cap top {cap_top} vs {body_top}");
+    }
+}
+
+#[test]
 fn drop_cap_text_is_not_duplicated_or_lost() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 240.0, 2000.0), drop_cap(4, 3));
     let cs = compose_story(&d, sid, &ComposeOptions::default());

@@ -1223,11 +1223,11 @@ fn drop_cap(glyphs: &mut [Glyph], pp: &ParaProps, text: &str, prange: Range<usiz
     let cap_glyph = glyphs.first()?;
     let own_cap = cap_glyph.cap;
     let body = glyphs.get(n..).and_then(|rest| rest.iter().find(|g| g.len > 0 && g.byte < prange.end && !g.ch.is_control()));
-    // Body metrics: (cap height, ascent, descent, leading). A paragraph that is all cap measures
-    // against the cap's own font at the paragraph's leading.
-    let (cap, ascent, descent, leading) = match body {
-        Some(b) => (b.cap, b.ascent, b.descent, b.leading),
-        None => (own_cap, cap_glyph.ascent, cap_glyph.descent, leading),
+    // Body metrics: (cap height, ascent, descent, leading, size). A paragraph that is all cap
+    // measures against the cap's own font at the paragraph's leading.
+    let (cap, ascent, descent, leading, size) = match body {
+        Some(b) => (b.cap, b.ascent, b.descent, b.leading, b.size),
+        None => (own_cap, cap_glyph.ascent, cap_glyph.descent, leading, cap_glyph.size),
     };
     let finite_pos = |v: f64| v.is_finite() && v > 0.0;
     if n == 0 || !finite_pos(own_cap) || !finite_pos(cap) || !finite_pos(leading) {
@@ -1252,6 +1252,12 @@ fn drop_cap(glyphs: &mut [Glyph], pp: &ParaProps, text: &str, prange: Range<usiz
         g.ascent = ascent;
         g.descent = descent;
         g.leading = leading;
+        // The cap places itself (beside the dropped lines), so CJK Character Alignment must not
+        // move it: its em box is the scaled drawing's, and Em Center (the default in documents
+        // from InDesign) would lower it by half the growth. Reporting the body's size keeps it
+        // from becoming the line's alignment reference, which would move the body text.
+        g.character_alignment = designcraft_doc::cjk::CharacterAlignment::Baseline;
+        g.size = size;
         g.locked_advance = true;
         g.no_break = true;
         width += g.adv;
