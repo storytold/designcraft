@@ -73,7 +73,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let cols = ((ui.available_width() / CELL).floor() as u32).max(1);
     let ppp = ui.ctx().pixels_per_point();
-    let cell_px = (CELL * ppp).round() as u32;
+    let cell_px = (CELL * ppp).round().max(1.0) as u32;
+    // The grid is one texture: no more rows than the GPU's largest texture holds (a narrow
+    // panel of a large CJK font ran past it).
+    let max_rows = (ui.ctx().input(|i| i.max_texture_side) as u32 / cell_px).max(1);
+    chars.truncate((max_rows * cols) as usize);
     let ink = t.text_strong;
     let key = egui::Id::new(("glyph_grid", &st.family, &st.style, scope, &q, cols, cell_px, ink.to_array()));
     let tex: egui::TextureHandle = match ui.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
@@ -81,7 +85,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         None => {
             let img = designcraft_render::glyphs::glyph_grid(&db, &st.family, &st.style, &chars, cols, cell_px, ink.to_array());
             let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
-            let h = ui.ctx().load_texture("glyph_grid", ci, egui::TextureOptions::LINEAR);
+            let h = crate::widgets::load_texture(ui.ctx(), "glyph_grid", ci, egui::TextureOptions::LINEAR);
             ui.data_mut(|d| d.insert_temp(key, h.clone()));
             h
         }

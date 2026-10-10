@@ -20,6 +20,10 @@ pub struct NativeMenu {
     _menu: Menu,
     items: HashMap<String, (String, Value, Handle)>,
     last_refresh: f64,
+    /// The interface language the titles are in and whether the CJK-only items are in the menu
+    /// (Show CJK Features): the menu is rebuilt when either changes.
+    language: String,
+    cjk: bool,
 }
 
 /// Accelerator for "Cmd+Shift+]" (modifier-less shortcuts stay in the app so typing works).
@@ -69,7 +73,7 @@ impl NativeMenu {
                 (p.is_null() && accel(sc).is_some()).then(|| id.clone())
             })
             .collect();
-        Self { _menu: menu, items, last_refresh: 0.0 }
+        Self { _menu: menu, items, last_refresh: 0.0, language: app.ui.language.clone(), cjk: designcraft_ui_egui::cjk_features(app) }
     }
 
     pub fn poll(&mut self, app: &mut DesignApp, ctx: &egui::Context) {
@@ -77,6 +81,12 @@ impl NativeMenu {
             if let Some((cmd, params, _)) = self.items.get(ev.id.as_ref()) {
                 menus::activate_native(app, ctx, &cmd.clone(), &params.clone());
             }
+        }
+        // Edit › Interface Language and Show CJK Features: the system menu bar follows at once,
+        // like the panels (the new menu replaces the old one as the application's menu before
+        // that one is dropped).
+        if app.ui.language != self.language || designcraft_ui_egui::cjk_features(app) != self.cjk {
+            *self = Self::install(app);
         }
         let now = designcraft_ui_egui::now_ms();
         if now - self.last_refresh < 250.0 {
@@ -107,6 +117,7 @@ fn build(app: &DesignApp, parent: &Submenu, entries: &[Item], items: &mut HashMa
                 build(app, &sub, children, items, counter);
                 let _ = parent.append(&sub);
             }
+            Item::Cmd { id, .. } if !menus::shown(app, id) => {}
             Item::Cmd { label, id, params, shortcut } => {
                 *counter += 1;
                 let mid = format!("dc{counter}");

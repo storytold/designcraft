@@ -200,6 +200,15 @@ fn services() -> Services {
         pick_save: Some(Box::new(|name: &str| rfd::FileDialog::new().set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string()))),
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string()))),
+        // One clipboard handle each, kept for the app's life (X11 serves copied text from it).
+        clipboard_get: arboard::Clipboard::new().ok().map(|mut c| -> designcraft_ui_egui::ClipboardGetFn { Box::new(move || c.get_text().ok()) }),
+        clipboard_set: arboard::Clipboard::new().ok().map(|mut c| -> designcraft_ui_egui::ClipboardSetFn {
+            Box::new(move |t: &str| {
+                if let Err(e) = c.set_text(t.to_string()) {
+                    log::warn!("clipboard: {e}");
+                }
+            })
+        }),
         ..Default::default()
     }
 }

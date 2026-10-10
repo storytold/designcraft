@@ -197,6 +197,8 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             };
             let a = egui::pos2(f("x"), f("y"));
             let end = if req.method == "ui.drag" { egui::pos2(f("toX"), f("toY")) } else { a };
+            // Held keys as well as on the buttons: tools read the keyboard's modifier state.
+            app.synthetic.push(egui::Event::ModifiersChanged(modifiers));
             app.synthetic.push(egui::Event::PointerMoved(a));
             app.synthetic.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers });
             if req.method == "ui.drag" {
@@ -213,6 +215,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 app.synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: true, modifiers });
                 app.synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
             }
+            app.synthetic.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
             ctx.request_repaint();
             ok(Value::Null)
         }
@@ -231,6 +234,17 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 wrap(app.run("text.insert", json!({"text": text})))
             }
         }
+        "ui.ime" => {
+            // Input-method events: the text being composed, or the text committed.
+            if let Some(t) = s("preedit") {
+                app.synthetic.push(egui::Event::Ime(egui::ImeEvent::Preedit { text: t.to_string(), active_range_chars: None }));
+            }
+            if let Some(t) = s("commit") {
+                app.synthetic.push(egui::Event::Ime(egui::ImeEvent::Commit(t.to_string())));
+            }
+            ctx.request_repaint();
+            ok(Value::Null)
+        }
         "ui.set" => {
             let mut r = Ok(Value::Null);
             if let Some(b) = s("brightness") {
@@ -247,6 +261,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 ("frameEdges", "view.frameEdges"),
                 ("guides", "view.guides"),
                 ("baselineGrid", "view.baselineGrid"),
+                ("frameGrids", "view.frameGrids"),
                 ("textThreads", "view.textThreads"),
             ] {
                 if let Some(want) = p.get(k).and_then(Value::as_bool) {
@@ -255,6 +270,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                         "frameEdges" => app.ui.frame_edges,
                         "guides" => app.ui.guides,
                         "baselineGrid" => app.ui.baseline_grid,
+                        "frameGrids" => app.ui.frame_grids,
                         _ => app.ui.text_threads,
                     };
                     if cur != want {

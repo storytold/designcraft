@@ -247,7 +247,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(st) = app.session.active() else { return };
     let Some(&v) = app.view() else { return };
     let xf = Xf::new(rect, &v);
-    let doc = st.doc.clone();
+    let doc = display_doc(app).unwrap_or_else(|| st.doc.clone());
     let layout = CanvasLayout::new(&doc, st.editing_parents);
     let painter = ui.painter_at(screen);
     let preview = matches!(app.ui.screen_mode, ScreenMode::Preview | ScreenMode::Presentation);
@@ -304,6 +304,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             painter.line_segment([a, b], Stroke::new(1.0, col));
         }
         draw_frames(app, &painter, &xf, &doc, &layout);
+        if app.ui.frame_grids && !preview {
+            draw_frame_grids(app, &painter, &xf, &doc, &layout);
+        }
         if app.ui.hidden_characters {
             draw_hidden_characters(app, &painter, &xf, &doc, &layout);
         }
@@ -370,7 +373,8 @@ fn cursor_icon(c: Cursor) -> egui::CursorIcon {
 fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf, layout: &CanvasLayout, preview: bool) {
     let Some(st) = app.session.active() else { return };
     let ppp = ctx.pixels_per_point() as f64;
-    let doc_key = (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64, st.revision, preview);
+    let shown = display_doc(app).unwrap_or_else(|| st.doc.clone());
+    let doc_key = (st.uid, std::sync::Arc::as_ptr(&shown) as u64, st.revision, preview);
     // Overscan: 25% of the viewport on every side, within the GPU's maximum texture size.
     let max_side = ctx.input(|i| i.max_texture_side) as f32 / ppp as f32;
     let (ow, oh) =
@@ -408,7 +412,6 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
     let doc_changed = app.canvas.shown.is_none_or(|s| s.doc != doc_key);
     let zoom_same = app.canvas.shown.is_some_and(|s| (s.zoom - xf.zoom).abs() < 1e-9);
     let job = |app: &DesignApp| {
-        let st = app.session.active()?;
         let placed: Vec<designcraft_render::Placed> =
             layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
         let w = (target.size.0 as f64 * ppp).round().max(1.0) as u32;
@@ -432,7 +435,7 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
             blend_space_view: !app.ui.proof_colors,
             ..Default::default()
         };
-        Some((st.doc.clone(), placed, w, h, view, opts))
+        Some((display_doc(app)?, placed, w, h, view, opts))
     };
     // Synchronous path: document edits (keep editing crisp), first frame, or no worker.
     #[cfg(not(target_arch = "wasm32"))]
@@ -489,7 +492,7 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     if sh.doc.0 != doc_key.0 || sh.doc.3 != doc_key.3 || app.canvas.texture.is_none() {
         return false;
     }
-    let new = st.doc.clone();
+    let new = display_doc(app).unwrap_or_else(|| st.doc.clone());
     let Some(regions) = designcraft_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return false };
     let t0 = crate::now_ms();
     let (tw, th) = ((sh.size.0 as f64 * ppp).round() as i64, (sh.size.1 as f64 * ppp).round() as i64);
@@ -573,6 +576,7 @@ fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render:
         designcraft_render::separation_view(&mut img, None, app.ui.ink_limit);
     }
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
+    let ci = crate::widgets::fit_texture(ci, ctx.input(|i| i.max_texture_side));
     match &mut app.canvas.texture {
         Some(tex) => tex.set(ci, egui::TextureOptions::LINEAR),
         None => app.canvas.texture = Some(ctx.load_texture("canvas", ci, egui::TextureOptions::LINEAR)),
@@ -782,7 +786,10 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
     let mut text_rect = None;
     // Text selection / caret.
     if let Some(ts) = sel.text {
-        draw_text_selection(app, painter, xf, doc, layout, ts, sel.cells);
+        match app.preedit_view.as_ref().filter(|v| v.sel == ts && v.text == app.preedit) {
+            Some(v) => draw_preedit(app, painter, xf, doc, layout, v),
+            None => draw_text_selection(app, painter, xf, doc, layout, ts, sel.cells),
+        }
         let fid = ts.frame.or_else(|| {
             let cs = app.session.cache.get(doc, ts.story, None);
             compose::caret(&cs, ts.focus).and_then(|c| cs.frames.get(c.0)).map(|f| f.frame)
@@ -1007,14 +1014,94 @@ fn draw_text_selection(
         && let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame))
     {
         let m = a * doc.text_xf(it);
+        let p0 = xf.to_screen(m * Point::new(x, bl - asc));
+        let p1 = xf.to_screen(m * Point::new(x, bl + desc));
+        caret_for_ime(painter, p0, p1);
         let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
         if blink {
-            let p0 = xf.to_screen(m * Point::new(x, bl - asc));
-            let p1 = xf.to_screen(m * Point::new(x, bl + desc));
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
         painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
+}
+
+/// Where the text caret is on screen (top and bottom of the caret line), for the input method.
+const IME_CARET: &str = "dc_ime_caret";
+
+/// Record the caret (`p0` → `p1`, across the line) for the input method's candidate window.
+fn caret_for_ime(painter: &egui::Painter, p0: Pos2, p1: Pos2) {
+    painter.ctx().data_mut(|d| d.insert_temp(egui::Id::new(IME_CARET), (p0, p1)));
+}
+
+/// The document the canvas shows: the session's, or while an input method composes, the copy
+/// with the composition typed at the caret ([`crate::PreeditView`]).
+pub(crate) fn display_doc(app: &DesignApp) -> Option<std::sync::Arc<Document>> {
+    let st = app.session.active()?;
+    let current = app
+        .preedit_view
+        .as_ref()
+        .filter(|v| v.base == std::sync::Arc::as_ptr(&st.doc) as usize && v.revision == st.revision && v.text == app.preedit);
+    Some(current.map_or_else(|| st.doc.clone(), |v| v.doc.clone()))
+}
+
+/// Keep [`crate::PreeditView`] in step with the composition, the document and the caret.
+fn refresh_preedit_view(app: &mut DesignApp) {
+    let Some(st) = app.session.active() else {
+        app.preedit_view = None;
+        return;
+    };
+    let Some(sel) = st.selection.text.filter(|_| !app.preedit.is_empty()) else {
+        app.preedit_view = None;
+        return;
+    };
+    let base = std::sync::Arc::as_ptr(&st.doc) as usize;
+    if app.preedit_view.as_ref().is_some_and(|v| v.base == base && v.revision == st.revision && v.text == app.preedit && v.sel == sel) {
+        return;
+    }
+    let mut doc = (*st.doc).clone();
+    let range = sel.range();
+    let ok = doc.text_story_mut(sel.story, sel.cell).is_some_and(|story| {
+        let fits = range.end <= story.text.len() && story.text.is_char_boundary(range.start) && story.text.is_char_boundary(range.end);
+        if fits {
+            // As typing would: the composition replaces the selection, in the format at the caret.
+            if !range.is_empty() {
+                story.delete(range.clone());
+            }
+            story.insert(range.start, &app.preedit);
+        }
+        fits
+    });
+    app.preedit_view = ok.then(|| crate::PreeditView {
+        base,
+        revision: st.revision,
+        text: app.preedit.clone(),
+        sel,
+        doc: std::sync::Arc::new(doc),
+        range: range.start..range.start + app.preedit.len(),
+    });
+}
+
+/// The composition in the canvas: underlined where it sits in the composed text, the caret (and
+/// the input method's candidate window) after it.
+fn draw_preedit(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout, v: &crate::PreeditView) {
+    let caret = designcraft_doc::TextSel { anchor: v.range.end, focus: v.range.end, ..v.sel };
+    if v.sel.cell.is_none() {
+        let cs = app.session.cache.get(doc, v.sel.story, None);
+        for ft in &cs.frames {
+            let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
+            let m = a * doc.text_xf(it);
+            for l in &ft.lines {
+                let (s, e) = (v.range.start.max(l.range.start), v.range.end.min(l.range.end));
+                if s >= e {
+                    continue;
+                }
+                let (x0, x1) = (compose::caret_x(l, s), compose::caret_x(l, e));
+                let y = l.baseline + l.descent;
+                painter.line_segment([xf.to_screen(m * Point::new(x0, y)), xf.to_screen(m * Point::new(x1, y))], Stroke::new(1.5, Color32::BLACK));
+            }
+        }
+    }
+    draw_text_selection(app, painter, xf, doc, layout, caret, None);
 }
 
 /// Caret / text highlight inside a table cell (the cell's lines are offset by the cell origin).
@@ -1062,12 +1149,11 @@ fn draw_cell_selection(
         }
     {
         let m = a * doc.text_xf(it);
+        let (p0, p1) = (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)));
+        caret_for_ime(painter, p0, p1);
         let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
         if blink {
-            painter.line_segment(
-                [xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc))],
-                Stroke::new(1.0, Color32::BLACK),
-            );
+            painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
         painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
@@ -1154,7 +1240,7 @@ fn draw_inverse_highlight(
             let mut res = vello_cpu::Resources::new();
             rc.render(&mut pm, &mut res);
             let ci = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], pm.data_as_u8_slice());
-            let t = ctx.load_texture("inverse_selection", ci, egui::TextureOptions::NEAREST);
+            let t = crate::widgets::load_texture(ctx, "inverse_selection", ci, egui::TextureOptions::NEAREST);
             ctx.data_mut(|d| d.insert_temp(cache_id, (key, t.clone())));
             t
         }
@@ -1383,15 +1469,26 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     let mut events: Vec<PointerEvent> = Vec::new();
     let down_id = egui::Id::new(("canvas_pointer_down", app.pane));
     let mut down: bool = ui.data(|d| d.get_temp(down_id)).unwrap_or(false);
-    let (pressed, released, origin, latest, dbl) = ui.input(|i| {
-        (
-            i.pointer.primary_pressed(),
-            i.pointer.primary_released(),
-            i.pointer.press_origin(),
-            i.pointer.latest_pos(),
-            i.pointer.button_double_clicked(egui::PointerButton::Primary),
-        )
-    });
+    let (pressed, released, origin, latest, now) =
+        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos(), i.time));
+    let delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
+    // A double-click is the second press near the first, soon after it. (egui reports double
+    // clicks on the second release; tools act on the press: Selection tool → into the text,
+    // Type tool → select the word.)
+    let last_press_id = egui::Id::new(("canvas_last_press", app.pane));
+    let mut dbl = false;
+    if pressed && let Some(o) = origin {
+        let last: Option<(f64, Pos2)> = ui.data(|d| d.get_temp(last_press_id));
+        dbl = last.is_some_and(|(t, p)| now - t <= delay && (p - o).length() <= 6.0);
+        // A third press starts over rather than counting as another double-click.
+        ui.data_mut(|d| {
+            if dbl {
+                d.remove::<(f64, Pos2)>(last_press_id);
+            } else {
+                d.insert_temp(last_press_id, (now, o));
+            }
+        });
+    }
     if pressed
         && !space
         && let Some(o) = origin.filter(|o| (if xf.rot == 0 { rect.contains(*o) } else { resp.rect.contains(*o) }) && resp.hovered())
@@ -1447,9 +1544,36 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     if ui.ctx().text_edit_focused() && !resp.has_focus() {
         return;
     }
+    // Input methods (Japanese, Chinese, Korean…): on while there is a text caret, their candidate
+    // window at the caret. Their text arrives composed (`Preedit`, shown at the caret) and then
+    // committed (`Commit`, typed into the story).
+    if wants_text && resp.has_focus() {
+        let caret: Option<(Pos2, Pos2)> = ui.data(|d| d.get_temp(egui::Id::new(IME_CARET)));
+        let (p0, p1) = caret.unwrap_or((rect.center(), rect.center()));
+        let cursor = egui::Rect::from_two_pos(p0, p1).expand(1.0);
+        ui.ctx().output_mut(|o| {
+            o.ime =
+                Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Normal, rect, cursor_rect: cursor, should_interrupt_composition: false })
+        });
+    } else if !app.preedit.is_empty() {
+        app.preedit.clear();
+    }
+    refresh_preedit_view(app);
     let evs = ui.input(|i| i.events.clone());
     for e in evs {
         match e {
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) if wants_text => {
+                app.preedit = text;
+                refresh_preedit_view(app);
+                ui.ctx().request_repaint();
+            }
+            egui::Event::Ime(egui::ImeEvent::Commit(t)) if wants_text => {
+                app.preedit.clear();
+                app.preedit_view = None;
+                if !t.is_empty() {
+                    let _ = app.run("text.insert", json!({"text": t}));
+                }
+            }
             egui::Event::Text(t) if wants_text => {
                 let _ = app.run("text.insert", json!({"text": t}));
             }
@@ -1468,7 +1592,8 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                     ui.ctx().copy_text(t.to_string());
                 }
             }
-            egui::Event::Key { key, pressed: true, modifiers, .. } => {
+            // Keys belong to the input method while it composes.
+            egui::Event::Key { key, pressed: true, modifiers, .. } if app.preedit.is_empty() => {
                 let k = match key {
                     egui::Key::ArrowLeft => Some(ToolKey::Left),
                     egui::Key::ArrowRight => Some(ToolKey::Right),
@@ -1499,6 +1624,92 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
 }
 
 /// View → Show Hidden Characters: ¶ paragraph ends, » tabs, · spaces, ¬ forced line breaks, # end of story.
+/// Frame grids: their cells (or the N/Z view) and character counts, in the frame's layer colour
+/// (screen only).
+fn draw_frame_grids(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
+    const MAX_CELLS: usize = 20_000;
+    for slot in &layout.slots {
+        let Some(sp) = doc.spread(slot.spread) else { continue };
+        let mut frames: Vec<&Item> = Vec::new();
+        for top in &sp.items {
+            top.walk(&mut |it: &Item| {
+                if it.text_frame().is_some_and(|t| t.options.frame_grid.is_some() && t.options.path.is_none()) && !it.hidden {
+                    frames.push(it);
+                }
+            });
+        }
+        for it in frames {
+            if doc.layer(it.layer).is_some_and(|l| !l.visible) {
+                continue;
+            }
+            let (Some((a, _)), Some(tf)) = (item_canvas_xf(doc, layout, it.id), it.text_frame()) else { continue };
+            let Some(g) = tf.options.frame_grid.as_ref().map(designcraft_doc::FrameGrid::sanitized) else { continue };
+            let vertical = doc.frame_vertical(it);
+            let m = a * doc.text_xf(it);
+            let col = layer_color(doc, it).gamma_multiply(0.55);
+            let stroke = Stroke::new(hair(painter), col);
+            let area = it.text_area();
+            let area = if vertical { DRect::new(0.0, 0.0, area.height(), area.width()) } else { area };
+            let spec_cols = {
+                let o = &tf.options;
+                designcraft_doc::page::column_rects(area, o.columns.max(1), o.gutter)
+            };
+            let quad = |r: DRect| -> Vec<Pos2> {
+                [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].iter().map(|&(x, y)| xf.to_screen(m * Point::new(x, y))).collect()
+            };
+            // Cells too small to see are drawn as the outline view.
+            let cell_px = g.cell(vertical).0.min(g.cell(vertical).1) * xf.zoom;
+            let view = if cell_px < 3.0 { designcraft_doc::GridView::Outline } else { g.view };
+            let (chars, lines) = g.counts_in(area, tf.options.columns, tf.options.gutter, vertical);
+            for c in &spec_cols {
+                match view {
+                    designcraft_doc::GridView::Grid => {
+                        for r in g.cells(*c, vertical, MAX_CELLS) {
+                            painter.add(egui::Shape::closed_line(quad(r), stroke));
+                        }
+                    }
+                    designcraft_doc::GridView::Outline => {
+                        let cells = g.cells(*c, vertical, MAX_CELLS);
+                        let n = chars as usize;
+                        for (i, r) in cells.iter().enumerate() {
+                            let row = i.checked_div(n).unwrap_or(0);
+                            let k = i.checked_rem(n).unwrap_or(0);
+                            if row == 0 || row + 1 == lines as usize || k == 0 || k + 1 == n {
+                                painter.add(egui::Shape::closed_line(quad(*r), stroke));
+                            }
+                        }
+                    }
+                    designcraft_doc::GridView::NZ => {
+                        // N (horizontal) or Z (vertical): the frame's diagonal from the line start.
+                        let (p0, p1) = (xf.to_screen(m * Point::new(c.x0, c.y0)), xf.to_screen(m * Point::new(c.x1, c.y1)));
+                        painter.line_segment([p0, p1], stroke);
+                    }
+                }
+            }
+            // Character count: "chars W × lines L = cells (characters in the frame)".
+            if g.count != designcraft_doc::GridCount::None {
+                let cs = app.session.cache.get(doc, tf.story, None);
+                let shown = cs.frame(it.id).map_or(0, |f| f.lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.visible && g.len > 0).count());
+                let cells = u64::from(chars) * u64::from(lines) * u64::from(tf.options.columns.max(1));
+                let label = format!("{chars}W × {lines}L = {cells} ({shown})");
+                let b = xf.rect(a.transform_rect_bbox(it.xf.transform_rect_bbox(it.inner_bounds())));
+                let size = ((g.count_size * xf.zoom) as f32).clamp(7.0, 18.0);
+                let font = egui::FontId::proportional(size);
+                let (pos, align) = match g.count {
+                    designcraft_doc::GridCount::Top => (b.left_top() - egui::vec2(0.0, 2.0), egui::Align2::LEFT_BOTTOM),
+                    designcraft_doc::GridCount::Left => (b.left_top() - egui::vec2(2.0, 0.0), egui::Align2::RIGHT_TOP),
+                    designcraft_doc::GridCount::Right => (b.right_top() + egui::vec2(2.0, 0.0), egui::Align2::LEFT_TOP),
+                    _ => (b.left_bottom() + egui::vec2(0.0, 2.0), egui::Align2::LEFT_TOP),
+                };
+                let galley = painter.layout_no_wrap(label, font, layer_color(doc, it));
+                let r = align.anchor_size(pos, galley.size());
+                painter.rect_filled(r.expand(1.0), 1.0, layer_color(doc, it).gamma_multiply(0.18));
+                painter.galley(r.min, galley, layer_color(doc, it));
+            }
+        }
+    }
+}
+
 fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
     for story in doc.stories.values() {
         let cs = app.session.cache.get(doc, story.id, None);

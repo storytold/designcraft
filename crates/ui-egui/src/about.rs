@@ -52,7 +52,7 @@ pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
         let mut res = vello_cpu::Resources::new();
         rc.render(&mut pm, &mut res);
         let ci = egui::ColorImage::from_rgba_premultiplied([px as usize, px as usize], pm.data_as_u8_slice());
-        let t = ctx.load_texture("artcraft_mark", ci, egui::TextureOptions::LINEAR);
+        let t = crate::widgets::load_texture(ctx, "artcraft_mark", ci, egui::TextureOptions::LINEAR);
         ctx.data_mut(|d| d.insert_temp(key, t.clone()));
         t
     });
@@ -122,9 +122,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             ui.allocate_ui_with_layout(vec2(ui.available_width(), h), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_min_height(h);
                 if app.ui.about_tab == 1 {
-                    crate::credits::contributors_ui(ui);
+                    crate::credits::contributors_ui(ui, &app.ui.language);
                 } else {
-                    crate::credits::models_ui(ui);
+                    crate::credits::models_ui(ui, &app.ui.language);
                 }
             });
             ui.separator();

@@ -275,6 +275,73 @@ fn vertical_type_tool_draws_vertical_frames() {
 }
 
 #[test]
+fn grid_tools_draw_frame_grids() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    for (id, vertical) in [("horizontalGrid", false), ("verticalGrid", true)] {
+        let mut t = create(id);
+        assert_eq!(t.id(), id);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 100.0, 100.0));
+        let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 200.0, 300.0));
+        assert!(a.contains(&Action::Begin("Create Frame Grid".into())));
+        let p = a.iter().find_map(|x| match x {
+            Action::Preview(id, p) if id == "frame.create" => Some(p.clone()),
+            _ => None,
+        });
+        let p = p.unwrap();
+        assert_eq!((p["grid"].clone(), p["vertical"].clone()), (serde_json::json!(true), serde_json::json!(vertical)));
+    }
+    assert_eq!(crate::tool_for_shortcut("Y"), Some("horizontalGrid"));
+}
+
+/// ⌘-click with the Type (or a Grid) tool: the Selection tool, with the item clicked selected.
+#[test]
+fn command_click_in_type_tools_selects_the_item() {
+    let mut d = Document::new(&NewDocument::default());
+    let rect = Rect::new(100.0, 100.0, 300.0, 200.0);
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), rect, d.default_layer(), "text", Default::default()).unwrap();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let cmd = Mods { cmd: true, ..Default::default() };
+    for tool in ["type", "verticalType", "horizontalGrid", "verticalGrid"] {
+        let mut t = create(tool);
+        let a = t.pointer(&cx, &PointerEvent { mods: cmd, ..PointerEvent::new(PointerKind::Down, 150.0 + off.x, 150.0 + off.y) });
+        assert_eq!(
+            a,
+            vec![Action::SwitchTool("selection".into()), Action::Exec("selection.set".into(), serde_json::json!({"ids": [fid.0]}))],
+            "{tool}"
+        );
+        // On nothing: the Selection tool, nothing selected.
+        let a = t.pointer(&cx, &PointerEvent { mods: cmd, ..PointerEvent::new(PointerKind::Down, -500.0, -500.0) });
+        assert_eq!(a, vec![Action::SwitchTool("selection".into()), Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))], "{tool}");
+    }
+    // Without ⌘ the Type tool still places the caret.
+    let mut t = create("type");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0 + off.x, 150.0 + off.y));
+    assert!(matches!(a.first(), Some(Action::Exec(id, _)) if id == "text.placeCaret"), "{a:?}");
+}
+
+/// Double-clicking a text frame (a frame grid too) with the Selection tool goes into its text.
+#[test]
+fn double_click_with_selection_tool_enters_text() {
+    let mut d = Document::new(&NewDocument::default());
+    let rect = Rect::new(100.0, 100.0, 300.0, 200.0);
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), rect, d.default_layer(), "", Default::default()).unwrap();
+    if let Some(tf) = d.item_mut(fid).and_then(designcraft_doc::Item::text_frame_mut) {
+        tf.options.frame_grid = Some(designcraft_doc::FrameGrid::default());
+    }
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let mut t = create("selection");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 150.0 + off.x, 150.0 + off.y));
+    assert_eq!(a.first(), Some(&Action::SwitchTool("type".into())));
+    assert!(matches!(a.get(1), Some(Action::Exec(id, p)) if id == "text.placeCaret" && p["frame"] == fid.0), "{a:?}");
+}
+
+#[test]
 fn turned_spread_maps_points_both_ways() {
     let mut d = Document::new(&NewDocument::default());
     std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;

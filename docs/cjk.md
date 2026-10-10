@@ -35,7 +35,8 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Vertical metrics and shaping | done: upright runs shaped top to bottom (`vert`; `vkrn`/`vpal` when asked) with `vmtx`/`VORG` advances and origins, centred on the ideographic em box (`BASE`, else OS/2); turned runs shaped horizontally, without `vrt2`; Horizontal Kana (`hkna`) takes the vertical kana (`vkna`) in upright runs. Default location of variable fonts only (no `VVAR`) |
 | Kinsoku | named (hard, soft, Chinese, Korean) and custom kinsoku sets, bunri-kinshi, rensuuji, hanging punctuation (regular, force); without a set, fixed no-start / no-end lists and a break anywhere between CJK characters; kinsoku type (push in / push out priorities) kept but not applied |
 | Korean line breaking | at spaces (Hangul everywhere, hanja in Korean text); per-paragraph character-based breaking (`koreanCharBreaks`); DesignCraft-only, not in IDML |
-| Mojikumi | tables and paragraph references kept through IDML; not applied (Preflight says so) |
+| Mojikumi | built-in JLREQ sets applied (`compose::jlreq`): character classes (Appendix A), full-width punctuation trimmed to its ink plus aki, consecutive punctuation collapsed, wa-ō aki, line-start/line-end treatment as discardable items in both breakers, justification by aki → inter-character space → glyph scaling (§3.8); sets `lineEndHalf`, `halfWidth`, `fullWidth` (`type.mojikumi`, Paragraph panel). Imported IDML tables are kept but not executed (Preflight says so) |
+| Frame grids | done (`FrameGrid` on text frames; [frame grids](#frame-grids-as-built)) |
 | Aki, tsume, jidori | done ([cjk-typography.md](cjk-typography.md)) |
 | Character alignment, leading model | em box top / centre / bottom, ICF from ascender and descender, roman baseline; aki above / below, centre (centre down as centre) |
 | Tate-chu-yoko | manual, with offsets; no auto, 3+ digits overflow the em |
@@ -46,11 +47,32 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Missing glyphs | as in InDesign: characters the applied font lacks are drawn as its missing-glyph box (screen and PDF) and listed by Preflight; the document setting Draw Missing Glyphs from Fallback Fonts (Preferences › Composition, off in new documents and IDML imports, on in documents saved before it existed) draws them from fallback fonts instead |
 | Font menus | Western families first, then Japanese, Simplified Chinese, Traditional Chinese and Korean groups (from the font's `meta` languages, CJK family names, OS/2 code pages, else its coverage); CJK families under their native names unless Preferences › Type › Show Font Names in English; the order is recalled from InDesign, not observed |
 | CJK fonts | Japanese faces (Shippori Mincho first) from the optional craft-fonts build input, in the font menus for users to apply; fallback by language (with fallback fonts on) (Japanese: the craft-fonts faces, then system fonts; Simplified and Traditional Chinese, Korean: system fonts); document fonts: the fonts of a `Document Fonts` folder beside an opened file belong to that document (composition, export, font menus), ahead of installed fonts of the same name, and are forgotten when it closes; Package copies every font file that draws text, fallback fonts included (licence permitting). Font files stay in memory for the session (reopening a document reuses them) and aren't read on the web |
+| Interface | Preferences › Type › Show CJK Features (`cjkFeatures`; until set, on for a Japanese, Chinese or Korean interface) shows the CJK-only menu items (Type › Tate-Chu-Yoko, Ruby…, Kenten, Warichu) and the Paragraph panel's Kinsoku Set and Mojikumi Set; the macOS menu bar follows at once (it is rebuilt, as for the interface language); frame grids are outside it; layout, IDML and commands work either way |
 | Everything else below | missing |
 
-Known bugs to fix first:
+New frame grids use the `lineEndHalf` mojikumi set (`doc::DEFAULT_GRID_MOJIKUMI`): JIS X 4051
+and JLREQ's basic setting, with consecutive punctuation closed up (§3.1.4), an opening bracket
+flush at a line and paragraph start (§3.1.5 ①, JIS X 4051's method), a quarter em between
+Japanese and Western text and half-width marks at the line end. A grid's `mojikumi` is always
+written to the file: missing reads as the default set, empty as none.
 
-- A justified CJK line has no stretch except Single Word Justification.
+Lines are taken in in the order of JLREQ §3.8.3 (`jlreq::Aki::rank`): word spaces, then the
+quarter ems around middle dots, then the half ems of brackets and commas, then wa-ō aki. A full
+stop's half em is never used inside a line, also before an opening bracket.
+
+Push-in is the first choice where kinsoku forbids the natural break (§3.8.2). A line that fits at
+its natural widths and may end there is not compressed just to take one more Japanese character
+in (`breaker::UNFORCED_PUSH_IN`); it is spread out instead, as InDesign is observed to do, unless
+that would open it up a lot.
+
+Justified Japanese set solid (no mojikumi set) keeps full-width
+punctuation in place but lets its blanks compress (`jlreq::SOLID`, no collapsing, no wa-ō aki),
+so a line one character over that kinsoku won't let end takes it in (push-in) instead of pushing
+it out and spreading the line; inter-character expansion has a small nominal range (1/32 em), and
+stretch past the ranges is shared by word spaces and Japanese gaps alike.
+Justified Japanese always has JLREQ §3.8.2 inter-character expansion where a line may break, set
+solid or with a mojikumi set; without it every inexact line was
+equally bad and the composer could strand a two-character first line.
 
 ## Architecture
 
@@ -154,6 +176,37 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
   and lines, alignment, view options), grid alignment of paragraphs (em-box centre, ICF top/bottom,
   roman baseline, gyoudori: lines spanning N grid lines), grid tracking.
 - Frame Grid tools (horizontal and vertical) and Object › Frame Type (text frame ↔ frame grid).
+
+#### Frame grids as built
+
+- Model: `TextFrameOptions.frame_grid: Option<FrameGrid>` (font, size, horizontal/vertical scale,
+  character aki, line aki, line alignment override, grid alignment, character alignment, character
+  count position and size, view, mojikumi set); `DocSettings.frame_grid` is the grid new frame
+  grids get (font Hiragino Mincho ProN W3 in new documents; where it isn't installed, new grids
+  take the first installed of Yu Mincho, MS Mincho, Noto Serif CJK JP, …). Character and line counts are not stored: they follow from the frame size (columns
+  divide the line direction, as in text frames). Hostile numbers are sanitized before use.
+- Composition: full-width characters of the grid's size take exactly one cell (character pitch =
+  cell + character aki); Western text keeps its widths. Every line snaps to the grid's rows from
+  the column start; a line whose em box is taller than a cell takes as many whole rows as it
+  needs (*gyōdori*), placed by the grid alignment (em-box top/centre/bottom, ICF top/bottom,
+  Roman baseline, none). Space before/after rounds up to rows. Overset follows the rows. Text in
+  the grid uses the grid's mojikumi set unless its paragraph has one (default: `lineEndHalf`; none sets it solid,
+  punctuation taking whole cells), and the grid's line alignment when set.
+- Properties panel, frame grid selected: Grid Format Attributes (font, style, size, ••• for the
+  dialog), Alignment Options (line, grid and character alignment) and Lines and Columns
+  (characters, lines, columns, gutter), all through `object.frameGridOptions`. A new size
+  resizes the grid to the same counts of the new cells, and the text that follows the grid
+  (characters with the old grid's font, size or scale) takes the new format; characters given
+  their own keep it (`applyFormat: true` gives it to all the text).
+- Commands: `frame.create {grid}`, `object.frameGridOptions`, `object.frameGridInfo`,
+  `object.frameType`, `type.applyGridFormat`, `document.frameGridDefaults`; tools
+  `horizontalGrid` (Y) and `verticalGrid` (Q); Object › Frame Grid Options… (⌘B on a frame grid),
+  Object › Frame Type, Edit › Apply Grid Format, View › Grids & Guides › Show/Hide Frame Grids.
+- Resizing (handles, `transform.resize`, Control panel W/H via `transform.set`) snaps a frame grid to
+  whole cells (nearest count, at least one), keeping the edges that didn't move.
+- Screen: cells (or N/Z view, or outline), the character count `20W × 10L = 200 (123)`.
+- Not yet: layout grid, named grids, IDML frame-grid attributes (the frame round-trips as a plain
+  text frame), ICF from the font's `BASE` table (approximated as 5 % inside the em box).
 
 ### Fonts
 

@@ -216,7 +216,7 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label.trim_end_matches('…')))
                     .on_hover_text(format!("{id}{}", if menu.is_empty() { String::new() } else { format!("  ({menu})") }));
                 let cur = crate::menus::shortcut_of(app, id).map(|s| crate::menus::shortcut_text(&s)).unwrap_or_else(|| "—".into());
-                let text = if recording == *id { "Press keys…".to_string() } else { cur };
+                let text = if recording == *id { crate::i18n::tr(&app.ui.language, "Press keys…").to_string() } else { cur };
                 if ui.add(egui::Button::new(text).min_size(egui::vec2(110.0, 0.0))).clicked() {
                     d.fields.insert("recording".into(), json!(id));
                     d.fields.insert("message".into(), json!(""));
@@ -833,6 +833,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Type Options")).font(semibold(12.0)));
                     check(ui, d, "typographersQuotes", crate::i18n::tr(&app.ui.language, "Use Typographer's Quotes"));
                     check(ui, d, "showFontNamesInEnglish", crate::i18n::tr(&app.ui.language, "Show Font Names in English"));
+                    check(ui, d, "cjkFeatures", crate::i18n::tr(&app.ui.language, "Show CJK Features"));
                     ui.add_space(6.0);
                     ui.label(crate::rtl::widget(
                         ui,
@@ -1098,6 +1099,171 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
     });
 }
 
+/// Object › Frame Grid Options: the selected frame grid's settings (the defaults for a text
+/// frame that isn't one yet).
+pub fn open_frame_grid_options(app: &mut DesignApp) {
+    let info = app.session.execute("object.frameGridInfo", &json!({})).ok();
+    let g0 = info.as_ref().and_then(|v| v["grids"].get(0).cloned());
+    let (grid, chars, lines, columns, gutter) = match &g0 {
+        Some(g) => (g["grid"].clone(), g["chars"].clone(), g["lines"].clone(), g["columns"].clone(), g["gutter"].clone()),
+        None => {
+            let defaults = app.session.active().map(|d| json!(d.doc.settings.frame_grid)).unwrap_or(json!({}));
+            (defaults, json!(""), json!(""), json!(1), json!(12.0))
+        }
+    };
+    let pt = |v: &Value| v.as_f64().map_or(String::new(), |x| format!("{} pt", (x * 1000.0).round() / 1000.0));
+    let pct = |v: &Value| v.as_f64().map_or("100".into(), |x| format!("{}", (x * 1000.0).round() / 10.0));
+    let s = |v: &Value| v.as_str().unwrap_or("").to_string();
+    let n = |v: &Value| v.as_f64().map_or(s(v), |x| format!("{x}"));
+    let f = json!({
+        "fontFamily": s(&grid["fontFamily"]), "fontStyle": s(&grid["fontStyle"]), "size": pt(&grid["size"]),
+        "vScale": pct(&grid["vScale"]), "hScale": pct(&grid["hScale"]), "charAki": pt(&grid["charAki"]), "lineAki": pt(&grid["lineAki"]),
+        "lineAlign": grid["lineAlign"].as_str().unwrap_or("paragraph"), "gridAlign": s(&grid["gridAlign"]), "charAlign": s(&grid["charAlign"]),
+        "count": s(&grid["count"]), "countSize": pt(&grid["countSize"]), "view": s(&grid["view"]), "mojikumi": s(&grid["mojikumi"]),
+        "chars": n(&chars), "lines": n(&lines), "columns": n(&columns), "gutter": pt(&gutter),
+    });
+    app.ui.dialog = Some(Dialog::new("frameGridOptions", f));
+}
+
+/// A combo box over `(value, label)` pairs for field `key`.
+fn choice(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str, options: &[(&str, &str)], width: f32) {
+    let cur = d.s(key);
+    let shown = options.iter().find(|o| o.0 == cur).map_or(cur.as_str(), |o| o.1).to_string();
+    egui::ComboBox::from_id_salt(("dlg_choice", key))
+        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &shown)))
+        .width(width)
+        .show_ui(ui, |ui| {
+            for (v, l) in options {
+                if ui.selectable_label(cur == *v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                    d.fields.insert(key.into(), json!(v));
+                }
+            }
+        });
+}
+
+const GRID_ALIGNMENTS: &[(&str, &str)] = &[
+    ("none", "None"),
+    ("romanBaseline", "Roman Baseline"),
+    ("emTop", "Em Box Top"),
+    ("emCenter", "Em Box Center"),
+    ("emBottom", "Em Box Bottom"),
+    ("icfTop", "ICF Top"),
+    ("icfBottom", "ICF Bottom"),
+];
+
+fn frame_grid_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let tr = |s: &'static str| -> &'static str { crate::i18n::tr(&app.ui.language, s) };
+    crate::rtl::label(ui, egui::RichText::new(tr("Grid Attributes")).font(semibold(12.0)));
+    egui::Grid::new("fgo_attrs").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Font:"));
+        text_field(ui, d, "fontFamily", 140.0);
+        text_field(ui, d, "fontStyle", 80.0);
+        ui.label("");
+        ui.end_row();
+        crate::rtl::label(ui, tr("Size:"));
+        text_field(ui, d, "size", 70.0);
+        ui.label("");
+        ui.label("");
+        ui.end_row();
+        crate::rtl::label(ui, tr("Vertical:"));
+        text_field(ui, d, "vScale", 70.0);
+        crate::rtl::label(ui, tr("Horizontal:"));
+        text_field(ui, d, "hScale", 70.0);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Character Aki:"));
+        text_field(ui, d, "charAki", 70.0);
+        crate::rtl::label(ui, tr("Line Aki:"));
+        text_field(ui, d, "lineAki", 70.0);
+        ui.end_row();
+    });
+    ui.add_space(6.0);
+    crate::rtl::label(ui, egui::RichText::new(tr("Alignment Options")).font(semibold(12.0)));
+    egui::Grid::new("fgo_align").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Line Alignment:"));
+        choice(
+            app,
+            ui,
+            d,
+            "lineAlign",
+            &[
+                ("paragraph", "Paragraph Alignment"),
+                ("left", "Align Left"),
+                ("center", "Align Center"),
+                ("right", "Align Right"),
+                ("leftJustified", "Justify with Last Line Aligned Left"),
+                ("centerJustified", "Justify with Last Line Aligned Center"),
+                ("rightJustified", "Justify with Last Line Aligned Right"),
+                ("fullyJustified", "Justify All Lines"),
+            ],
+            220.0,
+        );
+        ui.end_row();
+        crate::rtl::label(ui, tr("Grid Alignment:"));
+        choice(app, ui, d, "gridAlign", GRID_ALIGNMENTS, 220.0);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Character Alignment:"));
+        choice(app, ui, d, "charAlign", GRID_ALIGNMENTS, 220.0);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Mojikumi:"));
+        let mut sets: Vec<(&str, &str)> = vec![("", "None (Solid)")];
+        sets.extend(designcraft_compose::jlreq::MOJIKUMI_SETS.iter().map(|m| (m.id, m.label)));
+        choice(app, ui, d, "mojikumi", &sets, 220.0);
+        ui.end_row();
+    });
+    ui.add_space(6.0);
+    crate::rtl::label(ui, egui::RichText::new(tr("View Options")).font(semibold(12.0)));
+    egui::Grid::new("fgo_view").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Character Count:"));
+        choice(app, ui, d, "count", &[("none", "None"), ("top", "Top"), ("bottom", "Bottom"), ("left", "Left"), ("right", "Right")], 100.0);
+        crate::rtl::label(ui, tr("Size:"));
+        text_field(ui, d, "countSize", 60.0);
+        ui.end_row();
+        crate::rtl::label(ui, tr("View:"));
+        choice(app, ui, d, "view", &[("grid", "Grid"), ("nZ", "N/Z View"), ("outline", "Outline")], 100.0);
+        ui.end_row();
+    });
+    ui.add_space(6.0);
+    crate::rtl::label(ui, egui::RichText::new(tr("Line and Columns")).font(semibold(12.0)));
+    egui::Grid::new("fgo_lines").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Characters:"));
+        text_field(ui, d, "chars", 60.0);
+        crate::rtl::label(ui, tr("Lines:"));
+        text_field(ui, d, "lines", 60.0);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Columns:"));
+        text_field(ui, d, "columns", 60.0);
+        crate::rtl::label(ui, tr("Column Gutter:"));
+        text_field(ui, d, "gutter", 60.0);
+        ui.end_row();
+    });
+}
+
+/// The parameters of `object.frameGridOptions` from the Frame Grid Options dialog.
+fn frame_grid_params(d: &Dialog) -> Value {
+    let mut p = serde_json::Map::new();
+    for k in ["fontFamily", "fontStyle", "gridAlign", "charAlign", "count", "view", "mojikumi"] {
+        p.insert(k.into(), json!(d.s(k)));
+    }
+    let align = d.s("lineAlign");
+    p.insert("lineAlign".into(), if align == "paragraph" || align.is_empty() { Value::Null } else { json!(align) });
+    for k in ["size", "charAki", "lineAki", "countSize", "gutter"] {
+        if let Some(v) = d.pt(k).filter(|v| v.is_finite()) {
+            p.insert(k.into(), json!(v));
+        }
+    }
+    for k in ["vScale", "hScale"] {
+        if let Some(v) = d.n(k).filter(|v| v.is_finite()) {
+            p.insert(k.into(), json!(v / 100.0));
+        }
+    }
+    for k in ["chars", "lines", "columns"] {
+        if let Some(v) = d.n(k).filter(|v| v.is_finite() && *v >= 1.0) {
+            p.insert(k.into(), json!(v.round()));
+        }
+    }
+    Value::Object(p)
+}
+
 /// An `[r, g, b]` field edited with a colour button.
 fn color_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str) {
     let v: [u8; 3] = d.fields.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or([128, 128, 128]);
@@ -1126,6 +1292,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Create Table"),
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
+        "frameGridOptions" => crate::i18n::tr(&app.ui.language, "Frame Grid Options"),
         "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
         "findChange" => crate::i18n::tr(&app.ui.language, "Find/Change"),
         "paragraphStyleOptions" => crate::i18n::tr(&app.ui.language, "Paragraph Style Options"),
@@ -1382,7 +1549,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                 });
                 if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-                    ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+                    ui.label(egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
                 }
                 }
             }
@@ -1690,6 +1857,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 text_frame_options_dialog(app, ui, &mut d);
             }
             "documentSetup" => document_setup(app, ui, &mut d),
+            "frameGridOptions" => frame_grid_options(app, ui, &mut d),
             "pdfExport" => pdf_export(app, ui, &mut d),
             "alert" => {
                 let file = d.s("file");
@@ -1798,6 +1966,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
             r
         }
+        "frameGridOptions" => app.run("object.frameGridOptions", frame_grid_params(&d)),
         "documentSetup" => {
             let edges = |k: &str| json!(["Top", "Bottom", "Inside", "Outside"].map(|e| d.m(&format!("{k}{e}")).unwrap_or(0.0)));
             app.run(
@@ -1986,17 +2155,18 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
         }
         "preferences" => {
-            app.run(
-                "prefs.set",
-                json!({"scaleStrokes": d.b("scaleStrokes"), "dimensionsIncludeStroke": d.b("dimensionsIncludeStroke"), "transformationsAreTotals": d.b("transformationsAreTotals"), "absolutePageNumbers": d.b("absolutePageNumbers"), "highlightHj": d.b("highlightHj"), "highlightKeeps": d.b("highlightKeeps"), "highlightCustomTracking": d.b("highlightCustomTracking"), "highlightSubstitutedFonts": d.b("highlightSubstitutedFonts"), "richBlackOutput": d.b("richBlackOutput"), "typographersQuotes": d.b("typographersQuotes"), "showFontNamesInEnglish": d.b("showFontNamesInEnglish"), "smartTextReflow": d.b("smartTextReflow"),
+            let mut prefs = json!({"scaleStrokes": d.b("scaleStrokes"), "dimensionsIncludeStroke": d.b("dimensionsIncludeStroke"), "transformationsAreTotals": d.b("transformationsAreTotals"), "absolutePageNumbers": d.b("absolutePageNumbers"), "highlightHj": d.b("highlightHj"), "highlightKeeps": d.b("highlightKeeps"), "highlightCustomTracking": d.b("highlightCustomTracking"), "highlightSubstitutedFonts": d.b("highlightSubstitutedFonts"), "richBlackOutput": d.b("richBlackOutput"), "typographersQuotes": d.b("typographersQuotes"), "showFontNamesInEnglish": d.b("showFontNamesInEnglish"), "smartTextReflow": d.b("smartTextReflow"),
                     "autocorrect": d.b("autocorrect"), "showAddedText": d.b("showAddedText"), "showNoteAnchors": d.b("showNoteAnchors"),
                     "recoveryMinutes": d.n("recoveryMinutes").unwrap_or(0.5),
                     "autocorrectList": d.s("autocorrectText").lines().filter_map(|l| {
                         let (a, b) = l.split_once('→').or_else(|| l.split_once("->"))?;
                         let (a, b) = (a.trim().to_lowercase(), b.trim().to_string());
                         (!a.is_empty() && !b.is_empty()).then(|| json!([a, b]))
-                    }).collect::<Vec<_>>()}),
-            )?;
+                    }).collect::<Vec<_>>()});
+            if d.b("cjkFeatures") != d.b("cjkFeatures.initial") {
+                prefs["cjkFeatures"] = json!(d.b("cjkFeatures"));
+            }
+            app.run("prefs.set", prefs)?;
             app.ui.dynamic_spelling = d.b("dynamicSpelling");
             if d.fields.contains_key("userWords") {
                 let words: Vec<String> = d.s("userWords").lines().map(str::to_string).collect();
@@ -3551,7 +3721,7 @@ fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         }
     });
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        ui.label(egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 

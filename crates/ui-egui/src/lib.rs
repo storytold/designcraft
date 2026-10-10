@@ -38,6 +38,10 @@ pub use control::{ControlRequest, ControlResponse};
 pub type ReadFn = Box<dyn Fn(&str) -> Result<Vec<u8>, String>>;
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
+/// Reads the system clipboard's text.
+pub type ClipboardGetFn = Box<dyn FnMut() -> Option<String>>;
+/// Puts text on the system clipboard.
+pub type ClipboardSetFn = Box<dyn FnMut(&str)>;
 /// Context captured before any host file-picker or read await.
 #[derive(Clone, Debug)]
 pub struct ImportRequest {
@@ -71,6 +75,11 @@ pub struct Services {
     pub download: Option<DownloadFn>,
     /// Files delivered asynchronously, drained every frame with their captured request context.
     pub inbox: Option<Inbox>,
+    /// The system clipboard, for Edit › Copy / Cut / Paste chosen from a native menu (its key
+    /// equivalents ⌘C ⌘X ⌘V never reach egui as clipboard events). Unset (web), egui's own
+    /// clipboard events carry the text.
+    pub clipboard_get: Option<ClipboardGetFn>,
+    pub clipboard_set: Option<ClipboardSetFn>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +116,26 @@ fn default_true() -> bool {
 /// A missing snap zone stays at the factory width, in screen pixels.
 fn default_zone() -> f64 {
     4.0
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// A copy of the document with the input method's composition typed at the text caret, for the
+/// canvas only (never the session's document: undo, saving and commands don't see it). The text
+/// takes the format at the caret, so it shows in the story's font and size, in a frame grid's
+/// cells, down vertical lines, reflowing the frame.
+#[derive(Clone)]
+pub struct PreeditView {
+    /// The document state and composition it was made from.
+    pub base: usize,
+    pub revision: u64,
+    pub text: String,
+    pub sel: designcraft_doc::TextSel,
+    pub doc: std::sync::Arc<designcraft_doc::Document>,
+    /// Where the composition is in its story.
+    pub range: std::ops::Range<usize>,
 }
 
 /// File › Export PDF… options: the values persisted in `UiState.pdf_export` and used as the
@@ -162,6 +191,9 @@ pub struct UiState {
     pub rulers: bool,
     pub guides: bool,
     pub baseline_grid: bool,
+    /// View › Grids & Guides › Show Frame Grids: the cells and character counts of frame grids.
+    #[serde(default = "yes")]
+    pub frame_grids: bool,
     pub document_grid: bool,
     pub text_threads: bool,
     pub hidden_characters: bool,
@@ -277,6 +309,7 @@ impl Default for UiState {
             rulers: true,
             guides: true,
             baseline_grid: false,
+            frame_grids: true,
             document_grid: false,
             text_threads: false,
             hidden_characters: false,
@@ -481,6 +514,10 @@ pub struct DesignApp {
     pub native_menu: bool,
     /// Shortcuts the native menu handles (skip them in the egui shortcut handler).
     pub native_shortcuts: std::collections::HashSet<String>,
+    /// Text the input method is composing at the text caret (shown there, not yet in the story).
+    pub preedit: String,
+    /// The document as the canvas shows it while composing: the composition typed at the caret.
+    pub preedit_view: Option<PreeditView>,
     last_time: f64,
     /// When recovery data was last written (seconds, egui time).
     pub last_recovery: f64,
@@ -519,6 +556,8 @@ impl DesignApp {
             integrated_titlebar: false,
             native_menu: false,
             native_shortcuts: Default::default(),
+            preedit: String::new(),
+            preedit_view: None,
             last_time: 0.0,
             last_recovery: 0.0,
         }
@@ -805,7 +844,7 @@ impl DesignApp {
             return;
         }
         let n = match self.synthetic[0] {
-            egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } => 1,
+            egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::ModifiersChanged(_) => 1,
             _ => self.synthetic.iter().position(|e| matches!(e, egui::Event::Key { pressed: false, .. })).map_or(self.synthetic.len(), |i| i + 1),
         };
         if let Some(egui::Event::PointerMoved(p) | egui::Event::PointerButton { pos: p, .. }) = self.synthetic.first() {
@@ -1005,6 +1044,18 @@ impl DesignApp {
             false
         });
     }
+}
+
+/// Whether CJK-only interface is shown (Preferences › Type › Show CJK Features): the explicit
+/// preference, else on for a Japanese, Chinese or Korean interface language.
+///
+/// Every menu item, dialog section and panel field that only CJK typesetting uses goes behind
+/// this check, as in InDesign, whose Roman edition leaves those features out. It hides interface
+/// only: the commands behind it run whatever it says (from scripts, the control channel and MCP).
+/// Story Direction, the vertical type tools, frame grids, Language, Digits and font naming are
+/// in both editions and stay outside it.
+pub fn cjk_features(app: &DesignApp) -> bool {
+    app.session.prefs.cjk_features.unwrap_or_else(|| i18n::is_cjk(&app.ui.language))
 }
 
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft

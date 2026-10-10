@@ -1024,6 +1024,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Advanced Type", "كتابة متقدمة"),
     ("Composition", "التركيب"),
     ("Show Font Names in English", "إظهار أسماء الخطوط بالإنجليزية"),
+    ("Show CJK Features", "إظهار ميزات CJK"),
     ("Missing Glyphs", "الحروف الناقصة"),
     ("Draw Missing Glyphs from Fallback Fonts", "رسم الحروف الناقصة بخطوط بديلة"),
     ("Units & Increments", "الوحدات والزيادات"),

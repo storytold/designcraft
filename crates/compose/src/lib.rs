@@ -14,6 +14,7 @@ mod bidi;
 pub mod breaker;
 mod cache;
 pub mod hyphen;
+pub mod jlreq;
 mod notes;
 mod overlay;
 mod ruby;
@@ -311,6 +312,8 @@ pub struct FrameSpec {
     pub left_page: bool,
     /// The page and its margins in the frame's inner space (custom anchored objects).
     pub page_rect: Option<(Rect, Rect)>,
+    /// A frame grid: its cells set the text (sanitized).
+    pub frame_grid: Option<designcraft_doc::FrameGrid>,
 }
 
 impl FrameSpec {
@@ -442,6 +445,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             grid,
             left_page,
             page_rect,
+            frame_grid: if tf.options.path.is_some() { None } else { tf.options.frame_grid.as_ref().map(designcraft_doc::FrameGrid::sanitized) },
         });
     }
     out
@@ -490,6 +494,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         last_descent: 0.0,
         last_reference: 0.0,
         pending: 0.0,
+        grid_next: 0.0,
         pi: 0,
         band: Band::default(),
         limits: Rc::default(),
@@ -566,7 +571,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             continue 'paras;
         }
         let pf = &story.paras[pi];
-        let (pp, base_chars) = doc.styles.resolve_para(pf);
+        let (mut pp, base_chars) = doc.styles.resolve_para(pf);
+        // A frame grid's line alignment overrides the paragraphs'.
+        let para_grid = frames.get(cur.fi).and_then(|f| f.frame_grid.as_ref().map(|g| (g.clone(), f.vertical)));
+        if let Some(a) = para_grid.as_ref().and_then(|(g, _)| g.line_align) {
+            pp.align = a;
+        }
         // A break character that ends the previous paragraph sends this one on, like a start option.
         let after_break = pi
             .checked_sub(1)
@@ -762,6 +772,26 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         );
         bidi::resolve_mirroring(&mut glyphs, &bidi_info);
         apply_desired_spacing(&mut glyphs, &pp);
+        // Japanese composition: frame-grid cells, then the mojikumi set (the paragraph's, else
+        // the frame grid's).
+        if let Some((g, vertical)) = &para_grid {
+            jlreq::snap_to_grid(&mut glyphs, g, *vertical);
+            let align = grid_char_alignment(g.char_align);
+            for gl in glyphs.iter_mut().filter(|gl| gl.character_alignment == designcraft_doc::cjk::CharacterAlignment::Baseline) {
+                gl.character_alignment = align;
+            }
+        }
+        let mojikumi = if pp.mojikumi.is_empty() { para_grid.as_ref().map_or("", |(g, _)| g.mojikumi.as_str()) } else { pp.mojikumi.as_str() };
+        if let Some(set) = jlreq::mojikumi_set(mojikumi) {
+            jlreq::apply_mojikumi(&mut glyphs, set);
+        } else if pp.align.is_justified() && !matches!(mojikumi, "" | "None" | "Nothing" | "none") {
+            // An imported table we don't run: leave the text as it is.
+        } else if pp.align.is_justified() {
+            jlreq::apply_mojikumi(&mut glyphs, &jlreq::SOLID);
+        }
+        if pp.align.is_justified() {
+            jlreq::mark_expansion(&mut glyphs);
+        }
         let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
         let base_size = base_chars.size;
         let base_leading = match base_chars.leading {
@@ -889,10 +919,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             // Estimate slots for the breaker with the paragraph's base leading.
             let est_first = cur.next_baseline(f, col, base_leading, base_chars.size * 0.75, &pp);
             let slots = estimate_slots(f, col, est_first, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
+            // In a frame grid the last cell's character aki may run past the measure.
+            let grid_tail = f.frame_grid.as_ref().map_or(0.0, |g| g.char_aki);
             let width = |j: usize| -> f64 {
                 let (x0, x1) = slots.get(j).copied().unwrap_or((col.x0, col.x1));
                 let ind = pp.left_indent + pp.right_indent + if line_no + j == 0 { pp.first_line_indent } else { 0.0 };
-                (x1 - x0 - ind).max(1.0)
+                (x1 - x0 - ind + grid_tail).max(1.0)
             };
             let rest = &glyphs[g0..];
             let rest_h = &hyph_after[g0..];
@@ -919,27 +951,41 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 if cur.last_baseline.is_some() {
                     baseline += cur.last_reference - reference;
                 }
-                // Baseline grid.
-                if let Some((g_start, inc)) = f.grid
+                // Frame grid: the line takes whole rows (bottom of them, top of the next row).
+                let mut grid_rows: Option<GridRows> = None;
+                if let Some(g) = &f.frame_grid {
+                    let from = if cur.last_baseline.is_some() { cur.grid_next + cur.pending } else { col.y0 };
+                    let r = grid_line(g, f.vertical, col, from, line_glyphs, base_size);
+                    baseline = r.baseline;
+                    grid_rows = Some(r);
+                } else if let Some((g_start, inc)) = f.grid
                     && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
                     && inc > 0.0
                 {
+                    // Baseline grid.
                     let n = ((baseline - g_start) / inc - 1e-6).ceil();
                     baseline = g_start + n * inc;
                 }
-                // Wrap: push the line down until a slot exists.
+                // Wrap: push the line down until a slot exists (a row at a time in a frame grid).
                 let (mut x0, mut x1) = (col.x0, col.x1);
                 if !f.exclusions.is_empty() {
                     let mut tries = 0;
                     loop {
-                        match free_slot(f, col, baseline - asc, baseline + desc, base_size) {
+                        let (top, bottom) = grid_rows.as_ref().map_or((baseline - asc, baseline + desc), |r| (r.top, r.bottom));
+                        match free_slot(f, col, top, bottom, base_size) {
                             Some((a, b)) => {
                                 x0 = a;
                                 x1 = b;
                                 break;
                             }
                             None => {
-                                baseline += 1.0;
+                                match (&f.frame_grid, &mut grid_rows) {
+                                    (Some(g), Some(r)) => {
+                                        *r = grid_line(g, f.vertical, col, r.top + g.line_pitch(f.vertical), line_glyphs, base_size);
+                                        baseline = r.baseline;
+                                    }
+                                    _ => baseline += 1.0,
+                                }
                                 tries += 1;
                                 if baseline > col.y1 || tries > 4000 {
                                     break;
@@ -955,7 +1001,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let col_w = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)].width();
                 let reserve = notes.reserve(doc, cur.fi, cur.col, &line_notes, col_w, f, opts);
                 let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, cur.fi, cur.col, &[], col_w, f, opts) } else { reserve };
-                let fits = baseline + desc <= col.y1 - reserve + 0.01 && !capped;
+                let bottom = grid_rows.as_ref().map_or(baseline + desc, |r| r.bottom);
+                let fits = bottom <= col.y1 - reserve + 0.01 && !capped;
                 if !fits {
                     if cur.can_next_sub() {
                         g0 = s;
@@ -1023,7 +1070,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 }
                 let ind_l = pp.left_indent + if line_no == 0 { pp.first_line_indent } else { 0.0 };
                 let lx0 = x0 + ind_l;
-                let lx1 = x1 - pp.right_indent;
+                let lx1 = x1 - pp.right_indent + grid_tail;
                 let last = k + 1 == breaks.len();
                 // The break character that ends this line, if any (it is the line's last glyph).
                 let brk = if b.forced && e > s {
@@ -1089,6 +1136,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 cur.last_reference = reference;
                 cur.last_descent = desc;
                 cur.pending = 0.0;
+                if let Some(r) = &grid_rows {
+                    cur.grid_next = r.next;
+                }
                 line_no += 1;
                 // A column / frame / page break inside the paragraph: the rest of it continues in the
                 // new column/frame/page, re-broken there. (A break that ends the paragraph moves the
@@ -1722,6 +1772,8 @@ struct Cursor {
     last_reference: f64,
     /// Space before/after waiting to be added to the next line.
     pending: f64,
+    /// In a frame grid: the top of the first row after the last line set (with `last_baseline`).
+    grid_next: f64,
     /// The paragraph being laid.
     pi: usize,
     /// The band of columns the cursor is in.
@@ -2011,6 +2063,68 @@ impl Cursor {
     }
 }
 
+/// Where a line sits in a frame grid.
+#[derive(Clone, Copy, Debug)]
+struct GridRows {
+    baseline: f64,
+    /// The rows it takes: top of the first, bottom of the last (without the line aki after it).
+    top: f64,
+    bottom: f64,
+    /// Top of the row after them.
+    next: f64,
+}
+
+/// A line of `line` glyphs in frame grid `g` from the first row at or after `from` (column `col`,
+/// composition space): as many rows as its em box needs, its em box placed in them by the grid
+/// alignment (JLREQ §4.2: lines on the grid; a larger heading takes whole rows).
+fn grid_line(g: &designcraft_doc::FrameGrid, vertical: bool, col: Rect, from: f64, line: &[Glyph], base_size: f64) -> GridRows {
+    use designcraft_doc::GridAlignment as A;
+    let (_, cell) = g.cell(vertical);
+    let pitch = g.line_pitch(vertical);
+    // The ideographic em box (the one upright vertical glyphs hang in), y down from the baseline.
+    let em_box = |g: &Glyph| {
+        let (t, b) = g.face.em_box();
+        let (t, b) = (-t * g.sy, -b * g.sy);
+        (t.min(b), t.max(b))
+    };
+    let (top, bottom) =
+        line.iter().filter(|g| g.adv > 0.0).max_by(|a, b| a.size.total_cmp(&b.size)).map_or((-0.88 * base_size, 0.12 * base_size), em_box);
+    let h = (bottom - top).max(0.01);
+    let rows = if h > cell + 1e-6 { (((h - cell) / pitch - 1e-6).ceil().clamp(0.0, 1000.0)) + 1.0 } else { 1.0 };
+    let block_top = if g.grid_align == A::None {
+        from
+    } else {
+        let k = ((from - col.y0) / pitch - 1e-6).ceil().clamp(0.0, 1e6);
+        col.y0 + k * pitch
+    };
+    let block_bottom = block_top + rows * cell + (rows - 1.0) * g.line_aki;
+    let icf = 0.05;
+    let baseline = match g.grid_align {
+        A::EmTop => block_top - top,
+        A::EmBottom => block_bottom - bottom,
+        A::IcfTop => block_top + icf * cell - top - icf * h,
+        A::IcfBottom => block_bottom - icf * cell - bottom + icf * h,
+        // The Roman baseline of the line on the Roman baseline of its last row.
+        A::RomanBaseline => block_bottom - cell + cell * (-top / h),
+        A::EmCenter | A::None => (block_top + block_bottom) / 2.0 - (top + bottom) / 2.0,
+    };
+    GridRows { baseline, top: block_top, bottom: block_bottom, next: block_top + rows * pitch }
+}
+
+/// A frame grid's Character Alignment as the character alignment of the text in it.
+fn grid_char_alignment(a: designcraft_doc::GridAlignment) -> designcraft_doc::cjk::CharacterAlignment {
+    use designcraft_doc::GridAlignment as A;
+    use designcraft_doc::cjk::CharacterAlignment as C;
+    match a {
+        A::None | A::RomanBaseline => C::Baseline,
+        A::EmTop => C::EmTop,
+        A::EmCenter => C::EmCenter,
+        A::EmBottom => C::EmBottom,
+        A::IcfTop => C::IcfTop,
+        A::IcfBottom => C::IcfBottom,
+    }
+}
+
 /// Em box relative to the baseline. Font ascender/descender proportions locate it;
 /// the box's total extent is the em, rather than the font's optional line gap.
 fn cjk_em_box(g: &Glyph) -> (f64, f64) {
@@ -2200,6 +2314,26 @@ fn layout_line(
     bidi_info: &unicode_bidi::BidiInfo<'_>,
 ) -> (Vec<PlacedGlyph>, f64, f64) {
     let mut line: Vec<Glyph> = glyphs[s..e.max(s)].to_vec();
+    // Mojikumi at the line edges (as the breakers measured it): a line that starts after a break
+    // inside the paragraph drops the aki before its first glyph, a line that doesn't end at a
+    // space drops the aki after its last one; what the set keeps there doesn't adjust.
+    if s > 0
+        && glyphs.get(s - 1).is_some_and(|p| !p.is_space() && !breaker::is_forced(p.ch))
+        && let Some(g) = line.first_mut()
+    {
+        let d = g.aki_before.drop();
+        g.adv -= d;
+        g.dx -= d;
+        g.aki_before = jlreq::Aki { w: g.aki_before.edge, edge: g.aki_before.edge, ..Default::default() };
+    }
+    if !hyphen
+        && glyphs.get(e).is_none_or(|n| !n.is_space())
+        && let Some(g) = line.last_mut()
+    {
+        g.adv -= g.aki_after.drop();
+        g.aki_after = jlreq::Aki { w: g.aki_after.edge, edge: g.aki_after.edge, ..Default::default() };
+        g.jl_expand = 0.0;
+    }
     let reference = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)).cloned();
     if let Some(reference) = reference {
         for g in &mut line {
@@ -2279,8 +2413,10 @@ fn layout_line(
         a => a,
     };
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
+    // Japanese justification material: mojikumi aki and space between characters.
+    let jl = line.iter().skip(seg).any(|g| g.aki_before.stretch + g.aki_before.shrink + g.aki_after.stretch + g.aki_after.shrink + g.jl_expand > 0.0);
     // A justified paragraph's last line may have been composed with shrunk spaces: shrink it too.
-    let squeeze_last = align.is_justified() && !justify_this && seg_justifies && extra < 0.0 && !spaces.is_empty();
+    let squeeze_last = align.is_justified() && !justify_this && seg_justifies && extra < 0.0 && (!spaces.is_empty() || jl);
     // Extra advance per glyph (word spaces and letter gaps) and horizontal scale per glyph.
     let mut add = vec![0.0; line.len()];
     let mut scale = vec![1.0; line.len()];
@@ -2299,7 +2435,7 @@ fn layout_line(
             }
         }
     }
-    if (justify_this || squeeze_last) && !spaces.is_empty() {
+    if (justify_this || squeeze_last) && (!spaces.is_empty() || jl) {
         let rebased: Vec<usize> = spaces.iter().map(|&i| i - seg).collect();
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
@@ -2556,6 +2692,21 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
             }
         })
         .collect();
+    // Mojikumi aki takes part with the word spaces (JLREQ §3.8): (gap it widens, capacity) — the
+    // aki before a glyph is the gap after the previous one.
+    let mut aki: Vec<(usize, f64, u8)> = Vec::new();
+    for (i, g) in line.iter().enumerate() {
+        if g.locked_advance {
+            continue;
+        }
+        let (b, a) = if stretch { (g.aki_before.stretch, g.aki_after.stretch) } else { (g.aki_before.shrink, g.aki_after.shrink) };
+        if b > 0.0 && i > 0 {
+            aki.push((i - 1, b, g.aki_before.rank));
+        }
+        if a > 0.0 {
+            aki.push((i, a, g.aki_after.rank));
+        }
+    }
     // Letter gaps: between visible glyphs (not after the line's last glyph).
     let last_box = line.iter().rposition(|g| !g.is_space() && g.adv > 0.0).unwrap_or(0);
     let is_box = |i: usize, g: &Glyph| i < last_box && !g.is_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false));
@@ -2566,7 +2717,8 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
             if !is_box(i, g) {
                 0.0
             } else if stretch {
-                g.space * (sp.letter_max - sp.letter_desired).max(0.0)
+                // Japanese: the space justification may add between characters.
+                g.space * (sp.letter_max - sp.letter_desired).max(0.0) + if sp.justify { g.jl_expand } else { 0.0 }
             } else {
                 g.space * (sp.letter_desired - sp.letter_min).max(0.0)
             }
@@ -2583,7 +2735,8 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
             }
         })
         .collect();
-    let (yw, yl, yg) = (word.iter().sum::<f64>(), letter.iter().sum::<f64>(), glyph.iter().sum::<f64>());
+    let ya: f64 = aki.iter().map(|a| a.1).sum();
+    let (yw, yl, yg) = (word.iter().sum::<f64>() + ya, letter.iter().sum::<f64>(), glyph.iter().sum::<f64>());
     let mut rem = extra.abs();
     let tw = rem.min(yw);
     rem -= tw;
@@ -2592,16 +2745,57 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     let tg = rem.min(yg);
     rem -= tg;
     let sign = if stretch { 1.0 } else { -1.0 };
-    // Stretch left over beyond every limit is shared equally by the word spaces; shrink never goes
-    // past the minimums (that would overlap glyphs), so an overfull line stays overfull.
-    let over = if stretch && !spaces.is_empty() { rem / spaces.len() as f64 } else { 0.0 };
+    // Stretch left over beyond every limit: shared equally by the word spaces and, in Japanese, the gaps
+    // between characters (JLREQ §3.8.2), so a mixed line doesn't open only its word spaces.
+    let cjk_gaps: Vec<usize> =
+        if stretch { line.iter().enumerate().filter(|(i, g)| g.jl_expand > 0.0 && is_box(*i, g)).map(|(i, _)| i).collect() } else { Vec::new() };
+    let sharers = spaces.len() + cjk_gaps.len();
+    let per = if sharers > 0 && !spaces.is_empty() { rem / sharers as f64 } else { 0.0 };
+    // Within the word tier, in the order of JLREQ §3.8.3 and §3.8.4: the word spaces first, then
+    // the aki by rank (middle dots, brackets and commas, wa-ō), each evenly.
+    let word_cap: f64 = word.iter().sum();
+    let word_take = tw.min(word_cap);
+    let mut aki_rem = tw - word_take;
+    let mut aki_take = [0.0f64; 4];
+    let mut aki_cap = [0.0f64; 4];
+    for &(_, cap, rank) in &aki {
+        aki_cap[usize::from(rank.min(3))] += cap;
+    }
+    for r in 0..4 {
+        aki_take[r] = aki_rem.min(aki_cap[r]);
+        aki_rem -= aki_take[r];
+    }
     for (k, &i) in spaces.iter().enumerate() {
-        let share = if yw > 1e-9 { tw * word[k] / yw } else { 0.0 };
-        add[i] += sign * share + over;
+        let share = if word_cap > 1e-9 { word_take * word[k] / word_cap } else { 0.0 };
+        // Shrink never goes past the minimums (that would overlap glyphs): an overfull line stays so.
+        add[i] += sign * share + if stretch { per } else { 0.0 };
+    }
+    if !spaces.is_empty() && stretch {
+        for &i in &cjk_gaps {
+            add[i] += per;
+        }
+    }
+    for &(i, cap, rank) in &aki {
+        let r = usize::from(rank.min(3));
+        if aki_cap[r] > 1e-9
+            && let Some(a) = add.get_mut(i)
+        {
+            *a += sign * aki_take[r] * cap / aki_cap[r];
+        }
     }
     if yl > 1e-9 && tl > 0.0 {
         for (i, l) in letter.iter().enumerate() {
             add[i] += sign * tl * l / yl;
+        }
+    }
+    // Beyond every limit without word spaces (Japanese): equal space between all characters.
+    if spaces.is_empty() && rem > 1e-9 && stretch {
+        let gaps: Vec<usize> = line.iter().enumerate().filter(|(i, g)| is_box(*i, g)).map(|(i, _)| i).collect();
+        if !gaps.is_empty() {
+            let per = rem / gaps.len() as f64;
+            for i in gaps {
+                add[i] += per;
+            }
         }
     }
     if yg > 1e-9 && tg > 0.0 {
@@ -3164,6 +3358,8 @@ pub fn adjacent_row(l: &Line, x: f64, caret_y: f64, up: bool) -> Option<f64> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_jlreq;
 
 /// Each visible glyph of a type-on-a-path frame placed on the path: its outline in frame space
 /// (grouped by run style).

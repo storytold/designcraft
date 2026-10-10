@@ -982,6 +982,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show Tag Markers", "Mostrar marcadores de marcação"),
     ("Single-line", "Linha única"),
     ("Smart Text Reflow", "Redistribuição inteligente de texto"),
+    ("Show CJK Features", "Mostrar recursos CJK"),
     ("Speed", "Velocidade"),
     ("Star Inset:", "Recuo da estrela:"),
     ("Start Page #:", "Iniciar página nº:"),

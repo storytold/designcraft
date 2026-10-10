@@ -712,3 +712,49 @@ mod tests {
         assert_eq!(m.step(), 1.0);
     }
 }
+
+/// `img` made to fit the GPU's largest texture (`max_side` pixels a side), sampled down
+/// (nearest pixel) when it is larger. A texture past the limit panics in the renderer, so every
+/// UI texture goes through this: an oversized image loses resolution, not the document.
+pub fn fit_texture(img: egui::ColorImage, max_side: usize) -> egui::ColorImage {
+    let [w, h] = img.size;
+    let max_side = max_side.max(1);
+    if w <= max_side && h <= max_side {
+        return img;
+    }
+    let k = (max_side as f64 / w.max(h) as f64).min(1.0);
+    let (nw, nh) = (((w as f64 * k).floor() as usize).clamp(1, max_side), ((h as f64 * k).floor() as usize).clamp(1, max_side));
+    let mut pixels = Vec::with_capacity(nw * nh);
+    for y in 0..nh {
+        let sy = (y * h / nh).min(h.saturating_sub(1));
+        for x in 0..nw {
+            let sx = (x * w / nw).min(w.saturating_sub(1));
+            pixels.push(img.pixels.get(sy * w + sx).copied().unwrap_or(Color32::TRANSPARENT));
+        }
+    }
+    egui::ColorImage::new([nw, nh], pixels)
+}
+
+/// [`egui::Context::load_texture`] for an image of any size (see [`fit_texture`]).
+pub fn load_texture(ctx: &egui::Context, name: impl Into<String>, img: egui::ColorImage, options: egui::TextureOptions) -> egui::TextureHandle {
+    let max = ctx.input(|i| i.max_texture_side);
+    ctx.load_texture(name, fit_texture(img, max), options)
+}
+
+#[cfg(test)]
+mod texture_tests {
+    /// The glyph grid that crashed the renderer: 7 columns of 1200 characters at 60 px, 10320 px
+    /// tall against an 8192 px limit.
+    #[test]
+    fn oversized_images_fit_the_texture_limit() {
+        let img = egui::ColorImage::new([420, 10320], vec![egui::Color32::WHITE; 420 * 10320]);
+        let out = super::fit_texture(img, 8192);
+        assert!(out.size[0] <= 8192 && out.size[1] == 8192, "{:?}", out.size);
+        assert_eq!(out.pixels.len(), out.size[0] * out.size[1]);
+        let small = egui::ColorImage::new([10, 10], vec![egui::Color32::RED; 100]);
+        assert_eq!(super::fit_texture(small, 8192).size, [10, 10]);
+        let wide = egui::ColorImage::new([20000, 3], vec![egui::Color32::RED; 60000]);
+        let out = super::fit_texture(wide, 8192);
+        assert!(out.size[0] == 8192 && out.size[1] >= 1);
+    }
+}
