@@ -774,8 +774,9 @@ fn document_setup(d: &designcraft_doc::Document) -> Value {
 /// The largest chapter number (as for page numbers).
 const MAX_CHAPTER: u64 = 99_999;
 
-/// The active document's chapter numbering, and the open book that holds it.
-fn chapter_numbering(s: &Session) -> Result<Value> {
+/// The active document's chapter numbering, and the open book that holds it (what
+/// `layout.chapterNumbering {}` reports, read without running a command).
+pub fn chapter_numbering(s: &Session) -> Result<Value> {
     let st = s.doc()?;
     let set = &st.doc.settings;
     let book = s
