@@ -20,6 +20,8 @@ pub struct NativeMenu {
     _menu: Menu,
     items: HashMap<String, (String, Value, Handle)>,
     last_refresh: f64,
+    /// The interface language the titles are in: the menu is rebuilt when it changes.
+    language: String,
 }
 
 /// Accelerator for "Cmd+Shift+]" (modifier-less shortcuts stay in the app so typing works).
@@ -69,7 +71,7 @@ impl NativeMenu {
                 (p.is_null() && accel(sc).is_some()).then(|| id.clone())
             })
             .collect();
-        Self { _menu: menu, items, last_refresh: 0.0 }
+        Self { _menu: menu, items, last_refresh: 0.0, language: app.ui.language.clone() }
     }
 
     pub fn poll(&mut self, app: &mut DesignApp, ctx: &egui::Context) {
@@ -77,6 +79,11 @@ impl NativeMenu {
             if let Some((cmd, params, _)) = self.items.get(ev.id.as_ref()) {
                 menus::activate_native(app, ctx, &cmd.clone(), &params.clone());
             }
+        }
+        // Edit › Interface Language: the system menu bar follows at once, like the panels (the
+        // new menu replaces the old one as the application's menu before that one is dropped).
+        if app.ui.language != self.language {
+            *self = Self::install(app);
         }
         let now = designcraft_ui_egui::now_ms();
         if now - self.last_refresh < 250.0 {
