@@ -45,7 +45,8 @@ impl Tool for TypeTool {
                 self.drawing = false;
                 self.selecting = None;
                 self.cell_drag = None;
-                if let Some((_, id)) = cx.hit(ev.pos)
+                // Text frames inside groups take the caret too.
+                if let Some((_, id)) = cx.hit_leaf(ev.pos)
                     && let Some(it) = cx.doc.item(id)
                     && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
                 {

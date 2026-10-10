@@ -705,3 +705,49 @@ fn pen_click_snaps_to_a_guide() {
     let x = p["anchors"][0]["p"][0].as_f64().unwrap();
     assert!((x - 100.0).abs() < 1e-6, "anchor x {x}");
 }
+
+/// A group holding a rectangle (0–50) and a text frame (100–200).
+fn grouped_rect_and_text() -> (Document, ItemId, ItemId, ItemId) {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "x", ParaFormat::default()).unwrap();
+    let rid = add_rect(&mut d, Rect::new(0.0, 0.0, 50.0, 50.0));
+    let gid = ItemId(d.alloc());
+    let sp = d.spread_mut(SpreadRef::Doc(0)).unwrap();
+    let kids: Vec<Arc<Item>> = std::mem::take(&mut sp.items);
+    let mut g = Item::new(gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = designcraft_doc::Content::Group { items: kids };
+    sp.items.push(Arc::new(g));
+    (d, gid, rid, fid)
+}
+
+#[test]
+fn clicks_reach_into_groups() {
+    let (d, gid, rid, fid) = grouped_rect_and_text();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let select = |ids: Vec<ItemId>| Action::Exec("selection.set".into(), serde_json::json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}));
+    let none = Selection::default();
+    let cx = ctx(&d, &none, &c, &l);
+    let mut t = create("selection");
+    // A click selects the group; Direct Selection and the Type tool reach inside.
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 25.0, 25.0));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [gid.0], "content": false}))]);
+    let a = create("directSelection").pointer(&cx, &PointerEvent::new(PointerKind::Down, 25.0, 25.0));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [rid.0], "content": true}))]);
+    let a = create("type").pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert!(matches!(&a[..], [Action::Exec(c, p)] if c == "text.placeCaret" && p["frame"] == fid.0), "{a:?}");
+    // Double-click: a grouped text frame takes the caret; anything else is selected inside the group.
+    let a = create("selection").pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 150.0, 150.0));
+    assert_eq!(a.first(), Some(&Action::SwitchTool("type".into())));
+    assert!(matches!(a.get(1), Some(Action::Exec(c, p)) if c == "text.placeCaret" && p["frame"] == fid.0), "{a:?}");
+    let group = Selection::items(vec![gid]);
+    let cx = ctx(&d, &group, &c, &l);
+    assert_eq!(create("selection").pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 25.0, 25.0)), vec![select(vec![rid])]);
+    // Inside the group, a click on another of its objects stays at that level.
+    let inside = Selection::items(vec![rid]);
+    let cx = ctx(&d, &inside, &c, &l);
+    let a = create("selection").pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [fid.0], "content": false}))]);
+    // A click on the selected object keeps it (to drag it).
+    assert!(create("selection").pointer(&cx, &PointerEvent::new(PointerKind::Down, 25.0, 25.0)).is_empty());
+}

@@ -106,7 +106,7 @@ impl Document {
     /// The top-level item (group root) containing `id`.
     pub fn top_level_of(&self, id: ItemId) -> Option<ItemId> {
         let loc = self.find(id)?;
-        Some(self.spread(loc.spread)?.items[loc.top()].id)
+        Some(self.spread(loc.spread)?.items.get(*loc.path.first()?)?.id)
     }
 
     /// Spread-space transform of the parent group chain of the item at `loc` (identity at top level).
@@ -355,6 +355,24 @@ impl Document {
             }
         }
         None
+    }
+
+    /// The items under spread point `p` on spread `si`, from the frontmost top-level item down to
+    /// the innermost object of its groups (or the content pasted into a frame). Empty if nothing is hit.
+    pub fn hit_chain(&self, si: usize, p: Point, tol: f64) -> Vec<ItemId> {
+        let Some(top) = self.hit_item(si, p, tol) else { return Vec::new() };
+        let mut chain = vec![top];
+        let Some(mut it) = self.spreads.get(si).and_then(|sp| sp.items.iter().find(|i| i.id == top)).map(|i| &**i) else {
+            return chain;
+        };
+        let mut p = p;
+        while let Content::Group { items } = &it.content {
+            p = it.xf.inverse() * p;
+            let Some(child) = items.iter().rev().find(|c| !c.hidden && item_hit(c, p, tol)) else { break };
+            chain.push(child.id);
+            it = child;
+        }
+        chain
     }
 
     /// Every item id (pre-order) on document spreads.
