@@ -828,6 +828,9 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                             d.fields.insert("recoveryMinutes".into(), json!(v));
                         }
                     });
+                    ui.add_space(6.0);
+                    ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Links")).font(semibold(12.0))));
+                    check(ui, d, "updateChangedLinks", crate::i18n::tr(&app.ui.language, "Update Links Changed on Disk"));
                 }
                 "type" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Type Options")).font(semibold(12.0)));
@@ -1991,6 +1994,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 json!({"scaleStrokes": d.b("scaleStrokes"), "dimensionsIncludeStroke": d.b("dimensionsIncludeStroke"), "transformationsAreTotals": d.b("transformationsAreTotals"), "absolutePageNumbers": d.b("absolutePageNumbers"), "highlightHj": d.b("highlightHj"), "highlightKeeps": d.b("highlightKeeps"), "highlightCustomTracking": d.b("highlightCustomTracking"), "highlightSubstitutedFonts": d.b("highlightSubstitutedFonts"), "richBlackOutput": d.b("richBlackOutput"), "typographersQuotes": d.b("typographersQuotes"), "showFontNamesInEnglish": d.b("showFontNamesInEnglish"), "smartTextReflow": d.b("smartTextReflow"),
                     "autocorrect": d.b("autocorrect"), "showAddedText": d.b("showAddedText"), "showNoteAnchors": d.b("showNoteAnchors"),
                     "recoveryMinutes": d.n("recoveryMinutes").unwrap_or(0.5),
+                    "updateChangedLinks": d.b("updateChangedLinks"),
                     "autocorrectList": d.s("autocorrectText").lines().filter_map(|l| {
                         let (a, b) = l.split_once('→').or_else(|| l.split_once("->"))?;
                         let (a, b) = (a.trim().to_lowercase(), b.trim().to_string());
@@ -3954,6 +3958,26 @@ mod tests {
             let label = crate::i18n::tr("ar", "Primary Text Frame");
             click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, label).center());
             assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"), "leftmost checkbox remains clickable after scrolling");
+        }
+    }
+
+    #[test]
+    fn preferences_ok_applies_update_links_changed_on_disk() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        assert!(app.session.prefs.update_changed_links, "on by default");
+        for on in [false, true] {
+            app.run("app.preferences", json!({})).unwrap();
+            assert_eq!(app.ui.dialog.as_ref().unwrap().b("updateChangedLinks"), !on, "the dialog shows the setting");
+            app.ui.dialog.as_mut().unwrap().fields.insert("updateChangedLinks".into(), json!(on));
+            let ctx = dialog_context("en");
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+            for _ in 0..3 {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "OK").center());
+            assert!(app.ui.dialog.is_none());
+            assert_eq!(app.session.prefs.update_changed_links, on, "OK saves it");
         }
     }
 

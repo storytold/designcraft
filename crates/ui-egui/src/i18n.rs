@@ -1260,6 +1260,16 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Typical Display", ["Typical Display", "Typical Display", "Typical Display", "Typical Display", "典型显示"]),
     ("UI Scaling", ["UI Scaling", "UI Scaling", "UI Scaling", "UI Scaling", "UI 缩放"]),
     ("Update Link", ["Update Link", "Update Link", "Update Link", "Update Link", "更新链接"]),
+    (
+        "Update Links Changed on Disk",
+        [
+            "Update Links Changed on Disk",
+            "Update Links Changed on Disk",
+            "Update Links Changed on Disk",
+            "Update Links Changed on Disk",
+            "更新磁盘上已更改的链接",
+        ],
+    ),
     ("User Dictionary Words", ["User Dictionary Words", "User Dictionary Words", "User Dictionary Words", "User Dictionary Words", "用户词典单词"]),
     ("User Dictionary…", ["User Dictionary…", "User Dictionary…", "User Dictionary…", "User Dictionary…", "用户词典…"]),
     ("Zoom To", ["Zoom To", "Zoom To", "Zoom To", "Zoom To", "缩放至"]),

@@ -186,6 +186,7 @@ Open P0 items: Vector/page formats (PDF/AI/SVG/EPS place), Export to PDF (print)
 | Placing & links | Links panel | P0 | D |
 | Placing & links | Effective/actual PPI | P0 | D |
 | Placing & links | Relink to folder / extension | P1 | D |
+| Placing & links | Update links changed on disk while open (Preferences › File Handling) | P1 | D |
 | Placing & links | Copy Links To / Package | P1 | D |
 | Placing & links | Captions | P2 | D |
 | Placing & links | Image import options | P1 | D |

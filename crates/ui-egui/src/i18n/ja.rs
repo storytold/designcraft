@@ -687,6 +687,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Typical Display", "標準表示"),
     ("UI Scaling", "UI の拡大・縮小"),
     ("Update Link", "リンクを更新"),
+    ("Update Links Changed on Disk", "ディスク上で変更されたリンクを更新"),
     ("User Dictionary Words", "ユーザー辞書の単語"),
     ("User Dictionary…", "ユーザー辞書…"),
     ("Zoom To", "ズーム倍率を指定"),

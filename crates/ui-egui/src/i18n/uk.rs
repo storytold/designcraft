@@ -688,6 +688,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Typical Display", "Типове відображення"),
     ("UI Scaling", "Масштаб інтерфейсу"),
     ("Update Link", "Оновити зв’язок"),
+    ("Update Links Changed on Disk", "Оновлювати зв’язки, змінені на диску"),
     ("User Dictionary Words", "Слова словника користувача"),
     ("User Dictionary…", "Словник користувача…"),
     ("Zoom To", "Масштабувати до"),
