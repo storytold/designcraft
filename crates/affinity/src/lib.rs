@@ -16,6 +16,7 @@ pub mod container;
 mod geometry;
 pub mod import;
 pub mod model;
+mod overlay;
 pub mod paint;
 pub mod preview;
 mod raster;

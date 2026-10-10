@@ -39,6 +39,9 @@ pub(crate) fn node_image(r: &mut Reader, id: ObjId, world: Affine) -> Result<Opt
         && (s.is(id, b"ImgN") || !has_tiles)
     {
         match original(r, name) {
+            // HEIF/HEIC (phone photos) and AVIF originals can't be decoded here: the same pixels
+            // stored as tiles are used instead (see `decode` when the tiles point back at the original).
+            Ok(bytes) if is_heif(&bytes) && has_tiles => {}
             Ok(bytes) => return Ok(Some(Image { width, height, pixels: Pixels::Encoded(bytes), transform: world })),
             Err(Error::Limit(e)) => return Err(Error::Limit(e)),
             Err(_) => r.warn("an embedded image file that could not be read (its cached pixels were used)"),
@@ -64,6 +67,14 @@ pub(crate) fn node_image(r: &mut Reader, id: ObjId, world: Affine) -> Result<Opt
         r.warn("edited placed images use their stored pixels");
     }
     decode(r, bitmap, crop, world)
+}
+
+/// An ISO base media file holding a HEIF image (HEIC, AVIF): `ftyp` with an image brand.
+fn is_heif(bytes: &[u8]) -> bool {
+    bytes.get(4..8) == Some(b"ftyp".as_slice())
+        && bytes.get(8..12).is_some_and(|brand| {
+            [b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1", b"avif", b"avis"].iter().any(|b| brand == b.as_slice())
+        })
 }
 
 /// A mask layer (`MRst`): one channel of coverage as grey pixels (white shows, black hides).
@@ -145,6 +156,21 @@ fn decode(r: &mut Reader, bitmap: ObjId, crop: (u32, u32, u32, u32), world: Affi
     } else {
         None
     };
+    // Tiles kept only in an original that can't be decoded here are left empty (transparent). Where
+    // a tile's colour is in the original but its alpha is stored, as in CMYK layers, it would come
+    // out opaque white instead: such a layer (a HEIC photo in a CMYK document) is left out, and said.
+    if needs_source && source.is_none() && channels > 1 {
+        let states = |c: usize| match s.field(bitmap, &tag(b"Sta", c)) {
+            Some(Value::Array(a)) => a.clone(),
+            _ => Vec::new(),
+        };
+        let alpha = states(channels);
+        let blank = (1..channels).any(|c| states(c).iter().enumerate().any(|(i, v)| *v == Value::UInt(5) && alpha.get(i) != Some(&Value::UInt(5))));
+        if blank {
+            r.warn("placed images whose pixels are only in an original DesignCraft can't decode, such as HEIC photos (left out)");
+            return Ok(None);
+        }
+    }
     let mut cache = CachedPixels { tiles: HashMap::new(), source };
     for c in 1..=channels {
         planes.push(plane(r, bitmap, c, bps, (x0, y0, w, h), &mut cache)?);
@@ -316,6 +342,15 @@ mod tests {
     use crate::model::Kind;
     use crate::synth::{self, F, Method, tag};
 
+    #[test]
+    fn heif_originals_are_recognised_by_their_brand() {
+        assert!(is_heif(b"\0\0\0\x18ftypheic\0\0\0\0"));
+        assert!(is_heif(b"\0\0\0\x1cftypavif"));
+        assert!(!is_heif(b"\0\0\0\x18ftypisom"), "a video is not a photo");
+        assert!(!is_heif(&png()));
+        assert!(!is_heif(b"ftyp"));
+    }
+
     fn png() -> Vec<u8> {
         let pixels = image::RgbaImage::from_fn(300, 2, |x, y| image::Rgba([(x % 251) as u8, (y * 31) as u8, 77, 255]));
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -326,18 +361,29 @@ mod tests {
     /// An original synthetic mixed source/cache bitmap. It exercises reader recovery,
     /// not a claim that Affinity itself accepts the synthetic container.
     fn fixture(source: &[u8], origin: i32) -> Vec<u8> {
+        fixture_in(source, origin, false)
+    }
+
+    /// `cmyk`: a CMYK bitmap whose colour tiles are all in the source and whose alpha is stored.
+    fn fixture_in(source: &[u8], origin: i32, cmyk: bool) -> Vec<u8> {
+        let channels = if cmyk { 5 } else { 4 };
         let mut bitmap = vec![
-            (tag(b"Frmt"), F::Enum(0, 0)),
+            (tag(b"Frmt"), F::Enum(if cmyk { 4 } else { 0 }, 0)),
             (tag(b"BmpW"), F::I32(300)),
             (tag(b"BmpH"), F::I32(2)),
             (tag(b"LInf"), F::I32(origin)),
             (tag(b"TInf"), F::I32(0)),
             (tag(b"Bckg"), F::Entry("c/1".into())),
         ];
-        for c in 1..=4 {
+        for c in 1..=channels {
+            let states = match (cmyk, c) {
+                (false, _) => vec![5, 4],
+                (true, 5) => vec![4, 4],
+                (true, _) => vec![5, 5],
+            };
             bitmap.push((tag(&super::tag(b"TWi", c)), F::I32(2)));
             bitmap.push((tag(&super::tag(b"THi", c)), F::I32(1)));
-            bitmap.push((tag(&super::tag(b"Sta", c)), F::U8s(vec![5, 4])));
+            bitmap.push((tag(&super::tag(b"Sta", c)), F::U8s(states)));
             bitmap.push((
                 tag(&super::tag(b"Idx", c)),
                 F::Shared(vec![F::Def(c as u32, vec![tag(b"Blck")], vec![(tag(b"Data"), F::Entry(format!("d/{c}")))])]),
@@ -362,18 +408,20 @@ mod tests {
         blob.extend((source.len() as u32).to_le_bytes());
         blob.extend(source);
         let block = synth::stream(&[(tag(b"Data"), F::Raw(blob))]);
-        let tiles: Vec<_> = [200u8, 10, 30, 255].into_iter().map(|v| vec![v; TILE_BYTES]).collect();
-        synth::container(
-            &[
-                ("doc.dat", &doc, Method::Zlib),
-                ("c/1", &block, Method::Zlib),
-                ("d/1", &tiles[0], Method::Zlib),
-                ("d/2", &tiles[1], Method::Zlib),
-                ("d/3", &tiles[2], Method::Zlib),
-                ("d/4", &tiles[3], Method::Zlib),
-            ],
-            None,
-        )
+        let tiles: Vec<_> = [200u8, 10, 30, 255, 255].into_iter().map(|v| vec![v; TILE_BYTES]).collect();
+        let names: Vec<String> = (1..=channels).map(|c| format!("d/{c}")).collect();
+        let mut entries = vec![("doc.dat", doc.as_slice(), Method::Zlib), ("c/1", block.as_slice(), Method::Zlib)];
+        for (name, tile) in names.iter().zip(&tiles) {
+            entries.push((name.as_str(), tile.as_slice(), Method::Zlib));
+        }
+        synth::container(&entries, None)
+    }
+
+    #[test]
+    fn a_cmyk_layer_whose_colours_are_only_in_an_unreadable_original_is_left_out_not_white() {
+        let doc = crate::read(&fixture_in(b"\0\0\0\x18ftypheic not decodable", 0, true), crate::Limits::default()).unwrap();
+        assert!(doc.warnings.iter().any(|w| w.starts_with("placed images whose pixels are only in an original")), "{:?}", doc.warnings);
+        assert!(matches!(doc.spreads[0].nodes[0].kind, Kind::Unsupported), "{:?}", doc.spreads[0].nodes[0].kind);
     }
 
     #[test]

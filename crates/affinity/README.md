@@ -47,12 +47,14 @@ accept the four extensions.
 | Opacity, visibility, lock, names, blend modes DesignCraft has | the same |
 | Layer effects: drop shadow, inner shadow, outer glow (an Affinity shadow angle is where the shadow goes; DesignCraft's where the light comes from) | the same effects |
 | Outline effect | the stroke of a shape without one, or the characters' stroke on text |
+| Colour and gradient overlay effects, in any blend mode | worked into what the object paints: its fill, stroke and text colours (a gradient overlay on one colour becomes a gradient) and its pixels |
+| Placed HEIC/HEIF photos | the pixels Affinity stored with them |
 
 Everything that is not imported, or only approximately, is listed in the open result's
 `warnings`, one line per kind with a count. Not yet imported: masters based on other masters, text threading
 between frames, hyphenation settings (imported paragraphs don't hyphenate), text fields such as page numbers, inline objects
-in text, table cell fills, cells merged across rows, bevel, overlay and blur effects, outlines on stroked objects, groups and images, adjustment layers and live
-filters, pixel masks on objects other than images, brush strokes, embedded files other than
+in text, table cell fills, cells merged across rows, bevel and blur effects, outlines on stroked objects, groups and images, adjustment layers and live
+filters, HEIC photos Affinity kept no pixels of, pixel masks on objects other than images, brush strokes, embedded files other than
 Affinity documents without a cached picture, Lab colours (converted to RGB) and Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
 with that reason.
 
@@ -84,6 +86,11 @@ description of the format and from public files, never from Affinity itself:
   locally): a table's text holds one segment per cell, each ended by a break glyph of kind 4;
   `BrLf` marks a cell merged into its left neighbour; scaling a table node resizes its grid but
   not its type. Each was confirmed by comparing a render with the document's thumbnail.
+* **Colour and gradient overlays** (`ColO`: `Colr`, `Opac`, `BlnM`; `GrdO`: a fill descriptor
+  `GrFl`) were read the same way. A gradient overlay's unit space runs from -1 to 1 across the
+  object's bounding box, centred on it with y down; that was fitted on the thumbnails of a
+  calendar (shapes and groups) and a flyer (a photo faded to white at both ends). Overlays sit
+  mostly on logos and photos there, recoloured in Normal, Color or Vivid Light mode.
 * **Every structure checked against real files.** Every archive entry carries a CRC-32 that must
   match, and every field in the object stream names its own type, so a misread layout fails
   loudly instead of producing plausible wrong data. Meanings were fitted by comparing a render

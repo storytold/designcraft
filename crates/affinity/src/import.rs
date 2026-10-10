@@ -300,6 +300,7 @@ impl Builder {
 
     /// A node directly on a spread: Affinity layers become document layers, their content items.
     fn top_level(&mut self, node: &Node, xf: Affine, default_layer: LayerId, out: &mut Vec<Item>) {
+        let node = &*self.overlaid(node);
         let plain = node.opacity >= 1.0
             && matches!(node.blend, model::Blend::Normal | model::Blend::PassThrough)
             && node.mask.is_none()
@@ -355,6 +356,7 @@ impl Builder {
             self.warn("objects nested too deeply (left out)");
             return None;
         }
+        let node = &*self.overlaid(node);
         let mut it = match &node.kind {
             Kind::Layer | Kind::Group | Kind::Unsupported => {
                 let kids = self.children(node, xf, layer, depth)?;
@@ -537,8 +539,20 @@ impl Builder {
                         spread: 0.0,
                     };
                 }
+                // Baked into the paint (see `overlaid`).
+                model::Effect::ColorOverlay { .. } | model::Effect::GradientOverlay { .. } => {}
             }
         }
+    }
+
+    /// `node` with its colour and gradient overlays baked into its paint and pixels.
+    fn overlaid<'n>(&mut self, node: &'n Node) -> std::borrow::Cow<'n, Node> {
+        let mut warnings = Vec::new();
+        let out = crate::overlay::apply(node, &mut |w| warnings.push(w.to_string()));
+        for w in warnings {
+            self.warn(&w);
+        }
+        out
     }
 
     fn children(&mut self, node: &Node, xf: Affine, layer: LayerId, depth: usize) -> Option<Vec<Arc<Item>>> {

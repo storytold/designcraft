@@ -371,6 +371,19 @@ pub enum Effect {
         width: f64,
         align: u16,
     },
+    /// Colour overlay: everything the node paints takes `color`, laid over it in `blend` mode at
+    /// `opacity` (the node's own alpha is kept).
+    ColorOverlay {
+        color: crate::paint::Color,
+        opacity: f64,
+        blend: Blend,
+    },
+    /// Gradient overlay: a colour overlay whose colour comes from `gradient` (document pixels).
+    GradientOverlay {
+        gradient: crate::paint::Gradient,
+        opacity: f64,
+        blend: Blend,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -613,8 +626,11 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         let (mask, attached_mask) = self.attached_masks(id, world)?;
         let pixel_mask = attached_mask.or(child_mask);
         self.active.remove(&id);
-        let effects = self.effects(id, world);
-        Ok(Some(Node { class, name, visible, locked, opacity, blend, kind, mask, pixel_mask, effects, children }))
+        let mut node = Node { class, name, visible, locked, opacity, blend, kind, mask, pixel_mask, effects: Vec::new(), children };
+        // Gradient overlays are laid out over the node's bounds.
+        let bounds = nodes_bounds(std::slice::from_ref(&node));
+        node.effects = self.effects(id, world, bounds);
+        Ok(Some(node))
     }
 
     fn kind(&mut self, id: ObjId, class: Tag, world: Affine, parent: Affine) -> Result<Kind, Error> {
@@ -709,7 +725,7 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
 
     /// The enabled layer effects (`FiEf`) of node `id`. The angle convention was measured on the
     /// public MIT fx fixture (Patchy): an angle of π/2 with offset 10 shadows 10 below.
-    fn effects(&mut self, id: ObjId, world: Affine) -> Vec<Effect> {
+    fn effects(&mut self, id: ObjId, world: Affine, bounds: Option<Rect>) -> Vec<Effect> {
         let s = self.s;
         let mut out = Vec::new();
         for e in s.objs(id, b"FiEf").into_iter().take(64) {
@@ -733,12 +749,44 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 }
                 (Some(b"Strk"), _) => self.warn("gradient outline effects (left out)"),
                 (Some(b"BevE" | b"EmbE"), _) => self.warn("bevel and emboss effects (left out)"),
-                (Some(b"ColO" | b"GrdO"), _) => self.warn("colour and gradient overlay effects (left out)"),
+                (Some(b"ColO"), Some(color)) => {
+                    let blend = self.effect_blend(e);
+                    out.push(Effect::ColorOverlay { color, opacity, blend });
+                }
+                (Some(b"GrdO"), _) => {
+                    let blend = self.effect_blend(e);
+                    // The gradient's unit space spans the node's bounding box from -1 to 1, centred
+                    // on it (y down): checked against the stored previews of real documents.
+                    let space =
+                        bounds.map(|b| Affine([(b.x1 - b.x0) / 2.0, 0.0, 0.0, (b.y1 - b.y0) / 2.0, (b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0]));
+                    match (s.obj(e, b"GrFl"), space) {
+                        (Some(fill), Some(space)) => match paint::descriptor(self, fill, space) {
+                            Some(Paint::Gradient(gradient)) => out.push(Effect::GradientOverlay { gradient, opacity, blend }),
+                            Some(Paint::Solid(color)) => out.push(Effect::ColorOverlay { color, opacity, blend }),
+                            _ => {}
+                        },
+                        // Nothing visible to lay it over.
+                        (Some(_), None) => {}
+                        (None, _) => self.warn("gradient overlay effects that could not be read (left out)"),
+                    }
+                }
+                (Some(b"ColO"), None) => self.warn("colour overlay effects that could not be read (left out)"),
                 (Some(b"Gaus"), _) => self.warn("blur effects (left out)"),
                 _ => self.warn("layer effects of other kinds (left out)"),
             }
         }
         out
+    }
+
+    /// A layer effect's blend mode (`BlnM`); unknown modes are Normal (warned).
+    fn effect_blend(&mut self, e: ObjId) -> Blend {
+        match self.s.enumeration(e, b"BlnM") {
+            None => Blend::Normal,
+            Some((i, v)) => Blend::from_enum(i, v).unwrap_or_else(|| {
+                self.warn("an unknown blend mode (imported as Normal)");
+                Blend::Normal
+            }),
+        }
     }
 
     /// Vector shapes attached to a node (`AdCh`) mask it: it shows only inside their outlines;
