@@ -33,13 +33,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let (db, scope) = (super::fonts(app), super::font_scope(app));
     ui.horizontal(|ui| {
-        let menu = super::font_menu(app);
-        egui::ComboBox::from_id_salt("glyph_family").selected_text(super::font_label(app, &menu, &st.family)).width(140.0).show_ui(ui, |ui| {
-            if let Some(f) = super::font_menu_rows(app, ui, &menu, &st.family) {
-                st.style = db.styles(&f).into_iter().next().unwrap_or_else(|| "Regular".into());
-                st.family = f;
-            }
-        });
+        if let Some(f) = super::font_combo(app, ui, "glyph_family", &st.family, 140.0) {
+            st.style = db.styles(&f).into_iter().next().unwrap_or_else(|| "Regular".into());
+            st.family = f;
+        }
         egui::ComboBox::from_id_salt("glyph_style").selected_text(&st.style).width(80.0).show_ui(ui, |ui| {
             for s in db.styles(&st.family) {
                 if ui.selectable_label(s == st.style, &s).clicked() {

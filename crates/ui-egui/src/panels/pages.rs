@@ -256,7 +256,7 @@ fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Docu
             ui.close();
         }
     }
-    ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply Parent")), |ui| {
+    crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply Parent")), |ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "[None]"))).clicked() {
             let _ = app.run("layout.pages.applyParent", json!({"pages": [abs], "parent": null}));
             ui.close();

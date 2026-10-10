@@ -134,12 +134,19 @@ impl<'a> NumField<'a> {
     /// Draw the field; returns the new value when the user commits an edit (Enter, focus loss,
     /// a spinner click, ↑/↓ while focused (Shift = ×10) or a preset).
     pub fn show(self, ui: &mut Ui) -> Option<f64> {
+        self.show_or_clear(ui).flatten()
+    }
+
+    /// Like [`NumField::show`]; a field emptied while it had a value commits `Some(None)` (for
+    /// values that may be unset, like a character style's attributes).
+    pub fn show_or_clear(self, ui: &mut Ui) -> Option<Option<f64>> {
         let t = Tokens::get(ui.ctx());
         let key = ui.id().with(self.id);
         let (rect, _) = ui.allocate_exact_size(vec2(self.width, FIELD_H), Sense::hover());
         let step = self.step.unwrap_or_else(|| self.kind.step());
         let clamp = |v: f64| v.clamp(self.range.0, self.range.1);
         let mut out: Option<f64> = None;
+        let mut cleared = false;
         let mut text_rect = rect;
         let focused_id = key.with("te");
         let focused = ui.memory(|m| m.has_focus(focused_id));
@@ -218,6 +225,8 @@ impl<'a> NumField<'a> {
                 && self.value.is_none_or(|old| (old - v).abs() > 1e-9)
             {
                 out = Some(v);
+            } else if buf.trim().is_empty() && self.value.is_some() {
+                cleared = true;
             }
             ui.data_mut(|d| d.remove::<String>(key));
         } else if !r.has_focus() {
@@ -246,7 +255,7 @@ impl<'a> NumField<'a> {
                 }
             });
         }
-        out
+        if cleared { Some(None) } else { out.map(Some) }
     }
 }
 
@@ -572,6 +581,21 @@ pub fn segmented(ui: &mut Ui, labels: &[&str], active: usize, width: f32) -> Opt
     out
 }
 
+/// Scrolling for a bar that a small window cuts off (Tools panel, Control panel, application
+/// bar): the mouse wheel scrolls the bar's only direction, and a thin scroll bar floats over the
+/// contents, so nothing moves and nothing shows while everything fits.
+pub fn overflow_scrolling(ui: &mut Ui) {
+    let style = ui.style_mut();
+    style.always_scroll_the_only_direction = true;
+    // A caption at the end of a scrolled row gets only what is left of it: extend, don't wrap.
+    style.wrap_mode = Some(egui::TextWrapMode::Extend);
+    let s = &mut style.spacing.scroll;
+    *s = egui::style::ScrollStyle::floating();
+    s.bar_width = 6.0;
+    // A faint handle while the pointer is elsewhere: the bar shows there is more.
+    s.dormant_handle_opacity = 0.5;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +669,36 @@ mod tests {
         frames.push((vec![key(egui::Key::Enter)], egui::Modifiers::NONE));
         let (got, _) = drive(frames, 10.0);
         assert_eq!(got, vec![12.0]);
+    }
+
+    #[test]
+    fn emptying_a_clearable_field_clears_it() {
+        let ctx = egui::Context::default();
+        let field = |ui: &mut Ui| NumField::number("c", Some(12.0), " pt", 2).width(80.0).show_or_clear(ui);
+        let mut rect = Rect::NOTHING;
+        run(&ctx, vec![], egui::Modifiers::NONE, &mut |ui| {
+            rect = ui.available_rect_before_wrap();
+            field(ui);
+        });
+        let key = |k, m| egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: m };
+        let mut frames: Vec<Vec<egui::Event>> = click(rect.min + vec2(40.0, 10.0), egui::Modifiers::NONE);
+        frames.push(vec![key(egui::Key::A, egui::Modifiers::COMMAND)]);
+        frames.push(vec![key(egui::Key::Backspace, egui::Modifiers::NONE)]);
+        frames.push(vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        let mut got = vec![];
+        for ev in frames {
+            let m = if ev.iter().any(|e| matches!(e, egui::Event::Key { modifiers, .. } if modifiers.command)) {
+                egui::Modifiers::COMMAND
+            } else {
+                egui::Modifiers::NONE
+            };
+            run(&ctx, ev, m, &mut |ui| {
+                if let Some(v) = field(ui) {
+                    got.push(v);
+                }
+            });
+        }
+        assert_eq!(got, vec![None]);
     }
 
     #[test]

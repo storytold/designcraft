@@ -1709,4 +1709,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Grid Alignment", "网格对齐"),
     ("Character Alignment", "字符对齐"),
     ("Lines", "行数"),
+    ("Odd Page Break", "奇数页分页符"),
+    ("Even Page Break", "偶数页分页符"),
+    ("Paragraph Rules…", "段落线…"),
+    ("Paragraph Rules", "段落线"),
+    ("Warichu", "割注"),
+    ("Distribute Rows Evenly", "平均分布行"),
+    ("Pin Bar Position", "固定任务栏位置"),
+    ("Reset Bar Position", "重置任务栏位置"),
 ];

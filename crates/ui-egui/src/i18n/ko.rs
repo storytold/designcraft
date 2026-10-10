@@ -1727,4 +1727,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Grid Alignment", "격자 정렬"),
     ("Character Alignment", "문자 정렬"),
     ("Lines", "행 수"),
+    ("Odd Page Break", "홀수 페이지 나누기"),
+    ("Even Page Break", "짝수 페이지 나누기"),
+    ("Paragraph Rules…", "단락 경계선…"),
+    ("Paragraph Rules", "단락 경계선"),
+    ("Warichu", "할주"),
+    ("Distribute Rows Evenly", "행을 균등하게 분배"),
+    ("Pin Bar Position", "막대 위치 고정"),
+    ("Reset Bar Position", "막대 위치 재설정"),
 ];

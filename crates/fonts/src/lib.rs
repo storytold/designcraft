@@ -15,7 +15,7 @@ mod vertical;
 
 pub use fontdb::{
     DOCUMENT_FONTS_FOLDER, DocumentFonts, FALLBACK_FAMILY, FaceRef, FontDb, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES,
-    MAX_DOCUMENT_FONTS_TOTAL, ScopedFonts, base_style, bundled, is_internal_family, system_font_dirs,
+    MAX_DOCUMENT_FONTS_TOTAL, ScopedFonts, base_style, bundled, system_font_dirs,
 };
 pub use group::{FamilyInfo, FontGroup, sort_for_menu};
 pub use harfrust::Feature;
@@ -433,6 +433,18 @@ mod tests {
         assert!(!db.styles(&fam).iter().any(|s| s.contains('{')), "instances aren't listed");
         let static_face = db.face(DEFAULT_FAMILY, "Regular {wght:700}");
         assert_eq!(static_face.style, "Regular", "static fonts ignore axis settings");
+    }
+
+    #[test]
+    fn an_exact_family_name_wins_over_the_name_without_its_format_suffix() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        db.add_font(testing::font_with("DC Test Suffix (OTF)", &['a']).unwrap());
+        assert_eq!(db.face("DC Test Suffix (OTF)", "Regular").family, "DC Test Suffix (OTF)");
+        assert_eq!(db.face(&format!("{DEFAULT_FAMILY} (TT)"), "Regular").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&format!("{DEFAULT_FAMILY} (T1)")));
+        assert!(!db.has_family(&format!("{DEFAULT_FAMILY} (Bold)")));
+        assert!(!db.has_family("DC Test Suffix"));
     }
 
     #[test]

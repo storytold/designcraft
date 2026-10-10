@@ -1,6 +1,8 @@
-//! English hyphenation.
+//! Hyphenation. English uses the bundled dictionary and patterns below. Other languages use the
+//! Liang patterns compiled into `hypher`, one cargo feature per language: Spanish is Javier Bezos's
+//! `hyph-es.tex` 5.0 from hyph-utf8, MIT (see NOTICE).
 //!
-//! Lookup order for each word:
+//! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
 //!    by Grady Ward (~160k words), stored compactly in `assets/hyphenation/en-us.dic`; simple
 //!    inflections (`'s`, `-s`, `-es`, `-ed`, `-d`) inherit the breaks of their stem;
@@ -61,6 +63,33 @@ impl Default for Limits {
     }
 }
 
+/// The hyphenator for a run of text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Lang {
+    English,
+    Patterns(hypher::Lang),
+}
+
+impl Lang {
+    /// The hyphenator for a language name or locale code (see [`designcraft_doc::language_tag`]).
+    /// None when the language has no bundled hyphenation.
+    pub fn for_language(language: &str) -> Option<Lang> {
+        if language.starts_with("English") {
+            return Some(Lang::English);
+        }
+        let tag = designcraft_doc::language_tag(language)?;
+        let sub = designcraft_doc::language_subtag(tag);
+        if sub == "en" {
+            return Some(Lang::English);
+        }
+        let b = sub.as_bytes();
+        if b.len() != 2 {
+            return None;
+        }
+        hypher::Lang::from_iso([b[0], b[1]]).map(Lang::Patterns)
+    }
+}
+
 /// Where a word's break points came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -79,10 +108,24 @@ fn is_word_char(c: char) -> bool {
 }
 
 /// Unrestricted break points of one lowercase core (letters and `'` only, no leading/trailing `'`).
-fn core_breaks(core: &[char]) -> (Vec<usize>, Source) {
+fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let n = core.len();
     if n < 2 {
         return (vec![], Source::None);
+    }
+    if let Lang::Patterns(l) = lang {
+        if core.contains(&'\'') {
+            return (vec![], Source::None);
+        }
+        let s: String = core.iter().collect();
+        let mut out = Vec::new();
+        let mut at = 0;
+        let syl: Vec<&str> = hypher::hyphenate_bounded(&s, l, 1, 1).collect();
+        for part in &syl[..syl.len().saturating_sub(1)] {
+            at += part.chars().count();
+            out.push(at);
+        }
+        return (out, Source::Patterns);
     }
     let dict = Dictionary::en_us();
     let s: String = core.iter().collect();
@@ -112,6 +155,11 @@ fn core_breaks(core: &[char]) -> (Vec<usize>, Source) {
 /// case, apostrophes (`don't`, `’s`), surrounding punctuation and compounds (each letter run is
 /// hyphenated separately). No break is ever placed next to an apostrophe or non-letter.
 pub fn word_breaks(word: &str) -> (Vec<usize>, Source) {
+    word_breaks_in(word, Lang::English)
+}
+
+/// [`word_breaks`] for a language.
+pub fn word_breaks_in(word: &str, lang: Lang) -> (Vec<usize>, Source) {
     let chars: Vec<char> = word.chars().collect();
     let mut out = Vec::new();
     let mut src = Source::None;
@@ -133,7 +181,7 @@ pub fn word_breaks(word: &str) -> (Vec<usize>, Source) {
             b -= 1;
         }
         let core: Vec<char> = chars[a..b].iter().map(|&c| if is_apostrophe(c) { '\'' } else { c.to_lowercase().next().unwrap_or(c) }).collect();
-        let (pts, s) = core_breaks(&core);
+        let (pts, s) = core_breaks(&core, lang);
         if src == Source::None {
             src = s;
         }
@@ -146,8 +194,13 @@ pub fn word_breaks(word: &str) -> (Vec<usize>, Source) {
 /// Allowed hyphenation points in `word` as char indices (a hyphen goes before that char), with
 /// the paragraph limits applied to each letter run.
 pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
+    hyphen_points_in(word, lim, Lang::English)
+}
+
+/// [`hyphen_points`] for a language.
+pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
     let chars: Vec<char> = word.chars().collect();
-    let (pts, _) = word_breaks(word);
+    let (pts, _) = word_breaks_in(word, lang);
     if pts.is_empty() {
         return pts;
     }
@@ -317,6 +370,23 @@ mod tests {
         assert!(hyphen_points("Paragraph", &lim).is_empty());
         let lim = Limits { min_word: 12, ..Limits::default() };
         assert!(hyphen_points("typography", &lim).is_empty());
+    }
+
+    #[test]
+    fn spanish_uses_the_bezos_patterns() {
+        let es = Lang::for_language("Spanish").unwrap();
+        assert_eq!(es, Lang::for_language("es_ES").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), es);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("transición"), "tran-si-ción");
+        assert_eq!(h("pingüino"), "pin-güino");
+        assert_eq!(h("Construcción"), "Cons-truc-ción");
+        assert_eq!(h("desesperación"), "de-ses-pe-ra-ción");
+        assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
+        assert_eq!(h("calle"), "ca-lle", "ll stays whole");
+        assert!(Lang::for_language("French").is_none(), "only languages built in");
     }
 
     #[test]

@@ -164,19 +164,3 @@ fn font_menus_group_installed_and_loaded_fonts_without_loading_them() {
     assert_eq!(infos.iter().filter(|i| i.family == "Groups Mincho").count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
-
-/// System-internal families (names starting with ".", as macOS names its UI faces) stay out of the
-/// font menus and listings, but a document naming one still gets it.
-#[test]
-fn internal_families_are_left_out_of_the_menus() {
-    let db = FontDb::with_font_dirs(vec![]);
-    db.add_font(crate::testing::font_with(".DC Internal UI", &['a']).unwrap());
-    db.add_font(crate::testing::font_with("DC Visible", &['a']).unwrap());
-    let fonts = db.scoped(0);
-    assert!(fonts.families().iter().any(|f| f == "DC Visible"));
-    assert!(!fonts.families().iter().any(|f| f.starts_with('.')));
-    assert!(!fonts.family_infos().iter().any(|f| f.family.starts_with('.')));
-    assert!(fonts.family_infos().iter().any(|f| f.family == "DC Visible"));
-    assert!(db.has_family(".DC Internal UI"));
-    assert_eq!(db.face(".DC Internal UI", "Regular").family, ".DC Internal UI");
-}
