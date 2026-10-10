@@ -450,6 +450,35 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 pen.line(&[(x0, y), (x1, y)]);
             }
         }
+        // Drop caps (Paragraph panel): an initial "A" beside three short lines, over two full lines.
+        // Lines: a two-headed arrow before the initial (how far it drops).
+        // Characters: "A+" (how many letters it takes). The initial is stroked, not set as text,
+        // so the icon draws the same with any UI font (or none).
+        "drop-cap-lines" | "drop-cap-chars" => {
+            let lines = name == "drop-cap-lines";
+            let (x0, short) = if lines { (5.0, 12.0) } else { (2.5, 13.0) };
+            for y in [4.0, 6.75, 9.5] {
+                pen.line(&[(short, y), (17.5, y)]);
+            }
+            for y in [13.0, 15.5] {
+                pen.line(&[(x0, y), (17.5, y)]);
+            }
+            // An "A" from its left foot at `ax`: two legs to the apex and a crossbar.
+            let initial = |ax: f32| {
+                pen.line(&[(ax, 10.5), (ax + 3.0, 2.8), (ax + 6.0, 10.5)]);
+                pen.line(&[(ax + 1.3, 7.6), (ax + 4.7, 7.6)]);
+            };
+            if lines {
+                pen.line(&[(2.5, 3.0), (2.5, 10.5)]);
+                pen.line(&[(1.2, 4.3), (2.5, 3.0), (3.8, 4.3)]);
+                pen.line(&[(1.2, 9.2), (2.5, 10.5), (3.8, 9.2)]);
+                initial(5.2);
+            } else {
+                initial(2.5);
+                pen.line(&[(9.3, 6.6), (12.1, 6.6)]);
+                pen.line(&[(10.7, 5.2), (10.7, 8.0)]);
+            }
+        }
         "ref-point" => {
             for i in 0..9 {
                 let (x, y) = (4.0 + (i % 3) as f32 * 6.0, 4.0 + (i / 3) as f32 * 6.0);
@@ -841,5 +870,14 @@ mod tests {
         assert_ne!(drawn[0], drawn[1], "Scale draws like Free Transform");
         assert_ne!(drawn[0], drawn[2], "Shear draws like Free Transform");
         assert_ne!(drawn[1], drawn[2], "Scale and Shear draw alike");
+    }
+
+    #[test]
+    fn drop_cap_fields_have_their_own_icons() {
+        let unknown = drawing("no-such-icon");
+        let (lines, chars) = (drawing("drop-cap-lines"), drawing("drop-cap-chars"));
+        assert_ne!(lines, unknown);
+        assert_ne!(chars, unknown);
+        assert_ne!(lines, chars);
     }
 }

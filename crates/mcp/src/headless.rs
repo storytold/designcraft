@@ -1,6 +1,6 @@
 //! An in-process engine session that answers the engine-level control-channel methods itself.
 
-use designcraft_engine::{Session, ViewInfo};
+use designcraft_engine::{Session, ViewInfo, cmd::known_ui_commands};
 use designcraft_geom::Point;
 use designcraft_render::{RenderOptions, Renderer};
 use designcraft_tools::{Mods, PointerEvent, PointerKind, TOOL_GROUPS, ToolKey};
@@ -96,8 +96,8 @@ impl Headless {
 
     fn exec(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         let r = self.session.execute(id, params).map_err(|e| {
-            let ui_only = ["app.", "view.", "window."].iter().any(|p| id.starts_with(p));
-            if ui_only && designcraft_engine::find_command(id).is_none() { format!("`{id}` is a UI command; {NEEDS_APP}") } else { e.to_string() }
+            let is_known_ui_command = known_ui_commands().contains(&id);
+            if is_known_ui_command { format!("`{id}` is a UI command; {NEEDS_APP}") } else { e.to_string() }
         });
         // Requests for a UI (file pickers, dialogs) have nobody to serve them here.
         self.session.ui_requests.clear();

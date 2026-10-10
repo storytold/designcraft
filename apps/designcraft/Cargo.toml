@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 designcraft-engine = { workspace = true }
-designcraft-ui-egui = { workspace = true }
+designcraft-ui-egui = { workspace = true, features = ["clipboard"] }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
 egui = { workspace = true }
 serde_json = { workspace = true }
@@ -30,3 +30,4 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
+designcraft-macos-open = { workspace = true }

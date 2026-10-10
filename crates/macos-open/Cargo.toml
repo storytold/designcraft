@@ -1,0 +1,27 @@
+[package]
+name = "designcraft-macos-open"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft: receive files opened from Finder or the Dock on macOS"
+
+# Not `workspace = true`: the workspace forbids unsafe code, and calling into AppKit needs it.
+# The unsafe is confined to this crate; the rest of the workspace lints are repeated here.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSAppleEventDescriptor",
+  "NSAppleEventManager",
+  "NSNotification",
+  "NSString",
+  "NSURL",
+] }

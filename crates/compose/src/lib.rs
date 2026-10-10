@@ -607,10 +607,15 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let spacing = spacing_for(&pp, base_chars.size);
             let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
             for _ in 0..3 {
-                let width = |j: usize| (col.width() - pp.left_indent - pp.right_indent - if j == 0 { pp.first_line_indent } else { 0.0 }).max(1.0);
-                // The same spacing, hyphenation and breaker as the layout below.
+                // The same spacing, drop cap, hyphenation and breaker as the layout below.
                 let mut gl = sp.glyphs.clone();
                 apply_desired_spacing(&mut gl, &pp);
+                let dc = drop_cap(&mut gl, &pp, &story.text, prange.clone(), para_leading(&pp, &base_chars), sub.vertical);
+                let width = |j: usize| {
+                    let ind =
+                        pp.left_indent + pp.right_indent + if j == 0 { pp.first_line_indent } else { 0.0 } + dc.map_or(0.0, |d| d.indent_for(j));
+                    (col.width() - ind).max(1.0)
+                };
                 let hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
                 let breaks = if pp.composer == Composer::SingleLine || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                     breaker::greedy(&gl, &hy, &spacing, &width)
@@ -689,10 +694,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         apply_desired_spacing(&mut glyphs, &pp);
         let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
         let base_size = base_chars.size;
-        let base_leading = match base_chars.leading {
-            designcraft_doc::Leading::Auto => base_size * pp.auto_leading,
-            designcraft_doc::Leading::Points(v) => v,
-        };
+        let base_leading = para_leading(&pp, &base_chars);
+        let dc = drop_cap(&mut glyphs, &pp, &story.text, prange.clone(), base_leading, sub.vertical);
+        // Where the cap was set: frame, line index, first baseline, column (its drop is corrected to
+        // the actual baseline of line `lines` once that line is set in the same column).
+        let mut dc_line: Option<(usize, usize, f64, usize)> = None;
         let spacing = spacing_for(&pp, base_size);
         // Paragraph start options.
         if force_col[pi] {
@@ -739,7 +745,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let slots = estimate_slots(f, col, est_first, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
             let width = |j: usize| -> f64 {
                 let (x0, x1) = slots.get(j).copied().unwrap_or((col.x0, col.x1));
-                let ind = pp.left_indent + pp.right_indent + if line_no + j == 0 { pp.first_line_indent } else { 0.0 };
+                // Lines beside a drop cap make room for it in the paragraph's first column only.
+                let cap = if col_first_line == 0 { dc.map_or(0.0, |d| d.indent_for(line_no + j)) } else { 0.0 };
+                let ind = pp.left_indent + pp.right_indent + if line_no + j == 0 { pp.first_line_indent } else { 0.0 } + cap;
                 (x1 - x0 - ind).max(1.0)
             };
             let rest = &glyphs[g0..];
@@ -840,7 +848,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     moved = true;
                     break;
                 }
-                let ind_l = pp.left_indent + if line_no == 0 { pp.first_line_indent } else { 0.0 };
+                let cap = if col_first_line == 0 { dc.map_or(0.0, |d| d.indent_for(line_no)) } else { 0.0 };
+                let ind_l = pp.left_indent + if line_no == 0 { pp.first_line_indent } else { 0.0 } + cap;
                 let lx0 = x0 + ind_l;
                 let lx1 = x1 - pp.right_indent;
                 let last = k + 1 == breaks.len();
@@ -873,6 +882,29 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     hj: hj_severity(ratio, pp.word_space_min, pp.word_space_max),
                     keep_violation: false,
                 });
+                if let Some(d) = dc {
+                    let ft = &mut out.frames[cur.fi];
+                    let li = ft.lines.len() - 1;
+                    if line_no == 0 {
+                        // Lower the cap to where line `lines` will sit if the leading holds...
+                        for g in ft.lines[li].glyphs.iter_mut().filter(|g| d.holds(g)) {
+                            g.y += d.drop;
+                        }
+                        dc_line = Some((cur.fi, li, baseline, cur.col));
+                    } else if line_no + 1 == d.lines
+                        && let Some((fi, cli, b0, c)) = dc_line
+                        && fi == cur.fi
+                        && c == cur.col
+                    {
+                        // ...and onto that line's actual baseline once it is set here.
+                        let shift = baseline - b0 - d.drop;
+                        if let Some(l) = ft.lines.get_mut(cli) {
+                            for g in l.glyphs.iter_mut().filter(|g| d.holds(g)) {
+                                g.y += shift;
+                            }
+                        }
+                    }
+                }
                 for k in line_notes {
                     notes.place(doc, k, cur.fi, cur.col, col_w, f, opts);
                 }
@@ -1130,6 +1162,114 @@ fn para_box_decos(out: &mut ComposedStory, pi: usize, pp: &ParaProps) {
             }
         }
     }
+}
+
+/// The paragraph's base leading (its default characters' leading, auto resolved).
+fn para_leading(pp: &ParaProps, base: &designcraft_doc::CharProps) -> f64 {
+    match base.leading {
+        designcraft_doc::Leading::Auto => base.size * pp.auto_leading,
+        designcraft_doc::Leading::Points(v) => v,
+    }
+}
+
+/// Most lines a drop cap may span (input is hostile; InDesign's own limit is 25).
+const DROP_CAP_MAX_LINES: u32 = 25;
+/// Most characters a drop cap may cover (InDesign's limit is 150).
+const DROP_CAP_MAX_CHARS: u32 = 150;
+
+/// A drop cap (Drop Cap Lines / Characters): the paragraph's first characters enlarged so their
+/// cap height reaches from the first line's cap height down to the baseline of line `lines`, with
+/// the lines beside them indented.
+#[derive(Clone, Copy, Debug)]
+struct DropCap {
+    /// Story bytes before this are the cap's characters.
+    end: usize,
+    lines: usize,
+    /// Extra indent of the lines beside the cap after the first: the first-line indent (the cap
+    /// sits where the first line starts) plus the cap's width.
+    indent: f64,
+    /// The cap's baseline below the first line's, with lines `leading` apart.
+    drop: f64,
+}
+
+impl DropCap {
+    /// Extra indent of paragraph line `line` (the first line makes room through the cap's advance).
+    fn indent_for(&self, line: usize) -> f64 {
+        if line > 0 && line < self.lines { self.indent } else { 0.0 }
+    }
+
+    fn holds(&self, g: &PlacedGlyph) -> bool {
+        g.len > 0 && g.byte < self.end
+    }
+}
+
+/// Sizes the paragraph's first glyphs as a drop cap, when it has one that can be set: horizontal,
+/// left-to-right text starting with its characters (not a list label or a control character).
+/// Returns None, leaving the glyphs alone, otherwise.
+///
+/// The cap is measured against the body text after it, not the paragraph style: its leading
+/// (local size and leading overrides included) sets how far the lines below sit, and its cap
+/// height is where the cap's top lines up. `leading` is the fallback when no body text follows.
+///
+/// As in InDesign, a cap set at the body's size spans exactly from the first line's cap height to
+/// the last dropped line's baseline; a cap set larger (or smaller) than the body is scaled by that
+/// ratio from there, keeping its baseline, so it rises above the first line (or falls short of it).
+/// The cap's font only decides its shape (its own cap height is what is fitted).
+fn drop_cap(glyphs: &mut [Glyph], pp: &ParaProps, text: &str, prange: Range<usize>, leading: f64, vertical: bool) -> Option<DropCap> {
+    let lines = pp.drop_cap_lines.min(DROP_CAP_MAX_LINES) as usize;
+    let chars = pp.drop_cap_chars.min(DROP_CAP_MAX_CHARS) as usize;
+    if lines < 2 || chars == 0 || vertical || pp.direction == designcraft_doc::TextDirection::RightToLeft {
+        return None;
+    }
+    let para = text.get(prange.clone())?;
+    let end = prange.start + para.char_indices().nth(chars).map_or(para.len(), |(i, _)| i);
+    let n = glyphs.iter().take_while(|g| g.len > 0 && g.byte >= prange.start && g.byte < end && !g.ch.is_control()).count();
+    let cap_glyph = glyphs.first()?;
+    let own_cap = cap_glyph.cap;
+    let body = glyphs.get(n..).and_then(|rest| rest.iter().find(|g| g.len > 0 && g.byte < prange.end && !g.ch.is_control()));
+    // Body metrics: (cap height, ascent, descent, leading, size). A paragraph that is all cap
+    // measures against the cap's own font at the paragraph's leading.
+    let (cap, ascent, descent, leading, size) = match body {
+        Some(b) => (b.cap, b.ascent, b.descent, b.leading, b.size),
+        None => (own_cap, cap_glyph.ascent, cap_glyph.descent, leading, cap_glyph.size),
+    };
+    let cap_size = cap_glyph.size;
+    let finite_pos = |v: f64| v.is_finite() && v > 0.0;
+    if n == 0 || !finite_pos(own_cap) || !finite_pos(cap) || !finite_pos(leading) || !finite_pos(cap_size) || !finite_pos(size) {
+        return None;
+    }
+    let drop = (lines - 1) as f64 * leading;
+    // At the body's size the cap's cap height is the drop plus the body's cap height; its own
+    // point size relative to the body's scales that. `own_cap` is already at `cap_size`, so the
+    // two size factors cancel into: target × (cap_size / size) / own_cap.
+    let k = (drop + cap) / own_cap * (cap_size / size);
+    if !finite_pos(k) {
+        return None;
+    }
+    let mut width = 0.0;
+    for g in glyphs.iter_mut().take(n) {
+        // Only the drawing changes size. Ascent, descent and leading become the body's, so the
+        // cap never pushes the first lines apart (even when its characters are set larger) and
+        // it hangs beside the lines below.
+        g.adv *= k;
+        g.dx *= k;
+        g.dy *= k;
+        g.sx *= k;
+        g.sy *= k;
+        g.ascent = ascent;
+        g.descent = descent;
+        g.leading = leading;
+        // The cap places itself (beside the dropped lines), so CJK Character Alignment must not
+        // move it: its em box is the scaled drawing's, and Em Center (the default in documents
+        // from InDesign) would lower it by half the growth. Reporting the body's size keeps it
+        // from becoming the line's alignment reference, which would move the body text.
+        g.character_alignment = designcraft_doc::cjk::CharacterAlignment::Baseline;
+        g.size = size;
+        g.locked_advance = true;
+        g.no_break = true;
+        width += g.adv;
+    }
+    Some(DropCap { end, lines, indent: pp.first_line_indent + width, drop })
 }
 
 /// Breaker parameters from the paragraph's settings.

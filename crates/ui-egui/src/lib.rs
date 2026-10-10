@@ -492,6 +492,14 @@ impl DesignApp {
         self.ui.status = s.into();
     }
 
+    /// What a file handed to the app from outside does (dropped on the window, or opened from
+    /// Finder or the Dock): documents (`.designcraft`, `.idml`) open, anything else is placed.
+    pub fn open_or_place(&mut self, path: &str) -> Result<Value, String> {
+        let lower = path.to_ascii_lowercase();
+        let cmd = if lower.ends_with(".designcraft") || lower.ends_with(".idml") { "file.open" } else { "file.place" };
+        self.run(cmd, json!({"path": path}))
+    }
+
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         if let Some(r) = menus::run_ui(self, id, &params) {
@@ -636,9 +644,12 @@ impl DesignApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
-            let p = f.path().to_string_lossy().to_string();
-            if !p.is_empty() {
-                let _ = self.open_dropped(&p);
+            {
+                let p = f.path().to_string_lossy().to_string();
+                if p.is_empty() {
+                    continue;
+                }
+                let _ = self.open_or_place(&p);
             }
         }
     }

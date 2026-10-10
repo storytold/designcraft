@@ -864,6 +864,7 @@ name = "designcraft"
 version = "0.5.0"
 dependencies = [
  "designcraft-engine",
+ "designcraft-macos-open",
  "designcraft-ui-egui",
  "eframe",
  "egui",
@@ -1031,6 +1032,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "designcraft-macos-open"
+version = "0.5.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "designcraft-mcp"
 version = "0.5.0"
 dependencies = [
@@ -1108,6 +1117,7 @@ dependencies = [
 name = "designcraft-ui-egui"
 version = "0.5.0"
 dependencies = [
+ "arboard",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",

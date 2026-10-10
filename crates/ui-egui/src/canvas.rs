@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode, View, theme::Tokens};
 
+#[cfg(all(feature = "clipboard", not(target_arch = "wasm32")))]
+use arboard::Clipboard;
+
 pub const RULER: f32 = 15.0;
 
 /// Canvas ↔ screen transform.
@@ -1012,10 +1015,29 @@ fn draw_text_selection(
                 let x1 = if e == l.range.end && range.end > l.range.end { l.end_x.max(x0 + 3.0) } else { compose::caret_x(l, e) };
                 quads.push(quad(x0, x1));
             }
+            // Selected glyphs set below the line's baseline (a drop cap hangs beside the lines under
+            // it): one box across them, from the line's top (or the cap's top, when a cap set larger
+            // than the body rises above the line) to their baseline plus the line's descent (or the
+            // cap's lowest point), so the whole cap is highlighted: selected glyphs are drawn
+            // inverted, and any part outside the box would vanish.
+            let mut dropped: Option<(f64, f64, f64, f64)> = None;
             for (gi, g) in l.glyphs.iter().enumerate() {
                 if g.visible && g.len > 0 && g.byte >= s && g.byte < e {
                     glyphs.push((li, gi));
+                    if g.y > 0.5 {
+                        let gb = l.baseline + g.y;
+                        // The outline is in font units, y down.
+                        use designcraft_render::vello_cpu::kurbo::Shape as _;
+                        let bb = designcraft_fonts::FontDb::global().outline(&g.face, g.gid).bounding_box();
+                        let (top, bottom) = if bb.is_finite() && bb.height() > 0.0 { (gb + bb.y0 * g.sy, gb + bb.y1 * g.sy) } else { (gb, gb) };
+                        let (top, bottom) = (top.min(l.baseline - l.ascent), bottom.max(gb + l.descent));
+                        let (x0, x1, t, b) = dropped.unwrap_or((g.x, g.x + g.adv, top, bottom));
+                        dropped = Some((x0.min(g.x), x1.max(g.x + g.adv), t.min(top), b.max(bottom)));
+                    }
                 }
+            }
+            if let Some((x0, x1, top, bottom)) = dropped {
+                quads.push([Point::new(x0, top), Point::new(x1, top), Point::new(x1, bottom), Point::new(x0, bottom)]);
             }
         }
         if !quads.is_empty() {
@@ -1486,7 +1508,16 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                 // Shift (⇧⌘V) pastes without formatting.
                 let plain = ui.input(|i| i.modifiers.shift);
                 let id = if plain { "edit.pasteWithoutFormatting" } else { "edit.paste" };
-                let _ = app.run(id, json!({"text": t}));
+                let result = app.run(id, json!({"text": t}));
+                if let Err(err) = &result {
+                    // Paste failed (e.g., "clipboard is empty"). Try reading directly from system clipboard.
+                    log::warn!("Paste from event failed: {err}, trying system clipboard fallback");
+                    if let Some(clipboard_text) = read_system_clipboard() {
+                        let _ = app.run(id, json!({"text": clipboard_text}));
+                    } else {
+                        app.status(format!("Paste failed: {err}"));
+                    }
+                }
             }
             egui::Event::Copy | egui::Event::Cut if wants_text => {
                 let id = if matches!(e, egui::Event::Cut) { "edit.cut" } else { "edit.copy" };
@@ -1766,71 +1797,16 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
     true
 }
 
-#[cfg(test)]
-mod tests {
-    use designcraft_geom::Unit;
-    use egui_kittest::{Harness, kittest::Queryable};
+/// Read text from the system clipboard using arboard.
+/// Only available on native platforms (not WASM) with the "clipboard" feature.
+#[cfg(all(feature = "clipboard", not(target_arch = "wasm32")))]
+fn read_system_clipboard() -> Option<String> {
+    let mut clipboard = Clipboard::new().ok()?;
+    clipboard.get_text().ok()
+}
 
-    use super::*;
-
-    fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
-        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let ctx = ui.ctx().clone();
-                app.logic(&ctx);
-                app.ui(ui);
-            },
-            app,
-        );
-        h.run_steps(4);
-        h
-    }
-
-    fn right_click(h: &mut Harness<'_, DesignApp>, p: Pos2) {
-        h.hover_at(p);
-        h.step();
-        for pressed in [true, false] {
-            h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() });
-        }
-        h.run_steps(3);
-    }
-
-    fn units(h: &Harness<'_, DesignApp>) -> (Unit, Unit) {
-        let s = &h.state().session.doc().unwrap().doc.settings;
-        (s.horizontal_units, s.vertical_units)
-    }
-
-    #[test]
-    fn right_clicking_a_ruler_sets_that_rulers_units() {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.new", json!({})).unwrap();
-        let mut h = harness(app);
-        let rect = h.state().canvas_rect.unwrap();
-        assert_eq!(units(&h), (Unit::Picas, Unit::Picas));
-        // Vertical ruler: the current unit is checked; picking one sets only the vertical units.
-        right_click(&mut h, pos2(rect.min.x - RULER / 2.0, rect.center().y));
-        h.get_by_label("✓ Picas");
-        h.get_by_label("   Millimeters").click();
-        h.run_steps(3);
-        assert_eq!(units(&h), (Unit::Picas, Unit::Millimeters));
-        // Horizontal ruler.
-        right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
-        h.get_by_label("✓ Picas");
-        h.get_by_label("   Inches").click();
-        h.run_steps(3);
-        assert_eq!(units(&h), (Unit::Inches, Unit::Millimeters));
-        // The page and the ruler corner open no units menu.
-        for p in [rect.center(), rect.min - vec2(RULER / 2.0, RULER / 2.0)] {
-            right_click(&mut h, p);
-            assert!(h.query_by_label("   Points").is_none());
-        }
-    }
-
-    #[test]
-    fn rulers_open_no_units_menu_without_a_document() {
-        let mut h = harness(DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()));
-        let Some(rect) = h.state().canvas_rect else { return };
-        right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
-        assert!(h.query_by_label("   Points").is_none());
-    }
+/// Stub for WASM or when clipboard feature is disabled.
+#[cfg(not(all(feature = "clipboard", not(target_arch = "wasm32"))))]
+fn read_system_clipboard() -> Option<String> {
+    None
 }

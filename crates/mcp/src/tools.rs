@@ -570,7 +570,13 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<ToolResult, Str
             req_str(a, "key")?;
             j(b.call("ui.key", pick(a, &["key", "shift", "alt", "cmd", "ctrl"]))?)
         }
-        "type_text" => j(b.call("ui.text", json!({"text": req_str(a, "text")?}))?),
+        "type_text" => {
+            // Ensure the type tool is active so text insertion works.
+            if !matches!(b.call("ui.tool.current", json!({}))?.get("tool").and_then(Value::as_str), Some("type" | "verticalType")) {
+                b.call("ui.tool.select", json!({"tool": "type"}))?;
+            }
+            j(b.call("ui.text", json!({"text": req_str(a, "text")?}))?)
+        }
         "click" | "drag" => {
             need_ui(b, name)?;
             let keys: &[&str] = &["x", "y", "toX", "toY", "steps", "button", "count", "shift", "alt", "cmd", "ctrl"];

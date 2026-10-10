@@ -1470,6 +1470,31 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
             ui.end_row();
         }
+        // Drop caps: how many lines the initial drops, and how many characters it takes. Both show
+        // at least 1: a stored 0 (the IDML default) and 1 both mean "no drop cap" (it takes 2+
+        // lines), and 1 is where a user starts counting. Setting either one also lifts the other to
+        // at least 1, so raising Lines on a paragraph whose stored Characters is 0 (shown as 1)
+        // makes the cap appear. A mixed selection (no value) is left mixed.
+        for (icon, tip, key, other, id, max) in [
+            ("drop-cap-lines", "Drop cap lines", "dropCapLines", "dropCapChars", "ppdcl", 25.0),
+            ("drop-cap-chars", "Drop cap characters", "dropCapChars", "dropCapLines", "ppdcc", 150.0),
+        ] {
+            let tip = crate::i18n::tr(&app.ui.language, tip);
+            let (r, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+            icons::paint(ui.painter(), r, icon, Tokens::get(ui.ctx()).icon);
+            resp.on_hover_ui(|ui| {
+                crate::rtl::label(ui, tip);
+            });
+            if let Some(v) = number(ui, id, p[key].as_f64().map(|v| v.max(1.0)), "", 64.0, 0) {
+                let mut attrs = serde_json::Map::new();
+                attrs.insert(key.into(), json!(v.round().clamp(1.0, max) as u32));
+                if let Some(o) = p[other].as_f64() {
+                    attrs.insert(other.into(), json!(o.round().max(1.0) as u32));
+                }
+                let _ = app.run("type.para", json!({ "attrs": attrs }));
+            }
+        }
+        ui.end_row();
     });
     ui.horizontal(|ui| {
         let mut h = p["hyphenate"].as_bool().unwrap_or(true);

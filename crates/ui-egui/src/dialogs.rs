@@ -1712,6 +1712,16 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                         // including explicit null, for the command to interpret.
                         p.insert(f.key, value.clone());
                     }
+                    Some(Value::Number(n)) => {
+                        p.insert(f.key, json!(n));
+                    }
+                    Some(Value::Array(a)) => {
+                        p.insert(f.key, json!(a));
+                    }
+                    Some(Value::Object(o)) => {
+                        p.insert(f.key, json!(o));
+                    }
+                    _ => {}
                 }
             }
             let r = app.run(cid, Value::Object(p));
