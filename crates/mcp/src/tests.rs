@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use designcraft_engine::cmd::{base64_decode, base64_encode};
 use serde_json::{Value, json};
 
-use crate::{Backend, Headless, PROTOCOL_VERSION, Remote, Server, control_addr, tool_definitions};
+use crate::{Backend, Headless, PROTOCOL_VERSION, PathGuard, Remote, Server, control_addr, tool_definitions};
 
 fn server() -> Server {
     Server::new(Box::new(Headless::with_document()))
@@ -499,4 +499,94 @@ fn explicit_typing_rejects_stale_selection_and_closed_document() {
     assert_eq!(b.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
     b.session.execute("file.close", &json!({})).unwrap();
     assert!(b.call("ui.text", json!({"text":"X"})).is_err());
+}
+
+/// #242: with `--automation-read-root` / `--automation-write-root` set, the file tools only
+/// reach paths under the matching root — relative paths resolve beneath it, escapes fail
+/// before any I/O, and nested scripts are refused.
+#[test]
+fn automation_roots_confine_tool_paths() {
+    let dir = std::env::temp_dir().join(format!("dc-roots-{}", std::process::id()));
+    let (r, w) = (dir.join("read"), dir.join("write"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::create_dir_all(&w).unwrap();
+
+    // A document inside the read root, made with an unrestricted session.
+    {
+        let mut seed = server();
+        let p = r.join("a.designcraft").to_string_lossy().into_owned();
+        let out = call(&mut seed, "save_document", json!({"path": p}));
+        assert_eq!(out["isError"], false, "seed: {out}");
+    }
+
+    let guard = PathGuard::new(Some(&r), Some(&w)).unwrap();
+    let mut s = Server::with_guard(Box::new(Headless::with_document()), guard);
+
+    // Reads: a relative path resolves under the read root…
+    ok(&mut s, "open_document", json!({"path": "a.designcraft"}));
+    // …an absolute path outside it is refused before any I/O.
+    let out = call(&mut s, "open_document", json!({"path": "/etc/hostname"}));
+    assert_eq!(out["isError"], true, "{out}");
+    assert!(text_of(&out).contains("outside the read root"), "{out}");
+
+    // Writes: relative resolves under the write root; traversal fails.
+    ok(&mut s, "save_document", json!({"path": "out.designcraft"}));
+    assert!(w.join("out.designcraft").exists(), "saved under the write root");
+    let out = call(&mut s, "save_document", json!({"path": "../escape.designcraft"}));
+    assert_eq!(out["isError"], true, "{out}");
+    assert!(text_of(&out).contains("parent traversal"), "{out}");
+    let out = call(&mut s, "export_png", json!({"path": "/tmp/dc-roots-escape.png"}));
+    assert_eq!(out["isError"], true, "export outside the write root: {out}");
+    assert!(text_of(&out).contains("outside the write root"), "{out}");
+
+    // `save_document` without a path would write to the document's ambient location.
+    let out = call(&mut s, "save_document", json!({}));
+    assert_eq!(out["isError"], true, "{out}");
+    assert!(text_of(&out).contains("explicit `path`"), "{out}");
+
+    // Nested scripts bypass per-step guarding and are refused.
+    let out = call(&mut s, "execute", json!({"command": "script.run", "params": {"text": "file.open {\"path\":\"x\"}"}}));
+    assert_eq!(out["isError"], true, "{out}");
+    assert!(text_of(&out).contains("bypass"), "{out}");
+
+    // Commands that follow paths stored in the document are refused: the guard cannot
+    // verify a path it never sees (this is the file.exportText exfiltration chain).
+    for (id, params) in [
+        ("data.source.update", json!({})),
+        ("data.merge", json!({})),
+        ("links.list", json!({})),
+        ("links.update", json!({})),
+        ("links.relinkFolder", json!({})),
+        ("book.list", json!({})),
+        ("file.package", json!({})),
+        ("file.revert", json!({})),
+        ("app.save", json!({})),
+    ] {
+        let out = call(&mut s, "execute", json!({"command": id, "params": params}));
+        assert_eq!(out["isError"], true, "{id} must be refused with roots set: {out}");
+    }
+    // …and the folder/dir parameters of links commands are confined like any other path.
+    let out = call(&mut s, "execute", json!({"command": "links.copyTo", "params": {"dir": "/tmp/dc-links-escape"}}));
+    assert_eq!(out["isError"], true, "links.copyTo outside the write root: {out}");
+    assert!(text_of(&out).contains("outside the write root"), "{out}");
+
+    // A dangling symlink as the last component: the link exists inside the root but its
+    // target does not — the write must be refused, not follow the link out.
+    #[cfg(unix)]
+    {
+        let plant = r.join("plant.txt");
+        let target = dir.join("nowhere");
+        let _ = std::fs::remove_file(&plant);
+        std::os::unix::fs::symlink(&target, &plant).unwrap();
+        let out = call(&mut s, "open_document", json!({"path": "plant.txt"}));
+        assert_eq!(out["isError"], true, "dangling symlink read: {out}");
+        assert!(text_of(&out).contains("outside the read root"), "{out}");
+        let _ = std::fs::remove_file(&plant);
+    }
+
+    // Path-less commands still work with roots set.
+    ok(&mut s, "execute", json!({"command": "frame.create", "params": {"rect": [36, 36, 200, 100]}}));
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
