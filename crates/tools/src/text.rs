@@ -1,6 +1,7 @@
-//! Type tool (T): click in a frame to place the caret, drag in a frame to select text, drag on
-//! empty canvas to draw a new text frame. Keys move the caret / delete; typing goes through
-//! `text.insert` (sent by the UI as text input).
+//! Type tool (T): click in a frame to place the caret, double-click selects the word, triple-click
+//! selects the line, drag in a frame to select text, drag on empty canvas to draw a new text
+//! frame. Keys move the caret / delete; typing goes through `text.insert` (sent by the UI as text
+//! input).
 
 use designcraft_geom::Point;
 use serde_json::json;
@@ -40,7 +41,7 @@ impl Tool for TypeTool {
 
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
-            PointerKind::Down | PointerKind::DoubleClick => {
+            PointerKind::Down | PointerKind::DoubleClick | PointerKind::TripleClick => {
                 self.start = Some(ev.pos);
                 self.drawing = false;
                 self.selecting = None;
@@ -56,12 +57,11 @@ impl Tool for TypeTool {
                         return vec![];
                     }
                     self.selecting = Some(id.0);
-                    let cmd = if ev.kind == PointerKind::DoubleClick {
-                        "text.selectWord"
-                    } else if ev.mods.shift {
-                        "text.extendTo"
-                    } else {
-                        "text.placeCaret"
+                    let cmd = match ev.kind {
+                        PointerKind::DoubleClick => "text.selectWord",
+                        PointerKind::TripleClick => "text.selectLine",
+                        _ if ev.mods.shift => "text.extendTo",
+                        _ => "text.placeCaret",
                     };
                     return vec![Action::Exec(cmd.into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))];
                 }

@@ -37,6 +37,7 @@ pub(crate) fn pointer_kind(k: &str) -> Option<PointerKind> {
         "up" => PointerKind::Up,
         "move" => PointerKind::Move,
         "doubleclick" | "dblclick" => PointerKind::DoubleClick,
+        "tripleclick" | "triclick" => PointerKind::TripleClick,
         _ => return None,
     })
 }

@@ -706,7 +706,7 @@ impl Tool for SelectionTool {
                     Drag::None => vec![],
                 }
             }
-            PointerKind::DoubleClick => {
+            PointerKind::DoubleClick | PointerKind::TripleClick => {
                 if let Some((_, id)) = cx.hit(p)
                     && cx.doc.item(id).is_some_and(|i| i.is_text_frame())
                 {
