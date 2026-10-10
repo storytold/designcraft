@@ -86,7 +86,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Paragraph Style…",
             [],
             None,
-            "{name, basedOn?, nextStyle?, para?: {…}, chars?: {…}, fromSelection?: bool}",
+            "{name, basedOn?, nextStyle?, para?: {… startAt?: null = continue numbering}, chars?: {…}, fromSelection?: bool}",
             has_doc,
             create_para
         ),
@@ -95,7 +95,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Style Options…",
             [],
             None,
-            "{name, rename?, basedOn?, nextStyle?, para?: {… ruleAbove?/ruleBelow?: only the named rule fields change}, chars?: {…}}",
+            "{name, rename?, basedOn?, nextStyle?, para?: {… ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering}, chars?: {…}}",
             has_doc,
             edit_para
         ),
@@ -425,9 +425,20 @@ fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// In a style, `startAt: null` is Continue from Previous Number: it is stored as an explicit
+/// "continue" so it also overrides a Start At the style would inherit.
+fn continue_numbering(p: Option<&Value>, para: &mut ParaAttrs) {
+    let explicit =
+        p.and_then(Value::as_object).is_some_and(|o| o.iter().any(|(k, v)| v.is_null() && k.replace('_', "").eq_ignore_ascii_case("startAt")));
+    if explicit {
+        para.start_at = Some(None);
+    }
+}
+
 fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Paragraph Style 1").to_string();
     let mut para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json(k, v))?;
+    continue_numbering(p.get("para"), &mut para);
     let mut chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
     if p.get("fromSelection").and_then(Value::as_bool).unwrap_or(false)
         && let Ok(cur) = s.execute("type.selectionAttrs", &json!({}))
@@ -480,7 +491,8 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // A rule object changes only the rule fields it names, over the style's resolved rule.
         let (current, _) = d.styles.resolve_para_style(&name);
-        let para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json_over(k, v, &current))?;
+        let mut para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json_over(k, v, &current))?;
+        continue_numbering(p.get("para"), &mut para);
         let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
         st.para.merge(&para);
         st.chars.merge(&chars);
@@ -1116,6 +1128,24 @@ mod color_tests {
         assert!(s.execute("style.character.edit", &json!({"name": "Strong", "rename": "  "})).is_err());
         assert!(s.execute("style.character.edit", &json!({"name": "[None]", "chars": {"size": 9}})).is_err());
         assert!(s.doc().unwrap().doc.styles.char_style("[None]").unwrap().chars.is_empty());
+    }
+
+    #[test]
+    fn continue_numbering_in_a_style_overrides_an_inherited_start_at() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Steps", "para": {"listType": "numbers", "startAt": 5}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "More Steps", "basedOn": "Steps"})).unwrap();
+        let start = |s: &Session, name: &str| s.doc().unwrap().doc.styles.resolve_para_style(name).0.start_at;
+        assert_eq!(start(&s, "More Steps"), Some(5), "inherited");
+        s.execute("style.paragraph.edit", &json!({"name": "More Steps", "para": {"startAt": null}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.para("More Steps").unwrap().para.start_at, Some(None));
+        assert_eq!(start(&s, "More Steps"), None, "continues");
+        assert_eq!(start(&s, "Steps"), Some(5), "the parent keeps its Start At");
+        s.execute("style.paragraph.edit", &json!({"name": "Steps", "para": {"startAt": null}})).unwrap();
+        assert_eq!(start(&s, "Steps"), None);
+        s.execute("style.paragraph.create", &json!({"name": "Fresh", "basedOn": "More Steps", "para": {"start_at": null}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.para("Fresh").unwrap().para.start_at, Some(None));
     }
 
     #[test]
