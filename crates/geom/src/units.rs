@@ -110,6 +110,10 @@ impl Unit {
 
     /// Ruler tick spacing (major, subdivisions) in points for a given zoom (screen px per pt).
     pub fn ruler_ticks(self, zoom: f64) -> (f64, u32) {
+        // A non-positive zoom can keep the major-spacing loop growing forever. Clamp
+        // extreme positive values too, so saved/corrupt viewport state cannot overflow
+        // the spacing calculation before the view restores a usable zoom.
+        let zoom = if zoom.is_finite() && zoom > 0.0 { zoom.clamp(1e-6, 1e6) } else { 1.0 };
         let (base, subs): (f64, &[u32]) = match self {
             Unit::Inches | Unit::InchesDecimal => (PT_PER_INCH, &[8, 4, 2]),
             Unit::Picas => (PT_PER_PICA, &[6, 3, 2]),
@@ -353,6 +357,20 @@ mod tests {
                 let s = format_measure_prec(v, u, 6);
                 let back = parse_measure(&s, u).unwrap_or_else(|e| panic!("{u:?} {s}: {e}"));
                 assert!((back - v).abs() < 1e-3, "{u:?}: {v} -> {s} -> {back}");
+            }
+        }
+    }
+
+    #[test]
+    fn ruler_ticks_reject_invalid_zoom_without_hanging_or_overflowing() {
+        for unit in Unit::ALL {
+            let fallback = unit.ruler_ticks(1.0);
+            for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.0, 0.0] {
+                assert_eq!(unit.ruler_ticks(bad), fallback, "{unit:?}: {bad}");
+            }
+            for extreme in [f64::MIN_POSITIVE, 1e-300, 1e300, f64::MAX] {
+                let (major, subdivisions) = unit.ruler_ticks(extreme);
+                assert!(major.is_finite() && major > 0.0 && subdivisions > 0, "{unit:?}: {extreme}");
             }
         }
     }
