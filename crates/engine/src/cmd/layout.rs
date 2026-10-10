@@ -105,7 +105,13 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             |s, p| {
                 let si = p.get("spread").and_then(Value::as_u64).unwrap_or(0) as usize;
-                let angle = p.get("angle").and_then(Value::as_i64).unwrap_or(90);
+                let angle = match p.get("angle") {
+                    None => 90,
+                    Some(v) => v.as_i64().ok_or_else(|| bad("layout.rotateSpreadView", "angle must be an integer multiple of 90 degrees"))?,
+                };
+                if angle % 90 != 0 {
+                    return Err(bad("layout.rotateSpreadView", "angle must be an integer multiple of 90 degrees"));
+                }
                 s.edit(|d, _| {
                     let sp = d.spreads.get_mut(si).ok_or_else(|| bad("layout.rotateSpreadView", "no such spread"))?;
                     let pg = std::sync::Arc::make_mut(sp).pages.first_mut().ok_or_else(|| bad("layout.rotateSpreadView", "empty spread"))?;
@@ -919,5 +925,29 @@ mod adjust_tests {
         s.execute("layout.marginsAndColumns", &json!({"margins": 36})).unwrap();
         let b2 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds();
         assert_eq!(b, b2);
+    }
+}
+
+#[cfg(test)]
+mod spread_rotation_input_tests {
+    use serde_json::json;
+
+    #[test]
+    fn quarter_turns_work_and_other_angles_are_rejected_without_mutation() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let rotation = |s: &crate::Session| s.doc().unwrap().doc.spreads[0].pages[0].view_rotation;
+        for bad in [json!(45), json!(-45), json!(91), json!("90"), json!(0.5)] {
+            assert!(s.execute("layout.rotateSpreadView", &json!({"angle": bad})).is_err(), "{bad}");
+            assert_eq!(rotation(&s), 0, "invalid input must not change the view");
+        }
+        s.execute("layout.rotateSpreadView", &json!({"angle": 90})).unwrap();
+        assert_eq!(rotation(&s), 1);
+        s.execute("layout.rotateSpreadView", &json!({"angle": -90})).unwrap();
+        assert_eq!(rotation(&s), 0);
+        s.execute("layout.rotateSpreadView", &json!({"angle": 180})).unwrap();
+        assert_eq!(rotation(&s), 2);
+        s.execute("layout.rotateSpreadView", &json!({"angle": 0})).unwrap();
+        assert_eq!(rotation(&s), 0, "zero resets the spread view");
     }
 }
