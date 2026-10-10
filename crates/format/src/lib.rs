@@ -299,4 +299,104 @@ mod tests {
         }
         assert!(matches!(load(&buf.into_inner()), Err(FormatError::TooNew(99))));
     }
+
+    fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
+        use designcraft_doc::{CharAttrs, ParaAttrs};
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let base = d.styles.default_paragraph.clone();
+        let chars = CharAttrs {
+            leading_aki: Some(Some(4.0)),
+            trailing_aki: Some(Some(3.0)),
+            underline_weight: Some(Some(2.0)),
+            underline_offset: Some(Some(1.0)),
+            strikethrough_weight: Some(Some(2.0)),
+            strikethrough_offset: Some(Some(1.0)),
+            ..Default::default()
+        };
+        let para = ParaAttrs {
+            start_at: Some(Some(7)),
+            paragraph_kashida_width: Some(Some(0.5)),
+            kinsoku: Some(Some(Default::default())),
+            ..Default::default()
+        };
+        let style = std::sync::Arc::make_mut(&mut d.styles).paragraph.iter_mut().find(|s| s.name == base).unwrap();
+        style.chars = chars;
+        style.para = para;
+        let clear_chars = CharAttrs {
+            leading_aki: Some(None),
+            trailing_aki: Some(None),
+            underline_weight: Some(None),
+            underline_offset: Some(None),
+            strikethrough_weight: Some(None),
+            strikethrough_offset: Some(None),
+            ..Default::default()
+        };
+        let clear_para = ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), ..Default::default() };
+        let selected = if style_clear {
+            std::sync::Arc::make_mut(&mut d.styles).paragraph.push(designcraft_doc::styles::ParagraphStyle {
+                name: "Defaults".into(),
+                based_on: Some(base.clone()),
+                next_style: None,
+                para: clear_para.clone(),
+                chars: clear_chars.clone(),
+                shortcut: String::new(),
+            });
+            "Defaults".to_string()
+        } else {
+            base
+        };
+        let format = ParaFormat {
+            style: selected,
+            para: if local_clear { clear_para } else { ParaAttrs::default() },
+            chars: if local_clear { clear_chars } else { CharAttrs::default() },
+            table: None,
+        };
+        let layer = d.default_layer();
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 400.0), layer, "clear", format).unwrap();
+        d
+    }
+
+    fn r7a_nullable_resolution(d: &Document) -> (designcraft_doc::ParaProps, designcraft_doc::CharProps) {
+        let s = d.stories.values().find(|s| s.text == "clear").unwrap();
+        d.styles.resolve_para(s.paras.first().unwrap())
+    }
+
+    fn r7a_assert_nullable_defaults_survive(d: &Document) {
+        let expected = r7a_nullable_resolution(d);
+        assert_eq!(expected.0.start_at, None);
+        assert_eq!(expected.0.paragraph_kashida_width, None);
+        assert_eq!(expected.0.kinsoku, None);
+        assert_eq!(expected.1.leading_aki, None);
+        for bytes in [save(d).unwrap(), serde_json::to_vec(d).unwrap()] {
+            let back = load(&bytes).unwrap();
+            assert_eq!(r7a_nullable_resolution(&back), expected, "saved explicit defaults must not become inherited values");
+            assert_eq!(back, *d, "native ZIP and legacy JSON preserve the complete document");
+        }
+    }
+
+    #[test]
+    fn r7a_native_local_default_text_overrides_survive_zip_and_legacy_json() {
+        r7a_assert_nullable_defaults_survive(&r7a_nullable_document(true, false));
+    }
+
+    #[test]
+    fn r7a_native_named_style_default_overrides_survive_zip_and_legacy_json() {
+        r7a_assert_nullable_defaults_survive(&r7a_nullable_document(false, true));
+    }
+
+    #[test]
+    fn r7a_native_nullable_missing_and_explicit_value_controls() {
+        let d = r7a_nullable_document(false, false);
+        assert_eq!(r7a_nullable_resolution(&d).0.start_at, Some(7));
+        assert_eq!(r7a_nullable_resolution(&d).1.leading_aki, Some(4.0));
+        for bytes in [save(&d).unwrap(), serde_json::to_vec(&d).unwrap()] {
+            let back = load(&bytes).unwrap();
+            assert_eq!(r7a_nullable_resolution(&back), r7a_nullable_resolution(&d));
+            assert_eq!(back, d);
+        }
+        let attrs: designcraft_doc::CharAttrs = serde_json::from_value(json!({"size":null})).unwrap();
+        assert!(attrs.size.is_none(), "nonnullable fields retain their existing null contract");
+        let props: designcraft_doc::CharProps = serde_json::from_value(json!({"leadingAki":null})).unwrap();
+        assert_eq!(props.leading_aki, None);
+    }
 }

@@ -4,18 +4,27 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Preserve a present nullable override; a missing field still uses the sparse default.
+fn deserialize_explicit_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 macro_rules! attr_set {
     (
         $(#[$m:meta])*
         $attrs:ident / $props:ident {
-            $( $(#[$fm:meta])* $field:ident : $ty:ty = $default:expr ),* $(,)?
+            $( $(#[$fm:meta])* $field:ident : $ty:ty = $default:expr $(=> $deserialize:literal)? ),* $(,)?
         }
     ) => {
         $(#[$m])*
         #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
         #[serde(default, rename_all = "camelCase")]
         pub struct $attrs {
-            $( $(#[$fm])* #[serde(skip_serializing_if = "Option::is_none")] pub $field: Option<$ty>, )*
+            $( $(#[$fm])* $(#[serde(deserialize_with = $deserialize)])? #[serde(skip_serializing_if = "Option::is_none")] pub $field: Option<$ty>, )*
         }
 
         /// Fully resolved values.
@@ -714,8 +723,8 @@ attr_set! {
         /// Tracking in 1/1000 em.
         tracking: f64 = 0.0,
         /// Explicit CJK aki, in em; None restores automatic spacing.
-        leading_aki: Option<f64> = None,
-        trailing_aki: Option<f64> = None,
+        leading_aki: Option<f64> = None => "deserialize_explicit_value",
+        trailing_aki: Option<f64> = None => "deserialize_explicit_value",
         /// Proportional character compression, 0..1.
         tsume: f64 = 0.0,
         /// Target em cells for the contiguous formatted group (0 disables jidori).
@@ -741,13 +750,13 @@ attr_set! {
         strikethrough: bool = false,
         /// Underline Options: weight and offset below the baseline (`None` = from the size),
         /// colour (empty = the text colour) and tint.
-        underline_weight: Option<f64> = None,
-        underline_offset: Option<f64> = None,
+        underline_weight: Option<f64> = None => "deserialize_explicit_value",
+        underline_offset: Option<f64> = None => "deserialize_explicit_value",
         underline_color: String = String::new(),
         underline_tint: f32 = 1.0,
         /// Strikethrough Options: offset above the baseline.
-        strikethrough_weight: Option<f64> = None,
-        strikethrough_offset: Option<f64> = None,
+        strikethrough_weight: Option<f64> = None => "deserialize_explicit_value",
+        strikethrough_offset: Option<f64> = None => "deserialize_explicit_value",
         strikethrough_color: String = String::new(),
         strikethrough_tint: f32 = 1.0,
         glyph_form: String = String::new(),
@@ -848,7 +857,7 @@ attr_set! {
         kashidas: bool = true,
         /// Preserved vendor policy; non-default policies require a dedicated composer.
         arabic_justification: String = String::new(),
-        paragraph_kashida_width: Option<f64> = None,
+        paragraph_kashida_width: Option<f64> = None => "deserialize_explicit_value",
         /// Korean text breaks between any two syllables (character-based breaking); otherwise
         /// it breaks at spaces, word by word.
         korean_char_breaks: bool = false,
@@ -870,7 +879,7 @@ attr_set! {
         /// Named list (Define Lists) the numbers belong to ("" = the story's own list).
         list_name: String = String::new(),
         /// Start At: restart the numbering at this number.
-        start_at: Option<u32> = None,
+        start_at: Option<u32> = None => "deserialize_explicit_value",
         bullet_char: String = "\u{2022}".into(),
         number_style: NumberStyle = NumberStyle::Arabic,
         /// A numbered paragraph's label: `^#` is the number, other metacharacters expand as in
@@ -881,7 +890,7 @@ attr_set! {
         balance_ragged: bool = false,
         optical_margin: bool = false,
         /// None uses the legacy built-in rules; an empty set explicitly disables kinsoku.
-        kinsoku: Option<crate::cjk::Kinsoku> = None,
+        kinsoku: Option<crate::cjk::Kinsoku> = None => "deserialize_explicit_value",
         /// Preserved spacing-table reference; compatibility audit reports unsupported composition.
         mojikumi: String = String::new(),
         /// Preserved priority policy; the current breaker does not implement these priorities.
