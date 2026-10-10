@@ -4,6 +4,7 @@
 use std::{collections::HashMap, sync::OnceLock};
 
 mod ar;
+mod de;
 mod it;
 mod ja;
 mod pt_br;
@@ -2831,6 +2832,7 @@ fn column(lang: &str) -> Option<usize> {
 
 /// `s` in `lang` (English, or the string itself, when there's no translation).
 pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
+    static GERMAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static JAPANESE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static TRANSLATIONS: OnceLock<HashMap<&'static str, [&'static str; 5]>> = OnceLock::new();
     static ARABIC: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -2840,8 +2842,13 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
-    // The Japanese table covers the whole interface; the shared table's Japanese column is the fallback
-    // for keys added there after it.
+    // The German and Japanese tables cover the whole interface; the shared table's German and Japanese
+    // columns are the fallback for keys added there after them.
+    if lang == "de"
+        && let Some(text) = GERMAN.get_or_init(|| de::TABLE.iter().copied().collect()).get(s).copied()
+    {
+        return text;
+    }
     if lang == "ja"
         && let Some(text) = JAPANESE.get_or_init(|| ja::TABLE.iter().copied().collect()).get(s).copied()
     {
@@ -2903,12 +2910,15 @@ mod tests {
     fn cached_lookup_preserves_every_translation_across_language_switches() {
         for (key, translations) in TABLE {
             for (lang, expected) in ["de", "fr", "es", "ja", "zh"].into_iter().zip(translations) {
-                // `ja::TABLE` translates the whole interface and wins over the shared Japanese column.
-                if lang != "ja" {
+                // `de::TABLE` and `ja::TABLE` translate the whole interface and win over the shared columns.
+                if lang != "de" && lang != "ja" {
                     assert_eq!(tr(lang, key), *expected, "{lang}: {key}");
                 }
             }
             assert_eq!(tr("", key), *key);
+        }
+        for (key, expected) in de::TABLE {
+            assert_eq!(tr("de", key), *expected, "de: {key}");
         }
         for (key, expected) in ar::TABLE {
             assert_eq!(tr("ar", key), *expected, "ar: {key}");
