@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
             has_doc, export_idml),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
-            "{path | base64, name?} — opens an IDML package as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings}",
+            "{path | base64, name?} — opens an IDML package as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: package parts missing, font files skipped}",
             always, open_idml),
     ]
 }
@@ -34,6 +34,11 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Import IDML bytes; `dir` is the folder the package came from (for relative link lookup).
 pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
+    import_report(bytes, dir).map(|(document, _)| document)
+}
+
+/// [`import`], with the problems that did not stop it (parts missing from the package, …).
+pub fn import_report(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<(Document, Vec<String>)> {
     #[cfg(not(target_arch = "wasm32"))]
     let resolved = std::cell::RefCell::new(std::collections::HashMap::new());
     let read = |link: &str| -> Option<Vec<u8>> {
@@ -49,7 +54,8 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
             None
         }
     };
-    let document = designcraft_idml::import_idml_with(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
+    let designcraft_idml::Imported { document, warnings } =
+        designcraft_idml::import_idml_report(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
     #[cfg(not(target_arch = "wasm32"))]
     let document = {
         let mut document = document;
@@ -62,7 +68,7 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
         resolve_packaged_links(&mut document, dir);
         document
     };
-    Ok(document)
+    Ok((document, warnings))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -142,14 +148,15 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("file.openIdml", "missing `path` or `base64`"));
     };
-    let mut d = import(&bytes, dir.as_deref())?;
+    let (mut d, mut warnings) = import_report(&bytes, dir.as_deref())?;
     if let Some(n) = name {
         d.title = n;
     }
-    let (fonts, faces, warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+    let (fonts, faces, font_warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
         Some(path) => super::file::load_document_fonts(&mut d, path),
         None => (None, 0, Vec::new()),
     };
+    warnings.extend(font_warnings);
     // Never save over the .idml with the native format: the document starts unsaved.
     let mut st = DocState::new(d, None);
     st.fonts = fonts;

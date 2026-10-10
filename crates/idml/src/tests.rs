@@ -427,6 +427,59 @@ fn imports_scalar_insets_in_object_style_without_replacing_frame_override() {
     assert_eq!(frame_inset(&d), [3.0; 4]);
 }
 
+/// A one-page spread part `Self` with one rectangle.
+fn one_frame_spread(id: &str) -> String {
+    format!(
+        r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+          <Spread Self="{id}">
+            <Page Self="{id}p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/>
+            <Rectangle Self="{id}r" ItemTransform="1 0 0 1 0 0">
+              <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+                <PathPointType Anchor="10 10"/><PathPointType Anchor="10 50"/>
+                <PathPointType Anchor="50 50"/><PathPointType Anchor="50 10"/>
+              </PathPointArray></GeometryPathType></PathGeometry></Properties>
+            </Rectangle>
+          </Spread>
+        </idPkg:Spread>"#
+    )
+}
+
+/// Writers differ in how a designmap `src` spells its part: percent-encoded, another case,
+/// backslashes, a leading `./`. Those resolve; a part absent from the package is a warning that
+/// names it, not silently dropped objects.
+#[test]
+fn designmap_parts_match_leniently_and_missing_ones_are_reported() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+          <idPkg:Spread src="Spreads/Spread_u1a%20b.xml"/>
+          <idPkg:Spread src="./spreads\SPREAD_u2.xml"/>
+          <idPkg:Spread src="Spreads/Spread_gone.xml"/>
+        </Document>"#;
+    let zip = zip_files(&[
+        ("designmap.xml", designmap),
+        ("Spreads/Spread_u1a b.xml", &one_frame_spread("u1")),
+        ("Spreads/Spread_u2.xml", &one_frame_spread("u2")),
+    ]);
+    let r = import_idml_report(&zip, &|_| None).unwrap();
+    assert_eq!(r.document.spreads.len(), 2, "both lenient spellings resolve");
+    assert!(r.document.spreads.iter().all(|sp| sp.items.len() == 1), "the spreads keep their frames");
+    assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+    assert!(r.warnings[0].contains("Spreads/Spread_gone.xml"), "{:?}", r.warnings);
+
+    // With every spread part missing the import fails, and the error names the part.
+    let only_missing = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+          <idPkg:Spread src="Spreads/Spread_gone.xml"/>
+        </Document>"#;
+    let err = import_idml(&zip_files(&[("designmap.xml", only_missing)])).unwrap_err();
+    assert!(err.to_string().contains("Spreads/Spread_gone.xml"), "{err}");
+}
+
+#[test]
+fn percent_decode_keeps_malformed_escapes() {
+    assert_eq!(import::percent_decode("a%20b%2"), "a b%2");
+    assert_eq!(import::percent_decode("%é%zz"), "%é%zz");
+    assert_eq!(import::uri_to_path("file:///C:/a%20b"), "C:/a b");
+}
+
 #[test]
 fn rejects_non_idml() {
     assert!(import_idml(b"not a zip").is_err());

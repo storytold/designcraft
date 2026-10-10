@@ -49,7 +49,7 @@ mod xml;
 mod tests;
 
 pub use export::{ExportOptions, export_idml, export_idml_with};
-pub use import::{import_idml, import_idml_with};
+pub use import::{Imported, import_idml, import_idml_report, import_idml_with};
 
 /// The IDML package mimetype (content of the first, stored `mimetype` entry).
 pub const MIMETYPE: &str = "application/vnd.adobe.indesign-idml-package";
