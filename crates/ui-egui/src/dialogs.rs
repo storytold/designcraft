@@ -8,6 +8,8 @@ use serde_json::{Map, Value, json};
 use crate::DesignApp;
 use crate::theme::semibold;
 
+mod style_cjk;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Dialog {
     pub id: String,
@@ -833,6 +835,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Type Options")).font(semibold(12.0)));
                     check(ui, d, "typographersQuotes", crate::i18n::tr(&app.ui.language, "Use Typographer's Quotes"));
                     check(ui, d, "showFontNamesInEnglish", crate::i18n::tr(&app.ui.language, "Show Font Names in English"));
+                    check(ui, d, "cjkFeatures", crate::i18n::tr(&app.ui.language, "Show CJK Features"));
                     ui.add_space(6.0);
                     ui.label(crate::rtl::widget(
                         ui,
@@ -1986,17 +1989,18 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
         }
         "preferences" => {
-            app.run(
-                "prefs.set",
-                json!({"scaleStrokes": d.b("scaleStrokes"), "dimensionsIncludeStroke": d.b("dimensionsIncludeStroke"), "transformationsAreTotals": d.b("transformationsAreTotals"), "absolutePageNumbers": d.b("absolutePageNumbers"), "highlightHj": d.b("highlightHj"), "highlightKeeps": d.b("highlightKeeps"), "highlightCustomTracking": d.b("highlightCustomTracking"), "highlightSubstitutedFonts": d.b("highlightSubstitutedFonts"), "richBlackOutput": d.b("richBlackOutput"), "typographersQuotes": d.b("typographersQuotes"), "showFontNamesInEnglish": d.b("showFontNamesInEnglish"), "smartTextReflow": d.b("smartTextReflow"),
+            let mut prefs = json!({"scaleStrokes": d.b("scaleStrokes"), "dimensionsIncludeStroke": d.b("dimensionsIncludeStroke"), "transformationsAreTotals": d.b("transformationsAreTotals"), "absolutePageNumbers": d.b("absolutePageNumbers"), "highlightHj": d.b("highlightHj"), "highlightKeeps": d.b("highlightKeeps"), "highlightCustomTracking": d.b("highlightCustomTracking"), "highlightSubstitutedFonts": d.b("highlightSubstitutedFonts"), "richBlackOutput": d.b("richBlackOutput"), "typographersQuotes": d.b("typographersQuotes"), "showFontNamesInEnglish": d.b("showFontNamesInEnglish"), "smartTextReflow": d.b("smartTextReflow"),
                     "autocorrect": d.b("autocorrect"), "showAddedText": d.b("showAddedText"), "showNoteAnchors": d.b("showNoteAnchors"),
                     "recoveryMinutes": d.n("recoveryMinutes").unwrap_or(0.5),
                     "autocorrectList": d.s("autocorrectText").lines().filter_map(|l| {
                         let (a, b) = l.split_once('→').or_else(|| l.split_once("->"))?;
                         let (a, b) = (a.trim().to_lowercase(), b.trim().to_string());
                         (!a.is_empty() && !b.is_empty()).then(|| json!([a, b]))
-                    }).collect::<Vec<_>>()}),
-            )?;
+                    }).collect::<Vec<_>>()});
+            if d.b("cjkFeatures") != d.b("cjkFeatures.initial") {
+                prefs["cjkFeatures"] = json!(d.b("cjkFeatures"));
+            }
+            app.run("prefs.set", prefs)?;
             app.ui.dynamic_spelling = d.b("dynamicSpelling");
             if d.fields.contains_key("userWords") {
                 let words: Vec<String> = d.s("userWords").lines().map(str::to_string).collect();
@@ -2245,10 +2249,12 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             &app.ui.language,
             ui,
             d,
+            crate::cjk_features(app),
             &[
                 ("general", "General"),
                 ("chars", "Basic Character Formats"),
                 ("indents", "Indents and Spacing"),
+                ("tabs", "Tabs"),
                 ("rules", "Paragraph Rules"),
                 ("hyph", "Hyphenation"),
                 ("justify", "Justification"),
@@ -2535,6 +2541,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     }
                 });
             }
+            "tabs" => style_tabs(&app.ui.language, ui, d, &pv, &doc),
             "rules" => paragraph_rules(app, ui, d, "p.", &pv),
             "hyph" => {
                 let mut h = cur(d, "p.hyphenate", &pv["hyphenate"]).as_bool().unwrap_or(true);
@@ -2602,6 +2609,9 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                 });
             }
             "color" => character_color(&app.ui.language, ui, d, &CharFields { base: &cv, sparse: false }, &doc),
+            s if style_cjk::is_section(s) => {
+                style_cjk::section(&app.ui.language, ui, d, s, &CharFields { base: &cv, sparse: false }, Some(&pv), &doc)
+            }
             _ => {
                 egui::Grid::new("psg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Style Name:"));
@@ -2650,15 +2660,98 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     });
 }
 
-/// The section list on the left of the style options dialogs.
-fn section_list(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, sections: &[(&str, &str)]) {
-    ui.vertical(|ui| {
-        ui.set_width(170.0);
-        for (id, label) in sections {
-            if ui.selectable_label(d.s("section") == *id, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
-                d.fields.insert("section".into(), json!(id));
+/// Paragraph Style Options › Tabs: the style's stops on a ruler as wide as the first page's
+/// column, edited in `p.tabs` (and the indents in `p.leftIndent`…) until OK.
+fn style_tabs(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: &designcraft_doc::Document) {
+    use crate::panels::tabs::{Ruler, RulerEdit, align_buttons, ruler, text_commit};
+    use designcraft_engine::cmd::tabs;
+    let cur = |d: &Dialog, k: &str| d.fields.get(k).cloned().unwrap_or_else(|| pv[k.trim_start_matches("p.")].clone());
+    let mut list: Vec<designcraft_doc::TabStop> = serde_json::from_value(cur(d, "p.tabs")).unwrap_or_default();
+    tabs::sort(&mut list);
+    let num = |d: &Dialog, k: &str| cur(d, k).as_f64().filter(|v| v.is_finite()).unwrap_or(0.0);
+    let (left, first, right) = (num(d, "p.leftIndent"), num(d, "p.firstLineIndent"), num(d, "p.rightIndent"));
+    let width = doc.page(0).and_then(|p| p.column_rects().first().map(|r| r.width())).filter(|w| *w > 1.0).unwrap_or(468.0);
+    let unit = doc.settings.horizontal_units;
+    let mut sel = d.fields.get("tabsSelected").and_then(Value::as_u64).map(|i| i as usize).filter(|i| *i < list.len());
+    let mut align = d.fields.get("tabsAlign").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let stop = sel.and_then(|i| list.get(i)).cloned();
+    // Each control's edit, applied to the list below.
+    let mut result: Option<Result<Option<usize>, String>> = None;
+    let mut indent: Option<(&str, f64)> = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if let Some(a) = align_buttons(ui, lang, stop.as_ref().map_or(align, |s| s.align)) {
+            align = a;
+            if let Some(i) = sel {
+                result = Some(tabs::change(&mut list, i, Some(a), None, None));
             }
         }
+        ui.add_space(6.0);
+        crate::rtl::label(ui, crate::i18n::tr(lang, "X:"));
+        if let Some(x) = crate::widgets::measure(ui, "pstabx", stop.as_ref().map(|s| s.position), unit, 72.0) {
+            result = Some(match sel {
+                Some(i) => tabs::move_to(&mut list, i, x),
+                None => tabs::add(&mut list, designcraft_doc::TabStop { position: x, align, leader: String::new(), align_on: String::new() }),
+            });
+        }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Leader:"));
+        if let (Some(l), Some(i)) = (text_commit(ui, "psleader", stop.as_ref().map_or("", |s| s.leader.as_str()), 36.0, stop.is_some()), sel) {
+            result = Some(tabs::leader_value(&l, "tabs").map_err(|e| e.to_string()).and_then(|l| tabs::change(&mut list, i, None, Some(l), None)));
+        }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Align On:"));
+        let on_char = stop.as_ref().is_some_and(|s| s.align == designcraft_doc::TabAlign::Char);
+        if let (Some(c), Some(i)) = (text_commit(ui, "psalignon", stop.as_ref().map_or("", |s| s.align_on.as_str()), 18.0, on_char), sel) {
+            result = Some(tabs::align_on_value(&c, "tabs").map_err(|e| e.to_string()).and_then(|c| tabs::change(&mut list, i, None, None, Some(c))));
+        }
+        ui.add_space(6.0);
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(lang, "Clear All"))).clicked() {
+            list.clear();
+            result = Some(Ok(None));
+        }
+    });
+    ui.add_space(6.0);
+    let r = Ruler { tabs: &list, left, first, right, width, unit, selected: sel, scale: None };
+    match ruler(ui, "style", &r) {
+        Some(RulerEdit::Select(i)) => sel = Some(i),
+        Some(RulerEdit::Add(x)) => {
+            result = Some(tabs::add(&mut list, designcraft_doc::TabStop { position: x, align, leader: String::new(), align_on: String::new() }))
+        }
+        Some(RulerEdit::Move(i, x)) => result = Some(tabs::move_to(&mut list, i, x)),
+        Some(RulerEdit::Remove(i)) => result = Some(tabs::remove(&mut list, i)),
+        Some(RulerEdit::Indent(k, x)) => indent = Some((k, x)),
+        None => {}
+    }
+    match result {
+        Some(Ok(i)) => {
+            sel = i;
+            d.fields.insert("p.tabs".into(), serde_json::to_value(&list).unwrap_or_default());
+            d.fields.remove("status");
+        }
+        Some(Err(e)) => {
+            d.fields.insert("status".into(), json!(e));
+        }
+        None => {}
+    }
+    if let Some((k, x)) = indent {
+        d.fields.insert(format!("p.{k}"), json!(x));
+    }
+    d.fields.insert("tabsSelected".into(), sel.map_or(Value::Null, |i| json!(i)));
+    d.fields.insert("tabsAlign".into(), serde_json::to_value(align).unwrap_or_default());
+}
+
+/// The section list on the left of the style options dialogs.
+fn section_list(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cjk: bool, sections: &[(&str, &str)]) {
+    let sections = style_cjk::sections(cjk, d.id == "paragraphStyleOptions", sections);
+    ui.vertical(|ui| {
+        ui.set_width(170.0);
+        // The dialog has a fixed height; a long list scrolls.
+        egui::ScrollArea::vertical().id_salt("style_sections").auto_shrink([false, true]).show(ui, |ui| {
+            for (id, label) in &sections {
+                if ui.selectable_label(d.s("section") == *id, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                    d.fields.insert("section".into(), json!(id));
+                }
+            }
+        });
     });
 }
 
@@ -2731,6 +2824,7 @@ fn character_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             &lang,
             ui,
             d,
+            crate::cjk_features(app),
             &[
                 ("general", "General"),
                 ("chars", "Basic Character Formats"),
@@ -2749,6 +2843,7 @@ fn character_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             "openType" => open_type_features(&lang, ui, d, &cf),
             "underline" => line_options(&lang, ui, d, &cf, &doc, "underline"),
             "strikethrough" => line_options(&lang, ui, d, &cf, &doc, "strikethrough"),
+            s if style_cjk::is_section(s) => style_cjk::section(&lang, ui, d, s, &cf, None, &doc),
             _ => {
                 egui::Grid::new("csg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&lang, "Style Name:"));
@@ -4068,6 +4163,32 @@ mod tests {
         assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], want, "the paragraph follows its style");
         app.run("edit.undo", json!({})).unwrap();
         assert_eq!(resolved(&app)["ruleBelow"], rule);
+    }
+
+    #[test]
+    fn paragraph_style_options_tabs_section_adds_a_stop_on_its_ruler() {
+        use egui_kittest::kittest::Queryable;
+        let (app, _) = ruled_paragraph();
+        let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+        h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "tabs"})));
+        h.run_steps(4);
+        h.get_by_label("Clear All");
+        // The ruler sits below the row of alignment buttons; its strip takes the click.
+        let b = h.get_by_label("Right-aligned tab").rect();
+        h.get_by_label("Right-aligned tab").click();
+        h.run_steps(2);
+        let left = h.get_by_label("Left-aligned tab").rect();
+        let at = egui::pos2(left.min.x + crate::panels::tabs::PAD + 100.0, b.max.y + 14.0);
+        crate::test_window::click_at(&mut h, at);
+        let d = h.state().app.ui.dialog.clone().unwrap();
+        let tabs = d.fields.get("p.tabs").cloned().unwrap_or_default();
+        assert_eq!(tabs.as_array().map(Vec::len), Some(1), "{tabs}");
+        assert_eq!(tabs[0]["align"], "right");
+        confirm(&mut h.state_mut().app).unwrap();
+        let app = &mut h.state_mut().app;
+        let style = app.session.execute("type.tabs.get", &json!({"style": "Ruled Child"})).unwrap();
+        assert_eq!(style["tabs"], tabs);
+        assert_eq!(app.session.execute("type.tabs.get", &json!({})).unwrap()["tabs"], tabs, "the paragraph follows its style");
     }
 
     fn command_app(id: &str, fields: Value) -> DesignApp {

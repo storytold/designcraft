@@ -89,11 +89,145 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Ruby…", ["Ruby …", "Ruby…", "Ruby…", "ルビ…", "旁注…"]),
     ("Kenten", ["Kenten", "Kenten", "Kenten", "圏点", "圈点"]),
     ("Warichu", ["Warichu", "Warichu", "Warichu", "割り注", "割注"]),
+    // Style Options: CJK sections.
+    ("Tate-chu-yoko Settings", ["Tate-Chu-Yoko-Einstellungen", "Paramètres Tate-Chu-Yoko", "Ajustes de Tate-Chu-Yoko", "縦中横設定", "纵中横设置"]),
+    ("Kenten Settings", ["Kenten-Einstellungen", "Paramètres Kenten", "Ajustes de Kenten", "圏点設定", "圈点设置"]),
+    (
+        "Japanese Composition Settings",
+        ["Japanischer Satz", "Paramètres de composition japonaise", "Ajustes de composición japonesa", "日本語文字組版", "日文排版设置"],
+    ),
+    ("Grid Settings", ["Rastereinstellungen", "Paramètres de grille", "Ajustes de cuadrícula", "グリッド設定", "网格设置"]),
+    ("Warichu Settings", ["Warichu-Einstellungen", "Paramètres Warichu", "Ajustes de Warichu", "割注設定", "割注设置"]),
+    ("Up/Down Position:", ["Position oben/unten:", "Position haut/bas:", "Posición arriba/abajo:", "上下位置:", "上下位置："]),
+    ("Left/Right Position:", ["Position links/rechts:", "Position gauche/droite:", "Posición izquierda/derecha:", "左右位置:", "左右位置："]),
+    ("Kenten Type:", ["Kenten-Art:", "Type de kenten:", "Tipo de kenten:", "圏点種類:", "圈点类型："]),
+    ("Sesame Dot", ["Sesampunkt", "Point sésame", "Punto de sésamo", "ゴマ", "芝麻点"]),
+    ("White Sesame Dot", ["Weißer Sesampunkt", "Point sésame blanc", "Punto de sésamo blanco", "白ゴマ", "空心芝麻点"]),
+    ("Bullseye", ["Zielscheibe", "Cible", "Diana", "蛇の目", "靶心"]),
+    ("Black Circle", ["Schwarzer Kreis", "Cercle noir", "Círculo negro", "黒丸", "实心圆"]),
+    ("Small Black Circle", ["Kleiner schwarzer Kreis", "Petit cercle noir", "Círculo negro pequeño", "小さい黒丸", "小实心圆"]),
+    ("Double Circle", ["Doppelkreis", "Double cercle", "Círculo doble", "二重丸", "双圆"]),
+    ("Black Triangle", ["Schwarzes Dreieck", "Triangle noir", "Triángulo negro", "黒三角", "实心三角"]),
+    ("White Triangle", ["Weißes Dreieck", "Triangle blanc", "Triángulo blanco", "白三角", "空心三角"]),
+    ("White Circle", ["Weißer Kreis", "Cercle blanc", "Círculo blanco", "白丸", "空心圆"]),
+    ("Small White Circle", ["Kleiner weißer Kreis", "Petit cercle blanc", "Círculo blanco pequeño", "小さい白丸", "小空心圆"]),
+    ("Character:", ["Zeichen:", "Caractère:", "Carácter:", "文字:", "字符："]),
+    ("Kinsoku Set:", ["Kinsoku-Satz:", "Jeu kinsoku:", "Conjunto kinsoku:", "禁則処理セット:", "避头尾集："]),
+    ("Default Rules", ["Standardregeln", "Règles par défaut", "Reglas predeterminadas", "既定の規則", "默认规则"]),
+    ("Hard Kinsoku", ["Hartes Kinsoku", "Kinsoku strict", "Kinsoku estricto", "強い禁則", "严格避头尾"]),
+    ("Soft Kinsoku", ["Weiches Kinsoku", "Kinsoku souple", "Kinsoku flexible", "弱い禁則", "宽松避头尾"]),
+    (
+        "Simplified Chinese Kinsoku",
+        ["Kinsoku für vereinfachtes Chinesisch", "Kinsoku chinois simplifié", "Kinsoku de chino simplificado", "簡体中国語禁則", "简体中文避头尾"],
+    ),
+    (
+        "Traditional Chinese Kinsoku",
+        ["Kinsoku für traditionelles Chinesisch", "Kinsoku chinois traditionnel", "Kinsoku de chino tradicional", "繁体中国語禁則", "繁体中文避头尾"],
+    ),
+    ("Korean Kinsoku", ["Koreanisches Kinsoku", "Kinsoku coréen", "Kinsoku coreano", "韓国語禁則", "韩文避头尾"]),
+    ("Kinsoku Type:", ["Kinsoku-Methode:", "Type de kinsoku:", "Tipo de kinsoku:", "禁則調整方式:", "避头尾调整方式："]),
+    ("Push In First", ["Zuerst einziehen", "Rentrer d'abord", "Primero hacia dentro", "追い込み優先", "先推入"]),
+    ("Push Out First", ["Zuerst hinausschieben", "Repousser d'abord", "Primero hacia fuera", "追い出し優先", "先推出"]),
+    ("Push Out Only", ["Nur hinausschieben", "Repousser uniquement", "Solo hacia fuera", "追い出しのみ", "仅推出"]),
+    (
+        "Prioritize Adjustment Amount",
+        ["Anpassungsbetrag bevorzugen", "Priorité à la valeur d'ajustement", "Priorizar la cantidad de ajuste", "調整量を優先", "优先调整量"],
+    ),
+    ("Hanging Type:", ["Hängende Interpunktion:", "Ponctuation suspendue:", "Puntuación colgante:", "ぶら下がり方法:", "悬挂方式："]),
+    ("Force", ["Erzwingen", "Forcer", "Forzar", "強制", "强制"]),
+    ("Bunri-Kinshi", ["Bunri-Kinshi", "Bunri-Kinshi", "Bunri-Kinshi", "分離禁止処理", "分离禁止"]),
+    ("Mojikumi Set:", ["Mojikumi-Satz:", "Jeu mojikumi:", "Conjunto mojikumi:", "文字組み:", "标点挤压集："]),
+    ("Leading Model:", ["Zeilenabstandsmodell:", "Modèle d'interlignage:", "Modelo de interlineado:", "行送りの基準位置:", "行距基准位置："]),
+    (
+        "Em Box Top/Right",
+        ["Geviert oben/rechts", "Haut/droite du cadratin", "Parte superior/derecha del cuadratín", "仮想ボディの上／右", "全角字框上/右"],
+    ),
+    ("Em Box Center", ["Geviert Mitte", "Centre du cadratin", "Centro del cuadratín", "仮想ボディの中央", "全角字框居中"]),
+    (
+        "Em Box Bottom/Left",
+        ["Geviert unten/links", "Bas/gauche du cadratin", "Parte inferior/izquierda del cuadratín", "仮想ボディの下／左", "全角字框下/左"],
+    ),
+    (
+        "Em Box Center (Down)",
+        ["Geviert Mitte (unten)", "Centre du cadratin (bas)", "Centro del cuadratín (abajo)", "仮想ボディの中央（下）", "全角字框居中（下）"],
+    ),
+    ("Roman Baseline", ["Lateinische Grundlinie", "Ligne de base romaine", "Línea de base romana", "欧文ベースライン", "罗马字基线"]),
+    ("Rensuuji", ["Rensuuji", "Rensuuji", "Rensuuji", "連数字処理", "连数字处理"]),
+    (
+        "Absorb Ideographic Space at Line End",
+        [
+            "Ideografisches Leerzeichen am Zeilenende absorbieren",
+            "Absorber l'espace idéographique en fin de ligne",
+            "Absorber el espacio ideográfico al final de línea",
+            "全角スペースを行末吸収",
+            "行尾吸收全角空格",
+        ],
+    ),
+    ("Grid Alignment:", ["Am Raster ausrichten:", "Alignement sur la grille:", "Alineación con cuadrícula:", "グリッド揃え:", "网格对齐："]),
+    (
+        "Align Only First Line to Grid",
+        [
+            "Nur erste Zeile am Raster ausrichten",
+            "Aligner uniquement la première ligne sur la grille",
+            "Alinear solo la primera línea con la cuadrícula",
+            "1 行目のみグリッドに揃える",
+            "仅首行对齐网格",
+        ],
+    ),
+    ("Lines:", ["Zeilen:", "Lignes:", "Líneas:", "行数:", "行数："]),
+    ("Warichu Size:", ["Warichu-Größe:", "Taille warichu:", "Tamaño de warichu:", "割注サイズ:", "割注大小："]),
+    ("Line Spacing:", ["Zeilenabstand:", "Interligne:", "Interlineado:", "行の間隔:", "行间距："]),
+    ("Auto", ["Auto", "Auto", "Automático", "自動", "自动"]),
+    ("Line Break Options", ["Umbruchoptionen", "Options de saut de ligne", "Opciones de salto de línea", "改行オプション", "换行选项"]),
+    (
+        "Characters Before Break:",
+        ["Zeichen vor dem Umbruch:", "Caractères avant le saut:", "Caracteres antes del salto:", "1 行目の最小文字数:", "换行前最少字符数："],
+    ),
+    (
+        "Characters After Break:",
+        ["Zeichen nach dem Umbruch:", "Caractères après le saut:", "Caracteres después del salto:", "最終行の最小文字数:", "换行后最少字符数："],
+    ),
     ("Font", ["Schriftart", "Police", "Fuente", "フォント", "字体"]),
     ("Size", ["Schriftgrad", "Corps", "Tamaño", "サイズ", "大小"]),
     ("Character", ["Zeichen", "Caractère", "Carácter", "文字", "字符"]),
     ("Paragraph", ["Absatz", "Paragraphe", "Párrafo", "段落", "段落"]),
     ("Tabs", ["Tabulatoren", "Tabulations", "Tabulaciones", "タブ", "制表符"]),
+    (
+        "Left-aligned tab",
+        ["Linksbündiger Tabulator", "Tabulation alignée à gauche", "Tabulación alineada a la izquierda", "左揃えタブ", "左对齐制表符"],
+    ),
+    ("Centered tab", ["Zentrierter Tabulator", "Tabulation centrée", "Tabulación centrada", "中央揃えタブ", "居中对齐制表符"]),
+    (
+        "Right-aligned tab",
+        ["Rechtsbündiger Tabulator", "Tabulation alignée à droite", "Tabulación alineada a la derecha", "右揃えタブ", "右对齐制表符"],
+    ),
+    (
+        "Tab aligned on a character",
+        [
+            "Am Zeichen ausgerichteter Tabulator",
+            "Tabulation alignée sur un caractère",
+            "Tabulación alineada en un carácter",
+            "文字揃えタブ",
+            "按字符对齐制表符",
+        ],
+    ),
+    ("X:", ["X:", "X :", "X:", "X:", "X:"]),
+    ("Leader:", ["Füllzeichen:", "Points de suite :", "Carácter de relleno:", "リーダー:", "前导符:"]),
+    ("Align On:", ["Ausrichten an:", "Aligner sur :", "Alinear en:", "揃える文字:", "对齐位置:"]),
+    (
+        "Position panel above text frame",
+        [
+            "Bedienfeld über dem Textrahmen platzieren",
+            "Placer le panneau au-dessus du bloc de texte",
+            "Colocar el panel sobre el marco de texto",
+            "パネルをテキストフレームの上に配置",
+            "将面板置于文本框上方",
+        ],
+    ),
+    ("Clear All", ["Alle löschen", "Tout effacer", "Borrar todo", "すべてを消去", "全部清除"]),
+    ("Delete Tab", ["Tabulator löschen", "Supprimer la tabulation", "Eliminar tabulación", "タブを削除", "删除制表符"]),
+    ("Repeat Tab", ["Tabulator wiederholen", "Répéter la tabulation", "Repetir tabulación", "タブを繰り返し", "重复制表符"]),
+    ("Reset Indents", ["Einzüge zurücksetzen", "Réinitialiser les retraits", "Restablecer sangrías", "インデントをリセット", "重置缩进"]),
     ("Glyphs", ["Glyphen", "Glyphes", "Glifos", "字形", "字形"]),
     ("Story", ["Textabschnitt", "Article", "Artículo", "ストーリー", "文章"]),
     ("Character Styles", ["Zeichenformate", "Styles de caractère", "Estilos de carácter", "文字スタイル", "字符样式"]),
@@ -2675,6 +2809,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "以英文显示字体名称",
         ],
     ),
+    ("Show CJK Features", ["CJK-Funktionen anzeigen", "Afficher les fonctions CJK", "Mostrar funciones CJK", "CJK 機能を表示", "显示中日韩功能"]),
     ("Missing Glyphs", ["Fehlende Glyphen", "Glyphes manquants", "Glifos que faltan", "欠落グリフ", "缺失字形"]),
     (
         "Draw Missing Glyphs from Fallback Fonts",
@@ -2816,6 +2951,12 @@ const TABLE: &[(&str, [&str; 5])] = &[
 /// Interface direction; independent of document binding and paragraph direction.
 pub fn is_rtl(lang: &str) -> bool {
     lang == "ar"
+}
+
+/// A Japanese, Chinese or Korean interface language (`zh-tw` included): CJK features are shown by
+/// default (see [`crate::cjk_features`]).
+pub fn is_cjk(lang: &str) -> bool {
+    matches!(lang.split('-').next(), Some("ja" | "zh" | "ko"))
 }
 
 fn column(lang: &str) -> Option<usize> {
