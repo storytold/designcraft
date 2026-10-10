@@ -825,15 +825,15 @@ fn facing_pages_merge_puts_each_record_on_its_own_page() {
     let doc = &s.documents()[s.active_index().unwrap()].doc;
     assert_eq!(doc.page_count(), 3, "one page per record");
 
-    // Which absolute page each merged frame sits on: page_loc inverts spread+index -> page.
+    // Which absolute page each merged frame sits on.
     let mut pages_seen = std::collections::BTreeSet::new();
     let mut origins = Vec::new();
-    for (si, sp) in doc.spreads.iter().enumerate() {
-        for (pi, it) in sp.items.iter().enumerate() {
+    for sp in &doc.spreads {
+        for it in &sp.items {
             if !matches!(it.content, Content::Text(_)) {
                 continue;
             }
-            let abs = (0..doc.page_count()).find(|a| doc.page_loc(*a) == Some((si, pi)));
+            let abs = doc.page_of_item(it.id);
             let b = it.bounds();
             origins.push((abs, b.x0.round() as i32, b.y0.round() as i32));
             if let Some(a) = abs {
@@ -858,10 +858,10 @@ fn facing_pages_merge_tiles_short_blocks_without_stacking() {
 
     let doc = &s.documents()[s.active_index().unwrap()].doc;
     let mut origins = Vec::new();
-    for (si, sp) in doc.spreads.iter().enumerate() {
-        for (pi, it) in sp.items.iter().enumerate() {
+    for sp in &doc.spreads {
+        for it in &sp.items {
             if matches!(it.content, Content::Text(_)) {
-                let abs = (0..doc.page_count()).find(|a| doc.page_loc(*a) == Some((si, pi)));
+                let abs = doc.page_of_item(it.id);
                 let b = it.bounds();
                 origins.push((abs, b.x0.round() as i32, b.y0.round() as i32));
             }
