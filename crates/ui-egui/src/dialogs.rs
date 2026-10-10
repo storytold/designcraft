@@ -1721,6 +1721,15 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                     Some(Value::Object(o)) => {
                         p.insert(f.key, json!(o));
                     }
+                    Some(Value::Number(n)) => {
+                        p.insert(f.key, json!(n));
+                    }
+                    Some(Value::Array(a)) => {
+                        p.insert(f.key, json!(a));
+                    }
+                    Some(Value::Object(o)) => {
+                        p.insert(f.key, json!(o));
+                    }
                     _ => {}
                 }
             }
