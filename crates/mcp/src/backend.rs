@@ -1,10 +1,15 @@
 //! Where MCP tool calls end up: a control-channel method call.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+
+const MIN_CONTROL_TOKEN_BYTES: usize = 32;
+const MAX_CONTROL_TOKEN_BYTES: usize = 1_024;
+const MAX_CONTROL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CONTROL_REPLY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Something that answers control-channel methods (`engine.execute`, `document.inspect`,
 /// `ui.pointer`, `ui.render`, …). See `designcraft_ui_egui::control` for the full list.
@@ -20,14 +25,30 @@ pub trait Backend {
 /// A running DesignCraft app, reached through its loopback control port.
 pub struct Remote {
     addr: String,
+    token: String,
     conn: Option<(BufReader<TcpStream>, TcpStream)>,
     next_id: u64,
 }
 
 impl Remote {
-    /// Connect to `addr` (`127.0.0.1:7979`), failing fast when nothing is listening.
+    /// Connect with the capability from `DESIGNCRAFT_CONTROL_TOKEN`.
     pub fn connect(addr: &str) -> std::io::Result<Self> {
-        let mut r = Self { addr: addr.to_string(), conn: None, next_id: 1 };
+        let token = std::env::var("DESIGNCRAFT_CONTROL_TOKEN").map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("DESIGNCRAFT_CONTROL_TOKEN is required for a control connection: {e}"))
+        })?;
+        Self::connect_with_token(addr, token)
+    }
+
+    /// Connect to `addr` with an explicit capability token.
+    pub fn connect_with_token(addr: &str, token: impl Into<String>) -> std::io::Result<Self> {
+        let token = token.into();
+        if !(MIN_CONTROL_TOKEN_BYTES..=MAX_CONTROL_TOKEN_BYTES).contains(&token.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("control token must contain between {MIN_CONTROL_TOKEN_BYTES} and {MAX_CONTROL_TOKEN_BYTES} bytes"),
+            ));
+        }
+        let mut r = Self { addr: addr.to_string(), token, conn: None, next_id: 1 };
         r.reconnect()?;
         Ok(r)
     }
@@ -40,11 +61,17 @@ impl Remote {
         self.conn = None;
         let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, format!("cannot resolve {}", self.addr));
         for sa in self.addr.to_socket_addrs()? {
+            if !sa.ip().is_loopback() {
+                last =
+                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("control connections must use a loopback address, not {sa}"));
+                continue;
+            }
             match TcpStream::connect_timeout(&sa, Duration::from_millis(800)) {
                 Ok(s) => {
                     s.set_nodelay(true).ok();
                     // The app answers within 60 s (its own timeout); leave headroom.
                     s.set_read_timeout(Some(Duration::from_secs(90))).ok();
+                    s.set_write_timeout(Some(Duration::from_secs(30))).ok();
                     let read = s.try_clone()?;
                     self.conn = Some((BufReader::new(read), s));
                     return Ok(());
@@ -66,8 +93,12 @@ impl Remote {
         writer.write_all(b"\n")?;
         writer.flush()?;
         let mut reply = String::new();
-        if reader.read_line(&mut reply)? == 0 {
+        let bytes_read = reader.by_ref().take((MAX_CONTROL_REPLY_BYTES + 1) as u64).read_line(&mut reply)?;
+        if bytes_read == 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "control channel closed"));
+        }
+        if bytes_read > MAX_CONTROL_REPLY_BYTES || !reply.ends_with('\n') {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid control reply framing"));
         }
         Ok(reply)
     }
@@ -77,7 +108,10 @@ impl Backend for Remote {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
-        let line = json!({"id": id, "method": method, "params": params}).to_string();
+        let line = json!({"id": id, "token": self.token, "method": method, "params": params}).to_string();
+        if line.len() > MAX_CONTROL_REQUEST_BYTES {
+            return Err(format!("control request is larger than {MAX_CONTROL_REQUEST_BYTES} bytes"));
+        }
         // One retry with a fresh connection (the app may have restarted).
         let reply = match self.roundtrip(&line) {
             Ok(r) => r,

@@ -30,8 +30,8 @@ People trust DesignCraft with their layouts; a crash loses their work. **This ou
 - **Quality gates** before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, assets, layers, wasm). One task id per commit (`M2.1: type tool caret navigation`).
 
 ## Running and looking at the app
-- `cargo run --release -p designcraft -- --sample --control 7979` (sample magazine + control channel).
-- Drive it: JSON lines on `127.0.0.1:7979`, e.g. `{"id":1,"method":"engine.execute","params":{"command":"frame.create","params":{"rect":[36,36,300,200],"content":"text"}}}` then `{"id":2,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
+- `export DESIGNCRAFT_CONTROL_TOKEN="$(openssl rand -hex 32)"; cargo run --release -p designcraft -- --sample --control 7979` (sample magazine + authenticated control channel).
+- Drive it with the same `DESIGNCRAFT_CONTROL_TOKEN`: JSON lines on `127.0.0.1:7979`, e.g. `{"id":1,"token":"<session-token>","method":"engine.execute","params":{"command":"frame.create","params":{"rect":[36,36,300,200],"content":"text"}}}` then `{"id":2,"token":"<session-token>","method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
 - **For UI work, look at the result** (take `ui.screenshot`, read the PNG) and compare with `plan/indesign/02-ui-ux.md` / `11-observed-ui.md`. If no frame is presented (screen locked) use `ui.render` or `designcraft-cli run --sample --all-pages DIR`.
 - Headless: `designcraft-cli run --sample --cmd 'frame.create={"rect":[0,0,100,100]}' --export out.png`.
 - Shell gotcha: `mv`/`cp` are aliased interactive here — use `/bin/mv -f` / `/bin/cp -f`.

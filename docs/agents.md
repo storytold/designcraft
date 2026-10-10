@@ -7,7 +7,7 @@ three ways — pick whichever fits the agent:
 |---|---|---|
 | **CLI** | One-shot jobs, shell pipelines, CI: build or edit a document and export it | `designcraft-cli run`, `script`, `app`, `describe`, `commands` |
 | **MCP** | Claude and other MCP clients; images of pages and the window come back as content | `designcraft-cli mcp` ([mcp.md](mcp.md)) |
-| **Control channel** | Your own client driving the running app (JSON lines over TCP) | `designcraft --control 7979` ([control-protocol.md](control-protocol.md)) |
+| **Control channel** | Your own authenticated client driving the running app (JSON lines over TCP) | `DESIGNCRAFT_CONTROL_TOKEN=… designcraft --control 7979` ([control-protocol.md](control-protocol.md)) |
 
 ## Discover commands
 
@@ -62,6 +62,7 @@ echo 'data.merge {"path": "people.csv", "records": "range", "range": "1-20"}' | 
 ## The running app
 
 ```sh
+export DESIGNCRAFT_CONTROL_TOKEN="$(openssl rand -hex 32)"
 designcraft --sample --control 7979 &
 designcraft-cli app type.changeCase '{"case": "title"}'            # any command
 designcraft-cli app --method ui.screenshot '{"path": "/tmp/w.png"}' # any control-channel method

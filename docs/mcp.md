@@ -13,8 +13,9 @@ Build the CLI (`cargo build --release -p designcraft-cli`), then:
 # Headless: an in-process engine, no window
 claude mcp add designcraft -- /path/to/target/release/designcraft-cli mcp
 
-# Drive the running desktop app (start it first with a control port)
-designcraft --control 7979
+# Drive the running desktop app. Both processes inherit the same random capability.
+export DESIGNCRAFT_CONTROL_TOKEN="$(openssl rand -hex 32)"
+designcraft --control 7979 &
 claude mcp add designcraft-app -- /path/to/target/release/designcraft-cli mcp --connect 7979
 ```
 
@@ -43,7 +44,7 @@ claude mcp add designcraft -- designcraft-cli mcp
 
 ## Modes
 
-| | Headless (`mcp`) | Connected (`mcp --connect PORT` or `HOST:PORT`) |
+| | Headless (`mcp`) | Connected (`mcp --connect PORT` or `LOOPBACK:PORT`) |
 |---|---|---|
 | Engine | In-process `designcraft_engine::Session`, starts with an empty Letter document (`--sample` opens the sample magazine) | The app's session, through its loopback control channel ([control-protocol.md](control-protocol.md)) |
 | Rendering | `designcraft-render` (CPU) | The app's renderer |
@@ -51,7 +52,8 @@ claude mcp add designcraft -- designcraft-cli mcp
 | UI-only commands via `execute` (`view.*`, `window.*`, `help.*`, `edit.dynamicSpelling`, and `app.*` except `app.links`) | Error | Work |
 
 In connected mode every tool maps to a control-channel method (`engine.execute`, `ui.render`, `ui.pointer`, …), so
-what the agent does shows up live in the window. The connection is re-established once if the app restarts.
+what the agent does shows up live in the window. Connected clients require the same
+`DESIGNCRAFT_CONTROL_TOKEN` as the app. The connection is re-established once if the app restarts.
 
 ## Coordinates
 

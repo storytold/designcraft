@@ -27,6 +27,12 @@ use crate::DesignApp;
 use crate::canvas::Xf;
 use crate::menus;
 
+const MAX_CLICK_COUNT: u64 = 16;
+
+fn synthetic_work_count(params: &Value, key: &str, default: u64, maximum: u64) -> u64 {
+    params.get(key).and_then(Value::as_u64).unwrap_or(default).clamp(1, maximum)
+}
+
 pub type ControlResponse = Value;
 
 pub struct ControlRequest {
@@ -208,7 +214,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 }
             }
             app.synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
-            let count = p.get("count").and_then(Value::as_u64).unwrap_or(1);
+            let count = synthetic_work_count(p, "count", 1, MAX_CLICK_COUNT);
             for _ in 1..count {
                 app.synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: true, modifiers });
                 app.synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
@@ -357,6 +363,18 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             ok(Value::Null)
         }
         other => err(format!("unknown method `{other}`")),
+    }
+}
+
+#[cfg(test)]
+mod control_limit_tests {
+    use super::{MAX_CLICK_COUNT, synthetic_work_count};
+    use serde_json::json;
+
+    #[test]
+    fn synthetic_pointer_work_is_bounded() {
+        assert_eq!(synthetic_work_count(&json!({"count": u64::MAX}), "count", 1, MAX_CLICK_COUNT), 16);
+        assert_eq!(synthetic_work_count(&json!({"count": 0}), "count", 1, MAX_CLICK_COUNT), 1);
     }
 }
 

@@ -366,7 +366,7 @@ fn fake_app() -> (String, std::sync::mpsc::Receiver<Value>) {
 #[test]
 fn connect_mode_forwards_to_the_app() {
     let (addr, seen) = fake_app();
-    let remote = Remote::connect(&addr).unwrap();
+    let remote = Remote::connect_with_token(&addr, "test-control-token-with-at-least-32-bytes").unwrap();
     assert!(remote.has_ui());
     let mut s = Server::new(Box::new(remote));
     let r = call(&mut s, "screenshot", json!({}));
@@ -374,6 +374,7 @@ fn connect_mode_forwards_to_the_app() {
     assert!(image_of(&r).starts_with(PNG_MAGIC));
     let got = seen.recv().unwrap();
     assert_eq!(got["method"], "ui.screenshot");
+    assert_eq!(got["token"], "test-control-token-with-at-least-32-bytes");
     assert!(!std::path::Path::new(got["params"]["path"].as_str().unwrap()).exists(), "temp screenshot is removed");
 
     ok(&mut s, "click", json!({"x": 10, "y": 20, "count": 2}));
@@ -386,10 +387,25 @@ fn connect_mode_forwards_to_the_app() {
 }
 
 #[test]
+fn connected_client_bounds_outbound_requests() {
+    let (addr, seen) = fake_app();
+    let mut remote = Remote::connect_with_token(&addr, "test-control-token-with-at-least-32-bytes").unwrap();
+    let error = remote.call("ui.inspect", json!({"value": "x".repeat(4 * 1024 * 1024)})).unwrap_err();
+    assert!(error.contains("control request is larger"), "{error}");
+    drop(remote);
+    assert!(seen.recv_timeout(std::time::Duration::from_millis(100)).is_err());
+}
+
+#[test]
 fn control_addr_accepts_port_or_address() {
     assert_eq!(control_addr("7979"), "127.0.0.1:7979");
     assert_eq!(control_addr("localhost:8000"), "localhost:8000");
-    assert!(Remote::connect("127.0.0.1:1").is_err());
+    assert_eq!(Remote::connect_with_token("127.0.0.1:1", "short").err().map(|e| e.kind()), Some(std::io::ErrorKind::InvalidInput));
+    assert_eq!(
+        Remote::connect_with_token("192.0.2.1:7979", "test-control-token-with-at-least-32-bytes").err().map(|e| e.kind()),
+        Some(std::io::ErrorKind::PermissionDenied)
+    );
+    assert!(Remote::connect_with_token("127.0.0.1:1", "test-control-token-with-at-least-32-bytes").is_err());
 }
 
 #[test]

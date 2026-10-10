@@ -2,8 +2,8 @@
 //!
 //! Usage: `designcraft [--control <port>] [--sample] [files…]`
 //!
-//! `--control <port>` (or `DESIGNCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server:
-//! `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
+//! `--control <port>` (or `DESIGNCRAFT_CONTROL_PORT`) starts an authenticated localhost JSON-lines
+//! control server. Configure `DESIGNCRAFT_CONTROL_TOKEN`, or copy the generated token from stderr.
 //! See `designcraft_ui_egui::control` for the methods.
 //!
 //! The graphics backend (DirectX 12, Vulkan, Metal or OpenGL) is chosen in `gpu` before the window
@@ -317,8 +317,10 @@ fn main() -> eframe::Result {
             load_prefs(&mut app);
             app.integrated_titlebar = cfg!(target_os = "macos");
             if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
-                app = app.with_control(rx);
+                match control_server::start(port, cc.egui_ctx.clone()) {
+                    Ok(rx) => app = app.with_control(rx),
+                    Err(e) => eprintln!("designcraft: control server not started: {e}"),
+                }
             }
             if sample {
                 let _ = app.run("file.newSample", serde_json::json!({}));
