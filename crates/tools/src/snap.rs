@@ -372,13 +372,15 @@ fn format_angle(deg: f64) -> String {
     if nearest.is_finite() && (deg - nearest).abs() < 1e-6 { format!("{nearest:.0}") } else { format!("{deg:.1}") }
 }
 
+/// The baseline grid comes last: its lines are dense and it snaps while hidden, so ahead of
+/// smart guides it would take nearly every vertical move and draw nothing (#188).
 fn first_on_axis(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> Option<AxisHit> {
     pass_grid(cx, req, axis, tol)
-        .or_else(|| pass_baseline(cx, req, axis, tol))
         .or_else(|| pass_guides(cx, req, axis, tol))
         .or_else(|| pass_align(cx, req, axis, tol))
         .or_else(|| pass_spacing(cx, req, axis, tol))
         .or_else(|| pass_dimensions(cx, req, axis, tol))
+        .or_else(|| pass_baseline(cx, req, axis, tol))
 }
 
 /// Document grid. No overlay.
@@ -525,7 +527,8 @@ fn offer_enabled(best: &mut Option<Best>, moving: Rect, flags: [bool; 3], axis: 
 /// stationary box. A box counts only when its range overlaps on the other axis. The nearest
 /// box on a side that overlaps the mover, or a zero gap, produces no gap, and a farther box
 /// is not used instead. A candidate shifts the mover so one of its gaps equals one stationary
-/// nearest-neighbor gap. The shift has to fall inside the zone. The closest shift wins.
+/// nearest-neighbor gap, or, with a box on both sides, so its two gaps are equal (centered
+/// between them). The shift has to fall inside the zone. The closest shift wins.
 /// One gap overlay is drawn for every gap of that length, including the moving gap after the
 /// shift. Create, resize, rotate, and point do not match.
 fn pass_spacing(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> Option<AxisHit> {
@@ -538,19 +541,21 @@ fn pass_spacing(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -
     let mover = interval_on(req.rect, axis)?;
     let boxes = spacing_intervals(cx, req, axis, &mover);
     let stationary = stationary_gaps(&boxes);
-    if stationary.is_empty() {
-        return None;
-    }
+    let low = nearest_side(&mover, &boxes, None, true);
+    let high = nearest_side(&mover, &boxes, None, false);
     let mut best: Option<SpacingChoice> = None;
-    if let Some(n) = nearest_side(&mover, &boxes, None, true) {
+    if let Some(n) = &low {
         for g in &stationary {
             offer_spacing(&mut best, g.gap - n.gap, g.gap, tol);
         }
     }
-    if let Some(n) = nearest_side(&mover, &boxes, None, false) {
+    if let Some(n) = &high {
         for g in &stationary {
             offer_spacing(&mut best, n.gap - g.gap, g.gap, tol);
         }
+    }
+    if let (Some(l), Some(h)) = (&low, &high) {
+        offer_spacing(&mut best, (h.gap - l.gap) * 0.5, (l.gap + h.gap) * 0.5, tol);
     }
     let choice = best?;
     let shifted = Interval { lo: mover.lo + choice.delta, hi: mover.hi + choice.delta, perp_lo: mover.perp_lo, perp_hi: mover.perp_hi };
@@ -1858,6 +1863,109 @@ mod tests {
         );
         assert!((hit.delta.x - -2.0).abs() < 1e-6);
         assert!(hit.guides.iter().any(|g| matches!(g, Overlay::Gap { .. })));
+    }
+
+    fn doc_with_rects(rects: &[Rect]) -> Document {
+        let mut doc = Document::new(&NewDocument::default());
+        let layer = doc.default_layer();
+        for &r in rects {
+            let id = ItemId(doc.alloc());
+            let item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(r));
+            doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+        }
+        doc
+    }
+
+    fn gap_overlays(guides: &[Overlay]) -> usize {
+        guides.iter().filter(|g| matches!(g, Overlay::Gap { .. })).count()
+    }
+
+    // #188: a box dragged between two others snaps to the middle and marks both gaps.
+    #[test]
+    fn move_centers_between_two_boxes_side_by_side() {
+        // Neighbours end at 40 and start at 160. The 30 wide mover at [83,113] is 2 left of centre.
+        let doc = doc_with_rects(&[Rect::new(0.0, 0.0, 40.0, 30.0), Rect::new(160.0, 0.0, 200.0, 30.0)]);
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&doc, false);
+        let sel = Selection::default();
+        let mut cx = ctx_on(&doc, &sel, &cache, &layout);
+        cx.snap.snap_to_guides = false;
+        let hit = snap(&cx, move_req(Rect::new(83.0, 5.0, 113.0, 25.0), &[]));
+        assert!((hit.delta.x - 2.0).abs() < 1e-6, "{}", hit.delta.x);
+        assert_eq!(gap_overlays(&hit.guides), 2);
+    }
+
+    #[test]
+    fn move_centers_between_two_boxes_stacked() {
+        let doc = doc_with_rects(&[Rect::new(0.0, 0.0, 30.0, 40.0), Rect::new(0.0, 160.0, 30.0, 200.0)]);
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&doc, false);
+        let sel = Selection::default();
+        let mut cx = ctx_on(&doc, &sel, &cache, &layout);
+        cx.snap.snap_to_guides = false;
+        let hit = snap(&cx, y_req(Rect::new(5.0, 83.0, 25.0, 113.0)));
+        assert!((hit.delta.y - 2.0).abs() < 1e-6, "{}", hit.delta.y);
+        assert_eq!(gap_overlays(&hit.guides), 2);
+    }
+
+    fn with_baseline_grid(mut doc: Document) -> Document {
+        doc.settings.baseline_grid.start = 36.0;
+        doc.settings.baseline_grid.increment = 12.0;
+        doc
+    }
+
+    // #188: with Snap to Guides on, the hidden baseline grid took vertical moves first.
+    #[test]
+    fn vertical_centering_beats_a_closer_baseline() {
+        // Middle at 200. Mover centre 198 (+2). Its top and bottom are 3 from lines 180 and 216.
+        let doc = with_baseline_grid(doc_with_rects(&[Rect::new(100.0, 100.0, 130.0, 140.0), Rect::new(100.0, 260.0, 130.0, 300.0)]));
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&doc, false);
+        let sel = Selection::default();
+        let cx = ctx_on(&doc, &sel, &cache, &layout);
+        let hit = snap(&cx, y_req(Rect::new(105.0, 183.0, 125.0, 213.0)));
+        assert!((hit.delta.y - 2.0).abs() < 1e-6, "{}", hit.delta.y);
+        assert_eq!(gap_overlays(&hit.guides), 2);
+    }
+
+    #[test]
+    fn vertical_alignment_beats_a_closer_baseline() {
+        // Top 107 is 1 from the line at 108 and 2 from the other box's top at 105.
+        let doc = with_baseline_grid(doc_with_rects(&[Rect::new(300.0, 105.0, 340.0, 135.0)]));
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&doc, false);
+        let sel = Selection::default();
+        let cx = ctx_on(&doc, &sel, &cache, &layout);
+        let hit = snap(&cx, y_req(Rect::new(100.0, 107.0, 140.0, 137.0)));
+        assert!((hit.delta.y - -2.0).abs() < 1e-6, "{}", hit.delta.y);
+        assert!(hit.guides.iter().any(|g| matches!(g, Overlay::Guide { .. })));
+    }
+
+    #[test]
+    fn move_off_center_outside_the_zone_does_not_center() {
+        // 10 off centre, zone 4.
+        let doc = doc_with_rects(&[Rect::new(0.0, 0.0, 40.0, 30.0), Rect::new(160.0, 0.0, 200.0, 30.0)]);
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&doc, false);
+        let sel = Selection::default();
+        let mut cx = ctx_on(&doc, &sel, &cache, &layout);
+        cx.snap.snap_to_guides = false;
+        let hit = snap(&cx, move_req(Rect::new(95.0, 5.0, 125.0, 25.0), &[]));
+        assert_eq!(hit.delta.x, 0.0);
+        assert_eq!(gap_overlays(&hit.guides), 0);
+    }
+
+    #[test]
+    fn centering_needs_smart_spacing() {
+        let doc = doc_with_rects(&[Rect::new(0.0, 0.0, 40.0, 30.0), Rect::new(160.0, 0.0, 200.0, 30.0)]);
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&doc, false);
+        let sel = Selection::default();
+        let mut cx = ctx_on(&doc, &sel, &cache, &layout);
+        cx.snap.snap_to_guides = false;
+        cx.snap.smart_spacing = false;
+        let hit = snap(&cx, move_req(Rect::new(83.0, 5.0, 113.0, 25.0), &[]));
+        assert_eq!(hit.delta.x, 0.0);
     }
 
     #[test]
