@@ -70,12 +70,24 @@ impl Glyph {
     pub fn is_space(&self) -> bool {
         matches!(self.ch, ' ' | '\u{2002}'..='\u{200A}') || (self.ch == '\u{3000}' && self.ideographic_space_elastic)
     }
+    /// A space whose width justification and word spacing vary: U+0020, the nonbreaking space
+    /// U+00A0 and an elastic ideographic space. Fixed-width spaces (U+2002–U+200A, U+202F) get no
+    /// word-space stretch or shrink.
+    pub fn is_word_space(&self) -> bool {
+        matches!(self.ch, ' ' | NBSP) || (self.ch == '\u{3000}' && self.ideographic_space_elastic)
+    }
+    /// A space that justification treats as a word space rather than a letter: [`Self::is_space`]
+    /// plus U+00A0, which is never a break opportunity.
+    pub fn is_justify_space(&self) -> bool {
+        self.is_space() || self.ch == NBSP
+    }
     pub fn is_letter(&self) -> bool {
         self.ch.is_alphabetic() || matches!(self.ch, '\'' | '’')
     }
 }
 
 pub const SOFT_HYPHEN: char = '\u{AD}';
+pub const NBSP: char = '\u{A0}';
 
 /// Shaped paragraph.
 pub struct ShapedPara {

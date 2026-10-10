@@ -325,6 +325,110 @@ fn hyphenation_skips_a_no_break_word_at_the_start() {
     assert!(!first.hyphenated && first.range.end >= 15, "{:?}", &text[first.range.clone()]);
 }
 
+/// Natural advance of each glyph of `text` by byte, and a frame width that puts the first three
+/// words on a justified line with one word space of extra to share.
+fn three_word_measure(text: &str) -> (std::collections::HashMap<usize, f64>, f64) {
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 1000.0, 100.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let adv = line.glyphs.iter().map(|g| (g.byte, g.adv)).collect::<std::collections::HashMap<_, _>>();
+    let third_end = text.find(" dddd").unwrap();
+    let gap = line.glyphs.iter().find(|g| g.byte == third_end).unwrap();
+    (adv, gap.x - line.x0 + gap.adv + 2.0 * line.x0)
+}
+
+fn justified_first_line(text: &str, width: f64, no_break: Option<std::ops::Range<usize>>) -> Line {
+    let para = ParaAttrs { align: Some(Align::LeftJustified), word_space_max: Some(4.0), ..Default::default() };
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 1000.0), para);
+    if let Some(run) = no_break {
+        d.story_mut(sid).unwrap().format_chars(run, |f| f.over.no_break = Some(true));
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0].clone();
+    assert!((line.end_x - line.x1).abs() < 0.1, "line ends at {} not {}", line.end_x, line.x1);
+    line
+}
+
+#[test]
+fn no_break_spaces_stretch_on_justified_lines() {
+    let text = "aaaa bbbb cccc dddd eeee ffff gggg hhhh";
+    let (natural, width) = three_word_measure(text);
+    // The run holds one of the line's two spaces, then both.
+    for run in [0..9, 0..14] {
+        let line = justified_first_line(text, width, Some(run.clone()));
+        assert_eq!(text[line.range.clone()].trim_end(), "aaaa bbbb cccc");
+        let words = line.glyphs.iter().filter(|g| g.byte < 14);
+        let (spaces, letters): (Vec<_>, Vec<_>) = words.partition(|g| text.as_bytes()[g.byte] == b' ');
+        assert_eq!(spaces.len(), 2);
+        for s in &spaces {
+            assert!(s.adv > natural[&s.byte] + 1.0 && (s.adv - spaces[0].adv).abs() < 1e-6, "run {run:?}: space at {} is {}", s.byte, s.adv);
+        }
+        for g in letters {
+            assert!((g.adv - natural[&g.byte]).abs() < 1e-6, "run {run:?}: letter at {} is {}", g.byte, g.adv);
+        }
+    }
+}
+
+#[test]
+fn nonbreaking_space_stretches_and_fixed_width_one_does_not() {
+    for (nb, stretches) in [('\u{A0}', true), ('\u{202F}', false)] {
+        let text = format!("aaaa{nb}bbbb cccc dddd eeee ffff gggg hhhh");
+        let (natural, width) = three_word_measure(&text);
+        let line = justified_first_line(&text, width, None);
+        let nb_glyph = line.glyphs.iter().find(|g| g.byte == 4).unwrap();
+        let space = line.glyphs.iter().find(|g| text.as_bytes()[g.byte] == b' ').unwrap();
+        assert!(space.adv > natural[&space.byte] + 1.0);
+        if stretches {
+            assert!((nb_glyph.adv - space.adv).abs() < 1e-6, "{nb:?}: {} vs {}", nb_glyph.adv, space.adv);
+        } else {
+            assert!((nb_glyph.adv - natural[&4]).abs() < 1e-6, "{nb:?}: {} vs {}", nb_glyph.adv, natural[&4]);
+        }
+    }
+}
+
+#[test]
+fn jidori_run_keeps_its_width_on_a_justified_line() {
+    fn first_line(text: &str, width: f64, para: ParaAttrs, run: std::ops::Range<usize>) -> Line {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 1000.0), para);
+        d.story_mut(sid).unwrap().format_chars(run, |f| f.over.jidori = Some(6));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].clone()
+    }
+    for sp in ['\u{A0}', ' '] {
+        let text = format!("aa{sp}aa bbbb cccc dddd eeee ffff gggg hhhh");
+        let run = 0..4 + sp.len_utf8();
+        let run_width = |l: &Line| l.glyphs.iter().filter(|g| run.contains(&g.byte)).map(|g| g.adv).sum::<f64>();
+        let ragged = first_line(&text, 1000.0, ParaAttrs::default(), run.clone());
+        let gap = ragged.glyphs.iter().find(|g| g.byte == text.find(" dddd").unwrap()).unwrap();
+        let width = gap.x - ragged.x0 + gap.adv + 2.0 * ragged.x0;
+        let para = ParaAttrs { align: Some(Align::LeftJustified), word_space_max: Some(4.0), ..Default::default() };
+        let line = first_line(&text, width, para, run.clone());
+        assert_eq!(text[line.range.clone()].trim_end(), format!("aa{sp}aa bbbb cccc"));
+        assert!((line.end_x - line.x1).abs() < 0.1, "{sp:?}: line ends at {} not {}", line.end_x, line.x1);
+        assert!((run_width(&line) - run_width(&ragged)).abs() < 1e-6, "{sp:?}: run is {} not {}", run_width(&line), run_width(&ragged));
+    }
+}
+
+#[test]
+fn nonbreaking_space_alone_fills_a_justified_line() {
+    let text = "10\u{A0}km 1234";
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 1000.0, 100.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ragged = all_lines(&cs)[0];
+    let natural = ragged.glyphs.iter().map(|g| (g.byte, g.adv)).collect::<std::collections::HashMap<_, _>>();
+    let m = ragged.glyphs.iter().find(|g| g.byte == 5).unwrap();
+    let width = m.x - ragged.x0 + m.adv + 15.0 + 2.0 * ragged.x0;
+    let line = justified_first_line(text, width, None);
+    assert_eq!(text[line.range.clone()].trim_end(), "10\u{A0}km");
+    for g in line.glyphs.iter().filter(|g| g.byte < 6) {
+        if g.byte == 2 {
+            assert!((g.adv - natural[&2] - 15.0).abs() < 0.1, "U+00A0 is {}", g.adv);
+        } else {
+            assert!((g.adv - natural[&g.byte]).abs() < 1e-6, "glyph at {} is {}", g.byte, g.adv);
+        }
+    }
+}
+
 /// Story of `n` one-line filler paragraphs followed by `extra` paragraphs, in a 2-column frame.
 fn keep_doc(fillers: usize, extra: &[&str], height: f64) -> (Document, StoryId, Vec<usize>) {
     let mut parts: Vec<String> = (0..fillers).map(|k| format!("Filler {k}")).collect();

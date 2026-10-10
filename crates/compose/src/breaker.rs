@@ -81,15 +81,21 @@ impl Spacing {
         if !self.justify || g.locked_advance {
             return ([0.0; 3], [0.0; 3]);
         }
+        // A space that is no break opportunity (No Break, U+00A0) is a box with word-space elasticity.
+        if g.is_justify_space() {
+            let (st, sh) = self.space_elastic(g);
+            return ([st, 0.0, 0.0], [sh, 0.0, 0.0]);
+        }
         let natural = g.adv / self.glyph_desired.max(0.01);
         (
             [0.0, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
             [0.0, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
         )
     }
-    /// Word-space stretch and shrink of space glyph `g` (only U+0020 is elastic).
+    /// Word-space stretch and shrink of space glyph `g` (see [`Glyph::is_word_space`]); none
+    /// inside a jidori run, whose width is fitted.
     fn space_elastic(&self, g: &Glyph) -> (f64, f64) {
-        if g.ch != ' ' && !(g.ch == '\u{3000}' && g.ideographic_space_elastic) {
+        if !g.is_word_space() || g.locked_advance {
             return (0.0, 0.0);
         }
         (g.space * (self.word_max - self.word_desired).max(0.0), g.space * (self.word_desired - self.word_min).max(0.0))
