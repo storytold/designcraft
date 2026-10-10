@@ -27,7 +27,7 @@ but are next in line.
 Exchanging files with InDesign users (open INDD, round-trip IDML) is a beta requirement, not part
 of the alpha gate: IDML works both ways today and INDD is gap 2.
 
-**Distance to alpha:** ~15–25 h (the threading row). Ready for real work (~42%) is already above
+**Distance to alpha:** ~15–25 h (the threading row). Ready for real work (~47%) is already above
 the ~40% alpha bar.
 
 ## Current focus
@@ -76,8 +76,8 @@ set exists; depth gaps are in gaps.md.
 
 ## To beta
 
-Beta needs ~75% ready for real work and no blocking gap in the main file format. From ~42% today
-that is ~33 points and **420–750 h** (~120–200 wall-clock hours with four to five agents):
+Beta needs ~75% ready for real work and no blocking gap in the main file format. From ~47% today
+that is ~28 points and **420–750 h** (~120–200 wall-clock hours with four to five agents):
 
 | Work | Gap | Hours |
 |---|---|---|
@@ -110,5 +110,6 @@ output intent · EPS place") is done except Books depth and EPS (preview only).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | trivial | Ready figure 42% → 47% (method aligned with the standard); beta distance 28 points |
 | 2026-10-10 | minor | Alpha gate table added (6 core workflows); gate fails on manual threading, stage pre-alpha; A1 milestone and focus item 0 |
 | 2026-10-10 | major | Created: milestones moved from ROADMAP.md and re-assessed; Current focus and the beta plan from the full re-measure |

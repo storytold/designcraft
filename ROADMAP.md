@@ -1,6 +1,6 @@
 # DesignCraft roadmap
 
-**Stage: pre-alpha** · next: alpha, ~0% and ~15–25 h away (the core-workflow gate, not the percentage: ready for real work is already ~42%)
+**Stage: pre-alpha** · next: alpha, ~0% and ~15–25 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, full re-measure against InDesign 2026 21.6; restructured to the craftrules progress-docs standard) · **Target:** Adobe InDesign 2026
 
@@ -12,11 +12,17 @@ format + IDML), scriptable by agents (MCP), and available on the web.
 | | Value | Kind |
 |---|---|---|
 | **Feature breadth** | **~80%** (69% of InDesign 21.6's in-scope menu items matched; 99% of our 275-row checklist) | measured bounds, estimate between |
-| **Ready for real work** | **~42%** (range 38–48%) | estimated: dimension weights 47.2% × 0.9 core-path discount |
+| **Ready for real work** | **~47%** (range 42–52%) | estimated: weighted sum over the dimensions below |
 | Mainstream practitioner | **~42%** (weekly core 60.7% × 0.88 interaction × 0.92 stability × 0.85 file exchange) | estimated |
 | Essentials user | **~54%** (core features 72% × 0.90 launch × 0.88 discoverability × 0.95 files received) | estimated |
 | Remaining to **beta** | **420–750 Opus 5.5 agent-hours** (~120–200 wall-clock hours with 4–5 agents) | estimated |
 | Remaining to **full parity** | **1,150–1,950 Opus 5.5 agent-hours** | estimated |
+
+| Audience | Ready | Opus 5.5 agent-hours to ~95% | Work that dominates |
+|---|---|---|---|
+| Full target (ready for real work) | ~47% | 1,150–1,950 (~70% parallel) | depth across all areas, scripting compatibility, localization, typography fidelity, INDD/IDML |
+| Mainstream practitioner | ~42% | 500–850 (~65% parallel) | INDD import and IDML corpus, composition fidelity, weekly-area depth, PDF/X-1a and printing |
+| Essentials user | ~54% | 135–250 (~50% parallel) | start-up robustness, context menus and copy/paste, threading, fonts, Windows printing |
 
 **Why pre-alpha:** it fails one of InDesign's core workflows, the alpha gate in
 [docs/roadmap.md](docs/roadmap.md#alpha-gate). A user can't thread a story from one frame to
@@ -24,7 +30,7 @@ another: the in and out ports are drawn, but clicking the out port does nothing 
 thread or unthread command. Long text flows only through autoflow on Place and Primary Text
 Frame, which users report adding and keeping pages wrongly (#165, #140, #194, #352). Everything
 else in the gate works end to end on macOS (document setup, styles, images, object editing, PDF
-export, save and reopen), and ready for real work (~42%) is above the alpha bar, so manual
+export, save and reopen), and ready for real work (~47%) is above the alpha bar, so manual
 threading is the whole distance to alpha. Beyond that, beta needs INDD opening, IDML proven on
 real files, composition compared with InDesign's, and basic editing fixed on Windows and Linux.
 Details: [docs/target-app-parity.md](docs/target-app-parity.md).
@@ -123,6 +129,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-10** · Readiness per audience: full ~47% (method aligned with the standard, was
+  42%), mainstream practitioner ~42%, essentials user ~54%, each with hours to ~95%.
 - **2026-10-10** · Stage re-normalized to **pre-alpha** under craftrules' core-workflow gate: text
   can't be threaded by hand (no out-port click, no thread command).
 - **2026-10-10** · Full re-measure against InDesign 2026 21.6 (menu dump, bundle formats and
@@ -155,6 +163,7 @@ Newest first.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Full number 42% → 47% (method aligned with the standard: plain weighted sum, no new evidence); readiness table with hours per audience |
 | 2026-10-10 | minor | Headline adds mainstream practitioner (~42%) and essentials user (~54%); method in docs/target-app-parity.md |
 | 2026-10-10 | minor | Stage alpha → pre-alpha under the new core-workflow gate: manual text threading is missing; alpha gate table added to docs/roadmap.md |
 | 2026-10-10 | major | Restructured to the progress-docs standard; full re-measure; the "Working today" inventory moved to docs/target-app-parity.md, milestones to docs/roadmap.md, the CLI/MCP section left to docs/agents.md (which already covered it) |

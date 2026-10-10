@@ -11,10 +11,10 @@ presence checklist is [parity-checklist.md](parity-checklist.md) (`cargo xtask p
 | Number | Value | Kind |
 |---|---|---|
 | **Feature breadth** (does each InDesign feature exist?) | **~80%** (range 69–99%) | measured lower and upper bounds, estimate between them (below) |
-| **Ready for real work** (could an InDesign professional switch for real jobs?) | **~42%** (range 38–48%) | estimated, weighted (below) |
-| Mainstream practitioner (weekly core of a typical InDesign pro) | **~42%** | estimated, [method below](#mainstream-practitioner-42) |
-| Essentials user (flyers, newsletters: the core only) | **~54%** | estimated, [method below](#essentials-user-54) |
-| Remaining effort to **beta** (~75% ready, main format reliable) | **420–750 Opus 5.5 agent-hours** | estimated |
+| **Ready for real work** (could an InDesign professional switch for real jobs?) | **~47%** (range 42–52%) | estimated, weighted sum (below); 1,150–1,950 h to ~95% |
+| Mainstream practitioner (weekly core of a typical InDesign pro) | **~42%** | 500–850 h to ~95%; estimated, [method below](#mainstream-practitioner-42) |
+| Essentials user (flyers, newsletters: the core only) | **~54%** | 135–250 h to ~95%; estimated, [method below](#essentials-user-54) |
+| Remaining effort to **beta** (~75% ready, main format reliable; 28 points away) | **420–750 Opus 5.5 agent-hours** | estimated |
 | Remaining effort to **full parity** | **1,150–1,950 Opus 5.5 agent-hours** | estimated |
 | Stage | **pre-alpha** (fails the core-workflow gate: no manual text threading); ~15–25 h to alpha | see [roadmap.md](roadmap.md#alpha-gate) |
 
@@ -69,26 +69,32 @@ they receive, setting type exactly, and basic editing that never fails.
 | Hardware | 2% | 45% | 20–40 | Canvas rasterizes on the CPU (vello_cpu, multithreaded); GPU only presents; printing is `lpr` (no Windows printing, no PostScript) | [hardware-parity.md](hardware-parity.md) |
 | Ecosystem (scripting, plug-ins) | 2% | 15% | 150–250 | Own command/script/MCP API is strong; no ExtendScript/UXP DOM, so InDesign scripts don't run; no plug-ins | [gaps.md](gaps.md) |
 | AI features | 0% (not weighted) | 15% | 60–120 | Agent control through MCP goes beyond InDesign; no generative features (InDesign 2026: Generative Expand, Text to Image, Auto Style) | [gaps.md](gaps.md) |
-| **Weighted** | 100% | 47% computed; reported as **~42%** (range 38–48%) | **1,150–1,950** | | |
+| **Weighted sum** | 100% | **47.2% → ~47%** (range 42–52%) | **1,150–1,950** | | |
 
-**How the 42% is built (written down 2026-10-10, unchanged value):** the weighted sum of the
-table is 47.2%. One multiplicative discount is then applied, **×0.9 for core-path failures that
-cut across dimensions**: manual threading is missing (alpha gate), and object copy/paste, context
-menus, caret formatting and start-up fail for users (44 of 81 open issues are core-path bugs, see
-the sentiment count below). These hit the Features, Typography and Stability rows as well as UI,
-so the UI row alone understates them. 47.2% × 0.9 = 42.5% → **~42%**. The range 38–48% spans the
-discount at ×0.8 to none.
+**How the number is built:** the plain weighted sum of the table above, per the craftrules
+standard: 25×55 + 15×45 + 20×40 + 15×45 + 10×45 + 5×65 + 3×45 + 3×55 + 2×45 + 2×15 = 47.2% →
+**~47%** (range 42–52%, ±5 points of judgement in the dimension values). An earlier version
+today applied a further ×0.9 for cross-cutting core-path failures and reported 42%. That
+multiplicative step was dropped to match the standard (discounts belong only to the mainstream
+and essentials numbers). Those failures are already in the UI/UX (45%) and Stability (45%) rows,
+and the missing manual threading is what holds the stage at pre-alpha through the gate.
 
 ## Mainstream practitioner and essentials user
 
 Two narrower questions, computed with the craftrules method so every app's numbers compare. The
-stage still follows the full number (~42%) and the core-workflow gate. All three are estimates.
+stage still follows the full number (~47%) and the core-workflow gate. All three are estimates.
 
-| Number | Value |
-|---|---|
-| Ready for real work (full InDesign) | **~42%** |
-| Mainstream practitioner | **~42%** |
-| Essentials user | **~54%** |
+| Audience | Ready | Opus 5.5 agent-hours to ~95% | Parallelizes | Work that dominates |
+|---|---|---|---|---|
+| Full target (ready for real work) | **~47%** | **1,150–1,950** | ~70% (per crate) | depth across all 19 areas, InDesign scripting compatibility, localization to full in 12 languages, typography fidelity, INDD/IDML exchange |
+| Mainstream practitioner | **~42%** | **500–850** | ~65% | INDD import and IDML real-file corpus (80–160), composition fidelity against InDesign (120–200), depth of the weekly areas (150–240), PDF/X-1a, presets and printing (65–110), editing and threading (45–75), stability and CI (25–45), fonts (10–20) |
+| Essentials user | **~54%** | **135–250** | ~50% | start-up robustness on every GPU (25–45), editing and discoverability bugs: context menus, copy/paste, installer (30–50), threading (15–25), text editing and fonts (20–40), printing on Windows (15–30), depth of the core features (30–60) |
+
+Hours are calibrated as in [Remaining effort and calibration](#remaining-effort-and-calibration)
+(1–2 h per feature arc, 2–4 h per behaviour cluster matched against an oracle). Each audience's
+work is a subset of the one above it: essentials ⊂ mainstream ⊂ full. Human needs: the owner's
+decision on INDD (#114), InDesign oracle captures on the owner's Mac, native-speaker review (full
+only).
 
 ### Mainstream practitioner: ~42%
 
@@ -123,9 +129,10 @@ Discounts (multiplicative):
 | Stability on real machines | ×0.92 | start-up failures on Intel Mac Metal (#334) and Windows drivers (#167, #273, #220, #192, #166); no CI on pull requests; macOS on Apple silicon is solid |
 | File exchange with InDesign users | ×0.85 | `.indd` can't be opened (#21); IDML import/export bugs (#193, #338, #339, #340, #211); opened text reflows: optical kerning (#181), overset rule (#180). Harsher than VectorCraft's ×0.92 because InDesign pros receive and send native files daily |
 
-60.7% × 0.88 × 0.92 × 0.85 = 41.8% → **~42%**. It isn't higher than the full number because
-DesignCraft's long tail is broad (99% checklist presence), so leaving it out doesn't lift the
-score, while the everyday core is where the gaps are (threading, editing bugs, INDD).
+60.7% × 0.88 × 0.92 × 0.85 = 41.8% → **~42%**. It is lower than the full number (47%)
+because the full number spreads weight over dimensions DesignCraft does relatively well
+(performance, platforms, breadth of the long tail: 99% checklist presence), while the weekly core
+carries the gaps at full weight: threading, editing bugs and INDD exchange.
 
 ### Essentials user: ~54%
 
@@ -434,6 +441,7 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-10 | minor | Full number 42% → 47%: method aligned with the standard (plain weighted sum, the ×0.9 discount dropped), no new evidence; readiness table with hours for full, mainstream and essentials; beta distance 33 → 28 points |
 | 2026-10-10 | minor | Added mainstream practitioner (~42%) and essentials user (~54%) numbers with written weights and discounts and a user-evidence count; full number (42%) now written as 47.2% × 0.9, value unchanged |
 | 2026-10-10 | minor | Stage alpha → pre-alpha under the core-workflow gate (manual threading missing); Type & text frames row updated |
 | 2026-10-10 | major | Created from ROADMAP.md's "How far from full parity" (2026-10-04) and "Working today"; full re-measure against InDesign 2026 21.6: menu coverage measured against InDesign 21.6's menu dump (69%) and the documented tree (75%), breadth set at ~80%, ready-for-real-work re-estimated 83% → 42% on user-reported evidence and the INDD gap; hours recalibrated from git history |
