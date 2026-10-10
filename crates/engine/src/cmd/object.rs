@@ -792,10 +792,24 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"ids": ids}))
         }),
-        cmd!("object.setLayer", "Move to Layer", [], None, "{layer, ids?}", has_selection, |s, p| {
-            let l = designcraft_doc::LayerId(p.get("layer").and_then(Value::as_u64).unwrap_or(0));
-            set_flag(s, p, move |i| i.layer = l, false)
-        }),
+        cmd!(
+            "object.setLayer",
+            "Move to Layer",
+            [],
+            None,
+            "{layer, ids?} — a group member moves its whole top-level group",
+            has_selection,
+            set_layer
+        ),
+        cmd!(
+            "object.reorder",
+            "Reorder Objects",
+            [],
+            None,
+            "{ids?, above?: id | below?: id | index?: n (0 = top of the layer), layer?} — moves the objects (siblings on one spread) in the stacking order: in front of `above` or behind `below` (onto that object's layer), or to `index` in `layer` counted from the top (default: the first object's layer, index 0). Group members stay in their group. Leaves the document (and undo history) alone when nothing would change.",
+            has_doc,
+            reorder
+        ),
     ]
 }
 
@@ -1299,6 +1313,172 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
             sp.items.insert(j, it);
         }
         ok()
+    })
+}
+
+/// An optional non-negative integer parameter; any other value is an error.
+fn opt_u64(p: &Value, cmd: &str, key: &str) -> Result<Option<u64>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, format!("{key} must be a non-negative integer"))),
+    }
+}
+
+/// The sibling list under the group at `parent` (the spread's top level when empty).
+fn siblings_mut<'a>(d: &'a mut Document, r: SpreadRef, parent: &[usize]) -> Option<&'a mut Vec<Arc<Item>>> {
+    let mut items = &mut d.spread_mut(r)?.items;
+    for &i in parent {
+        items = Arc::make_mut(items.get_mut(i)?).children_mut()?;
+    }
+    Some(items)
+}
+
+fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "object.reorder";
+    let mut ids = targets(s, p)?;
+    let mut seen = HashSet::new();
+    ids.retain(|i| seen.insert(*i));
+    let Some(&first) = ids.first() else { return Err(bad(C, "no objects")) };
+    let above = opt_u64(p, C, "above")?.map(ItemId);
+    let below = opt_u64(p, C, "below")?.map(ItemId);
+    let index = opt_u64(p, C, "index")?;
+    let layer = opt_u64(p, C, "layer")?.map(designcraft_doc::LayerId);
+    if [above.is_some(), below.is_some(), index.is_some()].into_iter().filter(|b| *b).count() > 1 {
+        return Err(bad(C, "give only one of above, below and index"));
+    }
+    let target = above.map(|t| (t, true)).or(below.map(|t| (t, false)));
+    let d = s.doc()?.doc.clone();
+    let (spread, parent, new_items) = {
+        let no_object = |id: ItemId| bad(C, format!("no object {}", id.0));
+        let loc = d.find(first).ok_or_else(|| no_object(first))?;
+        let Some((_, parent)) = loc.path.split_last() else { return Err(no_object(first)) };
+        let parent = parent.to_vec();
+        let sibling = |id: ItemId| d.find(id).is_some_and(|l| l.spread == loc.spread && l.path.split_last().is_some_and(|(_, pp)| pp == parent));
+        for id in &ids {
+            if d.find(*id).is_none() {
+                return Err(no_object(*id));
+            }
+            if !sibling(*id) {
+                return Err(bad(C, "the objects must be on one spread and in one group"));
+            }
+        }
+        let in_group = !parent.is_empty();
+        let group_layer = if in_group {
+            let g = d.item_at(&designcraft_doc::ItemLoc { spread: loc.spread, path: parent.clone() }).ok_or_else(|| no_object(first))?;
+            if !g.states.is_empty() {
+                return Err(bad(C, "the states of a multi-state object are reordered in the Object States panel"));
+            }
+            Some(g.layer)
+        } else {
+            None
+        };
+        let own_layer = d.item(first).map(|i| i.layer).ok_or_else(|| no_object(first))?;
+        let target_layer = match target {
+            Some((t, _)) => {
+                if ids.contains(&t) {
+                    return Err(bad(C, "an object can't move next to itself"));
+                }
+                if d.find(t).is_none() {
+                    return Err(no_object(t));
+                }
+                if !sibling(t) {
+                    return Err(bad(C, "the target must be on the same spread and in the same group"));
+                }
+                let tl = d.item(t).map(|i| i.layer).ok_or_else(|| no_object(t))?;
+                if layer.is_some_and(|l| l != tl) {
+                    return Err(bad(C, "layer differs from the target's layer"));
+                }
+                if in_group { own_layer } else { tl }
+            }
+            None => layer.unwrap_or(own_layer),
+        };
+        if d.layer(target_layer).is_none() {
+            return Err(bad(C, "no such layer"));
+        }
+        if let Some(gl) = group_layer
+            && layer.is_some_and(|l| l != gl)
+        {
+            return Err(bad(C, "group members stay on their group's layer"));
+        }
+        let items = d.spread(loc.spread).map(|sp| sp.items.clone()).ok_or_else(|| no_object(first))?;
+        let items = parent.iter().try_fold(items, |items, &i| items.get(i).map(|g| g.children().to_vec())).ok_or_else(|| no_object(first))?;
+        // Moved objects keep their relative stacking order.
+        let moved: Vec<Arc<Item>> = items.iter().filter(|i| ids.contains(&i.id)).cloned().collect();
+        let rest: Vec<Arc<Item>> = items.iter().filter(|i| !ids.contains(&i.id)).cloned().collect();
+        let at = match target {
+            Some((t, front)) => {
+                let i = rest.iter().position(|x| x.id == t).ok_or_else(|| no_object(t))?;
+                if front { i + 1 } else { i }
+            }
+            None => {
+                let k = usize::try_from(index.unwrap_or(0)).map_err(|_| bad(C, "index out of range"))?;
+                // Positions of the layer's objects (all siblings in a group), topmost first.
+                let stack: Vec<usize> = rest.iter().enumerate().filter(|(_, x)| in_group || x.layer == target_layer).map(|(i, _)| i).rev().collect();
+                if k > stack.len() {
+                    return Err(bad(C, format!("index {k} out of range (0..={})", stack.len())));
+                }
+                match (stack.get(k), stack.last()) {
+                    (Some(&i), _) => i + 1,
+                    (None, Some(&backmost)) => backmost,
+                    (None, None) => rest.len(),
+                }
+            }
+        };
+        let (back, front) = rest.split_at(at.min(rest.len()));
+        let moved = moved.into_iter().map(|mut it| {
+            if !in_group && it.layer != target_layer {
+                set_layer_deep(Arc::make_mut(&mut it), target_layer, 0);
+            }
+            it
+        });
+        let new_items: Vec<Arc<Item>> = back.iter().cloned().chain(moved).chain(front.iter().cloned()).collect();
+        if new_items.iter().zip(items.iter()).all(|(a, b)| a.id == b.id && a.layer == b.layer) {
+            return ok();
+        }
+        (loc.spread, parent, new_items)
+    };
+    s.edit(|d, _| {
+        let items = siblings_mut(d, spread, &parent).ok_or_else(|| bad(C, "the objects moved"))?;
+        *items = new_items;
+        ok()
+    })
+}
+
+/// Sets the layer of `it` and its group members (nesting is bounded).
+fn set_layer_deep(it: &mut Item, l: designcraft_doc::LayerId, depth: usize) {
+    it.layer = l;
+    if depth < 64
+        && let Some(kids) = it.children_mut()
+    {
+        for k in kids {
+            set_layer_deep(Arc::make_mut(k), l, depth + 1);
+        }
+    }
+}
+
+/// `object.setLayer`: moves the objects, or the top-level groups of group members, to a layer.
+fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "object.setLayer";
+    let l = designcraft_doc::LayerId(p.get("layer").and_then(Value::as_u64).ok_or_else(|| bad(C, "missing layer"))?);
+    let ids = targets(s, p)?;
+    s.edit(|d, _| {
+        if d.layer(l).is_none() {
+            return Err(bad(C, "no such layer"));
+        }
+        let mut tops: Vec<ItemId> = Vec::new();
+        for id in &ids {
+            if let Some(t) = d.top_level_of(*id)
+                && !tops.contains(&t)
+            {
+                tops.push(t);
+            }
+        }
+        for t in &tops {
+            if let Some(it) = d.item_mut(*t) {
+                set_layer_deep(it, l, 0);
+            }
+        }
+        Ok(json!({"changed": tops.len()}))
     })
 }
 
@@ -2712,5 +2892,107 @@ mod blend_mode_tests {
         let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
         assert_eq!(it.blend, BlendMode::Multiply, "a rejected value changes nothing");
         assert_eq!(it.opacity, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod reorder_tests {
+    use super::*;
+
+    fn frame(s: &mut Session) -> u64 {
+        s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap()
+    }
+
+    /// Top-level objects of the first spread on `layer`, topmost first.
+    fn stack(s: &Session, layer: u64) -> Vec<u64> {
+        let d = &s.doc().unwrap().doc;
+        d.spreads[0].items.iter().rev().filter(|i| i.layer.0 == layer).map(|i| i.id.0).collect()
+    }
+
+    #[test]
+    fn reorder_within_and_across_layers_validates_and_undoes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let l1 = s.doc().unwrap().doc.layers[0].id.0;
+        let l2 = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("layer.activate", &json!({"id": l1})).unwrap();
+        let (a, b, c) = (frame(&mut s), frame(&mut s), frame(&mut s));
+        s.execute("layer.activate", &json!({"id": l2})).unwrap();
+        let (x, y) = (frame(&mut s), frame(&mut s));
+        assert_eq!(stack(&s, l1), [c, b, a]);
+        s.execute("object.reorder", &json!({"ids": [a], "above": c})).unwrap();
+        assert_eq!(stack(&s, l1), [a, c, b]);
+        s.execute("object.reorder", &json!({"ids": [b], "index": 0})).unwrap();
+        assert_eq!(stack(&s, l1), [b, a, c]);
+        // To another layer at a position.
+        s.execute("object.reorder", &json!({"ids": [a], "layer": l2, "index": 1})).unwrap();
+        assert_eq!((stack(&s, l1), stack(&s, l2)), (vec![b, c], vec![y, a, x]));
+        s.execute("object.reorder", &json!({"ids": [x, y], "below": c})).unwrap();
+        assert_eq!((stack(&s, l1), stack(&s, l2)), (vec![b, c, y, x], vec![a]));
+        // Bad input is an error and changes nothing.
+        let before = s.doc().unwrap().doc.clone();
+        for bad in [
+            json!({"ids": [999], "index": 0}),
+            json!({"ids": [b], "index": 4}),
+            json!({"ids": [b], "above": b}),
+            json!({"ids": [b], "above": 999}),
+            json!({"ids": [b], "layer": 999}),
+            json!({"ids": [b], "layer": l2, "above": c}),
+            json!({"ids": [b], "above": c, "index": 0}),
+            json!({"ids": [b], "index": "top"}),
+            json!({"ids": []}),
+        ] {
+            assert!(s.execute("object.reorder", &bad).is_err(), "{bad}");
+            assert_eq!(*s.doc().unwrap().doc, *before, "{bad}");
+        }
+        // The bottom of a layer is index = its count.
+        s.execute("object.reorder", &json!({"ids": [b], "index": 3})).unwrap();
+        assert_eq!(stack(&s, l1), [c, y, x, b]);
+        // A reorder that changes nothing adds no undo step.
+        let undo = |s: &Session| s.doc().unwrap().history.undo.len();
+        let steps = undo(&s);
+        s.execute("object.reorder", &json!({"ids": [x], "index": 2})).unwrap();
+        s.execute("object.reorder", &json!({"ids": [y], "above": x})).unwrap();
+        s.execute("object.reorder", &json!({"ids": [c], "layer": l1, "index": 0})).unwrap();
+        assert_eq!(stack(&s, l1), [c, y, x, b]);
+        assert_eq!(undo(&s), steps);
+        // One undo step per reorder.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(stack(&s, l1), [b, c, y, x]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!((stack(&s, l1), stack(&s, l2)), (vec![b, c], vec![y, a, x]));
+    }
+
+    #[test]
+    fn group_members_reorder_only_within_their_group() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let (a, b, c) = (frame(&mut s), frame(&mut s), frame(&mut s));
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        let kids = |s: &Session| s.doc().unwrap().doc.item(ItemId(g)).unwrap().children().iter().map(|i| i.id.0).collect::<Vec<_>>();
+        assert_eq!(kids(&s), [a, b]);
+        s.execute("object.reorder", &json!({"ids": [a], "above": b})).unwrap();
+        assert_eq!(kids(&s), [b, a]);
+        s.execute("object.reorder", &json!({"ids": [a], "index": 1})).unwrap();
+        assert_eq!(kids(&s), [a, b]);
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("object.reorder", &json!({"ids": [a], "above": c})).is_err(), "out of the group");
+        assert!(s.execute("object.reorder", &json!({"ids": [c], "above": a})).is_err(), "into the group");
+        assert!(s.execute("object.reorder", &json!({"ids": [a, c], "index": 0})).is_err(), "mixed parents");
+        assert_eq!(*s.doc().unwrap().doc, *before);
+    }
+
+    #[test]
+    fn moving_a_group_member_to_a_layer_moves_its_group() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let (a, b) = (frame(&mut s), frame(&mut s));
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        let art = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        let r = s.execute("object.setLayer", &json!({"ids": [a, b], "layer": art})).unwrap();
+        assert_eq!(r["changed"], 1, "the group, once");
+        let d = &s.doc().unwrap().doc;
+        assert!([g, a, b].iter().all(|i| d.item(ItemId(*i)).unwrap().layer.0 == art));
+        assert!(s.execute("object.setLayer", &json!({"ids": [a], "layer": 999})).is_err());
     }
 }

@@ -240,6 +240,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Misspelled word → Correction (one per line):", "綴りの誤った単語 → 修正後の単語 (1行に1件):"),
     ("Mobile", "モバイル"),
     ("Move Selection Here", "選択範囲をここへ移動"),
+    ("Select; drag to move the selection to another layer", "選択（ドラッグで選択範囲を別のレイヤーへ移動）"),
     ("Move to Color Group", "カラーグループへ移動"),
     ("Move to Group", "グループへ移動"),
     ("Multiline", "複数行"),

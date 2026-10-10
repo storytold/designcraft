@@ -404,6 +404,16 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Mobile", ["Mobile", "Mobile", "Mobile", "Mobile", "移动设备"]),
     ("Move Selection Here", ["Move Selection Here", "Move Selection Here", "Move Selection Here", "Move Selection Here", "将所选内容移至此处"]),
+    (
+        "Select; drag to move the selection to another layer",
+        [
+            "Auswählen; ziehen, um die Auswahl auf eine andere Ebene zu verschieben",
+            "Sélectionner ; faire glisser pour déplacer la sélection vers un autre calque",
+            "Seleccionar; arrastre para mover la selección a otra capa",
+            "選択（ドラッグで選択範囲を別のレイヤーへ移動）",
+            "选择；拖动可将所选内容移至其他图层",
+        ],
+    ),
     ("Move to Color Group", ["Move to Color Group", "Move to Color Group", "Move to Color Group", "Move to Color Group", "移动到颜色组"]),
     ("Move to Group", ["Move to Group", "Move to Group", "Move to Group", "Move to Group", "移动到组"]),
     ("Multiline", ["Multiline", "Multiline", "Multiline", "Multiline", "多行"]),

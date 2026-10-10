@@ -433,12 +433,12 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!("layer.move", "Move Layer", [], None, "{id, to: index (0 = top/frontmost)}", has_doc, |s, p| {
-            let id = LayerId(p.get("id").and_then(Value::as_u64).unwrap_or(0));
-            let to = p.get("to").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let id = LayerId(p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("layer.move", "missing id"))?);
+            let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad("layer.move", "missing to"))?;
             s.edit(|d, _| {
                 let i = d.layers.iter().position(|l| l.id == id).ok_or_else(|| bad("layer.move", "no such layer"))?;
+                let to = usize::try_from(to).ok().filter(|t| *t < d.layers.len()).ok_or_else(|| bad("layer.move", "to out of range"))?;
                 let l = d.layers.remove(i);
-                let to = to.min(d.layers.len());
                 d.layers.insert(to, l);
                 ok()
             })
@@ -793,6 +793,22 @@ mod setup_tests {
 #[cfg(test)]
 mod layer_tests {
     use serde_json::json;
+
+    #[test]
+    fn layer_move_reorders_and_rejects_bad_input() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let l1 = s.doc().unwrap().doc.layers[0].id.0;
+        let l2 = s.execute("layer.new", &json!({})).unwrap()["id"].as_u64().unwrap();
+        let order = |s: &crate::Session| s.doc().unwrap().doc.layers.iter().map(|l| l.id.0).collect::<Vec<_>>();
+        assert_eq!(order(&s), [l2, l1]);
+        for bad in [json!({"id": l1, "to": 2}), json!({"id": 999, "to": 0}), json!({"id": l1}), json!({"to": 0})] {
+            assert!(s.execute("layer.move", &bad).is_err(), "{bad}");
+            assert_eq!(order(&s), [l2, l1]);
+        }
+        s.execute("layer.move", &json!({"id": l1, "to": 0})).unwrap();
+        assert_eq!(order(&s), [l1, l2]);
+    }
 
     #[test]
     fn merge_delete_unused_hide_and_lock_others() {

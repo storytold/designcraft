@@ -272,7 +272,7 @@ fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Docu
 }
 
 /// A small label following the pointer while dragging.
-fn drag_ghost(ui: &egui::Ui, label: &str, t: &Tokens) {
+pub(crate) fn drag_ghost(ui: &egui::Ui, label: &str, t: &Tokens) {
     let Some(p) = ui.ctx().pointer_interact_pos() else { return };
     let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("page_drag")));
     let g = painter.layout_no_wrap(label.to_string(), egui::FontId::proportional(11.0), t.text_strong);

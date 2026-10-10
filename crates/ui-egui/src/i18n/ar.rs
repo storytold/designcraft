@@ -897,6 +897,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Mobile", "جوال"),
     ("More ArtCraft apps", "المزيد من تطبيقات ArtCraft"),
     ("Move Selection Here", "نقل التحديد إلى هنا"),
+    ("Select; drag to move the selection to another layer", "تحديد؛ اسحب لنقل التحديد إلى طبقة أخرى"),
     ("Move to Color Group", "نقل إلى مجموعة ألوان"),
     ("Move to Group", "نقل إلى مجموعة"),
     ("Multiline", "متعدد الأسطر"),

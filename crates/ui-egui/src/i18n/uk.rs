@@ -241,6 +241,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Misspelled word → Correction (one per line):", "Помилкове слово → виправлення (по одному в рядку):"),
     ("Mobile", "Мобільні пристрої"),
     ("Move Selection Here", "Перемістити виділення сюди"),
+    ("Select; drag to move the selection to another layer", "Виділити; перетягніть, щоб перемістити виділення на інший шар"),
     ("Move to Color Group", "Перемістити до колірної групи"),
     ("Move to Group", "Перемістити до групи"),
     ("Multiline", "Багаторядкове"),
