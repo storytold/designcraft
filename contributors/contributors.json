@@ -2,49 +2,49 @@
   "schema": 1,
   "repo": "storytold/designcraft",
   "branch": "main",
-  "head": "f17397c305ecda9d644105f7a4e9b9d65d34bb60",
-  "head_date": "2026-10-07T18:55:09Z",
-  "commits": 294,
+  "head": "66c7ce7e96ec286a091878cc2541ee8369aa79d6",
+  "head_date": "2026-10-08T13:12:32Z",
+  "commits": 350,
   "unattributed_commits": 0,
   "contributors": [
     {
       "login": "echelon",
       "people_entry": true,
       "github_name": null,
-      "prs": 22,
-      "commits": 260,
-      "lines_added": 99427,
-      "lines_deleted": 6061,
+      "prs": 25,
+      "commits": 270,
+      "lines_added": 100858,
+      "lines_deleted": 6338,
       "binary_added": 42,
       "binary_deleted": 2,
       "first_commit": "2026-10-01T13:00:02Z",
-      "last_commit": "2026-10-07T18:55:09Z"
+      "last_commit": "2026-10-08T13:50:30Z"
     },
     {
       "login": "storybored379",
       "people_entry": false,
       "github_name": null,
-      "prs": 4,
-      "commits": 4,
-      "lines_added": 150,
-      "lines_deleted": 11,
+      "prs": 5,
+      "commits": 5,
+      "lines_added": 181,
+      "lines_deleted": 14,
       "binary_added": 0,
       "binary_deleted": 0,
       "first_commit": "2026-10-03T16:31:40Z",
-      "last_commit": "2026-10-05T03:53:26Z"
+      "last_commit": "2026-10-06T07:03:03Z"
     },
     {
       "login": "CameronGilroy",
       "people_entry": false,
       "github_name": null,
-      "prs": 1,
-      "commits": 18,
-      "lines_added": 5236,
-      "lines_deleted": 381,
+      "prs": 2,
+      "commits": 23,
+      "lines_added": 8982,
+      "lines_deleted": 609,
       "binary_added": 0,
       "binary_deleted": 0,
       "first_commit": "2026-10-05T06:15:59Z",
-      "last_commit": "2026-10-05T18:56:22Z"
+      "last_commit": "2026-10-07T10:22:06Z"
     },
     {
       "login": "midasdf",
@@ -63,14 +63,14 @@
       "login": "ShaoWenbinSaleh",
       "people_entry": false,
       "github_name": null,
-      "prs": 1,
-      "commits": 2,
-      "lines_added": 6020,
-      "lines_deleted": 1278,
+      "prs": 3,
+      "commits": 10,
+      "lines_added": 10282,
+      "lines_deleted": 2843,
       "binary_added": 0,
       "binary_deleted": 0,
       "first_commit": "2026-10-05T19:15:57Z",
-      "last_commit": "2026-10-06T14:32:13Z"
+      "last_commit": "2026-10-07T11:47:38Z"
     },
     {
       "login": "japbcoelho",
@@ -84,6 +84,123 @@
       "binary_deleted": 0,
       "first_commit": "2026-10-06T01:43:44Z",
       "last_commit": "2026-10-06T01:45:41Z"
+    },
+    {
+      "login": "aiongg",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 3,
+      "commits": 19,
+      "lines_added": 5933,
+      "lines_deleted": 735,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-06T15:11:56Z",
+      "last_commit": "2026-10-07T13:18:17Z"
+    },
+    {
+      "login": "epfabian",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 1,
+      "commits": 1,
+      "lines_added": 50,
+      "lines_deleted": 4,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-06T18:31:52Z",
+      "last_commit": "2026-10-06T18:31:52Z"
+    },
+    {
+      "login": "EthanSuquet",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 2,
+      "commits": 2,
+      "lines_added": 689,
+      "lines_deleted": 5,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-06T19:15:09Z",
+      "last_commit": "2026-10-06T20:13:06Z"
+    },
+    {
+      "login": "Luskish",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 1,
+      "commits": 1,
+      "lines_added": 259,
+      "lines_deleted": 32,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-07T02:49:05Z",
+      "last_commit": "2026-10-07T02:49:05Z"
+    },
+    {
+      "login": "denizkoekden",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 1,
+      "commits": 1,
+      "lines_added": 7,
+      "lines_deleted": 0,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-07T19:23:57Z",
+      "last_commit": "2026-10-07T19:23:57Z"
+    },
+    {
+      "login": "skylartaylor",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 4,
+      "commits": 4,
+      "lines_added": 528,
+      "lines_deleted": 28,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-07T20:27:50Z",
+      "last_commit": "2026-10-07T22:10:32Z"
+    },
+    {
+      "login": "RicSchonfelder",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 1,
+      "commits": 1,
+      "lines_added": 1059,
+      "lines_deleted": 4,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-07T20:43:34Z",
+      "last_commit": "2026-10-07T20:43:34Z"
+    },
+    {
+      "login": "h-a-n-a-s-h-i",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 0,
+      "commits": 2,
+      "lines_added": 42,
+      "lines_deleted": 42,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-08T12:13:12Z",
+      "last_commit": "2026-10-08T14:02:08Z"
+    },
+    {
+      "login": "XusBadia",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 1,
+      "commits": 1,
+      "lines_added": 241,
+      "lines_deleted": 1,
+      "binary_added": 2,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-08T13:12:32Z",
+      "last_commit": "2026-10-08T13:12:32Z"
     }
   ],
   "models": [
@@ -92,9 +209,18 @@
       "company": "Anthropic",
       "model": "Claude Opus",
       "version": "5.5",
-      "commits": 266,
-      "lines_added": 83821,
-      "lines_deleted": 6091
+      "commits": 282,
+      "lines_added": 86274,
+      "lines_deleted": 6420
+    },
+    {
+      "id": "openai/codex",
+      "company": "OpenAI",
+      "model": "Codex",
+      "version": "",
+      "commits": 2,
+      "lines_added": 57,
+      "lines_deleted": 8
     },
     {
       "id": "anthropic/claude-opus/4.8",
@@ -104,15 +230,6 @@
       "commits": 1,
       "lines_added": 1633,
       "lines_deleted": 3
-    },
-    {
-      "id": "openai/codex",
-      "company": "OpenAI",
-      "model": "Codex",
-      "version": "",
-      "commits": 1,
-      "lines_added": 26,
-      "lines_deleted": 5
     }
   ]
 }

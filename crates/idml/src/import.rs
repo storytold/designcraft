@@ -356,6 +356,8 @@ impl<'r> Importer<'r> {
                 self.layer_ids.insert(s.to_string(), id);
             }
         }
+        // IDML lists layers back to front; `Document::layers` is front to back.
+        self.layers.reverse();
         if self.layers.is_empty() {
             let id = LayerId(self.alloc());
             self.layers.push(Layer {
@@ -1095,7 +1097,9 @@ impl<'r> Importer<'r> {
         // Underline / strikethrough options (-9999 = automatic).
         for k in ["Underline", "StrikeThru"] {
             let num = |n: &str| e.num(&format!("{k}{n}")).filter(|v| *v > -9000.0);
-            let color = e.prop(&format!("{k}Color")).map(|r| self.swatch_ref(r.trim())).filter(|r| r != "Text Color" && !r.is_empty());
+            // An explicit Text Color resets an inherited swatch; absence still inherits.
+            // Resolve the sentinel before swatch_ref, which maps unknown names to [None].
+            let color = e.prop(&format!("{k}Color")).map(|r| if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
             let tint = e.num(&format!("{k}Tint")).filter(|v| *v >= 0.0).map(|v| (v / 100.0) as f32);
             if k == "Underline" {
                 a.underline_weight = num("Weight").map(Some);

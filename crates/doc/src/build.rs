@@ -34,6 +34,7 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "A3", intent: Intent::Print, width: 297.0 * MM, height: 420.0 * MM, units: Unit::Millimeters },
     Preset { name: "A4", intent: Intent::Print, width: 210.0 * MM, height: 297.0 * MM, units: Unit::Millimeters },
     Preset { name: "A5", intent: Intent::Print, width: 148.0 * MM, height: 210.0 * MM, units: Unit::Millimeters },
+    Preset { name: "A6", intent: Intent::Print, width: 105.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
     Preset { name: "B5", intent: Intent::Print, width: 176.0 * MM, height: 250.0 * MM, units: Unit::Millimeters },
     Preset { name: "Business Card", intent: Intent::Print, width: 252.0, height: 144.0, units: Unit::Picas },
     Preset { name: "Postcard", intent: Intent::Print, width: 432.0, height: 288.0, units: Unit::Picas },

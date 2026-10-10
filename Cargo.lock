@@ -636,6 +636,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cast"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
+
+[[package]]
 name = "cc"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -855,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-engine",
  "designcraft-ui-egui",
@@ -871,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -887,7 +893,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-color"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "kurbo",
  "moxcms",
@@ -899,12 +905,13 @@ dependencies = [
 
 [[package]]
 name = "designcraft-compose"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
  "designcraft-fonts",
  "designcraft-geom",
+ "hypher",
  "log",
  "miniz_oxide 0.8.9",
  "proptest",
@@ -915,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-doc"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-geom",
@@ -927,7 +934,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-engine"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -952,12 +959,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "wasm-bindgen-test",
  "zip",
 ]
 
 [[package]]
 name = "designcraft-epub"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
@@ -966,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-fonts"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "harfrust 0.13.3",
  "kurbo",
@@ -978,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-format"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-doc",
  "serde",
@@ -989,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-geom"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -1002,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-idml"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
@@ -1014,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-images"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-fonts",
@@ -1025,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-mcp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-engine",
  "designcraft-geom",
@@ -1038,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pdf"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1060,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-render"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1078,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-textimport"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-doc",
  "quick-xml 0.38.4",
@@ -1087,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-tools"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1099,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-ui-egui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1107,6 +1115,7 @@ dependencies = [
  "designcraft-engine",
  "designcraft-fonts",
  "designcraft-geom",
+ "designcraft-idml",
  "designcraft-render",
  "designcraft-tools",
  "egui",
@@ -1123,12 +1132,14 @@ dependencies = [
 
 [[package]]
 name = "designcraft-web"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "designcraft-engine",
+ "designcraft-format",
  "designcraft-ui-egui",
  "eframe",
  "egui",
+ "form_urlencoded",
  "js-sys",
  "log",
  "rfd",
@@ -2076,6 +2087,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hypher"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f2b4f6b5da34d400d4c112eadcc14512cc5d04307a8eee182586d9bebd7ce6"
+
+[[package]]
 name = "icu_collections"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2551,6 +2568,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "minicov"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4869b6a491569605d66d3952bcdf03df789e5b536e5f0cf7758a7f08a55ae24d"
+dependencies = [
+ "cc",
+ "walkdir",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2672,6 +2699,15 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "num-traits"
@@ -3021,6 +3057,12 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "oorandom"
+version = "11.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "open"
@@ -4747,6 +4789,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-bindgen-test"
+version = "0.3.79"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae7499dfd45780a0a91d7ee6bb9ac51970a4479a41a89da443fdda5a39547d42"
+dependencies = [
+ "async-trait",
+ "cast",
+ "js-sys",
+ "libm",
+ "minicov",
+ "nu-ansi-term",
+ "num-traits",
+ "oorandom",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test-macro",
+ "wasm-bindgen-test-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-test-macro"
+version = "0.3.79"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b84b5ac638bfb168196a1a461fcc8f46a294a18b1b6be52133b4e0db122cc9f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "wasm-bindgen-test-shared"
+version = "0.2.129"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f692aa943ccd88363733b77063f32cfed5bc6cbea8e6e8b251b302f881606fe"
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5562,7 +5643,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde_json",
 ]

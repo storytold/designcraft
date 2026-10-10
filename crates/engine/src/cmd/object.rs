@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use designcraft_color::BlendMode;
 use designcraft_doc::{
     Content, Document, Fill, Item, ItemId, ParaFormat, Selection, Shape, SpreadRef, Story, StoryId, Stroke, TextFrame, TextFrameOptions, TextSel,
 };
@@ -219,7 +220,16 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("object.opacity", "Opacity", [], None, "{opacity: 0..1, blend?: normal|multiply|…, ids?}", has_selection, |s, p| {
             let o = f64_or(p, "opacity", 1.0).clamp(0.0, 1.0) as f32;
-            let blend = p.get("blend").and_then(|b| serde_json::from_value(b.clone()).ok());
+            // `BlendMode::parse` takes the documented lowercase forms (`multiply`), the panel
+            // labels (`Color Burn`) and the serialized names (`Multiply`). An unknown value is
+            // an error rather than a silent no-op that still reports `changed` (#260).
+            let blend = match p.get("blend") {
+                None | Some(Value::Null) => None,
+                Some(v) => {
+                    let raw = v.as_str().ok_or_else(|| bad("object.opacity", "blend must be a string"))?;
+                    Some(BlendMode::parse(raw).ok_or_else(|| bad("object.opacity", format!("unknown blend mode `{raw}`")))?)
+                }
+            };
             set_flag(
                 s,
                 p,
@@ -1379,6 +1389,7 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
                 ("text", Some(Content::Unassigned | Content::Graphic(_))) => {
                     let sid = StoryId(d.alloc());
                     let mut st = Story::new(sid);
+                    st.direction = d.new_story_direction();
                     st.frames.push(*id);
                     d.stories.insert(sid, Arc::new(st));
                     if let Some(it) = d.item_mut(*id) {
@@ -1918,7 +1929,7 @@ fn step_and_repeat(s: &mut Session, p: &Value) -> Result<Value> {
     let cols = p.get("columns").and_then(Value::as_u64).map(|v| v as usize);
     let count = p.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 1000) as usize;
     let offsets: Vec<Vec2> = match (rows, cols) {
-        (Some(r), Some(c)) if r * c <= 1000 => (0..r)
+        (Some(r), Some(c)) if r.checked_mul(c).is_some_and(|n| n <= 1000) => (0..r)
             .flat_map(|i| (0..c).map(move |j| (i, j)))
             .filter(|&(i, j)| i + j > 0)
             .map(|(i, j)| Vec2::new(j as f64 * dx, i as f64 * dy))
@@ -2419,5 +2430,69 @@ mod named_target_tests {
         assert_eq!(columns(&s), Some(2));
         // Commands documented with `ids` honour `id` too.
         assert_eq!(s.execute("conveyor.collect", &json!({"id": r["id"]})).unwrap()["count"], 1);
+    }
+}
+
+#[cfg(test)]
+mod blend_mode_tests {
+    use designcraft_color::BlendMode;
+
+    use super::*;
+
+    /// `object.opacity` documents `blend?: normal|multiply|…`, but deserializing the value
+    /// against the enum only accepted the PascalCase variant names, so the documented
+    /// lowercase forms were silently dropped: the command reported `changed: 1` while the
+    /// stored blend stayed as it was (#260).
+    #[test]
+    fn lowercase_documented_blend_modes_apply() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let blend = |s: &Session| s.doc().unwrap().doc.item(id).map(|i| i.blend);
+
+        for (given, want) in [
+            ("multiply", BlendMode::Multiply),
+            ("screen", BlendMode::Screen),
+            ("MULTIPLY", BlendMode::Multiply),
+            ("Color Burn", BlendMode::ColorBurn),
+            ("color-burn", BlendMode::ColorBurn),
+            ("soft_light", BlendMode::SoftLight),
+            ("normal", BlendMode::Normal),
+        ] {
+            let out = s.execute("object.opacity", &json!({"opacity": 1, "blend": given})).unwrap();
+            assert_eq!(out["changed"], 1, "{given}");
+            assert_eq!(blend(&s), Some(want), "blend mode {given:?} must be applied");
+        }
+    }
+
+    /// The PascalCase names keep working, so the Properties panel's own submissions are
+    /// unaffected.
+    #[test]
+    fn pascal_case_blend_modes_still_apply() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        s.execute("object.opacity", &json!({"opacity": 0.5, "blend": "Multiply"})).unwrap();
+        let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
+        assert_eq!(it.blend, BlendMode::Multiply);
+        assert!((it.opacity - 0.5).abs() < 1e-6, "opacity must still be set");
+    }
+
+    /// A blend mode the command doesn't know is an error, not a silent success that leaves
+    /// the previous appearance in place.
+    #[test]
+    fn an_unknown_blend_mode_is_an_error() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        s.execute("object.opacity", &json!({"opacity": 1, "blend": "Multiply"})).unwrap();
+        let e = s.execute("object.opacity", &json!({"opacity": 1, "blend": "sparkle"})).unwrap_err().to_string();
+        assert!(e.contains("sparkle") && e.contains("blend"), "{e}");
+        let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
+        assert_eq!(it.blend, BlendMode::Multiply, "a rejected value changes nothing");
+        assert_eq!(it.opacity, 1.0);
     }
 }

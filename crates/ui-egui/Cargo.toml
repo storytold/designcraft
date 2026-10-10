@@ -27,6 +27,7 @@ serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+designcraft-idml = { workspace = true }
 # Headless (offscreen wgpu) rendering of the whole window for UI screenshots: `examples/ui_shot.rs`.
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }
