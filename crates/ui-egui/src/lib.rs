@@ -477,6 +477,10 @@ pub struct DesignApp {
     pub restyle: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
+    /// The desktop host uses our caption controls and window drag/resize regions (Windows).
+    pub custom_titlebar: bool,
+    pub(crate) window_maximized: bool,
+    pub(crate) pending_window_commands: Vec<egui::ViewportCommand>,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
     pub native_menu: bool,
     /// Shortcuts the native menu handles (skip them in the egui shortcut handler).
@@ -517,6 +521,9 @@ impl DesignApp {
             restyle: false,
             fonts_ready: false,
             integrated_titlebar: false,
+            custom_titlebar: false,
+            window_maximized: false,
+            pending_window_commands: vec![],
             native_menu: false,
             native_shortcuts: Default::default(),
             last_time: 0.0,
@@ -715,6 +722,7 @@ impl DesignApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         if !self.color_applied {
             self.color_applied = true;
             if let Some(cs) = self.ui.color_settings.clone() {
@@ -769,6 +777,7 @@ impl DesignApp {
         if self.fonts_ready {
             menus::shortcuts(self, ctx);
         }
+        self.flush_window_commands(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
             let p = f.path().to_string_lossy().to_string();
@@ -797,6 +806,13 @@ impl DesignApp {
             self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": title, "file": file, "message": e})));
         }
         r
+    }
+
+    /// Deliver window actions to the host without persisting them in UI preferences.
+    pub(crate) fn flush_window_commands(&mut self, ctx: &egui::Context) {
+        for command in std::mem::take(&mut self.pending_window_commands) {
+            ctx.send_viewport_cmd(command);
+        }
     }
 
     /// Inject synthetic events (one pointer event per frame).
@@ -932,6 +948,9 @@ impl DesignApp {
         dialogs::show(self, &ctx);
         about::show(self, &ctx);
         menus::palette(self, &ctx);
+        if self.custom_titlebar {
+            chrome::resize_borders(self, ui);
+        }
         for url in std::mem::take(&mut self.ui.pending_urls) {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }

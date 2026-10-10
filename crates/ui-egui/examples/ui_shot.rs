@@ -23,7 +23,8 @@ fn main() {
     };
     let (tx, rx) = std::sync::mpsc::channel::<ControlRequest>();
     let mut app = DesignApp::new(Session::new(), services).with_control(rx);
-    app.integrated_titlebar = true;
+    app.integrated_titlebar = cfg!(target_os = "macos");
+    app.custom_titlebar = cfg!(target_os = "windows");
     let lines: Vec<serde_json::Value> =
         script.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).expect("json line")).collect();
     if lines.first().is_none_or(|l| l.get("empty").is_none()) {
