@@ -2805,6 +2805,25 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "请通过控制通道传入 csv、rows 或 bytes。",
         ],
     ),
+    // Appearance modes (Preferences › Interface, the header button, Window menu).
+    ("Appearance Mode", ["Erscheinungsbild-Modus", "Mode d'apparence", "Modo de apariencia", "外観モード", "外观模式"]),
+    (
+        "Next Appearance Mode",
+        ["Nächster Erscheinungsbild-Modus", "Mode d'apparence suivant", "Siguiente modo de apariencia", "次の外観モード", "下一个外观模式"],
+    ),
+    (
+        "Sync with system",
+        ["Mit System synchronisieren", "Synchroniser avec le système", "Sincronizar con el sistema", "システムと同期", "与系统同步"],
+    ),
+    ("Dark Theme", ["Dunkles Design", "Thème sombre", "Tema oscuro", "ダークテーマ", "深色主题"]),
+    ("Light Theme", ["Helles Design", "Thème clair", "Tema claro", "ライトテーマ", "浅色主题"]),
+    ("Active", ["Aktiv", "Actif", "Activo", "使用中", "当前"]),
+    ("Auto", ["Automatisch", "Auto", "Automático", "自動", "自动"]),
+    ("Dark", ["Dunkel", "Sombre", "Oscuro", "ダーク", "深色"]),
+    ("Light", ["Hell", "Clair", "Claro", "ライト", "浅色"]),
+    ("Medium Dark", ["Mitteldunkel", "Moyennement sombre", "Medio oscuro", "やや暗い", "中等深色"]),
+    ("Medium Light", ["Mittelhell", "Moyennement clair", "Medio claro", "やや明るい", "中等浅色"]),
+    ("High Contrast", ["Hoher Kontrast", "Contraste élevé", "Contraste alto", "ハイコントラスト", "高对比度"]),
     // Paragraph Rules.
     ("Paragraph Rules…", ["Absatzlinien …", "Filets de paragraphe…", "Filetes de párrafo…", "段落境界線…", "段落线…"]),
     ("Paragraph Rules", ["Absatzlinien", "Filets de paragraphe", "Filetes de párrafo", "段落境界線", "段落线"]),

@@ -29,5 +29,10 @@ rfd = { workspace = true }
 # The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
 winit = { version = "0.30", default-features = false, features = ["x11"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The desktop colour scheme for Appearance Mode › Auto, through the XDG settings portal. Already in
+# Cargo.lock (eframe's AccessKit stack); pinned exactly to the same version.
+zbus = "=5.19.0"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }

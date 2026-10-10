@@ -67,3 +67,5 @@ Generated-in-code art is original and has no file to list: the UI icon set (`cra
 | `docs/brand/LICENSE-brand.txt` | (licence text) | ArtCraft Team | — | Terms for the ArtCraft Marks in `docs/brand/` |
 | `packaging/macos/dmg/background.svg` | @XusBadia | original work for this repository, derived from the DesignCraft app icon (`assets/app-icon/designcraft.svg`, referenced via `<image>`, not copied); text is outlined Inter / JetBrains Mono glyph paths | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) | DesignCraft macOS DMG window background for the Finder window; `packaging/macos/dmg/generate.py` renders it to `background.tiff` (2026-10-08) |
 | `packaging/macos/dmg/background.tiff` | @XusBadia | Rendered from `packaging/macos/dmg/background.svg` by `packaging/macos/dmg/generate.py` | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) | 1x + 2x HiDPI TIFF for the macOS DMG window; includes the app icon (see its row) and LittleCMS's built-in sRGB profile ("No copyright, use freely") |
+
+The miniature page-layout theme previews (`crates/ui-egui/src/appearance.rs`) are original procedural artwork under MIT OR Apache-2.0.

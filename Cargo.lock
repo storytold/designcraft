@@ -883,6 +883,7 @@ dependencies = [
  "serde_json",
  "winit",
  "winresource",
+ "zbus",
 ]
 
 [[package]]

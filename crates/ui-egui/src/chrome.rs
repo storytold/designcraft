@@ -123,6 +123,9 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                         if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
                             app.status("Export a PDF, IDML or package to share — no cloud account needed.");
                         }
+                        ui.add_space(4.0);
+                        // Appearance mode: Auto, Light, Dark (monitor, sun, moon).
+                        crate::appearance::header_button(app, ui);
                         ui.add_space(8.0);
                         // Always one click away: the ArtCraft community Discord.
                         if crate::about::discord_button(ui, "Discord", vec2(78.0, 22.0)) {

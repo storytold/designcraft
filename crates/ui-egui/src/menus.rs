@@ -164,7 +164,19 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("window.newWorkspace", "New Workspace…", None, "{name} — saves the current bars and panel arrangement"),
     ("window.deleteWorkspace", "Delete Workspace…", None, "{name}"),
     ("window.resetWorkspace", "Reset Workspace", None, "{} — back to the current workspace as saved (or its defaults)"),
-    ("window.brightness", "Interface Color Theme", None, "{brightness: dark|mediumDark|mediumLight|light|highContrast}"),
+    (
+        "window.brightness",
+        "Interface Color Theme",
+        None,
+        "{brightness: dark|mediumDark|mediumLight|light|highContrast} — also fixes the appearance mode to that theme's family",
+    ),
+    (
+        "window.appearanceMode",
+        "Appearance Mode",
+        None,
+        "{mode?: auto|dark|light, darkTheme?: dark|mediumDark|highContrast, lightTheme?: light|mediumLight} — auto follows the system",
+    ),
+    ("window.nextAppearanceMode", "Next Appearance Mode", None, "{} — Auto, Light, Dark, then Auto again"),
 ];
 
 /// Menu bar: (menu, entries). Entries: `cmd:<id>`, `ui:<id>`, `-` separator, `>Submenu` … `<`.
@@ -681,6 +693,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:preflight.run",
             "<",
             "-",
+            "ui:window.appearanceMode",
+            "ui:window.nextAppearanceMode",
             "ui:window.brightness",
         ],
     ),
@@ -1031,6 +1045,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 designcraft_render::DisplayQuality::High => "high",
             });
             f["uiScale"] = json!((app.ui.ui_scale * 100.0).round());
+            crate::appearance::dialog_fields(&app.ui, &mut f);
             f["richBlack"] = json!(app.ui.rich_black);
             f["dynamicSpelling"] = json!(app.ui.dynamic_spelling);
             f["storyEditorSize"] = json!(app.ui.story_editor_size);
@@ -1438,10 +1453,11 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "window.brightness" => {
             let b = p.get("brightness").and_then(Value::as_str).and_then(crate::theme::Brightness::parse).unwrap_or(crate::theme::Brightness::Dark);
-            app.ui.brightness = b;
-            app.restyle = true;
+            crate::appearance::pick_theme(app, b);
             Ok(Value::Null)
         }
+        "window.appearanceMode" => crate::appearance::set(app, p),
+        "window.nextAppearanceMode" => Ok(crate::appearance::cycle(app)),
         _ => return None,
     })
 }
@@ -1696,6 +1712,17 @@ fn parse_entries(entries: &[&str]) -> Vec<Item> {
                 })
                 .collect();
             out.push(Item::Sub("Interface Color Theme".into(), items));
+        } else if e == "ui:window.appearanceMode" {
+            let items = crate::theme::AppearanceMode::ALL
+                .iter()
+                .map(|m| Item::Cmd {
+                    label: m.label().to_string(),
+                    id: "window.appearanceMode".into(),
+                    params: json!({"mode": m.id()}),
+                    shortcut: None,
+                })
+                .collect();
+            out.push(Item::Sub("Appearance Mode".into(), items));
         } else {
             let (_, id) = e.split_once(':').unwrap_or(("cmd", e));
             // `id|Label|{params}`: a fixed-parameter variant of a command.
@@ -1762,6 +1789,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "window.toolsDoubleColumn" => app.ui.tools_double_column,
         "view.togglePreview" => app.ui.screen_mode == crate::ScreenMode::Preview,
         "window.brightness" => params.get("brightness").and_then(Value::as_str) == Some(app.ui.brightness.id()),
+        "window.appearanceMode" => params.get("mode").and_then(Value::as_str) == Some(app.ui.appearance_mode.id()),
         "type.storyDirection" => {
             let st = app.session.active()?;
             let sid = st

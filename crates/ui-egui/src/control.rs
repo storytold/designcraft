@@ -12,7 +12,7 @@
 //! - `ui.text {text}`: insert at the explicit caret, or type into a focused UI field
 //! - `ui.move {x, y}` / `ui.click {x, y, button?, count?, shift?…}` / `ui.drag {x, y, toX, toY, steps?}`:
 //!   real egui pointer input in screen points (reaches every widget: panels, flyouts, dialogs)
-//! - `ui.set {brightness?, panel?, dockTab?, rulers?, outline?, …}`
+//! - `ui.set {brightness?, appearanceMode?, panel?, dockTab?, rulers?, outline?, …}`
 //! - `ui.dialog.set {field, value}` / `ui.dialog.confirm` / `ui.dialog.cancel`
 //! - `ui.resize {width, height}`, `ui.focus`, `ui.screenshot {path?}`
 //! - `ui.render {path?, scale?}`: render the active artboard headlessly (PNG)
@@ -235,6 +235,9 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             let mut r = Ok(Value::Null);
             if let Some(b) = s("brightness") {
                 r = app.run("window.brightness", json!({"brightness": b}));
+            }
+            if let Some(m) = s("appearanceMode") {
+                r = app.run("window.appearanceMode", json!({"mode": m}));
             }
             if let Some(pn) = s("panel") {
                 r = app.run("window.panel", json!({"panel": pn}));

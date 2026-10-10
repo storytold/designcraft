@@ -788,6 +788,35 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.rect(3.0, 4.0, 17.0, 16.0);
             pen.line(&[(3.0, 7.0), (17.0, 7.0)]);
         }
+        // Appearance modes: Auto (a monitor), Light (a sun), Dark (a crescent moon).
+        "monitor" => {
+            pen.rect(2.5, 3.5, 17.5, 13.5);
+            pen.line(&[(10.0, 13.5), (10.0, 16.5)]);
+            pen.line(&[(6.5, 16.5), (13.5, 16.5)]);
+        }
+        "sun" => {
+            pen.circle(10.0, 10.0, 3.3);
+            for k in 0..8 {
+                let (s, c) = (k as f32 * std::f32::consts::FRAC_PI_4).sin_cos();
+                pen.line(&[(10.0 + 5.4 * c, 10.0 + 5.4 * s), (10.0 + 7.4 * c, 10.0 + 7.4 * s)]);
+            }
+        }
+        "moon" => {
+            // A disc with a bite of the same radius taken from its upper right: the outer arc of
+            // the disc, then the bite's arc back, between the two circles' crossings.
+            let (cx, cy, r, d) = (10.0_f32, 10.0_f32, 6.5_f32, 5.0_f32);
+            let theta = -std::f32::consts::FRAC_PI_4;
+            let alpha = (r * r - d * d / 4.0).sqrt().atan2(d / 2.0);
+            let (bx, by) = (cx + d * theta.cos(), cy + d * theta.sin());
+            let n = 24;
+            let outer = (0..=n)
+                .map(|i| theta + alpha + (std::f32::consts::TAU - 2.0 * alpha) * i as f32 / n as f32)
+                .map(|a| (cx + r * a.cos(), cy + r * a.sin()));
+            let inner = (1..n)
+                .map(|i| theta + std::f32::consts::PI + alpha - 2.0 * alpha * i as f32 / n as f32)
+                .map(|a| (bx + r * a.cos(), by + r * a.sin()));
+            pen.closed(&outer.chain(inner).collect::<Vec<_>>());
+        }
         _ => {
             pen.rect(4.0, 4.0, 16.0, 16.0);
         }
