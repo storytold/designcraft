@@ -21,86 +21,105 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             let full = ui.max_rect();
             let mut menus_end = full.min.x;
             let mut tools_start = full.max.x;
-            ui.horizontal_centered(|ui| {
-                if icons::button(ui, "home", 24.0, app.session.active().is_none(), crate::i18n::tr(&app.ui.language, "Home")).clicked() {
-                    app.session_home();
-                }
-                ui.add_space(6.0);
-                if !app.native_menu {
-                    ui.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                    ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-                    ui.style_mut().visuals.widgets.hovered.bg_stroke = Stroke::NONE;
-                    ui.style_mut().spacing.button_padding = vec2(7.0, 3.0);
-                    crate::menus::menu_bar(app, ui);
-                }
-                menus_end = ui.min_rect().max.x;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(4.0);
-                    // Search field.
-                    let (r, _) = ui.allocate_exact_size(vec2(125.0, 18.0), Sense::click());
-                    ui.painter().rect(r, 1.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                    icons::paint(ui.painter(), egui::Rect::from_min_size(r.min + vec2(3.0, 2.0), vec2(14.0, 14.0)), "search", t.icon);
-                    crate::rtl::paint(
-                        ui.painter(),
-                        r.min + vec2(20.0, 9.0),
-                        egui::Align2::LEFT_CENTER,
-                        crate::i18n::tr(&app.ui.language, "Search"),
-                        egui::FontId::proportional(11.0),
-                        t.text_dim,
-                    );
-                    ui.add_space(8.0);
-                    let current = app.ui.workspace.clone();
-                    let shown = crate::i18n::workspace_name(&app.ui.language, &current);
-                    ui.menu_button(crate::rtl::widget(ui, egui::RichText::new(format!("{shown} ▾")).font(semibold(11.5)).color(t.text)), |ui| {
-                        let customs: Vec<String> = app.ui.custom_workspaces.iter().map(|w| w.name.clone()).collect();
-                        for w in
-                            ["Essentials", "Advanced", "Book", "Digital Publishing", "Interactive for PDF", "Printing and Proofing", "Typography"]
-                                .into_iter()
-                                .map(str::to_string)
-                                .chain(customs.iter().cloned())
-                        {
-                            if ui.selectable_label(w == current, crate::rtl::widget(ui, crate::i18n::workspace_name(&app.ui.language, &w))).clicked()
+            // The right-hand controls' width, measured last frame: in a window too narrow for them
+            // and the menus they follow the menus, and the bar scrolls sideways.
+            let tools_w_id = ui.id().with("tools_width");
+            let tools_w: f32 = ui.data(|d| d.get_temp(tools_w_id)).unwrap_or(0.0);
+            crate::widgets::overflow_scrolling(ui);
+            egui::ScrollArea::horizontal().id_salt("app_bar_scroll").auto_shrink([false, false]).show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    if icons::button(ui, "home", 24.0, app.session.active().is_none(), crate::i18n::tr(&app.ui.language, "Home")).clicked() {
+                        app.session_home();
+                    }
+                    ui.add_space(6.0);
+                    if !app.native_menu {
+                        ui.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                        ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+                        ui.style_mut().visuals.widgets.hovered.bg_stroke = Stroke::NONE;
+                        ui.style_mut().spacing.button_padding = vec2(7.0, 3.0);
+                        crate::menus::menu_bar(app, ui);
+                    }
+                    menus_end = ui.min_rect().max.x;
+                    let size = vec2(ui.available_width().max(tools_w), ui.available_height());
+                    let tools = ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
+                        // Search field.
+                        let (r, _) = ui.allocate_exact_size(vec2(125.0, 18.0), Sense::click());
+                        ui.painter().rect(r, 1.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+                        icons::paint(ui.painter(), egui::Rect::from_min_size(r.min + vec2(3.0, 2.0), vec2(14.0, 14.0)), "search", t.icon);
+                        crate::rtl::paint(
+                            ui.painter(),
+                            r.min + vec2(20.0, 9.0),
+                            egui::Align2::LEFT_CENTER,
+                            crate::i18n::tr(&app.ui.language, "Search"),
+                            egui::FontId::proportional(11.0),
+                            t.text_dim,
+                        );
+                        ui.add_space(8.0);
+                        let current = app.ui.workspace.clone();
+                        let shown = crate::i18n::workspace_name(&app.ui.language, &current);
+                        ui.menu_button(crate::rtl::widget(ui, egui::RichText::new(format!("{shown} ▾")).font(semibold(11.5)).color(t.text)), |ui| {
+                            let customs: Vec<String> = app.ui.custom_workspaces.iter().map(|w| w.name.clone()).collect();
+                            for w in
+                                ["Essentials", "Advanced", "Book", "Digital Publishing", "Interactive for PDF", "Printing and Proofing", "Typography"]
+                                    .into_iter()
+                                    .map(str::to_string)
+                                    .chain(customs.iter().cloned())
                             {
-                                let _ = app.run("window.workspace", json!({"name": w}));
+                                if ui
+                                    .selectable_label(w == current, crate::rtl::widget(ui, crate::i18n::workspace_name(&app.ui.language, &w)))
+                                    .clicked()
+                                {
+                                    let _ = app.run("window.workspace", json!({"name": w}));
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui
+                                .button(crate::rtl::widget(
+                                    ui,
+                                    format!(
+                                        "{} {}",
+                                        crate::i18n::tr(&app.ui.language, "Reset"),
+                                        crate::i18n::workspace_name(&app.ui.language, &current)
+                                    ),
+                                ))
+                                .clicked()
+                            {
+                                let _ = app.run("window.resetWorkspace", json!({}));
                                 ui.close();
                             }
-                        }
-                        ui.separator();
-                        if ui
-                            .button(crate::rtl::widget(
-                                ui,
-                                format!("{} {}", crate::i18n::tr(&app.ui.language, "Reset"), crate::i18n::workspace_name(&app.ui.language, &current)),
-                            ))
-                            .clicked()
-                        {
-                            let _ = app.run("window.resetWorkspace", json!({}));
-                            ui.close();
-                        }
-                        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Workspace…"))).clicked() {
-                            let _ = app.run("window.newWorkspace", json!({}));
-                            ui.close();
-                        }
-                        if !customs.is_empty() {
-                            ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Workspace")), |ui| {
-                                for w in &customs {
-                                    if ui.button(w).clicked() {
-                                        let _ = app.run("window.deleteWorkspace", json!({"name": w}));
-                                        ui.close();
+                            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Workspace…"))).clicked() {
+                                let _ = app.run("window.newWorkspace", json!({}));
+                                ui.close();
+                            }
+                            if !customs.is_empty() {
+                                ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Workspace")), |ui| {
+                                    for w in &customs {
+                                        if ui.button(w).clicked() {
+                                            let _ = app.run("window.deleteWorkspace", json!({"name": w}));
+                                            ui.close();
+                                        }
                                     }
-                                }
-                            });
+                                });
+                            }
+                        });
+                        ui.add_space(6.0);
+                        if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
+                            app.status("Export a PDF, IDML or package to share — no cloud account needed.");
                         }
+                        ui.add_space(8.0);
+                        // Always one click away: the ArtCraft community Discord.
+                        if crate::about::discord_button(ui, "Discord", vec2(78.0, 22.0)) {
+                            let _ = app.run("help.discord", json!({}));
+                        }
+                        tools_start = ui.min_rect().min.x;
+                        ui.min_rect().width()
                     });
-                    ui.add_space(6.0);
-                    if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
-                        app.status("Export a PDF, IDML or package to share — no cloud account needed.");
+                    if (tools.inner - tools_w).abs() > 0.5 {
+                        ui.data_mut(|d| d.insert_temp(tools_w_id, tools.inner));
+                        ui.ctx().request_discard("app bar: the right-hand controls changed width");
                     }
-                    ui.add_space(8.0);
-                    // Always one click away: the ArtCraft community Discord.
-                    if crate::about::discord_button(ui, "Discord", vec2(78.0, 22.0)) {
-                        let _ = app.run("help.discord", json!({}));
-                    }
-                    tools_start = ui.min_rect().min.x;
                 });
             });
             // Centred title.
@@ -142,14 +161,18 @@ pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin { left: 8, right: 8, top: 5, bottom: 3 }).stroke(Stroke::new(1.0, t.divider)),
         )
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let text_mode =
-                    matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
-                if text_mode {
-                    control_text(app, ui);
-                } else {
-                    control_object(app, ui);
-                }
+            // Wider than the window: the bar scrolls sideways.
+            crate::widgets::overflow_scrolling(ui);
+            egui::ScrollArea::horizontal().id_salt("control_bar_scroll").auto_shrink([false, true]).show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    let text_mode =
+                        matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
+                    if text_mode {
+                        control_text(app, ui);
+                    } else {
+                        control_object(app, ui);
+                    }
+                });
             });
         });
 }
@@ -566,7 +589,14 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     egui::RichText::new(if errors == 0 {
                         format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
                     } else {
-                        format!("{errors} {} ▾", crate::i18n::tr(&app.ui.language, if errors == 1 { "error" } else { "errors" }))
+                        format!(
+                            "{} ▾",
+                            crate::i18n::count_label(
+                                &app.ui.language,
+                                if errors == 1 && app.ui.language != "uk" { "error" } else { "errors" },
+                                errors
+                            )
+                        )
                     })
                     .font(small.clone()),
                 );
@@ -715,4 +745,87 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
             });
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{pos2, vec2};
+    use egui_kittest::kittest::Queryable;
+
+    use crate::test_window::{self, wheel};
+
+    /// The Control panel's last control with nothing selected.
+    const LAST_CONTROL: &str = "Jump to Next Column";
+    const FIRST_CONTROL: &str = "Rotate 90° Counterclockwise";
+
+    fn app() -> crate::DesignApp {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.control_bar = true;
+        app
+    }
+
+    fn rect(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> egui::Rect {
+        h.get_by_label(label).rect()
+    }
+
+    #[test]
+    fn a_narrow_window_scrolls_the_control_bar() {
+        let w = 700.0;
+        let mut h = test_window::open(app(), vec2(w, 600.0));
+        let bar = test_window::panel_rect(&h, "control_bar");
+        assert!(rect(&h, LAST_CONTROL).max.x > w, "the controls are wider than the window");
+        // A plain mouse wheel scrolls the bar sideways.
+        let first = rect(&h, FIRST_CONTROL).center();
+        wheel(&mut h, first, vec2(0.0, -3000.0));
+        let last = rect(&h, LAST_CONTROL);
+        let window = egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(w, 600.0));
+        assert!(window.contains_rect(last) && bar.contains_rect(last), "{last:?} outside the bar {bar:?}");
+        assert_eq!(test_window::panel_rect(&h, "control_bar").height(), bar.height(), "the bar keeps its height");
+        // A popup opened from a scrolled control opens at that control.
+        let fill = h.get_by_label("Fill").rect();
+        let chip = pos2(fill.max.x + 15.0, fill.center().y);
+        h.hover_at(chip);
+        h.drag_at(chip);
+        h.drop_at(chip);
+        h.run_steps(4);
+        let item = rect(&h, "[Black]");
+        assert!(item.min.y > fill.max.y && (item.min.x - chip.x).abs() < 120.0, "popup item at {item:?}, control at {chip:?}");
+    }
+
+    #[test]
+    fn a_narrow_window_scrolls_the_app_bar() {
+        let w = 640.0;
+        let mut h = test_window::open(app(), vec2(w, 600.0));
+        let (help, share) = (rect(&h, "Help"), rect(&h, "Share"));
+        assert!(help.max.x <= share.min.x, "the menus ({help:?}) and the workspace controls ({share:?}) overlap");
+        wheel(&mut h, help.center(), vec2(0.0, -3000.0));
+        let share = rect(&h, "Share");
+        let window = egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(w, 600.0));
+        assert!(window.contains_rect(share), "{share:?} outside the window");
+    }
+
+    #[test]
+    fn a_wide_window_does_not_scroll_the_bars() {
+        let mut h = test_window::open(app(), vec2(1400.0, 900.0));
+        let before = [rect(&h, FIRST_CONTROL), rect(&h, LAST_CONTROL), rect(&h, "Help"), rect(&h, "Share")];
+        assert!(before.iter().all(|r| r.max.x <= 1400.0), "{before:?}");
+        wheel(&mut h, before[0].center(), vec2(0.0, -3000.0));
+        wheel(&mut h, before[2].center(), vec2(0.0, -3000.0));
+        let after = [rect(&h, FIRST_CONTROL), rect(&h, LAST_CONTROL), rect(&h, "Help"), rect(&h, "Share")];
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn a_scrolled_bar_keeps_its_captions_on_one_line() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let f = app.run("frame.create", serde_json::json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hello"})).unwrap();
+        app.run("selection.set", serde_json::json!({"ids": [f["id"]]})).unwrap();
+        let mut h = test_window::open(app, vec2(700.0, 600.0));
+        let bar = test_window::panel_rect(&h, "control_bar").center();
+        wheel(&mut h, bar, vec2(0.0, -3000.0));
+        // The text frame's last group: its caption gets only what is left of the row.
+        let columns = h.get_by_label("Columns").rect();
+        assert!(columns.height() < 20.0 && columns.width() > columns.height(), "Columns wraps: {columns:?}");
+    }
 }

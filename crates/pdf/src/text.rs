@@ -39,6 +39,28 @@ fn same_run(a: &PlacedGlyph, b: &PlacedGlyph) -> bool {
         && (a.y - b.y).abs() < 1e-6
 }
 
+/// Merge bars of one paint layer; underlines and strikes must never be merged together.
+fn text_rules(cs: &ComposedStory, ft: &FrameText, underline: bool) -> Vec<(designcraft_compose::Rule, Rect)> {
+    let mut bars: Vec<(designcraft_compose::Rule, Rect)> = Vec::new();
+    for line in &ft.lines {
+        for g in line.glyphs.iter().filter(|g| g.visible) {
+            let style = &cs.styles[g.style as usize];
+            let (on, rule) = if underline { (style.underline, &style.underline_rule) } else { (style.strikethrough, &style.strike_rule) };
+            if !on {
+                continue;
+            }
+            let rect = rule.rect(g.x, g.x + g.adv, line.baseline);
+            match bars.last_mut() {
+                Some((last_rule, last)) if last_rule == rule && (last.y0 - rect.y0).abs() < 1e-6 && (rect.x0 - last.x1).abs() < 0.5 => {
+                    last.x1 = rect.x1;
+                }
+                _ => bars.push((rule.clone(), rect)),
+            }
+        }
+    }
+    bars
+}
+
 impl Exporter<'_> {
     pub(crate) fn font(&mut self, face: &FontFace) -> Option<Font> {
         self.fonts
@@ -108,7 +130,17 @@ impl Exporter<'_> {
                 me.tables(s, ft);
             }
         });
-        let mut deco: Vec<(designcraft_compose::Rule, Rect)> = Vec::new();
+        // All underlines precede all glyph runs, including ink overlapping from another run.
+        let underlines = text_rules(cs, ft, true);
+        if !underlines.is_empty() {
+            self.as_artifact(s, |me, s| {
+                for (rule, r) in underlines {
+                    if let Some(c) = me.swatch_color(&rule.color, rule.tint) {
+                        me.fill_rect(s, r, c);
+                    }
+                }
+            });
+        }
         for l in &ft.lines {
             let gs = &l.glyphs;
             let mut i = 0;
@@ -135,21 +167,9 @@ impl Exporter<'_> {
                 self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
                 i = j;
             }
-            // Underline / strikethrough, merged per style along the line.
-            for g in gs.iter().filter(|g| g.visible) {
-                let st = &cs.styles[g.style as usize];
-                for (rule, r) in st.rules(g.x, g.x + g.adv, l.baseline) {
-                    match deco.last_mut() {
-                        Some((last_rule, last)) if *last_rule == *rule && (last.y0 - r.y0).abs() < 1e-6 && (r.x0 - last.x1).abs() < 0.5 => {
-                            last.x1 = r.x1
-                        }
-                        _ => deco.push((rule.clone(), r)),
-                    }
-                }
-            }
         }
         self.as_artifact(s, |me, s| {
-            for (rule, r) in deco {
+            for (rule, r) in text_rules(cs, ft, false) {
                 if let Some(c) = me.swatch_color(&rule.color, rule.tint) {
                     me.fill_rect(s, r, c);
                 }

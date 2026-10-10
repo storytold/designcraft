@@ -114,8 +114,8 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "story.get", "Get Story", [], None, "{story? | frame?} → text, frames, paragraphs, vertical, overset", has_doc, |s, p| {
             let st = s.doc()?;
             let sid = story_of(s, p).ok_or_else(|| bad("story.get", "no story"))?;
+            let mut v = st.doc.story_summary(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             let cs = s.cache.get(&st.doc, sid, None);
-            let mut v = st.doc.story_summary(sid).unwrap_or_default();
             v["overset"] = json!(cs.overset_at);
             v["lines"] = json!(cs.line_count());
             Ok(v)
@@ -1636,5 +1636,21 @@ mod vertical_caret_tests {
         assert_eq!(nline, line + 1);
         assert!((nx - x).abs() < 0.5, "{x} {nx}");
         assert_eq!(mv(&mut s, "up", false, false), 3 * c);
+    }
+}
+
+#[cfg(test)]
+mod story_query_contract_tests {
+    use serde_json::json;
+    #[test]
+    fn missing_story_errors_but_valid_empty_and_selected_stories_succeed() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert!(s.execute("story.get", &json!({"story":999})).unwrap_err().to_string().contains("no such story"));
+        let f = s.execute("frame.create", &json!({"rect":[36,36,300,200],"content":"text"})).unwrap();
+        assert_eq!(s.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "");
+        assert_eq!(s.execute("story.get", &json!({"frame":f["id"]})).unwrap()["text"], "");
+        s.execute("text.select", &json!({"story":f["story"],"anchor":0})).unwrap();
+        assert_eq!(s.execute("story.get", &json!({})).unwrap()["text"], "");
     }
 }

@@ -313,6 +313,18 @@ fn discretionary_hyphen_replaces_automatic_points() {
     assert!(lines.iter().filter(|l| l.hyphenated).count() <= 1);
 }
 
+#[test]
+fn hyphenation_skips_a_no_break_word_at_the_start() {
+    // Used to index before the first glyph and panic.
+    let text = "Extraordinarily long words wrap in a narrow column";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 60.0, 1000.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..15, |f| f.over.no_break = Some(true));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // The no-break word stays whole on the first line.
+    let first = all_lines(&cs)[0];
+    assert!(!first.hyphenated && first.range.end >= 15, "{:?}", &text[first.range.clone()]);
+}
+
 /// Story of `n` one-line filler paragraphs followed by `extra` paragraphs, in a 2-column frame.
 fn keep_doc(fillers: usize, extra: &[&str], height: f64) -> (Document, StoryId, Vec<usize>) {
     let mut parts: Vec<String> = (0..fillers).map(|k| format!("Filler {k}")).collect();
@@ -559,6 +571,32 @@ fn column_break_moves_following_text() {
     assert_eq!(lines[0].column, 0);
     assert_eq!(lines[1].column, 1);
     assert!(lines[1].baseline < 20.0, "second column starts at the top");
+}
+
+#[test]
+fn line_before_a_break_character_is_a_last_line() {
+    // As in InDesign: column, frame and page breaks end the paragraph's last line (set with the
+    // last-line alignment), while a forced line break inside a justified paragraph is justified.
+    use designcraft_doc::story::{COLUMN_BREAK, FORCED_LINE_BREAK, FRAME_BREAK, PAGE_BREAK};
+    for (brk, align, justified) in [
+        (COLUMN_BREAK, Align::LeftJustified, false),
+        (FRAME_BREAK, Align::LeftJustified, false),
+        (PAGE_BREAK, Align::LeftJustified, false),
+        (PAGE_BREAK, Align::FullyJustified, true),
+        (FORCED_LINE_BREAK, Align::LeftJustified, true),
+    ] {
+        // A space after the break is skipped and does not keep the break from moving the text.
+        let text = format!("one two three{brk} four five six");
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 300.0), ParaAttrs { align: Some(align), ..Default::default() });
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines[0];
+        let full = (l.end_x - l.x1).abs() < 0.6;
+        assert_eq!(full, justified, "{brk:?} {align:?}: line ends at {} of {}", l.end_x, l.x1);
+        if brk == COLUMN_BREAK {
+            assert_eq!(all_lines(&cs)[1].column, 1, "the text after a column break starts the next column");
+        }
+    }
 }
 
 #[test]
@@ -1876,4 +1914,160 @@ fn vertical_lines_fit_the_em_box() {
         assert!((l.ascent - ascent).abs() < 1e-9 && (l.descent - descent).abs() < 1e-9, "{family}: {} {}", l.ascent, l.descent);
         assert!((l.baseline - col.y0 - ascent).abs() < 1e-9, "{family}: {} {}", l.baseline, col.y0);
     }
+}
+
+// ---------- span columns ----------
+
+/// A story of `before` body paragraphs, a heading spanning all columns, and `after` body
+/// paragraphs, in a three-column frame. Returns the heading's paragraph index.
+fn span_doc(before: usize, after: usize, rect: Rect) -> (Document, StoryId, ItemId, usize) {
+    let mut paras: Vec<&str> = vec![LOREM; before];
+    paras.push("A heading across the columns");
+    paras.extend(vec![LOREM; after]);
+    let (mut d, sid, fid) = doc_with(&paras.join("\n"), rect, ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 3;
+    d.story_mut(sid).unwrap().paras[before].para.span_columns = Some(SpanColumns::Span(0));
+    (d, sid, fid, before)
+}
+
+/// The line's leading slot (glyph ascent and descent may reach into the neighbouring lines).
+fn line_box(l: &Line) -> (f64, f64) {
+    (l.baseline - 0.75 * l.leading, l.baseline + 0.25 * l.leading)
+}
+
+/// No two lines of a frame share any area.
+fn assert_no_overlap(ft: &FrameText) {
+    for (i, a) in ft.lines.iter().enumerate() {
+        for b in &ft.lines[i + 1..] {
+            let ((at, ab), (bt, bb)) = (line_box(a), line_box(b));
+            let x_overlap = a.x0 < b.x1 - 0.5 && b.x0 < a.x1 - 0.5;
+            let y_overlap = at < bb - 0.5 && bt < ab - 0.5;
+            assert!(
+                !(x_overlap && y_overlap),
+                "lines overlap: para {} col {} y {:.1}..{:.1} and para {} col {} y {:.1}..{:.1}",
+                a.para,
+                a.column,
+                at,
+                ab,
+                b.para,
+                b.column,
+                bt,
+                bb
+            );
+        }
+    }
+}
+
+/// The heading spans the frame; text before it sits above it and text after it below it.
+fn assert_span_layout(ft: &FrameText, h: usize) {
+    let heading: Vec<&Line> = ft.lines.iter().filter(|l| l.para == h).collect();
+    assert!(!heading.is_empty());
+    let (c0, cn) = (ft.columns[0], ft.columns[ft.columns.len() - 1]);
+    for l in &heading {
+        assert!((l.x0 - c0.x0.min(cn.x0)).abs() < 1e-6 && (l.x1 - c0.x1.max(cn.x1)).abs() < 1e-6, "heading spans {}..{}", l.x0, l.x1);
+    }
+    let top = heading.iter().map(|l| line_box(l).0).fold(f64::INFINITY, f64::min);
+    let bottom = heading.iter().map(|l| line_box(l).1).fold(f64::NEG_INFINITY, f64::max);
+    for l in ft.lines.iter().filter(|l| l.para < h) {
+        assert!(line_box(l).1 <= top + 0.5, "para {} col {} ends at {} below the heading top {top}", l.para, l.column, line_box(l).1);
+    }
+    for l in ft.lines.iter().filter(|l| l.para > h) {
+        assert!(line_box(l).0 >= bottom - 0.5, "para {} col {} starts at {} above the heading bottom {bottom}", l.para, l.column, line_box(l).0);
+    }
+    assert_no_overlap(ft);
+}
+
+#[test]
+fn text_after_a_spanning_paragraph_flows_below_it() {
+    let (d, sid, _, h) = span_doc(2, 3, Rect::new(0.0, 0.0, 540.0, 300.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_span_layout(ft, h);
+    // The text before is balanced across the three columns above the heading.
+    let before: Vec<&Line> = ft.lines.iter().filter(|l| l.para < h).collect();
+    let per_col = |c: u32| before.iter().filter(|l| l.column == c).count();
+    let counts = [per_col(0), per_col(1), per_col(2)];
+    assert!(counts.iter().all(|&n| n > 0), "{counts:?}");
+    assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1, "{counts:?}");
+    // The text after starts right below the heading in every column, on the same baseline.
+    let bottom = ft.lines.iter().filter(|l| l.para == h).map(|l| l.baseline).fold(f64::NEG_INFINITY, f64::max);
+    let firsts: Vec<f64> = (0..3).map(|c| ft.lines.iter().find(|l| l.para > h && l.column == c).map(|l| l.baseline).unwrap()).collect();
+    for b in &firsts {
+        assert!(*b > bottom && *b < bottom + 40.0, "{firsts:?} after {bottom}");
+    }
+    assert!((firsts[1] - firsts[2]).abs() < 1e-6, "{firsts:?}");
+}
+
+#[test]
+fn spanning_heading_kept_with_next_and_spanning_two_of_three_columns() {
+    let (mut d, sid, _, h) = span_doc(2, 3, Rect::new(0.0, 0.0, 540.0, 300.0));
+    d.story_mut(sid).unwrap().paras[h].para.keep_with_next = Some(2);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_span_layout(&cs.frames[0], h);
+    // Spanning two of three columns: the third column beside the heading stays empty.
+    d.story_mut(sid).unwrap().paras[h].para.span_columns = Some(SpanColumns::Span(2));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let heading = ft.lines.iter().find(|l| l.para == h).unwrap();
+    assert!((heading.x0 - ft.columns[0].x0).abs() < 1e-6 && (heading.x1 - ft.columns[1].x1).abs() < 1e-6);
+    assert_no_overlap(ft);
+    let bottom = heading.baseline + 0.25 * heading.leading;
+    assert!(ft.lines.iter().filter(|l| l.para > h).all(|l| line_box(l).0 >= bottom - 0.5));
+    assert!((0..3).all(|c| ft.lines.iter().any(|l| l.para > h && l.column == c)));
+}
+
+#[test]
+fn spanning_paragraph_at_the_top_and_end_of_a_frame() {
+    let (d, sid, _, h) = span_doc(0, 4, Rect::new(0.0, 0.0, 540.0, 300.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_span_layout(ft, h);
+    assert!(ft.lines[0].para == h && ft.lines[0].baseline < 20.0);
+    assert!((1..3).all(|c| ft.lines.iter().any(|l| l.column == c)));
+
+    let (d, sid, _, h) = span_doc(3, 0, Rect::new(0.0, 0.0, 540.0, 300.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_span_layout(&cs.frames[0], h);
+}
+
+#[test]
+fn text_after_a_spanning_paragraph_threads_into_the_next_frame() {
+    let (mut d, sid, f1, h) = span_doc(2, 8, Rect::new(0.0, 0.0, 540.0, 200.0));
+    let lid = d.default_layer();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 300.0, 540.0, 700.0), lid, "", ParaFormat::default()).unwrap();
+    d.item_mut(f2).unwrap().text_frame_mut().unwrap().options.columns = 3;
+    d.thread(f1, f2).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "overset at {:?}", cs.overset_at);
+    assert_span_layout(&cs.frames[0], h);
+    let (a, b) = (&cs.frames[0], &cs.frames[1]);
+    assert!((0..3).all(|c| a.lines.iter().any(|l| l.para > h && l.column == c)));
+    assert!(!b.lines.is_empty() && b.lines[0].para > h && b.lines[0].baseline < 320.0);
+    assert_no_overlap(b);
+    // Every line of the story is set once, in order.
+    let lines = all_lines(&cs);
+    for w in lines.windows(2) {
+        assert!(w[1].range.start >= w[0].range.end, "{:?} then {:?}", w[0].range, w[1].range);
+    }
+    assert_eq!(lines.last().unwrap().range.end, d.story(sid).unwrap().text.len());
+}
+
+#[test]
+fn spanning_paragraph_in_rtl_and_vertical_frames() {
+    let (mut d, sid, _, h) = span_doc(2, 4, Rect::new(0.0, 0.0, 540.0, 500.0));
+    d.story_mut(sid).unwrap().direction = designcraft_doc::TextDirection::RightToLeft;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_span_layout(&cs.frames[0], h);
+
+    let (mut d, sid, _, h) = span_doc(2, 4, Rect::new(0.0, 0.0, 540.0, 540.0));
+    d.story_mut(sid).unwrap().vertical = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.frames[0].lines.is_empty());
+    assert_no_overlap(&cs.frames[0]);
+    assert!(cs.frames[0].lines.iter().any(|l| l.para == h));
 }
