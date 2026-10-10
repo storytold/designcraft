@@ -94,6 +94,8 @@ impl RunStyle {
 /// A positioned glyph. `x` is absolute in frame inner space; `y` is relative to the line baseline.
 #[derive(Clone, Debug)]
 pub struct PlacedGlyph {
+    /// Actual character drawn, including generated labels.
+    pub rendered_char: char,
     pub face: designcraft_fonts::FaceRef,
     pub gid: u32,
     pub x: f64,
@@ -1867,6 +1869,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
+                rendered_char: '\t',
                 face: tab.face,
                 gid,
                 x: at,
@@ -1970,6 +1973,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == shape::SOFT_HYPHEN
         || g.ch == shape::HIDDEN);
     PlacedGlyph {
+        rendered_char: g.rendered_char,
         face: g.face,
         gid: g.gid,
         x: x + g.dx,

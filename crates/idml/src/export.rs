@@ -1021,9 +1021,13 @@ impl<'a> Ex<'a> {
             el.set("CharacterAlignment", crate::cjk::alignment_out(v));
         }
         if let Some(f) = &a.font_family {
-            props.push(p("AppliedFont", "string", f.clone()));
-            let style = a.font_style.clone().unwrap_or_else(|| "Regular".into());
-            self.note_font(f, &style);
+            if let Some(composite) = self.d.styles.composite_font(f) {
+                props.push(p("AppliedFont", "object", format!("CompositeFont/{}", escape_id(&composite.name))));
+            } else {
+                props.push(p("AppliedFont", "string", f.clone()));
+                let style = a.font_style.clone().unwrap_or_else(|| "Regular".into());
+                self.note_font(f, &style);
+            }
         }
         if let Some(v) = &a.font_style {
             el.set("FontStyle", v);

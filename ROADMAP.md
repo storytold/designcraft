@@ -1,8 +1,19 @@
 # DesignCraft roadmap
 
+- FONT7: replacement recommendations check the characters actually used; placeholder LastResort fonts and glyph-zero mappings cannot masquerade as glyph coverage or suppress missing-glyph diagnostics.
+
+- FONT6: localized and legacy family/style names share canonical resolution across shaping, inventory and replacement. Known compatible and script-based substitutes retain missing status; Find Font shows the resolved face and offers it as the replacement, while preflight reports unavailable styles.
+
+- FONT5: missing-glyph preflight inspects rendered characters in generated labels, including zero-length continuation glyphs, and identifies the owning page frame for nested text.
+
+- FONT4: generated note labels resolve composite character mappings and glyph fallback while retaining a single source anchor; composed glyphs retain the actual rendered character for diagnostics.
+
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
+- FONT3: opening documents with unavailable font families or styles automatically offers Find/Replace Font. The dialog supports repeated replacements, refreshed inventory and visible validation errors; native builds without craft-fonts use system CJK fonts for readable names.
+- FONT2: font replacements validate available targets and resolve inherited formatting in nested text and empty paragraphs, with undo and composite component preservation.
+- FONT1: composite-font references resolve by resource identity, retain literal display names, and export as object references. Font inventory and preflight share the character-selected component fonts, including nested notes and cells.
 - CJK1: IDML composite fonts now retain character mappings and metrics; explicit aki, tsume, jidori, em alignment/leading, named/custom kinsoku boundaries, hanging punctuation, tate-chu-yoko offsets and kenten symbols flow through composition and IDML export. Automatic kerning no longer imports inactive numeric values as enormous manual spacing. Composite definitions are editable through commands with undo/cache invalidation. Mojikumi definitions are retained and unsupported spacing-table / push-in-push-out policies are reported by preflight. Full InDesign CJK composition parity, frame-grid layout and detailed ruby/warichu remain unfinished.
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.

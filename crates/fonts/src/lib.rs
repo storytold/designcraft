@@ -530,3 +530,62 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    #[test]
+    fn localized_family_and_style_names_resolve_without_false_missing_status() {
+        let bytes = testing::font_with("Alias Face", &['A']).unwrap();
+        let bytes = testing::with_names(
+            &bytes,
+            &[(3, 1, 0x409, 1, "Alias Face"), (3, 1, 0x804, 1, "别名字体"), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x804, 2, "常规")],
+        )
+        .unwrap();
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(bytes);
+        let scope = db.scoped(0);
+        assert!(scope.has_family("别名字体"));
+        assert_eq!(scope.face("别名字体", "常规").family, "Alias Face");
+        assert!(scope.has_style("别名字体", "常规"));
+        assert!(!scope.has_style("别名字体", "Unreal Style"));
+        assert_eq!(scope.styles("别名字体"), ["Regular"]);
+    }
+
+    #[test]
+    fn known_substitution_preserves_missing_original_status() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(testing::font_with("Carlito", &['A']).unwrap());
+        let scope = db.scoped(0);
+        assert_eq!(scope.substitute_family("Calibri"), "Carlito");
+        assert!(scope.canonical_family("An Unavailable Original Family").is_none());
+        assert_eq!(scope.face("An Unavailable Original Family", "Regular").family, FALLBACK_FAMILY);
+    }
+}
+
+#[cfg(test)]
+mod coverage_recommendation_tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_fonts_do_not_satisfy_glyph_coverage() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(testing::font_with(".LastResort", &['\u{10fffd}']).unwrap());
+        let face = db.face(".LastResort", "Regular");
+        assert!(face.is_placeholder());
+        assert!(!face.covers('\u{10fffd}'));
+        assert!(db.fallback_for('\u{10fffd}', u32::MAX, None).is_none());
+    }
+
+    #[test]
+    fn arabic_replacement_also_covers_surrounding_punctuation() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(testing::font_with("Geeza Pro", &['ع']).unwrap());
+        db.add_font(testing::font_with("Al Bayan", &['ع', '“']).unwrap());
+        let scope = db.scoped(0);
+        assert_eq!(scope.face("Traditional Arabic", "Regular").family, "Geeza Pro");
+        assert_eq!(scope.replacement_face("Traditional Arabic", "Regular", &['ع', '“']).family, "Al Bayan");
+        assert!(!scope.has_family("Traditional Arabic"));
+    }
+}

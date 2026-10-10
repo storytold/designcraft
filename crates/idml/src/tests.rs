@@ -857,3 +857,40 @@ fn arabic_story_and_table_directions_survive_idml_export() {
     assert_eq!(st.direction, designcraft_doc::TextDirection::RightToLeft);
     assert_eq!(st.tables.values().next().unwrap().options.direction, designcraft_doc::TextDirection::RightToLeft);
 }
+
+#[test]
+fn composite_references_resolve_by_identity_and_export_as_objects() {
+    let map = DESIGNMAP.replace("</Document>", r#"
+      <CompositeFont Self="CompositeFont/opaque%3a17" Name="Mixed%3a literal">
+        <CompositeFontEntry Name="Base" FontStyle="$ID/Regular"><Properties><AppliedFont type="string">Source Serif 4</AppliedFont></Properties></CompositeFontEntry>
+        <CompositeFontEntry Name="Digits" CustomCharacters="0123456789" FontStyle="$ID/Bold" RelativeSize="80" HorizontalScale="90" VerticalScale="110" BaselineShift="5" ScaleOption="false"><Properties><AppliedFont type="string">Source Sans 3</AppliedFont></Properties></CompositeFontEntry>
+      </CompositeFont></Document>"#);
+    let styles = STYLES
+        .replace("<AppliedFont type=\"string\">Source Serif 4</AppliedFont>", "<AppliedFont type=\"object\">CompositeFont/opaque%3a17</AppliedFont>");
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1"><ParagraphStyleRange><CharacterStyleRange><Content>A1</Content><Footnote><ParagraphStyleRange><CharacterStyleRange><Content>B2</Content></CharacterStyleRange></ParagraphStyleRange></Footnote></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"#;
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    let d = import_idml(&bytes).unwrap();
+    let f = &d.styles.composite_fonts[0];
+    assert_eq!(f.name, "Mixed%3a literal", "display names are not encoded identifiers");
+    let body = d.stories.values().find(|s| !s.notes.is_empty()).unwrap();
+    for text in [body.as_ref(), &body.notes[0].text] {
+        let (_, base) = d.styles.resolve_para(&text.paras[0]);
+        let p = d.styles.resolve_char(&base, &text.chars[0].format);
+        assert_eq!(d.styles.composite_font(&p.font_family), Some(f));
+    }
+    let output = export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&output)).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("Resources/Styles.xml").unwrap(), &mut xml).unwrap();
+    assert!(xml.contains("<AppliedFont type=\"object\">CompositeFont/Mixed%253a literal</AppliedFont>"), "{xml}");
+    let back = import_idml(&output).unwrap();
+    assert_eq!(back.styles.composite_fonts, d.styles.composite_fonts);
+}

@@ -104,6 +104,7 @@ struct Importer<'r> {
     inks: designcraft_doc::InkManager,
     stroke_styles: Vec<designcraft_doc::StrokeStyleDef>,
     styles: Styles,
+    composite_names: HashMap<String, String>,
     kinsoku: HashMap<String, designcraft_doc::cjk::Kinsoku>,
     para_names: HashMap<String, String>,
     char_names: HashMap<String, String>,
@@ -188,6 +189,7 @@ impl<'r> Importer<'r> {
             inks: Default::default(),
             stroke_styles: Vec::new(),
             styles,
+            composite_names: HashMap::new(),
             kinsoku: HashMap::new(),
             para_names: HashMap::new(),
             char_names: HashMap::new(),
@@ -273,6 +275,11 @@ impl<'r> Importer<'r> {
             }
         }
         for e in top.iter().filter(|e| e.local() == "CompositeFont") {
+            let name =
+                e.get("Name").map(str::to_string).unwrap_or_else(|| unescape_id(e.get("Self").unwrap_or("").trim_start_matches("CompositeFont/")));
+            if let Some(id) = e.get("Self") {
+                self.composite_names.insert(id.to_string(), format!("CompositeFont/{name}"));
+            }
             let entries = e
                 .find_all("CompositeFontEntry")
                 .map(|c| designcraft_doc::cjk::CompositeFontEntry {
@@ -287,7 +294,7 @@ impl<'r> Importer<'r> {
                     scale_option: c.boolean("ScaleOption").unwrap_or(true),
                 })
                 .collect();
-            self.styles.composite_fonts.push(designcraft_doc::cjk::CompositeFont { name: unescape_id(e.get("Name").unwrap_or("")), entries });
+            self.styles.composite_fonts.push(designcraft_doc::cjk::CompositeFont { name, entries });
         }
         for e in top.iter().filter(|e| e.local() == "KinsokuTable") {
             if e.get("CantBeginLineChars").is_some() || e.get("CantEndLineChars").is_some() {
@@ -1050,7 +1057,7 @@ impl<'r> Importer<'r> {
             // Some writers append the style after a tab.
             let fam = f.split('\t').next().unwrap_or(f);
             if !fam.is_empty() && fam != "$ID/" {
-                a.font_family = Some(fam.to_string());
+                a.font_family = Some(self.composite_names.get(fam).cloned().unwrap_or_else(|| fam.to_string()));
             }
         }
         a.font_style = e.prop("FontStyle");
