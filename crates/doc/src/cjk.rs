@@ -87,6 +87,19 @@ pub enum CharacterAlignment {
     IcfBottom,
 }
 
+/// How the short lines of a warichu run sit inside the run's block.
+/// `Auto` centres them. `Justify` spreads a short line out to the block width.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WarichuAlignment {
+    #[default]
+    Auto,
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
 impl Kinsoku {
     /// Clean-room Unicode rules for the named CJK sets. Explicit document tables
     /// are imported separately and always take precedence over these defaults.

@@ -332,18 +332,11 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.selection.stroke = Stroke::new(1.0, t.text_strong);
     v.hyperlink_color = t.accent;
     v.override_text_color = Some(t.text);
-    for (w, fill) in [
-        (&mut v.widgets.noninteractive, t.panel),
-        (&mut v.widgets.inactive, t.button),
-        (&mut v.widgets.hovered, t.hover),
-        (&mut v.widgets.active, t.tool_active),
-        (&mut v.widgets.open, t.hover),
-    ] {
-        w.bg_fill = fill;
-        w.weak_bg_fill = fill;
-        w.corner_radius = r;
-        w.fg_stroke = Stroke::new(1.0, t.text);
-    }
+    craft_ui::theme::WidgetPalette { noninteractive: t.panel, inactive: t.button, hovered: t.hover, active: t.tool_active, open: t.hover }.apply_to(
+        &mut v.widgets,
+        r,
+        Stroke::new(1.0, t.text),
+    );
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, t.divider);
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.field_border);
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.field_border);

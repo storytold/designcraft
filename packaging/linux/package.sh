@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and package DesignCraft for Linux (<arch> is x86_64 or aarch64):
+# Build and package DesignCraft for Linux (<arch> is x86_64 or aarch64, or riscv64 when cross-compiling):
 #
 #   $DIST/designcraft-<version>-linux-<arch>.AppImage  any distro with glibc >= the build host's
 #   $DIST/designcraft-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
@@ -30,8 +30,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ARCH="$(uname -m)"
+ARCH="${CROSS_ARCH:-$(uname -m)}"
 case "$ARCH" in
+  riscv64) DEB_ARCH=riscv64 ;;
   x86_64) DEB_ARCH=amd64 ;;
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
@@ -42,9 +43,13 @@ BASENAME="designcraft-$VERSION-linux-$ARCH"
 echo "==> DesignCraft $VERSION for Linux $ARCH ($FORMATS)"
 
 if [ "$SKIP_BUILD" = 0 ]; then
-  (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli)
+  if [ -n "${CROSS_TARGET:-}" ]; then
+    (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli --target "$CROSS_TARGET")
+  else
+    (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli)
+  fi
 fi
-BIN="$CARGO_TARGET_DIR/release"
+BIN="$CARGO_TARGET_DIR/${CROSS_TARGET:+$CROSS_TARGET/}release"
 WORK="$CARGO_TARGET_DIR/linux-package"
 STAGE="$WORK/root"
 rm -rf "$WORK"
@@ -52,7 +57,7 @@ rm -rf "$WORK"
 # ---- stage an FHS tree (shared by every format) -------------------------------------------------
 install -Dm755 "$BIN/designcraft" "$STAGE/usr/bin/designcraft"
 install -Dm755 "$BIN/designcraft-cli" "$STAGE/usr/bin/designcraft-cli"
-strip "$STAGE/usr/bin/designcraft" "$STAGE/usr/bin/designcraft-cli" 2>/dev/null || true
+"${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/designcraft" "$STAGE/usr/bin/designcraft-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
@@ -94,6 +99,11 @@ fi
 
 # ---- AppImage -----------------------------------------------------------------------------------
 if has appimage; then
+  APPIMAGETOOL_VERSION=1.9.1
+  case "$ARCH" in
+    x86_64) APPIMAGETOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 ;;
+    aarch64) APPIMAGETOOL_SHA256=f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158 ;;
+  esac
   APPDIR="$WORK/DesignCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
   mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
@@ -104,11 +114,16 @@ if has appimage; then
 
   TOOL="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
   if [ -z "$TOOL" ]; then
-    TOOL="$CARGO_TARGET_DIR/appimagetool-$ARCH.AppImage"
+    TOOL="$CARGO_TARGET_DIR/appimagetool-$APPIMAGETOOL_VERSION-$ARCH.AppImage"
     if [ ! -x "$TOOL" ]; then
-      curl -fsSL -o "$TOOL" "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage"
-      chmod +x "$TOOL"
+      download="$TOOL.download"
+      curl -fsSL -o "$download" \
+        "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-$ARCH.AppImage"
+      printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$download" | sha256sum -c -
+      chmod 755 "$download"
+      mv "$download" "$TOOL"
     fi
+    printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$TOOL" | sha256sum -c -
   fi
   # Absolute, because appimagetool runs in $DIST below (CARGO_TARGET_DIR or APPIMAGETOOL may be
   # relative, e.g. target/agent-<name>).
@@ -135,6 +150,10 @@ if has appimage; then
   fi
 fi
 
-"$STAGE/usr/bin/designcraft-cli" --version
+if [ -z "${CROSS_TARGET:-}" ]; then
+  "$STAGE/usr/bin/designcraft-cli" --version
+elif [ -n "${EMULATOR:-}" ]; then
+  "$EMULATOR" "$STAGE/usr/bin/designcraft-cli" --version
+fi
 echo "==> done"
 ls -lh "$DIST"

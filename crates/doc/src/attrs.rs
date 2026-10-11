@@ -571,15 +571,33 @@ pub enum NumberStyle {
     LowerLetters,
     /// 01, 02, …
     ArabicLeadingZero,
+    /// 001, 002, …
+    ArabicThreeDigits,
+    /// 0001, 0002, …
+    ArabicFourDigits,
     /// *, †, ‡, §, ¶, ‖, then doubled (**, ††, …): footnotes.
     Symbols,
 }
 
+/// Numbers past this are written in Arabic digits by the styles that repeat characters (roman
+/// numerals, letters, symbols), so a hostile start number can't build a huge label.
+const MAX_REPEATED_FORM: u32 = 3999;
+
 impl NumberStyle {
     pub fn format(self, n: u32) -> String {
+        if n > MAX_REPEATED_FORM
+            && matches!(
+                self,
+                NumberStyle::UpperRoman | NumberStyle::LowerRoman | NumberStyle::UpperLetters | NumberStyle::LowerLetters | NumberStyle::Symbols
+            )
+        {
+            return n.to_string();
+        }
         match self {
             NumberStyle::Arabic => n.to_string(),
             NumberStyle::ArabicLeadingZero => format!("{n:02}"),
+            NumberStyle::ArabicThreeDigits => format!("{n:03}"),
+            NumberStyle::ArabicFourDigits => format!("{n:04}"),
             NumberStyle::UpperRoman => roman(n),
             NumberStyle::LowerRoman => roman(n).to_lowercase(),
             NumberStyle::UpperLetters => letters(n),
@@ -591,6 +609,58 @@ impl NumberStyle {
             }
         }
     }
+}
+
+/// Expand the metacharacters of a list's label text (`^t` tab, `^>` en space, `^^` caret, …),
+/// putting `number` in for `^#`. Level placeholders (`^1`…`^9`) and metacharacters with no
+/// meaning in a label are dropped; a label never holds a paragraph break.
+pub fn expand_list_text(s: &str, number: &str) -> String {
+    let mut out = String::with_capacity(s.len() + number.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '^' {
+            if c != '\n' && c != '\r' {
+                out.push(c);
+            }
+            continue;
+        }
+        let Some(m) = it.next() else {
+            out.push('^');
+            break;
+        };
+        let r = match m {
+            '#' => {
+                out.push_str(number);
+                continue;
+            }
+            '^' => '^',
+            't' => '\t',
+            'y' => crate::story::RIGHT_INDENT_TAB,
+            'i' => crate::story::INDENT_HERE,
+            'n' => crate::story::FORCED_LINE_BREAK,
+            'm' => '\u{2003}',
+            '>' => '\u{2002}',
+            'f' => '\u{2001}',
+            '|' => '\u{200A}',
+            '<' => '\u{2009}',
+            '/' => '\u{2007}',
+            '.' => '\u{2008}',
+            's' => '\u{A0}',
+            'S' => '\u{202F}',
+            '_' => '\u{2014}',
+            '=' => '\u{2013}',
+            '~' => '\u{2011}',
+            '{' => '\u{201C}',
+            '}' => '\u{201D}',
+            '[' => '\u{2018}',
+            ']' => '\u{2019}',
+            '"' => '"',
+            '\'' => '\'',
+            _ => continue,
+        };
+        out.push(r);
+    }
+    out
 }
 
 fn roman(mut n: u32) -> String {
@@ -692,6 +762,18 @@ attr_set! {
         ruby: String = String::new(),
         /// Kenten: an emphasis dot above each character.
         kenten: bool = false,
+        /// Warichu: the run is set in smaller lines stacked inside one line height.
+        warichu: bool = false,
+        /// How many warichu lines (InDesign's minimum is 2).
+        warichu_lines: u32 = 2,
+        /// Warichu size as a percentage of the parent size.
+        warichu_size: f64 = 50.0,
+        /// Extra points between warichu baselines. 0 is automatic (one small em).
+        warichu_line_spacing: f64 = 0.0,
+        warichu_alignment: crate::cjk::WarichuAlignment = crate::cjk::WarichuAlignment::Auto,
+        /// Minimum characters on a warichu line before a break, and on the line after it.
+        warichu_chars_before_break: u32 = 1,
+        warichu_chars_after_break: u32 = 1,
         /// Digits (World-Ready): how 0–9 are drawn.
         digits: Digits = Digits::Default,
         character_direction: crate::arabic::CharacterDirection = crate::arabic::CharacterDirection::Default,
@@ -778,6 +860,9 @@ attr_set! {
         keep_last: u32 = 2,
         start_paragraph: StartParagraph = StartParagraph::Anywhere,
         span_columns: SpanColumns = SpanColumns::Single,
+        /// Split Columns: the space between sub-columns and the inset from the column's edges.
+        split_inside_gutter: f64 = 6.0,
+        split_outside_gutter: f64 = 0.0,
         rule_above: Rule = Rule::default(),
         rule_below: Rule = Rule::default(),
         tabs: Vec<TabStop> = Vec::new(),
@@ -788,7 +873,10 @@ attr_set! {
         start_at: Option<u32> = None,
         bullet_char: String = "\u{2022}".into(),
         number_style: NumberStyle = NumberStyle::Arabic,
-        /// Text after the number/bullet (`^t` = tab).
+        /// A numbered paragraph's label: `^#` is the number, other metacharacters expand as in
+        /// [`expand_list_text`].
+        number_expression: String = "^#.^t".into(),
+        /// Text after the bullet (metacharacters expand as in [`expand_list_text`]).
         list_separator: String = "\t".into(),
         balance_ragged: bool = false,
         optical_margin: bool = false,
@@ -837,6 +925,20 @@ impl ParaAttrs {
             fields.insert(k.clone(), v.clone());
         }
         self.set_json(key, &merged)
+    }
+}
+
+impl ParaProps {
+    /// The label of a numbered paragraph with number `n`.
+    pub fn number_label(&self, n: u32) -> String {
+        expand_list_text(&self.number_expression, &self.number_style.format(n))
+    }
+
+    /// The label of a bulleted paragraph.
+    pub fn bullet_label(&self) -> String {
+        let mut s: String = self.bullet_char.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+        s.push_str(&expand_list_text(&self.list_separator, ""));
+        s
     }
 }
 
@@ -1023,5 +1125,22 @@ mod tests {
         assert_eq!(NumberStyle::UpperLetters.format(27), "AA");
         assert_eq!(NumberStyle::LowerLetters.format(28), "bb");
         assert_eq!(NumberStyle::ArabicLeadingZero.format(3), "03");
+        assert_eq!(NumberStyle::ArabicThreeDigits.format(7), "007");
+        assert_eq!(NumberStyle::ArabicFourDigits.format(12), "0012");
+        // Repeating forms stay small for huge numbers.
+        assert_eq!(NumberStyle::UpperRoman.format(u32::MAX), u32::MAX.to_string());
+        assert_eq!(NumberStyle::LowerLetters.format(u32::MAX), u32::MAX.to_string());
+        assert_eq!(NumberStyle::Symbols.format(u32::MAX), u32::MAX.to_string());
+    }
+
+    #[test]
+    fn list_labels_expand_metacharacters() {
+        let p = ParaProps { number_style: NumberStyle::UpperLetters, ..Default::default() };
+        assert_eq!(p.number_label(2), "B.\t");
+        let p = ParaProps { number_expression: "Tabel ^#^t".into(), ..Default::default() };
+        assert_eq!(p.number_label(3), "Tabel 3\t");
+        assert_eq!(expand_list_text("^2.^#.^>x^^^", "4"), ".4.\u{2002}x^^");
+        assert_eq!(expand_list_text("a\nb^p", "1"), "ab");
+        assert_eq!(ParaProps::default().bullet_label(), "\u{2022}\t");
     }
 }

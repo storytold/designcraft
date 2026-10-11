@@ -207,6 +207,15 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "type.warichu",
+            "Warichu",
+            [],
+            None,
+            "{on?: bool, lines?: int, size?: number, lineSpacing?: number, align?: auto|left|center|right|justify, charsBeforeBreak?: int, charsAfterBreak?: int} — set the selection as an inline note in smaller lines inside one line height (toggles by default)",
+            has_text_or_frames,
+            warichu_cmd
+        ),
+        cmd!(
             "type.storyDirection",
             "Story Direction",
             [],
@@ -370,6 +379,14 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let mut r = r.start.min(st.len())..r.end.min(st.len());
+        // Between a break character and its return is the end of that paragraph: typing there goes
+        // to the start of the next one.
+        if r.is_empty()
+            && st.text.get(r.start..).is_some_and(|t| t.starts_with('\n'))
+            && st.text.get(..r.start).and_then(|t| t.chars().next_back()).is_some_and(designcraft_doc::is_break_char)
+        {
+            r = r.start + 1..r.start + 1;
+        }
         // Autocorrect: a word ended by a space or punctuation is looked up.
         if let Some(list) = &autocorrect
             && r.is_empty()
@@ -392,8 +409,13 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
+        // A column, frame or page break ends its paragraph.
+        let mut text = if text.contains(designcraft_doc::is_break_char) {
+            designcraft_doc::end_paragraphs_at_breaks(&text, st.text.get(r.end..).and_then(|t| t.chars().next()))
+        } else {
+            text.clone()
+        };
         // Typing next to a table anchor starts a paragraph of its own.
-        let mut text = text.clone();
         let mut trail = 0;
         if t.cell.is_none() && !text.is_empty() && st.table_at(r.start).is_some() {
             let pi = st.para_at(r.start);
@@ -538,6 +560,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
             let start = if word { prev_word(&st.text, r.start) } else { prev_char(&st.text, r.start) };
             start..r.start
         };
+        let r = with_break_pair(&st.text, r);
         if tracking && t.cell.is_none() {
             // Marked, not removed: the caret steps over the deleted text.
             let at = super::changes::mark_deleted(st, r.clone());
@@ -549,6 +572,20 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
+}
+
+/// A break character and the return after it end one paragraph: deleting either deletes both.
+fn with_break_pair(text: &str, r: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let Some(del) = text.get(r.clone()) else { return r };
+    let mut chars = del.chars();
+    match (chars.next(), chars.next()) {
+        (Some('\n'), None) => match text.get(..r.start).and_then(|t| t.chars().next_back()) {
+            Some(b) if designcraft_doc::is_break_char(b) => r.start.saturating_sub(b.len_utf8())..r.end,
+            _ => r,
+        },
+        (Some(b), None) if designcraft_doc::is_break_char(b) && text.get(r.end..).is_some_and(|t| t.starts_with('\n')) => r.start..r.end + 1,
+        _ => r,
+    }
 }
 
 pub fn next_char(s: &str, i: usize) -> usize {
@@ -686,9 +723,18 @@ fn line_of(cs: &compose::ComposedStory, pos: usize) -> Option<(usize, usize)> {
 }
 
 fn vertical(cs: &compose::ComposedStory, pos: usize, up: bool) -> Option<usize> {
-    let (fi, x, baseline, _, _) = compose::caret(cs, pos)?;
+    let (fi, x, caret_y, _, _) = compose::caret(cs, pos)?;
     let lines: Vec<(usize, &compose::Line)> = cs.frames.iter().enumerate().flat_map(|(i, f)| f.lines.iter().map(move |l| (i, l))).collect();
-    let cur = lines.iter().position(|(i, l)| *i == fi && (l.baseline - baseline).abs() < 0.01 && pos >= l.range.start && pos <= l.range.end)?;
+    // Match the line by the bytes it owns. A warichu caret sits on a small-line baseline, so it
+    // does not equal the parent line's baseline.
+    let cur = lines.iter().position(|(i, l)| *i == fi && pos >= l.range.start && pos <= l.range.end && (pos < l.range.end || l.last_in_para))?;
+    let (_, l) = lines.get(cur)?;
+    if let Some(y) = compose::adjacent_row(l, x, caret_y, up)
+        && let Some(p) = compose::hit(cs, fi, Point::new(x, y))
+        && p != pos
+    {
+        return Some(p);
+    }
     let target = if up { cur.checked_sub(1)? } else { cur + 1 };
     let (tf, tl) = lines.get(target)?;
     compose::hit(cs, *tf, Point::new(x, tl.baseline - 1.0))
@@ -734,6 +780,43 @@ pub(crate) fn format_targets(s: &Session) -> Vec<Target> {
         }
     }
     v
+}
+
+fn warichu_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    let has_opts = ["lines", "size", "lineSpacing", "align", "charsBeforeBreak", "charsAfterBreak"].iter().any(|k| p.get(k).is_some());
+    let on = match p.get("on").and_then(Value::as_bool) {
+        Some(v) => v,
+        None if has_opts => true,
+        None => !format_targets(s).first().is_some_and(|t| {
+            s.doc()
+                .ok()
+                .and_then(|d| d.doc.text_story(t.story, t.cell))
+                .is_some_and(|st| st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over.warichu == Some(true))
+        }),
+    };
+    let mut body = serde_json::Map::new();
+    body.insert("warichu".into(), json!(on));
+    if on {
+        if let Some(v) = p.get("lines").and_then(Value::as_u64) {
+            body.insert("warichuLines".into(), json!(v.clamp(2, 16)));
+        }
+        if let Some(v) = p.get("size").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+            body.insert("warichuSize".into(), json!(v.clamp(1.0, 1000.0)));
+        }
+        if let Some(v) = p.get("lineSpacing").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+            body.insert("warichuLineSpacing".into(), json!(v.clamp(-10_000.0, 10_000.0)));
+        }
+        if let Some(v) = p.get("align").and_then(Value::as_str) {
+            body.insert("warichuAlignment".into(), json!(v));
+        }
+        if let Some(v) = p.get("charsBeforeBreak").and_then(Value::as_u64) {
+            body.insert("warichuCharsBeforeBreak".into(), json!(v.min(100)));
+        }
+        if let Some(v) = p.get("charsAfterBreak").and_then(Value::as_u64) {
+            body.insert("warichuCharsAfterBreak".into(), json!(v.min(100)));
+        }
+    }
+    format_chars(s, &Value::Object(body))
 }
 
 pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
@@ -1350,6 +1433,47 @@ mod autocorrect_tests {
 }
 
 #[cfg(test)]
+mod break_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// Type › Insert Break Character: the break ends its paragraph, the caret starts the next one.
+    #[test]
+    fn inserted_break_ends_its_paragraph() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "OneTwo\nThree"})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let story = |s: &Session| s.doc().unwrap().doc.stories[&sid].clone();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 3, "focus": 3})).unwrap();
+        s.execute("text.insert", &json!({"text": "\u{e011}", "raw": true})).unwrap();
+        assert_eq!(story(&s).text, "One\u{e011}\nTwo\nThree");
+        assert_eq!(s.doc().unwrap().selection.text.unwrap().focus, "One\u{e011}\n".len());
+        // At the end of a paragraph the break takes the place of its return.
+        let at = story(&s).text.find("\nThree").unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at})).unwrap();
+        s.execute("text.insert", &json!({"text": "\u{e002}", "raw": true})).unwrap();
+        let st = story(&s);
+        assert_eq!(st.text, "One\u{e011}\nTwo\u{e002}\nThree");
+        assert_eq!(st.paras.len(), 3);
+        st.check().unwrap();
+        // Typing after the break goes to the next paragraph; deleting the break or its return
+        // removes both.
+        let at = "One\u{e011}".len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at})).unwrap();
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        assert_eq!(story(&s).text, "One\u{e011}\nxTwo\u{e002}\nThree");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at + 1, "focus": at + 1})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        assert_eq!(story(&s).text, "OnexTwo\u{e002}\nThree");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": "OnexTwo".len(), "focus": "OnexTwo".len()})).unwrap();
+        s.execute("text.delete", &json!({"forward": true})).unwrap();
+        assert_eq!(story(&s).text, "OnexTwoThree");
+    }
+}
+
+#[cfg(test)]
 mod language_tests {
     use serde_json::json;
 
@@ -1494,6 +1618,53 @@ mod tcy_tests {
         s.execute("type.ruby", &json!({"text": ""})).unwrap();
         assert_eq!(f(&s).kenten, Some(false));
         assert_eq!(f(&s).ruby.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn warichu_toggles_on_the_selection_and_undoes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "注釈です"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        let n = "注釈".len();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": n})).unwrap();
+        s.execute("type.warichu", &json!({"lines": 2, "size": 40, "align": "left", "lineSpacing": 1, "charsBeforeBreak": 2, "charsAfterBreak": 2}))
+            .unwrap();
+        let f = |s: &Session| s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].char_format_at(1).over.clone();
+        let a = f(&s);
+        assert_eq!(a.warichu, Some(true));
+        assert_eq!(a.warichu_lines, Some(2));
+        assert_eq!(a.warichu_size, Some(40.0));
+        assert_eq!(a.warichu_line_spacing, Some(1.0));
+        assert_eq!(a.warichu_alignment, Some(designcraft_doc::cjk::WarichuAlignment::Left));
+        assert_eq!(a.warichu_chars_before_break, Some(2));
+        assert_eq!(a.warichu_chars_after_break, Some(2));
+        // The characters after the selection are not part of the note.
+        assert_eq!(s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].char_format_at(n + 1).over.warichu, None);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(f(&s).warichu, None);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(f(&s).warichu, Some(true));
+        s.execute("type.warichu", &json!({})).unwrap();
+        assert_eq!(f(&s).warichu, Some(false));
+    }
+
+    #[test]
+    fn warichu_up_and_down_move_between_the_rows() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "ABCDEFGHZ"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 8})).unwrap();
+        s.execute("type.warichu", &json!({"lines": 2, "align": "left"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        let down = s.execute("text.move", &json!({"dir": "down"})).unwrap()["pos"].as_u64().unwrap() as usize;
+        assert!((4..8).contains(&down), "down enters the second row: {down}");
+        let up = s.execute("text.move", &json!({"dir": "up"})).unwrap()["pos"].as_u64().unwrap() as usize;
+        assert!(up < 4, "up returns to the first row: {up}");
+        s.execute("text.select", &json!({"story": sid, "anchor": 8, "focus": 8})).unwrap();
+        let stayed = s.execute("text.move", &json!({"dir": "down"})).unwrap()["pos"].as_u64().unwrap() as usize;
+        assert_eq!(stayed, 8, "down from the character after the note does not fall back into a row");
     }
 }
 

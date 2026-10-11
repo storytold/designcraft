@@ -257,6 +257,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         let n = st.len();
         st.delete(n - 1..n);
     }
+    // A page or column break ends its paragraph.
+    st.end_paragraphs_at_breaks();
     Ok(Imported { story: st, para_styles: vec![], char_styles: vec![], warnings })
 }
 

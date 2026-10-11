@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The Japanese font tests run against craft-fonts (an optional build input; they skip without it).
       - name: Check out craft-fonts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,7 +46,11 @@ jobs:
           copyback: false
           prepare: |
             pkg install -y git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
-            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+            curl -fsSL -o /tmp/rustup-init \
+              https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-freebsd/rustup-init
+            test "$(sha256 -q /tmp/rustup-init)" = "4d9fef2e40731489f3186c61a0f178d54d79864fe3d34791edf5b17f70074956"
+            chmod 700 /tmp/rustup-init
+            /tmp/rustup-init -y --profile minimal
           run: |
             . "$HOME/.cargo/env"
             # The checkout is synced in under another owner; let tests that call git read it.

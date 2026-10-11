@@ -31,6 +31,22 @@ impl Dialog {
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
             "documentSetup" => json!({}),
+            "pdfExport" => {
+                json!({
+                    "preset": "Desktop Printing",
+                    "standard": "none",
+                    "compressImages": false,
+                    "flatten": "",
+                    "spreads": false,
+                    "bleed": true,
+                    "marksCrop": false,
+                    "marksBleed": false,
+                    "marksPageInfo": false,
+                    "marksWeight": "0.25",
+                    "marksOffset": "6",
+                    "tagged": true
+                })
+            }
             _ => json!({}),
         };
         if let Value::Object(d) = defaults {
@@ -235,6 +251,22 @@ pub fn open_print(app: &mut DesignApp) {
     ));
 }
 
+/// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
+/// (`UiState.pdf_export`) and the active document. `pages` is per-job (not persisted); `flatten`
+/// falls back to the global flattener preset when the persisted value is empty.
+pub fn open_pdf_export(app: &mut DesignApp) {
+    let mut fields = serde_json::to_value(&app.ui.pdf_export).unwrap_or_else(|_| json!({}));
+    if let Value::Object(m) = &mut fields {
+        let title = app.session.active().map(|st| st.doc.title.clone()).unwrap_or_default();
+        m.insert("title".into(), json!(title));
+        m.insert("pages".into(), json!("all"));
+        if app.ui.pdf_export.flatten.is_empty() {
+            m.insert("flatten".into(), json!(app.ui.flattener));
+        }
+    }
+    app.ui.dialog = Some(Dialog::new("pdfExport", fields));
+}
+
 fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let printers: Vec<String> = d
         .fields
@@ -282,6 +314,99 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         ui.end_row();
     });
+}
+
+/// The presets offered by the Export PDF dialog, in display order. The stored value is the
+/// English name; the caption is translated.
+const PDF_EXPORT_PRESETS: &[&str] = &["Desktop Printing", "Commercial Printing", "Screen and Email", "PDF/X-4", "PDF/A-2b", "Custom"];
+
+/// Apply a preset's dependent fields. Flatten is only touched by "Screen and Email"; "Custom"
+/// (and any unknown value) changes nothing.
+fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
+    let (standard, compress, crop, bleed, page_info, flatten) = match preset {
+        "Desktop Printing" => ("none", false, false, false, false, None),
+        "Commercial Printing" => ("none", true, true, true, false, None),
+        "Screen and Email" => ("none", true, false, false, false, Some("low")),
+        "PDF/X-4" => ("x4", false, true, true, false, None),
+        "PDF/A-2b" => ("a2b", false, false, false, false, None),
+        _ => return,
+    };
+    d.fields.insert("standard".into(), json!(standard));
+    d.fields.insert("compressImages".into(), json!(compress));
+    d.fields.insert("marksCrop".into(), json!(crop));
+    d.fields.insert("marksBleed".into(), json!(bleed));
+    d.fields.insert("marksPageInfo".into(), json!(page_info));
+    if let Some(f) = flatten {
+        d.fields.insert("flatten".into(), json!(f));
+    }
+}
+
+/// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
+/// Advanced). Selecting a preset fills the dependent fields; editing any other control flips the
+/// preset back to "Custom".
+fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.as_str();
+    let head = |ui: &mut egui::Ui, t: &str| {
+        ui.add_space(6.0);
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, t)).font(semibold(12.0)));
+    };
+    // Snapshot the non-preset fields so a manual edit can be detected after drawing.
+    let before = d.fields.clone();
+    let mut preset_clicked = false;
+
+    head(ui, "General");
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Preset:"));
+        let cur = d.s("preset");
+        egui::ComboBox::from_id_salt("pdf_preset").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, &cur))).width(200.0).show_ui(
+            ui,
+            |ui| {
+                for p in PDF_EXPORT_PRESETS {
+                    if ui.selectable_label(cur == *p, crate::rtl::widget(ui, crate::i18n::tr(lang, p))).clicked() {
+                        d.fields.insert("preset".into(), json!(*p));
+                        preset_clicked = true;
+                    }
+                }
+            },
+        );
+    });
+    if preset_clicked {
+        let p = d.s("preset");
+        apply_pdf_preset(d, &p);
+    }
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Page Range:"));
+        text_field(ui, d, "pages", 160.0);
+    });
+    check(ui, d, "spreads", crate::i18n::tr(lang, "Spreads"));
+
+    head(ui, "Compression");
+    check(ui, d, "compressImages", crate::i18n::tr(lang, "Compress images"));
+
+    head(ui, "Marks and Bleeds");
+    check(ui, d, "bleed", crate::i18n::tr(lang, "Include document bleed"));
+    check(ui, d, "marksCrop", crate::i18n::tr(lang, "Crop Marks"));
+    check(ui, d, "marksBleed", crate::i18n::tr(lang, "Bleed Marks"));
+    check(ui, d, "marksPageInfo", crate::i18n::tr(lang, "Page Information"));
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
+        text_field(ui, d, "marksWeight", 60.0);
+        ui.add_space(8.0);
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
+        text_field(ui, d, "marksOffset", 60.0);
+    });
+
+    head(ui, "Advanced");
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Standard:"));
+        translated_combo(lang, ui, d, "standard", &[("none", "None"), ("x4", "PDF/X-4"), ("a2b", "PDF/A-2b")]);
+    });
+    check(ui, d, "tagged", crate::i18n::tr(lang, "Tagged PDF"));
+
+    // Any edit other than picking a preset means the settings are no longer that preset.
+    if !preset_clicked && d.fields != before {
+        d.fields.insert("preset".into(), json!("Custom"));
+    }
 }
 
 /// The options of the selected text frame (the first selected item, or the frame of the caret).
@@ -576,7 +701,7 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 
 /// Preferences: a section list and the section's options. Application options always; units and
 /// increments when a document is open (InDesign keeps those with the document).
-fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_height: f32) {
     let has_doc = d.fields.contains_key("horizontalUnits");
     let sections: &[(&str, &str)] = if has_doc {
         &[
@@ -615,21 +740,26 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     };
     let cur = d.s("section");
     ui.horizontal_top(|ui| {
-        // A fixed height: the separator would otherwise take the whole window.
-        ui.set_min_height(240.0);
-        ui.set_max_height(240.0);
+        // Bound both panes independently so selecting a lower section keeps its options visible.
+        let height = max_height.min(440.0);
+        ui.set_min_height(240.0_f32.min(height));
+        ui.set_max_height(height);
         ui.vertical(|ui| {
             ui.set_width(150.0);
-            for (id, label) in sections {
-                if ui.selectable_label(cur == *id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    d.fields.insert("section".into(), json!(id));
+            egui::ScrollArea::vertical().id_salt("preferences_sections").min_scrolled_height(1.0).max_height(height).show(ui, |ui| {
+                for (id, label) in sections {
+                    if ui.selectable_label(cur == *id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                        d.fields.insert("section".into(), json!(id));
+                    }
                 }
-            }
+            });
         });
         ui.separator();
         ui.vertical(|ui| {
             ui.set_min_width(300.0);
-            match cur.as_str() {
+            egui::ScrollArea::vertical().id_salt(("preferences_options", &cur)).min_scrolled_height(1.0).max_height(height).show(ui, |ui| match cur
+                .as_str()
+            {
                 "dictionary" => {
                     ui.label(crate::rtl::widget(
                         ui,
@@ -963,7 +1093,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page Numbering")).font(semibold(12.0)));
                     check(ui, d, "absolutePageNumbers", crate::i18n::tr(&app.ui.language, "Absolute Numbering (instead of Section Numbering)"));
                 }
-            }
+            });
         });
     });
 }
@@ -1015,6 +1145,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
+        "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
         "colorSettings" => crate::i18n::tr(&app.ui.language, "Color Settings"),
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
         "keyboardShortcuts" => crate::i18n::tr(&app.ui.language, "Keyboard Shortcuts"),
@@ -1025,13 +1156,17 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         },
     };
     egui::Modal::new(egui::Id::new("dialog")).show(ctx, |ui| {
-        ui.set_min_width(380.0);
-        ui.set_max_width(match d.id.as_str() {
+        let frame_margin = egui::Frame::popup(ui.style()).total_margin().sum();
+        let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
+        let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
             "closeDocument" => 380.0,
             "newDocument" if crate::i18n::is_rtl(&app.ui.language) => 380.0,
             _ => 640.0,
-        });
+        };
+        let width = preferred_width.min(available.x);
+        ui.set_min_width(380.0_f32.min(width));
+        ui.set_max_width(width);
         if crate::i18n::is_rtl(&app.ui.language) {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1042,6 +1177,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             crate::rtl::label(ui, egui::RichText::new(title).font(semibold(16.0)));
         }
         ui.add_space(10.0);
+        // Keep the title and action buttons outside the scrollable body. Oversized
+        // forms remain reachable at large UI scales, without shrinking their text.
+        let footer_height = ui.spacing().interact_size.y.max(ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y);
+        let body_height = (available.y - ui.min_size().y - footer_height - 12.0 - 2.0 * ui.spacing().item_spacing.y).max(1.0);
+        egui::ScrollArea::both().id_salt(("dialog_body", &d.id)).min_scrolled_width(1.0).min_scrolled_height(1.0).max_width(width).max_height(body_height).show(ui, |ui| {
         match d.id.as_str() {
             "newDocument" => {
                 ui.horizontal(|ui| {
@@ -1256,7 +1396,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "insertXref" => insert_xref(app, ui, &mut d),
             "findFont" => find_font(app, ui, &mut d),
             "colorPicker" => color_picker(ui, &mut d),
-            "preferences" => preferences(app, ui, &mut d),
+            "preferences" => preferences(app, ui, &mut d, body_height),
             "print" => print_dialog(app, ui, &mut d),
             "pdfImport" => {
                 ui.label(egui::RichText::new(if d.b("async") { d.s("name") } else { d.s("path") }).size(11.0));
@@ -1550,6 +1690,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 text_frame_options_dialog(app, ui, &mut d);
             }
             "documentSetup" => document_setup(app, ui, &mut d),
+            "pdfExport" => pdf_export(app, ui, &mut d),
             "alert" => {
                 let file = d.s("file");
                 if !file.is_empty() {
@@ -1560,6 +1701,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             }
             _ => {}
         }
+        });
         ui.add_space(12.0);
         let ok_label = if d.id == "closeDocument" { "  Save  " } else { "  OK  " };
         ui.horizontal(|ui| {
@@ -1791,6 +1933,57 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             )?;
             app.status(format!("Sent {} page(s) to {}", r["pages"], r["printer"].as_str().unwrap_or("the default printer")));
             Ok(r)
+        }
+        "pdfExport" => {
+            // Remember the last-used options; `pages` and `title` are per-job and not persisted.
+            app.ui.pdf_export.preset = d.s("preset");
+            app.ui.pdf_export.standard = d.s("standard");
+            app.ui.pdf_export.compress_images = d.b("compressImages");
+            app.ui.pdf_export.flatten = d.s("flatten");
+            app.ui.pdf_export.spreads = d.b("spreads");
+            app.ui.pdf_export.bleed = d.b("bleed");
+            app.ui.pdf_export.marks_crop = d.b("marksCrop");
+            app.ui.pdf_export.marks_bleed = d.b("marksBleed");
+            app.ui.pdf_export.marks_page_info = d.b("marksPageInfo");
+            app.ui.pdf_export.marks_weight = d.s("marksWeight");
+            app.ui.pdf_export.marks_offset = d.s("marksOffset");
+            app.ui.pdf_export.tagged = d.b("tagged");
+
+            let mut params = json!({
+                "standard": d.s("standard"),
+                "compressImages": d.b("compressImages"),
+                "spreads": d.b("spreads"),
+                "bleed": d.b("bleed"),
+                "tagged": d.b("tagged"),
+                "marks": {
+                    "crop": d.b("marksCrop"),
+                    "bleed": d.b("marksBleed"),
+                    "pageInfo": d.b("marksPageInfo"),
+                    "weight": d.pt("marksWeight").unwrap_or(0.25),
+                    "offset": d.pt("marksOffset").unwrap_or(6.0),
+                },
+            });
+            let flatten = d.s("flatten");
+            if !flatten.is_empty() {
+                params["flatten"] = json!(flatten);
+            }
+            let pages = d.s("pages");
+            if !pages.trim().is_empty() && pages != "all" {
+                params["pages"] = json!(pages);
+            }
+            let title = d.s("title");
+            if !title.is_empty() {
+                params["title"] = json!(title);
+            }
+            let name = if title.is_empty() { "Export.pdf".to_string() } else { format!("{title}.pdf") };
+            match app.services.pick_save.as_mut().and_then(|f| f(&name)) {
+                Some(path) => {
+                    params["path"] = json!(path);
+                    crate::menus::export_pdf(app, &params)
+                }
+                // The user cancelled the save dialog: export nothing.
+                None => Ok(Value::Null),
+            }
         }
         "preferences" => {
             app.run(
@@ -3548,6 +3741,262 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 mod tests {
     use super::*;
 
+    fn dialog_context(language: &str) -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, language);
+        crate::theme::apply(&ctx, &crate::theme::Tokens::for_brightness(crate::theme::Brightness::default()));
+        ctx
+    }
+
+    fn dialog_frame(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, events: Vec<egui::Event>) -> Vec<(String, egui::Rect, egui::Rect)> {
+        let time = ctx.input(|i| i.time) + 1.0 / 60.0;
+        let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| {
+            show(app, ui.ctx());
+        });
+        output.textures_delta.clear();
+        fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(t) => labels.push((t.galley.job.text.clone(), t.visual_bounding_rect(), clip)),
+                egui::Shape::Vec(shapes) => {
+                    for s in shapes {
+                        collect(s, clip, labels);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut labels = Vec::new();
+        for shape in output.shapes {
+            collect(&shape.shape, shape.clip_rect, &mut labels);
+        }
+        labels
+    }
+
+    fn visible_label(labels: &[(String, egui::Rect, egui::Rect)], screen: egui::Rect, expected: &str) -> egui::Rect {
+        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text.trim() == expected).unwrap_or_else(|| panic!("{expected} is painted"));
+        assert!(screen.contains_rect(*rect), "{expected} must stay on screen: {rect:?}");
+        assert!(clip.contains_rect(*rect), "{expected} must not be clipped: {rect:?}, {clip:?}");
+        *rect
+    }
+
+    fn click_dialog(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            dialog_frame(
+                app,
+                ctx,
+                screen,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+    }
+
+    fn scroll_dialog(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, pos: egui::Pos2, delta: egui::Vec2) {
+        dialog_frame(
+            app,
+            ctx,
+            screen,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE },
+            ],
+        );
+        // Let smooth wheel scrolling and scrollbar visibility settle before clicking.
+        for _ in 0..30 {
+            dialog_frame(app, ctx, screen, vec![]);
+        }
+    }
+
+    #[test]
+    fn dialog_title_and_actions_fit_scaled_viewports() {
+        for language in ["en", "ar"] {
+            for size in [egui::vec2(1178.0, 814.0), egui::vec2(589.0, 407.0), egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0)] {
+                for (command, title) in [("app.preferences", "Preferences"), ("app.newDocumentDialog", "New Document")] {
+                    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+                    app.ui.language = language.into();
+                    app.run("file.new", json!({})).unwrap();
+                    app.run(command, json!({})).unwrap();
+                    let ctx = dialog_context(language);
+                    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                    for _ in 0..3 {
+                        dialog_frame(&mut app, &ctx, screen, vec![]);
+                    }
+                    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+                    for expected in [title, "OK", "Cancel"] {
+                        visible_label(&labels, screen, crate::i18n::tr(language, expected));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preferences_sidebar_scroll_keeps_selected_options_visible() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("app.preferences", json!({})).unwrap();
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(589.0, 407.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let sidebar = visible_label(&labels, screen, "General").center();
+        assert!(
+            !labels.iter().any(|(text, rect, clip)| text == "File Handling" && clip.contains_rect(*rect)),
+            "last section starts below the sidebar"
+        );
+        scroll_dialog(&mut app, &ctx, screen, sidebar, egui::vec2(0.0, -600.0));
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let files = visible_label(&labels, screen, "File Handling").center();
+        click_dialog(&mut app, &ctx, screen, files);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("section"), "files");
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        for expected in ["Document Recovery Data", "Save recovery data every:", "OK", "Cancel"] {
+            visible_label(&labels, screen, expected);
+        }
+    }
+
+    #[test]
+    fn preferences_horizontal_scroll_reaches_clipped_options() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("app.preferences", json!({})).unwrap();
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(450.0, 280.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let body = visible_label(&labels, screen, "When Scaling").center();
+        let option = "Absolute Numbering (instead of Section Numbering)";
+        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == option).unwrap();
+        assert!(rect.right() > clip.right(), "rightmost option starts horizontally clipped: {rect:?}, {clip:?}");
+        scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(-600.0, 0.0));
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        for expected in [option, "Preferences", "OK", "Cancel"] {
+            visible_label(&labels, screen, expected);
+        }
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, option).center());
+        assert!(app.ui.dialog.as_ref().unwrap().b("absolutePageNumbers"));
+    }
+
+    #[test]
+    fn new_document_vertical_scroll_reaches_last_field() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("app.newDocumentDialog", json!({})).unwrap();
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(392.0, 271.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let body = visible_label(&labels, screen, "Width").center();
+        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == "Primary Text Frame").unwrap();
+        assert!(rect.bottom() > clip.bottom(), "last field starts vertically clipped");
+        scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(0.0, -600.0));
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        for expected in ["Primary Text Frame", "New Document", "OK", "Cancel"] {
+            visible_label(&labels, screen, expected);
+        }
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Primary Text Frame").center());
+        assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"));
+    }
+
+    #[test]
+    fn arabic_new_document_leftmost_fields_remain_reachable() {
+        for size in [egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0)] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "ar".into();
+            app.run("app.newDocumentDialog", json!({})).unwrap();
+            let fields = [("height", "66p1"), ("gutter", "1p2"), ("marginBottom", "3p3"), ("marginOutside", "3p4")];
+            for (field, value) in fields {
+                app.ui.dialog.as_mut().unwrap().fields.insert(field.into(), json!(value));
+            }
+            let ctx = dialog_context("ar");
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            for _ in 0..3 {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            for (_, value) in fields {
+                visible_label(&labels, screen, value);
+            }
+            let body = visible_label(&labels, screen, "66p1").center();
+            for x in [-600.0, 600.0] {
+                scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(x, 0.0));
+                let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+                for (_, value) in fields {
+                    visible_label(&labels, screen, value);
+                }
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "66p1").center());
+            dialog_frame(
+                &mut app,
+                &ctx,
+                screen,
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
+                    },
+                    egui::Event::Text("88p8".into()),
+                ],
+            );
+            assert_eq!(app.ui.dialog.as_ref().unwrap().s("height"), "88p8", "leftmost numeric field accepts edits");
+            scroll_dialog(&mut app, &ctx, screen, body, egui::vec2(0.0, -600.0));
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            let label = crate::i18n::tr("ar", "Primary Text Frame");
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, label).center());
+            assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"), "leftmost checkbox remains clickable after scrolling");
+        }
+    }
+
+    #[test]
+    fn resized_dialogs_cancel_and_reopen_without_applying_edits() {
+        for (command, title, field) in [("app.preferences", "Preferences", "recoveryMinutes"), ("app.newDocumentDialog", "New Document", "pages")] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run(command, json!({})).unwrap();
+            let original = app.ui.dialog.as_ref().unwrap().fields[field].clone();
+            app.ui.dialog.as_mut().unwrap().fields.insert(field.into(), json!(42));
+            let ctx = dialog_context("en");
+            for size in [egui::vec2(1178.0, 814.0), egui::vec2(392.0, 271.0), egui::vec2(589.0, 407.0)] {
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                for _ in 0..3 {
+                    dialog_frame(&mut app, &ctx, screen, vec![]);
+                }
+                let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+                for expected in [title, "OK", "Cancel"] {
+                    visible_label(&labels, screen, expected);
+                }
+            }
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(589.0, 407.0));
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Cancel").center());
+            assert!(app.ui.dialog.is_none());
+            assert!(app.session.active().is_none(), "cancelling must not create a document");
+            app.run(command, json!({})).unwrap();
+            assert_eq!(app.ui.dialog.as_ref().unwrap().fields[field], original, "cancelled edits must not survive reopening");
+            for _ in 0..3 {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            visible_label(&labels, screen, title);
+            dialog_frame(
+                &mut app,
+                &ctx,
+                screen,
+                vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            );
+            assert!(app.ui.dialog.is_none(), "Escape must also close the reopened dialog");
+        }
+    }
+
     fn draw(app: &mut DesignApp, ctx: &egui::Context) {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -3760,6 +4209,207 @@ mod tests {
         for c in designcraft_engine::command_specs() {
             let _ = command_fields(c.params);
         }
+    }
+
+    #[test]
+    fn pdf_export_defaults() {
+        let d = Dialog::new("pdfExport", json!({}));
+        let keys: Vec<&str> = d.fields.iter().map(|(k, _)| k.as_str()).collect();
+        // serde_json::Map keeps keys sorted.
+        let expected = [
+            "bleed",
+            "compressImages",
+            "flatten",
+            "marksBleed",
+            "marksCrop",
+            "marksOffset",
+            "marksPageInfo",
+            "marksWeight",
+            "preset",
+            "spreads",
+            "standard",
+            "tagged",
+        ];
+        assert_eq!(keys, expected);
+        assert_eq!(d.fields["preset"].as_str(), Some("Desktop Printing"));
+        assert_eq!(d.fields["standard"].as_str(), Some("none"));
+        assert_eq!(d.fields["compressImages"].as_bool(), Some(false));
+        assert_eq!(d.fields["flatten"].as_str(), Some(""));
+        assert_eq!(d.fields["spreads"].as_bool(), Some(false));
+        assert_eq!(d.fields["bleed"].as_bool(), Some(true));
+        assert_eq!(d.fields["marksCrop"].as_bool(), Some(false));
+        assert_eq!(d.fields["marksBleed"].as_bool(), Some(false));
+        assert_eq!(d.fields["marksPageInfo"].as_bool(), Some(false));
+        assert_eq!(d.fields["marksWeight"].as_str(), Some("0.25"));
+        assert_eq!(d.fields["marksOffset"].as_str(), Some("6"));
+        assert_eq!(d.fields["tagged"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn pdf_export_override_keeps_override() {
+        let d = Dialog::new("pdfExport", json!({"bleed": false}));
+        assert_eq!(d.fields["bleed"].as_bool(), Some(false));
+        assert_eq!(d.fields["preset"].as_str(), Some("Desktop Printing"));
+        assert_eq!(d.fields["tagged"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn pdf_export_preset_high_quality_print_keeps_flatten() {
+        let mut d = Dialog::new("pdfExport", json!({}));
+        d.fields.insert("flatten".into(), json!("medium"));
+        apply_pdf_preset(&mut d, "Desktop Printing");
+        assert_eq!(d.s("standard"), "none");
+        assert!(!d.b("compressImages"));
+        assert!(!d.b("marksCrop"));
+        assert!(!d.b("marksBleed"));
+        assert!(!d.b("marksPageInfo"));
+        assert_eq!(d.s("flatten"), "medium", "a leave-unchanged preset must not touch flatten");
+    }
+
+    #[test]
+    fn pdf_export_preset_press_quality_keeps_flatten() {
+        let mut d = Dialog::new("pdfExport", json!({}));
+        d.fields.insert("flatten".into(), json!("high"));
+        apply_pdf_preset(&mut d, "Commercial Printing");
+        assert_eq!(d.s("standard"), "none");
+        assert!(d.b("compressImages"));
+        assert!(d.b("marksCrop"));
+        assert!(d.b("marksBleed"));
+        assert!(!d.b("marksPageInfo"));
+        assert_eq!(d.s("flatten"), "high");
+    }
+
+    #[test]
+    fn pdf_export_preset_smallest_file_size_sets_flatten_low() {
+        let mut d = Dialog::new("pdfExport", json!({}));
+        apply_pdf_preset(&mut d, "Screen and Email");
+        assert_eq!(d.s("standard"), "none");
+        assert!(d.b("compressImages"));
+        assert!(!d.b("marksCrop"));
+        assert!(!d.b("marksBleed"));
+        assert!(!d.b("marksPageInfo"));
+        assert_eq!(d.s("flatten"), "low");
+    }
+
+    #[test]
+    fn pdf_export_preset_pdf_x4_keeps_flatten() {
+        let mut d = Dialog::new("pdfExport", json!({}));
+        d.fields.insert("flatten".into(), json!("medium"));
+        apply_pdf_preset(&mut d, "PDF/X-4");
+        assert_eq!(d.s("standard"), "x4");
+        assert!(!d.b("compressImages"));
+        assert!(d.b("marksCrop"));
+        assert!(d.b("marksBleed"));
+        assert!(!d.b("marksPageInfo"));
+        assert_eq!(d.s("flatten"), "medium");
+    }
+
+    #[test]
+    fn pdf_export_preset_pdf_a2b_keeps_flatten() {
+        let mut d = Dialog::new("pdfExport", json!({}));
+        d.fields.insert("flatten".into(), json!("low"));
+        apply_pdf_preset(&mut d, "PDF/A-2b");
+        assert_eq!(d.s("standard"), "a2b");
+        assert!(!d.b("compressImages"));
+        assert!(!d.b("marksCrop"));
+        assert!(!d.b("marksBleed"));
+        assert!(!d.b("marksPageInfo"));
+        assert_eq!(d.s("flatten"), "low");
+    }
+
+    #[test]
+    fn open_pdf_export_seeds_fields_from_settings() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.pdf_export.standard = "x4".into();
+        app.ui.pdf_export.tagged = false;
+        app.ui.pdf_export.marks_crop = true;
+        app.ui.pdf_export.flatten = String::new();
+        app.ui.flattener = "medium".into();
+        open_pdf_export(&mut app);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.id, "pdfExport");
+        assert_eq!(d.s("standard"), "x4");
+        assert!(!d.b("tagged"));
+        assert!(d.b("marksCrop"));
+        assert_eq!(d.s("pages"), "all");
+        assert_eq!(d.s("flatten"), "medium", "empty flatten falls back to the global flattener");
+        assert_eq!(d.s("title"), "", "no document → empty title");
+
+        // A non-empty persisted flatten is used verbatim, not the global fallback.
+        app.ui.pdf_export.flatten = "low".into();
+        app.ui.flattener = "medium".into();
+        open_pdf_export(&mut app);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.s("flatten"), "low");
+    }
+
+    #[test]
+    fn pdf_export_preset_custom_changes_nothing() {
+        let mut d = Dialog::new("pdfExport", json!({}));
+        d.fields.insert("standard".into(), json!("x4"));
+        d.fields.insert("compressImages".into(), json!(true));
+        d.fields.insert("marksCrop".into(), json!(true));
+        d.fields.insert("marksBleed".into(), json!(true));
+        d.fields.insert("marksPageInfo".into(), json!(true));
+        d.fields.insert("flatten".into(), json!("high"));
+        let before = d.fields.clone();
+        apply_pdf_preset(&mut d, "Custom");
+        assert_eq!(d.fields, before);
+    }
+
+    #[test]
+    fn confirm_pdf_export_writes_file_and_persists_settings() {
+        use std::sync::{Arc, Mutex};
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let writes: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = writes.clone();
+        app.services.write = Some(Box::new(move |path: &str, bytes: &[u8]| {
+            sink.lock().unwrap().push((path.to_string(), bytes.to_vec()));
+            Ok(())
+        }));
+        app.services.pick_save = Some(Box::new(|_name: &str| Some("/tmp/designcraft-test.pdf".to_string())));
+
+        app.ui.dialog = Some(Dialog::new("pdfExport", json!({})));
+        {
+            let d = app.ui.dialog.as_mut().unwrap();
+            d.fields.insert("standard".into(), json!("x4"));
+            d.fields.insert("bleed".into(), json!(false));
+            d.fields.insert("marksCrop".into(), json!(true));
+            d.fields.insert("tagged".into(), json!(false));
+            d.fields.insert("title".into(), json!("Report"));
+        }
+        confirm(&mut app).unwrap();
+
+        let got = writes.lock().unwrap();
+        assert_eq!(got.len(), 1, "confirming the dialog writes exactly one file");
+        assert_eq!(got[0].0, "/tmp/designcraft-test.pdf");
+        assert!(got[0].1.starts_with(b"%PDF"), "the written bytes are a PDF");
+        drop(got);
+
+        assert_eq!(app.ui.pdf_export.standard, "x4");
+        assert!(!app.ui.pdf_export.bleed);
+        assert!(app.ui.pdf_export.marks_crop);
+        assert!(!app.ui.pdf_export.tagged);
+    }
+
+    #[test]
+    fn confirm_pdf_export_cancelled_save_writes_nothing() {
+        use std::sync::{Arc, Mutex};
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let writes: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = writes.clone();
+        app.services.write = Some(Box::new(move |path: &str, bytes: &[u8]| {
+            sink.lock().unwrap().push((path.to_string(), bytes.to_vec()));
+            Ok(())
+        }));
+        app.services.pick_save = Some(Box::new(|_name: &str| None));
+
+        app.ui.dialog = Some(Dialog::new("pdfExport", json!({})));
+        let r = confirm(&mut app).unwrap();
+        assert_eq!(r, Value::Null);
+        assert!(writes.lock().unwrap().is_empty(), "cancelling the save picker must not write");
     }
 
     use designcraft_doc::{CharAttrs, CharacterStyle};

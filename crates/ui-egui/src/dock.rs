@@ -49,6 +49,9 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
 ];
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    if crate::panel_docking::show(app, ui) {
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     // Expanded panel stack (outermost, 253 pt) — declared first so it sits at the far right.
     if app.ui.dock_expanded {
@@ -66,7 +69,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         ui.ctx(),
                         crate::i18n::tr(&app.ui.language, label),
                         semibold(11.5),
-                        if active { Color32::from_rgb(0xf3, 0xf3, 0xf3) } else { t.text_dim },
+                        if active { t.text_strong } else { t.text_dim },
                     );
                     let w = g.size().x + 26.0;
                     let r = egui::Rect::from_min_size(egui::pos2(x, strip.min.y), vec2(w, 27.0));
@@ -75,9 +78,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                     ui.painter().galley(egui::pos2(r.min.x + 13.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
                     ui.painter().line_segment([r.right_top(), r.right_bottom()], Stroke::new(1.0, t.border));
-                    if ui.interact(r, ui.id().with(("docktab", *id)), Sense::click()).clicked() {
+                    let response = craft_ui::tabs::Tab::new(ui.id().with(("docktab", *id)), label, active).sense(Sense::click_and_drag()).show_at(
+                        ui,
+                        r,
+                        |_, _| {},
+                    );
+                    if response.clicked() {
                         app.ui.dock_tab = id.to_string();
                     }
+                    crate::panel_docking::legacy_tab(app, ui, id, &response);
                     x += w;
                 }
                 let menu_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 24.0, strip.min.y + 4.0), vec2(18.0, 18.0));
@@ -100,13 +109,16 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             for (id, label, icon) in ICON_PANELS {
                 let open = app.ui.open_panel.as_deref() == Some(*id);
                 let floats = app.ui.floating.iter().any(|(p, _)| p == id);
-                if icons::button(ui, icon, 28.0, open || floats, crate::i18n::tr(&app.ui.language, label)).clicked() {
+                let response =
+                    icons::button(ui, icon, 28.0, open || floats, crate::i18n::tr(&app.ui.language, label)).interact(Sense::click_and_drag());
+                if response.clicked() {
                     if floats {
                         ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating_panel", *id))));
                     } else {
                         app.ui.open_panel = if open { None } else { Some(id.to_string()) };
                     }
                 }
+                crate::panel_docking::legacy_tab(app, ui, id, &response);
                 ui.add_space(1.0);
             }
         });
@@ -123,6 +135,9 @@ fn dock_header(ui: &mut egui::Ui, t: &Tokens, chevron: &str) {
 
 /// A panel opened from the icon column, shown as a floating flyout next to the dock.
 pub fn flyout(app: &mut DesignApp, ctx: &egui::Context) {
+    if app.ui.docking.is_some() {
+        return;
+    }
     let Some(id) = app.ui.open_panel.clone() else { return };
     let t = Tokens::get(ctx);
     let label = crate::i18n::tr(&app.ui.language, ICON_PANELS.iter().find(|p| p.0 == id).map(|p| p.1).unwrap_or("Panel")).to_owned();
@@ -170,6 +185,9 @@ pub fn flyout(app: &mut DesignApp, ctx: &egui::Context) {
 /// The contents of an icon-column panel.
 pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
     match id {
+        "properties" => panels::properties::show(app, ui),
+        "pages" => panels::pages::show(app, ui),
+        "layers" => panels::layers::show(app, ui),
         "swatches" => panels::swatches::show(app, ui),
         "paragraphStyles" => panels::styles::paragraph(app, ui),
         "characterStyles" => panels::styles::character(app, ui),
@@ -209,20 +227,27 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
 
 /// Tear panel `id` off the dock into a floating window at `at`.
 pub fn float_panel(app: &mut DesignApp, id: &str, at: egui::Pos2) {
-    if app.ui.open_panel.as_deref() == Some(id) {
-        app.ui.open_panel = None;
+    if let Some(Err(error)) = crate::panel_docking::command(app, "window.panel.float", &serde_json::json!({"panel":id,"x":at.x,"y":at.y})) {
+        app.status(error);
     }
-    app.ui.floating.retain(|(p, _)| p != id);
-    app.ui.floating.push((id.to_string(), [at.x, at.y]));
 }
 
 /// Put a floating panel back in the dock's icon column.
 pub fn dock_panel(app: &mut DesignApp, id: &str) {
+    if app.ui.docking.is_some() {
+        if let Some(Err(error)) = crate::panel_docking::command(app, "window.panel.dock", &serde_json::json!({"panel":id})) {
+            app.status(error);
+        }
+        return;
+    }
     app.ui.floating.retain(|(p, _)| p != id);
 }
 
 /// Floating panels: movable, resizable windows; "Dock" returns one to the icon column.
 pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
+    if app.ui.docking.is_some() {
+        return;
+    }
     let t = Tokens::get(ctx);
     for (id, at) in app.ui.floating.clone() {
         let label = crate::i18n::tr(&app.ui.language, ICON_PANELS.iter().find(|p| p.0 == id).map(|p| p.1).unwrap_or("Panel")).to_owned();
@@ -290,4 +315,97 @@ fn dock_glyph(p: &egui::Painter, r: egui::Rect, c: Color32) {
     let b = egui::Rect::from_min_size(r.min + vec2(3.5, 4.5), vec2(11.0, 9.0));
     p.rect_stroke(b, 0.0, Stroke::new(1.0, c), egui::StrokeKind::Middle);
     p.rect_filled(egui::Rect::from_min_max(egui::pos2(b.max.x - 3.5, b.min.y), b.max), 0.0, c);
+}
+
+#[cfg(test)]
+mod visual_regressions {
+    use super::*;
+
+    fn scaled_input(size: egui::Vec2, scale: f32) -> egui::RawInput {
+        let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };
+        input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);
+        input
+    }
+
+    /// Opt-in evidence for native screenshot review; ordinary test runs stay headless and fast.
+    #[test]
+    fn capture_dock_visual_fixtures() {
+        let Some(directory) = std::env::var_os("CRAFT_UI_VISUAL_FIXTURES").map(std::path::PathBuf::from) else { return };
+        std::fs::create_dir_all(&directory).unwrap();
+        for brightness in crate::theme::Brightness::ALL {
+            for width in [800.0, 1280.0] {
+                for scale in [1.0, 1.5, 2.0] {
+                    let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+                    app.ui.dock_expanded = true;
+                    app.ui.dock_tab = "properties".into();
+                    let mut ready = false;
+                    let mut harness =
+                        egui_kittest::Harness::builder().with_size(vec2(width, 640.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
+                            move |ui, app: &mut DesignApp| {
+                                if !ready {
+                                    crate::theme::install_fonts(ui.ctx(), "en");
+                                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(brightness));
+                                    ready = true;
+                                    return;
+                                }
+                                show(app, ui);
+                            },
+                            app,
+                        );
+                    harness.input_mut().max_texture_side = Some(8192);
+                    harness.run_steps(4);
+                    let stem = format!("designcraft-dock-{}-{width}-{scale}x", brightness.id());
+                    harness.render().unwrap().save(directory.join(format!("{stem}.png"))).unwrap();
+                    let panel = egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new("dock")).unwrap().outer_rect;
+                    let region = serde_json::json!({
+                        "screen": [width, 640.0], "scale": scale,
+                        "regions": {"dock-tabs": [panel.left(), panel.top(), panel.width(), 45.0]}
+                    });
+                    std::fs::write(directory.join(format!("{stem}.json")), serde_json::to_vec_pretty(&region).unwrap()).unwrap();
+                }
+            }
+        }
+    }
+
+    fn luminance(c: Color32) -> f32 {
+        let linear = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+    }
+
+    #[test]
+    fn selected_dock_tab_has_readable_rendered_contrast_in_every_theme() {
+        for brightness in crate::theme::Brightness::ALL {
+            for width in [800.0, 1280.0] {
+                for scale in [1.0, 1.5, 2.0] {
+                    let ctx = egui::Context::default();
+                    crate::theme::install_fonts(&ctx, "en");
+                    let tokens = Tokens::for_brightness(brightness);
+                    crate::theme::apply(&ctx, &tokens);
+                    let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+                    app.ui.dock_expanded = true;
+                    app.ui.dock_tab = "properties".into();
+                    let mut output = ctx.run_ui(scaled_input(vec2(width, 640.0), scale), |ui| show(&mut app, ui));
+                    output.textures_delta.clear();
+                    assert_eq!(ctx.content_rect().size(), vec2(width, 640.0));
+                    assert_eq!(ctx.pixels_per_point(), scale);
+                    let text = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.job.text == "Properties" => Some(text),
+                            _ => None,
+                        })
+                        .expect("the active Properties tab is painted");
+                    let color = text.galley.job.sections.first().expect("tab text has a format").format.color;
+                    let a = luminance(color);
+                    let b = luminance(tokens.panel);
+                    let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                    assert!(contrast >= 4.5, "{brightness:?} at {width}: selected tab contrast is {contrast:.2}");
+                }
+            }
+        }
+    }
 }

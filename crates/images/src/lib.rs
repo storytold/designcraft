@@ -159,8 +159,45 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
-    Some(image::load_from_memory(bytes).ok()?.to_rgba8())
+    Some(decode_to_rgba8(&image::load_from_memory(bytes).ok()?))
 }
+
+/// Fresh raster decodes are sRGB in the pinned image decoder. Expanding an L8 value to
+/// [gray, gray, gray, 255] is exact and avoids its generic floating-point conversion.
+fn decode_to_rgba8(img: &image::DynamicImage) -> image::RgbaImage {
+    let prepared = match img {
+        image::DynamicImage::ImageLuma8(gray) => prepare_luma8_rgba(gray),
+        _ => None,
+    };
+    rgba_or_original(img, prepared)
+}
+
+// Keep preparation failure on the existing conversion/error path. This small boundary also
+// lets tests force failure deterministically without exhausting memory or changing an allocator.
+fn rgba_or_original(img: &image::DynamicImage, prepared: Option<image::RgbaImage>) -> image::RgbaImage {
+    prepared.unwrap_or_else(|| img.to_rgba8())
+}
+
+fn prepare_luma8_rgba(gray: &image::GrayImage) -> Option<image::RgbaImage> {
+    let (width, height) = gray.dimensions();
+    let pixels = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?;
+    let length = pixels.checked_mul(4)?;
+    let mut bytes = Vec::new();
+    // Unlike the generic ConvertBuffer API's infallible allocation, preserve a route back to
+    // the original to_rgba8 behavior when the requested buffer cannot be reserved.
+    bytes.try_reserve_exact(length).ok()?;
+    bytes.resize(length, 0);
+    for (output, input) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(gray.pixels()) {
+        let value = input.0[0];
+        output.copy_from_slice(&[value, value, value, 255]);
+    }
+    let mut rgba = image::RgbaImage::from_raw(width, height, bytes)?;
+    rgba.set_color_space(gray.color_space()).ok()?;
+    Some(rgba)
+}
+
+#[cfg(test)]
+mod luma8_tests;
 
 /// A CMYK raster's ink values, 8 bits per ink (0 = no ink, 255 = solid), as PDF's DeviceCMYK
 /// reads them.

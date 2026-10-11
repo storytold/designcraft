@@ -1,7 +1,7 @@
 //! Object creation and the Object menu: frames, lines, transforms, arrange, group, lock/hide,
 //! fill/stroke, content type, Text Frame Options, corners, fitting, text wrap.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use designcraft_color::BlendMode;
@@ -565,7 +565,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Step and Repeat…",
             ["Edit"],
             Some("Cmd+Alt+U"),
-            "{count?: 1, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); with rows/columns, a grid",
+            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents",
             has_selection,
             step_and_repeat
         ),
@@ -1962,20 +1962,113 @@ fn path_move_anchors(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+const MAX_STEP_REPEAT_COPIES: u64 = 1000;
+const MAX_STEP_REPEAT_WORK: usize = 1000;
+const MAX_STEP_REPEAT_OFFSET: f64 = 1_000_000_000.0;
+
+fn step_repeat_count(p: &Value, key: &str, default: u64) -> Result<u64> {
+    let Some(value) = p.get(key) else { return Ok(default) };
+    let count = value.as_u64().ok_or_else(|| bad("edit.stepAndRepeat", format!("`{key}` must be an integer")))?;
+    if !(1..=MAX_STEP_REPEAT_COPIES).contains(&count) {
+        return Err(bad("edit.stepAndRepeat", format!("`{key}` must be between 1 and {MAX_STEP_REPEAT_COPIES}")));
+    }
+    Ok(count)
+}
+
+fn step_repeat_delta(p: &Value, key: &str, default: f64) -> Result<f64> {
+    let Some(value) = p.get(key) else { return Ok(default) };
+    let delta = value.as_f64().ok_or_else(|| bad("edit.stepAndRepeat", format!("`{key}` must be a finite number")))?;
+    if !delta.is_finite() {
+        return Err(bad("edit.stepAndRepeat", format!("`{key}` must be a finite number")));
+    }
+    Ok(delta)
+}
+
+fn checked_step_offset(dx: f64, dy: f64, x: u64, y: u64) -> Result<Vec2> {
+    let (x, y) = (x as f64 * dx, y as f64 * dy);
+    if !x.is_finite() || !y.is_finite() || x.abs() > MAX_STEP_REPEAT_OFFSET || y.abs() > MAX_STEP_REPEAT_OFFSET {
+        return Err(bad("edit.stepAndRepeat", format!("generated offsets must stay between -{MAX_STEP_REPEAT_OFFSET} and {MAX_STEP_REPEAT_OFFSET}")));
+    }
+    Ok(Vec2::new(x, y))
+}
+
+fn step_repeat_offsets(p: &Value) -> Result<Vec<Vec2>> {
+    let (dx, dy) = (step_repeat_delta(p, "dx", 12.0)?, step_repeat_delta(p, "dy", 12.0)?);
+    match (p.get("rows"), p.get("columns")) {
+        (None, None) => {
+            let count = step_repeat_count(p, "count", 1)?;
+            (1..=count).map(|k| checked_step_offset(dx, dy, k, k)).collect()
+        }
+        (Some(_), Some(_)) => {
+            let rows = step_repeat_count(p, "rows", 1)?;
+            let columns = step_repeat_count(p, "columns", 1)?;
+            let cells = rows
+                .checked_mul(columns)
+                .filter(|count| *count <= MAX_STEP_REPEAT_COPIES)
+                .ok_or_else(|| bad("edit.stepAndRepeat", format!("`rows` × `columns` must not exceed {MAX_STEP_REPEAT_COPIES}")))?;
+            let capacity = usize::try_from(cells.saturating_sub(1))
+                .map_err(|_| bad("edit.stepAndRepeat", "the requested grid is too large for this platform"))?;
+            let mut offsets = Vec::with_capacity(capacity);
+            for row in 0..rows {
+                for column in 0..columns {
+                    if row != 0 || column != 0 {
+                        offsets.push(checked_step_offset(dx, dy, column, row)?);
+                    }
+                }
+            }
+            Ok(offsets)
+        }
+        _ => Err(bad("edit.stepAndRepeat", "`rows` and `columns` must be provided together")),
+    }
+}
+
+/// Existing roots to duplicate, with repeated/ancestor-overlapping targets collapsed. Returns an
+/// error before cloning the document when the copies (including group descendants) exceed the
+/// command's work budget.
+fn checked_step_repeat_targets(d: &Document, ids: &[ItemId], copies: usize, max_work: usize) -> Result<Vec<ItemId>> {
+    let mut seen = HashSet::new();
+    let mut located = Vec::new();
+    for id in ids {
+        if seen.insert(*id)
+            && let Some(loc) = d.find(*id)
+        {
+            located.push((*id, loc));
+        }
+    }
+    if located.is_empty() {
+        return Err(bad("edit.stepAndRepeat", "nothing to repeat"));
+    }
+
+    // A selected ancestor already deep-copies its descendants. Keeping a selected child as a
+    // second root would duplicate it twice and make the checked work disagree with the real work.
+    let roots: Vec<ItemId> = located
+        .iter()
+        .filter(|(_, loc)| {
+            !located.iter().any(|(_, parent)| parent.spread == loc.spread && parent.path.len() < loc.path.len() && loc.path.starts_with(&parent.path))
+        })
+        .map(|(id, _)| *id)
+        .collect();
+
+    let mut expanded = HashSet::new();
+    for id in &roots {
+        if let Some(item) = d.item(*id) {
+            item.walk(&mut |child| {
+                expanded.insert(child.id);
+            });
+        }
+    }
+    expanded
+        .len()
+        .checked_mul(copies)
+        .filter(|work| *work <= max_work)
+        .ok_or_else(|| bad("edit.stepAndRepeat", format!("a single command may create at most {max_work} items, including group contents")))?;
+    Ok(roots)
+}
+
 fn step_and_repeat(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    let (dx, dy) = (f64_or(p, "dx", 12.0), f64_or(p, "dy", 12.0));
-    let rows = p.get("rows").and_then(Value::as_u64).map(|v| v as usize);
-    let cols = p.get("columns").and_then(Value::as_u64).map(|v| v as usize);
-    let count = p.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 1000) as usize;
-    let offsets: Vec<Vec2> = match (rows, cols) {
-        (Some(r), Some(c)) if r.checked_mul(c).is_some_and(|n| n <= 1000) => (0..r)
-            .flat_map(|i| (0..c).map(move |j| (i, j)))
-            .filter(|&(i, j)| i + j > 0)
-            .map(|(i, j)| Vec2::new(j as f64 * dx, i as f64 * dy))
-            .collect(),
-        _ => (1..=count).map(|k| Vec2::new(k as f64 * dx, k as f64 * dy)).collect(),
-    };
+    let offsets = step_repeat_offsets(p)?;
+    let ids = checked_step_repeat_targets(&s.doc()?.doc, &ids, offsets.len(), MAX_STEP_REPEAT_WORK)?;
     s.edit(|d, sel| {
         let src = d.clone();
         let mut all = ids.clone();
@@ -1988,6 +2081,40 @@ fn step_and_repeat(s: &mut Session, p: &Value) -> Result<Value> {
         *sel = Selection::items(all.clone());
         Ok(json!({"created": all.len() - ids.len()}))
     })
+}
+
+#[cfg(test)]
+mod step_repeat_tests {
+    use super::*;
+
+    #[test]
+    fn step_repeat_validates_counts_and_offsets() {
+        assert_eq!(step_repeat_offsets(&json!({"count": MAX_STEP_REPEAT_COPIES})).unwrap().len(), MAX_STEP_REPEAT_COPIES as usize);
+        assert_eq!(step_repeat_offsets(&json!({"rows": 25, "columns": 40})).unwrap().len(), 999);
+        assert!(step_repeat_offsets(&json!({"count": MAX_STEP_REPEAT_COPIES + 1})).is_err());
+        assert!(step_repeat_offsets(&json!({"rows": 500, "columns": 3})).is_err());
+        assert!(step_repeat_offsets(&json!({"rows": 3})).is_err());
+        assert!(step_repeat_offsets(&json!({"count": 2, "dx": f64::MAX})).is_err());
+    }
+
+    #[test]
+    fn step_repeat_counts_unique_items_and_group_contents() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = ItemId(s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap());
+        let b = ItemId(s.execute("frame.create", &json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap());
+        let c = ItemId(s.execute("frame.create", &json!({"rect": [40, 0, 50, 10]})).unwrap()["id"].as_u64().unwrap());
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(checked_step_repeat_targets(d, &[a, a], 2, 2).unwrap(), vec![a]);
+        assert!(checked_step_repeat_targets(d, &[a, b, c], 1, 2).is_err());
+        assert_eq!(s.execute("edit.stepAndRepeat", &json!({"ids": [a.0, a.0], "count": 1})).unwrap()["created"], 1);
+
+        let group = ItemId(s.execute("object.group", &json!({"ids": [a.0, b.0]})).unwrap()["id"].as_u64().unwrap());
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(checked_step_repeat_targets(d, &[group, group, a], 1, 3).unwrap(), vec![group]);
+        assert!(checked_step_repeat_targets(d, &[group, a], 1, 2).is_err());
+        assert_eq!(s.execute("edit.stepAndRepeat", &json!({"ids": [group.0, a.0], "count": 1})).unwrap()["created"], 1);
+    }
 }
 
 #[cfg(test)]

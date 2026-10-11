@@ -16,7 +16,7 @@ const GRIP: &str = "task_bar_grip";
 /// Show the bar under `sel` (screen rect of the selection), or where it is pinned, kept inside
 /// `canvas`.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
-    let grip_id = egui::Id::new(GRIP);
+    let grip_id = egui::Id::new((GRIP, ctx.viewport_id(), app.pane));
     // (Two separate context calls: `is_pointer_over_egui` inside an `input` closure deadlocks.)
     let dragging = ctx.dragged_id() == Some(grip_id);
     if !app.ui.task_bar || (ctx.input(|i| i.pointer.any_down()) && !ctx.is_pointer_over_egui() && !dragging) {
@@ -28,7 +28,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
         return;
     }
     let t = Tokens::get(ctx);
-    let id = egui::Id::new("task_bar");
+    // The same selection can be shown in two canvases; each bar needs its own area and widgets.
+    let id = egui::Id::new(("task_bar", ctx.viewport_id(), app.pane));
     // Width from the previous frame (content-sized).
     let w = ctx.memory(|m| m.area_rect(id).map(|r| r.width())).unwrap_or(420.0);
     let at = match app.ui.task_bar_pin {
@@ -46,7 +47,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
             pos2(x, y)
         }
     };
-    app.ui.task_bar_at = Some([at.x - canvas.min.x, at.y - canvas.min.y]);
+    // A shared persisted pin is relative to each canvas. The transient pin target belongs
+    // to the focused pane, so rendering the sibling cannot overwrite it.
+    if app.pane == app.focus_pane {
+        app.ui.task_bar_at = Some([at.x - canvas.min.x, at.y - canvas.min.y]);
+    }
     egui::Area::new(id).order(egui::Order::Middle).fixed_pos(at).show(ctx, |ui| {
         egui::Frame::NONE
             .fill(t.panel)
@@ -75,7 +80,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
                     } else {
                         object_controls(app, ui);
                     }
-                    more(app, ui);
+                    more(app, ui, [at.x - canvas.min.x, at.y - canvas.min.y]);
                 });
             });
     });
@@ -266,7 +271,7 @@ fn object_controls(app: &mut DesignApp, ui: &mut Ui) {
     }
 }
 
-fn more(app: &mut DesignApp, ui: &mut Ui) {
+fn more(app: &mut DesignApp, ui: &mut Ui, at: [f32; 2]) {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(22.0, FIELD_H), Sense::click());
     if resp.hovered() {
@@ -286,7 +291,8 @@ fn more(app: &mut DesignApp, ui: &mut Ui) {
         let pinned = app.ui.task_bar_pin.is_some();
         let pin = crate::i18n::tr(&app.ui.language, "Pin Bar Position");
         if ui.button(crate::rtl::widget(ui, if pinned { format!("✓ {pin}") } else { format!("   {pin}") })).clicked() {
-            let _ = app.run("window.taskBarPin", json!({"on": !pinned}));
+            let params = if pinned { json!({"on": false}) } else { json!({"on": true, "at": at}) };
+            let _ = app.run("window.taskBarPin", params);
             ui.close();
         }
         if ui.add_enabled(pinned, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Reset Bar Position")))).clicked() {
@@ -323,7 +329,7 @@ mod tests {
     }
 
     fn bar(h: &Harness<'static, Window>) -> egui::Rect {
-        h.ctx.memory(|m| m.area_rect(egui::Id::new("task_bar"))).unwrap()
+        h.ctx.memory(|m| m.area_rect(egui::Id::new(("task_bar", h.ctx.viewport_id(), h.state().app.pane)))).unwrap()
     }
 
     fn grip(h: &Harness<'static, Window>) -> egui::Pos2 {
@@ -370,6 +376,59 @@ mod tests {
         app.ui.task_bar_pin = None;
         run(&mut app, "window.workspace", json!({"name": "Mine"})).unwrap();
         assert_eq!(app.ui.task_bar_pin, Some([5.0, 6.0]));
+    }
+
+    #[test]
+    fn split_pane_grips_handle_only_their_own_drag() {
+        let (mut h, _) = window();
+        h.set_size(vec2(2200.0, 900.0));
+        // A compact object HUD fits in each pane, leaving room to exercise both axes
+        // without the intentional canvas-edge clamp masking horizontal movement.
+        let id = h.state_mut().app.run("frame.create", json!({"rect":[72,72,300,200],"content":"none"})).unwrap()["id"].as_u64().unwrap();
+        h.state_mut().app.run("selection.set", json!({"ids":[id]})).unwrap();
+        h.state_mut().app.run("window.split", json!({"on":true})).unwrap();
+        h.run_steps(6);
+        let area =
+            |h: &Harness<'static, Window>, pane| h.ctx.memory(|m| m.area_rect(egui::Id::new(("task_bar", h.ctx.viewport_id(), pane)))).unwrap();
+        for pane in [0_u8, 1] {
+            h.state_mut().app.run("window.taskBarPin", json!({"at":[100,120]})).unwrap();
+            h.run_steps(4);
+            let before = area(&h, pane);
+            let from = pos2(before.min.x + 10.0, before.center().y);
+            let delta = vec2(24.0, 28.0);
+            drag(&mut h, from, delta);
+            let after = area(&h, pane);
+            assert!((after.min - before.min - delta).length() < 2.0, "pane {pane} drag was handled by a sibling grip: {before:?} -> {after:?}");
+            assert!(h.state().app.ui.task_bar_pin.is_some());
+        }
+    }
+
+    #[test]
+    fn popup_pin_uses_the_invoking_hud_position_after_focus_moves_to_sibling() {
+        let (mut h, _) = window();
+        let id = h.state_mut().app.run("frame.create", json!({"rect":[72,72,300,200],"content":"none"})).unwrap()["id"].as_u64().unwrap();
+        h.state_mut().app.run("selection.set", json!({"ids":[id]})).unwrap();
+        h.state_mut().app.run("window.split", json!({"on":true})).unwrap();
+        h.run_steps(6);
+        h.state_mut().app.switch_pane(1);
+        h.state_mut().app.run("view.zoom", json!({"zoom":0.5})).unwrap();
+        h.state_mut().app.switch_pane(0);
+        h.run_steps(4);
+        let expected = h.state().app.ui.task_bar_at.unwrap();
+        let left = h.ctx.memory(|m| m.area_rect(egui::Id::new(("task_bar", h.ctx.viewport_id(), 0_u8)))).unwrap();
+        click_at(&mut h, pos2(left.max.x - 19.0, left.center().y));
+        let pin = h.get_by_label_contains("Pin Bar Position").rect();
+        let at = pos2(pin.max.x - 2.0, pin.center().y);
+        let sibling = h.state().app.other_pane.as_ref().and_then(|(_, rect)| *rect).unwrap();
+        assert!(sibling.contains(at), "fixture popup must extend into sibling canvas: {at:?} outside {sibling:?}");
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run_steps(1);
+        assert_eq!(h.state().app.focus_pane, 1);
+        assert_ne!(h.state().app.ui.task_bar_at, Some(expected), "fixture HUD positions must differ");
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(4);
+        assert_eq!(h.state().app.ui.task_bar_pin, Some(expected), "Pin must use the invoking HUD position");
     }
 
     #[test]

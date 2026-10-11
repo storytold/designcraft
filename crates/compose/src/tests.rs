@@ -573,6 +573,23 @@ fn column_break_moves_following_text() {
     assert!(lines[1].baseline < 20.0, "second column starts at the top");
 }
 
+/// InDesign: a break character ends its paragraph; the next paragraph starts on the next page (odd
+/// or even for those breaks), with no empty line where the break was.
+#[test]
+fn break_characters_end_their_paragraph_and_keep_page_parity() {
+    use designcraft_doc::story::{EVEN_PAGE_BREAK, ODD_PAGE_BREAK, PAGE_BREAK};
+    let mut d = Document::new(&NewDocument { pages: 4, facing_pages: false, primary_text_frame: true, ..Default::default() });
+    let sid = d.settings.primary_story.unwrap();
+    let text = format!("one{ODD_PAGE_BREAK}\ntwo{EVEN_PAGE_BREAK}\nthree{PAGE_BREAK}\nfour");
+    d.story_mut(sid).unwrap().insert(0, &text);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // Frame i is on page i + 1: "one" on 1, "two" on the next odd page (3), "three" on the next
+    // even page (4), and "four" has no page left.
+    let lines: Vec<(usize, usize)> = cs.frames.iter().enumerate().flat_map(|(fi, f)| f.lines.iter().map(move |l| (fi, l.para))).collect();
+    assert_eq!(lines, vec![(0, 0), (2, 1), (3, 2)]);
+    assert_eq!(cs.overset_at, Some(text.find("four").unwrap()));
+}
+
 #[test]
 fn line_before_a_break_character_is_a_last_line() {
     // As in InDesign: column, frame and page breaks end the paragraph's last line (set with the
@@ -1046,6 +1063,192 @@ fn ruby_and_kenten_sit_over_their_text() {
     let dot = l.glyphs.last().unwrap();
     let de = &l.glyphs[2];
     assert!((dot.x + dot.adv / 2.0 - (de.x + de.adv / 2.0)).abs() < 1.0 && dot.y < 0.0);
+}
+
+#[test]
+fn warichu_stacks_the_run_inside_the_line_and_closes_up() {
+    let text = "ABCDEFGHZ";
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+    let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    let z0 = plain.iter().find(|g| g.byte == 8 && g.len > 0).unwrap().x;
+    let sx0 = plain.iter().find(|g| g.byte == 0 && g.len > 0).unwrap().sx;
+    d.story_mut(sid).unwrap().format_chars(0..8, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let run: Vec<_> = l.glyphs.iter().filter(|g| g.byte < 8 && g.len > 0).collect();
+    assert_eq!(run.len(), 8, "the note keeps one glyph per letter");
+    let size = cs.styles[run[0].style as usize].size;
+    assert!((run[0].sx - sx0 * 0.5).abs() < 1e-6, "half the parent size");
+    let y_of = |slice: &[&PlacedGlyph]| slice.iter().map(|g| g.y).sum::<f64>() / slice.len() as f64;
+    let (y_top, y_bot) = (y_of(&run[..4]), y_of(&run[4..]));
+    assert!((y_bot - y_top - size * 0.5).abs() < 0.05 * size, "two lines one small em apart: {y_top} {y_bot} {size}");
+    assert!((run[0].x - run[4].x).abs() < 1e-6, "left alignment shares the start");
+    let z = l.glyphs.iter().find(|g| g.byte == 8 && g.len > 0).unwrap();
+    let right = run.iter().map(|g| g.x + g.adv).fold(f64::MIN, f64::max);
+    assert!((z.x - right).abs() < 1e-3, "the next character follows the note: {} {right}", z.x);
+    assert!(z.x < z0 - 1.0, "the note is narrower than the full-size run: {} {z0}", z.x);
+    assert!((l.end_x - (z.x + z.adv)).abs() < 1e-3, "the line-end caret follows the close-up");
+}
+
+#[test]
+fn warichu_break_minimum_keeps_a_short_run_on_one_line() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, "ABCD", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_lines = Some(2);
+        f.over.warichu_chars_before_break = Some(3);
+        f.over.warichu_chars_after_break = Some(3);
+    });
+    let l = &compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0];
+    let run: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte < 4).collect();
+    assert_eq!(run.len(), 4);
+    let y0 = run[0].y;
+    assert!(run.iter().all(|g| (g.y - y0).abs() < 1e-6), "not enough characters to break");
+}
+
+#[test]
+fn warichu_break_minimums_apply_to_the_first_and_last_line() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, "ABCDEFGH", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..8, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_lines = Some(2);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+        f.over.warichu_chars_before_break = Some(1);
+        f.over.warichu_chars_after_break = Some(5);
+    });
+    let l = &compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0];
+    let run: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte < 8).collect();
+    let y0 = run[0].y;
+    let first = run.iter().filter(|g| (g.y - y0).abs() < 1e-6).count();
+    let second = run.len() - first;
+    assert_eq!(first + second, run.len());
+    assert!(first >= 1 && second >= 5, "before 1 and after 5 on eight letters: {first} {second}");
+}
+
+#[test]
+fn warichu_rows_balance_by_width() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, "IIIIWWWW", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..8, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_lines = Some(2);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+    });
+    let l = &compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0];
+    let run: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte < 8).collect();
+    let y0 = run[0].y;
+    let width = |pred: bool| run.iter().filter(|g| ((g.y - y0).abs() < 1e-6) == pred).map(|g| g.adv).sum::<f64>();
+    let (top, bot) = (width(true), width(false));
+    let widest = run.iter().map(|g| g.adv).fold(0.0_f64, f64::max);
+    assert!((top - bot).abs() <= widest + 0.05, "rows differ by at most one glyph: {top} {bot}");
+}
+
+#[test]
+fn warichu_negative_spacing_tightens_the_rows() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, "ABCDEFGH", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..8, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+        f.over.warichu_line_spacing = Some(-1.0);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let run: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte < 8).collect();
+    let size = cs.styles[run[0].style as usize].size;
+    let gap = run[4].y - run[0].y;
+    assert!((gap - (size * 0.5 - 1.0)).abs() < 0.05, "one point tighter than a small em: {gap} {size}");
+}
+
+#[test]
+fn warichu_tab_leaders_stay_in_the_gap() {
+    let frame = |warichu: bool| {
+        let mut doc = Document::new(&designcraft_doc::build::NewDocument::default());
+        let lid = doc.default_layer();
+        let pf = ParaFormat {
+            para: ParaAttrs {
+                tabs: Some(vec![designcraft_doc::TabStop {
+                    position: 200.0,
+                    align: designcraft_doc::TabAlign::Right,
+                    leader: ".".into(),
+                    align_on: String::new(),
+                }]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (_, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 100.0), lid, "Intro\tABCDEFGH", pf).unwrap();
+        if warichu {
+            let at = "Intro\t".len();
+            doc.story_mut(sid).unwrap().format_chars(at..at + 8, |f| {
+                f.over.warichu = Some(true);
+                f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+            });
+        }
+        let cs = compose_story(&doc, sid, &ComposeOptions::default());
+        let line = cs.frames[0].lines[0].clone();
+        let dots: Vec<f64> = line.glyphs.iter().filter(|g| g.len == 0 && g.visible).map(|g| g.x).collect();
+        (dots, line)
+    };
+    let (plain, _) = frame(false);
+    let (noted, line) = frame(true);
+    assert!(plain.len() > 5 && plain.len() == noted.len(), "the leader is not rebuilt or dropped: {} {}", plain.len(), noted.len());
+    for (a, b) in plain.iter().zip(&noted) {
+        assert!((a - b).abs() < 1e-6, "a leader before the note stays put: {a} {b}");
+    }
+    let note_x = line.glyphs.iter().filter(|g| g.len > 0 && g.byte >= "Intro\t".len()).map(|g| g.x).fold(f64::INFINITY, f64::min);
+    assert!(noted.iter().all(|x| *x < note_x), "leaders stay ahead of the note");
+}
+
+#[test]
+fn warichu_hit_caret_and_selection_follow_each_row() {
+    let text = "ABCDEFGHZ";
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..8, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let at = |byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).unwrap();
+    let top = at(0);
+    let bot = at(4);
+    let z = at(8);
+    let (_, _, y0, asc, _) = caret(&cs, 0).unwrap();
+    let (_, _, y4, _, _) = caret(&cs, 4).unwrap();
+    let (_, x_end, y_end, _, _) = caret(&cs, text.len()).unwrap();
+    assert!((y0 - (l.baseline + top.y)).abs() < 1e-6 && (y4 - (l.baseline + bot.y)).abs() < 1e-6, "caret sits on the row");
+    assert!(asc < l.ascent * 0.8, "the row caret is shorter than the parent line");
+    assert!((y_end - l.baseline).abs() < 1e-6 && (x_end - l.end_x).abs() < 1e-3, "the line end stays on the parent baseline");
+    let click = |g: &PlacedGlyph| hit(&cs, 0, designcraft_geom::Point::new(g.x + g.adv * 0.25, l.baseline + g.y)).unwrap();
+    assert_eq!(click(top), 0);
+    assert_eq!(click(bot), 4);
+    assert_eq!(hit(&cs, 0, designcraft_geom::Point::new(z.x + z.adv * 0.25, l.baseline)).unwrap(), 8);
+    let up = adjacent_row(l, bot.x + bot.adv * 0.25, l.baseline + bot.y, true).unwrap();
+    assert!(hit(&cs, 0, designcraft_geom::Point::new(bot.x + bot.adv * 0.25, up)).unwrap() < 4);
+    assert!(adjacent_row(l, top.x + 0.1, l.baseline + top.y, true).is_none(), "the top row does not move up inside the note");
+    assert!(adjacent_row(l, z.x + 0.1, l.baseline, false).is_none(), "the character after the note is not inside a row");
+    let quads = highlight_quads(l, 0, 8, false);
+    assert_eq!(quads.len(), 2, "one band per row");
+    let mid_y = |q: &[designcraft_geom::Point; 4]| (q[0].y + q[2].y) / 2.0;
+    assert!(mid_y(&quads[0]) < l.baseline && mid_y(&quads[1]) > l.baseline, "the bands sit on either side of the parent baseline");
+    let style = &cs.styles[top.style as usize];
+    assert!((rule_baseline(style, l, top) - (l.baseline + top.y)).abs() < 1e-9);
+    let z_style = &cs.styles[z.style as usize];
+    assert!(!z_style.warichu && (rule_baseline(z_style, l, z) - l.baseline).abs() < 1e-9);
 }
 
 #[test]
@@ -1977,6 +2180,59 @@ fn vertical_lines_fit_the_em_box() {
     }
 }
 
+/// Lines of `text` set in a frame `width` wide, with `tracking` on every character.
+fn tracked_lines(text: &str, width: f64, para: ParaAttrs, tracking: f64) -> Vec<Line> {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 4000.0), para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.tracking = Some(tracking));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "overset at width {width}");
+    all_lines(&cs).into_iter().cloned().collect()
+}
+
+#[test]
+fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
+    use designcraft_doc::Composer;
+    let word = "n".repeat(60);
+    let long = format!("Then {word} and on");
+    for tracking in [0.0, 740.0] {
+        // Natural advances, from one unbroken line.
+        let natural: HashMap<usize, f64> =
+            tracked_lines(&long, 1e5, ParaAttrs::default(), tracking)[0].glyphs.iter().map(|g| (g.byte, g.adv)).collect();
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            for align in [Align::Left, Align::LeftJustified] {
+                let para = ParaAttrs { composer: Some(composer), align: Some(align), hyphenate: Some(false), ..Default::default() };
+                let lines = tracked_lines(&long, 72.0, para, tracking);
+                let what = format!("{composer:?} {align:?} tracking {tracking}");
+                assert!(lines.len() >= 4, "{what}: {} lines", lines.len());
+                for l in &lines {
+                    let ink: Vec<_> = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).collect();
+                    let right = ink.iter().map(|g| g.x + g.adv.min(natural[&g.byte])).fold(l.x0, f64::max);
+                    assert!(l.end_x <= l.x1 + 0.02 && right <= l.x1 + 0.02, "{what}: line {:?} ends at {} past {}", l.range, l.end_x, l.x1);
+                    for w in ink.windows(2) {
+                        assert!(w[1].x >= w[0].x + natural[&w[0].byte] - 1e-6, "{what}: glyphs overlap at {}", w[1].byte);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_line_that_exactly_fills_the_measure_fits() {
+    use designcraft_doc::Composer;
+    let text = "#knowyourplastic";
+    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    // The measure a rounding error short of the natural width.
+    let width = one.end_x - one.x0 - 0.005;
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for align in [Align::Left, Align::LeftJustified] {
+            let para = ParaAttrs { composer: Some(composer), align: Some(align), ..Default::default() };
+            let lines = tracked_lines(text, width, para, 0.0);
+            assert_eq!(lines.len(), 1, "{composer:?} {align:?}: {:?}", lines.iter().map(|l| l.range.clone()).collect::<Vec<_>>());
+        }
+    }
+}
+
 #[test]
 fn justified_line_with_a_tab_justifies_the_text_after_its_last_tab() {
     // InDesign justifies only the text after a line's last (left) tab; tab stops stay aligned.
@@ -2344,4 +2600,174 @@ fn spanning_paragraph_in_rtl_and_vertical_frames() {
     assert!(!cs.frames[0].lines.is_empty());
     assert_no_overlap(&cs.frames[0]);
     assert!(cs.frames[0].lines.iter().any(|l| l.para == h));
+}
+
+// ---------- split columns ----------
+
+/// A story of a body paragraph, `split` paragraphs in split columns and `after` body paragraphs.
+/// Returns the index of the first split paragraph.
+fn split_doc(split: usize, after: usize, rect: Rect, cfg: (u32, f64, f64)) -> (Document, StoryId, ItemId, usize) {
+    let mut paras: Vec<&str> = vec![LOREM; 1 + split + after];
+    paras[0] = "An introduction set at the full measure of the column, before the split block.";
+    let (mut d, sid, fid) = doc_with(&paras.join("\n"), rect, ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    for p in &mut st.paras[1..=split] {
+        p.para.span_columns = Some(SpanColumns::Split(cfg.0));
+        p.para.split_inside_gutter = Some(cfg.1);
+        p.para.split_outside_gutter = Some(cfg.2);
+    }
+    (d, sid, fid, 1)
+}
+
+/// The sub-columns of `col`: (x0, x1) of each.
+fn sub_columns(col: Rect, (n, inside, outside): (u32, f64, f64)) -> Vec<(f64, f64)> {
+    let w = (col.width() - 2.0 * outside - inside * (n - 1) as f64) / n as f64;
+    (0..n).map(|k| col.x0 + outside + k as f64 * (w + inside)).map(|x| (x, x + w)).collect()
+}
+
+/// The split paragraphs' lines, by sub-column.
+fn split_lines<'a>(ft: &'a FrameText, paras: std::ops::Range<usize>, subs: &[(f64, f64)]) -> Vec<Vec<&'a Line>> {
+    let mut by_sub = vec![Vec::new(); subs.len()];
+    for l in ft.lines.iter().filter(|l| paras.contains(&l.para)) {
+        let k = subs.iter().position(|&(x0, x1)| (l.x0 - x0).abs() < 1e-6 && (l.x1 - x1).abs() < 1e-6);
+        let k = k.unwrap_or_else(|| panic!("line of para {} at {}..{} is in no sub-column of {subs:?}", l.para, l.x0, l.x1));
+        by_sub[k].push(l);
+    }
+    by_sub
+}
+
+#[test]
+fn split_paragraphs_are_set_in_balanced_sub_columns() {
+    for cfg in [(2, 12.0, 10.0), (3, 6.0, 0.0)] {
+        let (d, sid, _, s) = split_doc(2, 1, Rect::new(0.0, 0.0, 400.0, 700.0), cfg);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        let ft = &cs.frames[0];
+        assert_no_overlap(ft);
+        let by_sub = split_lines(ft, s..s + 2, &sub_columns(ft.columns[0], cfg));
+        let counts: Vec<usize> = by_sub.iter().map(Vec::len).collect();
+        assert!(counts.iter().all(|&n| n > 0), "{cfg:?}: {counts:?}");
+        assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1, "{cfg:?}: balanced {counts:?}");
+        // Every sub-column starts on the same baseline, below the paragraph before the block.
+        let firsts: Vec<f64> = by_sub.iter().map(|v| v[0].baseline).collect();
+        assert!(firsts.iter().all(|b| (b - firsts[0]).abs() < 1e-6), "{cfg:?}: {firsts:?}");
+        let intro = ft.lines.iter().filter(|l| l.para == 0).map(|l| line_box(l).1).fold(f64::NEG_INFINITY, f64::max);
+        assert!(firsts[0] > intro && firsts[0] < intro + 20.0, "{cfg:?}: block at {} after {intro}", firsts[0]);
+        // The text after the block continues at the full measure below its deepest sub-column.
+        let bottom = by_sub.iter().flatten().map(|l| line_box(l).1).fold(f64::NEG_INFINITY, f64::max);
+        let next = ft.lines.iter().find(|l| l.para == s + 2).unwrap();
+        assert!(line_box(next).0 >= bottom - 0.5 && line_box(next).0 < bottom + 20.0, "{cfg:?}: {} after {bottom}", line_box(next).0);
+        assert!((next.x0 - ft.columns[0].x0).abs() < 1e-6 && (next.x1 - ft.columns[0].x1).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn split_block_in_the_second_column_and_at_the_story_end() {
+    let cfg = (2, 12.0, 0.0);
+    let (mut d, sid, fid, s) = split_doc(3, 0, Rect::new(0.0, 0.0, 540.0, 400.0), cfg);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.story_mut(sid).unwrap().paras[s].para.start_paragraph = Some(StartParagraph::NextColumn);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    assert!(ft.lines.iter().filter(|l| l.para >= s).all(|l| l.column == 1));
+    let by_sub = split_lines(ft, s..s + 3, &sub_columns(ft.columns[1], cfg));
+    // Nothing follows the block: it fills its first sub-column to the bottom of the frame, then
+    // the next.
+    let (a, b) = (&by_sub[0], &by_sub[1]);
+    assert!(!a.is_empty() && !b.is_empty() && a.len() > b.len() + 1, "{} and {} lines", a.len(), b.len());
+    let low = a.last().unwrap();
+    assert!(low.baseline + low.descent > 400.0 - low.leading, "the first sub-column ends at {}", low.baseline);
+    assert!((a[0].baseline - b[0].baseline).abs() < 1e-6);
+}
+
+#[test]
+fn split_block_flows_into_the_next_column() {
+    let cfg = (2, 12.0, 0.0);
+    let (mut d, sid, fid, s) = split_doc(6, 1, Rect::new(0.0, 0.0, 540.0, 200.0), cfg);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    for c in 0..2 {
+        let in_col: Vec<&Line> = ft.lines.iter().filter(|l| l.column == c as u32).collect();
+        let lines: Vec<&Line> = in_col.iter().copied().filter(|l| (s..s + 6).contains(&l.para)).collect();
+        let subs = sub_columns(ft.columns[c], cfg);
+        assert!(subs.iter().all(|&(x0, x1)| lines.iter().any(|l| (l.x0 - x0).abs() < 1e-6 && (l.x1 - x1).abs() < 1e-6)), "column {c}");
+    }
+    // The block continues at the top of the second column.
+    let top = ft.lines.iter().find(|l| l.column == 1).unwrap();
+    assert!((s..s + 6).contains(&top.para) && top.baseline < 20.0);
+}
+
+/// Each paragraph's list label as text: its label glyphs (laid before the paragraph's own text)
+/// matched back to characters of the label font; tabs and other invisible glyphs are skipped.
+fn list_labels(cs: &ComposedStory, alphabet: &str) -> Vec<String> {
+    all_lines(cs)
+        .iter()
+        .filter(|l| l.first_in_para)
+        .map(|l| {
+            l.glyphs
+                .iter()
+                .take_while(|g| g.len == 0)
+                .filter(|g| g.visible)
+                .map(|g| alphabet.chars().find(|c| g.face.glyph_for(*c) == g.gid).unwrap_or('?'))
+                .collect()
+        })
+        .collect()
+}
+
+const LABEL_CHARS: &str = "0123456789ABCDIVXabcdivx.\u{2022} Tabel";
+
+fn numbered(style: designcraft_doc::NumberStyle, expression: &str) -> ParaAttrs {
+    ParaAttrs {
+        list_type: Some(designcraft_doc::ListType::Numbers),
+        number_style: Some(style),
+        number_expression: Some(expression.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn numbered_lists_follow_their_format_and_expression() {
+    use designcraft_doc::NumberStyle as N;
+    let cases: [(N, &str, [&str; 3]); 4] = [
+        (N::UpperLetters, "^#.^t", ["A.", "B.", "C."]),
+        (N::LowerRoman, "^#.^t", ["i.", "ii.", "iii."]),
+        (N::ArabicThreeDigits, "^#.^t", ["001.", "002.", "003."]),
+        (N::Arabic, "Tabel ^#^t", ["Tabel 1", "Tabel 2", "Tabel 3"]),
+    ];
+    for (style, expression, want) in cases {
+        let (d, sid, _) = doc_with("One\nTwo\nThree", Rect::new(0.0, 0.0, 300.0, 300.0), numbered(style, expression));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(list_labels(&cs, LABEL_CHARS), want, "{style:?} {expression}");
+    }
+}
+
+#[test]
+fn numbering_from_the_largest_start_number_does_not_overflow() {
+    let (mut d, sid, _) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 300.0), numbered(designcraft_doc::NumberStyle::Arabic, "^#."));
+    d.story_mut(sid).unwrap().paras[0].para.start_at = Some(Some(u32::MAX));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let max = format!("{}.", u32::MAX);
+    assert_eq!(list_labels(&cs, LABEL_CHARS), [max.clone(), max]);
+}
+
+#[test]
+fn empty_paragraphs_get_no_bullet_or_number() {
+    let bullets = ParaAttrs { list_type: Some(designcraft_doc::ListType::Bullets), ..Default::default() };
+    let (d, sid, _) = doc_with("One\n\nTwo\n", Rect::new(0.0, 0.0, 300.0, 300.0), bullets);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["\u{2022}", "", "\u{2022}", ""]);
+    // An empty paragraph doesn't use up a number, in a story's own list or a named one.
+    for name in ["", "Steps"] {
+        let attrs = ParaAttrs { list_name: Some(name.into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.^t") };
+        let (mut d, sid, _) = doc_with("One\n\nTwo\n", Rect::new(0.0, 0.0, 300.0, 300.0), attrs);
+        if !name.is_empty() {
+            d.settings.lists.push(designcraft_doc::NumberedList { name: name.into(), continue_across_stories: false });
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.", "", "2.", ""], "list `{name}`");
+    }
 }

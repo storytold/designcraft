@@ -197,6 +197,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:text.insert|Column Break|{\"text\": \"\u{e002}\", \"raw\": true}",
             "cmd:text.insert|Frame Break|{\"text\": \"\u{e003}\", \"raw\": true}",
             "cmd:text.insert|Page Break|{\"text\": \"\u{e004}\", \"raw\": true}",
+            "cmd:text.insert|Odd Page Break|{\"text\": \"\u{e011}\", \"raw\": true}",
+            "cmd:text.insert|Even Page Break|{\"text\": \"\u{e012}\", \"raw\": true}",
             "cmd:text.insert|Paragraph Return|{\"text\": \"\\n\", \"raw\": true}",
             "cmd:text.insert|Forced Line Break|{\"text\": \"\u{2028}\", \"raw\": true}",
             "<",
@@ -274,6 +276,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.tateChuYoko",
             "ui:app.rubyDialog",
             "cmd:type.kenten",
+            "cmd:type.warichu",
             ">Track Changes",
             "cmd:changes.track",
             "cmd:changes.acceptAll",
@@ -543,6 +546,9 @@ pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
 
 /// Run a UI command; `None` if `id` isn't one.
 pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if let Some(result) = crate::panel_docking::command(app, id, p) {
+        return Some(result);
+    }
     let rect = app.canvas_rect;
     let flag = |b: &mut bool| {
         *b = !*b;
@@ -809,7 +815,14 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.open_panel = if app.ui.open_panel.as_deref() == Some("table") { None } else { Some("table".into()) };
             Ok(Value::Null)
         }
-        "app.exportPdf" => export_pdf(app, p),
+        "app.exportPdf" => {
+            if p.is_null() || p.as_object().is_none_or(|m| m.is_empty()) {
+                crate::dialogs::open_pdf_export(app);
+                Ok(Value::Null)
+            } else {
+                export_pdf(app, p)
+            }
+        }
         "app.palette" => {
             app.ui.palette = Some(String::new());
             Ok(Value::Null)
@@ -1208,6 +1221,8 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 dock_expanded: u.dock_expanded,
                 open_panel: u.open_panel.clone(),
                 floating: u.floating.clone(),
+                docking: u.docking.clone(),
+                docking_hidden: u.docking_hidden.clone(),
             };
             app.ui.custom_workspaces.retain(|x| x.name != name);
             app.ui.custom_workspaces.push(w);
@@ -1231,6 +1246,9 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             return run_ui(app, "window.workspace", &json!({"name": name}));
         }
         "window.workspace" => {
+            app.ui.docking_generation = app.ui.docking_generation.wrapping_add(1);
+            app.ui.docking_raise = None;
+            app.ui.docking_opened = None;
             let name = p.get("name").and_then(Value::as_str).unwrap_or("Essentials");
             if let Some(w) = app.ui.custom_workspaces.iter().find(|w| w.name == name).cloned() {
                 app.ui.control_bar = w.control_bar;
@@ -1241,10 +1259,17 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 app.ui.dock_expanded = w.dock_expanded;
                 app.ui.open_panel = w.open_panel;
                 app.ui.floating = w.floating;
+                app.ui.docking = w.docking;
+                app.ui.docking_hidden = w.docking_hidden;
                 app.ui.workspace = w.name;
                 return Some(Ok(Value::Null));
             }
             // Workspaces choose which bars and panels are visible.
+            if app.ui.docking.is_some() {
+                app.ui.floating.clear();
+            }
+            app.ui.docking = None;
+            app.ui.docking_hidden.clear();
             app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book");
             let dock_tab = match name {
                 "Typography" => Some("properties"),
@@ -1367,7 +1392,7 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
 
 /// File › Export PDF…: ask for a path, export through `file.exportPdf` and write the bytes with the
 /// platform writer (a download on the web).
-fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
@@ -1673,6 +1698,86 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
     let _ = app.run(id, p);
 }
 
+/// A menu button whose popup stays within the viewport and scrolls when needed.
+/// All menu buttons share this wrapper, including workspace, zoom and panel menus.
+pub fn menu_button<'a, R>(
+    ui: &mut egui::Ui,
+    atoms: impl egui::IntoAtoms<'a>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    use egui::containers::menu::{MenuButton, MenuConfig};
+
+    // A menu opens from a button already shown in the previous frame. Base its height on
+    // that anchor, not the popup's eventual position, so placement cannot oscillate.
+    let button = ui.ctx().read_response(ui.next_auto_id()).map(|response| response.rect);
+    let max_height = menu_max_height(ui, button);
+    let contents = |ui: &mut egui::Ui| {
+        // Override the popup's initial available height, including when it opens upwards.
+        ui.set_max_height(max_height);
+        let mut scroll = egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(1.0);
+        if ui.is_sizing_pass() {
+            // Closing and reopening a menu starts at its first command again.
+            scroll = scroll.vertical_scroll_offset(0.0);
+        }
+        scroll.show(ui, add_contents).inner
+    };
+    // Scrollbar clicks must not dismiss the popup; command rows close it explicitly.
+    let config = MenuConfig::find(ui).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let (response, inner) = if egui::containers::menu::is_in_menu(ui) {
+        clipped_submenu(ui, atoms, config, contents)
+    } else {
+        MenuButton::new(atoms).config(config).ui(ui, contents)
+    };
+    egui::InnerResponse { response, inner: inner.map(|response| response.inner) }
+}
+
+/// The tallest menu that fits on either side of its anchor, including the popup frame.
+fn menu_max_height(ui: &egui::Ui, button: Option<egui::Rect>) -> f32 {
+    let screen = ui.ctx().content_rect();
+    let space = match button {
+        // Submenus open beside their row, aligned with its top or bottom.
+        Some(rect) if egui::containers::menu::is_in_menu(ui) => (screen.bottom() - rect.top()).max(rect.bottom() - screen.top()),
+        Some(rect) => (screen.bottom() - rect.bottom()).max(rect.top() - screen.top()),
+        None => screen.height(),
+    };
+    let chrome = egui::Frame::menu(ui.style()).total_margin().sum().y + 8.0;
+    (space.min(screen.height()) - chrome).max(1.0)
+}
+
+/// egui's submenu hover test uses the full row rect, even outside a scroll area's clip.
+fn clipped_submenu<'a, R>(
+    ui: &mut egui::Ui,
+    atoms: impl egui::IntoAtoms<'a>,
+    config: egui::containers::menu::MenuConfig,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> (egui::Response, Option<egui::InnerResponse<R>>) {
+    use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
+
+    let id = SubMenu::id_from_widget_id(ui.next_auto_id());
+    let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(id));
+    let inactive = ui.style().visuals.widgets.inactive;
+    if open {
+        ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
+    }
+    let button = SubMenuButton::new(atoms).config(config);
+    let response = ui.add(button.button);
+    ui.style_mut().visuals.widgets.inactive = inactive;
+    let clip = ui.clip_rect();
+    if !response.rect.intersect(clip).is_positive() {
+        if open {
+            MenuState::from_ui(ui, |state, _| state.open_item = None);
+        }
+        return (response, None);
+    }
+    // Undo the half-spacing expansion used by SubMenu::show after clamping to the clip.
+    let hover_margin = ui.spacing().item_spacing / 2.0;
+    let mut clipped = response.clone();
+    clipped.rect = response.rect.expand2(hover_margin).intersect(clip).shrink2(hover_margin);
+    clipped.interact_rect = response.interact_rect.intersect(clip);
+    let inner = button.sub_menu.show(ui, &clipped, contents);
+    (response, inner)
+}
+
 /// A native menu bar item was chosen (macOS): like [`activate`], except that the menu bar takes
 /// ⌘A, ⌘C, ⌘X, ⌘V, ⌘Z and ⇧⌘Z before the window sees them, so while a text field has keyboard
 /// focus, Select All, Copy, Cut, Paste, Undo and Redo act on that field, as in any Mac app.
@@ -1719,7 +1824,7 @@ pub fn menu_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
         menus.reverse();
     }
     for (menu, entries) in menus {
-        ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&lang, menu)), |ui| {
+        menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&lang, menu)), |ui| {
             if crate::i18n::is_rtl(&lang) {
                 ui.set_max_width(320.0);
             }
@@ -1753,7 +1858,7 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
             Item::Sub(name, children) => {
                 let sub = format!("{path}/{name}");
                 let shown = crate::i18n::tr(&app.ui.language, name).to_owned();
-                ui.menu_button(crate::rtl::widget(ui, shown), |ui| {
+                menu_button(ui, crate::rtl::widget(ui, shown), |ui| {
                     hidden += menu_items(app, ui, children, &sub);
                 });
             }
@@ -2002,6 +2107,97 @@ mod tests {
         }
     }
 
+    /// Exercise the real dropdown, including clipping and wheel input, on a short viewport.
+    #[test]
+    fn oversized_edit_menu_scrolls_to_preferences() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 260.0));
+        let mut tick = 0;
+        let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
+            tick += 1;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
+                    egui::MenuBar::new().ui(ui, |ui| menu_bar(app, ui));
+                });
+            output.textures_delta.clear();
+            let mut labels = Vec::new();
+            fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect, egui::Rect)>) {
+                match shape {
+                    egui::Shape::Text(t) => labels.push((t.galley.job.text.clone(), t.visual_bounding_rect(), clip)),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, clip, labels);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in output.shapes {
+                collect(&shape.shape, shape.clip_rect, &mut labels);
+            }
+            labels
+        };
+        frame(&mut app, vec![]);
+        let labels = frame(&mut app, vec![]);
+        let edit = labels.iter().find(|(text, _, _)| text == "Edit").unwrap().1.center();
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(edit),
+                    egui::Event::PointerButton { pos: edit, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let layer = ctx.layer_id_at(egui::pos2(edit.x + 80.0, 100.0)).expect("menu layer");
+        let bounds = ctx.memory(|m| m.area_rect(layer.id)).expect("menu bounds");
+        let track = egui::pos2(bounds.right() - 9.0, bounds.bottom() - 25.0);
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(track),
+                    egui::Event::PointerButton { pos: track, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        assert!(egui::Popup::is_any_open(&ctx), "clicking the scroll track must not dismiss the menu");
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(edit.x + 80.0, 100.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -3000.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let mut labels = Vec::new();
+        for _ in 0..60 {
+            labels = frame(&mut app, vec![]);
+        }
+        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == "Preferences…").expect("Preferences is rendered");
+        assert!(screen.contains_rect(*rect) && clip.contains_rect(*rect), "Preferences must be visible after scrolling: {rect:?}, {clip:?}");
+        let pos = rect.center();
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
+        assert!(!egui::Popup::is_any_open(&ctx), "choosing a command dismisses the menu");
+    }
+
     #[test]
     fn transform_menu_items_open_their_dialogs() {
         for id in ["transform.move", "transform.scale", "transform.rotate", "transform.shear"] {
@@ -2010,6 +2206,18 @@ mod tests {
             let dialog = app.ui.dialog.as_ref().map(|d| d.id.clone());
             assert_eq!(dialog.as_deref(), Some(format!("cmd:{id}").as_str()), "{id} opens its dialog");
         }
+    }
+
+    #[test]
+    fn pdf_export_menu_item_opens_the_dialog_or_exports() {
+        // No params: the menu item opens the options dialog.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        activate(&mut app, "app.exportPdf", &Value::Null);
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfExport"));
+        // Explicit options: programmatic callers still export directly, opening no dialog.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        activate(&mut app, "app.exportPdf", &json!({"path": "/tmp/x.pdf"}));
+        assert!(app.ui.dialog.is_none());
     }
 
     #[test]
@@ -2084,6 +2292,170 @@ mod tests {
         assert_eq!(run_ui(&mut app, "window.split", &json!({})).unwrap().unwrap(), json!(false));
         assert_eq!(app.pane, 0);
         frame(&mut app);
+    }
+
+    #[test]
+    fn split_window_dispatches_text_once_to_the_shared_document() {
+        for focus_pane in [0, 1] {
+            let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let made = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+            let story = made["story"].as_u64().unwrap();
+            app.session.set_tool("type");
+            app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+            assert!(app.session.wants_text());
+            app.run("window.split", json!({"on": true})).unwrap();
+            app.focus_pane = focus_pane;
+
+            let ctx = egui::Context::default();
+            let frame = |app: &mut crate::DesignApp, events| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                });
+                out.textures_delta.clear();
+            };
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            let undo_before = app.session.active().unwrap().history.undo.len();
+            frame(&mut app, vec![egui::Event::Text("A".into())]);
+            let text = app.run("story.get", json!({"story": story})).unwrap();
+            assert_eq!(text["text"], "A", "one key press with pane {focus_pane} focused");
+            assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "");
+
+            // A press and key arriving together must use the newly focused pane, whichever
+            // canvas is drawn first. Middle-click changes pane focus without moving the caret.
+            let other = app.other_pane.as_ref().and_then(|p| p.1).unwrap().center();
+            frame(&mut app, vec![egui::Event::PointerMoved(other)]);
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerButton { pos: other, button: egui::PointerButton::Middle, pressed: true, modifiers: egui::Modifiers::NONE },
+                    egui::Event::Text("B".into()),
+                ],
+            );
+            assert_eq!(app.focus_pane, 1 - focus_pane);
+            assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "B", "a key in the pane-switch frame is dispatched once");
+            assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
+        }
+    }
+
+    #[test]
+    fn split_window_click_focus_routes_menu_zoom_but_hover_scroll_stays_local() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("window.split", json!({"on": true})).unwrap();
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let mut frame = |app: &mut crate::DesignApp, events| {
+            time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let left = app.canvas_rect.unwrap().center();
+        let right = app.other_pane.as_ref().and_then(|p| p.1).unwrap().center();
+        let cameras = |app: &mut crate::DesignApp| {
+            let current = app.pane;
+            app.switch_pane(0);
+            let left = *app.view().unwrap();
+            app.switch_pane(1);
+            let right = *app.view().unwrap();
+            app.switch_pane(current);
+            [left, right]
+        };
+        let button =
+            |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut app, vec![egui::Event::PointerMoved(right)]);
+        frame(&mut app, vec![button(right, true)]);
+        frame(&mut app, vec![button(right, false)]);
+        assert_eq!((app.pane, app.focus_pane), (1, 1));
+        let before = cameras(&mut app);
+        app.run("view.zoom", json!({"zoom": 2.0})).unwrap();
+        let zoomed = cameras(&mut app);
+        assert_eq!(zoomed[0], before[0], "menu zoom leaves the other camera alone");
+        assert!((zoomed[1].zoom - 2.0).abs() < 1e-9);
+
+        frame(&mut app, vec![egui::Event::PointerMoved(left)]);
+        frame(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -40.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let scrolled = cameras(&mut app);
+        assert_eq!(scrolled[1], zoomed[1], "hover scroll leaves the focused camera alone");
+        assert_ne!(scrolled[0].origin, zoomed[0].origin);
+        assert_eq!((app.pane, app.focus_pane), (1, 1), "hovering does not move menu focus");
+
+        frame(&mut app, vec![button(left, true)]);
+        frame(&mut app, vec![button(left, false)]);
+        assert_eq!((app.pane, app.focus_pane), (0, 0));
+        app.run("view.zoom", json!({"zoom": 1.0})).unwrap();
+        let final_views = cameras(&mut app);
+        assert!((final_views[0].zoom - 1.0).abs() < 1e-9);
+        assert_eq!(final_views[1], scrolled[1]);
+    }
+
+    #[test]
+    fn split_window_contextual_bars_have_independent_widget_ids() {
+        fn id_warnings(shape: &egui::Shape, found: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| id_warnings(shape, found)),
+                egui::Shape::Text(text) if text.galley.text().contains("use of widget ID") => found.push(text.galley.text().to_string()),
+                _ => {}
+            }
+        }
+
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        for rect in [[36, 36, 280, 180], [300, 36, 550, 180]] {
+            app.run("frame.create", json!({"rect": rect, "content": "unassigned"})).unwrap();
+        }
+        app.run("edit.selectAll", json!({})).unwrap();
+        app.run("window.split", json!({"on": true})).unwrap();
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.warn_on_id_clash = true);
+        let mut warnings = Vec::new();
+        for _ in 0..4 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            warnings.clear();
+            for shape in &output.shapes {
+                id_warnings(&shape.shape, &mut warnings);
+            }
+            output.textures_delta.clear();
+        }
+        assert!(warnings.is_empty(), "both bars reused the same interactive widget IDs: {warnings:?}");
+        let bars: Vec<_> =
+            (0_u8..2).map(|pane| ctx.memory(|memory| memory.area_rect(egui::Id::new(("task_bar", egui::ViewportId::ROOT, pane)))).unwrap()).collect();
+        assert!(!bars[0].intersects(bars[1]), "each pane keeps its own bar: {bars:?}");
     }
 
     #[test]
@@ -2746,5 +3118,206 @@ mod tests {
         run_ui(&mut app, "window.hideMenuItem", &json!({"item": key, "hidden": false})).unwrap().unwrap();
         assert!(app.ui.hidden_menu_items.is_empty());
         assert!(items.len() > 100, "every menu's items are listed: {}", items.len());
+    }
+
+    #[test]
+    fn menu_button_fits_its_anchor_and_resets_scroll_on_reopen() {
+        // Workspace/panel menus may be in the middle; the status-bar zoom menu opens upwards.
+        for anchor_y in [0.0, 130.0, 260.0] {
+            let ctx = egui::Context::default();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+            let mut tick = 0;
+            let mut frame = |events: Vec<egui::Event>| {
+                tick += 1;
+                let mut button = None;
+                let mut first = None;
+                let mut last = None;
+                let mut output =
+                    ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
+                        ui.add_space(anchor_y);
+                        let response = menu_button(ui, "Long menu", |ui| {
+                            for i in 0..60 {
+                                let response = ui.button(format!("Item {i}"));
+                                if i == 0 {
+                                    first = Some((response.rect, ui.clip_rect()));
+                                }
+                                if i == 59 {
+                                    last = Some((response.rect, ui.clip_rect()));
+                                }
+                            }
+                        });
+                        button = Some(response.response);
+                    });
+                output.textures_delta.clear();
+                (button.expect("menu button"), first, last)
+            };
+            let click =
+                |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(vec![]);
+            let (button, _, _) = frame(vec![]);
+            let anchor = button.rect;
+            for pressed in [true, false] {
+                frame(vec![egui::Event::PointerMoved(anchor.center()), click(anchor.center(), pressed)]);
+            }
+            for _ in 0..3 {
+                frame(vec![]);
+            }
+            let popup = ctx.memory(|memory| memory.area_rect(egui::Popup::default_response_id(&button))).expect("open menu");
+            assert!(screen.contains_rect(popup), "menu at {anchor_y} fits in the viewport: {popup:?}");
+            assert!(
+                popup.top() >= anchor.bottom() - 1.0 || popup.bottom() <= anchor.top() + 1.0,
+                "menu at {anchor_y} stays on one side of its button: {popup:?}, {anchor:?}"
+            );
+            let (_, first, last) = frame(vec![]);
+            let (first, clip) = first.expect("first row");
+            assert!(clip.contains_rect(first), "newly opened menu starts at the first row");
+            assert!(!clip.intersects(last.expect("last row").0), "last row starts below the scroll area");
+
+            frame(vec![
+                egui::Event::PointerMoved(popup.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -5000.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            for _ in 0..60 {
+                frame(vec![]);
+            }
+            let (_, first, last) = frame(vec![]);
+            let (last, clip) = last.expect("scrolled last row");
+            assert!(popup.contains_rect(last) && clip.contains_rect(last), "last row is reachable: {last:?}, {popup:?}, {clip:?}");
+            assert!(!clip.intersects(first.expect("scrolled first row").0), "menu really scrolled away from its start");
+
+            let outside = egui::pos2(screen.right() - 10.0, screen.center().y);
+            for pressed in [true, false] {
+                frame(vec![egui::Event::PointerMoved(outside), click(outside, pressed)]);
+            }
+            assert!(!egui::Popup::is_any_open(&ctx), "outside click closes the menu");
+            assert!(frame(vec![]).1.is_none(), "closed menu is no longer drawn");
+            for pressed in [true, false] {
+                frame(vec![egui::Event::PointerMoved(anchor.center()), click(anchor.center(), pressed)]);
+            }
+            for _ in 0..3 {
+                frame(vec![]);
+            }
+            let (_, first, last) = frame(vec![]);
+            let (first, clip) = first.expect("reopened first row");
+            assert!(popup.contains_rect(first) && clip.contains_rect(first), "reopening resets to the first row: {first:?}, {clip:?}");
+            assert!(!clip.intersects(last.expect("reopened last row").0), "reopening discards the old scroll offset");
+        }
+    }
+
+    #[test]
+    fn tiny_menu_viewport_does_not_force_the_default_scroll_height() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 100.0));
+        let mut tick = 0;
+        let mut frame = |events: Vec<egui::Event>| {
+            tick += 1;
+            let mut button = None;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
+                    ui.add_space(35.0);
+                    let response = menu_button(ui, "Long menu", |ui| {
+                        for i in 0..20 {
+                            let _ = ui.button(format!("Item {i}"));
+                        }
+                    });
+                    button = Some(response.response);
+                });
+            output.textures_delta.clear();
+            button.expect("menu button")
+        };
+        frame(vec![]);
+        let button = frame(vec![]);
+        let pos = button.rect.center();
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ]);
+        }
+        for _ in 0..3 {
+            frame(vec![]);
+        }
+        let popup = ctx.memory(|memory| memory.area_rect(egui::Popup::default_response_id(&button))).expect("open menu");
+        let space = (screen.bottom() - button.rect.bottom()).max(button.rect.top() - screen.top());
+        assert!(space < 64.0, "fixture has less space than egui's default minimum scroll height");
+        // A complete command row may not fit, but the scroll area's minimum must not make
+        // the popup exceed its height budget or cover the button that dismisses it.
+        assert!(popup.height() <= space, "tiny menu respects its available height: {popup:?}, {space}");
+        assert!(screen.contains_rect(popup), "tiny menu remains inside the viewport: {popup:?}");
+        assert!(
+            popup.top() >= button.rect.bottom() - 1.0 || popup.bottom() <= button.rect.top() + 1.0,
+            "tiny menu stays beside its anchor: {popup:?}, {:?}",
+            button.rect
+        );
+    }
+
+    #[test]
+    fn clipped_submenu_does_not_open_when_hovering_outside_menu() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0));
+        let entries = vec![Item::Sub("Hidden submenu".into(), vec![cmd_item("app.preferences", Value::Null)])];
+        let mut tick = 0;
+        let mut frame = |spacing: f32, events: Vec<egui::Event>| {
+            tick += 1;
+            let mut button_rect = egui::Rect::NOTHING;
+            let mut hidden_submenu = None;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
+                    egui::MenuBar::new().ui(ui, |ui| {
+                        let response = ui.menu_button("Menu", |ui| {
+                            egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                                ui.add_space(spacing);
+                                let button_id = ui.next_auto_id();
+                                menu_items(&mut app, ui, &entries, "Test");
+                                let response = ui.ctx().read_response(button_id).expect("submenu button response");
+                                let open = egui::containers::menu::MenuState::from_ui(ui, |state, _| state.open_item.is_some());
+                                hidden_submenu = Some((response.rect, ui.clip_rect(), open));
+                            });
+                        });
+                        button_rect = response.response.rect;
+                    });
+                });
+            output.textures_delta.clear();
+            (button_rect, hidden_submenu)
+        };
+        frame(500.0, vec![]);
+        let button = frame(500.0, vec![]).0.center();
+        for pressed in [true, false] {
+            frame(
+                500.0,
+                vec![
+                    egui::Event::PointerMoved(button),
+                    egui::Event::PointerButton { pos: button, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        for _ in 0..3 {
+            frame(500.0, vec![]);
+        }
+        let (_, Some((hidden, clip, open))) = frame(500.0, vec![]) else { panic!("test menu is open") };
+        assert!(!open, "submenu starts closed");
+        assert!(screen.contains_rect(hidden), "hidden row remains inside the screen: {hidden:?}");
+        assert!(!clip.intersects(hidden), "submenu must be fully clipped: {hidden:?}, {clip:?}");
+        let (_, Some((_, _, open))) = frame(500.0, vec![egui::Event::PointerMoved(hidden.center())]) else { panic!("test menu remains open") };
+        assert!(!open, "hovering the clipped row's position outside the menu must not open its submenu");
+
+        let partial_spacing = 500.0 - (hidden.top() - clip.bottom()) - 6.0;
+        let (_, Some((partial, clip, open))) = frame(partial_spacing, vec![]) else { panic!("test menu remains open") };
+        assert!(!open);
+        assert!(partial.top() < clip.bottom() && partial.bottom() > clip.bottom(), "row must be partially clipped: {partial:?}, {clip:?}");
+        let outside = egui::pos2(partial.center().x, clip.bottom() + 1.0);
+        let (_, Some((_, _, open))) = frame(partial_spacing, vec![egui::Event::PointerMoved(outside)]) else { panic!("test menu remains open") };
+        assert!(!open, "hovering the clipped portion of a partially visible row must not open its submenu");
+        let visible = partial.intersect(clip).center();
+        let (_, Some((_, _, open))) = frame(partial_spacing, vec![egui::Event::PointerMoved(visible)]) else { panic!("test menu remains open") };
+        assert!(open, "hovering the visible portion still opens the submenu");
+        let (_, Some((_, _, open))) = frame(500.0, vec![]) else { panic!("test menu remains open") };
+        assert!(!open, "an open submenu closes when its row becomes fully clipped");
     }
 }

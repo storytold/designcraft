@@ -49,7 +49,7 @@ fn text_rules(cs: &ComposedStory, ft: &FrameText, underline: bool) -> Vec<(desig
             if !on {
                 continue;
             }
-            let rect = rule.rect(g.x, g.x + g.adv, line.baseline);
+            let rect = rule.rect(g.x, g.x + g.adv, designcraft_compose::rule_baseline(style, line, g));
             match bars.last_mut() {
                 Some((last_rule, last)) if last_rule == rule && (last.y0 - rect.y0).abs() < 1e-6 && (rect.x0 - last.x1).abs() < 0.5 => {
                     last.x1 = rect.x1;

@@ -2,6 +2,7 @@
 name = "designcraft-ui-egui"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "DesignCraft egui frontend (InDesign-style UI); swappable — nothing below depends on it"
 
@@ -9,6 +10,7 @@ description = "DesignCraft egui frontend (InDesign-style UI); swappable — noth
 workspace = true
 
 [dependencies]
+craft-ui = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }

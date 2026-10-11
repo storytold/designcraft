@@ -16,7 +16,9 @@ pub mod dock;
 pub mod i18n;
 pub mod icons;
 pub mod menus;
+mod panel_docking;
 pub mod panels;
+mod prefs;
 pub mod render_worker;
 mod rtl;
 pub mod story_editor;
@@ -97,6 +99,11 @@ pub struct SavedWorkspace {
     pub dock_expanded: bool,
     pub open_panel: Option<String>,
     pub floating: Vec<(String, [f32; 2])>,
+    /// Custom panel membership and placement; absent in older workspace files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docking: Option<craft_ui::docking::Layout<String>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub docking_hidden: std::collections::BTreeMap<String, craft_ui::docking::Location<String>>,
 }
 
 /// A missing on-by-default bool stays on. `bool::default` is false.
@@ -107,6 +114,49 @@ fn default_true() -> bool {
 /// A missing snap zone stays at the factory width, in screen pixels.
 fn default_zone() -> f64 {
     4.0
+}
+
+/// File › Export PDF… options: the values persisted in `UiState.pdf_export` and used as the
+/// dialog's defaults. Serialised as `pdfExport` with camelCase field names.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PdfExportSettings {
+    /// Preset (one of the five presets, or "Custom" after a manual edit).
+    pub preset: String,
+    /// PDF standard (`none`, `x4`, `a2b`).
+    pub standard: String,
+    /// Compression › Compress images (JPEG).
+    pub compress_images: bool,
+    /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
+    pub flatten: String,
+    pub spreads: bool,
+    pub bleed: bool,
+    pub marks_crop: bool,
+    pub marks_bleed: bool,
+    pub marks_page_info: bool,
+    pub marks_weight: String,
+    pub marks_offset: String,
+    /// File › Export PDF › Advanced › Tagged PDF.
+    pub tagged: bool,
+}
+
+impl Default for PdfExportSettings {
+    fn default() -> Self {
+        PdfExportSettings {
+            preset: "Desktop Printing".into(),
+            standard: "none".into(),
+            compress_images: false,
+            flatten: "".into(),
+            spreads: false,
+            bleed: true,
+            marks_crop: false,
+            marks_bleed: false,
+            marks_page_info: false,
+            marks_weight: "0.25".into(),
+            marks_offset: "6".into(),
+            tagged: true,
+        }
+    }
 }
 
 /// Persisted UI state.
@@ -149,6 +199,8 @@ pub struct UiState {
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
     pub flattener: String,
+    /// File › Export PDF… options (persisted; see `PdfExportSettings`).
+    pub pdf_export: PdfExportSettings,
     /// View › Separations Preview: a process plate (0–3) and/or an ink limit (total, 0–4).
     #[serde(skip)]
     pub separation: Option<u8>,
@@ -172,6 +224,20 @@ pub struct UiState {
     pub open_panel: Option<String>,
     /// Panels torn off the dock into their own floating windows: (panel id, top-left position).
     pub floating: Vec<(String, [f32; 2])>,
+    /// Shared panel layout after the user customizes the legacy dock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docking: Option<craft_ui::docking::Layout<String>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub docking_hidden: std::collections::BTreeMap<String, craft_ui::docking::Location<String>>,
+    /// Invalidates in-flight gestures when a workspace is replaced.
+    #[serde(skip)]
+    pub docking_generation: u64,
+    /// One-frame reveal request; z-order is never persisted.
+    #[serde(skip)]
+    pub docking_raise: Option<String>,
+    /// Last explicitly revealed customized panel, for the legacy closePanel control.
+    #[serde(skip)]
+    pub docking_opened: Option<String>,
     pub dock_expanded: bool,
     pub units: Unit,
     pub workspace: String,
@@ -252,6 +318,7 @@ impl Default for UiState {
             dynamic_spelling: false,
             language: String::new(),
             flattener: String::new(),
+            pdf_export: PdfExportSettings::default(),
             separation: None,
             ink_limit: None,
             display_quality: designcraft_render::DisplayQuality::High,
@@ -264,6 +331,11 @@ impl Default for UiState {
             dock_tab: "properties".into(),
             open_panel: None,
             floating: Vec::new(),
+            docking: None,
+            docking_hidden: Default::default(),
+            docking_generation: 0,
+            docking_raise: None,
+            docking_opened: None,
             dock_expanded: true,
             units: Unit::Picas,
             workspace: "Essentials".into(),
@@ -778,6 +850,9 @@ impl DesignApp {
         let t0 = now_ms();
         let t = theme::Tokens::get(&ctx);
         let presenting = self.ui.screen_mode == ScreenMode::Presentation;
+        if presenting || self.ui.hidden_panels != 0 {
+            panel_docking::cancel_gesture(self, &ctx);
+        }
         let dbg = std::env::var_os("DESIGNCRAFT_DEBUG_LAYOUT").is_some();
         if dbg {
             eprintln!("root start {:?}", ui.available_rect_before_wrap());
@@ -809,16 +884,29 @@ impl DesignApp {
             if !presenting {
                 chrome::doc_tabs(self, ui);
             }
-            if self.split && !presenting {
+            let split_layout = (self.split && !presenting)
+                .then(|| {
+                    craft_ui::layout::split_rect(
+                        ui.available_rect_before_wrap(),
+                        craft_ui::layout::SplitAxis::Horizontal,
+                        craft_ui::layout::SplitSize::Ratio(0.5),
+                        2.0,
+                        0.0,
+                    )
+                })
+                .flatten();
+            if let Some(layout) = split_layout {
                 // Two panes with a divider; each has its own view (zoom, scroll) and render cache.
-                let r = ui.available_rect_before_wrap();
-                let mid = r.center().x;
-                let halves = [
-                    egui::Rect::from_min_max(r.min, egui::pos2(mid - 1.0, r.max.y)),
-                    egui::Rect::from_min_max(egui::pos2(mid + 1.0, r.min.y), r.max),
-                ];
-                ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(mid - 1.0, r.min.y), egui::pos2(mid + 1.0, r.max.y)), 0.0, t.border);
-                for (k, half) in halves.into_iter().enumerate() {
+                ui.painter().rect_filled(layout.divider, 0.0, t.border);
+                // Resolve the clicked pane before either canvas handles this frame's keys.
+                if let Some(p) = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()) {
+                    if layout.first.contains(p) {
+                        self.focus_pane = 0;
+                    } else if layout.second.contains(p) {
+                        self.focus_pane = 1;
+                    }
+                }
+                for (k, half) in [layout.first, layout.second].into_iter().enumerate() {
                     self.switch_pane(k as u8);
                     // A new pane starts at the other pane's view.
                     if k == 1 && self.view().is_none() {
@@ -831,9 +919,6 @@ impl DesignApp {
                         }
                     }
                     ui.scope_builder(egui::UiBuilder::new().max_rect(half), |ui| canvas::show(self, ui));
-                    if ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| half.contains(p))) {
-                        self.focus_pane = k as u8;
-                    }
                 }
                 self.switch_pane(self.focus_pane);
             } else {
@@ -1122,6 +1207,38 @@ mod tests {
         ui.snap_zone = 0.0;
         assert!(!ui.snap_view().snap_to_guides);
         assert_eq!(ui.snap_view().zone_px, 0.0);
+    }
+
+    #[test]
+    fn pdf_export_settings_round_trip() {
+        let ui = UiState::default();
+        let json = serde_json::to_string(&ui).unwrap();
+        let parsed: UiState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.pdf_export, PdfExportSettings::default());
+    }
+
+    #[test]
+    fn pdf_export_settings_defaults() {
+        let settings = PdfExportSettings::default();
+        assert_eq!(settings.preset, "Desktop Printing");
+        assert_eq!(settings.standard, "none");
+        assert!(!settings.compress_images);
+        assert_eq!(settings.flatten, "");
+        assert!(!settings.spreads);
+        assert!(settings.bleed);
+        assert!(!settings.marks_crop);
+        assert!(!settings.marks_bleed);
+        assert!(!settings.marks_page_info);
+        assert_eq!(settings.marks_weight, "0.25");
+        assert_eq!(settings.marks_offset, "6");
+        assert!(settings.tagged);
+    }
+
+    #[test]
+    fn pdf_export_settings_survive_missing_key() {
+        let json = r#"{ "language": "en" }"#;
+        let ui: UiState = serde_json::from_str(json).unwrap();
+        assert_eq!(ui.pdf_export, PdfExportSettings::default());
     }
 
     /// A temporary file named `name` whose bytes aren't a document or a graphic.

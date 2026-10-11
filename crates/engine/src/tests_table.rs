@@ -176,3 +176,226 @@ fn file_roundtrip_keeps_tables() {
     let st = back.story(designcraft_doc::StoryId(sid)).unwrap();
     assert_eq!(st.tables.values().next().unwrap().cells[0].text.text, "A1");
 }
+
+fn table_for(s: &Session, sid: u64, tid: u64) -> &doc::Table {
+    s.doc().unwrap().doc.story(doc::StoryId(sid)).unwrap().tables.get(&tid).unwrap()
+}
+
+#[test]
+fn explicit_cell_edges_win_imported_priorities_and_keep_undo_and_file_roundtrip() {
+    for (direction, neighbors) in [
+        (doc::TextDirection::LeftToRight, [(0, 1, 2), (1, 0, 3), (1, 2, 1), (2, 1, 0)]),
+        (doc::TextDirection::RightToLeft, [(0, 1, 2), (1, 0, 1), (1, 2, 3), (2, 1, 0)]),
+    ] {
+        for imported_priority in [-7, 41, i32::MAX] {
+            let (mut s, sid, _) = session_with_frame();
+            let r = s.execute("table.insert", &json!({"rows": 3, "cols": 3})).unwrap();
+            let tid = r["table"].as_u64().unwrap();
+            s.edit(|d, _| {
+                let t = d.story_mut(doc::StoryId(sid)).unwrap().table_mut(tid).unwrap();
+                t.options.border = doc::CellStroke::none();
+                t.options.direction = direction;
+                for cell in &mut t.cells {
+                    cell.strokes = std::array::from_fn(|_| doc::CellStroke::none());
+                }
+                t.cell_mut(0, 0).unwrap().stroke_priorities[0] = -9;
+                for (row, col, edge) in neighbors {
+                    let cell = t.cell_mut(row, col).unwrap();
+                    cell.strokes[edge] = doc::CellStroke { weight: 7.0, ..Default::default() };
+                    cell.stroke_defined[edge] = true;
+                    cell.stroke_priorities[edge] = imported_priority;
+                }
+                Ok(())
+            })
+            .unwrap();
+            let before = table_for(&s, sid, tid).clone();
+            s.execute("table.setCell", &json!({"row": 1, "col": 1, "stroke": {"weight": 0, "edges": "all"}})).unwrap();
+            let after = table_for(&s, sid, tid).clone();
+            assert_eq!(after.cell(0, 0).unwrap().stroke_priorities[0], -9, "unrelated signed priorities are preserved");
+            let edited = after.cell(1, 1).unwrap();
+            let priority = if imported_priority == i32::MAX { 2 } else { imported_priority.max(0) + 1 };
+            assert_eq!(edited.stroke_defined, [true; 4]);
+            assert_eq!(edited.border_overrides, [true; 4]);
+            assert_eq!(edited.stroke_priorities, [priority; 4]);
+            for (row, col, edge) in neighbors {
+                let neighbor = after.cell(row, col).unwrap();
+                assert_eq!(neighbor.strokes[edge].weight, 0.0);
+                assert!(neighbor.stroke_defined[edge]);
+                assert!(neighbor.border_overrides[edge]);
+                assert_eq!(neighbor.stroke_priorities[edge], priority);
+            }
+            let composed = s.cache.get(&s.doc().unwrap().doc, doc::StoryId(sid), None);
+            assert!(composed.frames.iter().flat_map(|f| &f.tables).all(|t| t.strokes.is_empty()));
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(table_for(&s, sid, tid), &before);
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert_eq!(table_for(&s, sid, tid), &after);
+            let bytes = crate::cmd::file_bytes(&s.doc().unwrap().doc);
+            let back = crate::cmd::file_from(&bytes).unwrap();
+            assert_eq!(back.story(doc::StoryId(sid)).unwrap().tables.get(&tid).unwrap().as_ref(), &after);
+            check(&s);
+        }
+    }
+}
+
+#[test]
+fn perimeter_edits_override_imported_sides_and_uniform_border_clears_side_options() {
+    let (mut s, sid, _) = session_with_frame();
+    let r = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+    let tid = r["table"].as_u64().unwrap();
+    s.edit(|d, _| {
+        let t = d.story_mut(doc::StoryId(sid)).unwrap().table_mut(tid).unwrap();
+        t.options.border.weight = 4.0;
+        t.options.borders = std::array::from_fn(|_| Some(doc::CellStroke { weight: 9.0, ..Default::default() }));
+        Ok(())
+    })
+    .unwrap();
+    s.execute("table.setCell", &json!({"stroke": {"tint": 0.25, "edges": "left"}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    let cell = t.cell(0, 0).unwrap();
+    assert_eq!(cell.stroke_defined, [false, true, false, false]);
+    assert_eq!(cell.border_overrides, [false, true, false, false]);
+    assert_eq!(cell.strokes[1].weight, 9.0, "partial edits preserve the visible perimeter base");
+    assert_eq!(cell.strokes[1].tint, 0.25);
+    let before = t.clone();
+    s.execute("table.options", &json!({"border": {"weight": 3}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    assert!(t.options.borders.iter().all(Option::is_none));
+    assert_eq!(t.options.border.weight, 3.0);
+    let composed = s.cache.get(&s.doc().unwrap().doc, doc::StoryId(sid), None);
+    let frag = composed.frames.iter().flat_map(|f| &f.tables).next().unwrap();
+    assert_eq!(frag.strokes.iter().filter(|s| s.stroke.weight == 3.0).count(), 3);
+    assert_eq!(frag.strokes.iter().filter(|s| s.stroke.weight == 9.0 && s.stroke.tint == 0.25).count(), 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(table_for(&s, sid, tid), &before);
+}
+
+#[test]
+fn inherited_cell_and_table_styles_apply_and_follow_base_edits() {
+    let (mut s, sid, _) = session_with_frame();
+    let r = s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+    let tid = r["table"].as_u64().unwrap();
+    s.execute("style.cell.create", &json!({"name": "Cell Base", "insets": 7, "stroke": {"weight": 2}})).unwrap();
+    s.execute("style.cell.create", &json!({"name": "Cell Child", "basedOn": "Cell Base", "fill": "[Paper]"})).unwrap();
+    s.execute("style.cell.apply", &json!({"name": "Cell Child", "table": tid})).unwrap();
+    let t = table_for(&s, sid, tid);
+    assert!(t.cells.iter().all(|cell| cell.style == "Cell Child" && cell.insets == [7.0; 4] && cell.strokes[0].weight == 2.0));
+    s.execute("style.cell.edit", &json!({"name": "Cell Base", "insets": 5})).unwrap();
+    assert!(table_for(&s, sid, tid).cells.iter().all(|cell| cell.insets == [5.0; 4]));
+    s.execute("style.table.create", &json!({"name": "Table Base", "body": "Cell Child", "border": {"weight": 6}, "spaceBefore": 8})).unwrap();
+    s.execute("style.table.create", &json!({"name": "Table Child", "basedOn": "Table Base", "spaceAfter": 3})).unwrap();
+    s.execute("style.table.apply", &json!({"name": "Table Child"})).unwrap();
+    let t = table_for(&s, sid, tid);
+    assert_eq!(t.style, "Table Child");
+    assert_eq!(t.options.border_for(0).weight, 6.0);
+    assert_eq!(t.options.space_before, 8.0);
+    assert_eq!(t.options.space_after, 3.0);
+    assert!(t.cells.iter().all(|cell| cell.style == "Cell Child" && cell.insets == [5.0; 4]));
+    s.execute("style.table.edit", &json!({"name": "Table Base", "border": {"weight": 4}, "spaceBefore": 10})).unwrap();
+    let t = table_for(&s, sid, tid);
+    assert_eq!(t.options.border_for(0).weight, 4.0);
+    assert_eq!(t.options.space_before, 10.0);
+    assert_eq!(t.options.space_after, 3.0);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(table_for(&s, sid, tid).options.border_for(0).weight, 6.0);
+}
+
+#[test]
+fn uniform_style_edits_replace_imported_per_side_attributes() {
+    let (mut s, sid, _) = session_with_frame();
+    let r = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+    let tid = r["table"].as_u64().unwrap();
+    s.edit(|d, _| {
+        d.styles_mut().cell.push(doc::CellStyle {
+            name: "Imported Cell".into(),
+            strokes: std::array::from_fn(|_| doc::CellStrokeAttrs { weight: Some(9.0), ..Default::default() }),
+            inset_overrides: [Some(12.0); 4],
+            ..Default::default()
+        });
+        d.styles_mut().table.push(doc::TableStyle {
+            name: "Imported Table".into(),
+            borders: std::array::from_fn(|_| doc::CellStrokeAttrs { weight: Some(10.0), ..Default::default() }),
+            ..Default::default()
+        });
+        Ok(())
+    })
+    .unwrap();
+    s.execute("style.cell.apply", &json!({"name": "Imported Cell"})).unwrap();
+    s.execute("style.cell.edit", &json!({"name": "Imported Cell", "stroke": {"weight": 2}, "insets": 3})).unwrap();
+    let cell = table_for(&s, sid, tid).cell(0, 0).unwrap();
+    assert!(cell.strokes.iter().all(|edge| edge.weight == 2.0));
+    assert_eq!(cell.insets, [3.0; 4]);
+    s.execute("style.table.apply", &json!({"name": "Imported Table"})).unwrap();
+    s.execute("style.table.edit", &json!({"name": "Imported Table", "border": {"weight": 4}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    assert!((0..4).all(|edge| t.options.border_for(edge).weight == 4.0));
+}
+
+#[test]
+fn rtl_cell_edge_selection_uses_physical_sides() {
+    let (mut s, sid, _) = session_with_frame();
+    let r = s.execute("table.insert", &json!({"rows": 1, "cols": 3})).unwrap();
+    let tid = r["table"].as_u64().unwrap();
+    s.execute("table.options", &json!({"direction": "rightToLeft", "border": {"weight": 0}})).unwrap();
+    s.execute("table.setCell", &json!({"cols": [0, 2], "stroke": {"weight": 0}})).unwrap();
+    s.execute("table.setCell", &json!({"row": 0, "col": 0, "stroke": {"weight": 2, "edges": "left"}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    assert_eq!(t.cell(0, 0).unwrap().strokes[1].weight, 2.0);
+    assert_eq!(t.cell(0, 1).unwrap().strokes[3].weight, 2.0);
+    assert_eq!(t.cell(0, 1).unwrap().strokes[1].weight, 0.0);
+    s.execute("table.setCell", &json!({"cols": [0, 2], "stroke": {"weight": 5, "edges": "outer"}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    assert_eq!(t.cell(0, 0).unwrap().strokes[3].weight, 5.0);
+    assert_eq!(t.cell(0, 2).unwrap().strokes[1].weight, 5.0);
+    assert_eq!(t.cell(0, 0).unwrap().strokes[1].weight, 2.0);
+    assert_eq!(t.cell(0, 2).unwrap().strokes[3].weight, 0.0);
+    s.execute("table.setCell", &json!({"cols": [0, 2], "stroke": {"weight": 0, "edges": "inner"}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    assert_eq!(t.cell(0, 0).unwrap().strokes[3].weight, 5.0);
+    assert_eq!(t.cell(0, 2).unwrap().strokes[1].weight, 5.0);
+    assert_eq!(t.cell(0, 0).unwrap().strokes[1].weight, 0.0);
+    assert_eq!(t.cell(0, 1).unwrap().strokes[3].weight, 0.0);
+}
+
+#[test]
+fn editing_beside_a_merged_cell_only_changes_the_selected_edge_segment() {
+    for direction in [doc::TextDirection::LeftToRight, doc::TextDirection::RightToLeft] {
+        for imported_priority in [41, i32::MAX] {
+            let (mut s, sid, _) = session_with_frame();
+            let r = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+            let tid = r["table"].as_u64().unwrap();
+            s.execute("table.merge", &json!({"row": 0, "cols": [0, 1]})).unwrap();
+            s.edit(|d, _| {
+                let t = d.story_mut(doc::StoryId(sid)).unwrap().table_mut(tid).unwrap();
+                t.options.direction = direction;
+                t.options.border = doc::CellStroke::none();
+                for cell in &mut t.cells {
+                    cell.strokes = std::array::from_fn(|_| doc::CellStroke::none());
+                }
+                let merged = t.cell_mut(0, 0).unwrap();
+                merged.strokes[2] = doc::CellStroke { weight: 7.0, ..Default::default() };
+                merged.stroke_defined[2] = true;
+                merged.stroke_priorities[2] = imported_priority;
+                t.cell_mut(1, 1).unwrap().stroke_priorities[2] = 7;
+                Ok(())
+            })
+            .unwrap();
+            let before = table_for(&s, sid, tid).clone();
+            s.execute("table.setCell", &json!({"row": 1, "col": 0, "stroke": {"weight": 0, "edges": "top"}})).unwrap();
+            let t = table_for(&s, sid, tid);
+            assert_eq!(t.cell(0, 0).unwrap().strokes[2].weight, 7.0, "the merged edge itself must not be erased");
+            let priorities =
+                [t.cell(1, 1).unwrap().stroke_priorities[2], t.cell(0, 0).unwrap().stroke_priorities[2], t.cell(1, 0).unwrap().stroke_priorities[0]];
+            assert_eq!(priorities, if imported_priority == i32::MAX { [1, 2, 3] } else { [7, 41, 42] });
+            let composed = s.cache.get(&s.doc().unwrap().doc, doc::StoryId(sid), None);
+            let frag = composed.frames.iter().flat_map(|f| &f.tables).next().unwrap();
+            let unselected = frag.cell(1, 1).unwrap().rect;
+            let visible: Vec<_> = frag.strokes.iter().filter(|s| s.stroke.weight == 7.0).collect();
+            assert_eq!(visible.len(), 1);
+            assert_eq!(visible[0].a, designcraft_geom::Point::new(unselected.x0, unselected.y0));
+            assert_eq!(visible[0].b, designcraft_geom::Point::new(unselected.x1, unselected.y0));
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(table_for(&s, sid, tid), &before);
+        }
+    }
+}

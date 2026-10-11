@@ -378,9 +378,11 @@ fn step_and_repeat_grid() {
 fn step_and_repeat_with_a_huge_grid_makes_no_grid() {
     let mut s = session();
     s.execute("frame.create", &json!({"rect": [36, 36, 66, 66], "content": "unassigned"})).unwrap();
-    let r = s.execute("edit.stepAndRepeat", &json!({"rows": 4_294_967_296_u64, "columns": 4_294_967_296_u64})).unwrap();
-    // As for any grid of more than 1000 copies: `count` (default 1) copies instead.
-    assert_eq!(r["created"], 1);
+    let items = |s: &Session| s.doc().unwrap().doc.spreads[0].items.len();
+    let before = items(&s);
+    // Counts past the limit are an error, and nothing is copied.
+    assert!(s.execute("edit.stepAndRepeat", &json!({"rows": 4_294_967_296_u64, "columns": 4_294_967_296_u64})).is_err());
+    assert_eq!(items(&s), before);
 }
 
 /// The column count is the caller's and sizes a list every time the page's columns are laid out.

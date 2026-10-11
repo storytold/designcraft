@@ -4,10 +4,10 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/designcraft", "apps/designcraft-cli", "xtask"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.90"
+rust-version = "1.95"
 repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
@@ -42,7 +42,9 @@ unicode-bidi = "0.3"
 unicode-script = "0.5"
 unicode-bidi-mirroring = "0.4"
 unicode-segmentation = "1"
+caseless = "0.2"
 regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
+tempfile = "3"
 
 # text / rendering / formats
 skrifa = "0.47"
@@ -65,6 +67,8 @@ quick-xml = "0.38"
 zip = { version = "3", default-features = false, features = ["deflate"] }
 
 # ui
+# Shared frontend components; keep this dependency above the engine boundary.
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675", features = ["serde"] }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 eframe = { version = "0.36", default-features = false }
