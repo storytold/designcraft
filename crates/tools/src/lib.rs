@@ -309,6 +309,9 @@ pub enum Overlay {
         b: Point,
         label: String,
     },
+    /// The whole content of this frame drawn faintly, the part outside the frame included (while
+    /// the content moves inside it).
+    ContentGhost(ItemId),
 }
 
 /// Correction from a snap, in spread coordinates for `delta`.

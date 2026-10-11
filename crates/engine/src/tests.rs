@@ -561,3 +561,38 @@ fn commands_take_non_object_params_without_panicking() {
         assert!(r.is_ok(), "{p}: {r:?}");
     }
 }
+
+#[test]
+fn direct_selection_drag_and_arrow_keys_move_placed_content() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, SnapView, ToolKey};
+    let mut s = session();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png)})).unwrap();
+    s.execute("place.drop", &json!({"frame": f})).unwrap();
+    let xfs = |s: &Session| {
+        let it = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().clone();
+        (it.xf, it.graphic().unwrap().xf.translation())
+    };
+    let (frame0, g0) = xfs(&s);
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let at = s.layout().to_canvas(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Point::new(150.0, 150.0));
+    s.set_tool("directSelection");
+    s.pointer(&PointerEvent::new(PointerKind::Down, at.x, at.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, at.x + 20.0, at.y + 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, at.x + 30.0, at.y + 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, at.x + 30.0, at.y + 10.0), v).unwrap();
+    assert!(s.doc().unwrap().selection.content);
+    let (frame1, g1) = xfs(&s);
+    assert_eq!(frame1, frame0, "the frame stays");
+    assert_eq!(g1 - g0, designcraft_geom::Vec2::new(30.0, 10.0));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(xfs(&s).1, g0, "one undo step");
+    // Arrow keys nudge the selected content; Shift nudges ten times as far.
+    s.set_tool("selection");
+    s.tool_key(ToolKey::Right, Mods::default(), v).unwrap();
+    s.tool_key(ToolKey::Down, Mods { shift: true, ..Default::default() }, v).unwrap();
+    let (frame2, g2) = xfs(&s);
+    assert_eq!(frame2, frame0);
+    assert_eq!(g2 - g0, designcraft_geom::Vec2::new(1.0, 10.0));
+}

@@ -3,8 +3,12 @@
 //! Click selects the frontmost item (Shift toggles), drag moves (Alt duplicates, Shift constrains),
 //! the 8 bounding-box handles resize (Shift keeps proportions, Alt from centre, Cmd scales content),
 //! empty-canvas drags make a marquee, double-clicking a text frame switches to the Type tool.
+//!
+//! Content (a placed graphic, or items pasted into a frame) moves inside its frame: the Direct
+//! Selection tool selects and drags it, the Selection tool drags it by the content grabber (the
+//! circle at the frame's centre), and double-clicking a frame toggles between frame and content.
 
-use designcraft_doc::{ItemId, SpreadRef};
+use designcraft_doc::{Content, Item, ItemId, SpreadRef};
 use designcraft_geom::{Affine, Point, Rect, Vec2};
 use serde_json::{Value, json};
 
@@ -16,12 +20,15 @@ enum Drag {
     Pending {
         start: Point,
         hit: bool,
+        /// The drag moves the selection's content inside its frames.
+        content: bool,
     },
     Move {
         start: Point,
         origin_spread: SpreadRef,
         bounds0: Option<Rect>,
         exclude: Vec<ItemId>,
+        content: bool,
     },
     Resize {
         handle: usize,
@@ -106,6 +113,73 @@ impl SelectionTool {
     pub fn new(direct: bool) -> Self {
         Self { direct, drag: Drag::None, hover_handle: None, guides: vec![], shift_release: None }
     }
+}
+
+/// A frame whose content moves on its own: a placed graphic or items pasted into it.
+pub fn holds_content(it: &Item) -> bool {
+    !it.is_group() && (matches!(it.content, Content::Graphic(_)) || it.has_nested_items())
+}
+
+/// Grab radius of the content grabber, in screen pixels.
+const GRABBER_PX: f64 = 9.0;
+
+/// Canvas centre of the content grabber of `id` (the middle of its frame), when it has one. Frames
+/// too small to drag around the grabber have none.
+pub fn grabber_center(cx: &ToolContext, id: ItemId) -> Option<Point> {
+    let it = cx.doc.item(id)?;
+    if it.locked || !holds_content(it) {
+        return None;
+    }
+    let b = cx.item_canvas_xf(id)?.transform_rect_bbox(it.bounds());
+    let min = cx.tol(GRABBER_PX * 4.0);
+    (b.width() >= min && b.height() >= min && b.center().x.is_finite() && b.center().y.is_finite()).then(|| b.center())
+}
+
+/// Content grabbers on show: the single selected frame's and the hovered frame's.
+pub fn grabbers(cx: &ToolContext, hover: Option<Point>) -> Vec<(ItemId, Point)> {
+    let mut ids = Vec::new();
+    if let [one] = cx.selection.items.as_slice()
+        && cx.selection.text.is_none()
+    {
+        ids.push(*one);
+    }
+    if let Some((_, id)) = hover.and_then(|p| cx.hit(p)) {
+        let id = cx.doc.top_level_of(id).unwrap_or(id);
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids.into_iter().filter_map(|id| grabber_center(cx, id).map(|c| (id, c))).collect()
+}
+
+/// The frame whose content grabber is under `p` (canvas).
+pub fn grabber_at(cx: &ToolContext, p: Point) -> Option<ItemId> {
+    let r = cx.tol(GRABBER_PX);
+    grabbers(cx, Some(p)).into_iter().find(|(_, c)| (*c - p).hypot() <= r).map(|(id, _)| id)
+}
+
+/// Canvas union of the content of the selected frames (an item without content counts whole).
+fn content_bounds(cx: &ToolContext) -> Option<Rect> {
+    let mut acc: Option<Rect> = None;
+    for id in &cx.selection.items {
+        let (Some(it), Some(xf)) = (cx.doc.item(*id), cx.item_canvas_xf(*id)) else { continue };
+        let b = match &it.content {
+            Content::Graphic(g) => (xf * it.xf * g.xf).transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1)),
+            _ if it.has_nested_items() => {
+                let Some(r) = it.children().iter().map(|c| (xf * it.xf).transform_rect_bbox(c.bounds())).reduce(|a, b| a.union(b)) else { continue };
+                r
+            }
+            _ => {
+                let Some(local) = crate::snap::moving_bounds(it) else { continue };
+                xf.transform_rect_bbox(local)
+            }
+        };
+        if !(b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite()) {
+            continue;
+        }
+        acc = Some(acc.map_or(b, |have| have.union(b)));
+    }
+    acc
 }
 
 /// Handle positions (canvas) of a rect: 0 TL, 1 T, 2 TR, 3 R, 4 BR, 5 B, 6 BL, 7 L.
@@ -403,13 +477,24 @@ impl Tool for SelectionTool {
                         Drag::Resize { handle, start: p, from: cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b), spread: loc.spread };
                     return vec![Action::Begin("Resize".into())];
                 }
+                // The content grabber: select the frame's content; a drag moves it.
+                if !self.direct
+                    && !ev.mods.shift
+                    && let Some(id) = grabber_at(cx, p)
+                {
+                    self.drag = Drag::Pending { start: p, hit: true, content: true };
+                    if cx.selection.items == [id] && cx.selection.content {
+                        return vec![];
+                    }
+                    return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": true}))];
+                }
                 // Cmd+Shift-click a parent item on a page: override it there and select the copy.
                 if ev.mods.cmd
                     && ev.mods.shift
                     && cx.hit(p).is_none()
                     && let Some((page, id)) = cx.hit_parent_on_page(p)
                 {
-                    self.drag = Drag::Pending { start: p, hit: true };
+                    self.drag = Drag::Pending { start: p, hit: true, content: false };
                     return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
                 }
                 match cx.hit(p) {
@@ -423,31 +508,46 @@ impl Tool for SelectionTool {
                             } else {
                                 out.push(Action::Exec("selection.toggle".into(), json!({"id": id.0})));
                             }
-                        } else if !cx.selection.contains(id) {
+                        } else if !cx.selection.contains(id) || (self.direct && !cx.selection.content) {
                             out.push(Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": self.direct})));
                         }
-                        self.drag = Drag::Pending { start: p, hit: true };
+                        self.drag = Drag::Pending { start: p, hit: true, content: self.direct };
                         let _ = sr;
                         out
                     }
                     None => {
-                        self.drag = Drag::Pending { start: p, hit: false };
+                        self.drag = Drag::Pending { start: p, hit: false, content: false };
                         if ev.mods.shift { vec![] } else { vec![Action::Exec("selection.set".into(), json!({"ids": []}))] }
                     }
                 }
             }
             PointerKind::Drag => match self.drag.clone() {
-                Drag::Pending { start, hit } => {
+                Drag::Pending { start, hit, content } => {
                     if (p - start).hypot() < cx.tol(3.0) {
                         return vec![];
                     }
                     self.shift_release = None;
                     if hit && !cx.selection.items.is_empty() {
+                        // Direct Selection on items without content moves (or duplicates) them whole.
+                        let content = content && cx.selection.items.iter().any(|i| cx.doc.item(*i).is_some_and(holds_content));
                         let sr = cx.selection.items.first().and_then(|i| cx.doc.find(*i)).map(|l| l.spread).unwrap_or(SpreadRef::Doc(0));
                         let exclude = cx.selection.items.clone();
-                        self.drag = Drag::Move { start, origin_spread: sr, bounds0: cx.selection_visible_bounds(), exclude };
-                        let label = if ev.mods.alt { "Duplicate" } else { "Move" };
-                        let mut v = vec![Action::Begin(label.into())];
+                        let bounds0 = if content { content_bounds(cx) } else { cx.selection_visible_bounds() };
+                        self.drag = Drag::Move { start, origin_spread: sr, bounds0, exclude: exclude.clone(), content };
+                        let mut v = vec![];
+                        // Dragging a content selection by its frame moves the frame: select it.
+                        if !content && cx.selection.content {
+                            let ids: Vec<u64> = exclude.iter().map(|i| i.0).collect();
+                            v.push(Action::Exec("selection.set".into(), json!({"ids": ids})));
+                        }
+                        let label = if content {
+                            "Move Content"
+                        } else if ev.mods.alt {
+                            "Duplicate"
+                        } else {
+                            "Move"
+                        };
+                        v.push(Action::Begin(label.into()));
                         v.extend(self.pointer(cx, ev));
                         v
                     } else {
@@ -455,7 +555,7 @@ impl Tool for SelectionTool {
                         vec![]
                     }
                 }
-                Drag::Move { start, origin_spread, bounds0, exclude } => {
+                Drag::Move { start, origin_spread, bounds0, exclude, content } => {
                     let mut d: Vec2 = p - start;
                     let mut screen_x_locked = false;
                     let mut screen_y_locked = false;
@@ -469,7 +569,8 @@ impl Tool for SelectionTool {
                         }
                     }
                     // Snap on the spread under the pointer. Shift uses that spread's view rotation.
-                    let target = cx.layout.spread_at(p).map(|(s, _)| s).unwrap_or(origin_spread);
+                    // Content stays in its frame, on the frame's spread.
+                    let target = if content { origin_spread } else { cx.layout.spread_at(p).map(|(s, _)| s).unwrap_or(origin_spread) };
                     // 180 degrees keeps the screen axis. 90 and 270 swap it into the other spread axis.
                     let odd_turn = cx.layout.slot(target).is_some_and(|slot| slot.rotation % 2 == 1);
                     let spread_x_locked = if odd_turn { screen_y_locked } else { screen_x_locked };
@@ -503,7 +604,7 @@ impl Tool for SelectionTool {
                                 x_edges,
                                 y_edges,
                                 exclude: &exclude,
-                                copying: ev.mods.alt,
+                                copying: ev.mods.alt && !content,
                                 lengths: [None, None],
                                 angle: None,
                                 radius: 0.0,
@@ -535,6 +636,10 @@ impl Tool for SelectionTool {
                         let dt = landed - q0;
                         (dt.x, dt.y)
                     };
+                    if content {
+                        let ids: Vec<u64> = exclude.iter().map(|i| i.0).collect();
+                        return vec![Action::Preview("transform.move".into(), json!({"dx": dx, "dy": dy, "ids": ids, "content": true}))];
+                    }
                     let mut params = json!({"dx": dx, "dy": dy, "copy": ev.mods.alt});
                     if target != origin_spread {
                         params = json!({"dx": dx, "dy": dy, "copy": ev.mods.alt, "toSpread": spread_json(target)});
@@ -707,6 +812,15 @@ impl Tool for SelectionTool {
                 }
             }
             PointerKind::DoubleClick => {
+                // A frame with content: toggle between the frame and its content.
+                if !self.direct
+                    && let Some(id) = cx.hit(p).map(|(_, id)| cx.doc.top_level_of(id).unwrap_or(id))
+                    && cx.doc.item(id).is_some_and(holds_content)
+                {
+                    self.drag = Drag::None;
+                    let content = !(cx.selection.content && cx.selection.contains(id));
+                    return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": content}))];
+                }
                 if let Some((_, id)) = cx.hit(p)
                     && cx.doc.item(id).is_some_and(|i| i.is_text_frame())
                 {
@@ -742,14 +856,25 @@ impl Tool for SelectionTool {
     fn overlays(&self, _cx: &ToolContext) -> Vec<Overlay> {
         match &self.drag {
             Drag::Marquee { start, cur } => vec![Overlay::Marquee(Rect::from_points(*start, *cur))],
+            Drag::Move { content: true, exclude, .. } => {
+                let mut v: Vec<Overlay> = exclude.iter().map(|id| Overlay::ContentGhost(*id)).collect();
+                v.extend(self.guides.iter().cloned());
+                v
+            }
             Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
             _ => vec![],
         }
     }
 
     fn cursor(&self, cx: &ToolContext, p: Point, _m: Mods) -> Cursor {
+        if let Drag::Move { content: true, .. } = self.drag {
+            return Cursor::HandGrab;
+        }
         if self.direct {
-            return Cursor::ArrowHollow;
+            let over_content = matches!(self.drag, Drag::None)
+                && anchor_at(cx, p).is_none()
+                && cx.hit(p).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
+            return if over_content { Cursor::Hand } else { Cursor::ArrowHollow };
         }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
@@ -760,6 +885,7 @@ impl Tool for SelectionTool {
         match handle_at(cx, p) {
             Some(h) => handle_cursor(h),
             None if rotate_zone(cx, p).is_some() => Cursor::Rotate,
+            None if grabber_at(cx, p).is_some() => Cursor::Hand,
             None => Cursor::Arrow,
         }
     }

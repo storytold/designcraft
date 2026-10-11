@@ -705,3 +705,106 @@ fn pen_click_snaps_to_a_guide() {
     let x = p["anchors"][0]["p"][0].as_f64().unwrap();
     assert!((x - 100.0).abs() < 1e-6, "anchor x {x}");
 }
+
+/// A 100×100 frame at (100, 100) holding a 200×100 graphic that overhangs it.
+fn graphic_frame(doc: &mut Document) -> ItemId {
+    let id = ItemId(doc.alloc());
+    let mut item = Item::new(id, doc.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+    item.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        asset: designcraft_doc::AssetId(1),
+        size: (200.0, 100.0),
+        xf: designcraft_geom::Affine::translate((50.0, 100.0)),
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+    });
+    doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+    id
+}
+
+fn preview_params(a: &[Action]) -> serde_json::Value {
+    match a.last() {
+        Some(Action::Preview(cmd, p)) if cmd == "transform.move" => p.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn direct_selection_drags_content_inside_its_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let none = Selection::default();
+    let mut t = create("directSelection");
+    let at = spread_pt(&l, 120.0, 130.0);
+    let a = t.pointer(&ctx(&d, &none, &c, &l), &PointerEvent::new(PointerKind::Down, at.x, at.y));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": true}))]);
+    let sel = Selection { content: true, ..Selection::items(vec![f]) };
+    let cx = ctx(&d, &sel, &c, &l);
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, at.x + 15.0, at.y - 4.0));
+    assert_eq!(a.first(), Some(&Action::Begin("Move Content".into())));
+    let p = preview_params(&a);
+    assert_eq!(
+        (p["dx"].as_f64(), p["dy"].as_f64(), &p["content"], &p["ids"]),
+        (Some(15.0), Some(-4.0), &serde_json::json!(true), &serde_json::json!([f.0]))
+    );
+    assert_eq!(t.cursor(&cx, at, Mods::default()), Cursor::HandGrab);
+    assert!(t.overlays(&cx).contains(&Overlay::ContentGhost(f)));
+    // Shift keeps the drag on one axis.
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, at.x + 15.0, at.y - 4.0).with_mods(Mods { shift: true, ..Default::default() }));
+    let p = preview_params(&a);
+    assert_eq!((p["dx"].as_f64(), p["dy"].as_f64()), (Some(15.0), Some(0.0)));
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, at.x + 15.0, at.y)), vec![Action::Commit]);
+}
+
+#[test]
+fn selection_tool_grabber_moves_content_elsewhere_moves_the_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let frame = Selection::items(vec![f]);
+    let content = Selection { content: true, ..Selection::items(vec![f]) };
+    let centre = spread_pt(&l, 150.0, 150.0);
+    let mut t = create("selection");
+    // Hovering the grabber shows the hand; it is there on hover before any click, too.
+    assert_eq!(t.cursor(&ctx(&d, &Selection::default(), &c, &l), centre, Mods::default()), Cursor::Hand);
+    let g = select::grabbers(&ctx(&d, &Selection::default(), &c, &l), Some(centre));
+    assert!(matches!(g.as_slice(), [(id, p)] if *id == f && near(*p, centre)), "{g:?}");
+    // Press on the grabber: the content is selected; the drag moves it.
+    let a = t.pointer(&ctx(&d, &frame, &c, &l), &PointerEvent::new(PointerKind::Down, centre.x, centre.y));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": true}))]);
+    let a = t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Drag, centre.x - 20.0, centre.y + 10.0));
+    let p = preview_params(&a);
+    assert_eq!((p["dx"].as_f64(), p["dy"].as_f64(), &p["content"]), (Some(-20.0), Some(10.0), &serde_json::json!(true)));
+    assert_eq!(t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Up, centre.x - 20.0, centre.y + 10.0)), vec![Action::Commit]);
+    // A press elsewhere in the frame keeps the content selection; dragging selects and moves the frame.
+    let edge = spread_pt(&l, 115.0, 185.0);
+    assert!(t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Down, edge.x, edge.y)).is_empty());
+    let a = t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Drag, edge.x + 30.0, edge.y));
+    assert_eq!(a[0], Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0]})));
+    assert_eq!(a[1], Action::Begin("Move".into()));
+    let p = preview_params(&a);
+    assert_eq!((p["dx"].as_f64(), p.get("content"), p.get("ids")), (Some(30.0), None, None));
+    t.pointer(&ctx(&d, &frame, &c, &l), &PointerEvent::new(PointerKind::Up, edge.x + 30.0, edge.y));
+    // With the frame selected, a drag away from the grabber moves the frame.
+    t.pointer(&ctx(&d, &frame, &c, &l), &PointerEvent::new(PointerKind::Down, edge.x, edge.y));
+    let a = t.pointer(&ctx(&d, &frame, &c, &l), &PointerEvent::new(PointerKind::Drag, edge.x, edge.y + 30.0));
+    assert_eq!(a[0], Action::Begin("Move".into()));
+    assert_eq!(preview_params(&a).get("content"), None);
+}
+
+#[test]
+fn double_click_toggles_frame_and_content() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let at = spread_pt(&l, 120.0, 180.0);
+    let mut t = create("selection");
+    let dbl = PointerEvent::new(PointerKind::DoubleClick, at.x, at.y);
+    let frame = Selection::items(vec![f]);
+    let a = t.pointer(&ctx(&d, &frame, &c, &l), &dbl);
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": true}))]);
+    let content = Selection { content: true, ..Selection::items(vec![f]) };
+    let a = t.pointer(&ctx(&d, &content, &c, &l), &dbl);
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": false}))]);
+}

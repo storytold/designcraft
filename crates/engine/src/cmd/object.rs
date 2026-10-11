@@ -26,7 +26,15 @@ pub fn specs() -> Vec<CommandSpec> {
             frame_create
         ),
         cmd!("line.create", "Create Line", [], None, "{spread?, a: [x,y], b: [x,y]}", has_doc, line_create),
-        cmd!("transform.move", "Move", ["Object", "Transform"], None, "{dx, dy, copy?: bool, ids?, toSpread?}", has_selection, transform_move),
+        cmd!(
+            "transform.move",
+            "Move",
+            ["Object", "Transform"],
+            None,
+            "{dx, dy, copy?: bool, ids?, toSpread?, content?: bool (move the placed graphic or pasted-in items inside each frame; the frame stays. Default: whether the selection is content, when neither ids nor copy is given)}",
+            has_selection,
+            transform_move
+        ),
         cmd!(
             "transform.resize",
             "Resize",
@@ -939,6 +947,12 @@ fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
     let (dx, dy) = (f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
     let copy = bool_or(p, "copy", false);
+    let explicit = p.get("ids").is_some() || p.get("id").is_some();
+    // Duplicating copies the frame; moving a content selection moves what the frame holds.
+    let content = p.get("content").and_then(Value::as_bool).unwrap_or(!explicit && !copy && s.doc()?.selection.content);
+    if content {
+        return move_content(s, &ids, Vec2::new(dx, dy));
+    }
     let to: Option<SpreadRef> = p.get("toSpread").and_then(|v| serde_json::from_value(v.clone()).ok());
     s.edit(|d, sel| {
         let ids = if copy {
@@ -963,13 +977,58 @@ fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
                 let it = d.remove_item_keep_story(*id)?;
                 d.insert_item(target, it, None)?;
             }
+            // A nested item moves in its container's space.
+            let v = d.find(*id).map_or(Vec2::new(dx, dy), |l| linear_inverse(d.parent_xf(&l), Vec2::new(dx, dy)));
             let it = d.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
             if it.locked {
                 continue;
             }
-            it.xf = Affine::translate((dx, dy)) * it.xf;
+            it.xf = Affine::translate(v) * it.xf;
         }
         Ok(json!({"moved": ids.len()}))
+    })
+}
+
+/// `v` (a spread-space displacement) in the space `m` maps from. Degenerate maps leave it as is.
+fn linear_inverse(m: Affine, v: Vec2) -> Vec2 {
+    let c = m.as_coeffs();
+    let lin = Affine::new([c[0], c[1], c[2], c[3], 0.0, 0.0]);
+    if lin.determinant().abs() < 1e-12 {
+        return v;
+    }
+    let r = lin.inverse() * Point::new(v.x, v.y);
+    if r.x.is_finite() && r.y.is_finite() { r.to_vec2() } else { v }
+}
+
+/// Move what each frame holds — its placed graphic or the items pasted into it — by the
+/// spread-space displacement `d`; the frame stays, so the visible part of the content changes.
+/// Frames without such content (and groups) move as a whole. Auto-fit stays as it is: the next
+/// frame resize refits.
+fn move_content(s: &mut Session, ids: &[ItemId], d: Vec2) -> Result<Value> {
+    s.edit(|doc, _| {
+        let mut moved = 0;
+        for id in ids {
+            let loc = doc.find(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
+            let parent = doc.parent_xf(&loc);
+            let it = doc.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
+            if it.locked {
+                continue;
+            }
+            let inner = linear_inverse(parent * it.xf, d);
+            let nested = it.has_nested_items();
+            match &mut it.content {
+                Content::Graphic(g) => g.xf = Affine::translate(inner) * g.xf,
+                Content::Group { items } if nested => {
+                    for c in items.iter_mut() {
+                        let c = Arc::make_mut(c);
+                        c.xf = Affine::translate(inner) * c.xf;
+                    }
+                }
+                _ => it.xf = Affine::translate(linear_inverse(parent, d)) * it.xf,
+            }
+            moved += 1;
+        }
+        Ok(json!({"moved": moved}))
     })
 }
 
@@ -2712,5 +2771,77 @@ mod blend_mode_tests {
         let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
         assert_eq!(it.blend, BlendMode::Multiply, "a rejected value changes nothing");
         assert_eq!(it.opacity, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod content_move_tests {
+    use super::*;
+
+    /// A session with a 40×20 image placed in a frame at (100, 100)–(300, 300).
+    fn placed() -> (Session, ItemId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("place.load", &json!({"base64": super::super::base64_encode(&png)})).unwrap();
+        s.execute("place.drop", &json!({"frame": f})).unwrap();
+        (s, ItemId(f))
+    }
+
+    /// Spread bounds of the frame and of its graphic.
+    fn boxes(s: &Session, id: ItemId) -> (Rect, Rect) {
+        let it = s.doc().unwrap().doc.item(id).unwrap().clone();
+        let g = it.graphic().unwrap();
+        (it.bounds(), (it.xf * g.xf).transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1)))
+    }
+
+    fn near(a: Rect, b: Rect) -> bool {
+        [a.x0 - b.x0, a.y0 - b.y0, a.x1 - b.x1, a.y1 - b.y1].iter().all(|d| d.abs() < 1e-6)
+    }
+
+    #[test]
+    fn content_moves_inside_the_frame_in_one_undo_step() {
+        let (mut s, f) = placed();
+        let (frame0, g0) = boxes(&s, f);
+        s.execute("selection.set", &json!({"ids": [f.0], "content": true})).unwrap();
+        s.execute("transform.move", &json!({"dx": 10, "dy": -5})).unwrap();
+        let (frame1, g1) = boxes(&s, f);
+        assert!(near(frame1, frame0), "the frame stays");
+        assert!(near(g1, g0 + Vec2::new(10.0, -5.0)), "{g1:?}");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(near(boxes(&s, f).1, g0));
+        // Explicit ids with `content` act on the content whatever the selection is.
+        s.execute("selection.set", &json!({"ids": [f.0]})).unwrap();
+        s.execute("transform.move", &json!({"ids": [f.0], "content": true, "dx": 3})).unwrap();
+        assert!(near(boxes(&s, f).0, frame0) && near(boxes(&s, f).1, g0 + Vec2::new(3.0, 0.0)));
+        // A frame selection moves frame and content together.
+        s.execute("transform.move", &json!({"dx": 4})).unwrap();
+        assert!(near(boxes(&s, f).0, frame0 + Vec2::new(4.0, 0.0)) && near(boxes(&s, f).1, g0 + Vec2::new(7.0, 0.0)));
+    }
+
+    #[test]
+    fn content_moves_on_the_page_axes_in_a_rotated_frame_and_pasted_items_move_too() {
+        let (mut s, f) = placed();
+        s.execute("transform.rotate", &json!({"ids": [f.0], "angle": 90})).unwrap();
+        let (frame0, g0) = boxes(&s, f);
+        s.execute("transform.move", &json!({"ids": [f.0], "content": true, "dx": 10})).unwrap();
+        let (frame1, g1) = boxes(&s, f);
+        assert!(near(frame1, frame0) && near(g1, g0 + Vec2::new(10.0, 0.0)), "{g0:?} → {g1:?}");
+        // Items pasted into a frame are its content.
+        let a = s.execute("frame.create", &json!({"rect": [400, 100, 420, 120], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [400, 300, 500, 400], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [b]})).unwrap();
+        s.execute("edit.pasteInto", &json!({})).unwrap();
+        let kids = |s: &Session| {
+            let it = s.doc().unwrap().doc.item(ItemId(b)).unwrap().clone();
+            (it.bounds(), it.children().iter().map(|c| it.xf.transform_rect_bbox(c.bounds())).collect::<Vec<_>>())
+        };
+        let (fb0, k0) = kids(&s);
+        s.execute("transform.move", &json!({"ids": [b], "content": true, "dx": 5, "dy": 6})).unwrap();
+        let (fb1, k1) = kids(&s);
+        assert!(near(fb1, fb0) && near(k1[0], k0[0] + Vec2::new(5.0, 6.0)), "{k0:?} → {k1:?}");
     }
 }

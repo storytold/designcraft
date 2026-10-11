@@ -315,6 +315,16 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     let sel_rect = draw_selection(app, &painter, &xf, &doc, &layout);
+    if !preview {
+        // Content grabbers: the selected frame's and the hovered one's (Selection tool).
+        let hover = ui.ctx().pointer_hover_pos().filter(|p| screen.contains(*p)).map(|p| xf.to_canvas(p));
+        let vi = app.view_info();
+        for c in app.session.content_grabbers(hover, vi) {
+            let c = xf.to_screen(c);
+            painter.circle_stroke(c, 8.0, Stroke::new(1.5, Color32::from_white_alpha(170)));
+            painter.circle_stroke(c, 4.0, Stroke::new(1.5, Color32::from_white_alpha(170)));
+        }
+    }
     draw_tool_overlays(app, &painter, &xf);
     if rulers {
         draw_rulers(app, ui, full, rect, &xf, &doc, &layout, &t);
@@ -863,11 +873,6 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
             painter.rect_filled(r, 0.0, Color32::WHITE);
             painter.rect_stroke(r, 0.0, Stroke::new(hair(painter), color), StrokeKind::Inside);
         }
-        // Content grabber on graphic frames.
-        if sel.items.len() == 1 && doc.item(sel.items[0]).is_some_and(|i| matches!(i.content, Content::Graphic(_))) {
-            painter.circle_stroke(u.center(), 8.0, Stroke::new(1.5, Color32::from_white_alpha(170)));
-            painter.circle_stroke(u.center(), 4.0, Stroke::new(1.5, Color32::from_white_alpha(170)));
-        }
     }
     // Threads.
     if app.ui.text_threads || sel.items.iter().any(|i| doc.item(*i).is_some_and(|x| x.is_text_frame())) {
@@ -1171,6 +1176,8 @@ fn draw_tool_overlays(app: &mut DesignApp, painter: &egui::Painter, xf: &Xf) {
     }
     let tok = Tokens::get(painter.ctx());
     let ov = app.session.overlays(app.view_info());
+    let doc = app.session.active().map(|st| st.doc.clone());
+    let layout = app.session.layout();
     for o in ov {
         match o {
             Overlay::Marquee(r) => {
@@ -1213,8 +1220,64 @@ fn draw_tool_overlays(app: &mut DesignApp, painter: &egui::Painter, xf: &Xf) {
                 painter.galley(r.min + vec2(5.0, 3.0), g, tok.measure_text);
             }
             Overlay::Path { .. } => {}
+            Overlay::ContentGhost(id) => {
+                if let Some(doc) = &doc {
+                    draw_content_ghost(painter, xf, doc, &layout, id);
+                }
+            }
         }
     }
+}
+
+/// A frame's whole content drawn faintly over the canvas, the part outside the frame included,
+/// with its bounds outlined (while the content moves inside the frame).
+fn draw_content_ghost(painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId) {
+    let Some(it) = doc.item(id) else { return };
+    let Some((a, _)) = item_canvas_xf(doc, layout, id) else { return };
+    let outline = Stroke::new(1.0, Color32::from_rgb(196, 111, 43));
+    let Content::Graphic(g) = &it.content else {
+        for c in it.children() {
+            let r = xf.rect((a * it.xf).transform_rect_bbox(c.bounds()));
+            painter.rect_stroke(r, 0.0, outline, StrokeKind::Middle);
+        }
+        return;
+    };
+    let m = a * it.xf * g.xf;
+    let (w, h) = g.size;
+    let corners = [Point::new(0.0, 0.0), Point::new(w, 0.0), Point::new(w, h), Point::new(0.0, h)].map(|p| xf.to_screen(m * p));
+    if corners.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+        return;
+    }
+    if let Some(tex) = ghost_texture(painter.ctx(), doc, g) {
+        let mut mesh = egui::Mesh::with_texture(tex.id());
+        let tint = Color32::from_white_alpha(90);
+        for (p, uv) in corners.iter().zip([pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)]) {
+            mesh.vertices.push(egui::epaint::Vertex { pos: *p, uv, color: tint });
+        }
+        mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+        painter.add(egui::Shape::mesh(mesh));
+    }
+    painter.add(egui::Shape::closed_line(corners.to_vec(), outline));
+}
+
+/// A screen-resolution proxy of a placed graphic for the ghost, cached per asset.
+fn ghost_texture(ctx: &egui::Context, doc: &Document, g: &designcraft_doc::Graphic) -> Option<egui::TextureHandle> {
+    let asset = doc.assets.get(&g.asset)?;
+    let key = egui::Id::new(("content_ghost", std::sync::Arc::as_ptr(&asset.data) as usize, asset.data.len(), asset.page));
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
+        return Some(t);
+    }
+    // A 72 ppi proxy is enough for a faint preview.
+    let pm = designcraft_render::images::mip(&asset.data, asset.page, g.size.0, 1.0)?;
+    let (pw, ph) = (pm.width() as usize, pm.height() as usize);
+    let max = ctx.input(|i| i.max_texture_side).min(4096);
+    if pw == 0 || ph == 0 || pw > max || ph > max {
+        return None;
+    }
+    let ci = egui::ColorImage::from_rgba_premultiplied([pw, ph], pm.data_as_u8_slice());
+    let t = ctx.load_texture("content_ghost", ci, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(key, t.clone()));
+    Some(t)
 }
 
 #[allow(clippy::too_many_arguments)]

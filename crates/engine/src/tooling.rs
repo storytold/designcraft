@@ -117,6 +117,15 @@ impl Session {
         self.with_ctx(view, |t, cx| t.cursor(cx, p, mods)).unwrap_or_default()
     }
 
+    /// Canvas centres of the content grabbers the Selection tool shows: the selected frame's and
+    /// the one under `hover`.
+    pub fn content_grabbers(&mut self, hover: Option<designcraft_geom::Point>, view: ViewInfo) -> Vec<designcraft_geom::Point> {
+        if self.tool.id() != "selection" {
+            return vec![];
+        }
+        self.with_ctx(view, |_, cx| designcraft_tools::select::grabbers(cx, hover).into_iter().map(|(_, c)| c).collect()).unwrap_or_default()
+    }
+
     pub fn tool_busy(&self) -> bool {
         self.tool.busy()
     }
