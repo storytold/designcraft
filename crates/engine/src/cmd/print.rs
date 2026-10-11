@@ -1,7 +1,4 @@
-//! File › Print: the pages go to a printer through the system print spooler (`lpr`), as PDF.
-
-#[cfg(not(target_arch = "wasm32"))]
-use std::io::Write;
+//! File › Print: the pages go to a printer through the system print spooler (craft-print), as PDF.
 
 use serde_json::{Value, json};
 
@@ -20,91 +17,55 @@ pub fn specs() -> Vec<CommandSpec> {
             "Print…",
             ["File"],
             Some("Cmd+P"),
-            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, dryRun?: bool (only return the spool command)} → {printer, copies, pages, command}",
+            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, dryRun?: bool (export and preview submission without printing)} → {printer, copies, pages, command, bytes}",
             has_doc,
             print
         ),
     ]
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn printers() -> Value {
-    let run = |args: &[&str]| {
-        std::process::Command::new("lpstat").args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
-    };
-    let names: Vec<String> = run(&["-e"]).lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
-    // "system default destination: NAME"
-    let default = run(&["-d"]).rsplit(':').next().map(str::trim).filter(|s| !s.is_empty() && !s.contains("no system default")).map(str::to_string);
+    let printers = craft_print::printers();
+    let default = printers.iter().find(|p| p.default).map(|p| p.name.clone());
+    let names: Vec<_> = printers.into_iter().map(|p| p.name).collect();
     json!({"printers": names, "default": default})
 }
 
-#[cfg(target_arch = "wasm32")]
-fn printers() -> Value {
-    json!({"printers": [], "default": null})
-}
-
 fn print(s: &mut Session, p: &Value) -> Result<Value> {
-    let d = &s.doc()?.doc;
-    let opts = super::export::options(p, d.page_count())?;
     #[cfg(target_arch = "wasm32")]
     {
-        // Even a dry run cannot construct a native spool command in the browser.
-        let _ = opts;
+        super::export::options(p, s.doc()?.doc.page_count())?;
         Err(bad("file.print", "printing isn't available on the web: export a PDF and print it"))
     }
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999);
-        let printer = str_param(p, "printer").map(str::to_string);
-        let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-        let pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
-        let mut file = secure_print_file()?;
-        let file_path = file.path().to_path_buf();
-        let mut cmd: Vec<String> = vec!["lpr".into()];
-        if let Some(pr) = &printer {
-            cmd.extend(["-P".into(), pr.clone()]);
-        }
-        if copies > 1 {
-            cmd.extend(["-#".into(), copies.to_string()]);
-        }
-        cmd.extend(["-T".into(), d.title.clone(), file_path.to_string_lossy().to_string()]);
-        let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
-        let out = json!({"printer": printer, "copies": copies, "pages": pages, "command": cmd, "bytes": pdf.len()});
-        if dry {
-            return Ok(out);
-        }
-        file.as_file_mut().write_all(&pdf).map_err(|e| EngineError::Other(format!("{}: {e}", file.path().display())))?;
-        file.as_file_mut().flush().map_err(|e| EngineError::Other(format!("{}: {e}", file.path().display())))?;
-        let st = std::process::Command::new(&cmd[0]).args(&cmd[1..]).output().map_err(|e| bad("file.print", format!("lpr: {e}")))?;
-        if !st.status.success() {
-            return Err(bad("file.print", String::from_utf8_lossy(&st.stderr).trim().to_string()));
-        }
-        Ok(out)
-    }
+    print_with(s, p, craft_print::submit)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn secure_print_file() -> Result<tempfile::NamedTempFile> {
-    let file = tempfile::Builder::new()
-        .prefix("designcraft-print-")
-        .suffix(".pdf")
-        .tempfile()
-        .map_err(|e| EngineError::Other(format!("temporary print file: {e}")))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| EngineError::Other(format!("{}: {e}", file.path().display())))?;
+fn print_with(
+    s: &mut Session,
+    p: &Value,
+    submit: impl FnOnce(&[u8], &craft_print::Job) -> std::result::Result<String, craft_print::Error>,
+) -> Result<Value> {
+    let d = &s.doc()?.doc;
+    let opts = super::export::options(p, d.page_count())?;
+    let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
+    let job =
+        craft_print::Job { printer: str_param(p, "printer").map(str::to_string), copies, title: d.title.clone(), ..craft_print::Job::default() };
+    let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
+    let pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
+    let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
+    let out = json!({"printer": job.printer, "copies": copies, "pages": pages, "command": command, "bytes": pdf.len()});
+    if !dry {
+        submit(&pdf, &job).map_err(|e| bad("file.print", e.to_string()))?;
     }
-    Ok(file)
+    Ok(out)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use serde_json::json;
-
-    use crate::Session;
+    use super::*;
 
     #[test]
     fn print_builds_the_spool_command() {
@@ -112,37 +73,42 @@ mod tests {
         s.execute("file.new", &json!({"pages": 4})).unwrap();
         let r = s.execute("file.print", &json!({"printer": "Office", "copies": 2, "pages": "2-3", "dryRun": true})).unwrap();
         assert_eq!(r["pages"], 2);
-        let cmd: Vec<&str> = r["command"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
-        assert_eq!(&cmd[..5], ["lpr", "-P", "Office", "-#", "2"]);
-        assert!(cmd.last().unwrap().ends_with(".pdf"));
-        assert!(!std::path::Path::new(cmd.last().unwrap()).exists());
+        let command: Vec<&str> = r["command"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        if craft_print::backend() == Some(craft_print::Backend::Cups) {
+            assert_eq!(&command[..5], ["lp", "-d", "Office", "-n", "2"]);
+            assert!(command.contains(&"fit-to-page=false"));
+        } else {
+            assert_eq!(command[0], "powershell");
+        }
         assert!(r["bytes"].as_u64().unwrap() > 500);
         assert!(s.execute("file.print", &json!({"pages": "9", "dryRun": true})).is_err());
         assert!(s.execute("file.printers", &json!({})).unwrap()["printers"].is_array());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn print_uses_distinct_ephemeral_files() {
-        let first = super::secure_print_file().unwrap();
-        let second = super::secure_print_file().unwrap();
-        let first_path = first.path().to_path_buf();
-        let second_path = second.path().to_path_buf();
-        assert_ne!(first_path, second_path);
-        drop((first, second));
-        assert!(!first_path.exists());
-        assert!(!second_path.exists());
-    }
-
-    #[cfg(all(not(target_arch = "wasm32"), unix))]
-    #[test]
-    fn print_file_is_private_and_removed_on_drop() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let file = super::secure_print_file().unwrap();
-        let path = file.path().to_path_buf();
-        assert_eq!(file.as_file().metadata().unwrap().permissions().mode() & 0o777, 0o600);
-        drop(file);
-        assert!(!path.exists());
+    fn print_submits_the_selected_export_and_reports_refusal() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 4})).unwrap();
+        let params = json!({"printer": "Office (east)", "copies": 2, "pages": "2-3", "marks": true, "bleed": true});
+        let expected = {
+            let d = &s.doc().unwrap().doc;
+            let options = super::super::export::options(&params, d.page_count()).unwrap();
+            designcraft_pdf::export_pdf(d, &s.cache, &options).unwrap()
+        };
+        let r = print_with(&mut s, &params, |pdf, job| {
+            // The production export options and full bytes reach the shared spooler boundary.
+            assert_eq!(pdf, expected);
+            assert!(pdf.starts_with(b"%PDF-"));
+            assert_eq!(job.printer.as_deref(), Some("Office (east)"));
+            assert_eq!(job.copies, 2);
+            assert!(!job.title.is_empty());
+            Ok("request id is Office-1".into())
+        })
+        .unwrap();
+        assert_eq!(r["pages"], 2);
+        let refusal = print_with(&mut s, &params, |_, _| Err(craft_print::Error::Spool("printer offline".into()))).unwrap_err();
+        assert!(refusal.to_string().contains("printer offline"));
+        print_with(&mut s, &json!({"dryRun": true}), |_, _| panic!("dry runs must not spool")).unwrap();
+        assert!(print_with(&mut s, &json!({"pages": "9"}), |_, _| panic!("invalid ranges must not spool")).is_err());
     }
 }

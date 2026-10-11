@@ -1,6 +1,6 @@
 # DesignCraft roadmap (detail)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, milestones re-assessed; beta plan from the full re-measure) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, milestones re-assessed; beta plan from the full re-measure) · **Target:** Adobe InDesign 2026 (21.6)
 
 Forward-looking plan. The one-page summary is [ROADMAP.md](../ROADMAP.md); numbers are in
 [target-app-parity.md](target-app-parity.md); the work list is [gaps.md](gaps.md). Hours are
@@ -88,7 +88,7 @@ that is ~28 points and **420–750 h** (~120–200 wall-clock hours with four to
 | Start-up robustness, fonts | 5, 6 | 25–50 |
 | CI, Windows/Linux runtime tests | 7, 14 | 35–70 |
 | IME | 8 | 10–20 |
-| PDF/X-1a/X-3, presets, print on Windows | 9, 10 | 65–110 |
+| PDF/X-1a/X-3, presets, physical print validation | 9, 10 | 65–110 |
 | Styles, tables, missing menu items (the most-used half) | 11, 12, 16 | 60–100 |
 | Long documents (Books) | 15 | 30–50 |
 | **Total** | | **420–750** |
