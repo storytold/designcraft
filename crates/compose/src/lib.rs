@@ -15,6 +15,7 @@ pub mod breaker;
 mod cache;
 pub mod hyphen;
 mod notes;
+pub mod optical;
 mod overlay;
 mod ruby;
 pub mod shape;

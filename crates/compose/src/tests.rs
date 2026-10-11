@@ -260,6 +260,58 @@ fn glyph_scaling_and_letter_spacing_are_applied() {
     assert!(wide(0.5) > wide(0.0) + 10.0 * 0.5 * 2.0);
 }
 
+/// Width of `text` set at 48 pt with `kerning`, and the advance of each visible glyph.
+fn set_with_kerning(text: &str, kerning: designcraft_doc::Kerning) -> (f64, Vec<(char, f64)>) {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 200.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.size = Some(48.0);
+        f.over.kerning = Some(kerning);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let advs = l.glyphs.iter().filter(|g| g.visible).map(|g| (text[g.byte..].chars().next().unwrap_or(' '), g.adv)).collect();
+    (l.end_x - l.x0, advs)
+}
+
+#[test]
+fn optical_kerning_closes_open_pairs_and_leaves_stems() {
+    use designcraft_doc::Kerning;
+    // `AV` and `To` set tighter than unkerned; `nn`, the reference pair, stays as the font set it.
+    for pair in ["AV", "To", "r."] {
+        let (none, _) = set_with_kerning(pair, Kerning::None);
+        let (optical, _) = set_with_kerning(pair, Kerning::Optical);
+        assert!(optical < none - 0.5, "{pair}: optical {optical:.2} vs none {none:.2}");
+    }
+    let (none, _) = set_with_kerning("nn", Kerning::None);
+    let (optical, _) = set_with_kerning("nn", Kerning::Optical);
+    assert!((none - optical).abs() < 48.0 * 0.02, "nn: optical {optical:.2} vs none {none:.2}");
+    // Optical is measured, not the font's pairs: `HH` has no kern pair but its gap is wider
+    // than `nn`'s, so it closes up under Optical and not under Metrics.
+    let (metrics, _) = set_with_kerning("HH", Kerning::Metrics);
+    let (optical, _) = set_with_kerning("HH", Kerning::Optical);
+    assert!(optical < metrics - 0.5, "HH: optical {optical:.2} vs metrics {metrics:.2}");
+}
+
+#[test]
+fn optical_kerning_is_bounded_and_skips_spaces() {
+    use designcraft_doc::Kerning;
+    let text = "Sphinx of black quartz, judge my vow. 1997 “Park” AWAY";
+    let (_, none) = set_with_kerning(text, Kerning::None);
+    let (_, optical) = set_with_kerning(text, Kerning::Optical);
+    assert_eq!(none.len(), optical.len());
+    for ((c, a), (_, b)) in none.iter().zip(&optical) {
+        let em = (b - a) / 48.0;
+        assert!((-0.12 - 1e-6..=0.06 + 1e-6).contains(&em), "{c:?}: {em:.3} em");
+        if c.is_whitespace() {
+            assert!((a - b).abs() < 1e-9, "space before a word keeps its width");
+        }
+    }
+    // The glyph before a space is not kerned against it either.
+    let (_, none) = set_with_kerning("r ", Kerning::None);
+    let (_, optical) = set_with_kerning("r ", Kerning::Optical);
+    assert!((none[0].1 - optical[0].1).abs() < 1e-9);
+}
+
 #[test]
 fn hyphen_limit_is_a_hard_constraint() {
     let text = CORPUS.join(" ");

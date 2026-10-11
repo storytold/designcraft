@@ -352,7 +352,8 @@ pub(crate) fn collapse_tcy(glyphs: &mut [Glyph], vertical: bool) {
 
 fn features_for(p: &CharProps) -> Vec<Feature> {
     let mut v = Vec::new();
-    if !matches!(p.kerning, Kerning::Metrics | Kerning::Optical) {
+    // Optical kerning replaces the font's pairs with measured ones (`crate::optical`).
+    if p.kerning != Kerning::Metrics {
         v.extend(feature("-kern"));
     }
     if !p.ligatures || p.tracking.abs() > 1e-9 {
@@ -443,6 +444,9 @@ fn shape_run(
     let start = out.len();
     shape_run_raw(db, text, range, p, env, style, sub, out);
     let run = &mut out[start..];
+    if p.kerning == Kerning::Optical {
+        crate::optical::kern_run(db, run, p.tracking / 1000.0 * p.size);
+    }
     let em = p.size * p.h_scale;
     for g in run.iter_mut().filter(|g| g.adv > 0.0 && !g.ch.is_control()) {
         let (mut left, mut right) = (0.0, 0.0);

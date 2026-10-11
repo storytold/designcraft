@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first version, from the full re-measure) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (Optical kerning from outlines (#181); 2026-10-10: major, first version, from the full re-measure) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -14,7 +14,7 @@ against InDesign is **unmeasured**, which is the main gap.
 ## Fidelity: how we'd know
 
 There is no oracle yet. What exists: unit tests of break points and invariants in
-`crates/compose/src/tests.rs` (165 tests in the crate), IDML files built by DesignCraft and opened
+`crates/compose/src/tests.rs` (170 tests in the crate), IDML files built by DesignCraft and opened
 in InDesign 2026 by hand, and user reports comparing the two (#179, #180, #181, #282–#295).
 
 **Needed (gap 4 in [gaps.md](gaps.md)):** a set of synthetic stories (our own text and fonts:
@@ -38,7 +38,7 @@ Fidelity: **unmeasured** unless stated.
 | Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab now justifies after the tab (#284) |
 | Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list) and Spanish (Bezos); zone, limits, exceptions in the user dictionary | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
 | Spelling | per-language dictionaries | English (Moby) + document/user dictionary | ~ | |
-| Kerning | Metrics, Optical, manual, none | Metrics, manual, none | ~ | **Optical treated as Metrics** (#181): imported display text sets wider and can overset |
+| Kerning | Metrics, Optical, manual, none | Metrics, Optical (outline-based: pairs pulled towards the font's stem gap, `crates/compose/src/optical.rs`), manual, none | ~ | Optical is an approximation of Adobe's algorithm (#181), not a match: imported display text can still break differently |
 | Tracking, scale, skew, baseline shift | ✓ | ✓ | ✓ | |
 | OpenType features | ligatures, discretionary, swash, fractions, ordinals, figures, small caps, stylistic sets, positional forms | through harfrust | ✓ | |
 | Variable fonts | axes in Character panel | named instances and free axis values; PDF embeds the instance | ✓ | |
@@ -75,7 +75,7 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 | Work | Opus 5.5 h |
 |---|---|
 | Oracle harness (synthetic stories, IDML exchange, comparison metric) | 20–30 |
-| Optical kerning approximation (outline-based side-bearing model) + preflight warning | 15–25 |
+| Optical kerning tuning against InDesign (measured pairs per class, once the oracle harness exists) | 5–10 |
 | Overset rule (baseline fits) and frame-fit parity | 5–10 |
 | Fixing composer differences the harness finds (weights, penalties, glyph-scaling order) | 40–70 |
 | Hyphenation patterns for the top 15 InDesign languages (permissive sources) | 20–35 |

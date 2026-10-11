@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, first version: gaps from the full re-measure and the issue tracker) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (Optical kerning from outlines (#181); 2026-10-10: stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, first version: gaps from the full re-measure and the issue tracker) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -69,13 +69,13 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 ### 4. Composition isn't compared with InDesign (T)
 - **Missing:** an oracle harness: the same synthetic stories set by InDesign 2026 (observed
   black-box, results kept under `plan/`) and by DesignCraft, comparing line breaks, overset and
-  frame fit. Known differences: optical kerning falls back to metrics, so imported text sets
-  wider (#181); a frame goes overset when descenders don't fit, InDesign needs only the baseline
+  frame fit. Known differences: optical kerning is an outline-based approximation, not Adobe's
+  algorithm (#181); a frame goes overset when descenders don't fit, InDesign needs only the baseline
   (#180); setting the text language was missing (#130; Language is now in Properties, #145, the issue is still open); "hyphenation doesn't work"
   (#87).
 - **Impact:** an opened IDML reflows: different line breaks, different page count, overset text.
   Professionals notice on the first page.
-- **Estimate:** 80–140 h (harness 20–30, optical kerning 15–25, then fixes by cluster).
+- **Estimate:** 70–125 h (harness 20–30, optical kerning tuning 5–10, then fixes by cluster).
 - **Doc:** [typography-parity.md](typography-parity.md)
 
 ### 5. Startup crashes on some graphics hardware (S, H)
