@@ -2547,7 +2547,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         .iter()
         .map(|&i| {
             let g = &line[i];
-            if g.ch != ' ' && !(g.ch == '\u{3000}' && g.ideographic_space_elastic) {
+            if !breaker::elastic_space(g) {
                 0.0
             } else if stretch {
                 g.space * (sp.word_max - sp.word_desired).max(0.0)
@@ -2592,16 +2592,31 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     let tg = rem.min(yg);
     rem -= tg;
     let sign = if stretch { 1.0 } else { -1.0 };
-    // Stretch left over beyond every limit is shared equally by the word spaces; shrink never goes
-    // past the minimums (that would overlap glyphs), so an overfull line stays overfull.
-    let over = if stretch && !spaces.is_empty() { rem / spaces.len() as f64 } else { 0.0 };
+    // Stretch left over beyond every limit is shared equally by the word spaces (fixed-width spaces
+    // keep their width), else by the letter gaps; shrink never goes past the minimums (that would
+    // overlap glyphs), so an overfull line stays overfull.
+    let elastic = spaces.iter().filter(|&&i| breaker::elastic_space(&line[i])).count();
+    let gaps = line.iter().enumerate().filter(|&(i, g)| is_box(i, g)).count();
+    let (over, over_gap) = match (stretch && rem > 0.0, elastic, gaps) {
+        (false, _, _) => (0.0, 0.0),
+        (true, 0, 0) => (0.0, 0.0),
+        (true, 0, n) => (0.0, rem / n as f64),
+        (true, n, _) => (rem / n as f64, 0.0),
+    };
     for (k, &i) in spaces.iter().enumerate() {
         let share = if yw > 1e-9 { tw * word[k] / yw } else { 0.0 };
-        add[i] += sign * share + over;
+        add[i] += sign * share + if breaker::elastic_space(&line[i]) { over } else { 0.0 };
     }
     if yl > 1e-9 && tl > 0.0 {
         for (i, l) in letter.iter().enumerate() {
             add[i] += sign * tl * l / yl;
+        }
+    }
+    if over_gap > 0.0 {
+        for (i, g) in line.iter().enumerate() {
+            if is_box(i, g) {
+                add[i] += over_gap;
+            }
         }
     }
     if yg > 1e-9 && tg > 0.0 {

@@ -89,19 +89,41 @@ impl Spacing {
     }
     /// Word-space stretch and shrink of space glyph `g` (only U+0020 is elastic).
     fn space_elastic(&self, g: &Glyph) -> (f64, f64) {
-        if g.ch != ' ' && !(g.ch == '\u{3000}' && g.ideographic_space_elastic) {
+        if !elastic_space(g) {
             return (0.0, 0.0);
         }
         (g.space * (self.word_max - self.word_desired).max(0.0), g.space * (self.word_desired - self.word_min).max(0.0))
     }
+    /// The unit in which stretch past the maximum word spacing is rated (see [`tiered_ratio`]): the
+    /// word space's own stretch, but at least [`OVERFLOW_STRETCH`] of its width, so a tight
+    /// spacing range doesn't make a loose line with several word spaces look worse than a line
+    /// letter-spaced across the measure.
+    fn space_overflow(&self, g: &Glyph) -> f64 {
+        if !elastic_space(g) {
+            return 0.0;
+        }
+        g.space * (self.word_max - self.word_desired).max(OVERFLOW_STRETCH)
+    }
 }
+
+/// Does `g` stretch and shrink as a word space? Fixed-width spaces (em, en, thin…) don't.
+pub(crate) fn elastic_space(g: &Glyph) -> bool {
+    g.ch == ' ' || (g.ch == '\u{3000}' && g.ideographic_space_elastic)
+}
+
+/// Minimum stretch of a word space, as a fraction of its width, for rating lines that stretch
+/// past the maximum word spacing (the default range's 133% − 100%).
+const OVERFLOW_STRETCH: f64 = 0.33;
 
 /// Relative cost of using each tier of elastic material (word, letter, glyph).
 pub const TIER_COST: [f64; 3] = [1.0, 0.75, 1.0];
 
 /// Effective adjustment ratio for `d` points of stretch (`d > 0`) or shrink (`d < 0`), consuming
 /// the tiers in priority order. Returns `(r, feasible)`; shrinking beyond all tiers is infeasible.
-pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3]) -> (f64, bool) {
+/// Stretch past every tier goes into the word spaces and is rated in units of `over` (their
+/// overflow stretch, see [`Spacing::space_overflow`]); a line without word spaces rates it
+/// against its letter and glyph stretch.
+pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3], over: f64) -> (f64, bool) {
     const EPS: f64 = 1e-9;
     if d.abs() < EPS {
         return (0.0, true);
@@ -120,7 +142,7 @@ pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3]) -> (f64, bool) {
     }
     if rem > 1e-6 {
         // Beyond every maximum: word spaces grow without bound (an H&J violation).
-        let unit = if cap[0] > EPS { cap[0] } else { cap.iter().sum::<f64>() };
+        let unit = if over > EPS { over } else { cap.iter().sum::<f64>() };
         r = if unit > EPS { r + rem / unit } else { INF };
     }
     (r, true)
@@ -150,13 +172,15 @@ struct Item {
     zone_from: usize,
     /// An emergency break inside a word wider than the measure.
     emergency: bool,
+    /// Glue: stretch past the maximum word spacing ([`Spacing::space_overflow`]).
+    over: f64,
 }
 
 const NONE: usize = usize::MAX;
 
 impl Item {
     fn boxed(w: f64, st: [f64; 3], sh: [f64; 3]) -> Item {
-        Item { kind: Kind::Box, w, st, sh, p: 0.0, flagged: false, auto: false, hang: 0.0, zone_from: NONE, emergency: false }
+        Item { kind: Kind::Box, w, st, sh, p: 0.0, flagged: false, auto: false, hang: 0.0, zone_from: NONE, emergency: false, over: 0.0 }
     }
     fn glue(w: f64, st: f64, sh: f64) -> Item {
         Item {
@@ -170,10 +194,11 @@ impl Item {
             hang: 0.0,
             zone_from: NONE,
             emergency: false,
+            over: 0.0,
         }
     }
     fn penalty(w: f64, p: f64, flagged: bool) -> Item {
-        Item { kind: Kind::Penalty, w, st: [0.0; 3], sh: [0.0; 3], p, flagged, auto: false, hang: 0.0, zone_from: NONE, emergency: false }
+        Item { kind: Kind::Penalty, w, st: [0.0; 3], sh: [0.0; 3], p, flagged, auto: false, hang: 0.0, zone_from: NONE, emergency: false, over: 0.0 }
     }
 }
 
@@ -321,6 +346,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 let (st, sh) = sp.space_elastic(g);
                 let mut gl = Item::glue(w, st, sh);
                 gl.hang = prev_hang;
+                gl.over = sp.space_overflow(g);
                 last_space = it.len();
                 it.push(gl);
                 ig.push(i);
@@ -400,6 +426,7 @@ struct Node {
     tw: f64,
     ty: [f64; 3],
     tz: [f64; 3],
+    to: f64,
     demerits: f64,
     prev: Option<usize>,
     hyphens: u32,
@@ -482,20 +509,33 @@ fn kp_pass(
     let mut sw = vec![0.0; m + 1];
     let mut sy = vec![[0.0; 3]; m + 1];
     let mut sz = vec![[0.0; 3]; m + 1];
+    let mut so = vec![0.0; m + 1];
     for (i, it) in items.iter().enumerate() {
         let (w, y, z) = match it.kind {
             Kind::Box | Kind::Glue => (it.w, it.st, it.sh),
             Kind::Penalty => (0.0, [0.0; 3], [0.0; 3]),
         };
         sw[i + 1] = sw[i] + w;
+        so[i + 1] = so[i] + it.over;
         for t in 0..3 {
             sy[i + 1][t] = sy[i][t] + y[t];
             sz[i + 1][t] = sz[i][t] + z[t];
         }
     }
     let first_hang = items.iter().find(|i| i.kind == Kind::Box).map_or(0.0, |b| b.hang);
-    let mut arena: Vec<Node> =
-        vec![Node { pos: 0, line: 0, fitness: 1, tw: first_hang, ty: [0.0; 3], tz: [0.0; 3], demerits: 0.0, prev: None, hyphens: 0, flagged: false }];
+    let mut arena: Vec<Node> = vec![Node {
+        pos: 0,
+        line: 0,
+        fitness: 1,
+        tw: first_hang,
+        ty: [0.0; 3],
+        tz: [0.0; 3],
+        to: 0.0,
+        demerits: 0.0,
+        prev: None,
+        hyphens: 0,
+        flagged: false,
+    }];
     let limit = sp.hyphen_limit as usize;
     let states = if limit == 0 { 2 } else { (limit + 1).min(MAX_HYPHEN_STATES) };
     let mut active: Vec<usize> = vec![0];
@@ -528,7 +568,7 @@ fn kp_pass(
             // A line that overruns its measure by a rounding error fits exactly.
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
-            let (mut r, feasible) = tiered_ratio(d, y, z);
+            let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
                 // space it leaves, so the fullest piece wins (the break at the last glyph that fits).
@@ -603,7 +643,7 @@ fn kp_pass(
             continue;
         }
         // Totals after the break: skip glue and penalties up to the next box.
-        let (mut tw, mut ty, mut tz) = (sw[b], sy[b], sz[b]);
+        let (mut tw, mut ty, mut tz, mut to) = (sw[b], sy[b], sz[b], so[b]);
         let mut i = b;
         while i < m {
             let x = items[i];
@@ -614,6 +654,7 @@ fn kp_pass(
                 }
                 Kind::Glue => {
                     tw += x.w;
+                    to += x.over;
                     for t in 0..3 {
                         ty[t] += x.st[t];
                         tz[t] += x.sh[t];
@@ -638,6 +679,7 @@ fn kp_pass(
                     tw,
                     ty,
                     tz,
+                    to,
                     demerits: d,
                     prev: Some(a),
                     hyphens: if flagged { prev.hyphens + 1 } else { 0 },
@@ -856,16 +898,16 @@ mod tests {
     #[test]
     fn tiers_are_used_in_order() {
         // Word stretch alone.
-        let (r, ok) = tiered_ratio(5.0, [10.0, 10.0, 10.0], [0.0; 3]);
+        let (r, ok) = tiered_ratio(5.0, [10.0, 10.0, 10.0], [0.0; 3], 10.0);
         assert!(ok && (r - 0.5).abs() < 1e-9);
         // Word saturated, half the letter tier.
-        let (r, _) = tiered_ratio(15.0, [10.0, 10.0, 10.0], [0.0; 3]);
+        let (r, _) = tiered_ratio(15.0, [10.0, 10.0, 10.0], [0.0; 3], 10.0);
         assert!((r - (1.0 + 0.5 * TIER_COST[1])).abs() < 1e-9);
         // Beyond every tier: unbounded word spacing.
-        let (r, _) = tiered_ratio(40.0, [10.0, 10.0, 10.0], [0.0; 3]);
+        let (r, _) = tiered_ratio(40.0, [10.0, 10.0, 10.0], [0.0; 3], 10.0);
         assert!(r > 2.0);
         // Shrink beyond the tiers is infeasible.
-        assert!(!tiered_ratio(-25.0, [0.0; 3], [10.0, 10.0, 0.0]).1);
-        assert!(tiered_ratio(-15.0, [0.0; 3], [10.0, 10.0, 0.0]).1);
+        assert!(!tiered_ratio(-25.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0).1);
+        assert!(tiered_ratio(-15.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0).1);
     }
 }

@@ -2771,3 +2771,73 @@ fn empty_paragraphs_get_no_bullet_or_number() {
         assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.", "", "2.", ""], "list `{name}`");
     }
 }
+
+#[test]
+fn tight_word_spacing_does_not_isolate_a_word() {
+    // A narrow word-spacing range (100–105%) with some letter spacing and glyph scaling, no
+    // hyphenation: lines that need more stretch must open their word spaces, not letter-space a
+    // single word across the measure.
+    let para = ParaAttrs {
+        align: Some(Align::LeftJustified),
+        hyphenate: Some(false),
+        first_line_indent: Some(9.0),
+        word_space_min: Some(1.0),
+        word_space_desired: Some(1.03),
+        word_space_max: Some(1.05),
+        letter_space_min: Some(-0.05),
+        letter_space_max: Some(0.05),
+        glyph_scale_min: Some(0.99),
+        glyph_scale_max: Some(1.01),
+        ..Default::default()
+    };
+    // Short words: any two fit on a line together.
+    let text = CORPUS[..2].join(" ");
+    for w in (200..=320).step_by(5) {
+        let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, w as f64, 20000.0), para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        for l in &lines[..lines.len() - 1] {
+            let words = text[l.range.clone()].split_whitespace().count();
+            assert!(words > 1, "width {w}: a single-word line {:?}", &text[l.range.clone()]);
+        }
+    }
+}
+
+#[test]
+fn fixed_width_spaces_do_not_stretch_on_justified_lines() {
+    // Long words in a narrow column: lines stretch past the maximum word spacing. Only the word
+    // spaces take that stretch; em, en and thin spaces keep their width.
+    let words = ["characteristically", "misunderstanding", "unquestionably", "responsibility", "administration", "photographer"];
+    let seps = [" ", "\u{2003}", " ", "\u{2002}", " ", "\u{2009}"];
+    let text: String = (0..60).map(|i| format!("{}{}", words[i % words.len()], seps[i % seps.len()])).collect();
+    let text = text.trim_end().to_string();
+    let fixed = |c: char| matches!(c, '\u{2003}' | '\u{2002}' | '\u{2009}');
+    // (character, advance) of each fixed space, per line, and whether the line ends the paragraph.
+    let spaces = |align: Align, w: f64| -> Vec<(Vec<(char, f64)>, bool)> {
+        let para = ParaAttrs { align: Some(align), hyphenate: Some(false), ..Default::default() };
+        let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, w, 20000.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)
+            .iter()
+            .map(|l| {
+                let found = l.glyphs.iter().filter_map(|g| text[g.byte..].chars().next().filter(|&c| fixed(c)).map(|c| (c, g.adv))).collect();
+                (found, l.last_in_para)
+            })
+            .collect()
+    };
+    let mut checked = 0;
+    for w in [190.0, 230.0, 270.0] {
+        let natural: Vec<(char, f64)> = spaces(Align::Left, w).into_iter().flat_map(|l| l.0).collect();
+        for (found, last) in spaces(Align::LeftJustified, w) {
+            if last {
+                continue;
+            }
+            for (c, a) in found {
+                let Some(&(_, n)) = natural.iter().find(|x| x.0 == c) else { continue };
+                assert!((a - n).abs() < 1e-6, "width {w}: U+{:04X} is {a:.2} wide, not {n:.2}", c as u32);
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 5, "{checked} fixed spaces on justified lines");
+}
