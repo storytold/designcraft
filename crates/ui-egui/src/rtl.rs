@@ -300,7 +300,9 @@ mod tests {
 
     fn with_fonts(test: impl FnOnce(&egui::Context)) {
         let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx, "ar");
+        // The built-in faces only: installed fonts (the CJK fallbacks) would make the glyphs
+        // measured here depend on the machine.
+        ctx.set_fonts(crate::theme::font_definitions(designcraft_fonts::CRAFT_FONTS, "ar"));
         ctx.begin_pass(egui::RawInput { max_texture_side: Some(8192), ..Default::default() });
         test(&ctx);
         let mut output = ctx.end_pass();

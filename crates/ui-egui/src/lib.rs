@@ -474,6 +474,9 @@ pub struct DesignApp {
     styled: bool,
     /// The interface language the UI fonts were installed for (it orders the CJK fallbacks).
     fonts_lang: String,
+    /// The installed CJK faces are among the UI fonts (false while the system fonts are still
+    /// being cataloged: the fonts are installed again when they are).
+    fonts_system: bool,
     pub restyle: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
@@ -514,6 +517,7 @@ impl DesignApp {
             shot_token: 0,
             styled: false,
             fonts_lang: String::new(),
+            fonts_system: false,
             restyle: false,
             fonts_ready: false,
             integrated_titlebar: false,
@@ -726,16 +730,20 @@ impl DesignApp {
             ctx.set_zoom_factor(scale);
         }
         if !self.styled {
-            theme::install_fonts(ctx, &self.ui.language);
+            self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
             self.fonts_lang = self.ui.language.clone();
             self.styled = true;
             self.restyle = true;
         } else {
-            if self.fonts_lang != self.ui.language {
-                theme::install_fonts(ctx, &self.ui.language);
+            if self.fonts_lang != self.ui.language || (!self.fonts_system && theme::system_fonts_ready()) {
+                self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
                 self.fonts_lang = self.ui.language.clone();
             }
             self.fonts_ready = true;
+        }
+        if !self.fonts_system {
+            // The font scan runs in the background: look again shortly.
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         if self.restyle {
             theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness));
