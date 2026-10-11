@@ -257,8 +257,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-24.04 }
-          - { arch: aarch64, runner: ubuntu-24.04-arm }
+          - { arch: x86_64, runner: ubuntu-26.04 }
+          - { arch: aarch64, runner: ubuntu-26.04-arm }
     env:
       DESIGNCRAFT_VERSION: ${{ needs.version.outputs.version }}
       DESIGNCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
@@ -291,6 +291,7 @@ jobs:
     env:
       DESIGNCRAFT_VERSION: ${{ needs.version.outputs.version }}
       DESIGNCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      NFPM_VERSION: 2.47.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Optional font input (docs: storytold/craft-fonts docs/integration.md); releases always embed it.
@@ -327,10 +328,13 @@ jobs:
             gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu libc6-dev-riscv64-cross libc6-dev:riscv64 qemu-user \
             libasound2-dev:riscv64 libxkbcommon-dev:riscv64 \
             libwayland-dev:riscv64 libx11-dev:riscv64 libxrandr-dev:riscv64 libxi-dev:riscv64 libgl1-mesa-dev:riscv64
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
           if command -v qemu-riscv64 >/dev/null 2>&1 && ! command -v qemu-riscv64-static >/dev/null 2>&1; then
             sudo ln -s "$(command -v qemu-riscv64)" /usr/local/bin/qemu-riscv64-static
           fi
-      - name: Build and package
+      - name: Build and package (deb, rpm, tar.gz)
         env:
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-L/usr/riscv64-linux-gnu/lib -C link-arg=-L/usr/lib/riscv64-linux-gnu"
@@ -343,7 +347,7 @@ jobs:
           EMULATOR: qemu-riscv64-static
         run: |
           export CRAFT_FONTS_DIR="$PWD/craft-fonts" CRAFT_FONTS_REQUIRED=1
-          packaging/linux/package.sh --formats "tar"
+          packaging/linux/package.sh --formats "deb rpm tar"
       - name: Smoke test CLI under QEMU
         run: |
           tar -xzf dist/release/*.tar.gz
@@ -351,7 +355,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-linux-riscv64
-          path: dist/release/*.tar.gz
+          path: dist/release/*
           if-no-files-found: error
 
   freebsd:
@@ -460,7 +464,7 @@ jobs:
 
   release:
     name: Draft GitHub Release
-    needs: [version, macos, windows, linux, flatpak, freebsd, web]
+    needs: [version, macos, windows, linux, linux-riscv64, flatpak, freebsd, web]
     runs-on: ubuntu-latest
     environment: release
     permissions:
