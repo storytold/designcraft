@@ -62,6 +62,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Find/Change…", ["Suchen/Ersetzen …", "Rechercher/Remplacer…", "Buscar/Cambiar…", "検索と置換…", "查找/更改…"]),
     ("Check Spelling…", ["Rechtschreibprüfung …", "Vérifier l'orthographe…", "Revisar ortografía…", "スペルチェック…", "拼写检查…"]),
     ("Preferences…", ["Voreinstellungen …", "Préférences…", "Preferencias…", "環境設定…", "首选项…"]),
+    ("Settings…", ["Einstellungen …", "Réglages…", "Ajustes…", "設定…", "设置…"]),
     (
         "Keyboard Shortcuts…",
         ["Tastaturbefehle …", "Raccourcis clavier…", "Métodos abreviados de teclado…", "キーボードショートカット…", "键盘快捷键…"],

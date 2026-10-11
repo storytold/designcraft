@@ -38,6 +38,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Find/Change…", "Знайти й замінити…"),
     ("Check Spelling…", "Перевірити орфографію…"),
     ("Preferences…", "Налаштування…"),
+    ("Settings…", "Параметри…"),
     ("Keyboard Shortcuts…", "Клавіатурні скорочення…"),
     ("Interface Language", "Мова інтерфейсу"),
     ("Pages", "Сторінки"),

@@ -37,6 +37,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Find/Change…", "検索と置換…"),
     ("Check Spelling…", "スペルチェック…"),
     ("Preferences…", "環境設定…"),
+    ("Settings…", "設定…"),
     ("Keyboard Shortcuts…", "キーボードショートカット…"),
     ("Interface Language", "インターフェイスの言語"),
     ("Pages", "ページ"),

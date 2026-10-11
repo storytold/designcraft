@@ -1752,6 +1752,76 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
     MENUS.iter().map(|(m, e)| (*m, parse_entries(e))).collect()
 }
 
+/// A row of the macOS application menu (the menu named after the app).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMenuItem {
+    /// Runs `command` (no parameters); `id` is the native menu item id, `label` goes through `i18n::tr`.
+    Cmd {
+        id: &'static str,
+        label: &'static str,
+        command: &'static str,
+    },
+    Sep,
+    Services,
+    Hide,
+    HideOthers,
+    ShowAll,
+    Quit,
+}
+
+/// The macOS application menu. Settings… is `app.preferences`, which `native_menu_tree` leaves out of Edit.
+pub const MAC_APP_MENU: &[AppMenuItem] = &[
+    AppMenuItem::Cmd { id: "dc-about", label: "About DesignCraft", command: "help.about" },
+    AppMenuItem::Cmd { id: "dc-discord", label: "Join the ArtCraft Discord…", command: "help.discord" },
+    AppMenuItem::Sep,
+    AppMenuItem::Cmd { id: "dc-settings", label: "Settings…", command: "app.preferences" },
+    AppMenuItem::Sep,
+    AppMenuItem::Services,
+    AppMenuItem::Sep,
+    AppMenuItem::Hide,
+    AppMenuItem::HideOthers,
+    AppMenuItem::ShowAll,
+    AppMenuItem::Sep,
+    AppMenuItem::Quit,
+];
+
+/// The menu tree for the macOS menu bar: `menu_tree` without the commands `MAC_APP_MENU` holds,
+/// so each command (and its shortcut) appears once.
+pub fn native_menu_tree() -> Vec<(&'static str, Vec<Item>)> {
+    let in_app_menu = |id: &str| MAC_APP_MENU.iter().any(|m| matches!(m, AppMenuItem::Cmd { command, .. } if *command == id));
+    let mut tree = menu_tree();
+    for (_, entries) in &mut tree {
+        without_commands(entries, &in_app_menu);
+    }
+    tree
+}
+
+/// Drops the parameterless commands `drop` matches from `entries` (recursively), then any separator
+/// the removal left at an end or next to another.
+fn without_commands(entries: &mut Vec<Item>, drop: &dyn Fn(&str) -> bool) {
+    let before = entries.len();
+    entries.retain(|e| !matches!(e, Item::Cmd { id, params, .. } if params.is_null() && drop(id)));
+    for e in entries.iter_mut() {
+        if let Item::Sub(_, children) = e {
+            without_commands(children, drop);
+        }
+    }
+    if entries.len() == before {
+        return;
+    }
+    let mut tidy: Vec<Item> = Vec::with_capacity(entries.len());
+    for e in entries.drain(..) {
+        if matches!(e, Item::Sep) && tidy.last().is_none_or(|l| matches!(l, Item::Sep)) {
+            continue;
+        }
+        tidy.push(e);
+    }
+    if matches!(tidy.last(), Some(Item::Sep)) {
+        tidy.pop();
+    }
+    *entries = tidy;
+}
+
 /// Check state of a toggle command (None = not a toggle).
 pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
     Some(match id {
@@ -3496,5 +3566,42 @@ mod tests {
         assert!(open, "hovering the visible portion still opens the submenu");
         let (_, Some((_, _, open))) = frame(500.0, vec![]) else { panic!("test menu remains open") };
         assert!(!open, "an open submenu closes when its row becomes fully clipped");
+    }
+
+    #[test]
+    fn mac_settings_follow_about_in_the_app_menu_and_leave_edit() {
+        let pos = |command: &str| MAC_APP_MENU.iter().position(|m| matches!(m, AppMenuItem::Cmd { command: c, .. } if *c == command));
+        let (Some(about), Some(settings)) = (pos("help.about"), pos("app.preferences")) else { panic!("About and Settings are in the app menu") };
+        assert!(about < settings);
+        assert_eq!(MAC_APP_MENU.get(settings - 1), Some(&AppMenuItem::Sep));
+        assert_eq!(MAC_APP_MENU.get(settings + 1), Some(&AppMenuItem::Sep));
+        let label = |command: &str| {
+            MAC_APP_MENU.iter().find_map(|m| match m {
+                AppMenuItem::Cmd { label, command: c, .. } if *c == command => Some(*label),
+                _ => None,
+            })
+        };
+        assert_eq!(label("app.preferences"), Some("Settings…"));
+        assert_ne!(crate::i18n::tr("de", "Settings…"), "Settings…");
+        let ids = MAC_APP_MENU.iter().filter_map(|m| if let AppMenuItem::Cmd { id, .. } = m { Some(*id) } else { None }).collect::<Vec<_>>();
+        assert!(ids.iter().enumerate().all(|(i, id)| !ids[..i].contains(id)), "native ids are unique: {ids:?}");
+
+        let edit = |tree: Vec<(&'static str, Vec<Item>)>| {
+            let mut out = Vec::new();
+            walk(&tree.into_iter().find(|(t, _)| *t == "Edit").map(|(_, e)| e).unwrap_or_default(), &mut out);
+            out.into_iter().map(|(_, id, _)| id).collect::<Vec<_>>()
+        };
+        assert!(edit(menu_tree()).iter().any(|id| id == "app.preferences"), "the in-window Edit menu keeps Preferences");
+        let native = native_menu_tree();
+        let mut all = Vec::new();
+        for (_, entries) in &native {
+            walk(entries, &mut all);
+        }
+        assert!(!all.iter().any(|(_, id, _)| id == "app.preferences"), "the macOS menu bar has Settings only in the app menu");
+        assert!(edit(native_menu_tree()).iter().any(|id| id == "app.keyboardShortcuts"));
+        for (title, entries) in &native {
+            assert!(!matches!(entries.first(), Some(Item::Sep)) && !matches!(entries.last(), Some(Item::Sep)), "{title}: separator at an end");
+            assert!(entries.windows(2).all(|w| !matches!(w, [Item::Sep, Item::Sep])), "{title}: doubled separator");
+        }
     }
 }

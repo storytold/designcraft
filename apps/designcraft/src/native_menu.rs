@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use designcraft_ui_egui::DesignApp;
-use designcraft_ui_egui::menus::{self, Item};
+use designcraft_ui_egui::menus::{self, AppMenuItem, Item};
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use serde_json::Value;
@@ -30,32 +30,38 @@ fn accel(sc: &str) -> Option<Accelerator> {
     Accelerator::from_str(&sc.replace("Cmd", "CMD").replace("Alt", "ALT").replace("Shift", "SHIFT").replace("Ctrl", "CTRL")).ok()
 }
 
+/// A command's default shortcut, as the in-window menus show it.
+fn shortcut(id: &str) -> Option<&'static str> {
+    menus::ui_label(id).and_then(|(_, sc)| sc).or_else(|| designcraft_engine::find_command(id).and_then(|c| c.shortcut))
+}
+
 impl NativeMenu {
     pub fn install(app: &mut DesignApp) -> Self {
         let menu = Menu::new();
         let mut items = HashMap::new();
         let mut counter = 0usize;
-        // Application menu.
+        // Application menu: our own About splash (with the community links) instead of the stock
+        // panel, and Settings… (Edit › Preferences… on the other platforms).
         let app_menu = Submenu::new("DesignCraft", true);
-        // Our own About splash (with the community links) instead of the stock panel.
-        let about = MenuItem::with_id("dc-about", "About DesignCraft", true, None);
-        let discord = MenuItem::with_id("dc-discord", "Join the ArtCraft Discord…", true, None);
-        let _ = app_menu.append_items(&[
-            &about,
-            &discord,
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::services(None),
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::hide(None),
-            &PredefinedMenuItem::hide_others(None),
-            &PredefinedMenuItem::show_all(None),
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(None),
-        ]);
-        items.insert("dc-about".into(), ("help.about".into(), serde_json::Value::Null, Handle::Plain(about)));
-        items.insert("dc-discord".into(), ("help.discord".into(), serde_json::Value::Null, Handle::Plain(discord)));
+        for entry in menus::MAC_APP_MENU {
+            let _ = match *entry {
+                AppMenuItem::Cmd { id, label, command } => {
+                    let sc = shortcut(command).and_then(accel);
+                    let item = MenuItem::with_id(id, designcraft_ui_egui::i18n::tr(&app.ui.language, label), true, sc);
+                    let appended = app_menu.append(&item);
+                    items.insert(id.into(), (command.into(), Value::Null, Handle::Plain(item)));
+                    appended
+                }
+                AppMenuItem::Sep => app_menu.append(&PredefinedMenuItem::separator()),
+                AppMenuItem::Services => app_menu.append(&PredefinedMenuItem::services(None)),
+                AppMenuItem::Hide => app_menu.append(&PredefinedMenuItem::hide(None)),
+                AppMenuItem::HideOthers => app_menu.append(&PredefinedMenuItem::hide_others(None)),
+                AppMenuItem::ShowAll => app_menu.append(&PredefinedMenuItem::show_all(None)),
+                AppMenuItem::Quit => app_menu.append(&PredefinedMenuItem::quit(None)),
+            };
+        }
         let _ = menu.append(&app_menu);
-        for (title, entries) in menus::menu_tree() {
+        for (title, entries) in menus::native_menu_tree() {
             let sub = Submenu::new(designcraft_ui_egui::i18n::tr(&app.ui.language, title), true);
             build(app, &sub, &entries, &mut items, &mut counter);
             let _ = menu.append(&sub);
@@ -65,7 +71,7 @@ impl NativeMenu {
         app.native_shortcuts = items
             .values()
             .filter_map(|(id, p, _)| {
-                let sc = menus::ui_label(id).and_then(|(_, sc)| sc).or_else(|| designcraft_engine::find_command(id).and_then(|c| c.shortcut))?;
+                let sc = shortcut(id)?;
                 (p.is_null() && accel(sc).is_some()).then(|| id.clone())
             })
             .collect();
