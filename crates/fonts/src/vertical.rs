@@ -55,11 +55,12 @@ impl<'a> VMetrics<'a> {
 
 /// The ideographic em box (top, bottom) in font units, y up: `BASE` `idtp`/`ideo`, else the OS/2
 /// typo ascender and descender, else the ascender and descender; the last two centred on one em.
-pub(crate) fn em_box(face: &FontFace) -> (f64, f64) {
+/// The flag says whether `BASE` gave it.
+pub(crate) fn em_box(face: &FontFace) -> ((f64, f64), bool) {
     let upem = face.upem;
     let font = face.skrifa();
     if let Some(b) = font.as_ref().and_then(|f| base_em_box(f, upem)) {
-        return b;
+        return (b, true);
     }
     let centred = |asc: f64, desc: f64| {
         let span = asc - desc;
@@ -68,10 +69,12 @@ pub(crate) fn em_box(face: &FontFace) -> (f64, f64) {
             (top, top - upem)
         })
     };
-    font.and_then(|f| f.os2().ok())
+    let em = font
+        .and_then(|f| f.os2().ok())
         .and_then(|t| centred(f64::from(t.s_typo_ascender()), f64::from(t.s_typo_descender())))
         .or_else(|| centred(face.ascent, -face.descent))
-        .unwrap_or((upem * 0.88, upem * -0.12))
+        .unwrap_or((upem * 0.88, upem * -0.12));
+    (em, false)
 }
 
 /// The em box from the `BASE` table's horizontal axis: the Han script's values, else the default

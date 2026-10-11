@@ -2018,10 +2018,20 @@ fn cjk_em_box(g: &Glyph) -> (f64, f64) {
     let top = -height * g.ascent / (g.ascent + g.descent).max(1e-9);
     (top, top + height)
 }
+/// Em box that character alignment lines up, relative to the baseline (y down) at the glyph's
+/// size: the font's `BASE` em box, else 0.88 em above and 0.12 em below the baseline. A font's
+/// ascender/descender proportions put a Latin em box's centre too low for this.
+fn alignment_em_box(g: &Glyph) -> (f64, f64) {
+    let upem = g.face.units_per_em();
+    let (top, bottom) = g.face.base_em_box().unwrap_or((upem * 0.88, upem * -0.12));
+    let k = g.sy.abs();
+    (-top * k, -bottom * k)
+}
+/// Upward shift that puts `g`'s em box (or ICF) edge or centre where the reference glyph's is.
 fn cjk_alignment_shift(g: &Glyph, reference: &Glyph) -> f64 {
     use designcraft_doc::cjk::CharacterAlignment as A;
-    let (t, b) = cjk_em_box(g);
-    let (rt, rb) = cjk_em_box(reference);
+    let (t, b) = alignment_em_box(g);
+    let (rt, rb) = alignment_em_box(reference);
     match g.character_alignment {
         A::Baseline => 0.0,
         A::EmTop => t - rt,
