@@ -168,16 +168,7 @@ fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool) {
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Task Bar fill"));
         let mut picked = None;
         egui::Popup::menu(&resp).show(|ui| {
-            ui.set_min_width(180.0);
-            ui.set_max_width(280.0);
-            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                for s in &doc.swatches {
-                    if panels::swatch_menu_row(ui, &doc, &s.name, &sw) {
-                        picked = Some(s.name.clone());
-                        ui.close();
-                    }
-                }
-            });
+            picked = panels::swatch_list(ui, &doc, &sw);
         });
         if let Some(p) = picked {
             let _ = app.run("type.char", json!({"attrs": {"fill": p}}));
@@ -241,16 +232,7 @@ fn object_controls(app: &mut DesignApp, ui: &mut Ui) {
         });
         let mut picked = None;
         egui::Popup::menu(&resp).show(|ui| {
-            ui.set_min_width(180.0);
-            ui.set_max_width(280.0);
-            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                for s in &doc.swatches {
-                    if panels::swatch_menu_row(ui, &doc, &s.name, &sw) {
-                        picked = Some(s.name.clone());
-                        ui.close();
-                    }
-                }
-            });
+            picked = panels::swatch_list(ui, &doc, &sw);
         });
         if let Some(p) = picked {
             let _ = app.run(cmd, json!({"swatch": p}));
