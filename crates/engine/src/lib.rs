@@ -247,6 +247,8 @@ impl Default for Prefs {
 pub struct Session {
     docs: Vec<DocState>,
     active: Option<usize>,
+    /// An undoable command is running: the commands it runs are part of its undo step.
+    in_undo_step: bool,
     pub prefs: Prefs,
     pub cache: Arc<Cache>,
     pub(crate) tool: Box<dyn designcraft_tools::Tool>,
@@ -287,6 +289,7 @@ impl Session {
         Session {
             docs: vec![],
             active: None,
+            in_undo_step: false,
             prefs: Prefs::default(),
             cache: Arc::new(Cache::new()),
             tool: designcraft_tools::create("selection"),
@@ -409,7 +412,19 @@ impl Session {
             self.stop_data_preview();
         }
         let before = self.active().map(|d| (d.uid, d.doc.clone()));
-        let r = (spec.run)(self, params)?;
+        // What an undoable command runs is part of its undo step.
+        let nested = self.in_undo_step;
+        self.in_undo_step = nested || spec.undoable;
+        let ran = (spec.run)(self, params);
+        self.in_undo_step = nested;
+        let r = match ran {
+            Ok(r) => r,
+            Err(e) => {
+                // What it did before it failed can be undone too.
+                self.record_undo_step(spec, before, nested);
+                return Err(e);
+            }
+        };
         // Undo, redo or deleting layers can take the active layer away: new objects would land on
         // a layer that isn't there (invisible, not exported). Fall back to the top layer.
         if let Some(st) = self.active_mut()
@@ -432,20 +447,26 @@ impl Session {
                 st.doc = Arc::new(d);
             }
         }
-        // Record undo if the document changed (and we're not previewing an interaction).
+        self.record_undo_step(spec, before, nested);
+        if spec.journal {
+            self.journal.push((id.to_string(), params.clone()));
+        }
+        Ok(r)
+    }
+
+    /// Record undo if the document changed (and we're not previewing an interaction). A command
+    /// run by an undoable one leaves the step to it: one command is one undo step.
+    fn record_undo_step(&mut self, spec: &CommandSpec, before: Option<(u64, Arc<Document>)>, nested: bool) {
         if let (Some((uid, old)), Some(st)) = (before, self.active_mut())
             && st.uid == uid
             && !Arc::ptr_eq(&old, &st.doc)
             && st.interaction.is_none()
             && spec.undoable
+            && !nested
         {
             let entry = HistoryEntry { label: spec.label.to_string(), doc: old, selection: st.selection.clone() };
             push_undo(st, entry);
         }
-        if spec.journal {
-            self.journal.push((id.to_string(), params.clone()));
-        }
-        Ok(r)
     }
 
     /// Smart Text Reflow for the primary story: add threaded pages while it oversets; remove

@@ -54,6 +54,8 @@ impl Session {
                 {
                     log::error!("crash recovery save after `{id}` failed: {e}");
                 }
+                // The command never got to say that it is done.
+                self.in_undo_step = false;
                 log::error!("command `{id}` panicked: {msg}");
                 Err(EngineError::Internal(id.to_string(), msg))
             }
@@ -85,5 +87,20 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&st.doc, &before), "the document is the one from before the command");
         // The session keeps working.
         s.execute("frame.create", &json!({"rect": [36, 236, 200, 400]})).unwrap();
+    }
+
+    /// An undoable command that panics is no longer running: the next command records its own
+    /// undo step.
+    #[test]
+    fn a_panicking_command_does_not_swallow_later_undo_steps() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let panicked = s.guarded("test.panic", |s| {
+            s.in_undo_step = true;
+            panic!("boom");
+        });
+        assert!(panicked.is_err());
+        s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
+        assert_eq!(s.active().unwrap().history.undo.len(), 1);
     }
 }

@@ -75,6 +75,111 @@ fn tool_gesture_creates_one_undo_step() {
     assert!((it.visible_bounds().x0 - 36.0).abs() < 1e-6, "visible {:?} path {:?}", it.visible_bounds(), it.bounds());
 }
 
+/// A command that runs another one (Cut runs Clear) recorded an undo step for each, so the
+/// second Undo did nothing. One command is one step, whatever it runs inside.
+#[test]
+fn a_command_that_runs_another_is_one_undo_step() {
+    let mut s = session();
+    let one_step = |s: &mut Session, id: &str, p: Value, label: &str| {
+        let (before, steps) = {
+            let st = s.doc().unwrap();
+            (st.doc.clone(), st.history.undo.len())
+        };
+        s.execute(id, &p).unwrap();
+        let st = s.doc().unwrap();
+        assert_ne!(st.doc, before, "{id} changes the document");
+        assert_eq!(st.history.undo.len(), steps + 1, "{id}");
+        assert_eq!(st.history.undo.last().unwrap().label, label);
+        let after = st.doc.clone();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before, "one Undo takes {id} back");
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, after, "one Redo brings {id} back");
+        s.execute("edit.undo", &json!({})).unwrap();
+    };
+    // Pasting text runs Type.
+    let story = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+    s.execute("text.select", &json!({"story": story, "anchor": 2})).unwrap();
+    one_step(&mut s, "edit.paste", json!({"text": "c"}), "Paste");
+    let a = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].clone();
+    s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap();
+    for (id, label) in
+        [("edit.duplicate", "Duplicate"), ("object.bringToFront", "Bring to Front"), ("edit.cut", "Cut"), ("edit.pasteInPlace", "Paste in Place")]
+    {
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        one_step(&mut s, id, json!({}), label);
+    }
+    // A script that runs Cut is three commands deep and still one step.
+    let script = format!("selection.set {{\"ids\": [{a}]}}\nedit.cut {{}}");
+    one_step(&mut s, "script.run", json!({"text": script}), "Run Script");
+}
+
+/// What a command did before it failed is an undo step too: a script that stopped at a bad
+/// step left its earlier steps in the document with nothing to undo.
+#[test]
+fn a_command_that_fails_partway_can_be_undone() {
+    let mut s = session();
+    let before = s.doc().unwrap().doc.clone();
+    let script = "frame.create {\"rect\": [36, 36, 136, 136]}\nnope.command";
+    assert!(s.execute("script.run", &json!({"text": script})).is_err());
+    let st = s.doc().unwrap();
+    assert_eq!(st.doc.spreads[0].items.len(), 1, "the first step ran");
+    assert_eq!(st.history.undo.len(), 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc, before);
+    // The next command records its step as usual.
+    s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap();
+    assert_eq!(s.doc().unwrap().history.undo.len(), 1);
+}
+
+/// The same for a command that fails after a command it ran changed the document: that one
+/// leaves the step to it, so it has to record one.
+#[test]
+fn a_command_that_fails_after_the_one_it_ran_can_be_undone() {
+    let mut s = session();
+    let empty = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "unassigned"})).unwrap()["id"].clone();
+    let text = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "abc"})).unwrap()["id"].clone();
+    s.execute("selection.set", &json!({"ids": [text]})).unwrap();
+    let (before, steps) = {
+        let st = s.doc().unwrap();
+        (st.doc.clone(), st.history.undo.len())
+    };
+    // Fill with Placeholder Text turns the empty frame into a text frame, then finds no such story.
+    assert!(s.execute("type.fillWithPlaceholder", &json!({"frame": empty, "story": 99999})).is_err());
+    let st = s.doc().unwrap();
+    assert_ne!(st.doc, before, "the frame was converted");
+    assert_eq!(st.history.undo.len(), steps + 1);
+    assert_eq!(st.history.undo.last().unwrap().label, "Fill with Placeholder Text");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc, before);
+}
+
+/// A script's steps still record as it runs: an Undo step takes back the step before it, not
+/// what was done before the script. The script stays one step.
+#[test]
+fn a_script_that_undoes_its_own_step_is_one_undo_step() {
+    let mut s = session();
+    s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap();
+    let script = "frame.create {\"rect\": [200, 36, 300, 136]}\nframe.create {\"rect\": [400, 36, 500, 136]}\nedit.undo {}";
+    s.execute("script.run", &json!({"text": script})).unwrap();
+    let st = s.doc().unwrap();
+    assert_eq!(st.doc.spreads[0].items.len(), 2, "the frame from before the script and the script's first");
+    assert_eq!(st.history.undo.len(), 2);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.spreads[0].items.len(), 1);
+}
+
+/// A command that is no undo step itself (placing the caret) leaves the steps of the commands
+/// it runs alone: turning the empty frame into a text frame can be undone.
+#[test]
+fn a_command_without_an_undo_step_keeps_the_steps_of_those_it_runs() {
+    let mut s = session();
+    let id = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "unassigned"})).unwrap()["id"].clone();
+    s.execute("text.placeCaret", &json!({"frame": id, "point": [50, 50]})).unwrap();
+    let labels: Vec<&str> = s.doc().unwrap().history.undo.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(labels, ["Create Frame", "Content"]);
+}
+
 #[test]
 fn shift_move_does_not_take_the_other_axis() {
     use designcraft_tools::{PointerEvent, PointerKind};

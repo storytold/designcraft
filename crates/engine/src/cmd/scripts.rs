@@ -8,7 +8,9 @@ use crate::Result;
 fn run(s: &mut crate::Session, p: &Value) -> Result<Value> {
     let text = str_param(p, "text").ok_or_else(|| bad("script.run", "`text` required"))?;
     let steps = crate::script::parse(text).map_err(|e| bad("script.run", e))?;
-    // The steps' own undo entries collapse into this command's single one.
+    // The steps record undo entries of their own while the script runs (one of them may be
+    // Undo); they collapse into this command's single one.
+    s.in_undo_step = false;
     let uid = s.active().map(|d| d.uid);
     let before = s.active().map_or(0, |d| d.history.undo.len());
     let report = s.run_script(&steps);
