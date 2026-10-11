@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use designcraft_color::BlendMode;
 use designcraft_doc::{
-    Content, Document, Fill, Item, ItemId, ParaFormat, Selection, Shape, SpreadRef, Story, StoryId, Stroke, TextFrame, TextFrameOptions, TextSel,
+    Content, Document, Fill, Item, ItemId, ItemLoc, ParaFormat, Selection, Shape, SpreadRef, Story, StoryId, Stroke, TextFrame, TextFrameOptions,
+    TextSel,
 };
 use designcraft_geom::{Affine, Point, Rect, Vec2, shapes};
 use serde_json::{Value, json};
@@ -129,7 +130,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .execute("object.arrange", &json!({"to": "backward"}))),
         cmd!("object.sendToBack", "Send to Back", ["Object", "Arrange"], Some("Cmd+Shift+["), "{}", has_selection, |s, _| s
             .execute("object.arrange", &json!({"to": "back"}))),
-        cmd!("object.group", "Group", ["Object"], Some("Cmd+G"), "{ids?}", has_selection, group),
+        cmd!("object.group", "Group", ["Object"], Some("Cmd+G"), "{ids?}", can_group, group),
         cmd!("object.ungroup", "Ungroup", ["Object"], Some("Cmd+Shift+G"), "{ids?}", has_selection, ungroup),
         cmd!("object.lock", "Lock", ["Object"], Some("Cmd+L"), "{ids?}", has_selection, |s, p| set_flag(s, p, |i| i.locked = true, true)),
         cmd!("object.unlockAll", "Unlock All on Spread", ["Object"], Some("Cmd+Alt+L"), "{}", has_doc, |s, _| all_flag(s, |i| i.locked = false)),
@@ -1302,26 +1303,85 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Where a group of `ids` goes: their spread, the path of the group holding them (empty at top
+/// level), and their indices in that list, back to front.
+struct GroupPlan {
+    spread: SpreadRef,
+    parent: Vec<usize>,
+    indices: Vec<usize>,
+}
+
+/// Objects can be grouped when they share a spread and a parent: all top-level, or all in the
+/// same group (which then holds the new group). A multi-state object keeps one state per child,
+/// so objects inside one stay as they are.
+fn group_plan(d: &Document, ids: &[ItemId]) -> std::result::Result<GroupPlan, String> {
+    let mut seen = HashSet::new();
+    let mut locs = Vec::new();
+    for id in ids {
+        if seen.insert(*id) {
+            locs.push(d.find(*id).ok_or_else(|| format!("no object with id {}", id.0))?);
+        }
+    }
+    if locs.len() < 2 {
+        return Err("select at least two objects".into());
+    }
+    let mut plan: Option<GroupPlan> = None;
+    for loc in locs {
+        let Some((&i, parent)) = loc.path.split_last() else { return Err("object not found".into()) };
+        match &mut plan {
+            None => plan = Some(GroupPlan { spread: loc.spread, parent: parent.to_vec(), indices: vec![i] }),
+            Some(p) if p.spread == loc.spread && p.parent == parent => p.indices.push(i),
+            Some(_) => return Err(GROUP_SAME_LEVEL.into()),
+        }
+    }
+    let Some(mut plan) = plan else { return Err("select at least two objects".into()) };
+    if !plan.parent.is_empty() && d.item_at(&ItemLoc { spread: plan.spread, path: plan.parent.clone() }).is_some_and(|g| !g.states.is_empty()) {
+        return Err("objects inside a multi-state object can't be grouped".into());
+    }
+    plan.indices.sort_unstable();
+    Ok(plan)
+}
+
+const GROUP_SAME_LEVEL: &str = "objects to group must be on the same spread and at the same level (all top-level, or all in the same group)";
+
+/// The list that holds the objects a [`GroupPlan`] groups.
+fn siblings_mut<'a>(d: &'a mut Document, plan: &GroupPlan) -> Option<&'a mut Vec<Arc<Item>>> {
+    if plan.parent.is_empty() {
+        return Some(&mut d.spread_mut(plan.spread)?.items);
+    }
+    d.item_mut_at(&ItemLoc { spread: plan.spread, path: plan.parent.clone() })?.children_mut()
+}
+
+/// Menu state of Object › Group: the selection must be groupable.
+fn can_group(s: &Session) -> std::result::Result<(), String> {
+    has_selection(s)?;
+    let st = s.active().ok_or_else(|| "no document open".to_string())?;
+    group_plan(&st.doc, &st.selection.items).map(|_| ()).map_err(|_| super::CANT_GROUP_SELECTION.into())
+}
+
 fn group(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    if ids.len() < 2 {
-        return Err(bad("object.group", "select at least two objects"));
-    }
     s.edit(|d, sel| {
-        let sr = d.find(ids[0]).map(|l| l.spread).ok_or(designcraft_doc::DocError::NoItem(ids[0]))?;
-        // Keep stacking order: collect in z-order.
-        let order: Vec<ItemId> = d.spread(sr).map(|sp| sp.items.iter().map(|i| i.id).filter(|i| ids.contains(i)).collect()).unwrap_or_default();
-        let front = d.spread(sr).and_then(|sp| sp.items.iter().position(|i| Some(&i.id) == order.last())).unwrap_or(0);
-        let layer = d.item(order[0]).map(|i| i.layer).unwrap_or_default();
-        let mut kids = Vec::new();
-        for id in &order {
-            kids.push(d.remove_item_keep_story(*id)?);
+        let plan = group_plan(d, &ids).map_err(|e| bad("object.group", e))?;
+        let missing = || bad("object.group", "the objects to group are gone");
+        let siblings = siblings_mut(d, &plan).ok_or_else(missing)?;
+        let (Some(&back), Some(&front)) = (plan.indices.first(), plan.indices.last()) else { return Err(missing()) };
+        let layer = siblings.get(back).ok_or_else(missing)?.layer;
+        // Keep stacking order: remove front to back, then restore back-to-front order.
+        let mut kids = Vec::with_capacity(plan.indices.len());
+        for &i in plan.indices.iter().rev() {
+            if i >= siblings.len() {
+                return Err(missing());
+            }
+            kids.push(siblings.remove(i));
         }
+        kids.reverse();
         let gid = ItemId(d.alloc());
         let mut g = Item::new(gid, layer, Shape::Group, designcraft_geom::PathData::default());
-        g.content = Content::Group { items: kids.into_iter().map(Arc::new).collect() };
-        let at = front + 1 - order.len();
-        d.insert_item(sr, g, Some(at))?;
+        let at = (front + 1).saturating_sub(kids.len());
+        g.content = Content::Group { items: kids };
+        let siblings = siblings_mut(d, &plan).ok_or_else(missing)?;
+        siblings.insert(at.min(siblings.len()), Arc::new(g));
         *sel = Selection::items(vec![gid]);
         Ok(json!({"id": gid.0}))
     })
@@ -2712,5 +2772,113 @@ mod blend_mode_tests {
         let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
         assert_eq!(it.blend, BlendMode::Multiply, "a rejected value changes nothing");
         assert_eq!(it.opacity, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    fn frame(s: &mut Session, rect: [f64; 4], spread: usize) -> ItemId {
+        ItemId(s.execute("frame.create", &json!({"rect": rect, "spread": spread})).unwrap()["id"].as_u64().unwrap())
+    }
+
+    fn group_ids(s: &mut Session, ids: &[ItemId]) -> Result<ItemId> {
+        let r = s.execute("object.group", &json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))?;
+        Ok(ItemId(r["id"].as_u64().unwrap()))
+    }
+
+    fn children(s: &Session, id: ItemId) -> Vec<ItemId> {
+        s.doc().unwrap().doc.item(id).unwrap().children().iter().map(|c| c.id).collect()
+    }
+
+    fn world(s: &Session, id: ItemId) -> Affine {
+        let d = &s.doc().unwrap().doc;
+        let loc = d.find(id).unwrap();
+        d.parent_xf(&loc) * d.item(id).unwrap().xf
+    }
+
+    fn group_enabled(s: &Session) -> bool {
+        super::super::find_command("object.group").unwrap().info(s).enabled
+    }
+
+    #[test]
+    fn grouping_objects_already_in_a_group_does_not_panic() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let a = frame(&mut s, [36.0, 36.0, 136.0, 136.0], 0);
+        let b = frame(&mut s, [200.0, 36.0, 300.0, 136.0], 0);
+        let g = group_ids(&mut s, &[a, b]).unwrap();
+        let inner = group_ids(&mut s, &[a, b]).unwrap();
+        assert_eq!(children(&s, g), vec![inner]);
+        assert_eq!(children(&s, inner), vec![a, b]);
+
+        // The same through the selection, and through Convert to Multi-State Object.
+        s.execute("selection.set", &json!({"ids": [a.0, b.0], "content": true})).unwrap();
+        assert!(group_enabled(&s));
+        let inner2 = ItemId(s.execute("object.group", &json!({})).unwrap()["id"].as_u64().unwrap());
+        assert_eq!(children(&s, inner), vec![inner2]);
+        let st = ItemId(s.execute("states.create", &json!({"ids": [a.0, b.0]})).unwrap()["id"].as_u64().unwrap());
+        assert_eq!(children(&s, inner2), vec![st]);
+        assert_eq!(s.doc().unwrap().doc.item(st).unwrap().states.len(), 2);
+    }
+
+    #[test]
+    fn grouping_siblings_inside_a_group_nests_them_and_undo_restores() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let a = frame(&mut s, [0.0, 0.0, 10.0, 10.0], 0);
+        let b = frame(&mut s, [20.0, 0.0, 30.0, 10.0], 0);
+        let c = frame(&mut s, [40.0, 0.0, 50.0, 10.0], 0);
+        let g = group_ids(&mut s, &[a, b, c]).unwrap();
+        s.execute("transform.rotate", &json!({"ids": [g.0], "angle": 30})).unwrap();
+        let before = (world(&s, a), world(&s, c));
+
+        let inner = group_ids(&mut s, &[c, a]).unwrap();
+        assert_eq!(children(&s, g), vec![b, inner], "the new group takes the frontmost object's place");
+        assert_eq!(children(&s, inner), vec![a, c], "stacking order kept");
+        assert_eq!((world(&s, a), world(&s, c)), before, "nothing moves");
+        assert_eq!(s.doc().unwrap().selection.items, vec![inner]);
+
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(children(&s, g), vec![a, b, c]);
+        assert!(s.doc().unwrap().doc.find(inner).is_none());
+    }
+
+    #[test]
+    fn grouping_across_levels_or_spreads_is_refused_and_changes_nothing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let a = frame(&mut s, [0.0, 0.0, 10.0, 10.0], 0);
+        let b = frame(&mut s, [20.0, 0.0, 30.0, 10.0], 0);
+        let top = frame(&mut s, [40.0, 0.0, 50.0, 10.0], 0);
+        let other = frame(&mut s, [0.0, 0.0, 10.0, 10.0], 1);
+        let other2 = frame(&mut s, [20.0, 0.0, 30.0, 10.0], 1);
+        let g = group_ids(&mut s, &[a, b]).unwrap();
+        let doc = s.doc().unwrap().doc.clone();
+
+        for ids in [[a, top], [top, a], [a, other], [top, other], [g, a]] {
+            let e = group_ids(&mut s, &ids).unwrap_err().to_string();
+            assert!(e.contains("same spread and at the same level"), "{ids:?}: {e}");
+            let e = s.execute("states.create", &json!({"ids": [ids[0].0, ids[1].0]})).unwrap_err().to_string();
+            assert!(e.contains("same spread and at the same level"), "states.create {ids:?}: {e}");
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &doc), "{ids:?} changed the document");
+        }
+        assert!(group_ids(&mut s, &[a, ItemId(999_999)]).is_err());
+
+        s.execute("selection.set", &json!({"ids": [a.0, other.0], "content": true})).unwrap();
+        assert!(!group_enabled(&s), "Group is disabled for objects on different spreads");
+        s.execute("selection.set", &json!({"ids": [other.0, other2.0]})).unwrap();
+        assert!(group_enabled(&s));
+        // Named objects win over a selection that can't be grouped.
+        s.execute("selection.set", &json!({"ids": [a.0, other.0], "content": true})).unwrap();
+        assert!(group_ids(&mut s, &[other, other2]).is_ok());
+
+        // A multi-state object keeps one state per object.
+        let ms = ItemId(s.execute("states.create", &json!({"ids": [g.0]})).unwrap()["id"].as_u64().unwrap());
+        assert_eq!(ms, g);
+        let e = group_ids(&mut s, &[a, b]).unwrap_err().to_string();
+        assert!(e.contains("multi-state"), "{e}");
+        assert_eq!(children(&s, g), vec![a, b]);
     }
 }

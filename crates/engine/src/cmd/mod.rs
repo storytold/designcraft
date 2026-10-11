@@ -116,6 +116,14 @@ pub fn has_doc(s: &Session) -> std::result::Result<(), String> {
 /// Why [`has_selection`] disables a command. A command that documents `ids` still runs when the
 /// call names its objects (see [`named_targets`]).
 pub const NOTHING_SELECTED: &str = "nothing selected";
+/// Why Object › Group is disabled for a selection it can't group. Like [`NOTHING_SELECTED`], a
+/// call that names its objects still runs, and the command checks those instead.
+pub const CANT_GROUP_SELECTION: &str = "select two or more objects on one spread, all top-level or all in the same group";
+
+/// Whether `reason` only concerns the selection, so a call that names its objects runs anyway.
+pub(crate) fn selection_reason(reason: &str) -> bool {
+    reason == NOTHING_SELECTED || reason == CANT_GROUP_SELECTION
+}
 pub fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     if s.active().is_some_and(|d| !d.selection.items.is_empty()) { Ok(()) } else { Err(NOTHING_SELECTED.into()) }

@@ -393,9 +393,10 @@ impl Session {
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
         if let Err(e) = (spec.enabled)(self) {
-            // A command that takes `ids` acts on the objects the call names, so it needs no
-            // selection: with a text caret or nothing selected, `{"ids": [5]}` still runs.
-            let named = if e == cmd::NOTHING_SELECTED { cmd::named_targets(spec, params) } else { None };
+            // A command that takes `ids` acts on the objects the call names, so the selection
+            // doesn't matter: with a text caret, nothing selected, or a selection the command
+            // can't act on, `{"ids": [5]}` still runs.
+            let named = if cmd::selection_reason(&e) { cmd::named_targets(spec, params) } else { None };
             let Some(ids) = named else { return Err(EngineError::Disabled(id.into(), e)) };
             let st = self.doc()?;
             if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
