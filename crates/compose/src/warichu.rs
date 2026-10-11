@@ -84,7 +84,8 @@ fn line_count(len: usize, want: usize, before: usize, after: usize) -> usize {
     let before = before.max(1);
     let after = after.max(1);
     while n >= 2 {
-        if before + after + n - 2 <= len {
+        // The minimums come from documents and commands: on 32-bit targets their sum can overflow.
+        if before.saturating_add(after).saturating_add(n - 2) <= len {
             return n;
         }
         n -= 1;
@@ -220,7 +221,9 @@ fn layout(styles: &[RunStyle], line: &mut [PlacedGlyph], members: &[usize]) -> f
     let small = st.size * scale;
     // 0 is the default (one small em). Any other value, including a negative one, is added to
     // that em and then clamped so the rows cannot swap order.
-    let gap = if st.warichu_line_spacing == 0.0 { small } else { (small + st.warichu_line_spacing).max(0.0) };
+    // Bounded, so a hostile value can't move a row to an infinite or huge coordinate.
+    let spacing = if st.warichu_line_spacing.is_finite() { st.warichu_line_spacing.clamp(-16.0 * st.size, 16.0 * st.size) } else { 0.0 };
+    let gap = if spacing == 0.0 { small } else { (small + spacing).max(0.0) };
     let mut off = 0_usize;
     for (li, &c) in counts.iter().enumerate() {
         let w = widths[li];
@@ -263,4 +266,16 @@ fn layout(styles: &[RunStyle], line: &mut [PlacedGlyph], members: &[usize]) -> f
         }
     }
     delta
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_break_minimums_keep_one_line() {
+        assert_eq!(line_count(10, 2, usize::MAX, 1), 1);
+        assert_eq!(line_count(10, 3, 1, usize::MAX), 1);
+        assert_eq!(line_count(10, 2, 3, 3), 2);
+    }
 }

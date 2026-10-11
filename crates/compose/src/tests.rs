@@ -1096,6 +1096,27 @@ fn warichu_stacks_the_run_inside_the_line_and_closes_up() {
 }
 
 #[test]
+fn warichu_line_spacing_from_a_document_stays_finite() {
+    for spacing in [1e308, -1e308, f64::INFINITY, f64::NAN] {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, "ABCDEFGHZ", ParaFormat::default()).unwrap();
+        d.story_mut(sid).unwrap().format_chars(0..8, |f| {
+            f.over.warichu = Some(true);
+            f.over.warichu_lines = Some(16);
+            f.over.warichu_line_spacing = Some(spacing);
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines[0];
+        assert!(
+            l.glyphs.iter().all(|g| g.x.is_finite() && g.y.is_finite() && g.y.abs() < 1e4),
+            "{spacing}: {:?}",
+            l.glyphs.iter().map(|g| g.y).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn warichu_break_minimum_keeps_a_short_run_on_one_line() {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
     let lid = d.default_layer();
