@@ -84,10 +84,28 @@ pub fn import_idml_with(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>
         }
     }
     let mut im = Importer::new(read_link);
+    if let Some(m) = files.get("META-INF/metadata.xml") {
+        let m = String::from_utf8_lossy(m);
+        im.created = xmp_date(&m, "xmp:CreateDate");
+        im.modified = xmp_date(&m, "xmp:ModifyDate");
+    }
     im.run(&root, &top)?;
     let d = im.finish(&root)?;
     d.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
     Ok(d)
+}
+
+/// An XMP date property, written as an element or an attribute.
+fn xmp_date(xmp: &str, key: &str) -> Option<i64> {
+    let value = if let Some(i) = xmp.find(&format!("<{key}>")) {
+        let rest = xmp.get(i + key.len() + 2..)?;
+        rest.get(..rest.find('<')?)?
+    } else {
+        let i = xmp.find(&format!("{key}=\""))?;
+        let rest = xmp.get(i + key.len() + 2..)?;
+        rest.get(..rest.find('"')?)?
+    };
+    designcraft_doc::vars::parse_iso_date(value)
 }
 
 struct ItemCtx {
@@ -145,6 +163,12 @@ struct Importer<'r> {
     /// Index topic Self → topic path; topic See / See also cross-references.
     index_topics: HashMap<String, Vec<String>>,
     index_xrefs: Vec<designcraft_doc::IndexRef>,
+    /// The file's text variables (`None`: it defines none) and their Self → index.
+    text_vars: Option<Vec<designcraft_doc::vars::TextVariable>>,
+    text_var_ids: HashMap<String, usize>,
+    /// Creation and modification times (Unix seconds) from the package metadata.
+    created: Option<i64>,
+    modified: Option<i64>,
 }
 
 fn lab_to_color(l: f32, a: f32, b: f32) -> Color {
@@ -226,6 +250,10 @@ impl<'r> Importer<'r> {
             xref_formats: designcraft_doc::xref::default_formats(),
             index_topics: HashMap::new(),
             index_xrefs: Vec::new(),
+            text_vars: None,
+            text_var_ids: HashMap::new(),
+            created: None,
+            modified: None,
         }
     }
 
@@ -389,6 +417,9 @@ impl<'r> Importer<'r> {
         }
         if let Some(ix) = top.iter().find(|e| e.local() == "Index") {
             self.index_topics_of(ix, &[]);
+        }
+        for e in top.iter().filter(|e| e.local() == "TextVariable") {
+            self.text_variable(e);
         }
         // Stories (ids first so frames can reference them).
         for e in top.iter().filter(|e| e.local() == "Story") {
@@ -977,6 +1008,88 @@ impl<'r> Importer<'r> {
     }
 
     /// `CrossReferenceFormat`: building blocks back to a format definition.
+    /// A `TextVariable` definition. Types that aren't computed here keep their settings and show
+    /// the result of their first instance.
+    fn text_variable(&mut self, e: &El) {
+        use designcraft_doc::vars::{TextVariable, Use, VAR_MAX, VarKind};
+        let ty = e.get("VariableType").unwrap_or("");
+        // Cross-reference internals; export writes its own.
+        if ty.is_empty() || ty.starts_with("Xref") {
+            return;
+        }
+        let vars = self.text_vars.get_or_insert_with(Vec::new);
+        if vars.len() >= VAR_MAX {
+            return;
+        }
+        let pref = e.elements().find(|c| c.local().ends_with("Preference"));
+        let attr = |k: &str| pref.and_then(|p| p.get(k)).unwrap_or("");
+        let date = || Some(attr("Format")).filter(|f| !f.is_empty()).unwrap_or("MM/dd/yy").to_string();
+        let kind = match ty {
+            "CustomTextType" => Some(VarKind::Custom { text: attr("Contents").into() }),
+            "LastPageNumberType" => Some(VarKind::LastPageNumber { section: attr("Scope") == "SectionScope" }),
+            "ChapterNumberType" => Some(VarKind::ChapterNumber),
+            "FileNameType" if attr("IncludePath") != "true" => Some(VarKind::FileName { extension: attr("IncludeExtension") == "true" }),
+            "CreationDateType" => Some(VarKind::CreationDate { format: date() }),
+            "ModificationDateType" => Some(VarKind::ModificationDate { format: date() }),
+            "OutputDateType" => Some(VarKind::OutputDate { format: date() }),
+            "MatchParagraphStyleType" | "MatchCharacterStyleType" => {
+                let character = ty == "MatchCharacterStyleType";
+                let r = attr(if character { "AppliedCharacterStyle" } else { "AppliedParagraphStyle" });
+                let use_ = if attr("SearchStrategy") == "LastOnPage" { Use::LastOnPage } else { Use::FirstOnPage };
+                // Change Case and Delete End Punctuation aren't modelled: the header shows the text as set.
+                (!r.is_empty()).then(|| VarKind::RunningHeader {
+                    style: if character { self.char_style_ref(r) } else { self.para_style_ref(r) },
+                    use_,
+                    character,
+                })
+            }
+            _ => None,
+        };
+        let name = e.get("Name").unwrap_or("").to_string();
+        let v = match kind {
+            Some(kind) => {
+                let mut v = TextVariable::new(&name, kind);
+                v.before = attr("TextBefore").into();
+                v.after = attr("TextAfter").into();
+                v
+            }
+            None => TextVariable::new(
+                &name,
+                VarKind::Imported {
+                    variable_type: ty.into(),
+                    result: String::new(),
+                    settings_element: pref.map(|p| p.name.clone()).unwrap_or_default(),
+                    settings: pref.map(|p| p.attrs.clone()).unwrap_or_default(),
+                },
+            ),
+        };
+        let vars = self.text_vars.get_or_insert_with(Vec::new);
+        if let Some(s) = e.get("Self") {
+            self.text_var_ids.insert(s.to_string(), vars.len());
+        }
+        vars.push(v);
+    }
+
+    /// A `TextVariableInstance`: the variable's character, or its recorded text when the file
+    /// doesn't define the variable.
+    fn text_variable_instance(&mut self, e: &El) -> String {
+        use designcraft_doc::vars::{VarKind, var_char};
+        let result = e.get("ResultText").unwrap_or("");
+        let found = e.get("AssociatedTextVariable").and_then(|r| self.text_var_ids.get(r)).copied();
+        let var = found.and_then(|i| Some((i, self.text_vars.as_mut()?.get_mut(i)?)));
+        match var.and_then(|(i, v)| Some((var_char(i)?, v))) {
+            Some((c, v)) => {
+                if let VarKind::Imported { result: r, .. } = &mut v.kind
+                    && r.is_empty()
+                {
+                    *r = result.to_string();
+                }
+                c.to_string()
+            }
+            None => result.to_string(),
+        }
+    }
+
     fn xref_format(&mut self, e: &El) {
         let name = e.get("Name").unwrap_or("Format").to_string();
         let mut def = String::new();
@@ -1810,7 +1923,11 @@ impl<'r> Importer<'r> {
                             b.push(&designcraft_doc::OBJECT_MARK.to_string(), cf);
                         }
                     }
-                    "Properties" | "Note" | "TextFrame" | "StoryPreference" | "InCopyExportOption" | "TextVariableInstance" => {}
+                    "TextVariableInstance" => {
+                        let t = self.text_variable_instance(c);
+                        b.push(&t, cf);
+                    }
+                    "Properties" | "Note" | "TextFrame" | "StoryPreference" | "InCopyExportOption" => {}
                     _ => self.walk_story(c, b, pf, pchars, cf, brk),
                 },
                 Node::Pi(t, v) if t == "ACE" => {
@@ -2332,12 +2449,12 @@ impl<'r> Importer<'r> {
             user_words: vec![],
             hyphenation_exceptions: vec![],
             toc: None,
-            text_variables: designcraft_doc::vars::defaults(),
+            text_variables: self.text_vars.take().unwrap_or_else(designcraft_doc::vars::defaults),
             footnote_options: std::mem::take(&mut self.footnote_options),
             xref_formats: std::mem::take(&mut self.xref_formats),
             index: None,
-            created: designcraft_doc::vars::now(),
-            modified: 0,
+            created: self.created.unwrap_or_else(designcraft_doc::vars::now),
+            modified: self.modified.unwrap_or(0),
             next_id: self.next_id,
             font_scope: 0,
         };

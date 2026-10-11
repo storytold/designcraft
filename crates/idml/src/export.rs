@@ -228,6 +228,7 @@ impl<'a> Ex<'a> {
         let designmap = self.designmap(&masters, &spreads, &story_parts);
 
         parts.push(("META-INF/container.xml".to_string(), CONTAINER.as_bytes().to_vec()));
+        parts.push(("META-INF/metadata.xml".to_string(), metadata_xmp(d).into_bytes()));
         parts.push(("designmap.xml".to_string(), designmap));
         parts.push(("Resources/Graphic.xml".to_string(), graphic));
         parts.push(("Resources/Fonts.xml".to_string(), fonts));
@@ -345,6 +346,9 @@ impl<'a> Ex<'a> {
         for (name, ty) in [("XRefChapterNumber", "XrefChapterNumberType"), ("XRefPageNumber", "XrefPageNumberType")] {
             let n = format!("<?AID 001b?>TV {name}");
             root.push(El::new("TextVariable").attr("Self", format!("dTextVariablen{n}")).attr("Name", &n).attr("VariableType", ty));
+        }
+        for v in &d.text_variables {
+            root.push(text_variable_el(v));
         }
         // IDML lists layers back to front.
         for l in d.layers.iter().rev() {
@@ -2127,6 +2131,19 @@ impl<'a> Ex<'a> {
                             csrs.push(src);
                             self.xref_sources.push((me, x.target));
                         }
+                    } else if let Some(vi) = designcraft_doc::vars::var_index(ch) {
+                        flush_text(&mut cur, &mut pending);
+                        flush_content(&mut pending, &mut out);
+                        if let Some(v) = self.d.text_variables.get(vi) {
+                            let result = self.d.variable_value(vi, None).unwrap_or_else(|| format!("{}{}", v.before, v.after));
+                            out.push(Node::El(
+                                El::new("TextVariableInstance")
+                                    .attr("Self", self.fresh())
+                                    .attr("Name", &v.name)
+                                    .attr("ResultText", result)
+                                    .attr("AssociatedTextVariable", format!("dTextVariablen{}", v.name)),
+                            ));
+                        }
                     } else if ch == designcraft_doc::NOTE_MARK {
                         // Editorial notes aren't written to IDML yet.
                     } else if ch == designcraft_doc::ENDNOTE_REF {
@@ -2664,4 +2681,72 @@ fn topic_self(path: &[String]) -> String {
         s.push_str(&escape_id(n));
     }
     s
+}
+
+/// Package metadata: the creation and modification times that date variables show.
+fn metadata_xmp(d: &Document) -> String {
+    use designcraft_doc::vars::format_date;
+    let iso = |t: i64| format!("{}:{:02}Z", format_date(t, "yyyy-MM-ddTHH:mm"), t.rem_euclid(60));
+    let modified = if d.modified > 0 { d.modified } else { d.created };
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\n   <xmp:CreateDate>{}</xmp:CreateDate>\n   <xmp:ModifyDate>{}</xmp:ModifyDate>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n",
+        iso(d.created),
+        iso(modified)
+    )
+}
+
+/// A text variable definition with its type's settings element.
+fn text_variable_el(v: &designcraft_doc::vars::TextVariable) -> El {
+    use designcraft_doc::vars::{Use, VarKind};
+    let pref = |name: &str| El::new(name).attr("TextBefore", &v.before);
+    let (ty, settings) = match &v.kind {
+        VarKind::Custom { text } => ("CustomTextType", Some(pref("CustomTextVariablePreference").attr("Contents", text))),
+        VarKind::LastPageNumber { section } => (
+            "LastPageNumberType",
+            Some(
+                pref("PageNumberVariablePreference").attr("Format", "Current").attr("Scope", if *section { "SectionScope" } else { "DocumentScope" }),
+            ),
+        ),
+        VarKind::ChapterNumber => ("ChapterNumberType", Some(pref("ChapterNumberVariablePreference").attr("Format", "Current"))),
+        VarKind::FileName { extension } => {
+            ("FileNameType", Some(pref("FileNameVariablePreference").attr("IncludePath", "false").attr("IncludeExtension", bool_s(*extension))))
+        }
+        VarKind::CreationDate { format } => ("CreationDateType", Some(pref("DateVariablePreference").attr("Format", format))),
+        VarKind::ModificationDate { format } => ("ModificationDateType", Some(pref("DateVariablePreference").attr("Format", format))),
+        VarKind::OutputDate { format } => ("OutputDateType", Some(pref("DateVariablePreference").attr("Format", format))),
+        VarKind::RunningHeader { style, use_, character } => {
+            let (ty, el, key, style_ref) = if *character {
+                (
+                    "MatchCharacterStyleType",
+                    "MatchCharacterStylePreference",
+                    "AppliedCharacterStyle",
+                    names::style_self("CharacterStyle", CHAR_BUILTINS, style),
+                )
+            } else {
+                (
+                    "MatchParagraphStyleType",
+                    "MatchParagraphStylePreference",
+                    "AppliedParagraphStyle",
+                    names::style_self("ParagraphStyle", PARA_BUILTINS, style),
+                )
+            };
+            let strategy = if *use_ == Use::LastOnPage { "LastOnPage" } else { "FirstOnPage" };
+            (
+                ty,
+                Some(pref(el).attr(key, style_ref).attr("SearchStrategy", strategy).attr("ChangeCase", "None").attr("DeleteEndPunctuation", "false")),
+            )
+        }
+        VarKind::Imported { variable_type, settings_element, settings, .. } => {
+            let el = (!settings_element.is_empty()).then(|| El { name: settings_element.clone(), attrs: settings.clone(), children: vec![] });
+            (variable_type.as_str(), el)
+        }
+    };
+    let mut e = El::new("TextVariable").attr("Self", format!("dTextVariablen{}", v.name)).attr("Name", &v.name).attr("VariableType", ty);
+    if let Some(mut s) = settings {
+        if !matches!(v.kind, VarKind::Imported { .. }) {
+            s.set("TextAfter", &v.after);
+        }
+        e.push(s);
+    }
+    e
 }

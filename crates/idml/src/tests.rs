@@ -8,6 +8,7 @@ use designcraft_geom::{Rect, shapes};
 use super::*;
 
 mod decorations;
+mod variables;
 
 fn zip_files(files: &[(&str, &str)]) -> Vec<u8> {
     use zip::write::SimpleFileOptions;

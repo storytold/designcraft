@@ -65,6 +65,19 @@ pub enum VarKind {
         #[serde(default)]
         character: bool,
     },
+    /// A variable type that isn't computed here (an image caption, say): it shows the result
+    /// recorded in the imported file, which already includes any text before and after.
+    Imported {
+        /// The file's name for the type, e.g. `LiveCaptionType`.
+        variable_type: String,
+        #[serde(default)]
+        result: String,
+        /// The type's settings element as read (name and attributes), written back on export.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        settings_element: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        settings: Vec<(String, String)>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -124,6 +137,65 @@ fn civil(days: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// Days since 1970-01-01 of a civil date (inverse of [`civil`]).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = i64::from(if m > 2 { m - 3 } else { m + 9 });
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Unix seconds of an ISO 8601 timestamp such as `2019-12-16T09:48:02+01:00` (seconds, the
+/// time and the zone are optional; no zone means UTC).
+pub fn parse_iso_date(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let num = |a: usize, b: usize| -> Option<i64> {
+        let t = s.get(a..b)?;
+        t.bytes().all(|c| c.is_ascii_digit()).then(|| t.parse().ok()).flatten()
+    };
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    if s.get(4..5) != Some("-") || s.get(7..8) != Some("-") || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let mut secs = days_from_civil(y, mo as u32, d as u32) * 86_400;
+    let rest = s.get(10..).unwrap_or("");
+    let Some(time) = rest.strip_prefix('T') else { return rest.is_empty().then_some(secs) };
+    let tnum = |a: usize, b: usize| -> Option<i64> {
+        let t = time.get(a..b)?;
+        t.bytes().all(|c| c.is_ascii_digit()).then(|| t.parse().ok()).flatten()
+    };
+    let (h, mi) = (tnum(0, 2)?, tnum(3, 5)?);
+    let mut i = 5;
+    let mut sec = 0;
+    if time.get(5..6) == Some(":") {
+        sec = tnum(6, 8)?;
+        i = 8;
+        // Fractional seconds are ignored.
+        if time.get(8..9) == Some(".") {
+            i = 9 + time.get(9..)?.bytes().take_while(u8::is_ascii_digit).count();
+        }
+    }
+    if h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    secs += h * 3600 + mi * 60 + sec;
+    let zone = time.get(i..)?;
+    match zone.chars().next() {
+        None | Some('Z') => Some(secs),
+        Some(sign @ ('+' | '-')) => {
+            let z = zone.get(1..)?;
+            let zh: i64 = z.get(0..2)?.parse().ok()?;
+            let zm: i64 = z.get(2..).map(|r| r.trim_start_matches(':')).filter(|r| !r.is_empty()).map_or(Some(0), |r| r.parse().ok())?;
+            let off = zh * 3600 + zm * 60;
+            Some(if sign == '+' { secs - off } else { secs + off })
+        }
+        _ => None,
+    }
 }
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -198,6 +270,7 @@ impl Document {
             VarKind::ModificationDate { format } => format_date(if self.modified > 0 { self.modified } else { self.created }, format),
             VarKind::OutputDate { format } => format_date(now(), format),
             VarKind::RunningHeader { .. } => return None,
+            VarKind::Imported { result, .. } => return Some(result.clone()),
         };
         Some(format!("{}{}{}", v.before, body, v.after))
     }
@@ -219,6 +292,18 @@ mod tests {
         assert_eq!(format_date(t, "MMMM d, yyyy h:mm aa"), "October 1, 2026 2:05 PM");
         assert_eq!(format_date(0, "MM/dd/yy"), "01/01/70");
         assert_eq!(format_date(951_782_400, "yyyy-MM-dd"), "2000-02-29");
+    }
+
+    #[test]
+    fn iso_dates() {
+        assert_eq!(parse_iso_date("2026-10-01T14:05:00Z"), Some(1_790_863_500));
+        assert_eq!(parse_iso_date("2026-10-01T16:05:00+02:00"), Some(1_790_863_500));
+        assert_eq!(parse_iso_date("2026-10-01T09:05-05:00"), Some(1_790_863_500));
+        assert_eq!(parse_iso_date("2000-02-29"), Some(951_782_400));
+        assert_eq!(parse_iso_date("2019-12-16T09:48:02.5+01:00").map(|t| format_date(t, "MM/dd/yy HH:mm")), Some("12/16/19 08:48".into()));
+        for bad in ["", "2019", "2019-13-01", "2019-12-16T25:00", "2019-12-16T09:48+0x", "２０１９-12-16"] {
+            assert_eq!(parse_iso_date(bad), None, "{bad}");
+        }
     }
 
     #[test]
