@@ -48,6 +48,7 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Missing glyphs | as in InDesign: characters the applied font lacks are drawn as its missing-glyph box (screen and PDF) and listed by Preflight; the document setting Draw Missing Glyphs from Fallback Fonts (Preferences › Composition, off in new documents and IDML imports, on in documents saved before it existed) draws them from fallback fonts instead |
 | Font menus | Western families first, then Japanese, Simplified Chinese, Traditional Chinese and Korean groups (from the font's `meta` languages, CJK family names, OS/2 code pages, else its coverage); CJK families under their native names unless Preferences › Type › Show Font Names in English; the order is recalled from InDesign, not observed |
 | CJK fonts | Japanese faces (Shippori Mincho first) from the optional craft-fonts build input, in the font menus for users to apply; fallback by language (with fallback fonts on) (Japanese: the craft-fonts faces, then system fonts; Simplified and Traditional Chinese, Korean: system fonts); document fonts: the fonts of a `Document Fonts` folder beside an opened file belong to that document (composition, export, font menus), ahead of installed fonts of the same name, and are forgotten when it closes; Package copies every font file that draws text, fallback fonts included (licence permitting). Font files stay in memory for the session (reopening a document reuses them) and aren't read on the web |
+| Frame grids | Chinese, Japanese and Korean text frames set in a grid of character cells (`TextFrameOptions.frameGrid`): cell = size × scale, character and line aki, rows with gyōdori, grid and character alignment (em box, ICF, Roman baseline), line alignment override, horizontal and vertical; whole-cell resizing; Horizontal / Vertical Grid tools, Object › Frame Grid Options, Frame Type, Edit › Apply Grid Format, View › Show Frame Grids (cells with every n-th one shaded, N/Z or outline view, character count), Properties sections for a selected grid. Punctuation takes a whole cell each: there is no mojikumi yet (the aki will come from the mojikumi engine); no IDML attributes, named grids or layout grid yet |
 | Everything else below | missing |
 
 Known bugs to fix first:
@@ -156,6 +157,22 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
   and lines, alignment, view options), grid alignment of paragraphs (em-box centre, ICF top/bottom,
   roman baseline, gyoudori: lines spanning N grid lines), grid tracking.
 - Frame Grid tools (horizontal and vertical) and Object › Frame Type (text frame ↔ frame grid).
+
+What is built (`doc::framegrid`, `compose::framegrid`, `engine::cmd::grids`): the grid of a frame
+(font, size, scales, character and line aki, line alignment override, grid and character
+alignment, count position and size, view, the cell shaded every n-th), `DocSettings.frame_grid`
+for new grids (Noto Serif CJK JP Regular for now, the same face on every platform; the face of
+the document's language, SC / TC / KR, is to come; else the first
+installed of Noto Serif JP, Source Han Serif JP, Hiragino Mincho ProN, Yu Mincho, MS Mincho,
+IPAexMincho). Character and line counts are not stored: they follow from the frame size.
+Composition puts full-width characters of the grid's size one to a cell, a character pitch
+apart; Western text and other sizes keep their widths. A line takes as many rows as its em box
+needs and is placed in them by the grid alignment. Changing a grid's size keeps its counts and
+resizes the frame; the text that follows the grid takes the new format, characters with their
+own keep it (`applyFormat: true` gives it to all). Commands: `frame.create {grid}`,
+`object.frameGridOptions`, `object.frameGridInfo`, `object.frameType`, `type.applyGridFormat`,
+`document.frameGridDefaults`. Punctuation spacing in a grid (half-width marks, bracket aki) is
+left to the mojikumi engine.
 
 ### Fonts
 

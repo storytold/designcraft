@@ -21,7 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Frame",
             [],
             None,
-            "{spread?, rect: [x0,y0,x1,y1] (spread coords), shape?: rectangle|ellipse|polygon, content?: graphic|text|unassigned, sides?: 6, text?: string, caret?: bool, vertical?: bool (text: a new vertical story)}",
+            "{spread?, rect: [x0,y0,x1,y1] (spread coords), shape?: rectangle|ellipse|polygon, content?: graphic|text|unassigned, sides?: 6, text?: string, caret?: bool, vertical?: bool (text: a new vertical story), grid?: bool | {grid fields of object.frameGridOptions} (text: a frame grid from the document's frame grid defaults, sized to whole cells, its text in the grid format)}",
             has_doc,
             frame_create
         ),
@@ -811,6 +811,16 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
     let sides = p.get("sides").and_then(Value::as_u64).map_or(s.prefs.polygon_sides, |v| v as u32).clamp(3, 100);
     let inset = p.get("starInset").and_then(Value::as_f64).map_or(s.prefs.star_inset, |v| v / 100.0).clamp(0.0, 1.0);
     let rect = Rect::new(rect.x0, rect.y0, rect.x1.max(rect.x0 + 0.5), rect.y1.max(rect.y0 + 0.5));
+    // A frame grid: the document's defaults with the given fields, in whole cells.
+    let grid = match p.get("grid") {
+        Some(Value::Bool(true)) => Some(super::grids::with_installed_font(s.doc()?.doc.settings.frame_grid.sanitized())),
+        Some(g @ Value::Object(_)) => {
+            Some(super::grids::grid_with(&super::grids::with_installed_font(s.doc()?.doc.settings.frame_grid.clone()), g, "frame.create")?)
+        }
+        _ => None,
+    }
+    .filter(|_| content == "text");
+    let rect = grid.as_ref().map_or(rect, |g| super::grids::snap_grid_rect(g, rect, vertical));
     s.edit(|d, sel| {
         if d.spread(sr).is_none() {
             return Err(bad("frame.create", "no such spread"));
@@ -827,6 +837,15 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
                 it.shape = sh;
             }
             super::text::set_story_direction(d, &[sid], vertical);
+            if let Some(g) = grid {
+                if let Some(tf) = d.item_mut(id).and_then(Item::text_frame_mut) {
+                    tf.options.frame_grid = Some(Box::new(g.clone()));
+                }
+                if let Some(st) = d.story_mut(sid) {
+                    let n = st.len();
+                    super::grids::format_story_chars(st, 0..n, &super::grids::grid_format(&g));
+                }
+            }
             *sel = if caret {
                 Selection::text(TextSel { story: sid, anchor: text.len(), focus: text.len(), frame: Some(id), cell: None })
             } else {
@@ -989,6 +1008,13 @@ fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
     let m = Affine::translate((to.x0, to.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-from.x0, -from.y0));
     let strokes = s.prefs.scale_strokes;
     s.edit(|d, _| {
+        // Frame grids among the targets, with their direction (vertical stories).
+        let grid_vertical: HashMap<ItemId, bool> = ids
+            .iter()
+            .filter_map(|id| d.item(*id))
+            .filter(|it| it.text_frame().is_some_and(|t| t.options.frame_grid.is_some() && t.options.path.is_none()))
+            .map(|it| (it.id, d.frame_vertical(it)))
+            .collect();
         for id in &ids {
             let it = d.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
             if it.locked {
@@ -1004,8 +1030,13 @@ fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
             } else {
                 // Resize the frame's path (in inner space); content keeps its size (InDesign's
                 // default) unless the frame auto-fits it.
+                let before = it.inner_bounds();
                 let inner = it.xf.inverse() * m * it.xf;
                 bake(it, inner);
+                // A frame grid resizes by whole cells.
+                if let Some(v) = grid_vertical.get(id) {
+                    super::grids::snap_grid_frame(it, before, *v);
+                }
                 let r = it.inner_bounds();
                 if let Content::Graphic(g) = &mut it.content
                     && let Some(xf) = g.fitted(r, g.auto_fit)
@@ -1263,13 +1294,20 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
         let m = Affine::translate((to.x0, to.y0))
             * Affine::scale_non_uniform(to.width() / geom.width().max(1e-9), to.height() / geom.height().max(1e-9))
             * Affine::translate((-geom.x0, -geom.y0));
+        let resizing = p.get("width").is_some() || p.get("height").is_some();
         for id in &ids {
+            let vertical = d.item(*id).map(|it| d.frame_vertical(it));
             if let Some(it) = d.item_mut(*id) {
                 if matches!(it.content, Content::Group { .. }) {
                     it.xf = m * it.xf;
                 } else {
+                    let before = it.inner_bounds();
                     let inner = it.xf.inverse() * m * it.xf;
                     bake(it, inner);
+                    // A frame grid resizes by whole cells.
+                    if resizing && it.text_frame().is_some_and(|t| t.options.frame_grid.is_some() && t.options.path.is_none()) {
+                        super::grids::snap_grid_frame(it, before, vertical.unwrap_or(false));
+                    }
                 }
             }
         }

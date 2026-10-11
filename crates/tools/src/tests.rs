@@ -705,3 +705,24 @@ fn pen_click_snaps_to_a_guide() {
     let x = p["anchors"][0]["p"][0].as_f64().unwrap();
     assert!((x - 100.0).abs() < 1e-6, "anchor x {x}");
 }
+
+#[test]
+fn grid_tools_draw_frame_grids() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    for (id, vertical) in [("horizontalGrid", false), ("verticalGrid", true)] {
+        let mut t = create(id);
+        assert_eq!(t.id(), id);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 100.0, 100.0));
+        let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 200.0, 300.0));
+        assert!(a.contains(&Action::Begin("Create Frame Grid".into())));
+        let p = a.iter().find_map(|x| match x {
+            Action::Preview(id, p) if id == "frame.create" => Some(p.clone()),
+            _ => None,
+        });
+        let p = p.unwrap();
+        assert_eq!((p["grid"].clone(), p["vertical"].clone()), (serde_json::json!(true), serde_json::json!(vertical)));
+    }
+    assert_eq!(crate::tool_for_shortcut("Y"), Some("horizontalGrid"));
+}

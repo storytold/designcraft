@@ -116,6 +116,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, left
         grid: None,
         left_page,
         page_rect: None,
+        frame_grid: None,
     };
     let cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
     let line_heights: Vec<f64> = cs
