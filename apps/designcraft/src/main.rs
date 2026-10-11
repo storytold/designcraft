@@ -83,7 +83,7 @@ fn load_prefs(app: &mut DesignApp) {
     }
     if let Some(p) = prefs_path()
         && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(ui) = serde_json::from_slice::<designcraft_ui_egui::UiState>(&bytes)
+        && let Ok(ui) = designcraft_ui_egui::UiState::from_preferences_json(&bytes)
     {
         app.ui = ui;
     }

@@ -18,6 +18,7 @@ pub mod icons;
 pub mod menus;
 mod panel_docking;
 pub mod panels;
+mod prefs;
 pub mod render_worker;
 mod rtl;
 pub mod story_editor;
