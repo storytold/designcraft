@@ -1521,7 +1521,7 @@ fn draw_frame_grids(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Doc
                 continue;
             }
             let (Some((a, _)), Some(tf)) = (item_canvas_xf(doc, layout, it.id), it.text_frame()) else { continue };
-            let Some(g) = tf.options.frame_grid.as_ref().map(designcraft_doc::FrameGrid::sanitized) else { continue };
+            let Some(g) = tf.options.frame_grid.as_ref().map(|g| g.sanitized()) else { continue };
             let vertical = doc.frame_vertical(it);
             let m = a * doc.text_xf(it);
             let col = layer_color(doc, it).gamma_multiply(0.55);

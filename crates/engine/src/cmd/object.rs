@@ -839,7 +839,7 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
             super::text::set_story_direction(d, &[sid], vertical);
             if let Some(g) = grid {
                 if let Some(tf) = d.item_mut(id).and_then(Item::text_frame_mut) {
-                    tf.options.frame_grid = Some(g.clone());
+                    tf.options.frame_grid = Some(Box::new(g.clone()));
                 }
                 if let Some(st) = d.story_mut(sid) {
                     let n = st.len();

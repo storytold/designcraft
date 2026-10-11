@@ -445,7 +445,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             grid,
             left_page,
             page_rect,
-            frame_grid: if tf.options.path.is_some() { None } else { tf.options.frame_grid.as_ref().map(designcraft_doc::FrameGrid::sanitized) },
+            frame_grid: if tf.options.path.is_some() { None } else { tf.options.frame_grid.as_ref().map(|g| g.sanitized()) },
         });
     }
     out

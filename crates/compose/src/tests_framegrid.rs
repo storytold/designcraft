@@ -65,7 +65,7 @@ fn grid_doc(text: &str, g: FrameGrid, chars: u32, lines: u32, vertical: bool) ->
     let (w, h) = g.area_size(chars, lines, 1, 0.0, vertical);
     let (mut d, sid, fid) = japanese(text, Rect::new(0.0, 0.0, w, h), ParaAttrs::default());
     if let Some(tf) = d.item_mut(fid).and_then(Item::text_frame_mut) {
-        tf.options.frame_grid = Some(g);
+        tf.options.frame_grid = Some(Box::new(g));
     }
     d.story_mut(sid).unwrap().vertical = vertical;
     (d, sid, fid)
@@ -150,7 +150,7 @@ fn hostile_frame_grids_compose_without_panicking() {
     let g = FrameGrid { size: f64::NAN, char_aki: -1e12, line_aki: f64::INFINITY, h_scale: 0.0, ..grid() };
     let (mut d, sid, fid) = japanese("漢、漢\n「漢」", Rect::new(0.0, 0.0, 100.0, 100.0), ParaAttrs::default());
     if let Some(tf) = d.item_mut(fid).and_then(Item::text_frame_mut) {
-        tf.options.frame_grid = Some(g);
+        tf.options.frame_grid = Some(Box::new(g));
     }
     let _ = compose_story(&d, sid, &ComposeOptions::default());
     let _ = GridAlignment::ALL;

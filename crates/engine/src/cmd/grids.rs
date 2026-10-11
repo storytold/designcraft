@@ -238,7 +238,7 @@ fn frame_grid_options(s: &mut Session, p: &Value) -> Result<Value> {
             }
             let vertical = d.frame_vertical(it);
             let had = tf.options.frame_grid.clone();
-            let old = had.clone().unwrap_or_else(|| with_installed_font(d.settings.frame_grid.clone()));
+            let old = had.as_deref().cloned().unwrap_or_else(|| with_installed_font(d.settings.frame_grid.clone()));
             let g = grid_with(&old, &p, ID)?;
             let (c0, l0) = counts(d, it, if had.is_some() { &old } else { &g });
             let columns = p.get("columns").and_then(Value::as_u64).map_or(tf.options.columns, |v| v.clamp(1, 40) as u32);
@@ -253,7 +253,7 @@ fn frame_grid_options(s: &mut Session, p: &Value) -> Result<Value> {
             let story = tf.story;
             let Some(it) = d.item_mut(*id) else { continue };
             if let Some(tf) = it.text_frame_mut() {
-                tf.options.frame_grid = Some(g.clone());
+                tf.options.frame_grid = Some(Box::new(g.clone()));
                 tf.options.columns = columns;
                 tf.options.gutter = gutter;
             }
@@ -384,7 +384,7 @@ fn apply_grid_format(s: &mut Session, _p: &Value) -> Result<Value> {
 /// didn't move. Only rectangles are snapped.
 pub(crate) fn snap_grid_frame(it: &mut Item, before: Rect, vertical: bool) {
     let Some(o) = it.text_frame().map(|t| t.options.clone()) else { return };
-    let Some(g) = o.frame_grid.as_ref().map(FrameGrid::sanitized) else { return };
+    let Some(g) = o.frame_grid.as_ref().map(|g| g.sanitized()) else { return };
     if it.shape != Shape::Rectangle {
         return;
     }
@@ -436,7 +436,7 @@ mod tests {
 
     fn grid_of(s: &Session, id: u64) -> designcraft_doc::FrameGrid {
         let d = &s.active().unwrap().doc;
-        d.item(designcraft_doc::ItemId(id)).and_then(|i| i.text_frame()).and_then(|t| t.options.frame_grid.clone()).unwrap()
+        d.item(designcraft_doc::ItemId(id)).and_then(|i| i.text_frame()).and_then(|t| t.options.frame_grid.as_deref().cloned()).unwrap()
     }
 
     #[test]
