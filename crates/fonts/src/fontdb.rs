@@ -884,7 +884,10 @@ impl FontDb {
     /// Whether the installed fonts are cataloged: a lookup by family name won't wait for the
     /// scan (always true on wasm, which has none). See [`FontDb::scan_in_background`].
     pub fn system_fonts_cataloged(&self) -> bool {
-        cfg!(target_arch = "wasm32") || self.cataloged.get().is_some()
+        #[cfg(target_arch = "wasm32")]
+        return true;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.cataloged.get().is_some()
     }
 
     /// Catalog the installed fonts on a background thread, so the first lookup by family name
