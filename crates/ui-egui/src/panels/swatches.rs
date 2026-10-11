@@ -31,6 +31,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let open_id = egui::Id::new(("color_group_open", &g.name));
         let mut open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or(true);
         let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &g.name));
         if resp.hovered() {
             ui.painter().rect_filled(row, 0.0, t.hover);
         }
@@ -45,11 +46,19 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.painter().rect_stroke(f, 1.5, egui::Stroke::new(1.2, t.text_dim), egui::StrokeKind::Inside);
         ui.painter().line_segment([f.left_top() + vec2(1.0, 3.0), f.right_top() + vec2(-1.0, 3.0)], egui::Stroke::new(1.0, t.text_dim));
         ui.painter().text(row.min + vec2(42.0, 11.0), egui::Align2::LEFT_CENTER, &g.name, egui::FontId::proportional(12.5), t.text);
+        // A double click's first click folded the group: it stays as it was.
         if resp.clicked() {
             open = !open;
             ui.data_mut(|d| d.insert_temp(open_id, open));
         }
+        if resp.double_clicked() {
+            let _ = app.run("app.colorGroupOptionsDialog", json!({"name": g.name}));
+        }
         resp.context_menu(|ui| {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Color Group Options…"))).clicked() {
+                let _ = app.run("app.colorGroupOptionsDialog", json!({"name": g.name}));
+                ui.close();
+            }
             if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Ungroup Color Group"))).clicked() {
                 let _ = app.run("swatch.ungroupColorGroup", json!({"name": g.name}));
                 ui.close();
@@ -74,6 +83,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("swatch.create", json!({"color": {"c": 0, "m": 50, "y": 100, "k": 0}}));
             }
             crate::menus::menu_button(ui, "☰", |ui| {
+                let current = fill_cur.as_deref().filter(|n| doc.swatch(n).is_some_and(|w| !w.hidden));
+                if ui
+                    .add_enabled(current.is_some(), egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Swatch Options…"))))
+                    .clicked()
+                {
+                    let _ = app.run("app.swatchOptionsDialog", json!({"name": current}));
+                    ui.close();
+                }
                 crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Ink Manager")), |ui| {
                     let Ok(l) = app.session.execute("ink.list", &json!({})) else { return };
                     let mut all = l["allToProcess"].as_bool().unwrap_or(false);
@@ -127,6 +144,7 @@ fn swatch_row(
 ) {
     let t = Tokens::get(ui.ctx());
     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &sw.name));
     if fill_cur == Some(sw.name.as_str()) {
         ui.painter().rect_filled(row, 0.0, t.row_selected);
     } else if resp.hovered() {
@@ -154,11 +172,19 @@ fn swatch_row(
         icons::paint(ui.painter(), egui::Rect::from_min_size(egui::pos2(row.max.x - 64.0, row.min.y + 4.0), vec2(13.0, 13.0)), "lock", t.text_dim);
     }
     ui.painter().text(row.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, kind, egui::FontId::proportional(10.5), t.text_dim);
-    if resp.clicked() {
+    if resp.clicked() && !resp.double_clicked() {
         let r = if text { app.run("type.char", json!({"attrs": {"fill": sw.name}})) } else { app.run("object.fill", json!({"swatch": sw.name})) };
         let _ = r;
     }
+    // Double-click: Swatch Options (the first click has applied the swatch).
+    if resp.double_clicked() {
+        let _ = app.run("app.swatchOptionsDialog", json!({"name": sw.name}));
+    }
     resp.context_menu(|ui| {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Swatch Options…"))).clicked() {
+            let _ = app.run("app.swatchOptionsDialog", json!({"name": sw.name}));
+            ui.close();
+        }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply to Stroke"))).clicked() {
             let _ = app.run("object.stroke", json!({"swatch": sw.name}));
             ui.close();

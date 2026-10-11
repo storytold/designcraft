@@ -193,6 +193,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             add_to_swatches
         ),
+        cmd!(
+            "swatch.options",
+            "Swatch Options…",
+            [],
+            None,
+            "{name, to?: new name, nameWithValue?: bool, color?: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b]|{gray}(0..100), spot?: bool, tint?: 0–1 (tint swatches), base?: colour swatch (tint swatches)} → {name} — every use follows a rename; [None], [Registration], [Black] and [Paper] keep their names",
+            has_doc,
+            swatch_options
+        ),
         cmd!("swatch.addUnnamed", "Add Unnamed Colors", [], None, "{} — every unnamed colour used becomes a swatch", has_doc, |s, _| {
             s.edit(|d, _| {
                 let mut n = 0;
@@ -689,13 +698,7 @@ fn create_swatch(s: &mut Session, p: &Value) -> Result<Value> {
     let c = p.get("color").ok_or_else(|| bad("swatch.create", "missing color"))?;
     let color = parse_color(c).ok_or_else(|| bad("swatch.create", "bad color"))?;
     let spot = p.get("spot").and_then(Value::as_bool).unwrap_or(false);
-    let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| match color {
-        designcraft_color::Color::Cmyk { c, m, y, k } => designcraft_color::swatch::cmyk_name(c, m, y, k),
-        other => {
-            let [r, g, b] = other.to_rgb();
-            format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
-        }
-    });
+    let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| value_name(color));
     s.edit(|d, _| {
         let name = Styles::unique_name(|n| d.swatch(n).is_some(), &name);
         d.swatches.push(Swatch {
@@ -722,6 +725,9 @@ pub fn parse_color(v: &Value) -> Option<designcraft_color::Color> {
         }
         Value::Object(o) => {
             let g = |k: &str| o.get(k).and_then(Value::as_f64).map(|x| if x > 1.0 { x / 100.0 } else { x } as f32);
+            if o.contains_key("gray") {
+                return Some(Color::gray(g("gray")?));
+            }
             Some(Color::cmyk(g("c")?, g("m")?, g("y")?, g("k")?))
         }
         _ => None,
@@ -788,13 +794,7 @@ fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The swatch name of a colour value ("C=… M=… Y=… K=…" / "R=… G=… B=…").
 fn value_name(color: designcraft_color::Color) -> String {
-    match color {
-        designcraft_color::Color::Cmyk { c, m, y, k } => designcraft_color::swatch::cmyk_name(c, m, y, k),
-        other => {
-            let [r, g, b] = other.to_rgb();
-            format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
-        }
-    }
+    designcraft_color::swatch::value_name(color)
 }
 
 fn load_swatches(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1003,37 +1003,109 @@ fn add_to_swatches(s: &mut Session, p: &Value) -> Result<Value> {
         let w = d.swatches.iter_mut().find(|w| w.name == name).ok_or_else(|| bad("swatch.addToSwatches", format!("no swatch `{name}`")))?;
         w.name = new.clone();
         w.named = true;
-        for g in &mut d.color_groups {
-            for w in &mut g.swatches {
-                if *w == name {
-                    *w = new.clone();
-                }
-            }
-        }
-        // Everything using the colour follows the rename.
-        for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
-            let sp = std::sync::Arc::make_mut(sp);
-            for top in &mut sp.items {
-                rename_in(std::sync::Arc::make_mut(top), &name, &new);
-            }
-        }
+        d.rename_swatch_refs(&name, &new);
         Ok(json!({"name": new}))
     })
 }
 
-/// Point fills and strokes of an item (and its children) at a renamed swatch.
-fn rename_in(it: &mut designcraft_doc::Item, from: &str, to: &str) {
-    if it.fill.swatch == from {
-        it.fill.swatch = to.to_string();
-    }
-    if it.stroke.swatch == from {
-        it.stroke.swatch = to.to_string();
-    }
-    if let Some(kids) = it.children_mut() {
-        for k in kids {
-            rename_in(std::sync::Arc::make_mut(k), from, to);
+/// Swatch Options: rename, Name with Color Value, colour type and value, a tint swatch's tint
+/// and base — one undo step. Every use of the swatch follows a rename.
+fn swatch_options(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "swatch.options";
+    let name = str_param(p, "name").ok_or_else(|| bad(ID, "missing name"))?.to_string();
+    let to = str_param(p, "to").map(|n| n.trim().to_string());
+    let with_value = p.get("nameWithValue").and_then(Value::as_bool);
+    let color = match p.get("color") {
+        Some(c) => Some(parse_color(c).ok_or_else(|| bad(ID, "bad color"))?),
+        None => None,
+    };
+    let spot = p.get("spot").and_then(Value::as_bool);
+    let tint = match p.get("tint") {
+        Some(v) => Some(v.as_f64().filter(|t| t.is_finite() && (0.0..=1.0).contains(t)).ok_or_else(|| bad(ID, "tint is 0–1"))? as f32),
+        None => None,
+    };
+    let base = str_param(p, "base").map(str::to_string);
+    s.edit(|d, _| {
+        let w = d.swatch(&name).cloned().ok_or_else(|| bad(ID, format!("no swatch `{name}`")))?;
+        let mut w2 = w.clone();
+        if w.locked {
+            if to.as_ref().is_some_and(|t| *t != name) || with_value == Some(true) {
+                return Err(bad(ID, format!("`{name}` can't be renamed")));
+            }
+            match (&mut w2.value, color) {
+                (_, None) => {}
+                (SwatchValue::Paper { color: c }, Some(new)) => *c = new,
+                _ => return Err(bad(ID, format!("`{name}` can't be edited"))),
+            }
+            if spot.is_some() || tint.is_some() || base.is_some() {
+                return Err(bad(ID, format!("`{name}` can't be edited")));
+            }
+        } else {
+            match &mut w2.value {
+                SwatchValue::Color { color: c, color_type } => {
+                    if let Some(new) = color {
+                        *c = new;
+                    }
+                    if let Some(sp) = spot {
+                        *color_type = if sp { designcraft_color::ColorType::Spot } else { designcraft_color::ColorType::Process };
+                    }
+                    if tint.is_some() || base.is_some() {
+                        return Err(bad(ID, "only tint swatches have a tint"));
+                    }
+                }
+                SwatchValue::Tint { base: b, tint: t } => {
+                    if color.is_some() || spot.is_some() {
+                        return Err(bad(ID, "a tint swatch takes its colour from its base"));
+                    }
+                    if let Some(v) = tint {
+                        *t = v;
+                    }
+                    if let Some(nb) = &base {
+                        if !d.swatch(nb).is_some_and(|x| matches!(x.value, SwatchValue::Color { .. })) || *nb == name {
+                            return Err(bad(ID, format!("`{nb}` isn't a colour swatch")));
+                        }
+                        *b = nb.clone();
+                    }
+                }
+                _ => {
+                    if color.is_some() || spot.is_some() || tint.is_some() || base.is_some() {
+                        return Err(bad(ID, format!("`{name}` only takes a name here")));
+                    }
+                }
+            }
+            // Name with Color Value: the name is the colour's values and tracks later edits.
+            let auto = with_value.unwrap_or(!w.named && to.as_ref().is_none_or(|t| *t == name));
+            let derived = match (&w2.value, auto) {
+                (SwatchValue::Color { color, .. }, true) => Some(value_name(*color)),
+                _ => None,
+            };
+            match derived {
+                Some(n) => {
+                    w2.name = n;
+                    w2.named = false;
+                }
+                None => {
+                    if let Some(t) = &to {
+                        if t.is_empty() {
+                            return Err(bad(ID, "a swatch needs a name"));
+                        }
+                        w2.name = t.clone();
+                    }
+                    if with_value == Some(false) || w2.name != name {
+                        w2.named = true;
+                    }
+                }
+            }
+            if w2.name != name && d.swatch(&w2.name).is_some() {
+                return Err(bad(ID, format!("a swatch named `{}` exists", w2.name)));
+            }
         }
-    }
+        let new = w2.name.clone();
+        let slot = d.swatches.iter_mut().find(|x| x.name == name).ok_or_else(|| bad(ID, format!("no swatch `{name}`")))?;
+        *slot = w2;
+        d.rename_swatch_refs(&name, &new);
+        Ok(json!({"name": new}))
+    })
 }
 
 #[cfg(test)]
@@ -1316,5 +1388,119 @@ mod cjk_tests {
         let restored = s.cache.get(&s.doc().unwrap().doc, sid, None);
         assert_eq!(old.frames[0].lines[0].end_x, restored.frames[0].lines[0].end_x);
         assert!(s.execute("style.compositeFont.set", &definition(-1.0)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod swatch_options_tests {
+    use designcraft_color::SwatchValue;
+    use designcraft_doc::{ItemId, StoryId};
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A document whose frame, text, styles, tint swatch and colour group all use "Brand".
+    fn brand_doc() -> (Session, u64, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Brand", "color": {"c": 0, "m": 80, "y": 100, "k": 0}})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Other", "color": "#108080"})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hello"})).unwrap();
+        let (id, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        s.execute("object.fill", &json!({"swatch": "Brand", "ids": [id]})).unwrap();
+        s.execute("object.stroke", &json!({"swatch": "Brand", "ids": [id]})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 3})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fill": "Brand"}})).unwrap();
+        s.execute("swatch.newColorGroup", &json!({"name": "Brand Colors", "swatches": ["Brand"]})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Accent"})).unwrap();
+        s.edit(|d, _| {
+            d.swatches.push(designcraft_color::Swatch {
+                name: "Brand 50%".into(),
+                value: SwatchValue::Tint { base: "Brand".into(), tint: 0.5 },
+                locked: false,
+                named: true,
+                hidden: false,
+            });
+            let st = d.styles_mut();
+            if let Some(p) = st.para_mut(designcraft_doc::BASIC_PARAGRAPH) {
+                p.chars.underline_color = Some("Brand".into());
+                p.para.shading_color = Some("Brand".into());
+            }
+            if let Some(c) = st.char_style_mut("Accent") {
+                c.chars.fill = Some("Brand".into());
+            }
+            Ok(())
+        })
+        .unwrap();
+        (s, id, sid)
+    }
+
+    fn uses(s: &Session, id: u64, sid: u64, name: &str) -> Vec<bool> {
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(ItemId(id)).unwrap();
+        let story = d.story(StoryId(sid)).unwrap();
+        let basic = d.styles.para(designcraft_doc::BASIC_PARAGRAPH).unwrap();
+        vec![
+            it.fill.swatch == name,
+            it.stroke.swatch == name,
+            story.chars.iter().any(|r| r.format.over.fill.as_deref() == Some(name)),
+            basic.chars.underline_color.as_deref() == Some(name),
+            basic.para.shading_color.as_deref() == Some(name),
+            d.styles.char_style("Accent").unwrap().chars.fill.as_deref() == Some(name),
+            matches!(&d.swatch("Brand 50%").unwrap().value, SwatchValue::Tint { base, .. } if base == name),
+            d.color_groups[0].swatches == [name],
+        ]
+    }
+
+    #[test]
+    fn renaming_a_swatch_renames_every_use_in_one_undo_step() {
+        let (mut s, id, sid) = brand_doc();
+        assert!(uses(&s, id, sid, "Brand").iter().all(|u| *u));
+        let r = s.execute("swatch.options", &json!({"name": "Brand", "to": "Signal Orange", "spot": true})).unwrap();
+        assert_eq!(r["name"], "Signal Orange");
+        let d = &s.doc().unwrap().doc;
+        assert!(d.swatch("Brand").is_none());
+        assert!(matches!(d.swatch("Signal Orange").unwrap().value, SwatchValue::Color { color_type: designcraft_color::ColorType::Spot, .. }));
+        assert_eq!(uses(&s, id, sid, "Signal Orange"), vec![true; 8]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.swatch("Brand").is_some());
+        assert_eq!(uses(&s, id, sid, "Brand"), vec![true; 8]);
+    }
+
+    #[test]
+    fn bad_swatch_renames_change_nothing() {
+        let (mut s, id, sid) = brand_doc();
+        let before = s.doc().unwrap().doc.clone();
+        for p in [
+            json!({"name": "Brand", "to": "Other"}),
+            json!({"name": "Brand", "to": "  "}),
+            json!({"name": "Brand", "to": "[Paper]"}),
+            json!({"name": "[Black]", "to": "Ink"}),
+            json!({"name": "[Registration]", "to": "Reg"}),
+            json!({"name": "[None]", "to": "Nothing"}),
+            json!({"name": "[Black]", "color": "#ff0000"}),
+            json!({"name": "Brand 50%", "color": "#ff0000"}),
+            json!({"name": "Missing", "to": "X"}),
+        ] {
+            assert!(s.execute("swatch.options", &p).is_err(), "{p}");
+        }
+        assert_eq!(s.doc().unwrap().doc.swatches, before.swatches);
+        assert_eq!(uses(&s, id, sid, "Brand"), vec![true; 8]);
+        // [Paper]'s colour can change; its name can't.
+        s.execute("swatch.options", &json!({"name": "[Paper]", "to": "[Paper]", "color": "#fff8e0"})).unwrap();
+    }
+
+    #[test]
+    fn name_with_color_value_tracks_the_colour() {
+        let (mut s, id, sid) = brand_doc();
+        let r = s.execute("swatch.options", &json!({"name": "Brand", "nameWithValue": true, "color": {"c": 10, "m": 20, "y": 30, "k": 40}})).unwrap();
+        assert_eq!(r["name"], "C=10 M=20 Y=30 K=40");
+        assert_eq!(uses(&s, id, sid, "C=10 M=20 Y=30 K=40"), vec![true; 8]);
+        // Later colour edits keep the name in step until the swatch is named by hand.
+        let r = s.execute("swatch.options", &json!({"name": "C=10 M=20 Y=30 K=40", "color": {"c": 0, "m": 0, "y": 0, "k": 50}})).unwrap();
+        assert_eq!(r["name"], "C=0 M=0 Y=0 K=50");
+        let r = s.execute("swatch.options", &json!({"name": "C=0 M=0 Y=0 K=50", "to": "Warm Gray"})).unwrap();
+        assert_eq!(r["name"], "Warm Gray");
+        assert!(s.doc().unwrap().doc.swatch("Warm Gray").unwrap().named);
     }
 }

@@ -106,6 +106,14 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("window.nextDocument", "Next Document", Some("Cmd+F6"), "{}"),
     ("window.previousDocument", "Previous Document", Some("Cmd+Shift+F6"), "{}"),
     ("app.layerOptions", "Object Layer Options…", None, "{} — show or hide the layers of the selected placed PDF"),
+    (
+        "app.layerOptionsDialog",
+        "Layer Options…",
+        None,
+        "{id?} (default: the active layer) — name, colour, show, lock, print, guides, text wrap (layer.set)",
+    ),
+    ("app.swatchOptionsDialog", "Swatch Options…", None, "{name} — name, colour type, mode and values, tint (swatch.options)"),
+    ("app.colorGroupOptionsDialog", "Color Group Options…", None, "{name} — rename a colour group (swatch.renameColorGroup)"),
     ("view.tagMarkers", "Show Tag Markers", None, "{on?: bool} — brackets around inline-tagged text"),
     ("view.flattenerPreview", "Flattener Preview", None, "{on?: bool} — highlight objects that involve transparency"),
     ("view.rotateSpread", "Rotate Spread", None, "{angle: 90 (clockwise) | -90 | 180 | 0 (clear)} — turn the view in quarter turns"),
@@ -1128,6 +1136,13 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 app.session.set_active(next);
             }
             Ok(json!(app.session.active_index()))
+        }
+        "app.layerOptionsDialog" => crate::dialogs::open_layer_options(app, p.get("id").and_then(Value::as_u64)).map(|()| Value::Null),
+        "app.swatchOptionsDialog" => {
+            crate::dialogs::open_swatch_options(app, p.get("name").and_then(Value::as_str).unwrap_or("")).map(|()| Value::Null)
+        }
+        "app.colorGroupOptionsDialog" => {
+            crate::dialogs::open_color_group_options(app, p.get("name").and_then(Value::as_str).unwrap_or("")).map(|()| Value::Null)
         }
         "app.layerOptions" => {
             let layers = match app.session.execute("object.pdfLayers", &json!({})) {

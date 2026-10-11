@@ -28,6 +28,7 @@ pub mod selection;
 mod slice;
 pub mod story;
 pub mod styles;
+mod swatch_refs;
 pub mod table;
 pub mod vars;
 pub mod xref;

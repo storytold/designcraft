@@ -121,6 +121,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         let open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or(l.id == active);
         let lc = c32(l.color);
         let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &l.name));
         if l.id == active {
             ui.painter().rect_filled(row, 0.0, t.row_selected);
         } else if resp.hovered() {
@@ -160,10 +161,18 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         } else if sq {
             let ids: Vec<u64> = spread_items.iter().filter(|i| i.layer == l.id).map(|i| i.id.0).collect();
             let _ = app.run("selection.set", json!({"ids": ids}));
+        } else if resp.double_clicked() {
+            let _ = app.run("app.layerOptionsDialog", json!({"id": l.id.0}));
         } else if resp.clicked() {
             let _ = app.run("layer.activate", json!({"id": l.id.0}));
         }
         resp.context_menu(|ui| {
+            let options = crate::i18n::tr(&app.ui.language, "Layer Options for \"{name}\"…").replace("{name}", &l.name);
+            if ui.button(crate::rtl::widget(ui, options)).clicked() {
+                let _ = app.run("app.layerOptionsDialog", json!({"id": l.id.0}));
+                ui.close();
+            }
+            ui.separator();
             if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Layer"))).clicked() {
                 let _ = app.run("layer.delete", json!({"id": l.id.0}));
                 ui.close();
