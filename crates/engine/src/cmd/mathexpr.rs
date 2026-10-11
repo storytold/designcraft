@@ -13,11 +13,16 @@ use crate::{Result, Session};
 
 fn math_item(d: &mut designcraft_doc::Document, latex: &str, size: f64, lid: designcraft_doc::LayerId, at: (f64, f64)) -> Item {
     let (svg, (w, h)) = crate::math::to_svg(latex, size);
-    let aid = AssetId(d.alloc());
-    d.assets.insert(
-        aid,
-        Arc::new(Asset { page: 0, id: aid, name: "math.svg".into(), mime: "image/svg+xml".into(), link: None, data: Arc::new(svg), pixels: None }),
-    );
+    let fresh = AssetId(d.alloc());
+    let aid = d.add_asset(Asset {
+        page: 0,
+        id: fresh,
+        name: "math.svg".into(),
+        mime: "image/svg+xml".into(),
+        link: None,
+        data: Arc::new(svg),
+        pixels: None,
+    });
     let id = ItemId(d.alloc());
     let r = Rect::new(at.0, at.1, at.0 + w, at.1 + h);
     let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));

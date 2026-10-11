@@ -336,9 +336,9 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let py = p.get("y").and_then(Value::as_f64);
     let want_w = p.get("width").and_then(Value::as_f64);
     s.edit(|d, sel| {
-        let aid = AssetId(d.alloc());
+        let fresh = AssetId(d.alloc());
         let mime = designcraft_render::image_mime(&bytes).to_string();
-        d.assets.insert(aid, Arc::new(Asset { page: pdf_page, id: aid, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)) }));
+        let aid = d.add_asset(Asset { page: pdf_page, id: fresh, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)) });
         // The width the whole page (or image) gets; the height follows the proportions.
         let w = match want_w {
             Some(w) => w,
@@ -441,13 +441,9 @@ fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, name, link) = read_source(p)?;
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
     let aid = s.edit(|d, _| {
-        let aid = AssetId(d.alloc());
+        let fresh = AssetId(d.alloc());
         let mime = designcraft_render::image_mime(&bytes).to_string();
-        d.assets.insert(
-            aid,
-            Arc::new(Asset { page: 0, id: aid, name: name.clone(), mime, link: link.clone(), data: Arc::new(bytes), pixels: Some((pw, ph)) }),
-        );
-        Ok(aid)
+        Ok(d.add_asset(Asset { page: 0, id: fresh, name: name.clone(), mime, link: link.clone(), data: Arc::new(bytes), pixels: Some((pw, ph)) }))
     })?;
     s.loaded = Some((aid, (pw as f64, ph as f64)));
     s.set_tool("placeGun");

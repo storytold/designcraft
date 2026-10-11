@@ -2,14 +2,15 @@
 //!
 //! - `mimetype` (stored first, uncompressed): `application/vnd.designcraft+zip`
 //! - `document.json`: the [`Document`] (pretty JSON, documented by the serde model in `designcraft-doc`)
-//! - `assets/<id>.<ext>`: embedded placed files, byte-for-byte
+//! - `assets/<id>.<ext>`: embedded placed files, byte-for-byte: one per distinct file, and only
+//!   the ones the document references (see [`Document::compact_assets`])
 //! - `meta.json`: format version and generator
 //!
 //! Older single-file JSON documents (assets as base64 in `assetData`) still open.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 
@@ -42,8 +43,12 @@ fn ext_for(mime: &str) -> &'static str {
     }
 }
 
-/// Serialize a document to `.designcraft` bytes.
+/// Serialize a document to `.designcraft` bytes. The file holds each distinct placed file once
+/// and leaves out assets nothing references; `doc` itself keeps them (undo can bring them back).
 pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
+    let mut compact = doc.clone();
+    compact.compact_assets();
+    let doc = &compact;
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
     let mut buf = Cursor::new(Vec::new());
     {
@@ -100,13 +105,26 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     upgrade(&mut v);
     let mut doc: Document = serde_json::from_value(v).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     let names: Vec<String> = z.file_names().map(str::to_string).collect();
+    // Files saved with one copy per placement: identical copies share one buffer as they are
+    // read, so memory holds each distinct file once.
+    let mut loaded: HashMap<usize, Vec<Arc<Vec<u8>>>> = HashMap::new();
     for name in names {
         let Some(stem) = name.strip_prefix("assets/") else { continue };
         let Some(id) = stem.split('.').next().and_then(|s| s.parse::<u64>().ok()) else { continue };
         if let (Some(data), Some(a)) = (read(&mut z, &name), doc.assets.get_mut(&AssetId(id))) {
-            Arc::make_mut(a).data = Arc::new(data);
+            let same = loaded.entry(data.len()).or_default();
+            let data = match same.iter().find(|d| ***d == data) {
+                Some(d) => d.clone(),
+                None => {
+                    let d = Arc::new(data);
+                    same.push(d.clone());
+                    d
+                }
+            };
+            Arc::make_mut(a).data = data;
         }
     }
+    doc.merge_duplicate_assets();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -124,6 +142,7 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
             }
         }
     }
+    doc.merge_duplicate_assets();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -205,30 +224,109 @@ mod tests {
     use designcraft_doc::geom::Rect;
     use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+    fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
+        let aid = AssetId(d.alloc());
+        let a = Asset {
+            page: 0,
+            id: aid,
+            name: "x.png".into(),
+            mime: "image/png".into(),
+            link: None,
+            data: Arc::new(data.to_vec()),
+            pixels: Some((1, 1)),
+        };
+        d.assets.insert(aid, Arc::new(a));
+        aid
+    }
+
+    fn place(d: &mut Document, asset: AssetId, crop: f64) -> designcraft_doc::ItemId {
+        use designcraft_doc::geom::{Affine, shapes};
+        use designcraft_doc::{Content, Graphic, Item, ItemId, Shape};
+        let id = ItemId(d.alloc());
+        let mut it = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 50.0, 50.0)));
+        it.content = Content::Graphic(Graphic {
+            asset,
+            size: (1.0, 1.0),
+            xf: Affine::translate((crop, crop)),
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [crop; 4],
+        });
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        id
+    }
+
+    fn asset_entries(bytes: &[u8]) -> usize {
+        let z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        z.file_names().filter(|n| n.starts_with("assets/")).count()
+    }
+
+    /// Zip `d` the way files were saved with one asset per placement (nothing merged or pruned).
+    fn save_uncompacted(d: &Document) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        let mut z = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        z.start_file("mimetype", opts).unwrap();
+        z.write_all(MIME.as_bytes()).unwrap();
+        z.start_file("document.json", opts).unwrap();
+        z.write_all(&serde_json::to_vec(d).unwrap()).unwrap();
+        for (id, a) in &d.assets {
+            z.start_file(format!("assets/{}.png", id.0), opts).unwrap();
+            z.write_all(&a.data).unwrap();
+        }
+        z.finish().unwrap();
+        buf.into_inner()
+    }
+
     #[test]
     fn roundtrip_with_assets() {
         let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
         let lid = d.default_layer();
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "héllo\nworld", ParaFormat::default()).unwrap();
-        let aid = AssetId(d.alloc());
-        d.assets.insert(
-            aid,
-            Arc::new(Asset {
-                page: 0,
-                id: aid,
-                name: "x.png".into(),
-                mime: "image/png".into(),
-                link: None,
-                data: Arc::new(vec![1, 2, 3, 4]),
-                pixels: Some((1, 1)),
-            }),
-        );
+        let aid = png_asset(&mut d, &[1, 2, 3, 4]);
+        place(&mut d, aid, 0.0);
         let bytes = save(&d).unwrap();
         assert!(bytes.starts_with(b"PK"));
         let back = load(&bytes).unwrap();
         assert_eq!(back.page_count(), 3);
         assert_eq!(*back.assets[&aid].data, vec![1, 2, 3, 4]);
         assert_eq!(back.stories, d.stories);
+    }
+
+    #[test]
+    fn saves_hold_each_used_file_once() {
+        let mut d = Document::new(&NewDocument::default());
+        let first = png_asset(&mut d, &[7; 64]);
+        let copy = png_asset(&mut d, &[7; 64]);
+        let replaced = png_asset(&mut d, &[9; 64]);
+        let a = place(&mut d, first, 1.0);
+        let b = place(&mut d, copy, 2.0);
+        assert_eq!(d.assets.len(), 3);
+
+        // Duplicates merge into the first asset, the unreferenced one is left out, and every
+        // placement keeps its own crop and transform.
+        let bytes = save(&d).unwrap();
+        assert_eq!(asset_entries(&bytes), 1);
+        assert_eq!(d.assets.len(), 3, "the open document keeps its assets");
+        let back = load(&bytes).unwrap();
+        assert_eq!(back.assets.keys().copied().collect::<Vec<_>>(), vec![first]);
+        assert!(!back.assets.contains_key(&replaced));
+        for (id, crop) in [(a, 1.0), (b, 2.0)] {
+            let g = back.item(id).and_then(|i| i.graphic()).unwrap();
+            assert_eq!((g.asset, g.crop, g.xf), (first, [crop; 4], d.item(id).unwrap().graphic().unwrap().xf));
+        }
+    }
+
+    #[test]
+    fn older_files_with_one_asset_per_placement_open_with_one() {
+        let mut d = Document::new(&NewDocument::default());
+        let ids: Vec<AssetId> = (0..3).map(|_| png_asset(&mut d, &[5; 32])).collect();
+        for (k, id) in ids.iter().enumerate() {
+            place(&mut d, *id, k as f64);
+        }
+        let back = load(&save_uncompacted(&d)).unwrap();
+        assert_eq!(back.assets.len(), 1);
+        assert_eq!(asset_entries(&save(&back).unwrap()), 1);
     }
 
     /// The object of the item `id` in a document's JSON.

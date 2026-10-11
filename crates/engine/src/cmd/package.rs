@@ -285,13 +285,13 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
     let mut out = d.clone();
     let mut taken = Vec::new();
     let mut written = Vec::new();
-    let mut ids: Vec<AssetId> = d.assets.keys().copied().collect();
-    ids.sort_by_key(|i| i.0);
+    // Only files something places; the saved document leaves the others out.
+    let ids = d.used_assets();
     for id in ids {
         if only.is_some_and(|o| !o.contains(&id)) {
             continue;
         }
-        let a = &d.assets[&id];
+        let Some(a) = d.assets.get(&id) else { continue };
         let name = link_name(a.link.as_deref().unwrap_or(&a.name), id, &mut taken);
         let path = dir.join(&name);
         root.write(&path, a.data.as_slice())?;

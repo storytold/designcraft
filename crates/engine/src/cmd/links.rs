@@ -112,8 +112,10 @@ pub fn status(a: &designcraft_doc::Asset) -> &'static str {
 }
 
 fn list(d: &Document) -> Vec<Value> {
+    let used = d.used_assets();
     d.assets
         .values()
+        .filter(|a| used.contains(&a.id))
         .map(|a| {
             let uses: Vec<Value> = uses(d, a.id)
                 .into_iter()
@@ -309,5 +311,88 @@ mod relink_folder_tests {
         assert_eq!(r["relinked"], 0);
         assert_eq!(r["notFound"], json!(["logo.png"]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod shared_asset_tests {
+    use super::*;
+
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        designcraft_render::Rendered { width: w, height: h, pixels: vec![200u8; (w * h * 4) as usize] }.to_png()
+    }
+
+    #[test]
+    fn placements_of_one_file_share_an_asset_and_saves_drop_replaced_ones() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = super::super::file::base64_encode(&png(10, 10));
+        s.execute("file.place", &json!({"base64": a, "name": "a.png", "x": 72, "y": 72})).unwrap();
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        s.execute("file.place", &json!({"base64": a, "name": "a.png", "x": 200, "y": 72})).unwrap();
+        let l = s.execute("links.list", &json!({})).unwrap();
+        assert_eq!(l.as_array().unwrap().len(), 1);
+        assert_eq!(l[0]["uses"].as_array().unwrap().len(), 2);
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 1);
+
+        // A new image into a frame: the old asset stays in memory (undo) but not in the file.
+        let f = s.execute("frame.create", &json!({"rect": [100, 300, 200, 400]})).unwrap()["id"].as_u64().unwrap();
+        let b = super::super::file::base64_encode(&png(20, 10));
+        let c = super::super::file::base64_encode(&png(30, 10));
+        s.execute("file.place", &json!({"base64": b, "name": "b.png", "frame": f})).unwrap();
+        s.execute("file.place", &json!({"base64": c, "name": "c.png", "frame": f})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.assets.len(), 3);
+        assert_eq!(s.execute("links.list", &json!({})).unwrap().as_array().unwrap().len(), 2);
+        let back = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        let mut names: Vec<&str> = back.assets.values().map(|a| a.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["a.png", "c.png"]);
+    }
+
+    #[test]
+    fn pasted_graphics_reuse_the_identical_asset_of_the_target() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Asset, Graphic, Item, ItemId, Shape, SpreadRef};
+        let asset = |id: u64, data: Vec<u8>| Asset {
+            id: AssetId(id),
+            name: "p.png".into(),
+            mime: "image/png".into(),
+            link: None,
+            data: Arc::new(data),
+            pixels: None,
+            page: 0,
+        };
+        let mut src = Document::new(&NewDocument::default());
+        let mut dst = Document::new(&NewDocument::default());
+        let (pa, pb) = (png(4, 4), png(8, 4));
+        // The source's asset id is taken in the target by a different file.
+        let sid = AssetId(src.alloc());
+        src.assets.insert(sid, Arc::new(asset(sid.0, pa.clone())));
+        dst.assets.insert(sid, Arc::new(asset(sid.0, pb)));
+        dst.alloc();
+        let same = AssetId(dst.alloc());
+        assert_ne!(same, sid);
+        dst.assets.insert(same, Arc::new(asset(same.0, pa)));
+        let iid = ItemId(src.alloc());
+        let mut it = Item::new(
+            iid,
+            src.default_layer(),
+            Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 9.0, 9.0)),
+        );
+        it.content = Content::Graphic(Graphic {
+            asset: sid,
+            size: (4.0, 4.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [1.0; 4],
+        });
+        src.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let ids = super::super::object::duplicate_from(&mut dst, &src, &[iid], SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO).unwrap();
+        let g = dst.item(ids[0]).and_then(|i| i.graphic()).unwrap();
+        assert_eq!((g.asset, g.crop), (same, [1.0; 4]));
+        assert_eq!(dst.assets.len(), 2);
     }
 }

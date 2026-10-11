@@ -900,6 +900,11 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
 fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
     it.id = ItemId(dst.alloc());
     let my_id = it.id;
+    if let Some(m) = it.media.as_mut()
+        && let Some(p) = m.poster
+    {
+        m.poster = dst.adopt_asset(src, p).or(Some(p));
+    }
     match &mut it.content {
         Content::Text(tf) => {
             let new_sid = match stories.get(&tf.story) {
@@ -908,6 +913,15 @@ fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut Has
                     let n = StoryId(dst.alloc());
                     let mut st = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
                     st.id = n;
+                    let mut assets = HashMap::new();
+                    for a in designcraft_doc::story_asset_refs(&st) {
+                        if let Some(na) = dst.adopt_asset(src, a)
+                            && na != a
+                        {
+                            assets.insert(a, na);
+                        }
+                    }
+                    designcraft_doc::remap_story_assets(&mut st, &assets);
                     st.frames.clear();
                     dst.stories.insert(n, Arc::new(st));
                     stories.insert(tf.story, n);
@@ -920,10 +934,8 @@ fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut Has
             }
         }
         Content::Graphic(g) => {
-            if let Some(a) = src.assets.get(&g.asset)
-                && !dst.assets.contains_key(&g.asset)
-            {
-                dst.assets.insert(g.asset, a.clone());
+            if let Some(a) = dst.adopt_asset(src, g.asset) {
+                g.asset = a;
             }
         }
         Content::Group { items } => {

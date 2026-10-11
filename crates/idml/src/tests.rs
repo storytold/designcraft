@@ -7,6 +7,7 @@ use designcraft_geom::{Rect, shapes};
 
 use super::*;
 
+mod assets;
 mod decorations;
 
 fn zip_files(files: &[(&str, &str)]) -> Vec<u8> {

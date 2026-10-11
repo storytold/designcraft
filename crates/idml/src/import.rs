@@ -132,6 +132,8 @@ struct Importer<'r> {
     page_index: HashMap<String, usize>,
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Assets read from a link path, so later placements of that path reuse them unread.
+    linked_assets: HashMap<String, AssetId>,
     ctx: ItemCtx,
     sections: Vec<Section>,
     footnote_options: designcraft_doc::FootnoteOptions,
@@ -217,6 +219,7 @@ impl<'r> Importer<'r> {
             page_index: HashMap::new(),
             item_ids: HashMap::new(),
             assets: BTreeMap::new(),
+            linked_assets: HashMap::new(),
             ctx: ItemCtx { threads: Vec::new() },
             sections: Vec::new(),
             footnote_options: Default::default(),
@@ -2205,12 +2208,29 @@ impl<'r> Importer<'r> {
         let size = ((r - l).abs(), (b - t).abs());
         let link = g.find("Link");
         let uri = link.and_then(|k| k.get("LinkResourceURI")).map(uri_to_path);
+        let graphic = |asset| {
+            Content::Graphic(designcraft_doc::Graphic {
+                asset,
+                size,
+                xf: gxf * Affine::translate((l, t)),
+                auto_fit: Default::default(),
+                fit_align: 4,
+                crop: [0.0; 4],
+            })
+        };
         let mut data = g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default();
+        let mut read_from = None;
         if data.is_empty()
             && let Some(p) = &uri
-            && let Some(d) = (self.read_link)(p)
         {
-            data = d;
+            // Every placement of a linked file shares one asset; read the file once.
+            if let Some(id) = self.linked_assets.get(p) {
+                return graphic(*id);
+            }
+            if let Some(d) = (self.read_link)(p) {
+                data = d;
+                read_from = Some(p.clone());
+            }
         }
         let (mime, px) = sniff_image(&data);
         let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {
@@ -2226,17 +2246,14 @@ impl<'r> Importer<'r> {
         });
         let name =
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
-        let id = AssetId(self.alloc());
+        let fresh = AssetId(self.alloc());
         let link_path = uri.filter(|p| p.contains('/') || p.contains('\\'));
-        self.assets.insert(id, Arc::new(Asset { page: 0, id, name, mime, link: link_path, data: Arc::new(data), pixels }));
-        Content::Graphic(designcraft_doc::Graphic {
-            asset: id,
-            size,
-            xf: gxf * Affine::translate((l, t)),
-            auto_fit: Default::default(),
-            fit_align: 4,
-            crop: [0.0; 4],
-        })
+        let id =
+            designcraft_doc::insert_asset(&mut self.assets, Asset { page: 0, id: fresh, name, mime, link: link_path, data: Arc::new(data), pixels });
+        if let Some(p) = read_from {
+            self.linked_assets.insert(p, id);
+        }
+        graphic(id)
     }
 
     fn link_threads(&mut self) {
