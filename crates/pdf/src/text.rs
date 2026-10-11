@@ -1,10 +1,14 @@
 //! Composed text → PDF text objects with embedded (subsetted) fonts.
 //!
-//! Each line is split into runs of glyphs sharing face, style, scale and baseline offset. A run is
-//! drawn with one `draw_glyphs` call: the run origin, horizontal scale and skew go into the
-//! transform, glyph advances are taken from the composed x positions (so justification, tracking
-//! and kerning are exact), and every glyph carries the story text it came from so viewers can
-//! select, search and copy it.
+//! Each line is split into runs of glyphs sharing face, style and scale. A run is drawn with one
+//! `draw_glyphs` call: the run origin, horizontal scale and skew go into the transform, glyph
+//! advances and offsets are taken from the composed positions (so justification, tracking, kerning
+//! and mark positioning are exact), and every glyph carries the story text it came from so viewers
+//! can select, search and copy it.
+//!
+//! Composed lines hold their glyphs in text order, so content streams list text in reading order
+//! even where right-to-left text is drawn leftwards. Viewers that order text by position instead
+//! read the ActualText that a line with right-to-left text carries.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -36,7 +40,83 @@ fn same_run(a: &PlacedGlyph, b: &PlacedGlyph) -> bool {
         && a.style == b.style
         && (a.sx - b.sx).abs() < 1e-9
         && (a.sy - b.sy).abs() < 1e-9
-        && (a.y - b.y).abs() < 1e-6
+}
+
+/// End of the run of `gs` that starts at `i`.
+fn run_end(ft: &FrameText, gs: &[PlacedGlyph], i: usize) -> usize {
+    let mut j = i + 1;
+    while j < gs.len() && same_run(&gs[i], &gs[j]) && !(ft.vertical && (gs[j].upright || gs[j].tcy.is_some())) {
+        j += 1;
+    }
+    j
+}
+
+/// Clusters of several glyphs (a base and its marks, as in pointed Hebrew) map glyph by glyph
+/// when every glyph stands for one of the cluster's characters, and are drawn in text order:
+/// viewers that only read ToUnicode then get each character once, marks after their base. A
+/// glyph stands for a character when it is the font's glyph for it, or when both are marks (a
+/// mark's glyph may be a positional variant). Other clusters (ligatures, contextual forms) keep
+/// one shared range, which krilla writes as ActualText. Returns the order to draw the glyphs in.
+fn split_clusters(glyphs: &[PlacedGlyph], text: &str, ranges: &mut [Range<usize>]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..glyphs.len()).collect();
+    let mut i = 0;
+    while i < ranges.len() {
+        let r = ranges[i].clone();
+        let mut j = i + 1;
+        while ranges.get(j).is_some_and(|n| *n == r) {
+            j += 1;
+        }
+        if let (Some(cluster), Some(members)) = (text.get(r.clone()).filter(|_| j - i > 1), glyphs.get(i..j))
+            && let Some(own) = cluster_chars(members, cluster)
+        {
+            for (m, (at, c)) in own.into_iter().enumerate() {
+                if let Some(range) = ranges.get_mut(i + m) {
+                    *range = r.start + at..r.start + at + c.len_utf8();
+                }
+            }
+            if let Some(o) = order.get_mut(i..j) {
+                o.sort_by_key(|&m| ranges.get(m).map_or(0, |r| r.start));
+            }
+        }
+        i = j;
+    }
+    order
+}
+
+/// The character (byte offset in `cluster`, char) each glyph of a cluster stands for, if each
+/// stands for a different one and all are covered.
+fn cluster_chars(members: &[PlacedGlyph], cluster: &str) -> Option<Vec<(usize, char)>> {
+    let chars: Vec<(usize, char)> = cluster.char_indices().collect();
+    if chars.len() != members.len() {
+        return None;
+    }
+    let mut own: Vec<Option<usize>> = vec![None; members.len()];
+    let mut used = vec![false; chars.len()];
+    for (m, g) in members.iter().enumerate() {
+        if let Some(k) = (0..chars.len()).find(|&k| !used[k] && g.face.glyph_for(chars[k].1) == g.gid) {
+            used[k] = true;
+            own[m] = Some(k);
+        }
+    }
+    // The remaining glyphs and characters must all be marks; they pair up in text order (a
+    // right-to-left cluster lists its glyphs right to left).
+    let mut rest: Vec<usize> = (0..members.len()).filter(|&m| own[m].is_none()).collect();
+    if members.first().is_some_and(|g| g.rtl) {
+        rest.reverse();
+    }
+    let marks: Vec<usize> = (0..chars.len()).filter(|&k| !used[k]).collect();
+    if rest.len() != marks.len() {
+        return None;
+    }
+    for (&m, &k) in rest.iter().zip(&marks) {
+        let g = members.get(m)?;
+        let c = chars.get(k)?.1;
+        if !g.face.glyph_is_mark(g.gid) || !g.face.glyph_is_mark(g.face.glyph_for(c)) {
+            return None;
+        }
+        own[m] = Some(k);
+    }
+    own.into_iter().map(|k| chars.get(k?).copied()).collect()
 }
 
 /// Merge bars of one paint layer; underlines and strikes must never be merged together.
@@ -143,6 +223,7 @@ impl Exporter<'_> {
         }
         for l in &ft.lines {
             let gs = &l.glyphs;
+            let line_span = self.start_rtl_line(s, cs, ft, gs, story);
             let mut i = 0;
             while i < gs.len() {
                 let g = &gs[i];
@@ -160,12 +241,16 @@ impl Exporter<'_> {
                     i += 1;
                     continue;
                 }
-                let mut j = i + 1;
-                while j < gs.len() && same_run(g, &gs[j]) && !(ft.vertical && (gs[j].upright || gs[j].tcy.is_some())) {
-                    j += 1;
+                let j = run_end(ft, gs, i);
+                if line_span {
+                    self.run(s, cs, &gs[i..j], l.baseline, story);
+                } else {
+                    self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
                 }
-                self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
                 i = j;
+            }
+            if line_span {
+                s.end_tagged();
             }
         }
         self.as_artifact(s, |me, s| {
@@ -182,6 +267,47 @@ impl Exporter<'_> {
                 }
             }
         });
+    }
+
+    /// Open a span over a line with right-to-left text whose ActualText is the line's text in
+    /// reading order (tagged under its paragraph while a story is being tagged). Viewers that order
+    /// text by position would otherwise read it in visual order. Marked content can't nest, so only
+    /// in untagged exports and in tagged stories (not inside artifacts or figures).
+    fn start_rtl_line(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, gs: &[PlacedGlyph], story: &str) -> bool {
+        if ft.vertical || !gs.iter().any(|g| g.rtl && g.visible) || (self.opts.tagged && self.tag_story.is_none()) {
+            return false;
+        }
+        let mut text = String::new();
+        let mut i = 0;
+        while i < gs.len() {
+            let g = &gs[i];
+            if !g.visible || g.sx <= 0.0 || g.sy <= 0.0 {
+                i += 1;
+                continue;
+            }
+            let j = run_end(ft, gs, i);
+            // Only runs `run` draws.
+            let painted = cs.styles.get(g.style as usize).is_some_and(|st| {
+                self.swatch_color(&st.fill, st.fill_tint).is_some()
+                    || (st.stroke != designcraft_color::swatch::NONE
+                        && st.stroke_weight > 0.0
+                        && self.swatch_color(&st.stroke, st.stroke_tint).is_some())
+            });
+            if painted && let Some(run) = gs.get(i..j) {
+                text.push_str(&self.run_text(run, story).0);
+            }
+            i = j;
+        }
+        if text.is_empty() {
+            return false;
+        }
+        let id = s.start_tagged(ContentTag::Span(SpanTag::empty().with_actual_text(Some(&text))));
+        if let Some(sid) = self.tag_story {
+            let byte = gs.first().map_or(0, |g| g.byte);
+            let pi = self.doc.story(sid).map_or(0, |st| st.para_at(byte.min(st.len())));
+            self.para_tags.entry((sid, pi)).or_default().push(id);
+        }
+        true
     }
 
     /// Table fragments: cell fills, cell text (real text), edges and the border.
@@ -263,6 +389,10 @@ impl Exporter<'_> {
             } else if g.len == 0 && prev_src == Some(g.byte) && !ranges.is_empty() {
                 // Second glyph of a multi-glyph cluster: share the cluster's text.
                 ranges[ranges.len() - 1].clone()
+            } else if g.len == 0 && cmap.get(&g.gid) == Some(&'\u{0640}') {
+                // A kashida that justification inserted: drawn, but no text of its own.
+                prev_src = None;
+                text.len()..text.len()
             } else {
                 // Inserted glyphs (page numbers, list labels, hyphens): map back through the font.
                 prev_src = None;
@@ -298,33 +428,40 @@ impl Exporter<'_> {
         let face = g0.face;
         let size = g0.sy * face.upem;
         let hs = g0.sx / g0.sy;
-        let skew = if st.skew != 0.0 { Affine::new([1.0, 0.0, -st.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
+        let tan = if st.skew != 0.0 { st.skew.to_radians().tan() } else { 0.0 };
+        let skew = if st.skew != 0.0 { Affine::new([1.0, 0.0, -tan, 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
         let origin = Affine::translate((g0.x, baseline + g0.y)) * skew * Affine::scale_non_uniform(hs, 1.0);
         // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
         if g0.gid == 0 {
-            self.outline_run(s, glyphs, origin, size, fill, stroke, st.stroke_weight);
+            self.outline_run(s, glyphs, origin, tan, size, fill, stroke, st.stroke_weight);
             return;
         }
         let Some(font) = self.font(&face) else {
             self.warn(format!("font `{} {}` could not be embedded; its text was drawn as outlines", face.family, face.style));
-            self.outline_run(s, glyphs, origin, size, fill, stroke, st.stroke_weight);
+            self.outline_run(s, glyphs, origin, tan, size, fill, stroke, st.stroke_weight);
             return;
         };
-        let (text, ranges) = self.run_text(glyphs, story);
+        let (text, mut ranges) = self.run_text(glyphs, story);
+        let order = split_clusters(glyphs, &text, &mut ranges);
         let k = 1.0 / (hs * size);
-        let kg: Vec<KrillaGlyph> = glyphs
+        // Glyphs are placed absolutely: each advance reaches the next glyph drawn, a vertical offset
+        // (a mark above or below its base) is undone by the skew so it lands where it was composed.
+        let kg: Vec<KrillaGlyph> = order
             .iter()
-            .zip(ranges)
             .enumerate()
-            .map(|(i, (g, r))| {
-                let next = glyphs.get(i + 1).map_or(g.x + g.adv, |n| n.x);
-                KrillaGlyph::new(GlyphId::new(g.gid), ((next - g.x) * k) as f32, 0.0, 0.0, 0.0, r, None)
+            .filter_map(|(n, &i)| {
+                let g = glyphs.get(i)?;
+                let next = order.get(n + 1).and_then(|&m| glyphs.get(m)).map_or(g.x + g.adv, |m| m.x);
+                let dy = g.y - g0.y;
+                let r = ranges.get(i)?.clone();
+                Some(KrillaGlyph::new(GlyphId::new(g.gid), ((next - g.x) * k) as f32, (tan * dy * k) as f32, (-dy / size) as f32, 0.0, r, None))
             })
             .collect();
+        let start = order.first().and_then(|&i| glyphs.get(i)).map_or(0.0, |g| (g.x - g0.x) / hs);
         s.push_transform(&tf(origin));
         s.set_fill(fill.map(|c| solid_fill(c, 1.0)));
         s.set_stroke(stroke.map(|c| Stroke { paint: c.into(), width: st.stroke_weight as f32, ..Default::default() }));
-        s.draw_glyphs(Point::from_xy(0.0, 0.0), &kg, font, &text, size as f32, false);
+        s.draw_glyphs(Point::from_xy(start as f32, 0.0), &kg, font, &text, size as f32, false);
         s.set_fill(None);
         s.set_stroke(None);
         s.pop();
@@ -337,6 +474,7 @@ impl Exporter<'_> {
         s: &mut Surface,
         glyphs: &[PlacedGlyph],
         origin: Affine,
+        tan: f64,
         size: f64,
         fill: Option<krilla::color::Color>,
         stroke: Option<krilla::color::Color>,
@@ -347,7 +485,8 @@ impl Exporter<'_> {
         let k = size / g0.face.upem;
         let mut bp = BezPath::new();
         for g in glyphs {
-            let a = Affine::translate(((g.x - g0.x) / (g0.sx / g0.sy), 0.0)) * Affine::scale(k);
+            let dy = g.y - g0.y;
+            let a = Affine::translate(((g.x - g0.x + tan * dy) / (g0.sx / g0.sy), dy)) * Affine::scale(k);
             let mut o = (*db.outline(&g.face, g.gid)).clone();
             o.apply_affine(a);
             bp.extend(o.iter());

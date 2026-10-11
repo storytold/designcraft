@@ -201,6 +201,8 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
 }
 
 #[cfg(test)]
+mod rtl_tests;
+#[cfg(test)]
 mod tests;
 
 // Run the same public API/output contracts with the unit-only colliding cache hasher as well
