@@ -258,6 +258,7 @@ pub(crate) fn shape_para(
             resolved.push((a, b, props, fmt, para_chars.clone()));
         }
     }
+    let resolved = marks_join_their_base(&story.text, resolved);
     for (a, b, props, fmt, resolved_base) in resolved {
         let style = table.intern(db, &props);
         // A missing font's substitute stands in for the whole font: fallback fonts help it.
@@ -318,6 +319,38 @@ pub(crate) fn shape_para(
     }
     collapse_tcy(&mut glyphs, sub.vertical);
     ShapedPara { glyphs, range }
+}
+
+/// Combining marks that start a run are shaped with the letter before them when the two runs
+/// differ only in OpenType features (ligatures, kerning, `otf_features`): the shaper attaches each
+/// mark to its base, in its base's face. A run in another font, size or colour keeps its marks.
+fn marks_join_their_base<'f>(
+    text: &str,
+    resolved: Vec<(usize, usize, CharProps, &'f designcraft_doc::CharFormat, CharProps)>,
+) -> Vec<(usize, usize, CharProps, &'f designcraft_doc::CharFormat, CharProps)> {
+    let same_but_features = |a: &CharProps, b: &CharProps| {
+        *b == CharProps { ligatures: b.ligatures, kerning: b.kerning, otf_features: b.otf_features.clone(), ..a.clone() }
+    };
+    let is_base = |c: char| !c.is_whitespace() && !c.is_control() && !matches!(c, designcraft_doc::FOOTNOTE_REF | designcraft_doc::ENDNOTE_REF);
+    let mut out: Vec<(usize, usize, CharProps, &designcraft_doc::CharFormat, CharProps)> = Vec::with_capacity(resolved.len());
+    for (a, b, props, fmt, base) in resolved {
+        let run = text.get(a..b).unwrap_or("");
+        let marks = run.char_indices().find(|(_, c)| !is_mark(*c)).map_or(run.len(), |(i, _)| i);
+        if let Some(prev) = out.last_mut()
+            && marks > 0
+            && prev.1 == a
+            && text.get(prev.0..prev.1).and_then(|s| s.chars().next_back()).is_some_and(is_base)
+            && same_but_features(&prev.2, &props)
+        {
+            prev.1 = a + marks;
+            if a + marks < b {
+                out.push((a + marks, b, props, fmt, base));
+            }
+            continue;
+        }
+        out.push((a, b, props, fmt, base));
+    }
+    out
 }
 
 /// Tate-chu-yoko: in vertical text each run of marked glyphs takes one em along the line, its

@@ -1841,6 +1841,40 @@ fn missing_glyphs_are_the_fonts_box_unless_fallback_is_on() {
 }
 
 #[test]
+fn a_mark_starting_a_run_is_shaped_with_its_base() {
+    use designcraft_fonts::testing::font_with;
+    const HEBREW: &str = "DC Test Hebrew Points";
+    designcraft_fonts::FontDb::global().add_font(font_with(HEBREW, &['ש', '\u{5C2}', 'ל']).unwrap());
+    // Shin, then sin dot and lamed in a run that only turns ligatures off.
+    let text = "ש\u{5C2}ל";
+    let mark = "ש".len();
+    let glyphs = |family: &str, mark_family: Option<&str>| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.font_family = Some(family.into()));
+        story.format_chars(mark..text.len(), |f| {
+            f.over.ligatures = Some(false);
+            if let Some(m) = mark_family {
+                f.over.font_family = Some(m.into());
+            }
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).map(|g| (g.face, g.gid, g.byte)).collect::<Vec<_>>()
+    };
+    // A missing font: its substitute lacks both, so the letter comes from a fallback font, and the
+    // mark from the same font, in its letter's cluster.
+    let g = glyphs("DC Test No Such Family", None);
+    let (base, dot) = (g[0], g[1]);
+    assert_ne!(base.1, 0, "{g:?}");
+    assert_eq!((dot.0.family.as_str(), dot.2), (base.0.family.as_str(), 0), "the sin dot goes with its shin: {g:?}");
+    assert_ne!(dot.1, 0, "{g:?}");
+    // The run's own font lacks the mark: its box, whatever font the letter before it has.
+    let g = glyphs(HEBREW, Some(designcraft_fonts::DEFAULT_FAMILY));
+    let dot = g.iter().find(|x| x.2 == mark).unwrap();
+    assert_eq!((dot.0.family.as_str(), dot.1), (designcraft_fonts::DEFAULT_FAMILY, 0), "{g:?}");
+}
+
+#[test]
 fn kenten_missing_from_the_font_are_its_box_unless_fallback_is_on() {
     use designcraft_fonts::testing::font_with;
     // Some font draws the sesame dot when fallback fonts are allowed (a system font, or this one).
