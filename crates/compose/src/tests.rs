@@ -261,6 +261,50 @@ fn glyph_scaling_and_letter_spacing_are_applied() {
 }
 
 #[test]
+fn kerning_crosses_a_change_of_colour() {
+    // Painting `a` in another colour doesn't change how the pair `ay` is kerned (#29): the runs
+    // are shaped together and each glyph keeps its own style.
+    let set = |painted: bool| {
+        let (mut d, sid, _) = doc_with("ay", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        if painted {
+            d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.fill = Some("[Paper]".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let gs: Vec<PlacedGlyph> = cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).cloned().collect();
+        assert_eq!(gs.len(), 2);
+        (gs[1].x - gs[0].x, gs[0].style, gs[1].style)
+    };
+    let (one, s0, s1) = set(false);
+    let (two, t0, t1) = set(true);
+    assert_eq!(s0, s1);
+    assert_ne!(t0, t1, "a and y keep their own colours");
+    assert!((one - two).abs() < 1e-6, "y sits {one:.3} after a in one colour, {two:.3} in two");
+    // The pair is kerned at all: alone, `a` advances further than it does before `y`.
+    let (d, sid, _) = doc_with("a", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    let alone = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs[0].adv;
+    assert!(two < alone - 0.05, "ay is kerned: {two:.3} before y, {alone:.3} alone");
+}
+
+#[test]
+fn ligature_is_not_painted_two_ways() {
+    // `fi` ligates in one colour; with `f` in another colour the letters are set apart, each in
+    // its own glyph and style.
+    let glyphs = |painted: bool| {
+        let (mut d, sid, _) = doc_with("fi", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        if painted {
+            d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.fill = Some("[Paper]".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).map(|g| (g.byte, g.len, g.style)).collect::<Vec<_>>()
+    };
+    let one = glyphs(false);
+    assert_eq!(one.len(), 1, "fi ligates: {one:?}");
+    let two = glyphs(true);
+    assert_eq!(two.len(), 2, "f and i set apart: {two:?}");
+    assert_ne!(two[0].2, two[1].2);
+}
+
+#[test]
 fn hyphen_limit_is_a_hard_constraint() {
     let text = CORPUS.join(" ");
     for limit in [1u32, 2] {

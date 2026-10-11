@@ -258,66 +258,148 @@ pub(crate) fn shape_para(
             resolved.push((a, b, props, fmt, para_chars.clone()));
         }
     }
-    for (a, b, props, fmt, resolved_base) in resolved {
-        let style = table.intern(db, &props);
+    // Deleted or hidden conditional text isn't shaped; note references are set in their own style.
+    let hidden = |props: &CharProps| {
+        props.change == designcraft_doc::ChangeMark::Deleted
+            || (!props.conditions.is_empty() && props.conditions.iter().all(|c| sub.hidden_conditions.contains(c)))
+    };
+    let is_ref = |c: char| c == designcraft_doc::FOOTNOTE_REF || c == designcraft_doc::ENDNOTE_REF;
+    let plain = |a: usize, b: usize, props: &CharProps| !hidden(props) && !story.text[a..b].contains(is_ref);
+    let mut i = 0;
+    while i < resolved.len() {
+        let (a, b, props, fmt, resolved_base) = &resolved[i];
+        let (a, b) = (*a, *b);
+        let style = table.intern(db, props);
         // A missing font's substitute stands in for the whole font: fallback fonts help it.
         let auto_leading = table.env_for(auto_leading, style);
-        let deleted = props.change == designcraft_doc::ChangeMark::Deleted;
-        if deleted || (!props.conditions.is_empty() && props.conditions.iter().all(|c| sub.hidden_conditions.contains(c))) {
+        if hidden(props) {
             // Hidden conditional text: zero-width, unbreakable, undrawn place-holders keep every
             // byte addressable (caret, selection) without taking space.
             let face = db.face(&props.font_family, &props.font_style);
-            for (i, c) in story.text[a..b].char_indices() {
+            for (k, c) in story.text[a..b].char_indices() {
                 if c == '\n' {
                     continue;
                 }
-                let mut g = control_glyph(&face, &props, auto_leading, style, a + i, c);
+                let mut g = control_glyph(&face, props, auto_leading, style, a + k, c);
                 g.ch = HIDDEN;
                 (g.ascent, g.descent, g.leading, g.cap, g.xh) = (0.0, 0.0, 0.0, 0.0, 0.0);
                 glyphs.push(g);
             }
+            i += 1;
             continue;
         }
-        let is_ref = |c: char| c == designcraft_doc::FOOTNOTE_REF || c == designcraft_doc::ENDNOTE_REF;
-        if !story.text[a..b].contains(is_ref) {
-            shape_run(db, &story.text, a..b, &props, auto_leading, style, sub, &mut glyphs);
-            continue;
-        }
-        // Footnote references take the reference position / character style; endnote references
-        // are superscript.
-        let mut rf = fmt.clone();
-        if let Some(cs) = &sub.note_style {
-            rf.style = cs.clone();
-        }
-        rf.over.position = Some(sub.note_position);
-        let rprops = styles.resolve_char(&resolved_base, &rf);
-        let rstyle = table.intern(db, &rprops);
-        let renv = table.env_for(auto_leading, rstyle);
-        let mut ef = fmt.clone();
-        ef.over.position = Some(designcraft_doc::Position::Superscript);
-        let eprops = styles.resolve_char(&resolved_base, &ef);
-        let estyle = table.intern(db, &eprops);
-        let eenv = table.env_for(auto_leading, estyle);
-        let mut k = a;
-        for (i, m) in story.text[a..b].match_indices(is_ref) {
-            let i = a + i;
-            if k < i {
-                shape_run(db, &story.text, k..i, &props, auto_leading, style, sub, &mut glyphs);
+        if story.text[a..b].contains(is_ref) {
+            i += 1;
+            // Footnote references take the reference position / character style; endnote references
+            // are superscript.
+            let mut rf = (*fmt).clone();
+            if let Some(cs) = &sub.note_style {
+                rf.style = cs.clone();
             }
-            let e = i + m.len();
-            if m.starts_with(designcraft_doc::ENDNOTE_REF) {
-                shape_run(db, &story.text, i..e, &eprops, eenv, estyle, sub, &mut glyphs);
+            rf.over.position = Some(sub.note_position);
+            let rprops = styles.resolve_char(resolved_base, &rf);
+            let rstyle = table.intern(db, &rprops);
+            let renv = table.env_for(auto_leading, rstyle);
+            let mut ef = (*fmt).clone();
+            ef.over.position = Some(designcraft_doc::Position::Superscript);
+            let eprops = styles.resolve_char(resolved_base, &ef);
+            let estyle = table.intern(db, &eprops);
+            let eenv = table.env_for(auto_leading, estyle);
+            let mut k = a;
+            for (off, m) in story.text[a..b].match_indices(is_ref) {
+                let off = a + off;
+                if k < off {
+                    shape_run(db, &story.text, k..off, props, auto_leading, style, sub, &mut glyphs);
+                }
+                let e = off + m.len();
+                if m.starts_with(designcraft_doc::ENDNOTE_REF) {
+                    shape_run(db, &story.text, off..e, &eprops, eenv, estyle, sub, &mut glyphs);
+                } else {
+                    shape_run(db, &story.text, off..e, &rprops, renv, rstyle, sub, &mut glyphs);
+                }
+                k = e;
+            }
+            if k < b {
+                shape_run(db, &story.text, k..b, props, auto_leading, style, sub, &mut glyphs);
+            }
+            continue;
+        }
+        // The runs that follow and differ only in how they are painted (colour, stroke,
+        // underline…) are shaped with this one, so pair kerning and other adjustments cross the
+        // change, as in InDesign (#29). Each glyph then takes the style of the run its bytes are in.
+        let mut j = i + 1;
+        while let Some((na, nb, nprops, ..)) = resolved.get(j) {
+            if *na != resolved[j - 1].1 || !plain(*na, *nb, nprops) || !same_shaping(props, nprops) {
+                break;
+            }
+            j += 1;
+        }
+        let end = resolved[j - 1].1;
+        let start = glyphs.len();
+        shape_run(db, &story.text, a..end, props, auto_leading, style, sub, &mut glyphs);
+        if j > i + 1 {
+            let group = &resolved[i..j];
+            // The run (index into `group`) whose bytes hold `byte`: the runs are contiguous and in
+            // text order.
+            let run_of = |byte: usize| group.partition_point(|r| r.0 <= byte).saturating_sub(1);
+            // A ligature can't be painted two ways: when one straddles a change, the runs are set
+            // apart, each in its own glyphs.
+            let straddles = glyphs[start..].iter().any(|g| g.len > 0 && group.get(run_of(g.byte)).is_some_and(|r| r.1 < g.byte + g.len));
+            if straddles {
+                glyphs.truncate(start);
+                for (ra, rb, rprops, ..) in group {
+                    let rstyle = table.intern(db, rprops);
+                    let renv = table.env_for(auto_leading, rstyle);
+                    shape_run(db, &story.text, *ra..*rb, rprops, renv, rstyle, sub, &mut glyphs);
+                }
             } else {
-                shape_run(db, &story.text, i..e, &rprops, renv, rstyle, sub, &mut glyphs);
+                let mut styles = vec![style];
+                styles.extend(group[1..].iter().map(|(_, _, rprops, ..)| table.intern(db, rprops)));
+                for g in &mut glyphs[start..] {
+                    if let Some(&s) = styles.get(run_of(g.byte)) {
+                        g.style = s;
+                    }
+                }
             }
-            k = e;
         }
-        if k < b {
-            shape_run(db, &story.text, k..b, &props, auto_leading, style, sub, &mut glyphs);
-        }
+        i = j;
     }
     collapse_tcy(&mut glyphs, sub.vertical);
     ShapedPara { glyphs, range }
+}
+
+/// Whether text in `a` and `b` shapes alike: the two differ at most in how their glyphs are
+/// painted (fill, stroke, skew, underline and strikethrough, conditions, change marks, XML tags).
+/// Such runs are shaped as one, so pair kerning crosses the change. Everything else (font, size,
+/// scale, tracking, kerning, features, language, CJK settings…) counts as shaping; a jidori group
+/// is always its own run.
+fn same_shaping(a: &CharProps, b: &CharProps) -> bool {
+    if a.jidori > 0 || b.jidori > 0 {
+        return false;
+    }
+    let painted_like_a = CharProps {
+        fill: a.fill.clone(),
+        fill_tint: a.fill_tint,
+        stroke: a.stroke.clone(),
+        stroke_tint: a.stroke_tint,
+        stroke_weight: a.stroke_weight,
+        skew: a.skew,
+        underline: a.underline,
+        strikethrough: a.strikethrough,
+        underline_weight: a.underline_weight,
+        underline_offset: a.underline_offset,
+        underline_color: a.underline_color.clone(),
+        underline_tint: a.underline_tint,
+        strikethrough_weight: a.strikethrough_weight,
+        strikethrough_offset: a.strikethrough_offset,
+        strikethrough_color: a.strikethrough_color.clone(),
+        strikethrough_tint: a.strikethrough_tint,
+        conditions: a.conditions.clone(),
+        change: a.change,
+        xml_tag: a.xml_tag.clone(),
+        ..b.clone()
+    };
+    *a == painted_like_a
 }
 
 /// Tate-chu-yoko: in vertical text each run of marked glyphs takes one em along the line, its

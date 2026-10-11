@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, first version: gaps from the full re-measure and the issue tracker) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (pair kerning across a colour change fixed, #29; 2026-10-10: stage re-normalized to pre-alpha by the core-workflow gate, and before that major, first version: gaps from the full re-measure and the issue tracker) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -171,7 +171,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 18. Colour management depth (F)
 - **Missing:** Assign Profiles / Convert to Profile, per-image rendering intents in output,
-  hex entry and colour picker issues (#323, #190), keep kerning on colour change (#29).
+  hex entry and colour picker issues (#323, #190).
 - **Estimate:** 20–35 h.
 
 ### 19. Placed graphics depth (FF)
