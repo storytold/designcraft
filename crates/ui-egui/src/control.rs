@@ -278,7 +278,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 app.ui.control_bar = v;
             }
             if p.get("closePanel").is_some() {
-                app.ui.open_panel = None;
+                r = crate::panel_docking::close_visible(app).map(|_| Value::Null);
             }
             if let Some(v) = p.get("dockExpanded").and_then(Value::as_bool) {
                 app.ui.dock_expanded = v;

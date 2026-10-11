@@ -367,7 +367,9 @@ mod tests {
         // out of the set once it failed.
         write(&path, &record(Some(Backend::Gl), &[])).expect("write");
         let s = Startup::begin_unforced(Some(path.clone()), V).expect("candidates");
-        if candidates().len() > 1 {
+        // This synthetic prior start records OpenGL even on Metal-only macOS.
+        // Switching depends on the chosen backend, not the candidate count.
+        if s.backend != Backend::Gl {
             assert_eq!(s.switched_from, Some(Backend::Gl));
             let line = s.status_line().expect("status");
             assert!(line.contains("OpenGL") && line.contains(s.backend.name()) && line.contains("WGPU_BACKEND"), "{line}");

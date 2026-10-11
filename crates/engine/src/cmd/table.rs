@@ -834,7 +834,7 @@ fn distribute_rows(s: &mut Session, p: &Value) -> Result<Value> {
     }
     for key in ["row", "story", "table"] {
         if let Some(v) = p.get(key)
-            && !v.as_u64().is_some_and(|n| usize::try_from(n).is_ok())
+            && v.as_u64().is_none_or(|n| usize::try_from(n).is_err())
         {
             return Err(bad(ID, format!("{key} must be a non-negative integer")));
         }
