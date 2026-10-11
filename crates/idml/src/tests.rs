@@ -652,6 +652,44 @@ fn round_trips_cross_references() {
     assert_eq!(back.xref_formats.len(), d.xref_formats.len());
 }
 
+/// A cross-reference source sits either inside a character range (holding the text directly) or at
+/// paragraph level around a range. Both give the generated text the paragraph's and the range's
+/// attributes, so both set the same text at the same width.
+#[test]
+fn cross_reference_source_nesting_keeps_formatting() {
+    let story = |body: &str| {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+<Story Self="s1"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle" PointSize="11">{body}</ParagraphStyleRange></Story></idPkg:Story>"#
+        )
+    };
+    const CSR: &str = r#"<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" Tracking="200">"#;
+    let inside = story(&format!(
+        r#"{CSR}<Content>See section </Content><CrossReferenceSource Self="x1" AppliedFormat="n"><Content>11.</Content></CrossReferenceSource><Content>, then a few more words to wrap.</Content></CharacterStyleRange>"#
+    ));
+    let around = story(&format!(
+        r#"{CSR}<Content>See section </Content></CharacterStyleRange><CrossReferenceSource Self="x1" AppliedFormat="n">{CSR}<Content>11.</Content></CharacterStyleRange></CrossReferenceSource>{CSR}<Content>, then a few more words to wrap.</Content></CharacterStyleRange>"#
+    ));
+    let compose = |xml: &str| {
+        let d = import_idml(&fixture_with_story(xml)).unwrap();
+        d.check().unwrap();
+        let s = d.stories.values().find(|s| !s.xrefs.is_empty()).expect("story with a cross-reference").clone();
+        let cs = designcraft_compose::compose_story(&d, s.id, &Default::default());
+        let glyphs: Vec<_> = cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| l.glyphs.iter().map(move |g| (g.byte, g.x, l.baseline))).collect();
+        (s, glyphs)
+    };
+    let (a, ga) = compose(&inside);
+    let (b, gb) = compose(&around);
+    assert!(ga.len() > a.text.chars().count() / 2, "the story composes");
+    assert_eq!(a.text, b.text);
+    assert_eq!(a.chars, b.chars);
+    assert_eq!(a.chars.len(), 1, "the generated text shares its neighbours' format");
+    assert_eq!(a.chars[0].format.over.tracking, Some(200.0));
+    assert_eq!(a.chars[0].format.over.size, Some(11.0));
+    assert_eq!(ga, gb);
+}
+
 #[test]
 fn round_trips_index_references() {
     use designcraft_doc::index::IndexRange;

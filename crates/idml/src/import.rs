@@ -1660,6 +1660,15 @@ impl<'r> Importer<'r> {
         t
     }
 
+    /// The format of the text in a `CharacterStyleRange`: its style, and its local attributes over
+    /// the enclosing paragraph range's.
+    fn range_format(&mut self, c: &El, pchars: &CharAttrs) -> CharFormat {
+        let style = c.get("AppliedCharacterStyle").map(|r| self.char_style_ref(r)).unwrap_or_else(|| st::NO_CHAR_STYLE.into());
+        let mut over = pchars.clone();
+        over.merge(&self.char_attrs(c));
+        CharFormat { style, over }
+    }
+
     fn walk_story(&mut self, e: &El, b: &mut StoryBuilder, pf: &ParaFormat, pchars: &CharAttrs, cf: &CharFormat, brk: Option<&str>) {
         for n in &e.children {
             match n {
@@ -1674,13 +1683,13 @@ impl<'r> Importer<'r> {
                         {
                             *last = npf.clone();
                         }
-                        self.walk_story(c, b, &npf, &chars, cf, None);
+                        // Text and markers outside any character range (a destination or a
+                        // cross-reference source at paragraph level) take the paragraph's format.
+                        let pcf = CharFormat { style: st::NO_CHAR_STYLE.into(), over: chars.clone() };
+                        self.walk_story(c, b, &npf, &chars, &pcf, None);
                     }
                     "CharacterStyleRange" => {
-                        let style = c.get("AppliedCharacterStyle").map(|r| self.char_style_ref(r)).unwrap_or_else(|| st::NO_CHAR_STYLE.into());
-                        let mut over = pchars.clone();
-                        over.merge(&self.char_attrs(c));
-                        let ncf = CharFormat { style, over };
+                        let ncf = self.range_format(c, pchars);
                         let bt = c.get("ParagraphBreakType").filter(|t| *t != "Anywhere");
                         b.last = ncf.clone();
                         self.walk_story(c, b, pf, pchars, &ncf, bt);
@@ -1744,11 +1753,9 @@ impl<'r> Importer<'r> {
                     "CrossReferenceSource" => {
                         // The generated text is regenerated from the format.
                         b.xrefs.push((c.get("Self").unwrap_or("").to_string(), c.get("AppliedFormat").unwrap_or("").to_string()));
-                        let inner = c.find("CharacterStyleRange");
-                        let f = match inner.and_then(|r| r.get("AppliedCharacterStyle")) {
-                            Some(r) => CharFormat { style: self.char_style_ref(r), over: pchars.clone() },
-                            None => cf.clone(),
-                        };
+                        // A source at paragraph level wraps a range; inside a range it holds the
+                        // text directly and takes that range's format.
+                        let f = c.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars));
                         b.push(&designcraft_doc::XREF_MARK.to_string(), &f);
                     }
                     "Footnote" => {
