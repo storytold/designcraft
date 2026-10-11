@@ -109,8 +109,7 @@ cargo xtask ci                                             # fmt, clippy, tests,
 
 Japanese text (UI and documents) uses fonts from
 [storytold/craft-fonts](https://github.com/storytold/craft-fonts), an optional build input (font
-files are never committed here; see craftrules
-[`standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md)):
+files are never committed here; see [`craft-fonts/docs/integration.md`](https://github.com/storytold/craft-fonts/blob/main/docs/integration.md)):
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts
