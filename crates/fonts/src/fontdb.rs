@@ -559,7 +559,7 @@ fn file_face_names(path: &std::path::Path) -> Vec<ScannedFace> {
             let font = crate::group::sfnt(found.clone())?;
             let f = skrifa::FontRef::new(&font).ok()?;
             let (family, style) = face_names(&f)?;
-            let (group, native) = match crate::group::declared_group(&f) {
+            let (group, native) = match crate::group::declared_group(&f, &family) {
                 Some(g) => (g, crate::group::classify(&f, &family).1),
                 None => {
                     found.extend(table(b"cmap", MAX_CMAP));
