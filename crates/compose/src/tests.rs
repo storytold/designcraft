@@ -1038,6 +1038,25 @@ fn digits_option_draws_figures_in_another_script() {
 }
 
 #[test]
+fn page_numbers_take_the_digits_option() {
+    use designcraft_fonts::testing::font_mapping;
+    // Draws ١ as X, every other character as itself.
+    let glyphs = [('N', 'N'), ('o', 'o'), ('.', '.'), (' ', ' '), ('1', '1'), ('\u{661}', 'X')];
+    designcraft_fonts::FontDb::global().add_font(font_mapping("DC Test Page Digits", &glyphs).unwrap());
+    // The glyph drawn at byte 4: the page number, or a typed Arabic-Indic one.
+    let fourth = |text: &str| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(100.0, 100.0, 400.0, 200.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Page Digits".into());
+            f.over.digits = Some(designcraft_doc::Digits::Hindi);
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 4).map(|g| g.gid).unwrap()
+    };
+    assert_eq!(fourth(&format!("No. {}", story::PAGE_NUMBER)), fourth("No. \u{661}"));
+}
+
+#[test]
 fn ruby_and_kenten_sit_over_their_text() {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
     let lid = d.default_layer();

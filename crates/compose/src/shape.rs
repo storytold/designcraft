@@ -522,9 +522,9 @@ fn shape_run_raw(
             arabic_context = Some(context);
         }
         // Digits drawn in another script (World-Ready Digits): each is set as its substitute.
-        {
+        let digits = {
             use designcraft_doc::Digits;
-            let mode = if p.digits != Digits::Default {
+            if p.digits != Digits::Default {
                 p.digits
             } else {
                 match arabic_context {
@@ -532,8 +532,10 @@ fn shape_run_raw(
                     Some(true) if Digits::Native.map('0', &p.language) == '0' => Digits::Hindi,
                     _ => Digits::Native,
                 }
-            };
-            let d = mode.map(c, &p.language);
+            }
+        };
+        {
+            let d = digits.map(c, &p.language);
             if d != c {
                 flush(seg_start, i, &seg_face, out);
                 seg_start = i + c.len_utf8();
@@ -586,6 +588,8 @@ fn shape_run_raw(
                     } else {
                         sub.page_name.clone().unwrap_or_else(|| "#".into())
                     };
+                    // Page numbers take the digits of the text they stand in.
+                    let s: String = s.chars().map(|ch| digits.map(ch, &p.language)).collect();
                     shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, style, out, sub.vertical);
                 }
                 designcraft_doc::OBJECT_MARK => {
