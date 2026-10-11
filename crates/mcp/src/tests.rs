@@ -249,6 +249,105 @@ fn batch_stops_on_first_error() {
     assert_eq!(v["completed"], 2);
 }
 
+fn initialized_headless_server() -> Server {
+    let mut s = server();
+    let init = rpc(
+        &mut s,
+        1,
+        "initialize",
+        json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "command-classification-test", "version": "0"}}),
+    );
+    assert_eq!(init["result"]["protocolVersion"], PROTOCOL_VERSION);
+    assert_eq!(s.handle_line(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string()), None);
+    assert!(s.is_initialized());
+    s
+}
+
+// Repro cases include prefix-shaped nonexistent ids, case typos and unrelated unknown ids.
+const UNKNOWN_COMMAND_CASES: &[&str] = &[
+    "app.nonexistent",
+    "view.nonexistent",
+    "window.nonexistent",
+    "view.zoomin",
+    "app.Save",
+    "help.nonexistent",
+    "frame.nonexistent",
+    "nonexistent",
+    "app.",
+    "view.",
+    "window.",
+    "help.About",
+    "edit.dynamicspeling",
+];
+
+#[test]
+fn headless_execute_classifies_exact_ui_commands_and_unknown_ids() {
+    let mut s = initialized_headless_server();
+    for id in UNKNOWN_COMMAND_CASES {
+        let result = call(&mut s, "execute", json!({"command": id}));
+        assert_eq!(result["isError"], true, "{id}: {result}");
+        let text = text_of(&result);
+        assert!(text.contains(&format!("unknown command `{id}`")), "{id}: {text}");
+        assert!(!text.contains("--connect") && !text.contains("is a UI command"), "unknown ids must not suggest the desktop app: {text}");
+    }
+    // Use the authoritative catalog, including UI commands outside app/view/window families.
+    for &(id, _, _, _) in designcraft_engine::ui_commands::UI_COMMANDS {
+        if designcraft_engine::find_command(id).is_some() {
+            continue; // Engine commands take precedence if a UI id ever shares their name.
+        }
+        let result = call(&mut s, "execute", json!({"command": id}));
+        assert_eq!(result["isError"], true, "{id}: {result}");
+        let text = text_of(&result);
+        assert!(text.contains(&format!("`{id}` is a UI command")) && text.contains("--connect"), "{id}: {text}");
+    }
+    assert_eq!(
+        ok(&mut s, "execute", json!({"command": "app.links"})),
+        designcraft_engine::links::all(),
+        "an engine app.* command must still execute"
+    );
+}
+
+#[test]
+fn headless_batch_preserves_command_classification_and_stops_before_later_steps() {
+    let mut s = initialized_headless_server();
+    let before = ok(&mut s, "inspect_document", json!({}));
+    let cases = UNKNOWN_COMMAND_CASES.iter().map(|id| (*id, false)).chain(
+        designcraft_engine::ui_commands::UI_COMMANDS
+            .iter()
+            .filter(|command| designcraft_engine::find_command(command.0).is_none())
+            .map(|command| (command.0, true)),
+    );
+    for (id, is_ui) in cases {
+        let result = call(
+            &mut s,
+            "batch",
+            json!({"commands": [
+                {"command": "app.links"},
+                {"command": id},
+                {"command": "frame.create", "params": {"rect": [0, 0, 100, 100], "content": "text"}}
+            ]}),
+        );
+        assert_eq!(result["isError"], true, "{id}: {result}");
+        let report: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(report["failedIndex"], 1, "{id}: {report}");
+        assert_eq!(report["failedCommand"], id);
+        assert_eq!(report["completed"], 1);
+        assert_eq!(report["results"], json!([designcraft_engine::links::all()]));
+        let error = report["error"].as_str().unwrap();
+        if is_ui {
+            assert!(error.contains(&format!("`{id}` is a UI command")) && error.contains("--connect"), "{id}: {error}");
+        } else {
+            assert!(error.contains(&format!("unknown command `{id}`")), "{id}: {error}");
+            assert!(!error.contains("--connect") && !error.contains("is a UI command"), "{id}: {error}");
+        }
+    }
+    assert_eq!(ok(&mut s, "inspect_document", json!({})), before, "no command after any failed step may create a frame");
+    let success = ok(&mut s, "batch", json!({"commands": [{"command": "app.links"}, {"command": "app.links"}]}));
+    assert_eq!(success["completed"], 2);
+    assert_eq!(success["results"], json!([designcraft_engine::links::all(), designcraft_engine::links::all()]));
+    assert!(success.get("failedCommand").is_none());
+}
+
 #[test]
 fn ui_only_tools_explain_how_to_connect() {
     let mut s = server();

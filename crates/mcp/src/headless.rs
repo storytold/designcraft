@@ -96,7 +96,7 @@ impl Headless {
 
     fn exec(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         let r = self.session.execute(id, params).map_err(|e| {
-            let ui_only = ["app.", "view.", "window."].iter().any(|p| id.starts_with(p));
+            let ui_only = designcraft_engine::ui_commands::is_ui_command(id);
             if ui_only && designcraft_engine::find_command(id).is_none() { format!("`{id}` is a UI command; {NEEDS_APP}") } else { e.to_string() }
         });
         // Requests for a UI (file pickers, dialogs) have nobody to serve them here.
