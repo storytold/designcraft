@@ -512,7 +512,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Wrap",
             ["Window"],
             Some("Cmd+Alt+W"),
-            "{mode: none|boundingBox|contour|jumpObject|jumpToNextColumn, offset?: number|[t,l,b,r], invert?: bool, ids?}",
+            "{mode: none|boundingBox|contour|jumpObject|jumpToNextColumn, offset?: number|[t,l,b,r], invert?: bool, content?: bool (the placed graphic instead of its frame; default: whether the selection is the frame's content), ids?}",
             has_selection,
             |s, p| {
                 let mode = p.get("mode").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(designcraft_doc::WrapMode::BoundingBox);
@@ -522,16 +522,24 @@ pub fn specs() -> Vec<CommandSpec> {
                     None => None,
                 };
                 let invert = p.get("invert").and_then(Value::as_bool);
+                let content = match p.get("content").and_then(Value::as_bool) {
+                    Some(c) => c,
+                    None => p.get("ids").is_none() && p.get("id").is_none() && s.doc()?.selection.content,
+                };
                 set_flag(
                     s,
                     p,
                     move |i| {
-                        i.wrap.mode = mode;
+                        let w = match &mut i.content {
+                            Content::Graphic(g) if content => &mut g.wrap,
+                            _ => &mut i.wrap,
+                        };
+                        w.mode = mode;
                         if let Some(o) = off {
-                            i.wrap.offsets = o;
+                            w.offsets = o;
                         }
                         if let Some(v) = invert {
-                            i.wrap.invert = v;
+                            w.invert = v;
                         }
                     },
                     false,

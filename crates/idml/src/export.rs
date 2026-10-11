@@ -1715,21 +1715,7 @@ impl<'a> Ex<'a> {
                 );
             }
         }
-        let w = &it.wrap;
-        el.push(with_props(
-            El::new("TextWrapPreference")
-                .attr("Inverse", bool_s(w.invert))
-                .attr("ApplyToMasterPageOnly", "false")
-                .attr("TextWrapSide", names::wrap_side_out(w.side))
-                .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
-            vec![
-                El::new("TextWrapOffset")
-                    .attr("Top", num(w.offsets[0]))
-                    .attr("Left", num(w.offsets[1]))
-                    .attr("Bottom", num(w.offsets[2]))
-                    .attr("Right", num(w.offsets[3])),
-            ],
-        ));
+        el.push(text_wrap_pref(&it.wrap));
         match &it.content {
             Content::Group { items } => {
                 for c in items {
@@ -1779,6 +1765,9 @@ impl<'a> Ex<'a> {
         }
         props.push(El::new("GraphicBounds").attr("Left", "0").attr("Top", "0").attr("Right", num(g.size.0)).attr("Bottom", num(g.size.1)));
         let mut el = with_props(el, props);
+        if !g.wrap.is_default() {
+            el.push(text_wrap_pref(&g.wrap));
+        }
         let uri = match &asset.link {
             Some(l) => path_to_uri(l),
             None => format!("file:{}", asset.name),
@@ -2468,6 +2457,24 @@ fn margin_el(pg: &designcraft_doc::Page) -> El {
 }
 
 /// `rule_color` is the IDML reference of the column rule's swatch.
+/// `TextWrapPreference` of a page item or a placed graphic.
+fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
+    with_props(
+        El::new("TextWrapPreference")
+            .attr("Inverse", bool_s(w.invert))
+            .attr("ApplyToMasterPageOnly", "false")
+            .attr("TextWrapSide", names::wrap_side_out(w.side))
+            .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
+        vec![
+            El::new("TextWrapOffset")
+                .attr("Top", num(w.offsets[0]))
+                .attr("Left", num(w.offsets[1]))
+                .attr("Bottom", num(w.offsets[2]))
+                .attr("Right", num(w.offsets[3])),
+        ],
+    )
+}
+
 fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
     let mut inset = El::new("InsetSpacing").attr("type", "list");
     for v in o.inset {

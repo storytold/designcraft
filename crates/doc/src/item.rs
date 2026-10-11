@@ -426,6 +426,12 @@ pub struct TextWrap {
     pub side: WrapSide,
 }
 
+impl TextWrap {
+    pub fn is_default(&self) -> bool {
+        *self == TextWrap::default()
+    }
+}
+
 /// Frame fitting options (Object → Fitting → Frame Fitting Options).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -455,6 +461,9 @@ pub struct Graphic {
     /// Frame Fitting Options › Crop Amount: top, left, bottom, right (negative adds space).
     #[serde(default)]
     pub crop: [f64; 4],
+    /// Text wrap set on the graphic itself (Direct Selection), around the part its frame shows.
+    #[serde(default, skip_serializing_if = "TextWrap::is_default")]
+    pub wrap: TextWrap,
 }
 
 fn center_ref() -> u8 {
@@ -614,6 +623,13 @@ fn is_zero_usize(v: &usize) -> bool {
 }
 
 impl Graphic {
+    /// The part of the graphic its frame shows, in the frame's inner space (bounding boxes);
+    /// None when nothing shows.
+    pub fn shown_bounds(&self, frame: Rect) -> Option<Rect> {
+        let r = self.xf.transform_rect_bbox(Rect::new(0.0, 0.0, self.size.0, self.size.1)).intersect(frame);
+        (r.width() > 0.0 && r.height() > 0.0).then_some(r)
+    }
+
     /// The graphic transform that fits it into `frame` (the frame's inner rect) with `mode`,
     /// honouring the crop amounts and the reference point.
     pub fn fitted(&self, frame: Rect, mode: Fitting) -> Option<Affine> {
@@ -1070,6 +1086,10 @@ impl Item {
             Content::Text(t) => Some(t),
             _ => None,
         }
+    }
+    /// Does this item, or the graphic it holds, wrap text?
+    pub fn has_wrap(&self) -> bool {
+        self.wrap.mode != WrapMode::None || self.graphic().is_some_and(|g| g.wrap.mode != WrapMode::None)
     }
     pub fn graphic(&self) -> Option<&Graphic> {
         match &self.content {

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use designcraft_doc::{Document, Item, Story, StoryId, Styles, WrapMode};
+use designcraft_doc::{Document, Item, Story, StoryId, Styles};
 
 use crate::vars::RunningIndex;
 use crate::{ComposeOptions, ComposedStory};
@@ -261,7 +261,9 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
             if !spreads.contains(&loc.spread) {
                 spreads.push(loc.spread);
                 for it in &sp.items {
-                    if it.wrap.mode != WrapMode::None {
+                    let mut wraps = false;
+                    it.walk(&mut |i| wraps |= i.has_wrap());
+                    if wraps {
                         sig.push(Arc::as_ptr(it) as usize);
                         keep.push(it.clone());
                     }

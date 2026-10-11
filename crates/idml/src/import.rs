@@ -2095,17 +2095,7 @@ impl<'r> Importer<'r> {
         }
         // Text wrap.
         if let Some(w) = e.find("TextWrapPreference") {
-            let mut tw = TextWrap {
-                mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
-                invert: w.get("Inverse") == Some("true"),
-                side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
-                ..TextWrap::default()
-            };
-            if let Some(o) = w.prop_el("TextWrapOffset") {
-                tw.offsets =
-                    [o.num("Top").unwrap_or(0.0), o.num("Left").unwrap_or(0.0), o.num("Bottom").unwrap_or(0.0), o.num("Right").unwrap_or(0.0)];
-            }
-            it.wrap = tw;
+            it.wrap = text_wrap(w);
         }
         // Type on a path.
         if tag != "TextFrame"
@@ -2236,6 +2226,8 @@ impl<'r> Importer<'r> {
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            // A wrap set on the placed graphic (Direct Selection) is stored on the graphic element.
+            wrap: g.find("TextWrapPreference").map(text_wrap).unwrap_or_default(),
         })
     }
 
@@ -2346,6 +2338,20 @@ impl<'r> Importer<'r> {
 }
 
 /// Drop-shadow angle (degrees) from IDML offsets (inverse of export's mapping).
+/// A `TextWrapPreference` element (of a page item or a placed graphic).
+fn text_wrap(w: &El) -> TextWrap {
+    let mut tw = TextWrap {
+        mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
+        invert: w.get("Inverse") == Some("true"),
+        side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
+        ..TextWrap::default()
+    };
+    if let Some(o) = w.prop_el("TextWrapOffset") {
+        tw.offsets = [o.num("Top").unwrap_or(0.0), o.num("Left").unwrap_or(0.0), o.num("Bottom").unwrap_or(0.0), o.num("Right").unwrap_or(0.0)];
+    }
+    tw
+}
+
 fn names_angle(x: f64, y: f64) -> f64 {
     if x == 0.0 && y == 0.0 {
         return 135.0;

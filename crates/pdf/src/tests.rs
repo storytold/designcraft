@@ -236,6 +236,7 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
         auto_fit: designcraft_doc::Fitting::FillProportionally,
         fit_align: 4,
         crop: [0.0; 4],
+        wrap: Default::default(),
     });
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
 }

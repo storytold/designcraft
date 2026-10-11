@@ -514,6 +514,27 @@ fn object_set_flags_and_wrap_invert() {
 }
 
 #[test]
+fn text_wrap_on_selected_content_sets_the_graphic_wrap() {
+    let mut s = session();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = s.execute("frame.create", &json!({"rect": [300, 300, 400, 400], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png)})).unwrap();
+    s.execute("place.drop", &json!({"frame": f})).unwrap();
+    let item = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).cloned().unwrap();
+    s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "boundingBox", "offset": 4})).unwrap();
+    let it = item(&s);
+    assert_eq!(it.wrap.mode, designcraft_doc::WrapMode::None, "the frame keeps no wrap");
+    let g = it.graphic().unwrap();
+    assert_eq!((g.wrap.mode, g.wrap.offsets), (designcraft_doc::WrapMode::BoundingBox, [4.0; 4]));
+    // The frame selected: the frame's own wrap.
+    s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "jumpObject"})).unwrap();
+    let it = item(&s);
+    assert_eq!((it.wrap.mode, it.graphic().unwrap().wrap.mode), (designcraft_doc::WrapMode::JumpObject, designcraft_doc::WrapMode::BoundingBox));
+}
+
+#[test]
 fn gridify_while_drawing_frames() {
     use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
     let mut s = session();

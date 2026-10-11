@@ -21,8 +21,15 @@ fn math_item(d: &mut designcraft_doc::Document, latex: &str, size: f64, lid: des
     let id = ItemId(d.alloc());
     let r = Rect::new(at.0, at.1, at.0 + w, at.1 + h);
     let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
-    it.content =
-        Content::Graphic(Graphic { asset: aid, size: (w, h), xf: Affine::translate(at), auto_fit: Default::default(), fit_align: 4, crop: [0.0; 4] });
+    it.content = Content::Graphic(Graphic {
+        asset: aid,
+        size: (w, h),
+        xf: Affine::translate(at),
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+    });
     it.alt_text = latex.to_string();
     it.name = "Math".into();
     it

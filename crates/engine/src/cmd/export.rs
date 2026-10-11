@@ -123,7 +123,7 @@ fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, 
 fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     // Object Export Options › Rasterize: those objects go in as images.
-    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, |it| it.export_options.rasterize && !threaded(&st.doc, it));
+    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, false, |it| it.export_options.rasterize && !threaded(&st.doc, it));
     let epub_doc: &designcraft_doc::Document = raster.as_ref().unwrap_or(&st.doc);
     let fixed = p.get("fixedLayout").and_then(Value::as_bool).unwrap_or(false);
     let want_cover = p.get("cover").and_then(Value::as_bool).unwrap_or(false);
@@ -267,6 +267,7 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
                 auto_fit: Default::default(),
                 fit_align: 4,
                 crop: [0.0; 4],
+                wrap: Default::default(),
             });
             it.stroke.weight = 0.0;
             it
@@ -361,15 +362,17 @@ fn raster_effects(it: &designcraft_doc::Item) -> bool {
 /// A copy of `d` where spread-level objects with soft effects are 300 ppi images of their whole
 /// appearance (transparent around them, so they composite over what's behind).
 fn rasterize_effects(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache) -> (Option<designcraft_doc::Document>, usize) {
-    rasterize_where(d, cache, 300.0, |it| raster_effects(it) && !threaded(d, it))
+    rasterize_where(d, cache, 300.0, true, |it| raster_effects(it) && !threaded(d, it))
 }
 
 /// A copy of `d` where the spread-level objects `pred` picks are images of their appearance at
-/// `ppi` (transparent around them).
+/// `ppi` (transparent around them). With `keep_wrap`, each object also stays behind as a
+/// nonprinting [`wrap_stand_in`], so text wraps around it as before.
 fn rasterize_where(
     d: &designcraft_doc::Document,
     cache: &designcraft_compose::Cache,
     ppi: f64,
+    keep_wrap: bool,
     pred: impl Fn(&designcraft_doc::Item) -> bool,
 ) -> (Option<designcraft_doc::Document>, usize) {
     use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
@@ -432,6 +435,7 @@ fn rasterize_where(
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
         img_item.stroke.weight = 0.0;
         img_item.alt_text = it.alt_text.clone();
@@ -440,10 +444,51 @@ fn rasterize_where(
         let osp = std::sync::Arc::make_mut(&mut out.spreads[si]);
         if let Some(pos) = osp.items.iter().position(|x| x.id == id) {
             osp.items[pos] = std::sync::Arc::new(img_item);
+            if keep_wrap && has_wrap(it, 0) {
+                osp.items.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
+            }
             n += 1;
         }
     }
     (Some(out), n)
+}
+
+/// Whether `it`, its placed graphic or an item in it wraps text.
+fn has_wrap(it: &designcraft_doc::Item, depth: usize) -> bool {
+    use designcraft_doc::{Content, WrapMode};
+    if depth > MAX_STAND_IN_DEPTH {
+        return false;
+    }
+    it.wrap.mode != WrapMode::None
+        || match &it.content {
+            Content::Graphic(g) => g.wrap.mode != WrapMode::None,
+            Content::Group { items } => items.iter().any(|c| has_wrap(c, depth + 1)),
+            _ => false,
+        }
+}
+
+/// Nesting depth past which groups inside a rasterised object keep no wrap stand-ins.
+const MAX_STAND_IN_DEPTH: usize = 64;
+
+/// A nonprinting copy of `it` that keeps its text wrap (and its graphic's and its items') and
+/// nothing else that reaches the PDF: no text, form field, button or media. The image of the
+/// object stands in for all of that, as it does without the copy.
+fn wrap_stand_in(it: &designcraft_doc::Item, depth: usize) -> designcraft_doc::Item {
+    use designcraft_doc::Content;
+    let mut c = it.clone();
+    c.nonprinting = true;
+    c.form_field = None;
+    c.button = None;
+    c.media = None;
+    c.content = match &it.content {
+        Content::Text(_) => Content::Unassigned,
+        Content::Group { items } if depth < MAX_STAND_IN_DEPTH => {
+            Content::Group { items: items.iter().map(|i| std::sync::Arc::new(wrap_stand_in(i, depth + 1))).collect() }
+        }
+        Content::Group { .. } => Content::Group { items: Vec::new() },
+        other => other.clone(),
+    };
+    c
 }
 
 /// A copy of `d` where placed PDFs with Object Layer Options hidden layers are 300 ppi images.
@@ -706,6 +751,39 @@ mod text_tests {
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
         let text = String::from_utf8_lossy(&super::super::file::base64_decode(r["base64"].as_str().unwrap())).to_string();
         assert_eq!(text.matches("/S/Transparency/CS/DeviceCMYK").count(), 1, "only the page with transparency");
+    }
+
+    #[test]
+    fn objects_with_soft_effects_keep_their_text_wrap_in_pdf() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = "Words wrap around the objects on this page. ".repeat(60);
+        let t = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": text, "caret": false})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        // A feathered frame with a contour wrap of the frame itself.
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [a]})).unwrap();
+        s.execute("object.textWrap", &json!({"ids": [a], "mode": "contour", "contour": "sameAsClipping", "offset": 6})).unwrap();
+        // A feathered frame whose placed graphic has a bounding-box wrap.
+        let png = designcraft_render::Rendered { width: 40, height: 40, pixels: vec![90; 40 * 40 * 4] }.to_png();
+        let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 500]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": b})).unwrap();
+        s.execute("object.textWrap", &json!({"ids": [b], "content": true, "mode": "boundingBox", "offset": 6})).unwrap();
+        s.execute("object.feather", &json!({"ids": [a, b], "width": 14})).unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        let sid = d.item(designcraft_doc::ItemId(t)).and_then(|it| it.text_frame()).unwrap().story;
+        let before = designcraft_compose::frame_specs(d, sid)[0].exclusions.clone();
+        assert_eq!(before.len(), 2);
+        let (fx, n) = super::rasterize_effects(d, &s.cache);
+        assert_eq!(n, 2);
+        let fx = fx.unwrap();
+        assert_eq!(designcraft_compose::frame_specs(&fx, sid)[0].exclusions, before);
+        // The objects that keep the wrap don't print; their images do.
+        let sp = &fx.spreads[0];
+        assert_eq!(sp.items.iter().filter(|it| it.nonprinting).count(), 2);
+        assert_eq!(sp.items.iter().filter(|it| !it.nonprinting && it.graphic().is_some()).count(), 2);
     }
 
     #[test]

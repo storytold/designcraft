@@ -29,11 +29,11 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use designcraft_doc::{
-    Align, Composer, Document, FirstBaseline, GridAlign, ItemId, ParaProps, SpanColumns, StartParagraph, Story, StoryId, TabAlign, TextFrameOptions,
-    VerticalJustification, WrapMode, story,
+    Align, Composer, Content, Document, FirstBaseline, GridAlign, Item, ItemId, ParaProps, SpanColumns, StartParagraph, Story, StoryId, TabAlign,
+    TextFrameOptions, VerticalJustification, WrapMode, story,
 };
 use designcraft_fonts::{FontDb, ScopedFonts};
-use designcraft_geom::{Point, Rect};
+use designcraft_geom::{Affine, Point, Rect};
 
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::Cache;
@@ -344,6 +344,37 @@ pub struct ComposeOptions {
     pub xrefs: Option<Arc<xref::XrefIndex>>,
 }
 
+/// Nesting depth past which wrap obstacles inside groups are not collected.
+const MAX_WRAP_DEPTH: usize = 64;
+
+/// The text wrap obstacles of a page item, the graphic it holds and the items in it, as
+/// (spread-space box grown by the wrap offsets, mode). `parent` maps the item's parent space to
+/// the spread; `skip` is the text frame being wrapped.
+fn wrap_obstacles(it: &Item, parent: Affine, skip: ItemId, depth: usize, out: &mut Vec<(Rect, WrapMode)>) {
+    if it.id == skip || it.hidden || depth > MAX_WRAP_DEPTH {
+        return;
+    }
+    let grow = |r: Rect, o: [f64; 4]| Rect::new(r.x0 - o[1], r.y0 - o[0], r.x1 + o[3], r.y1 + o[2]);
+    if it.wrap.mode != WrapMode::None {
+        out.push((grow(parent.transform_rect_bbox(it.bounds()), it.wrap.offsets), it.wrap.mode));
+    }
+    let xf = parent * it.xf;
+    match &it.content {
+        // A wrap on the placed graphic follows the part of it the frame shows.
+        Content::Graphic(g) if g.wrap.mode != WrapMode::None => {
+            if let Some(r) = g.shown_bounds(it.inner_bounds()) {
+                out.push((grow(xf.transform_rect_bbox(r), g.wrap.offsets), g.wrap.mode));
+            }
+        }
+        Content::Group { .. } => {
+            for c in it.shown_children() {
+                wrap_obstacles(c, xf, skip, depth + 1, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Build the frame specs of a story from the document (geometry, wrap, page names, grid).
 pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
     let Some(st) = doc.story(sid) else { return vec![] };
@@ -359,19 +390,14 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
         if !tf.options.ignore_wrap
             && let Some(sp) = spread
         {
+            let mut obstacles = Vec::new();
             for other in &sp.items {
-                if other.id == item.id || other.wrap.mode == WrapMode::None || other.hidden {
-                    continue;
-                }
                 if doc.layer(other.layer).is_some_and(|l| !l.visible) {
                     continue;
                 }
-                let o = other.wrap.offsets;
-                let b = other.bounds();
-                let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
-                let inner = inv.transform_rect_bbox(r);
-                exclusions.push(Exclusion { rect: inner, mode: other.wrap.mode });
+                wrap_obstacles(other, Affine::IDENTITY, item.id, 0, &mut obstacles);
             }
+            exclusions.extend(obstacles.into_iter().map(|(r, mode)| Exclusion { rect: inv.transform_rect_bbox(r), mode }));
         }
         let (page_name, page, left_page) = match (loc.spread, spread) {
             (designcraft_doc::SpreadRef::Doc(si), Some(sp)) => {
