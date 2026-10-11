@@ -1,4 +1,4 @@
-//! Frame grids: text set in a grid of character cells.
+//! Frame grids: Chinese, Japanese and Korean text set in a grid of character cells.
 
 use designcraft_doc::FrameGrid;
 

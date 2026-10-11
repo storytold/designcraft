@@ -2064,7 +2064,8 @@ struct GridRows {
 
 /// A line of `line` glyphs in frame grid `g` from the first row at or after `from` (column `col`,
 /// composition space): as many rows as its em box needs, its em box placed in them by the grid
-/// alignment (JLREQ §4.2: lines on the grid; a larger heading takes whole rows).
+/// alignment (lines on the grid; a larger heading takes whole rows: JLREQ §4.2, and the same in
+/// Chinese and Korean grids).
 fn grid_line(g: &designcraft_doc::FrameGrid, vertical: bool, col: Rect, from: f64, line: &[Glyph], base_size: f64) -> GridRows {
     use designcraft_doc::GridAlignment as A;
     let (_, cell) = g.cell(vertical);

@@ -1,5 +1,7 @@
-//! Frame grids: text frames whose text is set in a grid of character cells (Japanese
-//! *genkō yōshi*-style composition, JLREQ §4.2 *hanmen* and frame grids).
+//! Frame grids: text frames whose text is set in a grid of character cells, as Chinese,
+//! Japanese and Korean text is on squared manuscript paper (原稿用紙 / 稿紙 / 원고지): one
+//! full-width character to a cell (JLREQ §4.2; CLREQ and KLREQ describe the same character
+//! grid for Chinese and Korean).
 //!
 //! A frame grid is an ordinary text frame with a [`FrameGrid`] in its options. The grid gives the
 //! cell (character size × scale), the character aki (space between cells along the line) and the
@@ -126,9 +128,10 @@ pub struct FrameGrid {
     pub fill_every: u32,
 }
 
-/// The grid font new documents give their frame grids: a Mincho (as Japanese body text is set
-/// in) that is the same face on macOS, Windows and Linux, so a document's grids look alike
-/// wherever it is opened.
+/// The grid font new documents give their frame grids: a serif (Mincho / Song / Myeongjo) face
+/// that is the same on macOS, Windows and Linux, so a document's grids look alike wherever it is
+/// opened. It is the Japanese face of a pan-CJK family for now: choosing the face of the
+/// document's language (SC, TC, KR) is to come.
 pub const DEFAULT_GRID_FONT: (&str, &str) = ("Noto Serif CJK JP", "Regular");
 
 /// Mincho faces that stand in for [`DEFAULT_GRID_FONT`] where it isn't installed: (family,

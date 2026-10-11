@@ -6,15 +6,36 @@ use designcraft_geom::Rect;
 
 use super::*;
 
-/// A synthetic Japanese font: kanji, kana and full-width punctuation one em wide (drawn as Source
+/// A synthetic CJK font: Han characters, kana, hangul and full-width punctuation one em wide (drawn as Source
 /// Sans 3 glyphs), Latin letters at their own widths. Added to the global database once.
 fn japanese_test_font() -> &'static str {
     use designcraft_fonts::testing::{font_mapping, with_advances};
     const FAMILY: &str = "DC Test Japanese";
     static ADDED: std::sync::Once = std::sync::Once::new();
     ADDED.call_once(|| {
-        let wide =
-            [('漢', 'X'), ('字', 'H'), ('か', 'o'), ('な', 'n'), ('、', ','), ('。', '.'), ('「', '['), ('」', ']'), ('・', '-'), ('\u{3000}', ' ')];
+        let wide = [
+            ('漢', 'X'),
+            ('字', 'H'),
+            ('か', 'o'),
+            ('な', 'n'),
+            ('、', ','),
+            ('。', '.'),
+            ('「', '['),
+            ('」', ']'),
+            ('・', '-'),
+            ('\u{3000}', ' '),
+            // Simplified and Traditional Chinese, Korean.
+            ('汉', 'X'),
+            ('语', 'H'),
+            ('漢', 'X'),
+            ('語', 'H'),
+            ('，', ','),
+            ('《', '['),
+            ('》', ']'),
+            // (Drawn as glyphs the source face doesn't kern, as hangul syllables aren't.)
+            ('한', 'X'),
+            ('글', 'H'),
+        ];
         let latin = [('A', 'A'), ('B', 'B'), ('x', 'x'), (' ', ' ')];
         let base = font_mapping(FAMILY, &[&wide[..], &latin[..]].concat()).unwrap_or_default();
         let scratch = designcraft_fonts::FontDb::with_font_dirs(vec![]);
@@ -92,6 +113,29 @@ fn frame_grid_puts_one_character_in_each_cell() {
     let k = 10.0 / g.face.units_per_em();
     let centre = ls[0].baseline - (top + bottom) / 2.0 * k;
     assert!((centre - 5.0).abs() < 1e-3, "em box centre {centre}");
+}
+
+/// Chinese (Simplified and Traditional) and Korean text is set the same way: every Han
+/// character, hangul syllable and full-width punctuation mark takes a cell, across and down.
+#[test]
+fn chinese_and_korean_text_takes_one_character_to_a_cell() {
+    // (Ten characters, broken where kinsoku allows: no closing mark starts the second line.)
+    for text in ["汉语，汉语《汉》语。", "漢語，漢語《漢》語。", "한글。한글한글한글。"] {
+        for vertical in [false, true] {
+            let (d, sid, _) = grid_doc(text, grid(), 5, 3, vertical);
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(!cs.is_overset(), "{text}");
+            let ls: Vec<&Line> = cs.frames[0].lines.iter().collect();
+            assert_eq!(ls.len(), 2, "{text}");
+            for l in &ls {
+                let glyphs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0).collect();
+                assert_eq!(glyphs.len(), if std::ptr::eq(*l, ls[0]) { 5 } else { text.chars().count() - 5 }, "{text}");
+                for (n, g) in glyphs.iter().enumerate() {
+                    assert!((g.x - n as f64 * 12.0).abs() < 1e-6, "{text} vertical {vertical}: {:?}", (n, g.x));
+                }
+            }
+        }
+    }
 }
 
 #[test]
