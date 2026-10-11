@@ -9,6 +9,7 @@ description = "DesignCraft engine: session, documents, history, selection, comma
 workspace = true
 
 [dependencies]
+craft-print = { workspace = true }
 designcraft-images = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }

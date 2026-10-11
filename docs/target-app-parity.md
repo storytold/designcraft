@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, full re-measure against InDesign 2026 21.6; replaces the 2026-10-04 estimate in ROADMAP.md) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (shared print spooler; native Windows validation pending) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -66,7 +66,7 @@ they receive, setting type exactly, and basic editing that never fails.
 | Performance | 5% | 65% | 40–80 | 300k characters compose in ~38 ms warm; typing repaints in < 1 ms (damage regions); no incremental composition; nothing benchmarked against InDesign; no large real documents | [gaps.md](gaps.md) |
 | Localization | 3% | 45% | 120–180 | 9 translations beyond English; Japanese 95%, most others 83–85%, pt-BR 61%; Hindi, Indonesian, Korean, Vietnamese none | [localization-parity.md](localization-parity.md) |
 | Platforms | 3% | 55% | 40–80 | macOS is where it's tested; Windows and Linux users hit basic failures; web and FreeBSD builds exist | [hardware-parity.md](hardware-parity.md) |
-| Hardware | 2% | 45% | 20–40 | Canvas rasterizes on the CPU (vello_cpu, multithreaded); GPU only presents; printing is `lpr` (no Windows printing, no PostScript) | [hardware-parity.md](hardware-parity.md) |
+| Hardware | 2% | 45% | 20–40 | Canvas rasterizes on the CPU (vello_cpu, multithreaded); GPU only presents; printing uses shared CUPS/Windows PDF spoolers (no PostScript; physical output needs validation) | [hardware-parity.md](hardware-parity.md) |
 | Ecosystem (scripting, plug-ins) | 2% | 15% | 150–250 | Own command/script/MCP API is strong; no ExtendScript/UXP DOM, so InDesign scripts don't run; no plug-ins | [gaps.md](gaps.md) |
 | AI features | 0% (not weighted) | 15% | 60–120 | Agent control through MCP goes beyond InDesign; no generative features (InDesign 2026: Generative Expand, Text to Image, Auto Style) | [gaps.md](gaps.md) |
 | **Weighted sum** | 100% | **47.2% → ~47%** (range 42–52%) | **1,150–1,950** | | |
@@ -117,7 +117,7 @@ twice.
 | Tables | 5% | 55% | anchored objects in cells, Table Options submenus |
 | Layers | 3% | 75% | |
 | Effects and transparency | 3% | 50% | fidelity unmeasured |
-| Output: PDF export, print, package | 8% | 60% | PDF/X-4 strong; no X-1a, presets, Windows printing |
+| Output: PDF export, print, package | 8% | 60% | PDF/X-4 strong; no X-1a or presets; physical print validation pending |
 | View, navigation, undo, save | 3% | 70% | |
 | **Weighted depth** | 100% | **60.7%** | |
 
@@ -152,7 +152,7 @@ features), exchange edge cases, and everything excluded above.
 | Undo / redo | 5% | 85% | |
 | Save and reopen | 5% | 85% | `.designcraft` round trip, recovery |
 | Export PDF / PNG | 10% | 80% | |
-| Print | 5% | 40% | PDF to `lpr` only, nothing on Windows |
+| Print | 5% | 40% | PDF to CUPS/Windows via craft-print; physical output validation pending |
 | **Weighted depth** | 100% | **72.0%** | |
 
 | Discount | Factor | Evidence |
@@ -217,7 +217,7 @@ table is the one summed.
 | Tables | 100% | 55% | 25–40 | anchored objects in cells not drawn (#163); Table ▸ Table Options submenus, Diagonal Lines, Convert Rows, Edit Header/Footer |
 | Long documents | 100% | 45% | 30–50 | Books are shallow (sync, book pagination, book PDF/TOC/index); Table of Contents Styles |
 | Interactivity & digital | 100% | 40% | 30–50 | HTML export basic (#314); fixed-layout EPUB is page images; no animation, timing, media playback |
-| Output & production | 92% | 55% | 40–70 | PDF/X-4 only (no X-1a/X-3), no PDF/print presets or `.joboptions`, print via `lpr` (no Windows), no trapping; Output Preview panel |
+| Output & production | 92% | 55% | 40–70 | PDF/X-4 only (no X-1a/X-3), no PDF/print presets or `.joboptions`, print via craft-print (CUPS/Windows), no trapping; Output Preview panel |
 | XML & automation | 100% | 35% | (ecosystem dimension) | no ExtendScript/UXP; XML structure depth |
 | View & navigation | 100% | 65% | 10–20 | Navigator, display badges, Show/Hide extras (content grabber, live corners) |
 | Undo, history, saving | 100% | 70% | 5–10 | Undo/Redo name the action; File ▸ Open Recent |
