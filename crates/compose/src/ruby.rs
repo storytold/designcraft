@@ -29,6 +29,7 @@ fn set(base: &PlacedGlyph, text: &str, size: f64, base_size: f64) -> (Vec<Placed
             sx: k,
             sy: k,
             len: 0,
+            generated_text: None,
             visible: true,
             upright: upright_in_vertical(ch),
             tcy: None,

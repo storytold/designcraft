@@ -18,6 +18,10 @@ pub struct Glyph {
     pub len: usize,
     /// First source character of the cluster (special characters keep their code).
     pub ch: char,
+    /// What a generated glyph (page number, list label) reads as in exported text, since its
+    /// `byte..byte + len` holds a marker or nothing: the cluster's text on its first glyph, empty
+    /// on the others. `None` for story text, which reads as its source bytes.
+    pub generated_text: Option<Box<str>>,
     /// Advance in points (tracking and horizontal scale applied).
     pub adv: f64,
     pub dx: f64,
@@ -764,6 +768,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         byte,
         len: ch.len_utf8(),
         ch,
+        generated_text: None,
         adv: 0.0,
         dx: 0.0,
         dy: 0.0,
@@ -858,6 +863,15 @@ fn shape_segment(
             (cl, end.saturating_sub(cl), text[cl..].chars().next().unwrap_or(' '))
         };
         let last_in_cluster = gi + 1 == n || shaped[gi + 1].cluster != sg.cluster;
+        // Only the first glyph of a cluster owns the bytes (so ranges partition the text).
+        let first_in_cluster = gi == 0 || shaped[gi - 1].cluster != sg.cluster;
+        let generated_text = replacement.map(|src| {
+            if !first_in_cluster {
+                return Box::from("");
+            }
+            let end = shaped[gi + 1..].iter().map(|r| r.cluster).find(|&c| c > sg.cluster).unwrap_or(src.len());
+            Box::from(src.get(sg.cluster..end).unwrap_or(""))
+        });
         // Upright: down the line is the shaper's -y, across it (text space -y) its x.
         let mut adv = if up { -(sg.y_advance as f64) * k_v } else { sg.x_advance as f64 * k * hs };
         let (dx, dy) = if up {
@@ -871,8 +885,6 @@ fn shape_segment(
         } else if last_in_cluster {
             adv += tracking + manual;
         }
-        // Only the first glyph of a cluster owns the bytes (so ranges partition the text).
-        let first_in_cluster = gi == 0 || shaped[gi - 1].cluster != sg.cluster;
         let mark = face.glyph_is_mark(sg.gid);
         let mark_x = if mark { p.diacritic_x_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * hs } else { 0.0 };
         let mark_y = if mark { p.diacritic_y_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * p.v_scale } else { 0.0 };
@@ -882,6 +894,7 @@ fn shape_segment(
             byte,
             len: if first_in_cluster || replacement.is_some() { len } else { 0 },
             ch,
+            generated_text,
             adv,
             dx: dx + mark_x,
             dy: dy - mark_y,
@@ -948,5 +961,6 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.byte = g.byte + g.len;
     h.len = 0;
     h.ch = '-';
+    h.generated_text = None;
     h
 }

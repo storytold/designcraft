@@ -446,3 +446,37 @@ fn column_rules_are_drawn() {
     assert!((xs[0] - 214.0).abs() < 0.01 && (xs[1] - 398.0).abs() < 0.01, "{xs:?}");
     assert!(rules(false).is_empty());
 }
+
+#[test]
+fn small_caps_and_small_cap_figures_extract_as_typed() {
+    // Source Sans 3 substitutes letters and figures under `smcp` / `c2sc` (`one` → `one.s`),
+    // in typed text, in a page number and in a list label alike (each with its own figures, so
+    // one's mapping can't stand in for another's).
+    use designcraft_doc::{Capitalization, ListType, story::PAGE_NUMBER};
+    for caps in [Capitalization::SmallCaps, Capitalization::OpenTypeAllSmallCaps] {
+        let text = format!("Abc 234 x{PAGE_NUMBER}\nItem");
+        let mut d = doc_with_text(&text);
+        let sid = *d.stories.keys().next().unwrap();
+        let st = d.story_mut(sid).unwrap();
+        st.format_paras(0..text.len(), |f| {
+            f.chars.font_family = Some("Source Sans 3".into());
+            f.chars.capitalization = Some(caps);
+        });
+        st.format_paras(text.len() - 1..text.len(), |f| {
+            f.para.list_type = Some(ListType::Numbers);
+            f.para.start_at = Some(Some(5));
+        });
+        let got = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap()).concat();
+        assert!(!got.contains('\u{FFFD}'), "{caps:?}: {got:?}");
+        assert_eq!(got.split_whitespace().collect::<Vec<_>>(), ["Abc", "234", "x15.Item"], "{caps:?}: {got:?}");
+    }
+    // All small caps draws `A` and `a` with one glyph, which one ToUnicode entry can't cover: the
+    // second spelling goes out as ActualText (which this extractor doesn't read).
+    let mut d = doc_with_text("Aa");
+    let sid = *d.stories.keys().next().unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+        f.over.font_family = Some("Source Sans 3".into());
+        f.over.capitalization = Some(Capitalization::OpenTypeAllSmallCaps);
+    });
+    assert!(uncompressed(&d, PdfOptions::default()).contains("/ActualText"));
+}

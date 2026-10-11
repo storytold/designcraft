@@ -125,6 +125,8 @@ pub struct PlacedGlyph {
     pub style: u32,
     pub byte: usize,
     pub len: usize,
+    /// Text of a generated glyph (see [`shape::Glyph::generated_text`]).
+    pub generated_text: Option<Box<str>>,
     /// Control characters (tabs, breaks, markers' carriers) are not drawn.
     pub visible: bool,
     /// Stays upright in vertical frames (CJK ideographs, kana, hangul, full-width forms).
@@ -2412,7 +2414,18 @@ fn layout_line(
         }
         // One tatweel stretched over the gap (overlapping its neighbours a little).
         let k = (l + 0.4) / w;
-        out.push(PlacedGlyph { gid, x: at - 0.2, y: -g.shift, adv: 0.0, sx: g.sx * k, len: 0, upright: false, tcy: None, ..place(g, at) });
+        out.push(PlacedGlyph {
+            gid,
+            x: at - 0.2,
+            y: -g.shift,
+            adv: 0.0,
+            sx: g.sx * k,
+            len: 0,
+            generated_text: None,
+            upright: false,
+            tcy: None,
+            ..place(g, at)
+        });
     }
     (out, x, ratio)
 }
@@ -2529,6 +2542,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
                 style: tab.style,
                 byte: tab.byte,
                 len: 0,
+                generated_text: None,
                 visible: true,
                 upright: false,
                 tcy: None,
@@ -2634,6 +2648,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         style: g.style,
         byte: g.byte,
         len: g.len,
+        generated_text: g.generated_text.clone(),
         visible,
         upright: g.upright,
         tcy: g.tcy,
@@ -2659,6 +2674,9 @@ fn prepend_label(
         .glyphs
         .into_iter()
         .map(|mut g| {
+            if g.generated_text.is_none() {
+                g.generated_text = Some(label.get(g.byte..g.byte + g.len).unwrap_or("").into());
+            }
             g.byte = at;
             g.len = 0;
             g

@@ -263,8 +263,19 @@ impl Exporter<'_> {
             } else if g.len == 0 && prev_src == Some(g.byte) && !ranges.is_empty() {
                 // Second glyph of a multi-glyph cluster: share the cluster's text.
                 ranges[ranges.len() - 1].clone()
+            } else if let Some(t) = g.generated_text.as_deref().filter(|t| !t.is_empty() && !t.chars().any(is_marker)) {
+                // Generated text (page numbers, list labels): its own characters, which a glyph
+                // the font substituted (small-cap or old-style figures) can't be mapped back to.
+                prev_src = None;
+                let a = text.len();
+                text.push_str(t);
+                a..text.len()
+            } else if g.generated_text.as_deref() == Some("") && !ranges.is_empty() {
+                // Later glyph of a generated cluster.
+                prev_src = None;
+                ranges[ranges.len() - 1].clone()
             } else {
-                // Inserted glyphs (page numbers, list labels, hyphens): map back through the font.
+                // Other inserted glyphs (hyphens, tab leaders, ruby): map back through the font.
                 prev_src = None;
                 match cmap.get(&g.gid) {
                     Some(c) => {
