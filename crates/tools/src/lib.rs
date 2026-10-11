@@ -200,6 +200,10 @@ pub struct ToolContext<'a> {
     pub layer: designcraft_doc::LayerId,
     pub snap: SnapView,
     pub unit: Unit,
+    /// Story loaded for threading (from frame.startThread). When set, the tool should show
+    /// the loaded text cursor and allow clicking frames to thread or dragging to create new frames.
+    /// Tuple: (story id, from frame id).
+    pub loaded_text: Option<(designcraft_doc::StoryId, designcraft_doc::ItemId)>,
 }
 
 impl ToolContext<'_> {

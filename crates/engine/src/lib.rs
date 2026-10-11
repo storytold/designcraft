@@ -260,6 +260,9 @@ pub struct Session {
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor: (asset, natural size in points).
     pub loaded: Option<(designcraft_doc::AssetId, (f64, f64))>,
+    /// Text frame story loaded in the threading cursor: (story id, from frame id).
+    /// When set, the Selection tool shows the loaded text cursor and clicking/dragging continues the thread.
+    pub loaded_text: Option<(designcraft_doc::StoryId, designcraft_doc::ItemId)>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -296,6 +299,7 @@ impl Session {
             text_clipboard: None,
             ui_requests: vec![],
             loaded: None,
+            loaded_text: None,
             transforms: Default::default(),
             text_drag: false,
             library: None,

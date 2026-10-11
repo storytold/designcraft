@@ -93,6 +93,7 @@ impl Session {
             layer,
             snap: view.snap,
             unit: view.unit,
+            loaded_text: self.loaded_text,
         };
         Some(f(self.tool.as_mut(), &cx))
     }

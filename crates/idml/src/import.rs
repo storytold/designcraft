@@ -95,6 +95,25 @@ struct ItemCtx {
     threads: Vec<(ItemId, String, String, String)>,
 }
 
+/// Extracted transparency settings to avoid borrowing conflicts.
+#[derive(Default)]
+struct TransparencyData {
+    opacity: Option<f64>,
+    blend_mode: Option<String>,
+    drop_shadow: Option<DropShadowData>,
+    feather: Option<f64>,
+}
+
+#[derive(Default)]
+struct DropShadowData {
+    x_offset: Option<f64>,
+    y_offset: Option<f64>,
+    effect_color: Option<String>,
+    opacity: Option<f64>,
+    size: Option<f64>,
+    spread: Option<f64>,
+}
+
 struct Importer<'r> {
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
     next_id: u64,
@@ -2049,48 +2068,86 @@ impl<'r> Importer<'r> {
         // Corners.
         let cn = crate::export::corner_names(&it.path);
         // The legacy all-corners attributes apply only when no per-corner attribute is present.
-        let per_corner = cn.iter().any(|n| e.get(&format!("{n}CornerOption")).is_some());
-        let legacy = if per_corner { (None, None) } else { (e.get("CornerOption"), e.num("CornerRadius")) };
+        // Use attr_or_style to resolve from object style chain.
+        let per_corner = cn.iter().any(|n| self.attr_or_style(e, &format!("{n}CornerOption")).is_some());
+        let legacy_opt = if per_corner { None } else { self.attr_or_style(e, "CornerOption") };
+        let legacy_rad = if per_corner { None } else { e.num("CornerRadius") };
         let mut corners = CornerOptions::default();
         for (i, n) in cn.iter().enumerate() {
-            let shape = e.get(&format!("{n}CornerOption")).or(legacy.0).map(names::corner_in).unwrap_or_default();
-            let size = e.num(&format!("{n}CornerRadius")).or(legacy.1).unwrap_or(0.0);
+            let shape = self.attr_or_style(e, &format!("{n}CornerOption")).or(legacy_opt.clone()).as_deref().map(names::corner_in).unwrap_or_default();
+            let size = self.attr_or_style(e, &format!("{n}CornerRadius")).and_then(|v| v.parse().ok()).or(legacy_rad).unwrap_or(0.0);
             corners.corners[i] = Corner { shape, size };
         }
         if !corners.is_none() {
             it.corners = corners;
         }
-        // Transparency.
-        if let Some(t) = e.find("TransparencySetting") {
+        // Transparency: check element first, then object style chain.
+        // Extract transparency data first (without borrowing self mutably), then apply.
+        fn find_transparency_setting<'a>(e: &'a El, object_els: &'a HashMap<String, El>) -> Option<&'a El> {
+            if let Some(t) = e.find("TransparencySetting") {
+                return Some(t);
+            }
+            let mut os = e.get("AppliedObjectStyle").map(str::to_string);
+            let mut depth = 0;
+            while let Some(id) = os {
+                depth += 1;
+                if depth > 16 { break; }
+                let Some(s) = object_els.get(&id) else { break; };
+                if let Some(t) = s.find("TransparencySetting") { return Some(t); }
+                os = s.prop("BasedOn").map(|b| if b.starts_with("ObjectStyle/") { b } else { format!("ObjectStyle/{}", names::escape_id(&b)) });
+            }
+            None
+        }
+        // Extract transparency settings as owned data to avoid borrowing conflicts.
+        let transparency_data = find_transparency_setting(e, &self.object_els).map(|t| {
+            let mut data = TransparencyData::default();
             if let Some(bs) = t.find("BlendingSetting") {
-                if let Some(o) = bs.num("Opacity") {
-                    it.opacity = (o / 100.0).clamp(0.0, 1.0) as f32;
-                }
-                if let Some(m) = bs.get("BlendMode") {
-                    it.blend = names::blend_in(m);
-                }
+                data.opacity = bs.num("Opacity");
+                data.blend_mode = bs.get("BlendMode").map(str::to_string);
             }
             if let Some(ds) = t.find("DropShadowSetting")
                 && ds.get("Mode") == Some("Drop")
             {
-                let x = ds.num("XOffset").unwrap_or(4.95);
-                let y = ds.num("YOffset").unwrap_or(4.95);
-                let def = DropShadow::default();
-                it.effects.drop_shadow = DropShadow {
-                    on: true,
-                    color: ds.get("EffectColor").map(|c| self.swatch_ref(c)).unwrap_or(def.color),
-                    opacity: ds.num("Opacity").map(|o| (o / 100.0) as f32).unwrap_or(def.opacity),
-                    angle: names_angle(x, y),
-                    distance: x.hypot(y),
-                    size: ds.num("Size").unwrap_or(def.size),
-                    spread: ds.num("Spread").unwrap_or(def.spread),
-                    global_light: false,
-                };
+                data.drop_shadow = Some(DropShadowData {
+                    x_offset: ds.num("XOffset"),
+                    y_offset: ds.num("YOffset"),
+                    effect_color: ds.get("EffectColor").map(str::to_string),
+                    opacity: ds.num("Opacity"),
+                    size: ds.num("Size"),
+                    spread: ds.num("Spread"),
+                });
             }
             if let Some(f) = t.find("FeatherSetting")
                 && f.get("Mode").is_some_and(|m| m != "None")
             {
-                it.effects = Effects { feather: f.num("Width").unwrap_or(9.0), ..it.effects.clone() };
+                data.feather = f.num("Width");
+            }
+            data
+        });
+        if let Some(data) = transparency_data {
+            if let Some(o) = data.opacity {
+                it.opacity = (o / 100.0).clamp(0.0, 1.0) as f32;
+            }
+            if let Some(m) = data.blend_mode {
+                it.blend = names::blend_in(&m);
+            }
+            if let Some(ds) = data.drop_shadow {
+                let x = ds.x_offset.unwrap_or(4.95);
+                let y = ds.y_offset.unwrap_or(4.95);
+                let def = DropShadow::default();
+                it.effects.drop_shadow = DropShadow {
+                    on: true,
+                    color: ds.effect_color.map(|c| self.swatch_ref(&c)).unwrap_or(def.color),
+                    opacity: ds.opacity.map(|o| (o / 100.0) as f32).unwrap_or(def.opacity),
+                    angle: names_angle(x, y),
+                    distance: x.hypot(y),
+                    size: ds.size.unwrap_or(def.size),
+                    spread: ds.spread.unwrap_or(def.spread),
+                    global_light: false,
+                };
+            }
+            if let Some(w) = data.feather {
+                it.effects = Effects { feather: w, ..it.effects.clone() };
             }
         }
         // Text wrap.
