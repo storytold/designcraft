@@ -52,7 +52,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ("Col ←", "table.moveColumn", c0, c0.saturating_sub(1), c0 > 0),
             ("Col →", "table.moveColumn", c0, c0 + 1, c0 + 1 < nc),
         ] {
-            if ui.add_enabled(ok, egui::Button::new(crate::rtl::widget(ui, label)).small()).clicked()
+            if ui.add_enabled(ok, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).small()).clicked()
                 && let Err(e) = app.run(id, json!({"from": from, "to": to}))
             {
                 app.status(format!("Table: {e}"));

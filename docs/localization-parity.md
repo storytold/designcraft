@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first version; catalogs measured) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (Japanese print, import and table controls localized; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -43,6 +43,11 @@ come as Middle East editions with an English or French interface and right-to-le
 Percentages are of the 1,724 measured strings. A language is `full` only when every user-visible
 string is translated and its script renders and edits correctly; none but English is.
 
+Japanese follow-up (2026-10-11): print ranges, imported style handling, the built-in `(import)`
+caption, table row/column movement and row-height distribution now use the existing translation
+catalog. Print, import options and an active table were rendered in Japanese and English with
+craft-fonts. The language totals above retain their dated measurement; this is a targeted fix.
+
 ## Other shipped languages
 
 | Language | Code | UI strings translated | Status |
@@ -77,4 +82,5 @@ locale shaping. See [typography-parity.md](typography-parity.md).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
 | 2026-10-10 | major | Created: catalogs measured (1,724 strings), the twelve key languages plus Italian and Ukrainian |

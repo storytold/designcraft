@@ -295,11 +295,11 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pages:"));
         ui.vertical(|ui| {
             let range = d.s("range");
-            if ui.radio(range == "all", "All").clicked() {
+            if ui.radio(range == "all", crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "All"))).clicked() {
                 d.fields.insert("range".into(), json!("all"));
             }
             ui.horizontal(|ui| {
-                if ui.radio(range == "range", "Range:").clicked() {
+                if ui.radio(range == "range", crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Range:"))).clicked() {
                     d.fields.insert("range".into(), json!("range"));
                 }
                 text_field(ui, d, "pages", 120.0);
@@ -1503,7 +1503,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     let cur = d.s("styleConflicts");
                     ui.horizontal(|ui| {
                         for (v, l) in [("useExisting", "Use Document Style Definition"), ("redefine", "Redefine Document Style"), ("autoRename", "Auto Rename")] {
-                            if ui.radio(cur == v, l).clicked() {
+                            if ui.radio(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
                                 d.fields.insert("styleConflicts".into(), json!(v));
                             }
                         }
@@ -1516,7 +1516,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             for w in &imported {
                                 ui.label(w);
                                 let mapped = d.fields.get("map").and_then(|m| m.get(w)).and_then(Value::as_str).unwrap_or("").to_string();
-                                let shown = if mapped.is_empty() { "(import)".to_string() } else { mapped.clone() };
+                                let shown = if mapped.is_empty() { crate::i18n::tr(&app.ui.language, "(import)").to_string() } else { mapped.clone() };
                                 egui::ComboBox::from_id_salt(("imp_map", w)).selected_text(crate::rtl::widget(ui, &shown)).width(170.0).show_ui(ui, |ui| {
                                     if ui.selectable_label(mapped.is_empty(),crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "(import)"))).clicked()
                                         && let Some(m) = d.fields.get_mut("map").and_then(Value::as_object_mut)
