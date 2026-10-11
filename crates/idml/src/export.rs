@@ -2487,26 +2487,16 @@ fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
         .attr("AutoSizingType", names::auto_size_out(o.auto_size))
         .attr("AutoSizingReferencePoint", names::REF_POINTS[(o.auto_size_ref as usize).min(8)]);
     let el = if o.column_width > 0.0 { el.attr("TextColumnFixedWidth", num(o.column_width)) } else { el };
-    let d = TextFrameOptions::default();
-    let rule_set = o.column_rule
-        || o.column_rule_weight != d.column_rule_weight
-        || o.column_rule_color != d.column_rule_color
-        || o.column_rule_tint != d.column_rule_tint
-        || o.column_rule_offset != d.column_rule_offset
-        || o.column_rule_top_inset != d.column_rule_top_inset
-        || o.column_rule_bottom_inset != d.column_rule_bottom_inset;
-    let el = if rule_set {
-        el.attr("ColumnRuleOverride", bool_s(o.column_rule))
-            .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
-            .attr("ColumnRuleStrokeColor", rule_color)
-            .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
-            .attr("ColumnRuleOffset", num(o.column_rule_offset))
-            .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
-            .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
-            .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset))
-    } else {
-        el
-    };
+    // Written on every frame: on import a frame takes any value it lacks from its object style.
+    let el = el
+        .attr("ColumnRuleOverride", bool_s(o.column_rule))
+        .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
+        .attr("ColumnRuleStrokeColor", rule_color)
+        .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
+        .attr("ColumnRuleOffset", num(o.column_rule_offset))
+        .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
+        .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
+        .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset));
     with_props(el, vec![inset])
 }
 

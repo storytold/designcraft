@@ -1922,25 +1922,63 @@ impl<'r> Importer<'r> {
         })
     }
 
+    /// An item's applied object style and the styles it is based on, nearest first.
+    fn style_chain(&self, e: &El) -> Vec<&El> {
+        let mut chain: Vec<&El> = Vec::new();
+        let mut os = e.get("AppliedObjectStyle").map(str::to_string);
+        while let Some(id) = os {
+            let Some(s) = self.object_els.get(&id) else { break };
+            if chain.len() >= 16 || chain.iter().any(|c| std::ptr::eq(*c, s)) {
+                break;
+            }
+            chain.push(s);
+            os = s.prop("BasedOn").map(|b| if b.starts_with("ObjectStyle/") { b } else { format!("ObjectStyle/{}", names::escape_id(&b)) });
+        }
+        chain
+    }
+
     /// Resolve an item attribute, falling back to its object style chain.
     fn attr_or_style(&self, e: &El, k: &str) -> Option<String> {
         if let Some(v) = e.get(k) {
             return Some(v.to_string());
         }
-        let mut os = e.get("AppliedObjectStyle").map(str::to_string);
-        let mut depth = 0;
-        while let Some(id) = os {
-            depth += 1;
-            if depth > 16 {
-                break;
+        self.style_chain(e).iter().find_map(|s| s.get(k)).map(str::to_string)
+    }
+
+    /// The item's child element `name` laid over the same element of each style in its object style
+    /// chain: attributes and nested elements merge one by one, nearer levels winning. IDML writes on an
+    /// item only the values that differ from its style. Effects whose category the applied style turns
+    /// off (`ObjectStyle*EffectsCategorySettings`) come from the item alone.
+    fn with_style(&self, e: &El, name: &str) -> Option<El> {
+        let chain = self.style_chain(e);
+        let category = match name {
+            "TransparencySetting" => Some("ObjectStyleObjectEffectsCategorySettings"),
+            "StrokeTransparencySetting" => Some("ObjectStyleStrokeEffectsCategorySettings"),
+            "FillTransparencySetting" => Some("ObjectStyleFillEffectsCategorySettings"),
+            "ContentTransparencySetting" => Some("ObjectStyleContentEffectsCategorySettings"),
+            _ => None,
+        };
+        let enabled = |effect: &str| {
+            let Some(flag) = category.and_then(|_| effect_flag(effect)) else { return true };
+            chain.iter().find_map(|s| category.and_then(|c| s.find(c)).and_then(|c| c.get(flag))) != Some("false")
+        };
+        let mut out: Option<El> = None;
+        for s in chain.iter().rev() {
+            let Some(c) = s.find(name) else { continue };
+            let mut c = c.clone();
+            c.children.retain(|n| !matches!(n, Node::El(x) if !enabled(x.local())));
+            match &mut out {
+                Some(o) => overlay(o, &c, 0),
+                None => out = Some(c),
             }
-            let Some(s) = self.object_els.get(&id) else { break };
-            if let Some(v) = s.get(k) {
-                return Some(v.to_string());
-            }
-            os = s.prop("BasedOn").map(|b| if b.starts_with("ObjectStyle/") { b } else { format!("ObjectStyle/{}", names::escape_id(&b)) });
         }
-        None
+        if let Some(c) = e.find(name) {
+            match &mut out {
+                Some(o) => overlay(o, c, 0),
+                None => out = Some(c.clone()),
+            }
+        }
+        out
     }
 
     fn stroke_from(&mut self, e: &El, item: Option<&El>) -> Stroke {
@@ -2046,22 +2084,31 @@ impl<'r> Importer<'r> {
                 it.stroke.weight = 1.0;
             }
         }
-        // Corners.
+        // Corners: each corner takes the nearest level (the item, then its object style chain) that
+        // gives a value. A level's all-corners attributes stand in only when it has no per-corner one.
         let cn = crate::export::corner_names(&it.path);
-        // The legacy all-corners attributes apply only when no per-corner attribute is present.
-        let per_corner = cn.iter().any(|n| e.get(&format!("{n}CornerOption")).is_some());
-        let legacy = if per_corner { (None, None) } else { (e.get("CornerOption"), e.num("CornerRadius")) };
         let mut corners = CornerOptions::default();
-        for (i, n) in cn.iter().enumerate() {
-            let shape = e.get(&format!("{n}CornerOption")).or(legacy.0).map(names::corner_in).unwrap_or_default();
-            let size = e.num(&format!("{n}CornerRadius")).or(legacy.1).unwrap_or(0.0);
-            corners.corners[i] = Corner { shape, size };
+        {
+            let mut levels = vec![e];
+            levels.extend(self.style_chain(e));
+            let pick = |kind: &str, n: &str| -> Option<&str> {
+                levels.iter().find_map(|l| {
+                    l.get(&format!("{n}Corner{kind}")).or_else(|| {
+                        (!cn.iter().any(|m| l.get(&format!("{m}Corner{kind}")).is_some())).then(|| l.get(&format!("Corner{kind}"))).flatten()
+                    })
+                })
+            };
+            for (c, n) in corners.corners.iter_mut().zip(cn) {
+                let shape = pick("Option", n).map(names::corner_in).unwrap_or_default();
+                let size = pick("Radius", n).and_then(|v| v.trim().parse().ok()).filter(|v: &f64| v.is_finite()).unwrap_or(0.0);
+                *c = Corner { shape, size };
+            }
         }
         if !corners.is_none() {
             it.corners = corners;
         }
         // Transparency.
-        if let Some(t) = e.find("TransparencySetting") {
+        if let Some(t) = self.with_style(e, "TransparencySetting") {
             if let Some(bs) = t.find("BlendingSetting") {
                 if let Some(o) = bs.num("Opacity") {
                     it.opacity = (o / 100.0).clamp(0.0, 1.0) as f32;
@@ -2094,7 +2141,7 @@ impl<'r> Importer<'r> {
             }
         }
         // Text wrap.
-        if let Some(w) = e.find("TextWrapPreference") {
+        if let Some(w) = self.with_style(e, "TextWrapPreference") {
             let mut tw = TextWrap {
                 mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
                 invert: w.get("Inverse") == Some("true"),
@@ -2138,8 +2185,8 @@ impl<'r> Importer<'r> {
                         sid
                     }
                 };
-                let mut options = e.find("TextFramePreference").map(|t| self.frame_options(t)).unwrap_or_default();
-                if let Some(g) = e.find("BaselineFrameGridOption")
+                let mut options = self.with_style(e, "TextFramePreference").map(|t| self.frame_options(&t)).unwrap_or_default();
+                if let Some(g) = self.with_style(e, "BaselineFrameGridOption")
                     && g.get("UseCustomBaselineFrameGrid") == Some("true")
                 {
                     options.baseline_grid =
@@ -2167,7 +2214,7 @@ impl<'r> Importer<'r> {
             _ => {
                 if let Some(g) = e.elements().find(|c| matches!(c.local(), "Image" | "PDF" | "EPS" | "ImportedPage" | "WMF" | "PICT" | "SVG")) {
                     it.content = self.graphic(g);
-                    if let (Some(ff), Content::Graphic(gr)) = (e.elements().find(|c| c.local() == "FrameFittingOption"), &mut it.content) {
+                    if let (Some(ff), Content::Graphic(gr)) = (self.with_style(e, "FrameFittingOption"), &mut it.content) {
                         gr.crop = [ff.num("TopCrop"), ff.num("LeftCrop"), ff.num("BottomCrop"), ff.num("RightCrop")].map(|v| v.unwrap_or(0.0));
                         gr.fit_align = ff.get("FittingAlignment").map_or(4, names::anchor_in);
                         if ff.get("AutoFit") == Some("true") {
@@ -2342,6 +2389,72 @@ impl<'r> Importer<'r> {
             font_scope: 0,
         };
         Ok(d)
+    }
+}
+
+/// The object style category flag that turns an effect element on or off.
+fn effect_flag(effect: &str) -> Option<&'static str> {
+    Some(match effect {
+        "BlendingSetting" => "EnableTransparency",
+        "DropShadowSetting" => "EnableDropShadow",
+        "FeatherSetting" => "EnableFeather",
+        "InnerShadowSetting" => "EnableInnerShadow",
+        "OuterGlowSetting" => "EnableOuterGlow",
+        "InnerGlowSetting" => "EnableInnerGlow",
+        "BevelAndEmbossSetting" => "EnableBevelEmboss",
+        "SatinSetting" => "EnableSatin",
+        "DirectionalFeatherSetting" => "EnableDirectionalFeather",
+        "GradientFeatherSetting" => "EnableGradientFeather",
+        _ => return None,
+    })
+}
+
+/// Lays `top` over `base`: attributes one by one, child elements matched by name and merged the same
+/// way, text replaced. A property given in one form (attribute or `Properties` child) replaces the
+/// other form in `base`.
+fn overlay(base: &mut El, top: &El, depth: usize) {
+    if depth > 32 {
+        *base = top.clone();
+        return;
+    }
+    for (k, v) in &top.attrs {
+        base.set(k, v);
+        if let Some(Node::El(p)) = base.children.iter_mut().find(|n| matches!(n, Node::El(p) if p.local() == "Properties")) {
+            p.children.retain(|n| !matches!(n, Node::El(x) if x.local() == k));
+        }
+    }
+    if let Some(p) = top.find("Properties") {
+        let names: Vec<&str> = p.elements().map(El::local).collect();
+        base.attrs.retain(|(k, _)| !names.contains(&k.as_str()));
+    }
+    let has_text = top.children.iter().any(|n| matches!(n, Node::Text(t) | Node::CData(t) if !t.trim().is_empty()));
+    if has_text {
+        base.children.retain(|n| !matches!(n, Node::Text(_) | Node::CData(_)));
+    }
+    // The k-th child of a name merges with the k-th child of that name in `base` (repeated elements
+    // such as gradient stops pair up in order).
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for n in &top.children {
+        match n {
+            Node::El(c) => {
+                let k = seen.entry(c.local()).or_insert(0);
+                let slot = base
+                    .children
+                    .iter_mut()
+                    .filter_map(|b| match b {
+                        Node::El(b) if b.local() == c.local() => Some(b),
+                        _ => None,
+                    })
+                    .nth(*k);
+                *k += 1;
+                match slot {
+                    Some(b) => overlay(b, c, depth + 1),
+                    None => base.children.push(n.clone()),
+                }
+            }
+            Node::Text(_) | Node::CData(_) if has_text => base.children.push(n.clone()),
+            _ => {}
+        }
     }
 }
 
