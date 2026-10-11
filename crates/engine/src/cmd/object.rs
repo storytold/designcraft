@@ -1359,6 +1359,9 @@ fn group(s: &mut Session, p: &Value) -> Result<Value> {
         let sr = d.find(ids[0]).map(|l| l.spread).ok_or(designcraft_doc::DocError::NoItem(ids[0]))?;
         // Keep stacking order: collect in z-order.
         let order: Vec<ItemId> = d.spread(sr).map(|sp| sp.items.iter().map(|i| i.id).filter(|i| ids.contains(i)).collect()).unwrap_or_default();
+        if order.is_empty() {
+            return Err(bad("object.group", "no top-level objects found on the same spread to group; nested objects must be ungrouped first"));
+        }
         let front = d.spread(sr).and_then(|sp| sp.items.iter().position(|i| Some(&i.id) == order.last())).unwrap_or(0);
         let layer = d.item(order[0]).map(|i| i.layer).unwrap_or_default();
         let mut kids = Vec::new();
