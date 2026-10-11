@@ -8440,3 +8440,38 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn many_stories_in_continuing_lists_compose_quickly() {
+    // Regression: each story's cache lookup searched the whole item tree per story and per list
+    // to order the stories by page, so a 677-story book took 69 s to compose and a second per
+    // repaint.
+    let pages = 20;
+    let mut d = Document::new(&NewDocument { pages, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let names: Vec<String> = (0..8).map(|i| format!("List {i}")).collect();
+    for name in &names {
+        d.settings.lists.push(designcraft_doc::NumberedList { name: name.clone(), continue_across_stories: true });
+    }
+    let mut sids = Vec::new();
+    for i in 0..400 {
+        let para = ParaAttrs { list_name: Some(names[i % names.len()].clone()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.^t") };
+        let (x, y) = ((i / pages % 4) as f64 * 120.0, (i / pages / 4) as f64 * 120.0);
+        let r = Rect::new(36.0 + x, 36.0 + y, 140.0 + x, 140.0 + y);
+        sids.push(d.add_text_frame(SpreadRef::Doc(i % pages), r, lid, "a\nb", ParaFormat { para, ..Default::default() }).unwrap().1);
+    }
+    let cache = Cache::new();
+    let t = std::time::Instant::now();
+    // Compose everything, then look everything up again (what every repaint does).
+    for _ in 0..2 {
+        for &sid in &sids {
+            cache.get(&d, sid, None);
+        }
+    }
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t.elapsed());
+    // Story 392 (list 0) sits on page 12. List 0 is every 8th story, on pages 0, 8, 16, 4, 12 in
+    // turn: 30 of them on earlier pages and 9 earlier on page 12 come first, two numbers each.
+    let later = cache.get(&d, sids[392], None);
+    assert_eq!(list_labels(&later, LABEL_CHARS), ["79.", "80."]);
+    assert_eq!(list_labels(&cache.get(&d, sids[0], None), LABEL_CHARS), ["1.", "2."]);
+}
