@@ -164,3 +164,82 @@ fn font_menus_group_installed_and_loaded_fonts_without_loading_them() {
     assert_eq!(infos.iter().filter(|i| i.family == "Groups Mincho").count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn rescanning_retries_missing_glyphs_and_absent_fallback_families() {
+    use crate::testing::font_with;
+    let dir = font_dir("rescan-fallback-ttf");
+    // Only synthetic TTF files in this folder are scanned. Keep the loaded Latin fallback
+    // alone so optional craft-fonts cannot provide the characters used by this fixture.
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    db.faces.write().unwrap().retain(|f| f.family == FALLBACK_FAMILY);
+    let c = '\u{1e900}';
+    assert!(db.fallback_for(c, 0, None).is_none());
+    // A loaded non-chain face supplies Hangul while all installed Korean chain faces are absent.
+    db.add_font(font_with("Earlier Korean Fallback", &['가']).unwrap());
+    let chain_family = "Noto Serif CJK KR";
+    assert!(!db.has_family(chain_family));
+    assert_eq!(db.fallback_for('가', 0, Some("ko")).unwrap().family, "Earlier Korean Fallback");
+    let family = "Installed After Glyph Miss";
+    std::fs::write(dir.join("Later.ttf"), font_with(family, &[c]).unwrap()).unwrap();
+    std::fs::write(dir.join("LaterKorean.ttf"), font_with(chain_family, &['가']).unwrap()).unwrap();
+    // Before an explicit rescan, both fallbacks still use the previous catalog.
+    assert!(db.fallback_for(c, 0, None).is_none());
+    assert_eq!(db.fallback_for('가', 0, Some("ko")).unwrap().family, "Earlier Korean Fallback");
+    assert_eq!(db.load_system_fonts(), 4);
+    assert!(db.has_family(family) && db.has_family(chain_family));
+    assert_eq!(db.fallback_for(c, 0, None).unwrap().family, family);
+    assert_eq!(db.fallback_for('가', 0, Some("ko")).unwrap().family, chain_family);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rescan_does_not_cache_an_older_in_flight_glyph_miss() {
+    use crate::testing::font_with;
+    use std::sync::{Barrier, mpsc};
+    use std::time::Duration;
+
+    let dir = font_dir("rescan-in-flight-ttf");
+    let db = Arc::new(FontDb::with_font_dirs(vec![dir.clone()]));
+    // Optional craft-fonts must not supply the test glyph from an already loaded face.
+    db.faces.write().unwrap().retain(|f| f.family == FALLBACK_FAMILY);
+    let c = '\u{1e900}';
+    let family = "Installed During Glyph Lookup";
+    let font = font_with(family, &[c]).unwrap();
+    assert!(db.read_faces().iter().all(|f| !f.covers(c)));
+    assert_eq!(db.load_system_fonts(), 2);
+
+    let deadline = Duration::from_secs(10);
+    let (reached_tx, reached_rx) = mpsc::sync_channel(1);
+    let resume = Arc::new(Barrier::new(2));
+    *db.fallback_snapshot_hook.lock().unwrap() = Some(FallbackSnapshotHook { reached: reached_tx, resume: resume.clone() });
+    let (lookup_tx, lookup_rx) = mpsc::sync_channel(1);
+    let lookup_db = db.clone();
+    let lookup = std::thread::spawn(move || {
+        let face = lookup_db.fallback_for(c, 0, None).map(|f| f.family.clone());
+        let _ = lookup_tx.send(face);
+    });
+    reached_rx.recv_timeout(deadline).expect("the lookup must reach its old catalog snapshot");
+
+    // Finish the rescan while the old lookup is paused. A timeout also detects accidentally
+    // holding sys/catalog locks at the hook; release the lookup before reporting that failure.
+    let (scan_tx, scan_rx) = mpsc::sync_channel(1);
+    let scan_db = db.clone();
+    let scan = std::thread::spawn(move || {
+        let result = std::fs::write(dir.join("Later.ttf"), font).map(|()| scan_db.load_system_fonts());
+        let _ = scan_tx.send(result);
+    });
+    let scanned = scan_rx.recv_timeout(deadline);
+    resume.wait();
+    let old_face = lookup_rx.recv_timeout(deadline).expect("the old lookup must finish after release");
+    lookup.join().unwrap();
+    assert_eq!(scanned.expect("the rescan must finish before releasing the old lookup").unwrap(), 3);
+    scan.join().unwrap();
+    assert!(old_face.is_none(), "the paused lookup only searched the old paths");
+    assert!(db.has_family(family));
+    assert!(!db.is_loaded(family), "a rescan catalogs the font without loading it");
+    // The old miss must not hide the new catalog entry; no second rescan is performed.
+    assert_eq!(db.fallback_for(c, 0, None).unwrap().family, family);
+    std::fs::remove_dir_all(db.font_dirs.first().unwrap()).unwrap();
+}

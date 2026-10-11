@@ -341,15 +341,26 @@ pub struct FontDb {
     /// System fallback state: enabled, and characters no system font covers.
     #[cfg(not(target_arch = "wasm32"))]
     sys: Mutex<SysFallback>,
+    /// Pause one fallback after copying catalog paths, with no database locks held.
+    #[cfg(all(test, target_os = "linux"))]
+    fallback_snapshot_hook: Mutex<Option<FallbackSnapshotHook>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct SysFallback {
     enabled: bool,
+    /// Rescan generation: an older in-flight lookup must not restore a cleared miss.
+    generation: u64,
     misses: std::collections::HashSet<char>,
     /// CJK chain families already looked up in the catalog (loaded, or not installed).
     chain_tried: std::collections::HashSet<&'static str>,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+struct FallbackSnapshotHook {
+    reached: std::sync::mpsc::SyncSender<()>,
+    resume: Arc<std::sync::Barrier>,
 }
 
 /// Families tried (when installed) for characters the loaded fonts lack: CJK, symbols, emoji.
@@ -784,6 +795,8 @@ impl FontDb {
             cataloged: std::sync::OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             sys: Mutex::new(SysFallback { enabled: true, ..Default::default() }),
+            #[cfg(all(test, target_os = "linux"))]
+            fallback_snapshot_hook: Mutex::new(None),
         }
     }
 
@@ -900,7 +913,14 @@ impl FontDb {
         // The first scan, or a rescan once it is done (never both at once).
         let mut first = None;
         self.cataloged.get_or_init(|| first = Some(self.scan_font_dirs()));
-        first.unwrap_or_else(|| self.scan_font_dirs())
+        let count = first.unwrap_or_else(|| self.scan_font_dirs());
+        // Retry characters and CJK chain families that newly installed fonts can now cover.
+        // Reset outside scan_font_dirs: a chain lookup can hold sys during the initial scan.
+        let mut sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
+        sys.generation = sys.generation.wrapping_add(1);
+        sys.misses.clear();
+        sys.chain_tried.clear();
+        count
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1100,12 +1120,13 @@ impl FontDb {
         if c.is_control() || c.is_whitespace() {
             return false;
         }
-        {
+        let generation = {
             let sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
             if !sys.enabled || sys.misses.contains(&c) {
                 return false;
             }
-        }
+            sys.generation
+        };
         let covered = |db: &FontDb| db.read_faces().iter().any(|f| f.covers(c));
         let cataloged: Vec<String> = self.read_catalog().iter().map(|e| e.family.clone()).collect();
         for fam in SYSTEM_FALLBACKS {
@@ -1119,6 +1140,14 @@ impl FontDb {
         let mut paths: Vec<std::path::PathBuf> = self.catalog.read().unwrap_or_else(|e| e.into_inner()).iter().map(|e| e.path.clone()).collect();
         paths.sort();
         paths.dedup();
+        #[cfg(all(test, target_os = "linux"))]
+        {
+            let hook = self.fallback_snapshot_hook.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(hook) = hook {
+                let _ = hook.reached.send(());
+                hook.resume.wait();
+            }
+        }
         for p in paths {
             if std::fs::metadata(&p).map(|m| m.len() > 40 << 20).unwrap_or(true) {
                 continue;
@@ -1130,7 +1159,10 @@ impl FontDb {
                 return true;
             }
         }
-        self.sys.lock().unwrap_or_else(|e| e.into_inner()).misses.insert(c);
+        let mut sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
+        if sys.generation == generation {
+            sys.misses.insert(c);
+        }
         false
     }
 
