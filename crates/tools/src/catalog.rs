@@ -32,6 +32,7 @@ pub const TOOL_GROUPS: &[&[ToolInfo]] = &[
         t("verticalType", "Vertical Type Tool", None, "tool-type-vertical"),
         t("verticalTypeOnPath", "Vertical Type on a Path Tool", None, "tool-type-path"),
     ],
+    &[t("horizontalGrid", "Horizontal Grid Tool", Some("Y"), "tool-grid-h"), t("verticalGrid", "Vertical Grid Tool", Some("Q"), "tool-grid-v")],
     &[t("line", "Line Tool", Some("\\"), "tool-line")],
     &[
         t("pen", "Pen Tool", Some("P"), "tool-pen"),

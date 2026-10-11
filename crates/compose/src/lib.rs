@@ -13,6 +13,7 @@
 mod bidi;
 pub mod breaker;
 mod cache;
+mod framegrid;
 pub mod hyphen;
 mod notes;
 mod overlay;
@@ -311,6 +312,8 @@ pub struct FrameSpec {
     pub left_page: bool,
     /// The page and its margins in the frame's inner space (custom anchored objects).
     pub page_rect: Option<(Rect, Rect)>,
+    /// A frame grid: its cells set the text (sanitized).
+    pub frame_grid: Option<designcraft_doc::FrameGrid>,
 }
 
 impl FrameSpec {
@@ -442,6 +445,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             grid,
             left_page,
             page_rect,
+            frame_grid: if tf.options.path.is_some() { None } else { tf.options.frame_grid.as_ref().map(designcraft_doc::FrameGrid::sanitized) },
         });
     }
     out
@@ -490,6 +494,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         last_descent: 0.0,
         last_reference: 0.0,
         pending: 0.0,
+        grid_next: 0.0,
         pi: 0,
         band: Band::default(),
         limits: Rc::default(),
@@ -566,7 +571,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             continue 'paras;
         }
         let pf = &story.paras[pi];
-        let (pp, base_chars) = doc.styles.resolve_para(pf);
+        let (mut pp, base_chars) = doc.styles.resolve_para(pf);
+        // A frame grid's line alignment overrides the paragraphs'.
+        let para_grid = frames.get(cur.fi).and_then(|f| f.frame_grid.as_ref().map(|g| (g.clone(), f.vertical)));
+        if let Some(a) = para_grid.as_ref().and_then(|(g, _)| g.line_align) {
+            pp.align = a;
+        }
         // A break character that ends the previous paragraph sends this one on, like a start option.
         let after_break = pi
             .checked_sub(1)
@@ -762,6 +772,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         );
         bidi::resolve_mirroring(&mut glyphs, &bidi_info);
         apply_desired_spacing(&mut glyphs, &pp);
+        // A frame grid: its cells set the full-width characters.
+        if let Some((g, vertical)) = &para_grid {
+            framegrid::snap_to_grid(&mut glyphs, g, *vertical);
+            let align = grid_char_alignment(g.char_align);
+            for gl in glyphs.iter_mut().filter(|gl| gl.character_alignment == designcraft_doc::cjk::CharacterAlignment::Baseline) {
+                gl.character_alignment = align;
+            }
+        }
         let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
         let base_size = base_chars.size;
         let base_leading = match base_chars.leading {
@@ -889,10 +907,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             // Estimate slots for the breaker with the paragraph's base leading.
             let est_first = cur.next_baseline(f, col, base_leading, base_chars.size * 0.75, &pp);
             let slots = estimate_slots(f, col, est_first, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
+            // In a frame grid the last cell's character aki may run past the measure.
+            let grid_tail = f.frame_grid.as_ref().map_or(0.0, |g| g.char_aki);
             let width = |j: usize| -> f64 {
                 let (x0, x1) = slots.get(j).copied().unwrap_or((col.x0, col.x1));
                 let ind = pp.left_indent + pp.right_indent + if line_no + j == 0 { pp.first_line_indent } else { 0.0 };
-                (x1 - x0 - ind).max(1.0)
+                (x1 - x0 - ind + grid_tail).max(1.0)
             };
             let rest = &glyphs[g0..];
             let rest_h = &hyph_after[g0..];
@@ -919,27 +939,41 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 if cur.last_baseline.is_some() {
                     baseline += cur.last_reference - reference;
                 }
-                // Baseline grid.
-                if let Some((g_start, inc)) = f.grid
+                // Frame grid: the line takes whole rows (bottom of them, top of the next row).
+                let mut grid_rows: Option<GridRows> = None;
+                if let Some(g) = &f.frame_grid {
+                    let from = if cur.last_baseline.is_some() { cur.grid_next + cur.pending } else { col.y0 };
+                    let r = grid_line(g, f.vertical, col, from, line_glyphs, base_size);
+                    baseline = r.baseline;
+                    grid_rows = Some(r);
+                } else if let Some((g_start, inc)) = f.grid
                     && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
                     && inc > 0.0
                 {
+                    // Baseline grid.
                     let n = ((baseline - g_start) / inc - 1e-6).ceil();
                     baseline = g_start + n * inc;
                 }
-                // Wrap: push the line down until a slot exists.
+                // Wrap: push the line down until a slot exists (a row at a time in a frame grid).
                 let (mut x0, mut x1) = (col.x0, col.x1);
                 if !f.exclusions.is_empty() {
                     let mut tries = 0;
                     loop {
-                        match free_slot(f, col, baseline - asc, baseline + desc, base_size) {
+                        let (top, bottom) = grid_rows.as_ref().map_or((baseline - asc, baseline + desc), |r| (r.top, r.bottom));
+                        match free_slot(f, col, top, bottom, base_size) {
                             Some((a, b)) => {
                                 x0 = a;
                                 x1 = b;
                                 break;
                             }
                             None => {
-                                baseline += 1.0;
+                                match (&f.frame_grid, &mut grid_rows) {
+                                    (Some(g), Some(r)) => {
+                                        *r = grid_line(g, f.vertical, col, r.top + g.line_pitch(f.vertical), line_glyphs, base_size);
+                                        baseline = r.baseline;
+                                    }
+                                    _ => baseline += 1.0,
+                                }
                                 tries += 1;
                                 if baseline > col.y1 || tries > 4000 {
                                     break;
@@ -955,7 +989,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let col_w = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)].width();
                 let reserve = notes.reserve(doc, cur.fi, cur.col, &line_notes, col_w, f, opts);
                 let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, cur.fi, cur.col, &[], col_w, f, opts) } else { reserve };
-                let fits = baseline + desc <= col.y1 - reserve + 0.01 && !capped;
+                let bottom = grid_rows.as_ref().map_or(baseline + desc, |r| r.bottom);
+                let fits = bottom <= col.y1 - reserve + 0.01 && !capped;
                 if !fits {
                     if cur.can_next_sub() {
                         g0 = s;
@@ -1023,7 +1058,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 }
                 let ind_l = pp.left_indent + if line_no == 0 { pp.first_line_indent } else { 0.0 };
                 let lx0 = x0 + ind_l;
-                let lx1 = x1 - pp.right_indent;
+                let lx1 = x1 - pp.right_indent + grid_tail;
                 let last = k + 1 == breaks.len();
                 // The break character that ends this line, if any (it is the line's last glyph).
                 let brk = if b.forced && e > s {
@@ -1089,6 +1124,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 cur.last_reference = reference;
                 cur.last_descent = desc;
                 cur.pending = 0.0;
+                if let Some(r) = &grid_rows {
+                    cur.grid_next = r.next;
+                }
                 line_no += 1;
                 // A column / frame / page break inside the paragraph: the rest of it continues in the
                 // new column/frame/page, re-broken there. (A break that ends the paragraph moves the
@@ -1722,6 +1760,8 @@ struct Cursor {
     last_reference: f64,
     /// Space before/after waiting to be added to the next line.
     pending: f64,
+    /// In a frame grid: the top of the first row after the last line set (with `last_baseline`).
+    grid_next: f64,
     /// The paragraph being laid.
     pi: usize,
     /// The band of columns the cursor is in.
@@ -2008,6 +2048,68 @@ impl Cursor {
                 col.y0 + off.max(f.opts.first_baseline_min)
             }
         }
+    }
+}
+
+/// Where a line sits in a frame grid.
+#[derive(Clone, Copy, Debug)]
+struct GridRows {
+    baseline: f64,
+    /// The rows it takes: top of the first, bottom of the last (without the line aki after it).
+    top: f64,
+    bottom: f64,
+    /// Top of the row after them.
+    next: f64,
+}
+
+/// A line of `line` glyphs in frame grid `g` from the first row at or after `from` (column `col`,
+/// composition space): as many rows as its em box needs, its em box placed in them by the grid
+/// alignment (JLREQ §4.2: lines on the grid; a larger heading takes whole rows).
+fn grid_line(g: &designcraft_doc::FrameGrid, vertical: bool, col: Rect, from: f64, line: &[Glyph], base_size: f64) -> GridRows {
+    use designcraft_doc::GridAlignment as A;
+    let (_, cell) = g.cell(vertical);
+    let pitch = g.line_pitch(vertical);
+    // The ideographic em box (the one upright vertical glyphs hang in), y down from the baseline.
+    let em_box = |g: &Glyph| {
+        let (t, b) = g.face.em_box();
+        let (t, b) = (-t * g.sy, -b * g.sy);
+        (t.min(b), t.max(b))
+    };
+    let (top, bottom) =
+        line.iter().filter(|g| g.adv > 0.0).max_by(|a, b| a.size.total_cmp(&b.size)).map_or((-0.88 * base_size, 0.12 * base_size), em_box);
+    let h = (bottom - top).max(0.01);
+    let rows = if h > cell + 1e-6 { (((h - cell) / pitch - 1e-6).ceil().clamp(0.0, 1000.0)) + 1.0 } else { 1.0 };
+    let block_top = if g.grid_align == A::None {
+        from
+    } else {
+        let k = ((from - col.y0) / pitch - 1e-6).ceil().clamp(0.0, 1e6);
+        col.y0 + k * pitch
+    };
+    let block_bottom = block_top + rows * cell + (rows - 1.0) * g.line_aki;
+    let icf = 0.05;
+    let baseline = match g.grid_align {
+        A::EmTop => block_top - top,
+        A::EmBottom => block_bottom - bottom,
+        A::IcfTop => block_top + icf * cell - top - icf * h,
+        A::IcfBottom => block_bottom - icf * cell - bottom + icf * h,
+        // The Roman baseline of the line on the Roman baseline of its last row.
+        A::RomanBaseline => block_bottom - cell + cell * (-top / h),
+        A::EmCenter | A::None => (block_top + block_bottom) / 2.0 - (top + bottom) / 2.0,
+    };
+    GridRows { baseline, top: block_top, bottom: block_bottom, next: block_top + rows * pitch }
+}
+
+/// A frame grid's Character Alignment as the character alignment of the text in it.
+fn grid_char_alignment(a: designcraft_doc::GridAlignment) -> designcraft_doc::cjk::CharacterAlignment {
+    use designcraft_doc::GridAlignment as A;
+    use designcraft_doc::cjk::CharacterAlignment as C;
+    match a {
+        A::None | A::RomanBaseline => C::Baseline,
+        A::EmTop => C::EmTop,
+        A::EmCenter => C::EmCenter,
+        A::EmBottom => C::EmBottom,
+        A::IcfTop => C::IcfTop,
+        A::IcfBottom => C::IcfBottom,
     }
 }
 
@@ -3164,6 +3266,8 @@ pub fn adjacent_row(l: &Line, x: f64, caret_y: f64, up: bool) -> Option<f64> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_framegrid;
 
 /// Each visible glyph of a type-on-a-path frame placed on the path: its outline in frame space
 /// (grouped by run style).

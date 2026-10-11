@@ -152,6 +152,10 @@ impl Default for PdfExportSettings {
     }
 }
 
+fn yes() -> bool {
+    true
+}
+
 /// Persisted UI state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -162,6 +166,9 @@ pub struct UiState {
     pub rulers: bool,
     pub guides: bool,
     pub baseline_grid: bool,
+    /// View › Grids & Guides › Show Frame Grids: the cells and character counts of frame grids.
+    #[serde(default = "yes")]
+    pub frame_grids: bool,
     pub document_grid: bool,
     pub text_threads: bool,
     pub hidden_characters: bool,
@@ -277,6 +284,7 @@ impl Default for UiState {
             rulers: true,
             guides: true,
             baseline_grid: false,
+            frame_grids: true,
             document_grid: false,
             text_threads: false,
             hidden_characters: false,

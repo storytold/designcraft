@@ -374,6 +374,8 @@ pub fn create(id: &str) -> Box<dyn Tool> {
         "rectangleFrame" | "ellipseFrame" | "polygonFrame" | "rectangle" | "ellipse" | "polygon" | "line" => Box::new(frame::FrameTool::new(id)),
         "type" => Box::new(text::TypeTool::default()),
         "verticalType" => Box::new(text::TypeTool::vertical()),
+        "horizontalGrid" => Box::new(text::TypeTool::grid(false)),
+        "verticalGrid" => Box::new(text::TypeTool::grid(true)),
         "pen" => Box::new(pen::PenTool::default()),
         "gradientSwatch" => Box::new(gradient::GradientTool::default()),
         "gradientFeather" => Box::new(gradient::GradientTool::feather()),
