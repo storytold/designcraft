@@ -11,7 +11,7 @@ use designcraft_doc::{
 use designcraft_geom::{Affine, Point, Rect, Vec2, shapes};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, bool_or, cmd, f64_or, has_doc, has_selection, ok, point_param, rect_param, spread_param, str_param, targets};
+use super::{CommandSpec, always, bad, bool_or, cmd, f64_or, has_doc, has_selection, ok, point_param, rect_param, spread_param, str_param, targets};
 use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -680,6 +680,54 @@ pub fn specs() -> Vec<CommandSpec> {
                     Ok(json!({"primary": on, "story": sid.0}))
                 })
             }
+        ),
+        cmd!(
+            "frame.thread",
+            "Thread Text Frames",
+            ["Object", "Text"],
+            None,
+            "{from, to} — thread `from` frame to `to` frame (the `to` frame joins `from`'s story after it; if `to` had text, that text is appended as a new paragraph)",
+            has_selection,
+            frame_thread
+        ),
+        cmd!(
+            "frame.unthread",
+            "Unthread Text Frame",
+            ["Object", "Text"],
+            None,
+            "{frame} — break the thread after `frame` (following frames become a new empty story; text stays with the first part and may become overset)",
+            has_selection,
+            frame_unthread
+        ),
+        cmd!(
+            "frame.startThread",
+            "Start Threading",
+            [],
+            None,
+            "{frame} — load the text from `frame`'s out-port for threading (click a frame or drag to create one)",
+            has_selection,
+            frame_start_thread
+        ),
+        cmd!(
+            "frame.clearThread",
+            "Clear Threading",
+            [],
+            None,
+            "{} — clear the loaded text cursor (cancel threading)",
+            always,
+            |s, _| {
+                s.loaded_text = None;
+                ok()
+            }
+        ),
+        cmd!(
+            "frame.threadOrCreate",
+            "Thread or Create Frame",
+            [],
+            None,
+            "{from, spread, rect: [x0,y0,x1,y1]} — create a new text frame at `rect` on `spread` and thread `from` to it",
+            has_doc,
+            frame_thread_or_create
         ),
         cmd!(
             "object.attributes",
@@ -2713,4 +2761,55 @@ mod blend_mode_tests {
         assert_eq!(it.blend, BlendMode::Multiply, "a rejected value changes nothing");
         assert_eq!(it.opacity, 1.0);
     }
+}
+
+fn frame_thread(s: &mut Session, p: &Value) -> Result<Value> {
+    let from = super::id_param(p, "from").ok_or_else(|| bad("frame.thread", "missing from"))?;
+    let to = super::id_param(p, "to").ok_or_else(|| bad("frame.thread", "missing to"))?;
+    s.edit(|d, _| Ok(d.thread(from, to)?))?;
+    Ok(json!({"from": from.0, "to": to.0}))
+}
+
+fn frame_unthread(s: &mut Session, p: &Value) -> Result<Value> {
+    let frame = super::id_param(p, "frame").ok_or_else(|| bad("frame.unthread", "missing frame"))?;
+    s.edit(|d, _| Ok(d.unthread_after(frame)?))?;
+    Ok(json!({"frame": frame.0}))
+}
+
+fn frame_start_thread(s: &mut Session, p: &Value) -> Result<Value> {
+    let frame = super::id_param(p, "frame").ok_or_else(|| bad("frame.startThread", "missing frame"))?;
+    let story = s.doc()?.doc.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or_else(|| bad("frame.startThread", "not a text frame"))?;
+    // Check if this frame has a next frame (already threaded)
+    let st = s.doc()?.doc.story(story).ok_or_else(|| bad("frame.startThread", "no such story"))?;
+    let pos = st.frames.iter().position(|f| *f == frame).unwrap_or(0);
+    if pos + 1 >= st.frames.len() {
+        // This is the last frame (or only frame) - can start threading from here
+        s.loaded_text = Some((story, frame));
+        Ok(json!({"story": story.0, "frame": frame.0}))
+    } else {
+        Err(bad("frame.startThread", "frame already has a next frame; click the out-port of the last frame"))
+    }
+}
+
+fn frame_thread_or_create(s: &mut Session, p: &Value) -> Result<Value> {
+    let from = super::id_param(p, "from").ok_or_else(|| bad("frame.threadOrCreate", "missing from"))?;
+    let sr = super::spread_param(p, "spread");
+    let rect = super::rect_param(p, "rect").ok_or_else(|| bad("frame.threadOrCreate", "missing rect"))?;
+    let lid = s.doc()?.active_layer;
+    
+    // Create the new text frame
+    let to_id = s.edit(|d, sel| {
+        let rect = Rect::new(rect.x0, rect.y0, rect.x1.max(rect.x0 + 0.5), rect.y1.max(rect.y0 + 0.5));
+        let (id, _sid) = d.add_text_frame(sr, rect, lid, "", ParaFormat { style: d.styles.default_paragraph.clone(), ..Default::default() })?;
+        *sel = Selection::items(vec![id]);
+        Ok(id)
+    })?;
+    
+    // Thread from -> to
+    s.edit(|d, _| Ok(d.thread(from, to_id)?))?;
+    
+    // Clear loaded text
+    s.loaded_text = None;
+    
+    Ok(json!({"from": from.0, "to": to_id.0}))
 }

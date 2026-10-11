@@ -4,7 +4,7 @@
 //! the 8 bounding-box handles resize (Shift keeps proportions, Alt from centre, Cmd scales content),
 //! empty-canvas drags make a marquee, double-clicking a text frame switches to the Type tool.
 
-use designcraft_doc::{ItemId, SpreadRef};
+use designcraft_doc::{Content, ItemId, SpreadRef};
 use designcraft_geom::{Affine, Point, Rect, Vec2};
 use serde_json::{Value, json};
 
@@ -16,6 +16,9 @@ enum Drag {
     Pending {
         start: Point,
         hit: bool,
+        /// True when this pending drag is for text threading (loaded text cursor active).
+        /// Prevents conversion to Marquee.
+        threading: bool,
     },
     Move {
         start: Point,
@@ -72,6 +75,43 @@ pub fn anchor_at_in(cx: &ToolContext, ids: &[designcraft_doc::ItemId], p: Point)
                 }
                 if a.has_out() && ((m * a.h_out) - p).hypot() <= tol {
                     return Some((id.0, si, ai, Some("out")));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Text frame port under `p` (canvas): returns (frame id, port kind) where kind is "in" or "out".
+/// Only checks text frames that are the last frame in their story (out port) or not the first (in port).
+pub fn port_at(cx: &ToolContext, p: Point) -> Option<(designcraft_doc::ItemId, &'static str)> {
+    let tol = cx.tol(10.0); // Port hit area is ~8.5pt, so 10pt tolerance
+    for slot in &cx.layout.slots {
+        let Some(sp) = cx.doc.spread(slot.spread) else { continue };
+        for it in &sp.items {
+            if it.hidden || cx.doc.layer(it.layer).is_some_and(|l| !l.visible || l.locked) {
+                continue;
+            }
+            let Content::Text(tf) = &it.content else { continue };
+            let Some(story) = cx.doc.story(tf.story) else { continue };
+            let pos = story.frames.iter().position(|f| *f == it.id).unwrap_or(0);
+            let is_first = pos == 0;
+            let is_last = pos + 1 == story.frames.len();
+            let Some(xf) = cx.item_canvas_xf(it.id) else { continue };
+            let r = it.inner_bounds();
+            let m = xf * it.xf;
+            // In port: top-left area (10pt from left, at top)
+            if !is_first {
+                let in_port = m * Point::new(r.x0 + 10.0, r.y0);
+                if (in_port - p).hypot() <= tol {
+                    return Some((it.id, "in"));
+                }
+            }
+            // Out port: bottom-right area (10pt from right, at bottom)
+            if is_last {
+                let out_port = m * Point::new(r.x1 - 10.0, r.y1);
+                if (out_port - p).hypot() <= tol {
+                    return Some((it.id, "out"));
                 }
             }
         }
@@ -378,6 +418,31 @@ impl Tool for SelectionTool {
             }
             PointerKind::Down => {
                 self.shift_release = None;
+                
+                // Handle loaded text cursor (threading mode)
+                if let Some((_story, from_frame)) = cx.loaded_text {
+                    // Check if clicking on a text frame to thread to
+                    if let Some((_sr, id)) = cx.hit(p)
+                        && let Some(it) = cx.doc.item(id)
+                        && it.is_text_frame()
+                        && !cx.selection.contains(id)
+                    {
+                        let to_frame = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
+                        let mut actions = vec![Action::Exec("frame.thread".into(), json!({"from": from_frame.0, "to": to_frame.0}))];
+                        actions.push(Action::Exec("frame.clearThread".into(), json!({})));
+                        return actions;
+                    }
+                    // Click on empty canvas: start drag to create new frame
+                    let Some((sr, _sp)) = cx.layout.spread_at(p) else {
+                        return vec![Action::Exec("frame.clearThread".into(), json!({}))];
+                    };
+                    let SpreadRef::Doc(_si) = sr else {
+                        return vec![Action::Exec("frame.clearThread".into(), json!({}))];
+                    };
+                    self.drag = Drag::Pending { start: p, hit: false, threading: true };
+                    return vec![];
+                }
+                
                 if self.direct
                     && let Some((id, si, ai, handle)) = anchor_at(cx, p)
                 {
@@ -409,8 +474,24 @@ impl Tool for SelectionTool {
                     && cx.hit(p).is_none()
                     && let Some((page, id)) = cx.hit_parent_on_page(p)
                 {
-                    self.drag = Drag::Pending { start: p, hit: true };
+                    self.drag = Drag::Pending { start: p, hit: true, threading: false };
                     return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
+                }
+                // Text frame port clicks (threading).
+                if !self.direct {
+                    if let Some((frame_id, port)) = port_at(cx, p) {
+                        match port {
+                            "out" => {
+                                // Click out-port: start threading from this frame.
+                                return vec![Action::Exec("frame.startThread".into(), json!({"frame": frame_id.0}))];
+                            }
+                            "in" => {
+                                // Click in-port: unthread before this frame.
+                                return vec![Action::Exec("frame.unthread".into(), json!({"frame": frame_id.0}))];
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 match cx.hit(p) {
                     Some((sr, id)) => {
@@ -426,22 +507,27 @@ impl Tool for SelectionTool {
                         } else if !cx.selection.contains(id) {
                             out.push(Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": self.direct})));
                         }
-                        self.drag = Drag::Pending { start: p, hit: true };
+                        self.drag = Drag::Pending { start: p, hit: true, threading: false };
                         let _ = sr;
                         out
                     }
                     None => {
-                        self.drag = Drag::Pending { start: p, hit: false };
+                        self.drag = Drag::Pending { start: p, hit: false, threading: false };
                         if ev.mods.shift { vec![] } else { vec![Action::Exec("selection.set".into(), json!({"ids": []}))] }
                     }
                 }
             }
             PointerKind::Drag => match self.drag.clone() {
-                Drag::Pending { start, hit } => {
+                Drag::Pending { start, hit, threading } => {
                     if (p - start).hypot() < cx.tol(3.0) {
                         return vec![];
                     }
                     self.shift_release = None;
+                    if threading {
+                        // Threading drag: don't convert to Move or Marquee, just update cursor position
+                        // The actual threading happens on Up
+                        return vec![];
+                    }
                     if hit && !cx.selection.items.is_empty() {
                         let sr = cx.selection.items.first().and_then(|i| cx.doc.find(*i)).map(|l| l.spread).unwrap_or(SpreadRef::Doc(0));
                         let exclude = cx.selection.items.clone();
@@ -683,10 +769,33 @@ impl Tool for SelectionTool {
                 let d = std::mem::replace(&mut self.drag, Drag::None);
                 match d {
                     Drag::Move { .. } | Drag::Resize { .. } | Drag::Anchor { .. } | Drag::Rotate { .. } => vec![Action::Commit],
-                    Drag::Pending { .. } => match release {
-                        Some(id) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
-                        None => vec![],
-                    },
+                    Drag::Pending { threading, .. } => {
+                        if threading {
+                            // Threading drag ended on empty canvas: create new frame and thread
+                            if let Some((_story, from_frame)) = cx.loaded_text {
+                                let Some((sr, sp)) = cx.layout.spread_at(p) else {
+                                    return vec![Action::Exec("frame.clearThread".into(), json!({}))];
+                                };
+                                let SpreadRef::Doc(si) = sr else {
+                                    return vec![Action::Exec("frame.clearThread".into(), json!({}))];
+                                };
+                                // Create a new text frame at the click position (default size)
+                                let frame_size = 144.0; // 2 inches default
+                                let rect = [sp.x - frame_size / 2.0, sp.y - frame_size / 2.0, sp.x + frame_size / 2.0, sp.y + frame_size / 2.0];
+                                vec![
+                                    Action::Exec("frame.threadOrCreate".into(), json!({"from": from_frame.0, "spread": si, "rect": rect})),
+                                    Action::Exec("frame.clearThread".into(), json!({})),
+                                ]
+                            } else {
+                                vec![Action::Exec("frame.clearThread".into(), json!({}))]
+                            }
+                        } else {
+                            match release {
+                                Some(id) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
+                                None => vec![],
+                            }
+                        }
+                    }
                     Drag::Marquee { start, cur } => {
                         let r = Rect::from_points(start, cur);
                         // Items whose bounds intersect the marquee.
@@ -723,6 +832,10 @@ impl Tool for SelectionTool {
     }
 
     fn key(&mut self, cx: &ToolContext, key: ToolKey, mods: Mods) -> Vec<Action> {
+        // Escape cancels threading when loaded text cursor is active
+        if key == ToolKey::Escape && cx.loaded_text.is_some() {
+            return vec![Action::Exec("frame.clearThread".into(), json!({}))];
+        }
         let inc = cx.doc.settings.keyboard_increment * if mods.shift { 10.0 } else { 1.0 };
         let mv = |dx: f64, dy: f64| vec![Action::Exec("transform.move".into(), json!({"dx": dx, "dy": dy, "copy": mods.alt}))];
         if cx.selection.items.is_empty() {
@@ -750,6 +863,10 @@ impl Tool for SelectionTool {
     fn cursor(&self, cx: &ToolContext, p: Point, _m: Mods) -> Cursor {
         if self.direct {
             return Cursor::ArrowHollow;
+        }
+        // Show loaded text cursor when threading
+        if cx.loaded_text.is_some() {
+            return Cursor::LoadedText;
         }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
