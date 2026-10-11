@@ -31,3 +31,8 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
+# Finder double-clicks, Open With, Dock drops and `open -a DesignCraft brochure.idml` arrive as a
+# kAEOpenDocuments Apple event, which winit 0.30 doesn't handle. This crate (also used by PhotoCraft,
+# PdfCraft and WordCraft) registers the handler behind a safe API (Objective-C interop needs unsafe,
+# which the workspace forbids). Pinned exactly: review the diff before bumping.
+fmv-macos-events = "=0.1.0"

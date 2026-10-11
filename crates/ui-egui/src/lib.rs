@@ -476,6 +476,9 @@ pub struct DesignApp {
     fonts_lang: String,
     pub restyle: bool,
     fonts_ready: bool,
+    /// Files the operating system asked to open (macOS Finder, Dock, Open With), opened once the
+    /// window is ready; see [`DesignApp::open_documents_later`].
+    os_documents: Vec<String>,
     pub integrated_titlebar: bool,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
     pub native_menu: bool,
@@ -516,6 +519,7 @@ impl DesignApp {
             fonts_lang: String::new(),
             restyle: false,
             fonts_ready: false,
+            os_documents: Vec::new(),
             integrated_titlebar: false,
             native_menu: false,
             native_shortcuts: Default::default(),
@@ -682,7 +686,8 @@ impl DesignApp {
 
     fn import_file(&mut self, file: ImportedFile) -> Result<Value, String> {
         let lower = file.name.to_ascii_lowercase();
-        let layout = opens_as_document(&file.name);
+        let layout = opens_as_document(&file.name)
+            || (std::path::Path::new(&file.name).extension().is_none() && designcraft_engine::cmd::is_document(&file.bytes));
         let place =
             file.request.purpose == "place" || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && !lower.ends_with(".ase"));
         if place || lower.ends_with(".ase") || file.request.purpose == "swatches" {
@@ -760,6 +765,7 @@ impl DesignApp {
         self.drain_control(ctx);
         if self.fonts_ready {
             self.drain_inbox();
+            self.open_os_documents();
         }
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
@@ -778,10 +784,28 @@ impl DesignApp {
         }
     }
 
-    /// A file dropped on the window: documents open, anything else is placed.
+    /// A file dropped on the window: documents open, anything else is placed. A file without an
+    /// extension opens when its content is a DesignCraft or IDML document.
     pub fn open_dropped(&mut self, path: &str) -> Result<Value, String> {
-        let cmd = if opens_as_document(path) { "file.open" } else { "file.place" };
+        let document = opens_as_document(path)
+            || (std::path::Path::new(path).extension().is_none() && std::fs::read(path).is_ok_and(|b| designcraft_engine::cmd::is_document(&b)));
+        let cmd = if document { "file.open" } else { "file.place" };
         self.open_file(cmd, json!({"path": path}))
+    }
+
+    /// Queue files the operating system asked the app to open. They can arrive before the window
+    /// exists (the event that launched the app); the first ready frame opens them, each as a new
+    /// document through `file.open`, as File › Open does.
+    pub fn open_documents_later(&mut self, paths: impl IntoIterator<Item = String>) {
+        self.os_documents.extend(paths);
+    }
+
+    fn open_os_documents(&mut self) {
+        for path in std::mem::take(&mut self.os_documents) {
+            if let Err(e) = self.open_file("file.open", json!({"path": path})) {
+                log::warn!("{path}: {e}");
+            }
+        }
     }
 
     /// Open (`file.open`, `file.openBytes`) or place (`file.place`) a file the user chose. A file
@@ -1224,6 +1248,30 @@ mod tests {
         for name in ["a.png", "b.pdf", "idml.txt", "c.idml.zip"] {
             assert!(!opens_as_document(name), "{name}");
         }
+    }
+
+    /// Files without an extension: dropped, a document opens and anything else is placed; asked
+    /// for by the operating system, they wait for the window and then open as documents.
+    #[test]
+    fn extensionless_documents_open_by_content() {
+        let path = std::env::temp_dir().join(format!("designcraft-ui-{}-Brochure", std::process::id()));
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let bytes = designcraft_engine::cmd::base64_decode(app.run("file.serialize", json!({})).unwrap()["base64"].as_str().unwrap());
+        std::fs::write(&path, bytes).unwrap();
+        let p = path.to_string_lossy().to_string();
+        app.open_dropped(&p).unwrap();
+        assert_eq!(app.session.documents().len(), 2, "a document opens, it isn't placed");
+        app.open_documents_later([p.clone()]);
+        assert_eq!(app.session.documents().len(), 2, "queued until the window is ready");
+        app.open_os_documents();
+        assert_eq!(app.session.documents().len(), 3);
+        assert_eq!(app.session.active().and_then(|d| d.path.clone()), Some(p));
+        let _ = std::fs::remove_file(&path);
+        let notes = unreadable_file("notes");
+        let e = app.open_dropped(&notes.to_string_lossy()).unwrap_err();
+        let _ = std::fs::remove_file(&notes);
+        assert_eq!(alert(&app), ("Can't Place the File".to_string(), e));
     }
 
     #[test]

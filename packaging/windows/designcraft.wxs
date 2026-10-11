@@ -4,9 +4,9 @@
 
     wix build designcraft.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
 
-  Per-machine install into Program Files, a Start Menu shortcut, `.pcraft` owned by DesignCraft,
-  and DesignCraft offered under "Open with" for PSD/PSB and the image formats it reads (without
-  taking over the user's default app for them).
+  Per-machine install into Program Files, a Start Menu shortcut, `.designcraft` owned by
+  DesignCraft, and DesignCraft offered under "Open with" for IDML (without taking over the user's
+  default app for it).
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -49,6 +49,22 @@
               Icon="DesigncraftIcon.ico" IconIndex="0" />
         </File>
 
+        <!-- .designcraft: DesignCraft's own format; DesignCraft is its default app. -->
+        <ProgId Id="Designcraft.Document" Description="DesignCraft Document" Icon="DesigncraftExe" IconIndex="0">
+          <Extension Id="designcraft" ContentType="application/x-designcraft">
+            <Verb Id="open" Command="Open" TargetFile="DesigncraftExe" Argument="&quot;%1&quot;" />
+          </Extension>
+        </ProgId>
+        <!-- IDML: offered under "Open with", never forced as the default. -->
+        <ProgId Id="Designcraft.Idml" Description="IDML Document" Icon="DesigncraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Designcraft.Idml\shell\open\command" Value="&quot;[#DesigncraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.idml\OpenWithProgids" Name="Designcraft.Idml" Value="" Type="string" />
+
+        <!-- "Open with" app list and the Run dialog (Win+R "designcraft"). -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe" Name="FriendlyAppName" Value="DesignCraft" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\shell\open\command" Value="&quot;[#DesigncraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\SupportedTypes" Name=".designcraft" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\SupportedTypes" Name=".idml" Value="" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\designcraft.exe" Value="[#DesigncraftExe]" Type="string" />
       </Component>
 

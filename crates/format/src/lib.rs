@@ -72,6 +72,15 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     Ok(buf.into_inner())
 }
 
+/// The file name extension of a DesignCraft document.
+pub const EXTENSION: &str = "designcraft";
+
+/// Whether `bytes` are a DesignCraft document package: a zip holding `document.json`. Files
+/// without an extension are recognised by this (the legacy JSON form is too generic to sniff).
+pub fn is_designcraft(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK") && zip::ZipArchive::new(Cursor::new(bytes)).is_ok_and(|z| z.index_for_name("document.json").is_some())
+}
+
 /// Read `.designcraft` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
     if bytes.starts_with(b"PK") {
