@@ -54,9 +54,13 @@ pub type DownloadFn = Box<dyn FnMut(&str, &[u8])>;
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
+pub type SystemThemeFn = Box<dyn Fn(&egui::Context) -> Option<egui::Theme>>;
+
 /// Platform services injected by the host (desktop or web).
 #[derive(Default)]
 pub struct Services {
+    /// Optional desktop appearance reader (Linux portal). Native hosts otherwise use egui input.
+    pub system_theme: Option<SystemThemeFn>,
     /// Open-file dialog for a purpose (`open`, `place`) → path.
     pub pick_open: Option<PickFn>,
     /// Save dialog with a suggested name → path.
@@ -475,6 +479,8 @@ pub struct DesignApp {
     /// The interface language the UI fonts were installed for (it orders the CJK fallbacks).
     fonts_lang: String,
     pub restyle: bool,
+    /// Resolved interface palette; never serialized over the saved choice.
+    resolved_brightness: Option<theme::Brightness>,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
@@ -515,6 +521,7 @@ impl DesignApp {
             styled: false,
             fonts_lang: String::new(),
             restyle: false,
+            resolved_brightness: None,
             fonts_ready: false,
             integrated_titlebar: false,
             native_menu: false,
@@ -737,8 +744,14 @@ impl DesignApp {
             }
             self.fonts_ready = true;
         }
+        let system = self.services.system_theme.as_ref().map_or_else(|| ctx.system_theme(), |read| read(ctx));
+        let resolved = self.ui.brightness.resolved(system);
+        if self.resolved_brightness != Some(resolved) {
+            self.resolved_brightness = Some(resolved);
+            self.restyle = true;
+        }
         if self.restyle {
-            theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness));
+            theme::apply(ctx, &theme::Tokens::for_brightness(resolved));
             self.restyle = false;
         }
         let now = ctx.input(|i| i.time);
@@ -1589,3 +1602,6 @@ mod browser_import_tests {
         assert!(app.session.doc().unwrap().doc.assets.is_empty());
     }
 }
+
+#[cfg(test)]
+mod tests_appearance;

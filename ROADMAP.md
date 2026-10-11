@@ -129,6 +129,9 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-10** · #237: opt-in System interface appearance preserves all five manual palettes
+  and Medium Dark default, keeps native inheritance, and follows Linux portal signals.
+
 - **2026-10-10** · Readiness per audience: full ~47% (method aligned with the standard, was
   42%), mainstream practitioner ~42%, essentials user ~54%, each with hours to ~95%.
 - **2026-10-10** · Stage re-normalized to **pre-alpha** under craftrules' core-workflow gate: text

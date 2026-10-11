@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Brightness {
+    /// Follow desktop appearance. Resolves to Light or Medium Dark; unknown uses Medium Dark.
+    System,
     Dark,
     #[default]
     MediumDark,
@@ -17,9 +19,11 @@ pub enum Brightness {
 }
 
 impl Brightness {
-    pub const ALL: [Brightness; 5] = [Brightness::Dark, Brightness::MediumDark, Brightness::MediumLight, Brightness::Light, Brightness::HighContrast];
+    pub const ALL: [Brightness; 6] =
+        [Brightness::System, Brightness::Dark, Brightness::MediumDark, Brightness::MediumLight, Brightness::Light, Brightness::HighContrast];
     pub fn label(self) -> &'static str {
         match self {
+            Brightness::System => "System",
             Brightness::Dark => "Dark",
             Brightness::MediumDark => "Medium Dark",
             Brightness::MediumLight => "Medium Light",
@@ -29,11 +33,20 @@ impl Brightness {
     }
     pub fn id(self) -> &'static str {
         match self {
+            Brightness::System => "system",
             Brightness::Dark => "dark",
             Brightness::MediumDark => "mediumDark",
             Brightness::MediumLight => "mediumLight",
             Brightness::Light => "light",
             Brightness::HighContrast => "highContrast",
+        }
+    }
+    /// Resolve without replacing the persisted preference.
+    pub fn resolved(self, system: Option<egui::Theme>) -> Self {
+        match (self, system) {
+            (Self::System, Some(egui::Theme::Light)) => Self::Light,
+            (Self::System, _) => Self::MediumDark,
+            _ => self,
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -129,7 +142,7 @@ impl Tokens {
         match b {
             Brightness::Dark => dark,
             // Measured from InDesign 2026 (plan/indesign/11-observed-ui.md §1).
-            Brightness::MediumDark => Tokens {
+            Brightness::System | Brightness::MediumDark => Tokens {
                 app_bar: hex(0x535353),
                 panel: hex(0x535353),
                 panel_darker: hex(0x424242),
@@ -352,8 +365,12 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.bg_fill = t.input;
     v.popup_shadow = egui::epaint::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(90) };
-    ctx.set_visuals(v);
-    ctx.global_style_mut(|s| {
+    // Keep native appearance inherited so macOS ThemeChanged continues to reach egui.
+    // Both branches use the resolved palette, including fixed manual and High Contrast choices.
+    ctx.set_theme(egui::ThemePreference::System);
+    ctx.set_visuals_of(egui::Theme::Light, v.clone());
+    ctx.set_visuals_of(egui::Theme::Dark, v);
+    ctx.all_styles_mut(|s| {
         s.text_styles = text_styles.clone();
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);
         s.spacing.button_padding = egui::vec2(6.0, 2.0);

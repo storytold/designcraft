@@ -66,7 +66,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         ui.ctx(),
                         crate::i18n::tr(&app.ui.language, label),
                         semibold(11.5),
-                        if active { Color32::from_rgb(0xf3, 0xf3, 0xf3) } else { t.text_dim },
+                        if active { t.text_strong } else { t.text_dim },
                     );
                     let w = g.size().x + 26.0;
                     let r = egui::Rect::from_min_size(egui::pos2(x, strip.min.y), vec2(w, 27.0));

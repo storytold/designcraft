@@ -18,6 +18,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
+[dev-dependencies]
+# Decode real portal variants on every test host without starting a desktop service.
+zbus = "5.19"
+async-channel = "2"
+futures-lite = "2"
+async-io = "2"
+tempfile = { workspace = true }
+
 [build-dependencies]
 # Icon + VERSIONINFO for designcraft.exe; build.rs only uses it when the target is Windows.
 winresource = "0.1"
@@ -28,6 +36,12 @@ rfd = { workspace = true }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 # The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
 winit = { version = "0.30", default-features = false, features = ["x11"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# XDG Settings portal appearance signals; already used by the AccessKit stack.
+zbus = "5.19"
+async-channel = "2"
+futures-lite = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }

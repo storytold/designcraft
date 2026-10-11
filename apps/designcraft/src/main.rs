@@ -11,6 +11,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod appearance;
 mod control_server;
 mod gpu;
 mod logging;
@@ -315,6 +316,7 @@ fn main() -> eframe::Result {
                 app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
             }
             load_prefs(&mut app);
+            app.services.system_theme = appearance::service(&cc.egui_ctx);
             app.integrated_titlebar = cfg!(target_os = "macos");
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());

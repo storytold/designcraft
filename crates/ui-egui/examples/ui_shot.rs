@@ -53,7 +53,14 @@ fn main() {
         if std::env::var_os("UI_SHOT_TRACE").is_some() {
             eprintln!("> {l}");
         }
-        if let Some(p) = l.get("shot").and_then(|v| v.as_str()) {
+        if let Some(system) = l.get("systemTheme") {
+            harness.input_mut().system_theme = match system.as_str() {
+                Some("light") => Some(egui::Theme::Light),
+                Some("dark") => Some(egui::Theme::Dark),
+                _ => None,
+            };
+            step_n(&mut harness, 3);
+        } else if let Some(p) = l.get("shot").and_then(|v| v.as_str()) {
             step_n(&mut harness, 3);
             match harness.render() {
                 Ok(img) => {

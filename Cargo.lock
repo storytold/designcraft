@@ -872,17 +872,22 @@ dependencies = [
 name = "designcraft"
 version = "0.5.0"
 dependencies = [
+ "async-channel",
+ "async-io",
  "designcraft-engine",
  "designcraft-ui-egui",
  "eframe",
  "egui",
+ "futures-lite",
  "log",
  "muda",
  "rfd",
  "serde",
  "serde_json",
+ "tempfile",
  "winit",
  "winresource",
+ "zbus",
 ]
 
 [[package]]

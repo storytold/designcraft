@@ -44,3 +44,31 @@ merged document; the template stays as it was ([agents.md](agents.md#data-merge)
 Headless window screenshots (locked screen, hidden window): `cargo run -p designcraft-ui-egui --example ui_shot -- script.jsonl`, where each line is one of the requests above, `{"shot": "/abs/out.png"}` or `{"steps": n}` (renders the whole UI offscreen with wgpu).
 
 The MCP server (`designcraft-cli mcp`) wraps the same methods for Claude and other agents.
+
+## Interface appearance
+
+`window.brightness {"brightness":"system"}` and `ui.set {"brightness":"system"}`
+select System in the same checked Window > Interface Color Theme menu used by native and
+in-window menus. The five manual values remain `dark`, `mediumDark`, `mediumLight`, `light`
+and `highContrast`; new installs still use Medium Dark. `ui.json` stores `"brightness":"System"`
+independently of the displayed palette. System resolves Light reports to Light, Dark reports to
+Medium Dark, and a missing appearance to Medium Dark. Interface changes do not edit document,
+page, canvas content or presentation settings. The pasteboard and rulers use interface tokens.
+
+macOS and Windows use eframe/winit startup reports and ThemeChanged events. Native window
+appearance remains inherited in every mode so switching from a manual palette to System can
+use the latest desktop report. Both egui style branches contain the resolved palette, so manual
+choices, including High Contrast, ignore desktop transitions.
+
+Linux subscribes to the XDG Settings portal `org.freedesktop.appearance` / `color-scheme` before
+its initial Read, then follows SettingChanged signals without polling. Portal 1 means Dark,
+2 means Light, and 0 or an unknown value means no preference. Startup does not wait for portal
+I/O; the first result requests a frame, including a late or unavailable result. If setup or
+subscription fails, or Read supplies no preference, System uses Medium Dark. The appearance
+reader owns its watcher; dropping the reader cancels setup, Read or idle reception and joins
+the worker. An ended subscription clears the cache; portal restart/reconnection is not supported.
+Browser builds use the appearance reports supplied by eframe and retain their existing storage
+behavior. There is no desktop polling or periodic Preferences repaint.
+
+For offscreen palette proof, `ui_shot` also accepts `{"systemTheme":"light"}`,
+`{"systemTheme":"dark"}` and `{"systemTheme":null}`. These are injected input, not native OS tests.

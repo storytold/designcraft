@@ -174,7 +174,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             resp.context_menu(|ui| page_menu(app, ui, &doc, abs, si));
             // Page number under the page: white on a blue badge when selected.
             let name = app.session.page_label(abs);
-            let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), Color32::WHITE);
+            let color = if selected { Color32::WHITE } else { t.text };
+            let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), color);
             let c = egui::pos2(pr.center().x, pr.max.y + 11.0);
             if selected {
                 let br = egui::Rect::from_center_size(c, vec2(g.size().x.max(7.0) + 7.0, 12.5));
