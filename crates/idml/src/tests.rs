@@ -1399,3 +1399,93 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     check(&d);
     check(&import_idml(&export_idml(&d)).unwrap());
 }
+
+fn feather_fixture(transparency: &str) -> Document {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+          <idPkg:Spread src="Spreads/Spread_s.xml"/>
+        </Document>"#;
+    let rect = |id: &str, inner: &str| {
+        format!(
+            r#"<Rectangle Self="{id}" ItemTransform="1 0 0 1 0 0">
+              <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+                <PathPointType Anchor="0 0"/><PathPointType Anchor="0 100"/>
+                <PathPointType Anchor="100 100"/><PathPointType Anchor="100 0"/>
+              </PathPointArray></GeometryPathType></PathGeometry></Properties>
+              {inner}
+            </Rectangle>"#
+        )
+    };
+    let spread = format!(
+        r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+          <Spread Self="s">
+            <Page Self="p" GeometricBounds="0 0 200 200" ItemTransform="1 0 0 1 0 0"/>
+            {}{}
+          </Spread>
+        </idPkg:Spread>"#,
+        rect("a", transparency),
+        rect("b", "")
+    );
+    import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", &spread)])).unwrap()
+}
+
+#[test]
+fn imports_gradient_and_directional_feathers() {
+    let d = feather_fixture(
+        r#"<TransparencySetting>
+             <GradientFeatherSetting Applied="true" Type="Linear" Angle="0" Length="50" GradientStart="10 20">
+               <OpacityGradientStop Self="s0" Opacity="90" Location="20"/>
+               <OpacityGradientStop Self="s2" Opacity="10" Location="80" Midpoint="40"/>
+               <OpacityGradientStop Self="s1" Opacity="55" Location="50" Midpoint="50"/>
+             </GradientFeatherSetting>
+             <DirectionalFeatherSetting Applied="true" LeftWidth="3" RightWidth="4" TopWidth="5" BottomWidth="6" Angle="0" Noise="0" ChokeAmount="0"/>
+           </TransparencySetting>"#,
+    );
+    let items = &d.spreads[0].items;
+    let gf = &items[0].effects.gradient_feather;
+    assert!(gf.on && !gf.radial);
+    assert!((gf.start - 0.9).abs() < 1e-6 && (gf.end - 0.1).abs() < 1e-6, "{gf:?}");
+    let v = gf.vector.unwrap();
+    for (a, b) in v.iter().zip([20.0, 20.0, 50.0, 20.0]) {
+        assert!((a - b).abs() < 1e-9, "{v:?}");
+    }
+    let df = &items[0].effects.directional_feather;
+    assert!(df.on);
+    assert_eq!(df.widths, [5.0, 3.0, 6.0, 4.0]);
+    assert_eq!(items[1].effects, designcraft_doc::Effects::default());
+
+    // Not applied: the settings stay off.
+    let off = feather_fixture(
+        r#"<TransparencySetting>
+             <GradientFeatherSetting Applied="false" Length="50" GradientStart="10 20"/>
+             <DirectionalFeatherSetting Applied="false" LeftWidth="3"/>
+           </TransparencySetting>"#,
+    );
+    assert_eq!(off.spreads[0].items[0].effects, designcraft_doc::Effects::default());
+}
+
+#[test]
+fn gradient_and_directional_feathers_round_trip() {
+    use designcraft_doc::{DirectionalFeather, GradientFeather, Item, ItemId};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let add = |d: &mut Document, effects: designcraft_doc::Effects| {
+        let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 40.0, 140.0, 120.0)));
+        it.effects = effects;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    };
+    let linear = designcraft_doc::Effects {
+        gradient_feather: GradientFeather { on: true, radial: false, angle: 0.0, start: 0.75, end: 0.25, vector: Some([50.0, 60.0, 110.0, 60.0]) },
+        directional_feather: DirectionalFeather { on: true, widths: [1.0, 2.0, 3.0, 4.0] },
+        ..Default::default()
+    };
+    let radial = designcraft_doc::Effects {
+        gradient_feather: GradientFeather { on: true, radial: true, angle: 30.0, start: 0.0, end: 1.0, vector: None },
+        ..Default::default()
+    };
+    add(&mut d, linear.clone());
+    add(&mut d, radial.clone());
+    add(&mut d, designcraft_doc::Effects::default());
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let effects: Vec<_> = back.spreads[0].items.iter().map(|i| i.effects.clone()).collect();
+    assert_eq!(effects, [linear, radial, designcraft_doc::Effects::default()]);
+}

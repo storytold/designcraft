@@ -21,7 +21,7 @@
 //! parent (master) spreads and applied parents, spreads and pages, page items (`TextFrame`,
 //! `Rectangle`, `Oval`, `Polygon`, `GraphicLine`, `Group`) with fill/stroke, corner options, text
 //! frame options (with column rules), text wrap, transparency (opacity, blend mode, drop shadow,
-//! feather), images (embedded `Contents` or linked), stories with paragraph/character style ranges and local overrides, special
+//! feather, gradient feather, directional feather), images (embedded `Contents` or linked), stories with paragraph/character style ranges and local overrides, special
 //! characters and breaks, and text threading.
 //!
 //! ## TODO (ignored on import / not written on export)
@@ -32,8 +32,9 @@
 //! - Nested/GREP/line styles, bullets & numbering details (bullet glyph, number format), OpenType
 //!   feature flags, paragraph borders, grid alignment, custom dashed stroke styles; column rule
 //!   stroke type and overprint.
-//! - Mixed inks, gradient stop opacity and gradient feathers, effects other than drop shadow and
-//!   basic feather, EPS/PDF/AI placed graphics (imported as images when the data is available),
+//! - Mixed inks, gradient stop opacity, gradient feather stops between the first and last, its
+//!   midpoints and highlight, directional feather angle, noise, choke and shape mode, other effects
+//!   than drop shadow and the feathers, stroke/fill/content transparency, EPS/PDF/AI placed graphics (imported as images when the data is available),
 //!   clipping paths, compound-path fill rules.
 //! - Unknown elements are ignored; nothing is preserved opaquely for round-trip yet.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]

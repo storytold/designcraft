@@ -7,10 +7,10 @@ use std::sync::Arc;
 use designcraft_color::cms::lab;
 use designcraft_color::{Color, ColorType, Gradient, GradientKind, GradientStop, Swatch, SwatchValue, swatch};
 use designcraft_doc::{
-    Asset, AssetId, BaselineGrid, CellRange, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind, Content, DocSettings, Document,
-    DropShadow, Effects, Fill, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer, LayerId, ListType, Margins, ObjectStyle,
-    Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode, Rule, Section, Shape, SpanColumns, Spread, SpreadId,
-    Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap, story as st,
+    Asset, AssetId, BaselineGrid, CellRange, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind, Content, DirectionalFeather,
+    DocSettings, Document, DropShadow, Effects, Fill, GradientFeather, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer,
+    LayerId, ListType, Margins, ObjectStyle, Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode, Rule, Section,
+    Shape, SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap, story as st,
 };
 use designcraft_geom::corners::{Corner, CornerOptions};
 use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
@@ -2092,6 +2092,18 @@ impl<'r> Importer<'r> {
             {
                 it.effects = Effects { feather: f.num("Width").unwrap_or(9.0), ..it.effects.clone() };
             }
+            if let Some(g) = t.find("GradientFeatherSetting")
+                && g.boolean("Applied") == Some(true)
+            {
+                it.effects.gradient_feather = gradient_feather_in(g);
+            }
+            if let Some(df) = t.find("DirectionalFeatherSetting")
+                && df.boolean("Applied") == Some(true)
+            {
+                let w = |k: &str| finite(df.num(k)).unwrap_or(0.0).max(0.0);
+                it.effects.directional_feather =
+                    DirectionalFeather { on: true, widths: [w("TopWidth"), w("LeftWidth"), w("BottomWidth"), w("RightWidth")] };
+            }
         }
         // Text wrap.
         if let Some(w) = e.find("TextWrapPreference") {
@@ -2343,6 +2355,42 @@ impl<'r> Importer<'r> {
         };
         Ok(d)
     }
+}
+
+fn finite(v: Option<f64>) -> Option<f64> {
+    v.filter(|v| v.is_finite())
+}
+
+/// A `GradientFeatherSetting`. The model holds two opacity stops at the ends of the gradient: the
+/// first and last `OpacityGradientStop` give them; with a linear vector, their `Location`s move its
+/// ends.
+fn gradient_feather_in(g: &El) -> GradientFeather {
+    let def = GradientFeather::default();
+    let angle = finite(g.num("Angle")).unwrap_or(0.0);
+    let mut stops: Vec<(f64, f64)> = g
+        .find_all("OpacityGradientStop")
+        .filter_map(|s| Some((finite(s.num("Location"))?.clamp(0.0, 100.0) / 100.0, finite(s.num("Opacity"))?.clamp(0.0, 100.0) / 100.0)))
+        .collect();
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (first, last) = match (stops.first(), stops.last()) {
+        (Some(&a), Some(&b)) => (a, b),
+        _ => ((0.0, def.start as f64), (1.0, def.end as f64)),
+    };
+    let start: Option<[f64; 2]> = g
+        .prop("GradientStart")
+        .and_then(|s| s.split_whitespace().map(|v| v.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<Vec<f64>>>())
+        .and_then(|v| v.try_into().ok());
+    let radial = g.get("Type") == Some("Radial");
+    let vector = match (start, finite(g.num("Length"))) {
+        (Some([x, y]), Some(len)) if len > 0.0 => {
+            let a = angle.to_radians();
+            let (dx, dy) = (len * a.cos(), -len * a.sin());
+            let (l0, l1) = if !radial && last.0 > first.0 { (first.0, last.0) } else { (0.0, 1.0) };
+            Some([x + dx * l0, y + dy * l0, x + dx * l1, y + dy * l1])
+        }
+        _ => None,
+    };
+    GradientFeather { on: true, radial, angle, start: first.1 as f32, end: last.1 as f32, vector }
 }
 
 /// Drop-shadow angle (degrees) from IDML offsets (inverse of export's mapping).

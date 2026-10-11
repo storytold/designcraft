@@ -1683,7 +1683,8 @@ impl<'a> Ex<'a> {
         let mut el = with_props(el, props);
         // Transparency.
         let ds = &it.effects.drop_shadow;
-        if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 {
+        let (gf, df) = (&it.effects.gradient_feather, &it.effects.directional_feather);
+        if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 || gf.on || df.on {
             let mut t = El::new("TransparencySetting");
             t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
             if ds.on {
@@ -1701,6 +1702,40 @@ impl<'a> Ex<'a> {
             }
             if it.effects.feather > 0.0 {
                 t.push(El::new("FeatherSetting").attr("Mode", "Standard").attr("Width", num(it.effects.feather)));
+            }
+            if df.on {
+                let [top, left, bottom, right] = df.widths;
+                t.push(
+                    El::new("DirectionalFeatherSetting")
+                        .attr("Applied", "true")
+                        .attr("LeftWidth", num(left))
+                        .attr("RightWidth", num(right))
+                        .attr("TopWidth", num(top))
+                        .attr("BottomWidth", num(bottom)),
+                );
+            }
+            if gf.on {
+                let mut g = El::new("GradientFeatherSetting").attr("Applied", "true").attr("Type", if gf.radial { "Radial" } else { "Linear" });
+                if let Some([x0, y0, x1, y1]) = gf.vector {
+                    // Gradient Feather tool vector: start, length and angle in the item's space.
+                    g.set("Angle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
+                    g.set("Length", num((x1 - x0).hypot(y1 - y0)));
+                    g.set("GradientStart", format!("{} {}", num(x0), num(y0)));
+                } else {
+                    g.set("Angle", num(gf.angle));
+                }
+                let id = uid(it.id.0);
+                for (i, (opacity, location)) in [(gf.start, 0.0), (gf.end, 100.0)].into_iter().enumerate() {
+                    let mut s = El::new("OpacityGradientStop")
+                        .attr("Self", format!("{id}TransparencySetting1GradientFeatherSetting1OpacityGradientStop{i}"))
+                        .attr("Opacity", pct(opacity as f64))
+                        .attr("Location", num(location));
+                    if i > 0 {
+                        s.set("Midpoint", "50");
+                    }
+                    g.push(s);
+                }
+                t.push(g);
             }
             el.push(t);
         }
