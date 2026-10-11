@@ -863,6 +863,7 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
     for (k, v) in obj {
         a.set_json_over(k, v, &designcraft_doc::ParaProps::default()).map_err(|e| bad("type.para", e))?;
     }
+    super::style::check_grep_styles("type.para", &a)?;
     // `null` removes the override (back to the style's value).
     let cleared: Vec<String> = obj.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
     let targets = format_targets(s);

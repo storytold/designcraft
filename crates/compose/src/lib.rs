@@ -13,6 +13,7 @@
 mod bidi;
 pub mod breaker;
 mod cache;
+pub mod grep;
 pub mod hyphen;
 mod notes;
 mod overlay;

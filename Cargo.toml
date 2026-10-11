@@ -44,6 +44,7 @@ unicode-bidi-mirroring = "0.4"
 unicode-segmentation = "1"
 caseless = "0.2"
 regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
+fancy-regex = "0.19.2"
 tempfile = "3"
 
 # text / rendering / formats

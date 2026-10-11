@@ -1807,53 +1807,17 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             )
         }
         "paragraphStyleOptions" => {
-            let name = d.s("name");
-            let mut para = serde_json::Map::new();
-            let mut chars = serde_json::Map::new();
-            for (k, v) in &d.fields {
-                if let Some(a) = k.strip_prefix("p.") {
-                    // `p.ruleAbove.weight`: one field of a rule (the command keeps the others).
-                    match a.split_once('.') {
-                        Some((attr, field)) => {
-                            if let Value::Object(m) = para.entry(attr).or_insert_with(|| json!({})) {
-                                m.insert(field.into(), v.clone());
-                            }
-                        }
-                        None => {
-                            para.insert(a.into(), v.clone());
-                        }
-                    }
-                } else if let Some(a) = k.strip_prefix("c.") {
-                    chars.insert(a.into(), v.clone());
+            let mut d = d;
+            let r = confirm_paragraph_style_options(app, &mut d);
+            if let Err(e) = &r {
+                // Keep the dialog open with the reason, on the section it concerns.
+                if e.contains("bad GREP") {
+                    d.fields.insert("section".into(), json!("grep"));
                 }
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
             }
-            let based = d.s("basedOn");
-            let rename = d.s("rename");
-            let (r, style) = if d.b("new") {
-                let mut params = json!({"name": if rename.trim().is_empty() { "Paragraph Style 1" } else { rename.trim() }, "para": para, "chars": chars});
-                if !based.is_empty() && based != designcraft_doc::NO_PARA_STYLE {
-                    params["basedOn"] = json!(based);
-                }
-                let r = app.run("style.paragraph.create", params)?;
-                let style = r["name"].as_str().unwrap_or_default().to_string();
-                (r, style)
-            } else {
-                let mut params = json!({"name": name, "para": para, "chars": chars});
-                if !based.is_empty() {
-                    params["basedOn"] = if based == designcraft_doc::NO_PARA_STYLE { Value::Null } else { json!(based) };
-                }
-                if !rename.is_empty() && rename != name {
-                    params["rename"] = json!(rename);
-                }
-                let style = if !rename.is_empty() && rename != name { rename } else { name };
-                (app.run("style.paragraph.edit", params)?, style)
-            };
-            if d.fields.contains_key("x.tag") {
-                let tag = d.s("x.tag");
-                let tag = if tag == "[Automatic]" { String::new() } else { tag };
-                app.run("style.exportTag", json!({"style": style, "tag": tag, "class": d.s("x.class")}))?;
-            }
-            Ok(r)
+            r
         }
         "paragraphRules" => {
             let attrs = rule_edits(&d, "");
@@ -2197,16 +2161,71 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     }
 }
 
-/// Paragraph Style Options: sections in a left list (like InDesign), fields on the right.
-/// Edited values are stored as `p.<attr>` / `c.<attr>` fields and applied on OK.
-/// Is `p` a pattern the GREP styles can use? (Checked as the user types.)
-fn regex_ok(p: &str) -> Result<(), ()> {
+/// Why `p` is not a pattern the GREP styles can use, if it isn't. (Checked as the user types.)
+fn grep_error(p: &str) -> Option<String> {
     if p.is_empty() {
-        return Ok(());
+        return None;
     }
-    regex::Regex::new(p).map(|_| ()).map_err(|_| ())
+    designcraft_compose::grep::Grep::new(p, Default::default()).err().map(|e| e.to_string())
 }
 
+fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
+    let name = d.s("name");
+    let mut para = serde_json::Map::new();
+    let mut chars = serde_json::Map::new();
+    for (k, v) in &d.fields {
+        if let Some(a) = k.strip_prefix("p.") {
+            // `p.ruleAbove.weight`: one field of a rule (the command keeps the others).
+            match a.split_once('.') {
+                Some((attr, field)) => {
+                    if let Value::Object(m) = para.entry(attr).or_insert_with(|| json!({})) {
+                        m.insert(field.into(), v.clone());
+                    }
+                }
+                None => {
+                    para.insert(a.into(), v.clone());
+                }
+            }
+        } else if let Some(a) = k.strip_prefix("c.") {
+            chars.insert(a.into(), v.clone());
+        }
+    }
+    let based = d.s("basedOn");
+    let rename = d.s("rename");
+    let (r, style) = if d.b("new") {
+        let mut params = json!({"name": if rename.trim().is_empty() { "Paragraph Style 1" } else { rename.trim() }, "para": para, "chars": chars});
+        if !based.is_empty() && based != designcraft_doc::NO_PARA_STYLE {
+            params["basedOn"] = json!(based);
+        }
+        let r = app.run("style.paragraph.create", params)?;
+        let style = r["name"].as_str().unwrap_or_default().to_string();
+        (r, style)
+    } else {
+        let mut params = json!({"name": name, "para": para, "chars": chars});
+        if !based.is_empty() {
+            params["basedOn"] = if based == designcraft_doc::NO_PARA_STYLE { Value::Null } else { json!(based) };
+        }
+        if !rename.is_empty() && rename != name {
+            params["rename"] = json!(rename);
+        }
+        let style = if !rename.is_empty() && rename != name { rename } else { name };
+        (app.run("style.paragraph.edit", params)?, style)
+    };
+    // The style now exists under `style`: if a later step fails, the dialog stays open on it and
+    // a second OK edits it rather than creating another one.
+    d.fields.insert("new".into(), json!(false));
+    d.fields.insert("name".into(), json!(&style));
+    d.fields.insert("rename".into(), json!(&style));
+    if d.fields.contains_key("x.tag") {
+        let tag = d.s("x.tag");
+        let tag = if tag == "[Automatic]" { String::new() } else { tag };
+        app.run("style.exportTag", json!({"style": style, "tag": tag, "class": d.s("x.class")}))?;
+    }
+    Ok(r)
+}
+
+/// Paragraph Style Options: sections in a left list (like InDesign), fields on the right.
+/// Edited values are stored as `p.<attr>` / `c.<attr>` fields and applied on OK.
 fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let name = d.s("name");
     let new = d.b("new");
@@ -2470,7 +2489,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                             });
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "To Text:"));
                         let mut pat = g["pattern"].as_str().unwrap_or("").to_string();
-                        let bad = regex_ok(&pat).is_err();
+                        let bad = grep_error(&pat).is_some();
                         let r = ui.add(
                             egui::TextEdit::singleline(&mut pat)
                                 .desired_width(150.0)
@@ -2490,6 +2509,9 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                             remove = Some(i);
                         }
                     });
+                    if let Some(e) = grep_error(g["pattern"].as_str().unwrap_or("")) {
+                        crate::rtl::label(ui, egui::RichText::new(e).size(11.0).color(egui::Color32::from_rgb(240, 90, 90)));
+                    }
                 }
                 if let Some(i) = remove {
                     list.remove(i);
@@ -2648,6 +2670,11 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
         });
     });
+    // Why OK didn't apply (a pattern that can't compile, a taken name).
+    let status = d.s("status");
+    if !status.is_empty() {
+        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+    }
 }
 
 /// The section list on the left of the style options dialogs.
@@ -4068,6 +4095,21 @@ mod tests {
         assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], want, "the paragraph follows its style");
         app.run("edit.undo", json!({})).unwrap();
         assert_eq!(resolved(&app)["ruleBelow"], rule);
+    }
+
+    #[test]
+    fn paragraph_style_options_keep_a_bad_grep_pattern_open_with_the_error() {
+        let (mut app, _) = ruled_paragraph();
+        let ctx = egui::Context::default();
+        app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled", "section": "general"})));
+        draw(&mut app, &ctx);
+        app.ui.dialog.as_mut().unwrap().fields.insert("p.grepStyles".into(), json!([{"style": "[None]", "pattern": "(?<=x"}]));
+        let e = confirm(&mut app).unwrap_err();
+        assert!(e.contains("bad GREP"), "{e}");
+        let d = app.ui.dialog.clone().expect("the dialog stays open");
+        assert_eq!((d.s("section").as_str(), d.s("status").contains("bad GREP")), ("grep", true));
+        assert!(app.session.doc().unwrap().doc.styles.para("Ruled").unwrap().para.grep_styles.is_none(), "nothing saved");
+        draw(&mut app, &ctx);
     }
 
     fn command_app(id: &str, fields: Value) -> DesignApp {

@@ -86,7 +86,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Paragraph Style…",
             [],
             None,
-            "{name, basedOn?, nextStyle?, para?: {…}, chars?: {…}, fromSelection?: bool}",
+            "{name, basedOn?, nextStyle?, para?: {… grepStyles?: [{style, pattern}]: a pattern that can't compile is an error}, chars?: {…}, fromSelection?: bool}",
             has_doc,
             create_para
         ),
@@ -95,7 +95,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Style Options…",
             [],
             None,
-            "{name, rename?, basedOn?, nextStyle?, para?: {… ruleAbove?/ruleBelow?: only the named rule fields change}, chars?: {…}}",
+            "{name, rename?, basedOn?, nextStyle?, para?: {… ruleAbove?/ruleBelow?: only the named rule fields change; a grepStyles pattern that can't compile is an error}, chars?: {…}}",
             has_doc,
             edit_para
         ),
@@ -428,6 +428,7 @@ fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
 fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Paragraph Style 1").to_string();
     let mut para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json(k, v))?;
+    check_grep_styles("style.paragraph.create", &para)?;
     let mut chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
     if p.get("fromSelection").and_then(Value::as_bool).unwrap_or(false)
         && let Ok(cur) = s.execute("type.selectionAttrs", &json!({}))
@@ -458,6 +459,39 @@ fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// The compile error of the first GREP style in `a` whose pattern can't compile.
+pub(crate) fn grep_style_error(a: &ParaAttrs) -> Option<String> {
+    a.grep_styles
+        .iter()
+        .flatten()
+        .filter(|g| !g.pattern.is_empty())
+        .find_map(|g| designcraft_compose::grep::Grep::new(&g.pattern, Default::default()).err().map(|e| format!("{e} (pattern {:?})", g.pattern)))
+}
+
+/// Rejects GREP styles a command would set with a pattern that can't compile.
+pub(crate) fn check_grep_styles(cmd: &str, a: &ParaAttrs) -> Result<()> {
+    grep_style_error(a).map_or(Ok(()), |e| Err(bad(cmd, e)))
+}
+
+/// One warning for each paragraph style or paragraph whose GREP style pattern can't compile.
+/// Such a GREP style stays in the document and composition skips it.
+pub(crate) fn grep_style_warnings(d: &designcraft_doc::Document) -> Vec<String> {
+    let mut out: Vec<String> = d
+        .styles
+        .paragraph
+        .iter()
+        .filter_map(|st| grep_style_error(&st.para).map(|e| format!("paragraph style {:?}: GREP style not applied: {e}", st.name)))
+        .collect();
+    for st in d.stories.values() {
+        for (i, pf) in st.paras.iter().enumerate() {
+            if let Some(e) = grep_style_error(&pf.para) {
+                out.push(format!("story {} paragraph {}: GREP style not applied: {e}", st.id.0, i + 1));
+            }
+        }
+    }
+    out
+}
+
 #[allow(non_snake_case)]
 fn ParaProps_to_attrs(p: &designcraft_doc::ParaProps) -> ParaAttrs {
     designcraft_doc::ParaProps::common([p])
@@ -481,6 +515,7 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
         // A rule object changes only the rule fields it names, over the style's resolved rule.
         let (current, _) = d.styles.resolve_para_style(&name);
         let para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json_over(k, v, &current))?;
+        check_grep_styles("style.paragraph.edit", &para)?;
         let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
         st.para.merge(&para);
         st.chars.merge(&chars);
@@ -1316,5 +1351,60 @@ mod cjk_tests {
         let restored = s.cache.get(&s.doc().unwrap().doc, sid, None);
         assert_eq!(old.frames[0].lines[0].end_x, restored.frames[0].lines[0].end_x);
         assert!(s.execute("style.compositeFont.set", &definition(-1.0)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod grep_style_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn grep_style_pattern_that_cannot_compile_is_rejected() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Keep"})).unwrap();
+        let bad = json!([{"style": "Keep", "pattern": "(\\d+"}]);
+        let e = s.execute("style.paragraph.create", &json!({"name": "Broken", "para": {"grepStyles": bad}})).unwrap_err().to_string();
+        assert!(e.contains("bad GREP") && e.contains("(\\\\d+"), "{e}");
+        assert!(s.doc().unwrap().doc.styles.para("Broken").is_none());
+
+        // The lookbehind dialect compiles.
+        let good = json!([{"style": "Keep", "pattern": "(?<=\\s)[aiouwzAIOUWZ]\\s"}]);
+        s.execute("style.paragraph.create", &json!({"name": "Polish", "para": {"grepStyles": good}})).unwrap();
+        let e = s.execute("style.paragraph.edit", &json!({"name": "Polish", "para": {"grepStyles": bad, "spaceAfter": 6}})).unwrap_err().to_string();
+        assert!(e.contains("bad GREP"), "{e}");
+        let st = s.doc().unwrap().doc.styles.para("Polish").unwrap().clone();
+        assert_eq!(st.para.grep_styles.unwrap()[0].pattern, "(?<=\\s)[aiouwzAIOUWZ]\\s");
+        assert_eq!(st.para.space_after, None, "nothing changes");
+
+        // A paragraph override too.
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Ala i kot"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        let e = s.execute("type.para", &json!({"grepStyles": bad})).unwrap_err().to_string();
+        assert!(e.contains("bad GREP"), "{e}");
+    }
+
+    #[test]
+    fn idml_import_keeps_a_broken_grep_style_and_warns() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Keep"})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Broken"})).unwrap();
+        // Written past the command, as another application could.
+        s.edit(|d, _| {
+            if let Some(st) = d.styles_mut().para_mut("Broken") {
+                st.para.grep_styles = Some(vec![designcraft_doc::GrepStyle { style: "Keep".into(), pattern: "[a-".into() }]);
+            }
+            Ok(())
+        })
+        .unwrap();
+        let b64 = s.execute("file.exportIdml", &json!({})).unwrap()["base64"].as_str().unwrap().to_string();
+        let r = s.execute("file.openIdml", &json!({"base64": b64})).unwrap();
+        let warnings = r["warnings"].to_string();
+        assert!(warnings.contains("Broken") && warnings.contains("[a-") && warnings.contains("bad GREP"), "{warnings}");
+        let st = s.doc().unwrap().doc.styles.para("Broken").unwrap().clone();
+        assert_eq!(st.para.grep_styles.unwrap()[0].pattern, "[a-", "the style opens with its pattern");
     }
 }

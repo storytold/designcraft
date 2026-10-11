@@ -2771,3 +2771,31 @@ fn empty_paragraphs_get_no_bullet_or_number() {
         assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.", "", "2.", ""], "list `{name}`");
     }
 }
+
+#[test]
+fn grep_style_in_the_documents_dialect_keeps_short_words_with_the_next() {
+    // `\l` (lowercase letter) and `\h` (horizontal space) aren't Rust regex syntax; the style used
+    // to be skipped silently.
+    let text = "Мы и он в доме и в саду, а она у окна и с книгой в руках у стола.";
+    let para = ParaAttrs {
+        align: Some(Align::Left),
+        grep_styles: Some(vec![designcraft_doc::GrepStyle { style: "nobreak".into(), pattern: r"\b\l{1,2}\h".into() }]),
+        ..Default::default()
+    };
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 70.0, 1000.0), para);
+    let chars = designcraft_doc::CharAttrs { no_break: Some(true), ..Default::default() };
+    std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+        name: "nobreak".into(),
+        based_on: None,
+        chars,
+        shortcut: String::new(),
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 3);
+    let short = |w: &str| w.chars().count() <= 2 && w.chars().all(char::is_lowercase);
+    for l in &lines[..lines.len() - 1] {
+        let last = text[l.range.clone()].split_whitespace().last().unwrap_or("");
+        assert!(!short(last), "line ends with a short word: {:?}", &text[l.range.clone()]);
+    }
+}

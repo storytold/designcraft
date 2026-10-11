@@ -17,6 +17,7 @@ designcraft-doc = { workspace = true }
 designcraft-fonts = { workspace = true }
 log = { workspace = true }
 regex = { workspace = true }
+fancy-regex = { workspace = true }
 miniz_oxide = "0.8"
 hypher = { version = "0.1.8", default-features = false, features = ["alloc", "spanish"] }
 
