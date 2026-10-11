@@ -224,28 +224,10 @@ impl Story {
 impl crate::Document {
     /// The numbering of list `name` after the stories before `sid` (page order), so `sid`'s
     /// numbering carries on; a fresh count for lists that don't continue across stories.
+    /// Composing many stories? Build [`Document::number_starts`](crate::Document::number_starts)
+    /// once instead.
     pub fn list_start(&self, sid: StoryId, name: &str) -> crate::ListCounter {
-        let mut n = crate::ListCounter::default();
-        if !self.settings.lists.iter().any(|l| l.name == name && l.continue_across_stories) {
-            return n;
-        }
-        let key = |st: &Story| -> (usize, u64) {
-            let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
-            (page, st.id.0)
-        };
-        let Some(me) = self.story(sid) else { return n };
-        let mine = key(me);
-        let mut before: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|st| st.id != sid && key(st) < mine).collect();
-        before.sort_by_key(|st| key(st));
-        for st in before {
-            for (p, r) in st.paras.iter().zip(st.para_ranges()) {
-                let (pp, _) = self.styles.resolve_para(p);
-                if pp.list_type == crate::ListType::Numbers && pp.list_name == name && !r.is_empty() {
-                    n.advance(&pp);
-                }
-            }
-        }
-        n
+        self.number_starts().list(sid, name)
     }
 
     /// Number of the first footnote of story `sid` when numbering runs through the document:
@@ -255,22 +237,14 @@ impl crate::Document {
         if o.restart != NoteRestart::Never {
             return o.start_at;
         }
-        let key = |st: &Story| -> (usize, u64) {
-            let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
-            (page, st.id.0)
-        };
-        let Some(me) = self.story(sid) else { return o.start_at };
-        let mine = key(me);
-        let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();
-        o.start_at.saturating_add(before as u32)
+        self.number_starts().footnote(sid)
     }
 
-    /// Absolute page an item sits on (its center), None on parent pages / pasteboard-only spreads.
     pub fn page_of_item(&self, id: crate::ItemId) -> Option<usize> {
         let loc = self.find(id)?;
         let crate::SpreadRef::Doc(si) = loc.spread else { return None };
         let sp = self.spread(loc.spread)?;
-        let c = self.item(id)?.bounds().center();
+        let c = self.item_at(&loc)?.bounds().center();
         Some(self.first_page_of_spread(si) + sp.page_at_x(c.x).unwrap_or(0))
     }
 }
