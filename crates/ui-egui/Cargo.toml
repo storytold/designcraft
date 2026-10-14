@@ -11,6 +11,11 @@ workspace = true
 
 [dependencies]
 craft-ui = { workspace = true }
+# The vendor-neutral cloud types the Open and Save pages hand back: a file
+# entry, a capability. Contracts only, so this crate still builds for the web.
+# The service is reached through the backend the host application connects
+# (see `cloud`).
+craft-cloud = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
@@ -19,6 +24,10 @@ designcraft-compose = { workspace = true }
 designcraft-render = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-engine = { workspace = true }
+# A cloud save encodes the layout here rather than through
+# `designcraft_engine::cmd::to_bytes`, which turns a failure into empty bytes
+# (see `cloud::encode`).
+designcraft-format = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-bidi-mirroring = { workspace = true }
 unicode-segmentation = { workspace = true }

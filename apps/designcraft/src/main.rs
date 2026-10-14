@@ -15,6 +15,7 @@
 
 #[cfg(target_os = "macos")]
 mod apple_events;
+mod cloud;
 mod control_server;
 mod gpu;
 mod gpu_limits;
@@ -504,6 +505,14 @@ fn main() -> std::process::ExitCode {
                     app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
                 }
                 load_prefs(&mut app);
+                // Cloud storage, when a service is configured. Without one the
+                // interface offers nothing cloud-shaped at all.
+                if let Some(backend) = cloud::service(cc.egui_ctx.clone()) {
+                    app.cloud.connect(backend);
+                }
+                // The share dialog reaches the same service through its own
+                // client, so a sign-in through either half serves both.
+                app.share.connect(collabcraft_share::CollabCraft::from_fn(cloud::client));
                 // After `load_prefs`, which replaces the UI state and with it the status line.
                 if let Some(note) = portable_note {
                     app.status(note);
