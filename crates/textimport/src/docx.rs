@@ -148,19 +148,21 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
 /// Largest decompressed zip part read (a small file can inflate to gigabytes).
 pub(crate) const PART_LIMIT: u64 = 64 * 1024 * 1024;
 
-/// A zip part as text. `Ok(None)` when the part is missing or isn't text; an error when it
-/// decompresses to more than [`PART_LIMIT`].
+/// A zip part as text. `Ok(None)` when the part is missing; an error when it is present but
+/// unreadable (bad compression, CRC or UTF-8) or decompresses to more than [`PART_LIMIT`].
 pub(crate) fn part(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str) -> Result<Option<String>, ImportError> {
     part_capped(zip, name, PART_LIMIT)
 }
 
 pub(crate) fn part_capped(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str, limit: u64) -> Result<Option<String>, ImportError> {
-    let Ok(f) = zip.by_name(name) else { return Ok(None) };
+    let f = match zip.by_name(name) {
+        Ok(f) => f,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(ImportError::Corrupt(format!("{name} is unreadable: {e}"))),
+    };
     let mut s = String::new();
     // Read one byte past the limit to tell "exactly at the limit" from "over it".
-    if f.take(limit.saturating_add(1)).read_to_string(&mut s).is_err() {
-        return Ok(None);
-    }
+    f.take(limit.saturating_add(1)).read_to_string(&mut s).map_err(|e| ImportError::Corrupt(format!("{name} is unreadable: {e}")))?;
     if s.len() as u64 > limit {
         return Err(ImportError::Corrupt(format!("{name} is larger than {} MiB uncompressed", limit / (1024 * 1024))));
     }

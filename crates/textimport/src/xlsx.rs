@@ -369,6 +369,36 @@ mod tests {
         assert_eq!(cell_ref("AA10"), Some((9, 26)));
     }
 
+    #[test]
+    fn corrupt_shared_strings_part_is_an_error_not_absent() {
+        let src = workbook();
+        let mut zin = zip::ZipArchive::new(std::io::Cursor::new(src.as_slice())).unwrap();
+        let rewrite = |zin: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, keep_shared: bool| {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            for i in 0..zin.len() {
+                let mut f = zin.by_index(i).unwrap();
+                let name = f.name().to_string();
+                if name == "xl/sharedStrings.xml" && !keep_shared {
+                    continue;
+                }
+                let mut data = Vec::new();
+                std::io::Read::read_to_end(&mut f, &mut data).unwrap();
+                w.start_file(name, o).unwrap();
+                w.write_all(&data).unwrap();
+            }
+            w.finish().unwrap().into_inner()
+        };
+        let mut bytes = rewrite(&mut zin, true);
+        // Invalid UTF-8 inside the stored shared-strings part.
+        let at = bytes.windows(4).position(|x| x == b"Item").unwrap();
+        bytes[at + 2] = 0xFF;
+        assert!(matches!(import(&bytes), Err(ImportError::Corrupt(_))));
+        assert!(matches!(records(&bytes, None), Err(ImportError::Corrupt(_))));
+        // A workbook without shared strings still imports.
+        assert!(import(&rewrite(&mut zin, false)).is_ok());
+    }
+
     /// A cell far away from the others used to allocate the whole used range (billions of cells)
     /// before the cell cap applied; a long column name overflowed the column number.
     #[test]
