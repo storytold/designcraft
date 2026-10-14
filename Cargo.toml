@@ -88,18 +88,18 @@ craft-cms = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 # `cloud` brings the Open and Save pages, the account badge and the share
 # dialog that every Craft app offers. One revision of this crate has to be in
 # the graph: two are two different `ShareBackend` traits that never meet.
-craft-ui = { version = "0.1.0", git = "https://github.com/wdunn001/craft-libs", rev = "effb5ca", features = ["serde", "cloud"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/wdunn001/craft-libs", rev = "183056e", features = ["serde", "cloud"] }
 # The vendor-neutral cloud vocabulary the pages speak: a file entry, a
 # capability, a share. Contracts only, with no IO and no vendor, so the wasm
 # build is unaffected.
-craft-cloud = { version = "0.1.0", git = "https://github.com/wdunn001/craft-libs", rev = "effb5ca" }
+craft-cloud = { version = "0.1.0", git = "https://github.com/wdunn001/craft-libs", rev = "183056e" }
 # How the desktop app reaches CollabCraft. No provider credential, no provider
 # URL and no provider protocol live in DesignCraft.
-craft-cloud-client = { git = "https://github.com/wdunn001/collabcraft", rev = "c4cddcd" }
+craft-cloud-client = { git = "https://github.com/wdunn001/collabcraft", rev = "700d9b9" }
 # The share dialog's backend. craft-ui states the work and nothing in
 # craft-libs answers it, so the half that opens a socket comes from beside the
 # client.
-collabcraft-share = { git = "https://github.com/wdunn001/collabcraft", rev = "c4cddcd" }
+collabcraft-share = { git = "https://github.com/wdunn001/collabcraft", rev = "700d9b9" }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 eframe = { version = "0.36", default-features = false }

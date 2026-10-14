@@ -30,10 +30,10 @@ use std::sync::Arc;
 // depending on the crates they come from.
 pub use craft_cloud::{Capability, Entry, EntryKind};
 pub use craft_ui::cloud::{
-    Account, Busy, CloudApp, CloudBackend, CloudFiles, Conflict, CopyFormat, DocumentKind, Event, Fault, Folder, Job, Link, Origin, Post, Source,
-    UNAVAILABLE, available, browse, can_converse, conflict_modal, destination_name, has_target, link, load_shared, open_entry, open_page, origin,
-    parent_of, prefers_cloud, progress, pump, reload_active, save, save_as, save_page, share_button, shares, sign_in, sign_out, start, who,
-    work_together,
+    Account, Busy, CloudApp, CloudBackend, CloudFiles, Conflict, CopyFormat, Destination, DocumentKind, Event, Fault, Folder, Job, Link, Origin,
+    Post, Source, UNAVAILABLE, available, browse, can_converse, conflict_modal, destination_name, has_target, link, load_shared, open_entry,
+    open_page, origin, parent_of, prefers_cloud, progress, pump, reload_active, save, save_as, save_page, share_button, shares, sign_in, sign_out,
+    start, who, work_together,
 };
 use designcraft_doc::Document;
 use egui::{Color32, Painter, Rect, Ui};
@@ -159,7 +159,15 @@ impl CloudApp for DesignApp {
         Ok(self.session.active().map(|d| d.uid))
     }
 
-    fn encode(&mut self, uid: u64) -> Result<Vec<u8>, String> {
+    fn encode(&mut self, uid: u64, into: Destination<'_>) -> Result<Vec<u8>, String> {
+        // DesignCraft reads IDML and writes only its own format. Saving a
+        // layout that arrived as IDML back under that name would hand somebody
+        // a file InDesign refuses, with nothing saying why. Save a Copy is the
+        // way out, and the message says so.
+        let extension = into.extension();
+        if !extension.is_empty() && extension != LAYOUT.default_extension {
+            return Err(format!("DesignCraft writes .{0}. Save a copy as .{0} instead.", LAYOUT.default_extension));
+        }
         let doc = self.session.documents().iter().find(|d| d.uid == uid).ok_or("no layout open")?;
         let snapshot = doc.doc.clone();
         // `designcraft_format::save` has a failure to hand back.
