@@ -198,7 +198,7 @@ impl Limits {
     const DEFAULT: Limits = Limits { json: 256 << 20, asset: 1 << 30, total: 4 << 30 };
 }
 
-/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses a deflated entry
+/// Read entry `name` of `z`, or `None` when it is missing, and an error when it is corrupt. Refuses a deflated entry
 /// that expands past `limit` bytes or past what is `left` of the archive's budget, without
 /// decompressing more than that: the sizes the archive claims are not trusted. A stored entry
 /// is read at its size in the archive and charged to `stored_left`, the archive's own size; only a
@@ -210,7 +210,12 @@ fn read_entry(
     left: &mut u64,
     stored_left: &mut u64,
 ) -> Result<Option<Vec<u8>>, FormatError> {
-    let Ok(f) = z.by_name(name) else { return Ok(None) };
+    let corrupt = |e: &dyn std::fmt::Display| FormatError::NotOurs(format!("corrupt {name}: {e}"));
+    let f = match z.by_name(name) {
+        Ok(f) => f,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(corrupt(&e)),
+    };
     let stored = f.compression() == zip::CompressionMethod::Stored;
     let limit = if !stored {
         limit.min(*left)
@@ -227,13 +232,13 @@ fn read_entry(
     let read = f.take(limit.saturating_add(1)).read_to_end(&mut v);
     let n = v.len() as u64;
     // What a failed read produced was inflated all the same: it counts against the archive's budget.
-    if read.is_err() {
+    if let Err(e) = read {
         if stored {
             *stored_left = stored_left.saturating_sub(n);
         } else {
             *left = left.saturating_sub(n);
         }
-        return Ok(None);
+        return Err(corrupt(&e));
     }
     if n > limit {
         return Err(too_big());

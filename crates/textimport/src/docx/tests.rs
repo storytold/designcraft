@@ -208,6 +208,24 @@ fn a_note_whose_first_reference_is_past_the_budget_is_not_recorded_as_kept() {
 }
 
 #[test]
+fn corrupt_styles_part_is_an_error_not_absent() {
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let body = format!(r#"<w:document {W}><w:body><w:p><w:r><w:t>Hi</w:t></w:r></w:p></w:body></w:document>"#);
+    w.start_file("word/document.xml", o).unwrap();
+    w.write_all(body.as_bytes()).unwrap();
+    w.start_file("word/styles.xml", o).unwrap();
+    w.write_all(format!("<w:styles {W}>\u{1}STYLESMARK</w:styles>").as_bytes()).unwrap();
+    let mut bytes = w.finish().unwrap().into_inner();
+    // Invalid UTF-8 inside the stored styles part.
+    let at = bytes.windows(10).position(|x| x == b"STYLESMARK").unwrap();
+    bytes[at - 1] = 0xFF;
+    assert!(matches!(import(&bytes), Err(ImportError::Corrupt(_))));
+    // Without a styles part the document still imports.
+    assert!(import(&docx(&body, "", "")).is_ok());
+}
+
+#[test]
 fn imports_styles_runs_footnotes_and_tables() {
     let styles = format!(
         r#"<w:styles {W}>
