@@ -45,7 +45,7 @@ Fidelity: **unmeasured** unless stated.
 | Variable fonts | axes in Character panel | named instances and free axis values; PDF embeds the instance | ✓ | |
 | Leading | auto (120%), absolute, leading model | ✓ | ✓ | CJK leading models in cjk-typography.md |
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
-| Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
+| Frame fit / overset | baseline of the last line must fit | baseline of the last line must fit | ✓ | same (#180) |
 | Baseline grid | document grid relative to the top of the page or each page's top margin; frame grids relative to the top of the page, top margin, top of frame or top inset | ✓ | ✓ | |
 | Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |
