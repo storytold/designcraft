@@ -60,10 +60,10 @@ fn oversized_part_is_an_error_not_a_huge_read() {
     // A highly compressible part: 64 KiB of spaces inflates past a 4 KiB cap.
     let big = docx(&" ".repeat(64 * 1024), "", "");
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(big.as_slice())).unwrap();
-    assert!(matches!(part_capped(&mut zip, "word/document.xml", 4096), Err(ImportError::Corrupt(_))));
+    assert!(matches!(part_capped(&mut zip, "word/document.xml", 4096, &mut Vec::new()), Err(ImportError::Corrupt(_))));
     // At or under the cap reads fine; a missing part is `None`.
-    assert_eq!(part_capped(&mut zip, "word/document.xml", 64 * 1024).unwrap().map(|s| s.len()), Some(64 * 1024));
-    assert_eq!(part_capped(&mut zip, "word/missing.xml", 4096).unwrap(), None);
+    assert_eq!(part_capped(&mut zip, "word/document.xml", 64 * 1024, &mut Vec::new()).unwrap().map(|s| s.len()), Some(64 * 1024));
+    assert_eq!(part_capped(&mut zip, "word/missing.xml", 4096, &mut Vec::new()).unwrap(), None);
 }
 
 /// A DOCX can hold any number where a measure belongs: `1e300` twips became a 5e298 pt
@@ -208,21 +208,36 @@ fn a_note_whose_first_reference_is_past_the_budget_is_not_recorded_as_kept() {
 }
 
 #[test]
-fn corrupt_styles_part_is_an_error_not_absent() {
+fn corrupt_styles_part_is_skipped_with_a_warning() {
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let body = format!(r#"<w:document {W}><w:body><w:p><w:r><w:t>Hi</w:t></w:r></w:p></w:body></w:document>"#);
     w.start_file("word/document.xml", o).unwrap();
     w.write_all(body.as_bytes()).unwrap();
     w.start_file("word/styles.xml", o).unwrap();
-    w.write_all(format!("<w:styles {W}>\u{1}STYLESMARK</w:styles>").as_bytes()).unwrap();
-    let mut bytes = w.finish().unwrap().into_inner();
-    // Invalid UTF-8 inside the stored styles part.
-    let at = bytes.windows(10).position(|x| x == b"STYLESMARK").unwrap();
-    bytes[at - 1] = 0xFF;
-    assert!(matches!(import(&bytes), Err(ImportError::Corrupt(_))));
+    // Invalid UTF-8 inside an otherwise intact styles part.
+    w.write_all(format!("<w:styles {W}>").as_bytes()).unwrap();
+    w.write_all(&[0xFF]).unwrap();
+    w.write_all(b"</w:styles>").unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let imp = import(&bytes).unwrap();
+    assert!(imp.warnings.iter().any(|w| w.contains("word/styles.xml")), "{:?}", imp.warnings);
     // Without a styles part the document still imports.
     assert!(import(&docx(&body, "", "")).is_ok());
+}
+
+#[test]
+fn corrupt_document_part_is_reported_as_damaged() {
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    w.start_file("word/document.xml", o).unwrap();
+    // Invalid UTF-8 inside an otherwise intact document part: it can't be skipped.
+    w.write_all(format!("<w:document {W}><w:body><w:p><w:r><w:t>").as_bytes()).unwrap();
+    w.write_all(&[0xFF]).unwrap();
+    w.write_all(b"</w:t></w:r></w:p></w:body></w:document>").unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let Err(ImportError::Corrupt(e)) = import(&bytes) else { panic!("a damaged document part is an error") };
+    assert!(e.contains("word/document.xml") && e.contains("damaged") && !e.contains("not a Word document"), "{e}");
 }
 
 #[test]

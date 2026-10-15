@@ -169,10 +169,16 @@ const MAX_PREVIEW_BYTES: u64 = 4 << 20;
 
 /// Read `.designcraft` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
+    load_with_warnings(bytes).map(|(doc, _)| doc)
+}
+
+/// [`load`], plus a warning for each damaged embedded asset. A damaged asset doesn't stop the
+/// document from opening: it loads without its data (shown as missing) and is reported here.
+pub fn load_with_warnings(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
     if bytes.starts_with(b"PK") {
         return load_zip(bytes);
     }
-    load_legacy_json(bytes)
+    load_legacy_json(bytes).map(|doc| (doc, Vec::new()))
 }
 
 /// Most entries a `.designcraft` archive may hold.
@@ -251,11 +257,11 @@ fn read_entry(
     Ok(Some(v))
 }
 
-fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
+fn load_zip(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
     load_zip_within(bytes, Limits::DEFAULT)
 }
 
-fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError> {
+fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<(Document, Vec<String>), FormatError> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     if z.len() > MAX_ENTRIES {
         return Err(FormatError::NotOurs(format!("{} entries (at most {MAX_ENTRIES})", z.len())));
@@ -281,14 +287,23 @@ fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError
     // read, so memory holds each distinct file once.
     let fingerprint = std::collections::hash_map::RandomState::new();
     let mut loaded: HashMap<u64, Vec<Arc<Vec<u8>>>> = HashMap::new();
+    let mut warnings = Vec::new();
     for name in names {
         let Some(stem) = name.strip_prefix("assets/") else { continue };
         let Some(id) = stem.split('.').next().and_then(|s| s.parse::<u64>().ok()) else { continue };
         // Entries for assets the document doesn't have are never decompressed.
-        if !doc.assets.contains_key(&AssetId(id)) {
-            continue;
-        }
-        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, limits.asset, &mut left, &mut stored_left)?, doc.assets.get_mut(&AssetId(id))) {
+        let Some(a) = doc.assets.get_mut(&AssetId(id)) else { continue };
+        // A damaged asset keeps its empty data (shown as missing) and is reported; a size-limit
+        // error still fails the load.
+        let data = match read_entry(&mut z, &name, limits.asset, &mut left, &mut stored_left) {
+            Ok(data) => data,
+            Err(e @ FormatError::NotOurs(_)) => {
+                warnings.push(format!("{name}: damaged embedded file, placed as missing ({e})"));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(data) = data {
             let same = loaded.entry(fingerprint.hash_one(data.as_slice())).or_default();
             let data = match same.iter().find(|d| ***d == data) {
                 Some(d) => d.clone(),
@@ -306,7 +321,7 @@ fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError
     doc.mark_differing_margins_local();
     doc.renumber_duplicate_items();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
-    Ok(doc)
+    Ok((doc, warnings))
 }
 
 /// Bring a document saved in format `from` up to [`VERSION`].
