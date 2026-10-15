@@ -4076,6 +4076,31 @@ fn empty_paragraph_uses_its_own_mark_not_the_previous_one() {
     assert!((lines[1].baseline - lines[0].baseline - 8.0).abs() < 1e-6, "{} {}", lines[0].baseline, lines[1].baseline);
 }
 
+/// Under a leading model an empty paragraph keeps the leading like any other line: its line
+/// measures from its paragraph mark's em box, as in InDesign. It used to measure from its
+/// baseline, so the empty line moved by the em box's offset and the line after it back by as
+/// much. The other composers set lines baseline to baseline whatever the model.
+#[test]
+fn an_empty_paragraph_keeps_the_leading_under_a_leading_model() {
+    use designcraft_doc::cjk::LeadingModel;
+    let text = "Aaa\n\nBbb\nCcc";
+    for model in [LeadingModel::AkiBelow, LeadingModel::AkiAbove, LeadingModel::Center] {
+        for para in [japanese(), ParaAttrs::default()] {
+            let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 300.0), para);
+            d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+                f.over.leading = Some(designcraft_doc::Leading::Points(16.0));
+                f.over.leading_model = Some(model);
+            });
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let base: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+            assert_eq!(base.len(), 4, "{model:?}");
+            for w in base.windows(2) {
+                assert!((w[1] - w[0] - 16.0).abs() < 1e-6, "{model:?}: {base:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn spanish_text_gets_spanish_hyphenation() {
     let text = "La transición democrática fue una construcción colectiva extraordinariamente compleja y desesperadamente necesaria.";
