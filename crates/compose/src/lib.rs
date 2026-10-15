@@ -4669,8 +4669,9 @@ fn layout_line(
             Align::Right => extra,
             _ => 0.0,
         };
-        // Overfull ragged lines are not shifted left of the slot.
-        if offset < 0.0 {
+        // An overfull ragged line is not shifted left of the slot, except a centred one: InDesign
+        // centres it, hanging out on both sides.
+        if offset < 0.0 && last_align != Align::Center {
             offset = 0.0;
         }
     }
