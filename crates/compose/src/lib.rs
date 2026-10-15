@@ -692,7 +692,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let sub_objects = sub.objects.clone();
         let drop_end = drop_cap_end(&story.text, prange.clone(), &pp, sub.vertical);
         let mut table = StyleTable { styles: &mut styles_tab, missing: &mut missing_fonts };
-        let env = shape::TypeEnv { auto_leading: pp.auto_leading, adv: doc.settings.advanced_type, glyph_fallback: doc.settings.glyph_fallback };
+        let env = shape::TypeEnv {
+            auto_leading: pp.auto_leading,
+            adv: doc.settings.advanced_type,
+            glyph_fallback: doc.settings.glyph_fallback,
+            unjoined: !pp.world_ready,
+        };
         let mut sp = shape::shape_para(
             db,
             &doc.styles,
@@ -844,11 +849,13 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             prepend_label(db, &mut sp.glyphs, label, prange.start, &base_chars, label_env, &mut table);
         }
         let mut glyphs = sp.glyphs;
+        // Not World-Ready: the line runs left to right in text order, whatever the script.
+        if !pp.world_ready {
+            glyphs.iter_mut().for_each(|g| g.character_direction = designcraft_doc::arabic::CharacterDirection::LeftToRight);
+        }
+        let rtl = pp.world_ready && pp.direction == designcraft_doc::TextDirection::RightToLeft;
         let bidi_text = bidi::paragraph_text(&mut glyphs, &story.text);
-        let bidi_info = unicode_bidi::BidiInfo::new(
-            &bidi_text,
-            Some(if pp.direction == designcraft_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
-        );
+        let bidi_info = unicode_bidi::BidiInfo::new(&bidi_text, Some(if rtl { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }));
         bidi::resolve_mirroring(&mut glyphs, &bidi_info);
         apply_desired_spacing(&mut glyphs, &pp);
         let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));

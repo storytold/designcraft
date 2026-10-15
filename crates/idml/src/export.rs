@@ -1464,12 +1464,14 @@ impl<'a> Ex<'a> {
                 }
             }
         }
-        if let Some(c) = a.composer {
+        if a.composer.is_some() || a.world_ready.is_some() {
             el.set(
                 "Composer",
-                match c {
-                    designcraft_doc::Composer::Paragraph => "HL Composer",
-                    designcraft_doc::Composer::SingleLine => "HL Single",
+                match (a.composer.unwrap_or_default(), a.world_ready.unwrap_or(true)) {
+                    (designcraft_doc::Composer::Paragraph, true) => "HL Composer Optyca",
+                    (designcraft_doc::Composer::Paragraph, false) => "HL Composer",
+                    (designcraft_doc::Composer::SingleLine, true) => "HL Single Optyca",
+                    (designcraft_doc::Composer::SingleLine, false) => "HL Single",
                 },
             );
         }

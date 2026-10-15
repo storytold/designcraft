@@ -955,6 +955,37 @@ fn text_stroke_alignment_imports_as_stroke_behind_fill_and_round_trips() {
     assert_eq!(flags(&back), want);
 }
 
+/// InDesign's Paragraph and Single-line Composers ("HL Composer", "HL Single") aren't World-Ready;
+/// the World-Ready ones end in "Optyca". Both come in and go back out.
+#[test]
+fn world_ready_composers_import_and_round_trip() {
+    let doc_with = |composer: &str| {
+        let story = format!(
+            r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" Composer="{composer}">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>text</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#
+        );
+        import_idml(&fixture_with_story(&story)).unwrap()
+    };
+    let attrs = |doc: &Document| {
+        let st = doc.stories.values().find(|s| s.text.contains("text")).unwrap();
+        (st.paras[0].para.composer, st.paras[0].para.world_ready)
+    };
+    use designcraft_doc::Composer;
+    for (name, want) in [
+        ("HL Composer", (Composer::Paragraph, false)),
+        ("HL Single", (Composer::SingleLine, false)),
+        ("HL Composer Optyca", (Composer::Paragraph, true)),
+        ("HL Single Optyca", (Composer::SingleLine, true)),
+    ] {
+        let doc = doc_with(name);
+        assert_eq!(attrs(&doc), (Some(want.0), Some(want.1)), "{name}");
+        let back = import_idml(&export_idml(&doc)).unwrap();
+        assert_eq!(attrs(&back), (Some(want.0), Some(want.1)), "{name} round trip");
+    }
+}
+
 #[test]
 fn warichu_imports_from_idml_and_round_trips() {
     let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
@@ -1639,7 +1670,7 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "DropCapCharacters": "0" => 0, "1" => 1, |r| r.0.drop_cap_chars;
         "DropcapDetail": "1" => (true, false), "2" => (false, true), |r| (r.0.drop_cap_align_left, r.0.drop_cap_scale_descenders);
         "GridAlignment": "None" => GridAlign::None, "AlignToBaseline" => GridAlign::AllLines, |r| r.0.grid_align;
-        "Composer": "HL Composer" => Composer::Paragraph, "HL Single" => Composer::SingleLine, |r| r.0.composer;
+        "Composer": "HL Composer" => (Composer::Paragraph, false), "HL Single Optyca" => (Composer::SingleLine, true), |r| (r.0.composer, r.0.world_ready);
         "Hyphenation": "true" => true, "false" => false, |r| r.0.hyphenate;
         "HyphenateWordsLongerThan": "5" => 5, "7" => 7, |r| r.0.hyph_min_word;
         "HyphenateAfterFirst": "2" => 2, "3" => 3, |r| r.0.hyph_after_first;

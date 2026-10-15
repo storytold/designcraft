@@ -3220,6 +3220,10 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     if ui.selectable_label(single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Single-line Composer"))).clicked() {
                         d.fields.insert("p.composer".into(), json!("singleLine"));
                     }
+                    let mut world_ready = cur(d, "p.worldReady", &pv["worldReady"]).as_bool().unwrap_or(true);
+                    if ui.checkbox(&mut world_ready, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "World-Ready"))).changed() {
+                        d.fields.insert("p.worldReady".into(), json!(world_ready));
+                    }
                     ui.end_row();
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Insert Kashidas:"));
                     let mut k = cur(d, "p.kashidas", &pv["kashidas"]).as_bool().unwrap_or(true);

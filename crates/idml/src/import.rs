@@ -1017,7 +1017,11 @@ impl<'r> Importer<'r> {
             let name = names::style_name_in(PARA_BUILTINS, e.get("Name").unwrap_or(""));
             let based_on = if name == designcraft_doc::NO_PARA_STYLE { None } else { self.based_on(e, true) };
             let next_style = e.get("NextStyle").map(|n| self.para_style_ref(n)).filter(|n| *n != name);
-            let para = self.para_attrs(e);
+            let mut para = self.para_attrs(e);
+            if name == designcraft_doc::NO_PARA_STYLE {
+                // InDesign's default composer is the Paragraph Composer, which isn't World-Ready.
+                para.world_ready.get_or_insert(false);
+            }
             let mut chars = self.char_attrs(e);
             // InDesign writes its CJK leading model (Aki Below) on [No paragraph style] of every
             // document; only the Japanese composers use it, so a document set with the Paragraph or
@@ -1553,9 +1557,13 @@ impl<'r> Importer<'r> {
                 GridAlign::AllLines
             });
         }
-        a.composer = e
-            .prop("Composer")
+        let composer = e.prop("Composer");
+        a.composer = composer
+            .as_deref()
             .map(|c| if c.contains("Single") { designcraft_doc::Composer::SingleLine } else { designcraft_doc::Composer::Paragraph });
+        // "HL Composer" and "HL Single" are the Paragraph and Single-line Composers; the
+        // World-Ready ones end in "Optyca". The Japanese composers ("… J") are left as they were.
+        a.world_ready = composer.as_deref().map(|c| c.contains("Optyca") || c.ends_with(" J") || c.contains("Japanese"));
         a.hyphenate = e.boolean("Hyphenation");
         a.hyph_min_word = u("HyphenateWordsLongerThan");
         a.hyph_after_first = u("HyphenateAfterFirst");

@@ -778,6 +778,7 @@ fn shape_cached(
     caps: bool,
     vertical: bool,
     (before, after): (&str, &str),
+    unjoined: bool,
 ) -> Vec<ShapedGlyph> {
     use designcraft_fonts::ShapeContext;
     let map = |c: char| if caps { c.to_uppercase().next().unwrap_or(c) } else { c };
@@ -788,8 +789,8 @@ fn shape_cached(
             designcraft_fonts::shape_with_context(face, s, feats, map, context)
         }
     };
-    if src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
-        return shape(src, ShapeContext { before, after, language: lang });
+    if unjoined || src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
+        return shape(src, ShapeContext { before, after, language: lang, unjoined });
     }
     let words = word_map((face.id(), vertical, caps, format!("{feats:?}"), lang));
     let pieces: Vec<&str> = src.split_inclusive(' ').collect();
@@ -840,6 +841,9 @@ pub struct TypeEnv {
     pub adv: designcraft_doc::AdvancedType,
     /// Characters the font lacks are drawn from fallback fonts (else as its .notdef glyph).
     pub glyph_fallback: bool,
+    /// The paragraph isn't World-Ready: Arabic letters stand unjoined
+    /// ([`designcraft_fonts::ShapeContext::unjoined`]).
+    pub unjoined: bool,
 }
 
 /// Synthesised super/subscript: size and shift from Advanced Type (percent of the font size).
@@ -936,7 +940,7 @@ fn shape_segment(
             None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
             Some(_) => ("", ""),
         };
-        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around);
+        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around, auto_leading.unjoined);
         upright.extend(std::iter::repeat_n(up, g.len()));
         shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: g.cluster + r.start, ..g }));
     }

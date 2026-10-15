@@ -149,6 +149,10 @@ pub struct ShapeContext<'a> {
     pub before: &'a str,
     pub after: &'a str,
     pub language: Option<&'a str>,
+    /// Letters of joining scripts (Arabic and the like) don't join: each takes its isolated form
+    /// and mandatory ligatures stay apart; marks are still placed. How InDesign's composers that
+    /// aren't World-Ready set them.
+    pub unjoined: bool,
 }
 
 /// Shape `text` with `face`. `chars` lets callers substitute characters (e.g. uppercase for All
@@ -173,6 +177,7 @@ pub fn shape_with_context(
             before: if r.start == 0 { context.before } else { &text[..r.start] },
             after: if r.end == text.len() { context.after } else { &text[r.end..] },
             language: context.language,
+            unjoined: context.unjoined,
         };
         let mut g = shape_dir(face, &text[r.clone()], features, &map, rtl, script, local);
         for x in &mut g {
@@ -195,6 +200,20 @@ pub fn shape_with_context(
     out
 }
 
+/// `features` as a run in `script` takes them: [`ShapeContext::unjoined`] turns the joining forms,
+/// mandatory ligatures and contextual alternates of a joining script off.
+fn script_features(features: &[Feature], script: unicode_script::Script, unjoined: bool) -> std::borrow::Cow<'_, [Feature]> {
+    use unicode_script::Script;
+    let joining = matches!(script, Script::Arabic | Script::Syriac | Script::Nko | Script::Mandaic | Script::Mongolian);
+    if unjoined && joining {
+        let mut v = features.to_vec();
+        v.extend(["-init", "-medi", "-fina", "-med2", "-fin2", "-fin3", "-rlig", "-calt"].into_iter().filter_map(feature));
+        v.into()
+    } else {
+        features.into()
+    }
+}
+
 fn shape_dir(
     face: &FontFace,
     text: &str,
@@ -205,6 +224,8 @@ fn shape_dir(
     context: ShapeContext<'_>,
 ) -> Vec<ShapedGlyph> {
     let mut out = Vec::with_capacity(text.len());
+    let features = script_features(features, script, context.unjoined);
+    let features = &features[..];
     let shaped = face.hb().map(|hb| {
         let shaper = face.shaper.shaper(&hb).instance(face.instance.as_ref()).build();
         let mut buf = UnicodeBuffer::new();
