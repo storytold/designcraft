@@ -255,6 +255,9 @@ struct Importer<'r> {
     object_els: HashMap<String, El>,
     layers: Vec<Layer>,
     layer_ids: HashMap<String, LayerId>,
+    /// The layer of the group (or frame) whose children are being read: IDML gives children no
+    /// ItemLayer of their own, they sit on their parent's layer.
+    parent_layer: Option<LayerId>,
     stories: BTreeMap<StoryId, Story>,
     story_ids: HashMap<String, StoryId>,
     parents: Vec<Spread>,
@@ -408,6 +411,7 @@ impl<'r> Importer<'r> {
             object_els: HashMap::new(),
             layers: Vec::new(),
             layer_ids: HashMap::new(),
+            parent_layer: None,
             stories: BTreeMap::new(),
             story_ids: HashMap::new(),
             parents: Vec::new(),
@@ -1140,8 +1144,11 @@ impl<'r> Importer<'r> {
     }
 
     fn based_on(&self, e: &El, para: bool) -> Option<String> {
-        let b = e.prop("BasedOn")?;
-        let b = b.trim();
+        let raw = e.prop("BasedOn")?;
+        // Style names may end in a space ("arabic purple "): look the reference up as written
+        // before trimming it.
+        let known = if para { self.para_names.contains_key(&raw) } else { self.char_names.contains_key(&raw) };
+        let b = if known { raw.as_str() } else { raw.trim() };
         if para {
             if let Some(n) = self.para_names.get(b) {
                 return Some(n.clone());
@@ -2315,7 +2322,7 @@ impl<'r> Importer<'r> {
         if let Some(s) = e.get("Self") {
             self.item_ids.insert(s.to_string(), id);
         }
-        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
+        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().or(self.parent_layer).unwrap_or_else(|| self.layers[0].id);
         let path = e.prop_el("PathGeometry").map(path_of).unwrap_or_default();
         let mut it = Item::new(id, layer, shape, path);
         it.xf = parent * parse_affine(e.get("ItemTransform"));
@@ -2495,11 +2502,13 @@ impl<'r> Importer<'r> {
             }
             "Group" => {
                 let mut kids = Vec::new();
+                let outer = self.parent_layer.replace(it.layer);
                 for c in e.elements() {
                     if let Some(k) = self.item(c, Affine::IDENTITY) {
                         kids.push(Arc::new(k));
                     }
                 }
+                self.parent_layer = outer;
                 it.content = Content::Group { items: kids };
                 it.fill = Fill::none();
                 it.stroke = Stroke::none();
@@ -2519,12 +2528,14 @@ impl<'r> Importer<'r> {
                     }
                 } else {
                     // Page items pasted into this frame (Paste Into).
+                    let outer = self.parent_layer.replace(it.layer);
                     let kids: Vec<Arc<Item>> = e
                         .elements()
                         .filter(|c| matches!(c.local(), "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame"))
                         .filter_map(|c| self.item(c, Affine::IDENTITY))
                         .map(Arc::new)
                         .collect();
+                    self.parent_layer = outer;
                     if !kids.is_empty() {
                         it.content = Content::Group { items: kids };
                     }
