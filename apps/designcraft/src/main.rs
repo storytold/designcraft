@@ -343,7 +343,7 @@ fn main() -> eframe::Result {
             }
             // The share dialog reaches the same service through its own
             // client, so a sign-in through either half serves both.
-            app.share.connect(collabcraft_share::CollabCraft::from_fn(cloud::client));
+            app.share.connect(collabcraft_share::CollabCraft::from_fn(cloud::client).for_app("designcraft"));
             app.integrated_titlebar = cfg!(target_os = "macos");
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
