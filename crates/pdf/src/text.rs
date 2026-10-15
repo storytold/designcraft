@@ -521,7 +521,8 @@ impl Exporter<'_> {
         } else {
             stroke
         };
-        // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
+        // A missing glyph is drawn as the font's .notdef outline: PDF/A and PDF/UA forbid showing
+        // .notdef as text.
         if g0.gid == 0 {
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
         } else if let Some(font) = self.font(&face) {
@@ -650,6 +651,11 @@ fn glyph_outlines(glyphs: &[PlacedGlyph], size: f64, tan: f64) -> BezPath {
     let Some(g0) = glyphs.first() else { return bp };
     let k = size / g0.face.upem;
     for g in glyphs {
+        // A .notdef the font leaves empty prints as nothing, as InDesign exports it (the screen
+        // shows a box, and Preflight lists the character).
+        if g.gid == 0 && db.missing_box(&g.face).is_some() {
+            continue;
+        }
         let dy = g.y - g0.y;
         let a = Affine::translate(((g.x - g0.x + tan * dy) / (g0.sx / g0.sy), dy)) * Affine::scale(k);
         let mut o = (*db.outline(&g.face, g.gid)).clone();

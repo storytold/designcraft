@@ -560,7 +560,7 @@ fn pdfa_leaves_out_form_fields_added_after_validation() {
 }
 
 #[test]
-fn missing_glyphs_print_as_boxes() {
+fn missing_glyphs_print_as_the_fonts_notdef() {
     // Source Serif 4 lacks 語: its .notdef box is drawn as a path, not as a .notdef glyph
     // (which PDF/A and PDF/UA forbid).
     let boxes = |paths: &[kurbo::Rect]| paths.iter().filter(|r| r.width() > 1.0 && r.width() < 12.0 && r.height() > 3.0 && r.height() < 12.0).count();
@@ -571,7 +571,7 @@ fn missing_glyphs_print_as_boxes() {
     assert_eq!(boxes(&paths), 1, "{paths:?}");
     let a = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, ..Default::default() });
     assert!(a.is_ok(), "PDF/A takes the box: {:?}", a.err());
-    // A font whose .notdef is empty: the box DesignCraft draws for it.
+    // A font whose .notdef is empty prints nothing there, as InDesign exports it.
     const FAMILY: &str = "DC Test PDF Empty Notdef";
     let font = designcraft_fonts::testing::font_mapping(FAMILY, &[('a', 'a'), ('b', 'b')]).unwrap();
     designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::with_empty_notdef(font).unwrap());
@@ -580,7 +580,7 @@ fn missing_glyphs_print_as_boxes() {
     d.story_mut(sid).unwrap().format_chars(0.."a語b".len(), |f| f.over.font_family = Some(FAMILY.into()));
     let (glyphs, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
     assert_eq!(glyphs.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), ["a", "b"], "{glyphs:?}");
-    assert_eq!(boxes(&paths), 1, "{paths:?}");
+    assert_eq!(boxes(&paths), 0, "{paths:?}");
 }
 
 #[test]
