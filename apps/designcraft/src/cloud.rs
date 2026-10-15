@@ -260,6 +260,16 @@ fn token_path() -> Option<PathBuf> {
 fn load_token() -> Option<String> {
     let raw = std::fs::read(token_path()?).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    let configured = designcraft_ui_egui::cloud::service_url()?;
+    token_for_service(&value, &configured)
+}
+
+fn token_for_service(value: &serde_json::Value, configured: &str) -> Option<String> {
+    let stored = value.get("service")?.as_str()?;
+    if stored.trim().trim_end_matches('/') != configured.trim().trim_end_matches('/') {
+        log::warn!("the saved cloud session belongs to a different service; ignoring it");
+        return None;
+    }
     value.get("token")?.as_str().map(str::to_owned).filter(|t| !t.is_empty())
 }
 
@@ -288,11 +298,9 @@ fn remember_account(subject: &str, display: &str) {
 fn write_session(value: serde_json::Value) {
     let Some(path) = token_path() else { return };
     let Ok(text) = serde_json::to_vec(&value) else { return };
-    if let Err(e) = std::fs::write(&path, text) {
+    if let Err(e) = write_private(&path, &text) {
         log::warn!("could not save the cloud session: {e}");
-        return;
     }
-    restrict(&path);
 }
 
 fn forget_token() {
@@ -302,15 +310,23 @@ fn forget_token() {
 }
 
 #[cfg(unix)]
-fn restrict(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    // `mode` applies when the file is first created. Tighten an older file
+    // before writing in case a previous version created it under the umask.
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(bytes)
 }
 
 /// On Windows the per-user AppData directory is already owner-scoped, and
 /// setting an ACL would need a Win32 call this application makes nowhere else.
 #[cfg(not(unix))]
-fn restrict(_path: &Path) {}
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
 
 fn open_browser(url: &str) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
@@ -342,4 +358,22 @@ fn open_browser(url: &str) -> std::io::Result<()> {
         c
     };
     command.spawn().map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::token_for_service;
+    use serde_json::json;
+
+    #[test]
+    fn saved_token_is_bound_to_its_service() {
+        let session = json!({"service": "https://one.example", "token": "secret"});
+        assert_eq!(token_for_service(&session, "https://one.example/").as_deref(), Some("secret"));
+        assert_eq!(token_for_service(&session, "https://two.example"), None);
+    }
+
+    #[test]
+    fn legacy_token_without_a_service_is_not_loaded() {
+        assert_eq!(token_for_service(&json!({"token": "secret"}), "https://one.example"), None);
+    }
 }
