@@ -3455,6 +3455,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("After First:", ["After First:", "Après les premières :", "After First:", "After First:", "连字符前最少字符数："]),
     ("Before Last:", ["Before Last:", "Avant les dernières :", "Before Last:", "Before Last:", "连字符后最少字符数："]),
     ("Hyphen Limit:", ["Hyphen Limit:", "Limite de césure :", "Hyphen Limit:", "Hyphen Limit:", "连字符限制："]),
+    ("World-Ready", ["World-Ready", "World-Ready", "World-Ready", "World-Ready", "全球通用"]),
     ("Word Spacing:", ["Word Spacing:", "Espacement des mots :", "Word Spacing:", "Word Spacing:", "单词间距："]),
     ("Letter Spacing:", ["Letter Spacing:", "Espacement des lettres :", "Letter Spacing:", "Letter Spacing:", "字母间距："]),
     ("Glyph Scaling:", ["Glyph Scaling:", "Échelle des glyphes :", "Glyph Scaling:", "Glyph Scaling:", "字形缩放比例："]),
