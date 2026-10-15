@@ -4454,3 +4454,34 @@ fn an_empty_last_paragraph_isnt_overset() {
     let (d, sid, _) = doc_with("One\nTwo\n\n", Rect::new(0.0, 0.0, 200.0, 35.0), ParaAttrs::default());
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset(), "an empty paragraph before the last one is text");
 }
+
+/// An empty paragraph is as tall as its paragraph mark's leading (the return's formatting), as in
+/// InDesign; it used to take the paragraph style's leading.
+#[test]
+fn empty_paragraph_takes_its_marks_leading() {
+    let text = "One\n\nTwo";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.leading = Some(designcraft_doc::Leading::Points(30.0)));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let b: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+    assert_eq!(b.len(), 3, "{b:?}");
+    assert!((b[1] - b[0] - 30.0).abs() < 1e-6 && (b[2] - b[1] - 30.0).abs() < 1e-6, "{b:?}");
+}
+
+/// With a leading model (Aki Below), an empty paragraph keeps the leading like any other line; it
+/// used to drop by the em box's depth and the line after it to rise by as much.
+#[test]
+fn an_empty_paragraph_keeps_the_leading_under_a_leading_model() {
+    let text = "Aaa\n\nBbb\nCcc";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.leading = Some(designcraft_doc::Leading::Points(16.0));
+        f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::AkiBelow);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let base: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+    assert_eq!(base.len(), 4);
+    for w in base.windows(2) {
+        assert!((w[1] - w[0] - 16.0).abs() < 1e-6, "{base:?}");
+    }
+}

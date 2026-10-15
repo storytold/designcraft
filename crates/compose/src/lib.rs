@@ -603,6 +603,15 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         }
         let pf = &story.paras[pi];
         let (pp, base_chars) = doc.styles.resolve_para(pf);
+        // An empty paragraph takes its font, size and leading from its paragraph mark (the hidden
+        // return that ends it, which the pilcrow selects to change a blank line's height; at the
+        // story's end, the text before it), as in InDesign, not from the paragraph style.
+        let base_chars = if prange.is_empty() {
+            let mark = if prange.start < story.text.len() { prange.start + 1 } else { prange.start };
+            doc.styles.resolve_char(&base_chars, story.char_format_at(mark))
+        } else {
+            base_chars
+        };
         // A break character that ends the previous paragraph sends this one on, like a start option.
         let after_break = pi
             .checked_sub(1)
@@ -708,19 +717,10 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             &[],
             (drop_end, &pp.drop_cap_style),
         );
-        // An empty paragraph has no glyphs of its own, so its only addressable character is its
-        // hidden paragraph mark (the `\n` just past `prange.end`). A leading/size override applied
-        // there (e.g. selecting the pilcrow to adjust line height) still needs to set the line's
-        // height, so resolve the mark's own run instead of the paragraph's plain default when present.
-        let mark_chars = prange
-            .is_empty()
-            .then(|| story.runs().find(|(r, _)| r.contains(&prange.end)))
-            .flatten()
-            .map(|(_, fmt)| doc.styles.resolve_char(&base_chars, fmt));
-        let leading_chars = mark_chars.as_ref().unwrap_or(&base_chars);
         // Drop cap: the size and indent come from the text beside it (`base_*` when there's none).
-        let base_leading = match leading_chars.leading {
-            designcraft_doc::Leading::Auto => leading_chars.size * pp.auto_leading,
+        // An empty paragraph's `base_chars` are its paragraph mark's (see above).
+        let base_leading = match base_chars.leading {
+            designcraft_doc::Leading::Auto => base_chars.size * pp.auto_leading,
             designcraft_doc::Leading::Points(v) => v,
         };
         let base_cap = {
@@ -1021,7 +1021,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let (s, e) = (g0 + b.start, g0 + b.end);
                 let line_glyphs = &glyphs[s..e.max(s)];
                 let (asc, tops, desc, lead) = line_metrics(line_glyphs, &glyphs, s, base_leading, base_chars.size, db, &base_chars);
-                let reference = cjk_line_reference(line_glyphs);
+                // An empty line (an empty paragraph) takes the paragraph's font, as for its metrics.
+                let reference = if line_glyphs.is_empty() {
+                    let face = db.face(&base_chars.font_family, &base_chars.font_style);
+                    let k = base_chars.size / face.upem;
+                    leading_reference(base_chars.leading_model, base_chars.size, face.ascent * k, face.descent * k)
+                } else {
+                    cjk_line_reference(line_glyphs)
+                };
                 // Baseline grid: the next grid line at or below.
                 let grid = f.grid.filter(|&(_, inc)| {
                     inc > 0.0 && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
@@ -2227,10 +2234,17 @@ fn cjk_alignment_shift(g: &Glyph, reference: &Glyph) -> f64 {
     }
 }
 fn cjk_line_reference(line: &[Glyph]) -> f64 {
-    use designcraft_doc::cjk::LeadingModel as L;
     let Some(g) = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)) else { return 0.0 };
-    let (top, bottom) = cjk_em_box(g);
-    match g.leading_model {
+    leading_reference(g.leading_model, g.face.units_per_em() * g.sy.abs(), g.ascent, g.descent)
+}
+
+/// Where `model` measures leading from, relative to the baseline, for an em box `height` tall
+/// split as the font's `ascent` and `descent` ([`cjk_em_box`]).
+fn leading_reference(model: designcraft_doc::cjk::LeadingModel, height: f64, ascent: f64, descent: f64) -> f64 {
+    use designcraft_doc::cjk::LeadingModel as L;
+    let top = -height * ascent / (ascent + descent).max(1e-9);
+    let bottom = top + height;
+    match model {
         L::Roman => 0.0,
         L::AkiBelow => bottom,
         L::AkiAbove => top,
