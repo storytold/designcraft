@@ -692,7 +692,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let sub_objects = sub.objects.clone();
         let drop_end = drop_cap_end(&story.text, prange.clone(), &pp, sub.vertical);
         let mut table = StyleTable { styles: &mut styles_tab, missing: &mut missing_fonts };
-        let env = shape::TypeEnv { auto_leading: pp.auto_leading, adv: doc.settings.advanced_type, glyph_fallback: doc.settings.glyph_fallback };
+        let env = shape::TypeEnv {
+            auto_leading: pp.auto_leading,
+            adv: doc.settings.advanced_type,
+            glyph_fallback: doc.settings.glyph_fallback,
+            context: None,
+        };
         let mut sp = shape::shape_para(
             db,
             &doc.styles,
@@ -2725,14 +2730,14 @@ fn layout_line(
 }
 
 /// Arabic letters that join the following letter (dual-joining).
-fn joins_next(c: char) -> bool {
+pub(crate) fn joins_next(c: char) -> bool {
     matches!(c as u32,
         0x0626 | 0x0628 | 0x062A..=0x062E | 0x0633..=0x063F | 0x0641..=0x0647 | 0x0649 | 0x064A | 0x066E | 0x066F
         | 0x0678..=0x0687 | 0x069A..=0x06BF | 0x06C1 | 0x06CC | 0x06CE | 0x06D0 | 0x06D1 | 0x06FA..=0x06FC)
 }
 
 /// Arabic letters that join the preceding one (dual- or right-joining).
-fn joins_prev(c: char) -> bool {
+pub(crate) fn joins_prev(c: char) -> bool {
     joins_next(c)
         || matches!(c as u32,
             0x0622..=0x0625 | 0x0627 | 0x0629 | 0x062F..=0x0632 | 0x0648 | 0x0671..=0x0673 | 0x0675..=0x0677 | 0x0688..=0x0699
@@ -3095,7 +3100,7 @@ fn prepend_label(
     label: &str,
     at: usize,
     base: &designcraft_doc::CharProps,
-    env: shape::TypeEnv,
+    env: shape::TypeEnv<'_>,
     table: &mut StyleTable<'_>,
 ) -> usize {
     // Shape the label as a tiny standalone story so it uses the paragraph's base character style.

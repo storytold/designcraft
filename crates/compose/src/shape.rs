@@ -201,7 +201,7 @@ impl StyleTable<'_> {
 
     /// `env` for text in run style `style`: a missing font's substitute draws the characters it
     /// lacks from fallback fonts whatever the document's setting.
-    fn env_for(&self, env: TypeEnv, style: u32) -> TypeEnv {
+    fn env_for<'e>(&self, env: TypeEnv<'e>, style: u32) -> TypeEnv<'e> {
         let missing = self.styles.get(style as usize).is_some_and(|s| s.missing_font);
         TypeEnv { glyph_fallback: env.glyph_fallback || missing, ..env }
     }
@@ -306,6 +306,9 @@ pub(crate) fn shape_para(
         }
     }
     let resolved = marks_join_their_base(&story.text, resolved);
+    // Letters next to a custom glyph join it as they would the letters it draws.
+    let joining = joining_context(db, &story.text, resolved.iter().map(|r| (r.0..r.1, &r.2)));
+    let auto_leading = TypeEnv { context: joining.as_deref(), ..auto_leading };
     for (a, b, props, fmt, resolved_base) in resolved {
         let style = table.intern(db, &props);
         // A missing font's substitute stands in for the whole font: fallback fonts help it.
@@ -644,6 +647,7 @@ fn shape_run_raw(
                 | designcraft_doc::ANCHOR_MARK
                 | designcraft_doc::INDEX_MARK
                 | designcraft_doc::OBJECT_MARK
+                | story::CUSTOM_GLYPH
         ) || designcraft_doc::vars::var_index(c).is_some();
         if special {
             flush(seg_start, i, &seg_face, out);
@@ -674,6 +678,16 @@ fn shape_run_raw(
                     } else {
                         shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, style, out, sub.vertical);
                     }
+                }
+                story::CUSTOM_GLYPH => {
+                    // The glyph the font names. For bidi it is the character it draws first;
+                    // without one it is neutral (U+FFFC) and goes with the text around it.
+                    let mut g = control_glyph(&primary, p, auto_leading, style, i, c);
+                    g.display_char = custom_glyph_role(&primary, &p.custom_glyph).0.unwrap_or('\u{FFFC}');
+                    let gid = primary.glyph_by_name(&p.custom_glyph);
+                    g.gid = gid;
+                    g.adv = primary.advance(gid) * g.sx;
+                    out.push(g);
                 }
                 designcraft_doc::OBJECT_MARK => {
                     let mut g = control_glyph(&primary, p, auto_leading, style, i, c);
@@ -835,11 +849,14 @@ fn metrics(face: &FontFace, p: &CharProps, auto_leading: TypeEnv) -> (f64, f64, 
 
 /// Auto leading and the document's Advanced Type settings, for shaping.
 #[derive(Clone, Copy, Debug)]
-pub struct TypeEnv {
+pub struct TypeEnv<'a> {
     pub auto_leading: f64,
     pub adv: designcraft_doc::AdvancedType,
     /// Characters the font lacks are drawn from fallback fonts (else as its .notdef glyph).
     pub glyph_fallback: bool,
+    /// The story text as the shaper sees it around a run, when it differs from the text: custom
+    /// glyphs replaced by characters that join as they do ([`joining_context`]).
+    pub context: Option<&'a str>,
 }
 
 /// Synthesised super/subscript: size and shift from Advanced Type (percent of the font size).
@@ -931,9 +948,10 @@ fn shape_segment(
     // Tate-chu-yoko is set across the line, so it stays horizontal.
     let mut shaped: Vec<ShapedGlyph> = Vec::new();
     let mut upright: Vec<bool> = Vec::new();
+    let context = auto_leading.context.filter(|c| c.len() == text.len()).unwrap_or(text);
     for (r, up) in upright_runs(src, vertical && !p.tate_chu_yoko) {
         let around = match replacement {
-            None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
+            None => (context.get(..range.start + r.start).unwrap_or(""), context.get(range.start + r.end..).unwrap_or("")),
             Some(_) => ("", ""),
         };
         let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around);
@@ -1048,4 +1066,64 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.len = 0;
     h.ch = '-';
     h
+}
+
+/// What custom glyph `name` of `face` stands for: the character it draws first (its first
+/// ligature component) and whether it joins the letter before it and the one after it. A
+/// positional suffix (`.init`, `.medi`, `.fina`, `.isol`) on the first or last component says so,
+/// else that component's character does.
+pub(crate) fn custom_glyph_role(face: &FontFace, name: &str) -> (Option<char>, bool, bool) {
+    let parts: Vec<(&str, Option<&str>)> = name
+        .split('_')
+        .map(|part| {
+            let mut it = part.split('.');
+            let base = it.next().unwrap_or("");
+            (base, it.find(|s| matches!(*s, "init" | "medi" | "fina" | "isol")))
+        })
+        .collect();
+    let (Some(first), Some(last)) = (parts.first(), parts.last()) else { return (None, false, false) };
+    let (c0, c1) = (face.char_for_glyph_name(first.0), face.char_for_glyph_name(last.0));
+    let before = match first.1 {
+        Some(form) => matches!(form, "medi" | "fina"),
+        None => c0.is_some_and(|c| c == '\u{0640}' || crate::joins_prev(c)),
+    };
+    let after = match last.1 {
+        Some(form) => matches!(form, "init" | "medi"),
+        None => c1.is_some_and(|c| c == '\u{0640}' || crate::joins_next(c)),
+    };
+    (c0, before, after)
+}
+
+/// `text` as the shaper's joining context sees it when `runs` hold custom glyphs: each is replaced
+/// by a character of the same length that joins as the glyph does ([`custom_glyph_role`]): ZWJ,
+/// a right-joining letter, a left-joining one or ZWNJ. `None` without custom glyphs.
+fn joining_context<'p>(db: &ScopedFonts<'_>, text: &str, runs: impl Iterator<Item = (std::ops::Range<usize>, &'p CharProps)>) -> Option<String> {
+    let mut stand_ins: Vec<(usize, char)> = Vec::new();
+    for (r, p) in runs {
+        let Some(s) = text.get(r.clone()) else { continue };
+        for (i, c) in s.char_indices() {
+            if c == story::CUSTOM_GLYPH {
+                let face = db.face(&p.font_family, &p.font_style);
+                let stand_in = match custom_glyph_role(&face, &p.custom_glyph) {
+                    (_, true, true) => '\u{200D}',
+                    (_, true, false) => '\u{08AA}',
+                    (_, false, true) => '\u{A872}',
+                    (_, false, false) => '\u{200C}',
+                };
+                stand_ins.push((r.start + i, stand_in));
+            }
+        }
+    }
+    if stand_ins.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut k = 0;
+    for (i, c) in stand_ins {
+        out.push_str(text.get(k..i)?);
+        out.push(c);
+        k = i + story::CUSTOM_GLYPH.len_utf8();
+    }
+    out.push_str(text.get(k..)?);
+    Some(out)
 }

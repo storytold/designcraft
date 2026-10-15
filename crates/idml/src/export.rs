@@ -1111,6 +1111,9 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.character_alignment {
             el.set("CharacterAlignment", crate::cjk::alignment_out(v));
         }
+        if let Some(g) = &a.custom_glyph {
+            props.push(p("CustomGlyph", "string", format!("$ID/{g}")));
+        }
         if let Some(f) = &a.font_family {
             props.push(p("AppliedFont", "string", f.clone()));
             let style = a.font_style.clone().unwrap_or_else(|| "Regular".into());
@@ -2112,6 +2115,7 @@ impl<'a> Ex<'a> {
                         st::SECTION_MARKER => Some("19"),
                         st::INDENT_HERE => Some("7"),
                         st::RIGHT_INDENT_TAB => Some("8"),
+                        st::CUSTOM_GLYPH => Some("1a"),
                         _ => None,
                     };
                     let brk = match ch {
