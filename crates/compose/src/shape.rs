@@ -125,13 +125,24 @@ struct Piece {
     composite_note: bool,
 }
 
-/// The style of each byte of a shaped run: `(first byte, style)` in story order.
-struct StyleRuns<'a>(&'a [(usize, u32)]);
+/// How a run shaped as one spans its pieces: the style of each byte (`(first byte, style)` in
+/// story order).
+struct StyleRuns<'a> {
+    styles: &'a [(usize, u32)],
+    /// Every character keeps its own cluster (a mark isn't merged into its letter's), so each
+    /// glyph can take its own character's style ([`designcraft_fonts::ShapeContext::cluster_chars`]).
+    cluster_chars: bool,
+}
 
-impl StyleRuns<'_> {
+impl<'a> StyleRuns<'a> {
+    /// A run in `styles`, its characters clustered as the shaper clusters them.
+    fn of(styles: &'a [(usize, u32)]) -> Self {
+        StyleRuns { styles, cluster_chars: false }
+    }
+
     fn at(&self, byte: usize) -> u32 {
-        let k = self.0.partition_point(|&(start, _)| start <= byte);
-        self.0.get(k.saturating_sub(1)).map_or(0, |&(_, s)| s)
+        let k = self.styles.partition_point(|&(start, _)| start <= byte);
+        self.styles.get(k.saturating_sub(1)).map_or(0, |&(_, s)| s)
     }
 }
 
@@ -566,7 +577,7 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
                         &props,
                         &face,
                         env,
-                        &StyleRuns(&[(at, style)]),
+                        &StyleRuns::of(&[(at, style)]),
                         &mut glyphs,
                         sub.upright(),
                     );
@@ -595,15 +606,27 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
         let group = &pieces[i..j];
         let range = group[0].range.start..group[j - i - 1].range.end;
         let runs: Vec<(usize, u32)> = group.iter().map(|p| (p.range.start, p.style)).collect();
+        let mut spans = StyleRuns::of(&runs);
         let start = glyphs.len();
-        shape_run(db, &story.text, range, &first.props, first.env, &StyleRuns(&runs), sub, &mut glyphs);
-        // A cluster (a ligature, a letter with its marks) that spans two styles would paint one
-        // of them in the other's colour: shape those pieces apart instead.
-        let spans_cut = |g: &Glyph| runs[1..].iter().any(|&(cut, _)| g.byte < cut && cut < g.byte + g.len);
-        if group.len() > 1 && glyphs[start..].iter().any(spans_cut) {
+        shape_run(db, &story.text, range.clone(), &first.props, first.env, &spans, sub, &mut glyphs);
+        // A cluster that spans two styles (a letter with a mark in a colour of its own, a
+        // ligature) would paint one of them in the other's colour.
+        let cuts = runs.get(1..).unwrap_or_default();
+        let spans_cut = |g: &Glyph, cut: usize| g.byte < cut && cut < g.byte + g.len;
+        if glyphs[start..].iter().any(|g| cuts.iter().any(|&(cut, _)| spans_cut(g, cut))) {
+            // Every character in a cluster of its own: a mark keeps its colour and still sits on
+            // its letter, as in InDesign.
             glyphs.truncate(start);
-            for p in group {
-                shape_run(db, &story.text, p.range.clone(), &p.props, p.env, &StyleRuns(&[(p.range.start, p.style)]), sub, &mut glyphs);
+            spans.cluster_chars = true;
+            shape_run(db, &story.text, range, &first.props, first.env, &spans, sub, &mut glyphs);
+            // What still spans a cut is a ligature. Between Arabic characters (lam-alif) it
+            // stays, in its first character's style, as in InDesign; elsewhere a change of style
+            // ends it, so each letter keeps its colour: those pieces are shaped apart.
+            if glyphs[start..].iter().any(|g| cuts.iter().any(|&(cut, _)| spans_cut(g, cut) && !between_arabic_characters(&story.text, cut))) {
+                glyphs.truncate(start);
+                for p in group {
+                    shape_run(db, &story.text, p.range.clone(), &p.props, p.env, &StyleRuns::of(&[(p.range.start, p.style)]), sub, &mut glyphs);
+                }
             }
         }
         i = j;
@@ -728,6 +751,15 @@ fn features_for(p: &CharProps) -> Vec<Feature> {
         }
     }
     v
+}
+
+/// Whether the style change at story byte `cut` falls between two Arabic characters (letters or
+/// marks), which a ligature such as lam-alif may join across it.
+fn between_arabic_characters(text: &str, cut: usize) -> bool {
+    let arabic = |c: Option<char>| {
+        c.is_some_and(|c| matches!(c, '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' | '\u{08A0}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFC}'))
+    };
+    arabic(text.get(..cut).and_then(|s| s.chars().next_back())) && arabic(text.get(cut..).and_then(|s| s.chars().next()))
 }
 
 fn is_mark(c: char) -> bool {
@@ -1021,7 +1053,9 @@ fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
 
 /// Shape `src` word by word through a cache (like a browser's word cache): the text is split
 /// after each U+0020 so repeated words are shaped once. Shaping does not cross word spaces in the
-/// scripts we lay out, and clusters stay byte offsets into `src`.
+/// scripts we lay out, and clusters stay byte offsets into `src`. Text with every character in a
+/// cluster of its own is shaped whole.
+#[allow(clippy::too_many_arguments)]
 fn shape_cached(
     face: &FontFace,
     src: &str,
@@ -1030,6 +1064,7 @@ fn shape_cached(
     caps: bool,
     vertical: bool,
     (before, after): (&str, &str),
+    cluster_chars: bool,
 ) -> Vec<ShapedGlyph> {
     use designcraft_fonts::ShapeContext;
     let map = |c: char| if caps { c.to_uppercase().next().unwrap_or(c) } else { c };
@@ -1040,8 +1075,8 @@ fn shape_cached(
             designcraft_fonts::shape_with_context(face, s, feats, map, context)
         }
     };
-    if src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
-        return shape(src, ShapeContext { before, after, language: lang });
+    if cluster_chars || src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
+        return shape(src, ShapeContext { before, after, language: lang, cluster_chars });
     }
     let words = word_map((face.id(), vertical, caps, format!("{feats:?}"), lang));
     let pieces: Vec<&str> = src.split_inclusive(' ').collect();
@@ -1220,7 +1255,7 @@ fn shape_segment(
             None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
             Some(_) => ("", ""),
         };
-        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around);
+        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around, styles.cluster_chars);
         upright.extend(std::iter::repeat_n(up, g.len()));
         shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: g.cluster + r.start, ..g }));
     }
@@ -1262,9 +1297,13 @@ fn shape_segment(
         };
         let (ascent, descent) = if up { (em_top * k_v, -em_bottom * k_v) } else { (ascent, descent) };
         let body = adv;
+        // Tracking follows a letter with its marks: none before a mark in a cluster of its own
+        // (a run shaped across styles keeps every character apart).
+        let tracked =
+            last_in_cluster && !shaped.get(gi + 1).is_some_and(|x| src.get(x.cluster..).and_then(|t| t.chars().next()).is_some_and(is_mark));
         if ch == SOFT_HYPHEN {
             adv = 0.0;
-        } else if last_in_cluster {
+        } else if tracked {
             adv += tracking + manual;
         }
         let mark = face.glyph_is_mark(sg.gid);

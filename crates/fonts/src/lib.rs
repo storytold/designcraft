@@ -151,6 +151,10 @@ pub struct ShapeContext<'a> {
     pub before: &'a str,
     pub after: &'a str,
     pub language: Option<&'a str>,
+    /// Every character keeps its own cluster (a vowel mark isn't merged into its base letter's
+    /// cluster), so a run shaped across several styles can give each glyph its own character's
+    /// style (HarfBuzz's monotone-characters cluster level).
+    pub cluster_chars: bool,
 }
 
 /// Shape `text` with `face`. `chars` lets callers substitute characters (e.g. uppercase for All
@@ -175,6 +179,7 @@ pub fn shape_with_context(
             before: if r.start == 0 { context.before } else { &text[..r.start] },
             after: if r.end == text.len() { context.after } else { &text[r.end..] },
             language: context.language,
+            cluster_chars: context.cluster_chars,
         };
         let mut g = shape_dir(face, &text[r.clone()], features, &map, rtl, script, local);
         for x in &mut g {
@@ -238,6 +243,9 @@ fn shape_dir(
             buf.set_language(language);
         }
         buf.set_flags(harfrust::BufferFlags::PRODUCE_SAFE_TO_INSERT_TATWEEL);
+        if context.cluster_chars {
+            buf.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
+        }
         buf.guess_segment_properties();
         buf.set_direction(if rtl { Direction::RightToLeft } else { Direction::LeftToRight });
         let gb = shaper.shape(buf, ShapeOptions::new().features(features));
@@ -295,6 +303,9 @@ pub fn shape_vertical(face: &FontFace, text: &str, features: &[Feature], map: im
         buf.set_post_context(context.after);
         if let Some(language) = context.language.and_then(|t| t.parse::<Language>().ok()) {
             buf.set_language(language);
+        }
+        if context.cluster_chars {
+            buf.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
         }
         buf.guess_segment_properties();
         buf.set_direction(Direction::TopToBottom);
