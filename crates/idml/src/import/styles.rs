@@ -202,8 +202,11 @@ impl<'r> Importer<'r> {
     }
 
     fn based_on(&self, e: &El, para: bool) -> Option<String> {
-        let b = e.prop("BasedOn")?;
-        let b = b.trim();
+        let raw = e.prop("BasedOn")?;
+        // Style names may end in a space ("arabic purple "): look the reference up as written
+        // before trimming it.
+        let known = if para { self.para_names.contains_key(&raw) } else { self.char_names.contains_key(&raw) };
+        let b = if known { raw.as_str() } else { raw.trim() };
         if para {
             if let Some(n) = self.para_names.get(b) {
                 return Some(n.clone());
