@@ -712,7 +712,7 @@ dependencies = [
 [[package]]
 name = "collabcraft-share"
 version = "0.1.0"
-source = "git+https://github.com/wdunn001/collabcraft?rev=c4cddcd#c4cddcd06c13d713c11bedbd2149a74addd1df16"
+source = "git+https://github.com/wdunn001/collabcraft?rev=80bfaec#80bfaec3e581213bb5bcfedc42079525aec5a1af"
 dependencies = [
  "craft-cloud",
  "craft-cloud-client",
@@ -826,7 +826,7 @@ dependencies = [
 [[package]]
 name = "craft-cloud"
 version = "0.1.0"
-source = "git+https://github.com/wdunn001/craft-libs?rev=effb5ca#effb5ca2c30314f0d628a64c41f1b82b6ce2ec84"
+source = "git+https://github.com/storytold/craft-libs?rev=289d562cc6e8b567819aee51f759a78f41a65454#289d562cc6e8b567819aee51f759a78f41a65454"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -835,10 +835,12 @@ dependencies = [
 [[package]]
 name = "craft-cloud-client"
 version = "0.1.0"
-source = "git+https://github.com/wdunn001/collabcraft?rev=c4cddcd#c4cddcd06c13d713c11bedbd2149a74addd1df16"
+source = "git+https://github.com/wdunn001/collabcraft?rev=80bfaec#80bfaec3e581213bb5bcfedc42079525aec5a1af"
 dependencies = [
  "craft-cloud",
+ "craft-collab",
  "js-sys",
+ "log",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -846,6 +848,19 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "craft-collab"
+version = "0.1.0"
+source = "git+https://github.com/wdunn001/collabcraft?rev=80bfaec#80bfaec3e581213bb5bcfedc42079525aec5a1af"
+dependencies = [
+ "js-sys",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -859,7 +874,7 @@ dependencies = [
 [[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+https://github.com/wdunn001/craft-libs?rev=effb5ca#effb5ca2c30314f0d628a64c41f1b82b6ce2ec84"
+source = "git+https://github.com/storytold/craft-libs?rev=289d562cc6e8b567819aee51f759a78f41a65454#289d562cc6e8b567819aee51f759a78f41a65454"
 dependencies = [
  "craft-cloud",
  "egui",
@@ -941,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "arboard",
  "collabcraft-share",
@@ -962,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-cli"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -978,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-color"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "kurbo",
  "moxcms",
@@ -990,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-compose"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
@@ -1008,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-doc"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-geom",
@@ -1020,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-engine"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "caseless",
  "craft-print",
@@ -1055,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-epub"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
@@ -1064,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-fonts"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "harfrust 0.13.3",
  "kurbo",
@@ -1076,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-format"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-doc",
  "serde",
@@ -1087,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-geom"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -1100,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-idml"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1113,7 +1128,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-images"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-fonts",
@@ -1124,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-mcp"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-engine",
  "designcraft-geom",
@@ -1137,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pdf"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1159,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-render"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1177,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-textimport"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-doc",
  "quick-xml 0.38.4",
@@ -1186,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-tools"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1198,7 +1213,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-ui-egui"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "craft-cloud",
  "craft-ui",
@@ -1228,8 +1243,11 @@ dependencies = [
 
 [[package]]
 name = "designcraft-web"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
+ "collabcraft-share",
+ "craft-cloud",
+ "craft-cloud-client",
  "designcraft-engine",
  "designcraft-format",
  "designcraft-ui-egui",
@@ -5981,7 +5999,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "serde_json",
 ]

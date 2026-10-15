@@ -20,6 +20,9 @@
 mod browser_policy;
 
 #[cfg(target_arch = "wasm32")]
+mod cloud;
+
+#[cfg(target_arch = "wasm32")]
 mod web;
 
 #[cfg(any(target_arch = "wasm32", test))]
