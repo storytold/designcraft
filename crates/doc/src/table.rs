@@ -326,6 +326,11 @@ pub struct TableOptions {
     pub row_strokes: Option<AltStrokes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column_strokes: Option<AltStrokes>,
+    /// Fit to frame width (DesignCraft-only; IDML has no equivalent): the columns scale in
+    /// proportion to fill the text column, wider or narrower, so the table follows its frame.
+    /// The stored column widths are then the proportions.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fit_to_frame: bool,
 }
 
 fn no_borders(borders: &[Option<CellStroke>; 4]) -> bool {
@@ -352,6 +357,7 @@ impl Default for TableOptions {
             alt_cols: None,
             row_strokes: None,
             column_strokes: None,
+            fit_to_frame: false,
         }
     }
 }

@@ -1,9 +1,10 @@
 //! Table layout: a table anchored in a story is laid out at its anchor paragraph.
 //!
-//! Column widths are scaled down to fit the text column; each cell's story is composed into its
-//! cell (insets applied) with the regular composer; a row is as tall as its tallest single-row
-//! cell (or its fixed height); rows that don't fit continue in the next column / frame, repeating
-//! header (and footer) rows. Rows tied together by row spans never split.
+//! Column widths are scaled down to fit the text column, or to fill it with Fit to Frame Width;
+//! each cell's story is composed into its cell (insets applied) with the regular composer; a row
+//! is as tall as its tallest single-row cell (or its fixed height); rows that don't fit continue in
+//! the next column / frame, repeating header (and footer) rows. Rows tied together by row spans
+//! never split.
 
 use std::sync::Arc;
 
@@ -180,10 +181,10 @@ pub(crate) fn place_table(
     }
     let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
     let mut col = col_rect(cur);
-    // Column widths: scaled to fit the measure.
+    // Column widths: scaled down to fit the measure, or to fill it with Fit to Frame Width.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
     let natural = table.width();
-    let k = if natural > avail && natural > 0.0 { avail / natural } else { 1.0 };
+    let k = if (natural > avail || table.options.fit_to_frame) && natural > 0.0 { avail / natural } else { 1.0 };
     let widths: Vec<f64> = table.columns.iter().map(|c| c.width * k).collect();
     let total_w: f64 = widths.iter().sum();
     let x_off = pp.left_indent
