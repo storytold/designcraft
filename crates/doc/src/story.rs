@@ -38,6 +38,9 @@ pub const TABLE_ANCHOR: char = '\u{E009}';
 pub const FORCED_LINE_BREAK: char = '\u{2028}';
 pub const ODD_PAGE_BREAK: char = '\u{E011}';
 pub const EVEN_PAGE_BREAK: char = '\u{E012}';
+/// A glyph without a Unicode value, picked from the font by name (InDesign's Glyphs panel; its
+/// name is the character's [`crate::CharProps::custom_glyph`]).
+pub const CUSTOM_GLYPH: char = '\u{E013}';
 
 /// Encode a table-of-contents separator using InDesign's special-character notation.
 pub fn toc_separator_notation(text: &str) -> String {
