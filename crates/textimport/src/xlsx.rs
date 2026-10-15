@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use designcraft_doc::{CharFormat, ParaFormat, Story, StoryId, Table};
 
-use crate::docx::{El, parse, part};
+use crate::docx::{El, parse, part, strict_part};
 use crate::{ImportError, Imported};
 
 /// "B12" → (row 11, column 1).
@@ -22,8 +22,8 @@ fn cell_ref(r: &str) -> Option<(usize, usize)> {
 
 /// The worksheet part of the first sheet (workbook order), via the workbook relationships.
 fn first_sheet(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Result<Option<String>, ImportError> {
-    let Some(wb) = part(zip, "xl/workbook.xml")? else { return Ok(None) };
-    let Some(rels) = part(zip, "xl/_rels/workbook.xml.rels")? else { return Ok(None) };
+    let Some(wb) = strict_part(zip, "xl/workbook.xml")? else { return Ok(None) };
+    let Some(rels) = strict_part(zip, "xl/_rels/workbook.xml.rels")? else { return Ok(None) };
     Ok(first_sheet_target(&wb, &rels))
 }
 
@@ -126,8 +126,11 @@ fn place_row(cols: &[(usize, String)], min_c: usize, width: usize) -> (Vec<Strin
 pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, ImportError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
     let sheet_part = sheet_target(&mut zip, sheet)?;
-    let sheet_xml = parse(&part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
-    let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
+    let sheet_xml =
+        parse(&strict_part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
+    // Data merge fills records from these cells: skipped shared strings would merge wrong data,
+    // so a damaged part stays an error here.
+    let shared: Vec<String> = strict_part(&mut zip, "xl/sharedStrings.xml")?
         .map(|x| parse(&x))
         .transpose()?
         .map(|sst| sst.els().filter(|e| e.name == "si").map(string_item).collect())
@@ -184,7 +187,7 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
 
 /// Workbook order, or the sheet named `wanted`.
 fn sheet_target(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, wanted: Option<&str>) -> Result<String, ImportError> {
-    let wb = parse(&part(zip, "xl/workbook.xml")?.ok_or_else(|| ImportError::Corrupt("no xl/workbook.xml (not an Excel workbook)".into()))?)?;
+    let wb = parse(&strict_part(zip, "xl/workbook.xml")?.ok_or_else(|| ImportError::Corrupt("no xl/workbook.xml (not an Excel workbook)".into()))?)?;
     let sheets: Vec<(String, String)> = wb
         .child("sheets")
         .map(|s| s.els().filter(|e| e.name == "sheet").filter_map(|e| Some((e.attr("name")?.to_string(), e.attr("id")?.to_string()))).collect())
@@ -193,7 +196,7 @@ fn sheet_target(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, wanted: Optio
         None => sheets.first().cloned().ok_or_else(|| ImportError::Corrupt("the workbook has no sheets".into()))?,
         Some(w) => sheets.into_iter().find(|(n, _)| n == w).ok_or_else(|| ImportError::Corrupt(format!("no worksheet \"{w}\"")))?,
     };
-    let rels = parse(&part(zip, "xl/_rels/workbook.xml.rels")?.ok_or_else(|| ImportError::Corrupt("no workbook relationships".into()))?)?;
+    let rels = parse(&strict_part(zip, "xl/_rels/workbook.xml.rels")?.ok_or_else(|| ImportError::Corrupt("no workbook relationships".into()))?)?;
     let target = rels
         .els()
         .find(|r| r.attr("Id") == Some(rid.as_str()))
@@ -205,9 +208,10 @@ fn sheet_target(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, wanted: Optio
 
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    let mut warnings = Vec::new();
     let sheet_part = first_sheet(&mut zip)?.unwrap_or_else(|| "xl/worksheets/sheet1.xml".into());
-    let sheet = parse(&part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
-    let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
+    let sheet = parse(&strict_part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
+    let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml", &mut warnings)?
         .map(|x| parse(&x))
         .transpose()?
         .map(|sst| sst.els().filter(|e| e.name == "si").map(string_item).collect())
@@ -239,7 +243,6 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
             }
         }
     }
-    let mut warnings = Vec::new();
     if cut {
         warnings.push(format!(
             "the worksheet holds more than {} cells or {} MB of text: the rest was not read",
@@ -370,10 +373,10 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_shared_strings_part_is_an_error_not_absent() {
+    fn corrupt_shared_strings_part_is_skipped_with_a_warning() {
         let src = workbook();
         let mut zin = zip::ZipArchive::new(std::io::Cursor::new(src.as_slice())).unwrap();
-        let rewrite = |zin: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, keep_shared: bool| {
+        let rewrite = |zin: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, keep_shared: bool, break_shared: bool| {
             let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
             let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
             for i in 0..zin.len() {
@@ -384,19 +387,50 @@ mod tests {
                 }
                 let mut data = Vec::new();
                 std::io::Read::read_to_end(&mut f, &mut data).unwrap();
+                if name == "xl/sharedStrings.xml" && break_shared {
+                    // Invalid UTF-8 inside an otherwise intact shared-strings part.
+                    let at = data.windows(4).position(|x| x == b"Item").unwrap();
+                    data[at + 2] = 0xFF;
+                }
                 w.start_file(name, o).unwrap();
                 w.write_all(&data).unwrap();
             }
             w.finish().unwrap().into_inner()
         };
-        let mut bytes = rewrite(&mut zin, true);
-        // Invalid UTF-8 inside the stored shared-strings part.
-        let at = bytes.windows(4).position(|x| x == b"Item").unwrap();
-        bytes[at + 2] = 0xFF;
-        assert!(matches!(import(&bytes), Err(ImportError::Corrupt(_))));
+        let bytes = rewrite(&mut zin, true, true);
+        let imp = import(&bytes).unwrap();
+        assert!(imp.warnings.iter().any(|w| w.contains("xl/sharedStrings.xml")), "{:?}", imp.warnings);
+        // Data merge records stay an error: skipped strings would merge wrong data.
         assert!(matches!(records(&bytes, None), Err(ImportError::Corrupt(_))));
         // A workbook without shared strings still imports.
-        assert!(import(&rewrite(&mut zin, false)).is_ok());
+        assert!(import(&rewrite(&mut zin, false, false)).is_ok());
+    }
+
+    #[test]
+    fn corrupt_required_parts_are_reported_as_damaged() {
+        let src = workbook();
+        let mut zin = zip::ZipArchive::new(std::io::Cursor::new(src.as_slice())).unwrap();
+        for broken in ["xl/workbook.xml", "xl/_rels/workbook.xml.rels", "xl/worksheets/sheet1.xml"] {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            for i in 0..zin.len() {
+                let mut f = zin.by_index(i).unwrap();
+                let name = f.name().to_string();
+                let mut data = Vec::new();
+                std::io::Read::read_to_end(&mut f, &mut data).unwrap();
+                if name == broken {
+                    // Invalid UTF-8 inside an otherwise intact part.
+                    data.push(0xFF);
+                }
+                w.start_file(name, o).unwrap();
+                w.write_all(&data).unwrap();
+            }
+            let bytes = w.finish().unwrap().into_inner();
+            for r in [import(&bytes).map(|_| ()), records(&bytes, None).map(|_| ())] {
+                let Err(ImportError::Corrupt(e)) = r else { panic!("a damaged {broken} is an error") };
+                assert!(e.contains(broken) && e.contains("damaged") && !e.contains("not an Excel workbook"), "{e}");
+            }
+        }
     }
 
     /// A cell far away from the others used to allocate the whole used range (billions of cells)

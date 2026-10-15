@@ -422,7 +422,7 @@ fn older_files_with_one_asset_per_placement_open_with_one() {
 }
 
 #[test]
-fn corrupt_embedded_asset_is_an_error_not_empty_data() {
+fn corrupt_embedded_asset_opens_with_a_warning() {
     let mut d = Document::new(&NewDocument::default());
     let payload = b"PAYLOADPAYLOADPAYLOAD";
     let id = png_asset(&mut d, payload);
@@ -431,7 +431,11 @@ fn corrupt_embedded_asset_is_an_error_not_empty_data() {
     // PNG assets are stored uncompressed: flip one payload byte so the CRC check fails.
     let at = bytes.windows(payload.len()).position(|w| w == payload).unwrap();
     bytes[at + 3] ^= 0xFF;
-    assert!(load(&bytes).is_err());
+    let (back, warnings) = load_with_warnings(&bytes).unwrap();
+    assert!(back.assets[&id].data.is_empty(), "the damaged asset is marked missing");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with(&format!("assets/{}.png", id.0)), "{warnings:?}");
+    assert!(load(&bytes).is_ok());
     // A link-only asset (no embedded copy) still opens with empty data.
     let mut d = Document::new(&NewDocument::default());
     let id = png_asset(&mut d, b"");

@@ -148,25 +148,60 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
 /// Largest decompressed zip part read (a small file can inflate to gigabytes).
 pub(crate) const PART_LIMIT: u64 = 64 * 1024 * 1024;
 
-/// A zip part as text. `Ok(None)` when the part is missing; an error when it is present but
-/// unreadable (bad compression, CRC or UTF-8) or decompresses to more than [`PART_LIMIT`].
-pub(crate) fn part(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str) -> Result<Option<String>, ImportError> {
-    part_capped(zip, name, PART_LIMIT)
+/// A zip part as text. `Ok(None)` when the part is missing, or when it isn't valid UTF-8: that
+/// part is skipped and a warning naming it is pushed to `warnings`. An error when it is present
+/// but unreadable (bad compression or CRC) or decompresses to more than [`PART_LIMIT`].
+pub(crate) fn part(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str, warnings: &mut Vec<String>) -> Result<Option<String>, ImportError> {
+    part_capped(zip, name, PART_LIMIT, warnings)
 }
 
-pub(crate) fn part_capped(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str, limit: u64) -> Result<Option<String>, ImportError> {
+pub(crate) fn part_capped(
+    zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
+    name: &str,
+    limit: u64,
+    warnings: &mut Vec<String>,
+) -> Result<Option<String>, ImportError> {
+    match read_part(zip, name, limit)? {
+        Part::Text(s) => Ok(Some(s)),
+        Part::Missing => Ok(None),
+        Part::NotText => {
+            warnings.push(format!("{name} is not valid text and was skipped."));
+            Ok(None)
+        }
+    }
+}
+
+/// A part that can't be skipped: `Ok(None)` when it is missing, an error naming it when it
+/// isn't valid UTF-8 (or, as with [`part`], unreadable or too large).
+pub(crate) fn strict_part(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str) -> Result<Option<String>, ImportError> {
+    match read_part(zip, name, PART_LIMIT)? {
+        Part::Text(s) => Ok(Some(s)),
+        Part::Missing => Ok(None),
+        Part::NotText => Err(ImportError::Corrupt(format!("{name} is damaged (not valid text)"))),
+    }
+}
+
+/// What reading a zip part found.
+enum Part {
+    Text(String),
+    Missing,
+    /// Present and intact, but not valid UTF-8.
+    NotText,
+}
+
+fn read_part(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str, limit: u64) -> Result<Part, ImportError> {
     let f = match zip.by_name(name) {
         Ok(f) => f,
-        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(zip::result::ZipError::FileNotFound) => return Ok(Part::Missing),
         Err(e) => return Err(ImportError::Corrupt(format!("{name} is unreadable: {e}"))),
     };
-    let mut s = String::new();
+    let mut b = Vec::new();
     // Read one byte past the limit to tell "exactly at the limit" from "over it".
-    f.take(limit.saturating_add(1)).read_to_string(&mut s).map_err(|e| ImportError::Corrupt(format!("{name} is unreadable: {e}")))?;
-    if s.len() as u64 > limit {
+    f.take(limit.saturating_add(1)).read_to_end(&mut b).map_err(|e| ImportError::Corrupt(format!("{name} is unreadable: {e}")))?;
+    if b.len() as u64 > limit {
         return Err(ImportError::Corrupt(format!("{name} is larger than {} MiB uncompressed", limit / (1024 * 1024))));
     }
-    Ok(Some(s))
+    Ok(String::from_utf8(b).map_or(Part::NotText, Part::Text))
 }
 
 /// Character attributes from `<w:rPr>`.
@@ -556,7 +591,7 @@ fn style_lists(styles: &El) -> HashMap<String, (Option<String>, Option<String>)>
 
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
-    let doc = part(&mut zip, "word/document.xml")?.ok_or_else(|| ImportError::Corrupt("no word/document.xml (not a Word document)".into()))?;
+    let doc = strict_part(&mut zip, "word/document.xml")?.ok_or_else(|| ImportError::Corrupt("no word/document.xml (not a Word document)".into()))?;
     let doc = parse(&doc)?;
     // Styles.
     let mut ctx = Ctx {
@@ -574,14 +609,14 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         default_para: BASIC_PARAGRAPH.into(),
     };
     // Lists that can't be read leave plain paragraphs, not a failed import.
-    match part_capped(&mut zip, "word/numbering.xml", NUMBERING_LIMIT).and_then(|s| s.map(|s| parse(&s)).transpose()) {
+    match part_capped(&mut zip, "word/numbering.xml", NUMBERING_LIMIT, &mut ctx.warnings).and_then(|s| s.map(|s| parse(&s)).transpose()) {
         Ok(Some(n)) => ctx.numbering = Numbering::parse(&n),
         Ok(None) => {}
         Err(_) => ctx.warnings.push("The Word file's list definitions could not be read: lists were imported as plain paragraphs.".into()),
     }
     let mut para_styles = Vec::new();
     let mut char_styles = Vec::new();
-    if let Some(styles) = part(&mut zip, "word/styles.xml")?.map(|s| parse(&s)).transpose()? {
+    if let Some(styles) = part(&mut zip, "word/styles.xml", &mut ctx.warnings)?.map(|s| parse(&s)).transpose()? {
         let ids: HashMap<String, String> =
             styles.els().filter(|s| s.name == "style").filter_map(|s| Some((s.attr("styleId")?.to_string(), s.val("name")?))).collect();
         ctx.style_lists = style_lists(&styles);
@@ -631,7 +666,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         }
     }
     // Footnotes (ids -1 / 0 are the separators).
-    if let Some(f) = part(&mut zip, "word/footnotes.xml")?.map(|s| parse(&s)).transpose()? {
+    if let Some(f) = part(&mut zip, "word/footnotes.xml", &mut ctx.warnings)?.map(|s| parse(&s)).transpose()? {
         for n in f.els().filter(|n| n.name == "footnote") {
             if let Some(id) = n.attr("id").filter(|id| id.parse::<i64>().is_ok_and(|v| v > 0)) {
                 ctx.footnotes.insert(id.to_string(), n.clone());
