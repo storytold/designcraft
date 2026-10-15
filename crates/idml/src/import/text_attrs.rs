@@ -240,7 +240,9 @@ impl<'r> Importer<'r> {
                 a.grid_reference = Some(crate::cjk::grid_reference_in(&g));
             }
         }
-        a.composer = e.prop("Composer").map(|c| composer_in(&c));
+        let composer = e.prop("Composer");
+        a.composer = composer.as_deref().map(composer_in);
+        a.world_ready = composer.as_deref().map(world_ready_in);
         a.hyphenate = e.boolean("Hyphenation");
         a.hyph_min_word = u("HyphenateWordsLongerThan");
         a.hyph_after_first = u("HyphenateAfterFirst");
@@ -438,6 +440,14 @@ pub(super) fn ace_char(v: &str) -> Option<char> {
         "8" => Some(st::RIGHT_INDENT_TAB),
         _ => None,
     }
+}
+
+/// Whether IDML composer `name` is World-Ready: the `… Optyca` composers are; `HL Composer` and
+/// `HL Single` (InDesign's Paragraph and Single-line Composers) aren't. The Japanese composers
+/// (`… J`) set text as they did before the attribute.
+fn world_ready_in(name: &str) -> bool {
+    let name = name.trim().trim_start_matches("$ID/");
+    name.contains("Optyca") || name.ends_with(" J") || name.contains("Japanese")
 }
 
 /// `HL Composer` and `HL Single`, their World-Ready (`… Optyca`) and Japanese (`… J`) forms.

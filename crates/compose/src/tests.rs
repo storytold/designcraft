@@ -7721,6 +7721,29 @@ fn an_empty_last_paragraph_isnt_overset() {
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset(), "an empty paragraph before the last one is text");
 }
 
+/// A paragraph that isn't World-Ready (InDesign's Paragraph Composer) sets Arabic left to right
+/// in text order, each letter in its isolated form, as InDesign does.
+#[test]
+fn arabic_outside_a_world_ready_paragraph_runs_left_to_right_unjoined() {
+    let text = "\u{0628}\u{0644}";
+    let set = |world_ready: bool, text: &str| {
+        let para = ParaAttrs { world_ready: Some(world_ready), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        d.settings.glyph_fallback = true;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().map(|g| (g.byte, g.gid, g.x)).collect::<Vec<_>>()
+    };
+    let beh = set(true, "\u{0628}")[0].1;
+    let lam = set(true, "\u{0644}")[0].1;
+    let joined = set(true, text);
+    let (b, l) = (joined.iter().find(|g| g.0 == 0).unwrap(), joined.iter().find(|g| g.0 == 2).unwrap());
+    assert!(b.2 > l.2 && b.1 != beh, "World-Ready: joined, right to left");
+    let plain = set(false, text);
+    let (b, l) = (plain.iter().find(|g| g.0 == 0).unwrap(), plain.iter().find(|g| g.0 == 2).unwrap());
+    assert!(b.2 < l.2, "left to right: {plain:?}");
+    assert_eq!((b.1, l.1), (beh, lam), "isolated forms");
+}
+
 #[test]
 fn greek_text_gets_greek_hyphenation() {
     // Greek had no hyphenation at all: `hypher`'s Greek patterns were not among the features

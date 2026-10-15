@@ -363,14 +363,19 @@ impl<'a> Ex<'a> {
                 }
             }
         }
-        if let Some(c) = a.composer {
+        if a.composer.is_some() || a.world_ready.is_some() {
+            use designcraft_doc::Composer as C;
+            // One name says both: what isn't set here comes from the parent style.
+            let d = parent.map(|name| self.d.styles.resolve_para_style(name).0).unwrap_or_default();
             el.set(
                 "Composer",
-                match c {
-                    designcraft_doc::Composer::Paragraph => "HL Composer",
-                    designcraft_doc::Composer::SingleLine => "HL Single",
-                    designcraft_doc::Composer::Japanese => "HL Composer J",
-                    designcraft_doc::Composer::JapaneseSingleLine => "HL Single J",
+                match (a.composer.unwrap_or(d.composer), a.world_ready.unwrap_or(d.world_ready)) {
+                    (C::Paragraph, true) => "HL Composer Optyca",
+                    (C::Paragraph, false) => "HL Composer",
+                    (C::SingleLine, true) => "HL Single Optyca",
+                    (C::SingleLine, false) => "HL Single",
+                    (C::Japanese, _) => "HL Composer J",
+                    (C::JapaneseSingleLine, _) => "HL Single J",
                 },
             );
         }

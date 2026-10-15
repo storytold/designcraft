@@ -2248,7 +2248,12 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     } = input;
     let drop_end = drop_cap_end(&story.text, prange.clone(), pp, sub.vertical);
     let mut table = StyleTable { styles, missing: missing_fonts };
-    let env = shape::TypeEnv { auto_leading: pp.auto_leading, adv: doc.settings.advanced_type, glyph_fallback: doc.settings.glyph_fallback };
+    let env = shape::TypeEnv {
+        auto_leading: pp.auto_leading,
+        adv: doc.settings.advanced_type,
+        glyph_fallback: doc.settings.glyph_fallback,
+        unjoined: !pp.world_ready,
+    };
     let mut sp = shape::shape_para(
         shape::ShapeInput {
             db,
@@ -2398,14 +2403,12 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
             g.character_alignment = designcraft_doc::cjk::CharacterAlignment::Baseline;
         }
     }
+    // Not World-Ready: the line runs left to right in text order, whatever the script.
+    if !pp.world_ready {
+        glyphs.iter_mut().for_each(|g| g.character_direction = designcraft_doc::arabic::CharacterDirection::LeftToRight);
+    }
     let bidi_text = bidi::paragraph_text(&mut glyphs, &story.text);
-    bidi::resolve_mirroring(
-        &mut glyphs,
-        &unicode_bidi::BidiInfo::new(
-            &bidi_text,
-            Some(if pp.direction == designcraft_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
-        ),
-    );
+    bidi::resolve_mirroring(&mut glyphs, &unicode_bidi::BidiInfo::new(&bidi_text, Some(bidi_level(pp))));
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
@@ -2833,10 +2836,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             last_line_mark,
             para_box: _,
         } = shaped;
-        let bidi_info = unicode_bidi::BidiInfo::new(
-            &bidi_text,
-            Some(if pp.direction == designcraft_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
-        );
+        let bidi_info = unicode_bidi::BidiInfo::new(&bidi_text, Some(bidi_level(&pp)));
         // A paragraph set across the columns moves on to the next frame where others move on to
         // the next column.
         let spanning = matches!(pp.span_columns, SpanColumns::Span(n) if n != 1);
@@ -4713,6 +4713,16 @@ fn layout_line(
     }
     append_kashidas(&line, &mut out, kashidas);
     (out, x, ratio)
+}
+
+/// The paragraph's base bidi level: right to left for a World-Ready right-to-left paragraph (a
+/// paragraph that isn't World-Ready runs left to right).
+fn bidi_level(pp: &designcraft_doc::ParaProps) -> unicode_bidi::Level {
+    if pp.world_ready && pp.direction == designcraft_doc::TextDirection::RightToLeft {
+        unicode_bidi::Level::rtl()
+    } else {
+        unicode_bidi::Level::ltr()
+    }
 }
 
 /// Arabic letters that join the following letter (dual-joining).
