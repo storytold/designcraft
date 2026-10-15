@@ -129,6 +129,9 @@ impl<'a> Ex<'a> {
     }
 
     fn char_font_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
+        if let Some(g) = &a.custom_glyph {
+            props.push(p("CustomGlyph", "string", format!("$ID/{g}")));
+        }
         if let Some(f) = &a.font_family {
             if let Some(composite) = self.d.styles.composite_font(f) {
                 props.push(p("AppliedFont", "object", format!("CompositeFont/{}", escape_id(&composite.name))));

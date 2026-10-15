@@ -279,6 +279,30 @@ impl FontFace {
             .as_deref()
     }
 
+    /// The glyph the font names `name` (its `post` or CFF glyph names), or 0 when it has none.
+    pub fn glyph_by_name(&self, name: &str) -> u32 {
+        let Some(f) = self.skrifa().filter(|_| !name.is_empty()) else { return 0 };
+        f.glyph_names().iter().find(|(_, n)| n.as_str() == name).map_or(0, |(g, _)| g.to_u32())
+    }
+
+    /// The character glyph name `name` stands for: `uniXXXX` or `uXXXX[XX]`, else the character
+    /// the font maps to the glyph of that name. `None` when neither says.
+    pub fn char_for_glyph_name(&self, name: &str) -> Option<char> {
+        let hex = |h: &str| h.chars().all(|c| c.is_ascii_hexdigit()).then(|| u32::from_str_radix(h, 16).ok().and_then(char::from_u32)).flatten();
+        if let Some(c) = name.strip_prefix("uni").filter(|h| h.len() == 4).and_then(hex) {
+            return Some(c);
+        }
+        if let Some(c) = name.strip_prefix('u').filter(|h| (4..=6).contains(&h.len())).and_then(hex) {
+            return Some(c);
+        }
+        let gid = self.glyph_by_name(name);
+        if gid == 0 {
+            return None;
+        }
+        let f = self.skrifa()?;
+        f.charmap().mappings().filter(|(_, g)| g.to_u32() == gid).filter_map(|(cp, _)| char::from_u32(cp)).min()
+    }
+
     /// Glyph id for `c` (0 = .notdef).
     pub fn glyph_for(&self, c: char) -> u32 {
         self.skrifa().and_then(|f| f.charmap().map(c)).map(|g| g.to_u32()).unwrap_or(0)

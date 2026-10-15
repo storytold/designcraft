@@ -359,6 +359,7 @@ impl<'a> Ex<'a> {
                     st::SECTION_MARKER => Some("19"),
                     st::INDENT_HERE => Some("7"),
                     st::RIGHT_INDENT_TAB => Some("8"),
+                    st::CUSTOM_GLYPH => Some("1a"),
                     _ => None,
                 };
                 let brk = match ch {

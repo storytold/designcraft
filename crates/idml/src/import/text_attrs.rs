@@ -159,6 +159,7 @@ impl<'r> Importer<'r> {
         a.diacritic_x_offset = e.num("XOffsetDiacritic").filter(|v| v.is_finite());
         a.diacritic_y_offset = e.num("YOffsetDiacritic").filter(|v| v.is_finite());
         a.positional_form = e.prop("PositionalForm");
+        a.custom_glyph = e.prop("CustomGlyph").map(|v| v.trim_start_matches("$ID/").to_string()).filter(|v| !v.is_empty());
         self.cjk_settings_chars(e, &mut a);
         if let Some(v) = e.get("AppliedConditions").filter(|v| !v.trim().is_empty()) {
             let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();
@@ -436,6 +437,7 @@ pub(super) fn ace_char(v: &str) -> Option<char> {
         "19" => Some(st::SECTION_MARKER),
         "7" => Some(st::INDENT_HERE),
         "8" => Some(st::RIGHT_INDENT_TAB),
+        "1a" => Some(st::CUSTOM_GLYPH),
         _ => None,
     }
 }

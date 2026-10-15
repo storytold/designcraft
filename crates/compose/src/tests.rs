@@ -91,6 +91,22 @@ fn justified_lines_fill_the_measure() {
     assert!(last.end_x < last.x1 - 1.0, "last line is ragged");
 }
 
+/// A custom glyph (InDesign's Glyphs panel, `<?ACE 1a?>` + CustomGlyph) draws the glyph the font
+/// names, at that glyph's advance; it used to vanish.
+#[test]
+fn custom_glyph_draws_the_named_glyph() {
+    let text = format!("x{}x", designcraft_doc::story::CUSTOM_GLYPH);
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    let at = text.find(designcraft_doc::story::CUSTOM_GLYPH).unwrap();
+    d.story_mut(sid).unwrap().format_chars(at..at + 3, |f| f.over.custom_glyph = Some("a".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0].clone();
+    let g = line.glyphs.iter().find(|g| g.byte == at).unwrap();
+    let face = g.face.get();
+    assert_eq!(g.gid, face.glyph_for('a'));
+    assert!(g.visible && (g.adv - face.advance(g.gid) * g.sx).abs() < 1e-9 && g.adv > 0.0, "{g:?}");
+}
+
 #[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());
@@ -4594,6 +4610,32 @@ fn arabic_kashida_moves_marks_with_their_cluster_and_respects_nonjoiners() {
     d.settings.glyph_fallback = true;
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert!(cs.frames[0].lines[0].glyphs.iter().all(|g| g.gid != g.face.glyph_for('\u{0640}') || g.len > 0));
+}
+
+/// Letters next to a custom glyph join it as they would the letters it draws, and it reads in
+/// their direction: a lam (`uni0644`) after a beh makes the beh initial and sits to its left.
+#[test]
+fn letters_join_a_custom_glyph_as_its_letters() {
+    let glyph = designcraft_doc::story::CUSTOM_GLYPH;
+    let set = |text: &str, custom: Option<(usize, &str)>| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        d.settings.glyph_fallback = true;
+        if let Some((at, name)) = custom {
+            d.story_mut(sid).unwrap().format_chars(at..at + glyph.len_utf8(), |f| f.over.custom_glyph = Some(name.into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.clone()
+    };
+    let at = |gs: &[PlacedGlyph], byte: usize| gs.iter().find(|g| g.byte == byte).map(|g| (g.gid, g.x)).unwrap();
+    // Lam joins the beh before it; alef doesn't join the beh after it.
+    let before = format!("\u{0628}{glyph}");
+    assert_eq!(at(&set(&before, Some((2, "uni0644"))), 0).0, at(&set("\u{0628}\u{0644}", None), 0).0, "initial beh");
+    let after = format!("{glyph}\u{0628}");
+    assert_eq!(at(&set(&after, Some((0, "uni0627"))), 3).0, at(&set("\u{0627}\u{0628}", None), 2).0, "isolated beh");
+    assert_eq!(at(&set(&after, Some((0, "uni0644.medi"))), 3).0, at(&set("\u{0644}\u{0628}", None), 2).0, "final beh");
+    // Right to left in a left-to-right paragraph: the glyph comes first, on the left.
+    let gs = set(&before, Some((2, "uni0644")));
+    assert!(at(&gs, 2).1 < at(&gs, 0).1, "{:?} {:?}", at(&gs, 2), at(&gs, 0));
 }
 
 #[test]
