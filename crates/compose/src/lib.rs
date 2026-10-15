@@ -692,7 +692,13 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let sub_objects = sub.objects.clone();
         let drop_end = drop_cap_end(&story.text, prange.clone(), &pp, sub.vertical);
         let mut table = StyleTable { styles: &mut styles_tab, missing: &mut missing_fonts };
-        let env = shape::TypeEnv { auto_leading: pp.auto_leading, adv: doc.settings.advanced_type, glyph_fallback: doc.settings.glyph_fallback };
+        let env = shape::TypeEnv {
+            auto_leading: pp.auto_leading,
+            adv: doc.settings.advanced_type,
+            glyph_fallback: doc.settings.glyph_fallback,
+            cluster_chars: false,
+            switches: &[],
+        };
         let mut sp = shape::shape_para(
             db,
             &doc.styles,
@@ -3095,7 +3101,7 @@ fn prepend_label(
     label: &str,
     at: usize,
     base: &designcraft_doc::CharProps,
-    env: shape::TypeEnv,
+    env: shape::TypeEnv<'_>,
     table: &mut StyleTable<'_>,
 ) -> usize {
     // Shape the label as a tiny standalone story so it uses the paragraph's base character style.

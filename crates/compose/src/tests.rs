@@ -63,6 +63,51 @@ fn justified_lines_fill_the_measure() {
     assert!(last.end_x < last.x1 - 1.0, "last line is ragged");
 }
 
+/// A combining mark in a colour of its own still sits on its base letter (the runs shape as one)
+/// and keeps its colour: colour-coded texts put single vowel marks in their own colour.
+#[test]
+fn a_mark_in_its_own_colour_stays_on_its_base() {
+    let text = "Ax\u{301}y";
+    let mark = text.find('\u{301}').unwrap();
+    let place = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        if colour {
+            d.story_mut(sid).unwrap().format_chars(mark..mark + 2, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = all_lines(&cs)[0].clone();
+        // The glyph after the x (one cluster with it when the runs are one).
+        let at = line.glyphs.iter().position(|g| g.byte == text.find('x').unwrap()).unwrap();
+        let g = line.glyphs[at + 1].clone();
+        (g.x, g.y, cs.styles[g.style as usize].fill.clone(), line.glyphs.len())
+    };
+    let (x, y, fill, n) = place(false);
+    let (cx, cy, cfill, cn) = place(true);
+    assert_eq!(n, cn);
+    assert!((x - cx).abs() < 1e-6 && (y - cy).abs() < 1e-6, "the mark moved: {x},{y} → {cx},{cy}");
+    assert_ne!(fill, cfill);
+    assert_eq!(cfill, "C=100 M=0 Y=0 K=0");
+}
+
+/// Tracking goes after a letter with its marks: a mark in its own colour (its own cluster) doesn't
+/// add tracking between itself and its base.
+#[test]
+fn tracking_skips_a_mark_in_its_own_colour() {
+    let text = "Ax\u{301}y";
+    let mark = text.find('\u{301}').unwrap();
+    let y_at = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        let s = d.story_mut(sid).unwrap();
+        s.format_chars(0..text.len(), |f| f.over.tracking = Some(300.0));
+        if colour {
+            s.format_chars(mark..mark + 2, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].glyphs.iter().find(|g| g.byte == text.find('y').unwrap()).unwrap().x
+    };
+    assert!((y_at(false) - y_at(true)).abs() < 1e-6, "{} vs {}", y_at(false), y_at(true));
+}
+
 #[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());
