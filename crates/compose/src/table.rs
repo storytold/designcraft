@@ -1,10 +1,9 @@
 //! Table layout: a table anchored in a story is laid out at its anchor paragraph.
 //!
-//! Column widths are scaled down to fit the text column, or to fill it with Fit to Frame Width;
-//! each cell's story is composed into its cell (insets applied) with the regular composer; a row
-//! is as tall as its tallest single-row cell (or its fixed height); rows that don't fit continue in
-//! the next column / frame, repeating header (and footer) rows. Rows tied together by row spans
-//! never split.
+//! Column widths are scaled down to fit the text column; each cell's story is composed into its
+//! cell (insets applied) with the regular composer; a row is as tall as its tallest single-row
+//! cell (or its fixed height); rows that don't fit continue in the next column / frame, repeating
+//! header (and footer) rows. Rows tied together by row spans never split.
 
 use std::sync::Arc;
 

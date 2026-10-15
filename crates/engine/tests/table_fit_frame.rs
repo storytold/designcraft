@@ -85,10 +85,11 @@ fn fit_to_frame_width_is_saved_undone_and_validated() {
     assert_eq!(s.execute("table.get", &json!({"story": sid})).unwrap()["options"].get("fitToFrame"), None, "off is not reported");
     assert!(close(composed(&mut s, sid).0, 200.0));
 
-    // Not a boolean: an error that changes nothing.
+    // Not a boolean: an error that changes nothing, not even the other options of the call.
     for bad in [json!("yes"), json!(1), Value::Null] {
-        assert!(s.execute("table.options", &json!({"story": sid, "fitToFrame": bad})).is_err(), "{bad}");
+        assert!(s.execute("table.options", &json!({"story": sid, "repeatHeader": false, "fitToFrame": bad})).is_err(), "{bad}");
     }
+    assert_eq!(s.execute("table.get", &json!({"story": sid})).unwrap()["options"]["repeatHeader"], json!(true));
     assert_eq!(s.execute("table.get", &json!({"story": sid})).unwrap()["options"].get("fitToFrame"), None, "off is not reported");
 }
 
@@ -99,4 +100,14 @@ fn documents_without_the_option_load_with_it_off() {
     // Off is the default and is not written, so older readers see the same file.
     let v = serde_json::to_value(designcraft_doc::TableOptions::default()).unwrap();
     assert!(v.get("fitToFrame").is_none(), "{v}");
+}
+
+#[test]
+fn applying_a_table_style_keeps_fit_to_frame_width() {
+    let (mut s, _, sid) = table_in_frame(472.0);
+    s.execute("table.options", &json!({"story": sid, "fitToFrame": true})).unwrap();
+    s.execute("style.table.create", &json!({"name": "Data", "border": {"weight": 2, "color": "[Black]"}})).unwrap();
+    s.execute("style.table.apply", &json!({"name": "Data"})).unwrap();
+    let o = &s.execute("table.get", &json!({"story": sid})).unwrap()["options"];
+    assert_eq!((o["fitToFrame"].clone(), o["border"]["weight"].clone()), (json!(true), json!(2.0)));
 }
