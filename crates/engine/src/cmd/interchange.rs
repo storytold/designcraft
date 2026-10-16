@@ -262,7 +262,8 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     // preview), as InDesign shows them. One preview can stand for any number of graphics: they
     // share its buffer.
     let mut previews = std::collections::HashMap::new();
-    let bytes = if is_indd(&file, &bytes) {
+    let from_indd = is_indd(&file, &bytes);
+    let bytes = if from_indd {
         // What the converter can't read still comes over as IDML (#21).
         let conversion = indd::convert(&bytes, &file).map_err(|e| {
             EngineError::Other(format!(
@@ -291,8 +292,16 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     };
     warnings.extend(font_warnings);
     warnings.extend(super::style::grep_style_warnings(&d));
-    // Never save over the .idml or .indd with the native format: the document starts unsaved.
-    let mut st = DocState::new(d, None);
+    // Saving IDML (Preferences › File Handling): an opened .idml file is the document's file, and
+    // Save writes IDML back to it. Anything else starts unsaved, so neither a converted .indd nor a
+    // file that isn't named .idml is ever overwritten (nor is any .idml with the native format).
+    let path = match s.prefs.save_format {
+        crate::SaveFormat::Idml if !from_indd => str_param(p, "path")
+            .filter(|path| str_param(p, "base64").is_none() && crate::SaveFormat::of_path(path) == crate::SaveFormat::Idml)
+            .map(str::to_string),
+        _ => None,
+    };
+    let mut st = DocState::new(d, path);
     st.fonts = fonts;
     let i = s.add_document(st);
     Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
