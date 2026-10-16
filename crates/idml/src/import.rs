@@ -1552,7 +1552,8 @@ impl<'r> Importer<'r> {
         // 1e11 IDML sentinel). It must not become a multi-million-em advance.
         a.kerning = e.prop("KerningMethod").and_then(|k| match k.trim().trim_start_matches("$ID/") {
             "Optical" => Some(Kerning::Optical),
-            "Metrics" | "Metrics - Roman Only" => Some(Kerning::Metrics),
+            "Metrics" => Some(Kerning::Metrics),
+            "Metrics - Roman Only" => Some(Kerning::MetricsRomanOnly),
             "None" => Some(Kerning::None),
             _ => None,
         });
