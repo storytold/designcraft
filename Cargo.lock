@@ -454,20 +454,20 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bit-set"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
-dependencies = [
- "bit-vec 0.8.0",
-]
-
-[[package]]
-name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d"
 dependencies = [
  "bit-vec 0.9.1",
+]
+
+[[package]]
+name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec 0.8.0",
 ]
 
 [[package]]
@@ -693,6 +693,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cobs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -794,6 +803,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
 dependencies = [
  "libm",
+]
+
+[[package]]
+name = "craft-collab"
+version = "0.1.0"
+source = "git+https://github.com/hasan-sdaif/crafthub?rev=1e96a9fb9b8c82ac6ec31818608967b66ef7a527#1e96a9fb9b8c82ac6ec31818608967b66ef7a527"
+dependencies = [
+ "postcard",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1050,6 +1070,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "designcraft-hub"
+version = "0.8.0"
+dependencies = [
+ "craft-collab",
+ "designcraft-color",
+ "designcraft-doc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1442,6 +1473,18 @@ checksum = "52c8d4141cf0f60fb2f7aefaf352d3ffa5171ef0ab09731c64391801e95e48f1"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "embedded-io"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "endi"
@@ -2568,15 +2611,15 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.4.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
-
-[[package]]
-name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
 name = "litemap"
@@ -3427,6 +3470,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
 dependencies = [
  "portable-atomic",
+]
+
+[[package]]
+name = "postcard"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
+dependencies = [
+ "cobs",
+ "embedded-io 0.4.0",
+ "embedded-io 0.6.1",
+ "serde",
 ]
 
 [[package]]

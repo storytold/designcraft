@@ -18,6 +18,7 @@ craft-print = { git = "https://github.com/storytold/craft-libs", version = "0.1.
 designcraft-geom = { path = "crates/geom" }
 designcraft-color = { path = "crates/color" }
 designcraft-doc = { path = "crates/doc" }
+designcraft-hub = { path = "crates/hub" }
 designcraft-fonts = { path = "crates/fonts" }
 designcraft-compose = { path = "crates/compose" }
 designcraft-images = { path = "crates/images" }

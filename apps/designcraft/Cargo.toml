@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 designcraft-engine = { workspace = true }
 designcraft-ui-egui = { workspace = true }
+designcraft-hub = { workspace = true, optional = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
 egui = { workspace = true }
 serde = { workspace = true }
@@ -35,3 +36,8 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 # The same winit as eframe; only the native termination opt-in is used.
 winit = { version = "0.30", default-features = false }
 muda = { version = "0.21", default-features = false }
+
+[features]
+# The CraftHub v3 client path (spec §18.4 row 4): default off, flipped only after the
+# simulation suite runs green in CI for a full week.
+crafthub = ["dep:designcraft-hub"]

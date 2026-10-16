@@ -1,0 +1,20 @@
+[package]
+name = "designcraft-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft's CraftHub client path: the HubAdapter that maps the document onto craft-collab's generalized object/property model, the unified hub.* command catalog, deep links, PageRange region locks and presence projections (no networking — the session wiring lands behind the app's `crafthub` feature flag)"
+
+[lints]
+workspace = true
+
+[dependencies]
+designcraft-doc = { workspace = true }
+designcraft-color = { workspace = true }
+# The generalized collaboration core (CraftHub spec §3.4): consumed by git reference exactly as
+# the family consumes `craft-print`, pinned to the reviewed commit. Retargeted to the org's
+# canonical home (storytold/craft-libs or storytold/crafthub) the day that PR merges — a one-line
+# change, noted in this PR's description.
+craft-collab = { git = "https://github.com/hasan-sdaif/crafthub", rev = "1e96a9fb9b8c82ac6ec31818608967b66ef7a527" }
+serde = { workspace = true }
+serde_json = { workspace = true }
