@@ -35,3 +35,4 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 # The same winit as eframe; only the native termination opt-in is used.
 winit = { version = "0.30", default-features = false }
 muda = { version = "0.21", default-features = false }
+designcraft-macos-open = { workspace = true }

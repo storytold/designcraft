@@ -900,6 +900,7 @@ version = "0.8.0"
 dependencies = [
  "arboard",
  "designcraft-engine",
+ "designcraft-macos-open",
  "designcraft-ui-egui",
  "eframe",
  "egui",
@@ -1074,6 +1075,14 @@ dependencies = [
  "image",
  "resvg",
  "tiff",
+]
+
+[[package]]
+name = "designcraft-macos-open"
+version = "0.8.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
