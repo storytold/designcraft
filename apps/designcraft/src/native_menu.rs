@@ -116,7 +116,7 @@ fn build(app: &DesignApp, parent: &Submenu, entries: &[Item], items: &mut HashMa
                 let _ = parent.append(&PredefinedMenuItem::separator());
             }
             Item::Sub(label, children) => {
-                let sub = Submenu::new(designcraft_ui_egui::i18n::tr(&app.ui.language, label), true);
+                let sub = Submenu::new(designcraft_ui_egui::i18n::menu_label(&app.ui.language, label), true);
                 build(app, &sub, children, items, counter);
                 let _ = parent.append(&sub);
             }
