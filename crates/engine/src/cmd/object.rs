@@ -94,10 +94,32 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             clear_transformations
         ),
-        cmd!("transform.shear", "Shear", ["Object", "Transform"], None, "{angle (degrees), ids?}", has_selection, |s, p| {
-            let a = f64_or(p, "angle", 0.0).clamp(-85.0, 85.0).to_radians().tan();
-            apply_about_center(s, p, Affine::new([1.0, 0.0, a, 1.0, 0.0, 0.0]))
-        }),
+        cmd!(
+            "transform.shear",
+            "Shear",
+            ["Object", "Transform"],
+            None,
+            "{angle (degrees), axis?: horizontal|vertical (default horizontal: points slide sideways), origin?: [x, y] (spread coords: the point that stays; default the selection's centre — the Free Transform tool passes the opposite edge), ids?}",
+            has_selection,
+            |s, p| {
+                let a = f64_or(p, "angle", 0.0).clamp(-85.0, 85.0).to_radians().tan();
+                let m = match p.get("axis").and_then(Value::as_str) {
+                    None | Some("horizontal") => Affine::new([1.0, 0.0, a, 1.0, 0.0, 0.0]),
+                    Some("vertical") => Affine::new([1.0, a, 0.0, 1.0, 0.0, 0.0]),
+                    Some(other) => return Err(bad("transform.shear", format!("unknown axis `{other}`"))),
+                };
+                match p.get("origin") {
+                    None | Some(Value::Null) => apply_about_center(s, p, m),
+                    Some(o) => {
+                        let o = serde_json::from_value::<[f64; 2]>(o.clone())
+                            .ok()
+                            .filter(|o| o.iter().all(|v| v.is_finite()))
+                            .ok_or_else(|| bad("transform.shear", "origin is [x, y]"))?;
+                        apply_about(s, p, Point::new(o[0], o[1]), m)
+                    }
+                }
+            }
+        ),
         cmd!(
             "object.matchAttributes",
             "Apply Attributes (Eyedropper)",
@@ -1253,6 +1275,20 @@ fn clear_transformations(s: &mut Session, p: &Value) -> Result<Value> {
             let c = it.bounds().center();
             let inner = it.inner_bounds().center();
             it.xf = Affine::translate(c - inner);
+        }
+        ok()
+    })
+}
+
+/// `a` about `origin` (spread coordinates) on every target.
+fn apply_about(s: &mut Session, p: &Value, origin: Point, a: Affine) -> Result<Value> {
+    let ids = targets(s, p)?;
+    let m = Affine::translate(origin.to_vec2()) * a * Affine::translate(-origin.to_vec2());
+    s.edit(|d, _| {
+        for id in &ids {
+            if let Some(it) = d.item_mut(*id) {
+                it.xf = m * it.xf;
+            }
         }
         ok()
     })
