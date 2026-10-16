@@ -23,6 +23,13 @@ use vello_cpu::{Pixmap, RenderContext, Resources};
 
 pub use vello_cpu;
 
+// Kurbo drops zero-length dash segments before adding round caps. A tiny positive
+// dash draws the dot; shortening the gap preserves the 2w center-to-center period.
+fn dotted_stroke(stroke: kurbo::Stroke, weight: f64) -> kurbo::Stroke {
+    let dash = weight * 0.001;
+    stroke.with_dashes(0.0, [dash, weight * 2.0 - dash]).with_caps(kurbo::Cap::Round)
+}
+
 mod blendspace;
 pub mod damage;
 mod fx;
@@ -703,7 +710,7 @@ impl Renderer {
         let kind = f.doc.stroke_kind(&st.kind);
         match &kind {
             StrokeType::Dashed { pattern } if !pattern.is_empty() => stroke = stroke.with_dashes(0.0, pattern.iter().copied()),
-            StrokeType::Dotted => stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round),
+            StrokeType::Dotted => stroke = dotted_stroke(stroke, st.weight),
             _ => {}
         }
         ctx.set_transform(f.view * xf);
@@ -1440,6 +1447,29 @@ mod tests {
         let (dash, gap) = (img.pixel(106, 500), img.pixel(114, 500));
         assert!(dash[0] < 80 && dash[2] < 80, "dash {dash:?}");
         assert!(gap[0] < 80 && gap[2] > 150, "gap {gap:?}");
+    }
+
+    #[test]
+    fn dotted_object_strokes_draw_round_marks_with_clear_gaps() {
+        let mut d = Document::new(&NewDocument::default());
+        let id = designcraft_doc::ItemId(d.alloc());
+        let path = designcraft_geom::shapes::line(designcraft_geom::Point::new(100.0, 400.0), designcraft_geom::Point::new(148.0, 400.0));
+        let mut line = Item::new(id, d.default_layer(), designcraft_doc::Shape::GraphicLine, path);
+        line.stroke =
+            designcraft_doc::Stroke { swatch: designcraft_color::swatch::BLACK.into(), weight: 2.0, kind: StrokeType::Dotted, ..Default::default() };
+        d.insert_item(SpreadRef::Doc(0), line, None).unwrap();
+        let cache = Cache::new();
+        let mut renderer = Renderer::new();
+        renderer.threads = 0;
+        for scale in [1, 2] {
+            let img = renderer.render_page(&d, &cache, 0, f64::from(scale), false, &RenderOptions::default()).unwrap();
+            for dot in 1..12 {
+                let x = 100 + dot * 4;
+                assert!(img.pixel(x * scale, 400 * scale)[0] < 160, "a dotted object's stroke must remain visible");
+                assert_eq!(img.pixel((x + 2) * scale, 400 * scale), [255; 4], "dotted strokes retain clear gaps");
+                assert_eq!(img.pixel(x * scale, 402 * scale), [255; 4]);
+            }
+        }
     }
 
     #[test]

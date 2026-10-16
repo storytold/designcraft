@@ -560,7 +560,7 @@ fn cell_stroke(s: &designcraft_doc::CellStroke) -> kurbo::Stroke {
         designcraft_doc::StrokeType::Dashed { pattern } if !pattern.is_empty() => {
             st.with_caps(kurbo::Cap::Butt).with_dashes(0.0, pattern.iter().copied())
         }
-        designcraft_doc::StrokeType::Dotted => st.with_dashes(0.0, [0.0, s.weight * 2.0]).with_caps(kurbo::Cap::Round),
+        designcraft_doc::StrokeType::Dotted => crate::dotted_stroke(st, s.weight),
         _ => st,
     }
 }
@@ -587,6 +587,98 @@ impl Renderer {
             let fill = TextPaint::of(doc, &st.fill, st.fill_tint).map(|c| (c, false));
             paint_glyphs(ctx, doc, area, &bp, fill, stroke_of(doc, st), st.stroke_weight, st.stroke_behind_fill);
             self.stats.glyphs += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod table_stroke_tests {
+    use super::*;
+    use designcraft_color::{Color, Swatch};
+    use designcraft_compose::{Cache, StrokeSeg, TableFrag};
+    use designcraft_doc::{CellStroke, Document, StrokeType, build::NewDocument};
+    use designcraft_geom::Point;
+
+    use crate::{RenderOptions, Rendered};
+
+    // Exercise draw_tables and the CPU rasterizer with tinted red, 2 pt edges,
+    // without text/fonts or an IDML dependency.
+    fn render_edge(kind: StrokeType, vertical: bool, reverse: bool, scale: u16) -> Rendered {
+        let mut doc = Document::new(&NewDocument::default());
+        doc.swatches.push(Swatch::color("Brand", Color::rgb8(255, 0, 0)));
+        let cache = Cache::new();
+        let opts = RenderOptions::default();
+        let size = 64 * scale;
+        let view = Affine::scale(f64::from(scale));
+        let f =
+            Frame { doc: &doc, cache: &cache, view, visible: Rect::new(0.0, 0.0, 64.0, 64.0), px: 1.0 / f64::from(scale), opts: &opts, mt: false };
+        let a = Point::new(8.0, 8.0);
+        let b = if vertical { Point::new(8.0, 56.0) } else { Point::new(56.0, 8.0) };
+        let (a, b) = if reverse { (b, a) } else { (a, b) };
+        let ft = FrameText {
+            tables: vec![TableFrag {
+                table: 1,
+                anchor: 0,
+                column: 0,
+                rect: Rect::new(8.0, 8.0, 56.0, 56.0),
+                cells: Vec::new(),
+                strokes: vec![StrokeSeg { a, b, stroke: CellStroke { weight: 2.0, color: "Brand".into(), tint: 0.6, kind } }],
+                line: 0,
+                first: true,
+                last: true,
+            }],
+            ..Default::default()
+        };
+        let mut renderer = Renderer::new();
+        let mut ctx = RenderContext::new(size, size);
+        ctx.set_paint(peniko::Color::from_rgba8(255, 255, 255, 255));
+        ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(size), f64::from(size)));
+        renderer.draw_tables(&mut ctx, &f, &ft, Affine::IDENTITY);
+        ctx.flush();
+        let mut pixels = vec![0; usize::from(size) * usize::from(size) * 4];
+        ctx.render(vello_cpu::PixmapMut::new(size, size, &mut pixels).unwrap(), &mut renderer.resources);
+        Rendered { width: u32::from(size), height: u32::from(size), pixels }
+    }
+
+    fn sample(img: &Rendered, vertical: bool, scale: u16, along: u32, across: u32) -> [u8; 4] {
+        let scale = u32::from(scale);
+        let (x, y) = if vertical { (across, along) } else { (along, across) };
+        img.pixel(x * scale, y * scale)
+    }
+
+    fn assert_tinted_red(pixel: [u8; 4]) {
+        assert!(pixel[0] > 220 && (90..200).contains(&pixel[1]) && (90..200).contains(&pixel[2]), "expected a visible tinted red stroke: {pixel:?}");
+        assert_eq!(pixel[3], 255);
+    }
+
+    #[test]
+    fn dotted_table_edges_draw_tinted_round_marks_and_gaps_at_both_scales() {
+        for scale in [1, 2] {
+            for vertical in [false, true] {
+                for reverse in [false, true] {
+                    let img = render_edge(StrokeType::Dotted, vertical, reverse, scale);
+                    // Interior dots are 4 pt apart (twice the 2 pt weight); both directions
+                    // have the same phase on this 48 pt edge. Zero dashes leave these white.
+                    for dot in 1..12 {
+                        let center = 8 + dot * 4;
+                        assert_tinted_red(sample(&img, vertical, scale, center, 8));
+                        assert_eq!(sample(&img, vertical, scale, center + 2, 8), [255; 4], "dotted strokes must retain clear gaps");
+                        assert_eq!(sample(&img, vertical, scale, center, 10), [255; 4], "a 2 pt dot must not become a thick bar");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn solid_and_dashed_table_edges_keep_their_distinct_pixel_coverage() {
+        for vertical in [false, true] {
+            let solid = render_edge(StrokeType::Solid, vertical, false, 2);
+            assert_tinted_red(sample(&solid, vertical, 2, 9, 8));
+            assert_tinted_red(sample(&solid, vertical, 2, 14, 8));
+            let dashed = render_edge(StrokeType::Dashed { pattern: vec![4.0, 4.0] }, vertical, false, 2);
+            assert_tinted_red(sample(&dashed, vertical, 2, 9, 8));
+            assert_eq!(sample(&dashed, vertical, 2, 14, 8), [255; 4]);
         }
     }
 }
