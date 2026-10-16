@@ -417,6 +417,50 @@ mod parent_base_tests {
         assert_eq!(s.execute("document.inspect", &json!({})).unwrap()["parents"][1]["basedOn"], Value::Null);
     }
 
+    /// Parent B based on A: an A item that B's page overrides, or all of A when B's page hides
+    /// its parent's items, is gone from the pages using B and from B itself; B's own items stay.
+    #[test]
+    fn a_parent_page_hides_the_base_items_it_overrides_or_hides() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"width": 400, "height": 400, "pages": 2, "facingPages": false, "margins": 0})).unwrap();
+        s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+        let a_item = rect(&mut s, json!({"kind": "parent", "index": 0}), [0.0, 0.0, 200.0, 200.0], "[Black]");
+        rect(&mut s, json!({"kind": "parent", "index": 1}), [200.0, 0.0, 400.0, 200.0], "C=100 M=0 Y=0 K=0");
+        s.execute("layout.parents.options", &json!({"parent": "B", "basedOn": "A"})).unwrap();
+        s.execute("layout.pages.applyParent", &json!({"pages": [1], "parent": "B"})).unwrap();
+        let black = |p: [u8; 4]| p[0] < 80 && p[1] < 80 && p[2] < 80;
+        let cyan = |p: [u8; 4]| p[0] < 80 && p[1] > 120 && p[2] > 180;
+        let parent_b = |s: &crate::Session| {
+            let mut rr = designcraft_render::Renderer::new();
+            rr.threads = 0;
+            let placed = [designcraft_render::Placed { spread: designcraft_doc::SpreadRef::Parent(1), xf: designcraft_geom::Affine::IDENTITY }];
+            let opts = designcraft_render::RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+            rr.render(&s.doc().unwrap().doc, &s.cache, &placed, (400, 400), designcraft_geom::Affine::IDENTITY, &opts)
+        };
+        assert!(black(page(&s, 1).pixel(50, 100)) && cyan(page(&s, 1).pixel(300, 100)));
+        let set_b_page = |s: &mut crate::Session, f: &dyn Fn(&mut designcraft_doc::Page)| {
+            s.edit(|d, _| {
+                f(&mut std::sync::Arc::make_mut(&mut d.parents[1]).pages[0]);
+                Ok(())
+            })
+            .unwrap();
+        };
+        // B's page overrides A's square.
+        set_b_page(&mut s, &|p| p.overridden = vec![designcraft_doc::ItemId(a_item)]);
+        let img = page(&s, 1);
+        assert!(!black(img.pixel(50, 100)) && cyan(img.pixel(300, 100)), "{:?} {:?}", img.pixel(50, 100), img.pixel(300, 100));
+        assert!(!black(parent_b(&s).pixel(50, 100)) && cyan(parent_b(&s).pixel(300, 100)));
+        assert!(black(page(&s, 0).pixel(50, 100)), "a page using A still shows it");
+        // B's page hides its parent's items.
+        set_b_page(&mut s, &|p| {
+            p.overridden.clear();
+            p.show_parent_items = false;
+        });
+        let img = page(&s, 1);
+        assert!(!black(img.pixel(50, 100)) && cyan(img.pixel(300, 100)), "{:?} {:?}", img.pixel(50, 100), img.pixel(300, 100));
+        assert!(!black(parent_b(&s).pixel(50, 100)) && cyan(parent_b(&s).pixel(300, 100)));
+    }
+
     /// A's page-number marker shown on parent XYZ (based on A) reads XYZ, as markers on XYZ's own items do.
     #[test]
     fn base_parent_markers_read_the_showing_parent() {
