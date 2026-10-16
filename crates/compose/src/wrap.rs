@@ -95,8 +95,9 @@ pub(crate) fn obstacles<'a>(doc: &Document, story: &'a Story, cs: &ComposedStory
     for ft in cs.frames.iter().filter(|ft| !ft.objects.is_empty()) {
         let Some(loc) = doc.find(ft.frame) else { continue };
         let Some(frame) = doc.item_at(&loc) else { continue };
-        // Text that isn't shown pushes nothing aside.
-        if frame.hidden || doc.layer(frame.layer).is_some_and(|l| !l.visible) {
+        // A hidden frame's objects push nothing aside. A hidden layer's keep wrapping text unless
+        // the layer suppresses their wrap, like page items ([`crate::layer_wraps_text`]).
+        if frame.hidden || !crate::layer_wraps_text(doc, frame.layer) {
             continue;
         }
         let fxf = doc.parent_xf(&loc) * doc.text_xf(frame);

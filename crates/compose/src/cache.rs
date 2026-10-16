@@ -398,6 +398,10 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
             keep.push(top.clone());
             // Page position matters for page-number markers.
             sig.push(loc.top());
+            // The frame's layer decides whether its anchored objects wrap other stories' text.
+            if crate::wrap::has_wrapping_objects(story) {
+                sig.push(usize::from(doc.item_at(&loc).is_some_and(|it| crate::layer_wraps_text(doc, it.layer))));
+            }
             if !spreads.contains(&loc.spread) {
                 spreads.push(loc.spread);
                 // The page under a frame (found by x) gives its grid origin, page rect and side.
@@ -411,8 +415,8 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
                     it.walk(&mut |i| wraps |= i.has_wrap());
                     if wraps {
                         sig.push(Arc::as_ptr(it) as usize);
-                        // Wrap objects on hidden layers don't wrap text.
-                        sig.push(usize::from(doc.layer(it.layer).is_some_and(|l| l.visible)));
+                        // Wrap objects on a hidden layer that suppresses their wrap don't wrap text.
+                        sig.push(usize::from(crate::layer_wraps_text(doc, it.layer)));
                         keep.push(it.clone());
                     }
                 }
