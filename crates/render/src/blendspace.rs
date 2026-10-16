@@ -113,6 +113,7 @@ fn same_document(old: &Document, new: &Document) -> bool {
         modified,
         next_id,
         font_scope,
+        alpha_outlines,
     } = new;
     let same_spreads = |a: &[std::sync::Arc<designcraft_doc::Spread>], b: &[std::sync::Arc<designcraft_doc::Spread>]| {
         a.len() == b.len() && a.iter().zip(b).all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
@@ -124,6 +125,8 @@ fn same_document(old: &Document, new: &Document) -> bool {
         && old.stories.iter().zip(stories).all(|((a, x), (b, y))| a == b && std::sync::Arc::ptr_eq(x, y))
         && old.assets.len() == assets.len()
         && old.assets.iter().zip(assets).all(|((a, x), (b, y))| a == b && std::sync::Arc::ptr_eq(x, y))
+        && old.alpha_outlines.len() == alpha_outlines.len()
+        && old.alpha_outlines.iter().zip(alpha_outlines).all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
         && old.title == *title
         && old.settings == *settings
         && old.layers == *layers

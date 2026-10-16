@@ -13,6 +13,7 @@ designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
 thiserror = { workspace = true }
+log = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }
 

@@ -131,7 +131,9 @@ impl Drop for FontScope {
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl DocState {
-    pub fn new(doc: Document, path: Option<String>) -> Self {
+    pub fn new(mut doc: Document, path: Option<String>) -> Self {
+        // Alpha Channel contour outlines aren't saved: trace them for the document as opened.
+        crate::cmd::alpha_wrap::sync(&mut doc);
         let active_layer = doc.default_layer();
         let doc = Arc::new(doc);
         DocState {
@@ -589,6 +591,7 @@ impl Session {
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
+        crate::cmd::alpha_wrap::sync(&mut doc);
         doc.sync_endnote_story();
         st.doc = Arc::new(doc);
         st.selection = sel;

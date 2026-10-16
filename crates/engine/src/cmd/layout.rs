@@ -50,6 +50,9 @@ fn adjust_layout(d: &mut designcraft_doc::Document, before: &[(designcraft_doc::
             } else {
                 let inner = it.xf.inverse() * m * it.xf;
                 it.path.transform(inner);
+                if let Some(w) = &mut it.wrap.path {
+                    w.transform(inner);
+                }
                 let ib = it.inner_bounds();
                 if let designcraft_doc::Content::Graphic(g) = &mut it.content {
                     // Content keeps its size but moves with the frame; auto-fit refits.

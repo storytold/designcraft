@@ -1834,20 +1834,30 @@ impl<'a> Ex<'a> {
             }
         }
         let w = &it.wrap;
-        el.push(with_props(
-            El::new("TextWrapPreference")
-                .attr("Inverse", bool_s(w.invert))
-                .attr("ApplyToMasterPageOnly", "false")
-                .attr("TextWrapSide", names::wrap_side_out(w.side))
-                .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
-            vec![
-                El::new("TextWrapOffset")
-                    .attr("Top", num(w.offsets[0]))
-                    .attr("Left", num(w.offsets[1]))
-                    .attr("Bottom", num(w.offsets[2]))
-                    .attr("Right", num(w.offsets[3])),
-            ],
-        ));
+        el.push(
+            with_props(
+                El::new("TextWrapPreference")
+                    .attr("Inverse", bool_s(w.invert))
+                    .attr("ApplyToMasterPageOnly", "false")
+                    .attr("TextWrapSide", names::wrap_side_out(w.side))
+                    .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
+                w.path
+                    .iter()
+                    .filter(|p| !p.is_empty())
+                    .map(path_geometry)
+                    .chain([El::new("TextWrapOffset")
+                        .attr("Top", num(w.offsets[0]))
+                        .attr("Left", num(w.offsets[1]))
+                        .attr("Bottom", num(w.offsets[2]))
+                        .attr("Right", num(w.offsets[3]))])
+                    .collect(),
+            )
+            .child(
+                El::new("ContourOption")
+                    .attr("ContourType", names::contour_type_out(w.contour))
+                    .attr("IncludeInsideEdges", if w.inside_edges { "true" } else { "false" }),
+            ),
+        );
         match &it.content {
             Content::Group { items } => {
                 for c in items {

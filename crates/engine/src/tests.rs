@@ -519,6 +519,51 @@ fn object_set_flags_and_wrap_invert() {
     s.execute("selection.set", &json!({"ids": [id]})).unwrap();
     s.execute("object.textWrap", &json!({"mode": "boundingBox", "invert": true})).unwrap();
     assert!(item(&s).wrap.invert);
+    // Side and contour type keep the mode; contour types that need the image aren't accepted.
+    s.execute("object.textWrap", &json!({"mode": "contour"})).unwrap();
+    s.execute("object.textWrap", &json!({"side": "largestArea", "contour": "graphicFrame"})).unwrap();
+    let w = item(&s).wrap;
+    assert_eq!(
+        (w.mode, w.side, w.contour),
+        (designcraft_doc::WrapMode::Contour, designcraft_doc::WrapSide::LargestArea, designcraft_doc::ContourType::GraphicFrame)
+    );
+    assert!(s.execute("object.textWrap", &json!({"contour": "detectEdges"})).is_err());
+    assert!(s.execute("object.textWrap", &json!({"side": "middle"})).is_err());
+}
+
+#[test]
+fn custom_wrap_path_follows_resize_and_yields_to_offsets() {
+    let mut s = session();
+    let r = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "boundingBox"})).unwrap();
+    let inner = s.doc().unwrap().doc.item(id).unwrap().path.clone();
+    let custom = designcraft_geom::PathData::single(designcraft_geom::SubPath::polyline(
+        &[designcraft_geom::Point::new(0.0, 0.0), designcraft_geom::Point::new(40.0, 0.0), designcraft_geom::Point::new(0.0, 100.0)],
+        true,
+    ));
+    s.edit(|d, _| {
+        if let Some(it) = d.item_mut(id) {
+            it.wrap.path = Some(custom.clone());
+        }
+        Ok(())
+    })
+    .unwrap();
+    let wrap_path = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().wrap.path.clone();
+    // Side and mode keep the boundary.
+    s.execute("object.textWrap", &json!({"side": "rightSide"})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "contour"})).unwrap();
+    assert_eq!(wrap_path(&s), Some(custom.clone()));
+    // Resizing scales it with the frame's path.
+    let b = inner.bounds().unwrap();
+    let to = [b.x0, b.y0, b.x0 + 2.0 * b.width(), b.y1];
+    s.execute("transform.resize", &json!({"from": [b.x0, b.y0, b.x1, b.y1], "to": to})).unwrap();
+    let w = wrap_path(&s).unwrap().bounds().unwrap();
+    assert!((w.width() - 80.0).abs() < 1e-6 && (w.height() - 100.0).abs() < 1e-6, "{w:?}");
+    // An offset rebuilds the wrap from the frame.
+    s.execute("object.textWrap", &json!({"offset": 6})).unwrap();
+    assert_eq!(wrap_path(&s), None);
 }
 
 #[test]
@@ -1109,4 +1154,28 @@ fn a_line_fits_when_its_baseline_does() {
     // descent (about 25 pt more) doesn't.
     assert!(!overset(&mut s, 78.5), "the line is set; its descenders hang below the frame");
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
+}
+
+/// Beside an object with text on both sides, every line stays within its segment, however many
+/// lines the paragraph needs (the breaker's segment estimate can run out on narrow segments; a
+/// line it set for the whole column ran across the object).
+#[test]
+fn every_line_beside_a_wrap_stays_within_its_segment() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"facingPages": false})).unwrap();
+    // Placeholder text: paragraphs of a few sentences, some of them starting beside the object.
+    let t = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": ""})).unwrap();
+    s.execute("type.fillWithPlaceholder", &json!({})).unwrap();
+    s.execute("selection.set", &json!({"ids": []})).unwrap();
+    s.execute("frame.create", &json!({"rect": [196, 160, 416, 490]})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "boundingBox", "offset": 6})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let c = s.cache.get(d, designcraft_doc::StoryId(t["story"].as_u64().unwrap()), None);
+    let mut beside = 0;
+    for l in c.frames.iter().flat_map(|f| &f.lines) {
+        let end = l.glyphs.iter().filter(|g| g.visible).map(|g| g.x + g.adv).fold(l.x0, f64::max);
+        assert!(end <= l.x1 + 0.5, "line at {} runs to {end}, past its segment {}..{}", l.baseline, l.x0, l.x1);
+        beside += usize::from(l.x1 < 400.0 || l.x0 > 400.0);
+    }
+    assert!(beside > 20, "lines on both sides of the object: {beside}");
 }

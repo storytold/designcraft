@@ -59,6 +59,11 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Copy", ["Kopieren", "Copier", "Copiar", "コピー", "复制"]),
     ("Paste", ["Einfügen", "Coller", "Pegar", "ペースト", "粘贴"]),
     (
+        "Include Inside Edges",
+        ["Innenkanten einschließen", "Inclure les bords intérieurs", "Incluir bordes interiores", "内側エッジを含める", "包含内边缘"],
+    ),
+    ("Alpha Channel", ["Alphakanal", "Couche alpha", "Canal alfa", "アルファチャンネル", "Alpha 通道"]),
+    (
         "Bulleted & Numbered Lists",
         [
             "Aufzählungszeichen und nummerierte Listen",

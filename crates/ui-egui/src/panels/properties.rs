@@ -1892,6 +1892,62 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     if let Some(o) = set {
         let _ = app.run("object.textWrap", json!({"mode": mode, "offset": o}));
     }
+    let Some(i) = info.as_ref().filter(|i| i.wrap == "boundingBox" || i.wrap == "contour") else { return };
+    let sides = [
+        ("bothSides", "Both Right & Left Sides"),
+        ("rightSide", "Right Side"),
+        ("leftSide", "Left Side"),
+        ("towardsSpine", "Side Towards Spine"),
+        ("awayFromSpine", "Side Away from Spine"),
+        ("largestArea", "Largest Area"),
+    ];
+    wrap_combo(app, ui, "wrap_side", "Wrap To", &sides, &[], &i.wrap_side, "side");
+    if i.wrap == "contour" && i.is_graphic {
+        // Detected edges and image paths aren't offered: they need the image's own analysis or
+        // paths. An imported one shows by name and wraps around the frame.
+        let types = [
+            ("boundingBox", "Bounding Box"),
+            ("alphaChannel", "Alpha Channel"),
+            ("graphicFrame", "Graphic Frame"),
+            ("sameAsClipping", "Same as Clipping"),
+        ];
+        let shown_only = [("detectEdges", "Detect Edges"), ("photoshopPath", "Photoshop Path")];
+        wrap_combo(app, ui, "wrap_contour", "Contour Type", &types, &shown_only, &i.wrap_contour, "contour");
+        if i.wrap_contour == "alphaChannel" {
+            let mut inside = i.wrap_inside_edges;
+            if widgets::checkbox(ui, &mut inside, crate::i18n::tr(&app.ui.language, "Include Inside Edges")).changed() {
+                let _ = app.run("object.textWrap", json!({"insideEdges": inside}));
+            }
+        }
+    }
+}
+
+/// A Text Wrap panel choice: `opts` are offered, `shown_only` only name the current value.
+#[allow(clippy::too_many_arguments)]
+fn wrap_combo(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    salt: &str,
+    caption_text: &str,
+    opts: &[(&str, &str)],
+    shown_only: &[(&str, &str)],
+    cur: &str,
+    key: &str,
+) {
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, caption_text));
+        let shown = opts.iter().chain(shown_only).find(|o| o.0 == cur).map_or(cur, |o| o.1).to_string();
+        egui::ComboBox::from_id_salt(salt).selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &shown))).width(170.0).show_ui(
+            ui,
+            |ui| {
+                for (k, l) in opts {
+                    if ui.selectable_label(*k == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                        let _ = app.run("object.textWrap", json!({ key: k }));
+                    }
+                }
+            },
+        );
+    });
 }
 
 /// The Pathfinder operations, in the order of InDesign's Pathfinder buttons.
@@ -2909,7 +2965,7 @@ mod wrap_panel_tests {
         crate::theme::install_fonts(&ctx, "en");
         // Top and Left, then Bottom and Right, each with its own value (picas here: 0p1 = 1 pt).
         let t: Vec<String> = frame(&mut app, &ctx, vec![]).into_iter().map(|(t, _)| t).filter(|t| !t.is_empty()).collect();
-        assert_eq!(t, ["Invert", "Top", "0p1", "Left", "0p2", "Bottom", "0p3", "Right", "0p4"]);
+        assert_eq!(t, ["Invert", "Top", "0p1", "Left", "0p2", "Bottom", "0p3", "Right", "0p4", "Wrap To", "Both Right & Left Sides"]);
         // Invert, next to the wrap buttons.
         let pos = frame(&mut app, &ctx, vec![]).into_iter().find(|(t, _)| t == "Invert").unwrap().1.center();
         for pressed in [true, false] {

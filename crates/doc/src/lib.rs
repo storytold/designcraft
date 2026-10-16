@@ -448,6 +448,21 @@ pub struct Asset {
     pub page: u32,
 }
 
+/// The outline of a raster image's visible pixels (Text Wrap › Contour › Alpha Channel), in the
+/// image's pixel space (0..width, 0..height). Derived from the image, so not saved: the engine
+/// traces it again when a document opens.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlphaOutline {
+    pub asset: AssetId,
+    pub threshold: u8,
+    pub width: u32,
+    pub height: u32,
+    /// The outer boundaries of the visible areas.
+    pub outer: designcraft_geom::PathData,
+    /// The boundaries of transparent holes those areas enclose (wound the other way).
+    pub holes: designcraft_geom::PathData,
+}
+
 impl Asset {
     /// A raster image (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD), as opposed to a PDF, EPS or SVG.
     pub fn is_raster(&self) -> bool {
@@ -501,6 +516,9 @@ pub struct Document {
     pub sections: Vec<Section>,
     #[serde(default)]
     pub assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Alpha Channel contour outlines of placed images (see [`AlphaOutline`]). Not saved.
+    #[serde(skip)]
+    pub alpha_outlines: Vec<Arc<AlphaOutline>>,
     /// Hyperlinks (Window → Interactive → Hyperlinks).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hyperlinks: Vec<Hyperlink>,
@@ -693,6 +711,11 @@ impl Document {
         let Some(sec) = self.section_of(abs) else { return (abs + 1).to_string() };
         let num = sec.style.format(self.page_number(abs));
         if sec.include_prefix { format!("{}{}", sec.prefix, num) } else { num }
+    }
+
+    /// The Alpha Channel outline of `asset` at `threshold`, once the engine has traced it.
+    pub fn alpha_outline(&self, asset: AssetId, threshold: u8) -> Option<&AlphaOutline> {
+        self.alpha_outlines.iter().map(|o| &**o).find(|o| o.asset == asset && o.threshold == threshold)
     }
 
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {

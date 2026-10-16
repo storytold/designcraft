@@ -427,8 +427,11 @@ pub fn knuth_plass(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &
         return vec![Break { start: 0, end: 0, next: 0, hyphen: false, forced: true }];
     }
     let (mut items, mut ig) = items(glyphs, hyph_after, &[], sp);
-    let narrowest = (0..=glyphs.len().min(64)).map(width).fold(f64::INFINITY, f64::min).max(1.0);
-    if let Some(emergency_after) = overlong_words(&items, &ig, glyphs, narrowest) {
+    // A word gets emergency breaks only when no line could hold it: beside a wrap object some
+    // lines are slivers much narrower than the measure, and a word that fits a full line goes
+    // there instead of being split.
+    let widest = (0..=glyphs.len().min(64)).map(width).fold(1.0, f64::max);
+    if let Some(emergency_after) = overlong_words(&items, &ig, glyphs, widest) {
         (items, ig) = self::items(glyphs, hyph_after, &emergency_after, sp);
     }
     for tolerance in [2.5, 12.0, f64::INFINITY] {
@@ -437,6 +440,29 @@ pub fn knuth_plass(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &
         }
     }
     greedy(glyphs, hyph_after, sp, width, &|_, _, _| 0.0)
+}
+
+/// Width of the first word of `glyphs` after any leading spaces, fully shrunk (the boxes up to
+/// the first break opportunity, emergency breaks aside, and the hyphen a break there adds).
+pub fn first_word_width(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> f64 {
+    // A word this long is wider than any line; the rest of the paragraph doesn't matter.
+    let n = glyphs.len().min(256);
+    let (items, _) = items(glyphs.get(..n).unwrap_or(glyphs), hyph_after.get(..n).unwrap_or(hyph_after), &[], sp);
+    let mut w = 0.0;
+    let mut started = false;
+    for it in &items {
+        match it.kind {
+            Kind::Box => {
+                started = true;
+                w += it.w - it.sh.iter().sum::<f64>();
+            }
+            Kind::Penalty if it.p >= INF => {}
+            Kind::Penalty if started => return w + it.w,
+            Kind::Glue if started => return w,
+            Kind::Glue | Kind::Penalty => {}
+        }
+    }
+    w
 }
 
 /// Glyphs after which a word wider than `measure` may take an emergency break, or `None` when every

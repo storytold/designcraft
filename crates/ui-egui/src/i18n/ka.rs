@@ -31,6 +31,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "ამოჭრა"),
     ("Copy", "კოპირება"),
     ("Paste", "ჩასმა"),
+    ("Include Inside Edges", "შიდა კიდეების ჩართვა"),
     ("Reverse Path", "ტრაექტორიის შებრუნება"),
     ("Set Anchor", "საყრდენი წერტილის დაყენება"),
     ("Clear", "გასუფთავება"),

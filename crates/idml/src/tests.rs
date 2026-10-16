@@ -2598,3 +2598,133 @@ mod liquid_page_rules {
         }
     }
 }
+
+#[test]
+fn imports_and_round_trips_text_wrap_side_and_contour_type() {
+    let wrap = r#"<TextWrapPreference TextWrapMode="Contour" TextWrapSide="LeftSide"><ContourOption ContourType="BoundingBox" IncludeInsideEdges="false"/></TextWrapPreference><Image Self="im""#;
+    let spread = SPREAD.replace(r#"<Image Self="im""#, wrap);
+    assert_ne!(spread, SPREAD);
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let mut d = import_idml(&bytes).unwrap();
+    let id = d.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().id;
+    let w = d.item(id).unwrap().wrap.clone();
+    assert_eq!(
+        (w.mode, w.side, w.contour),
+        (designcraft_doc::WrapMode::Contour, designcraft_doc::WrapSide::LeftSide, designcraft_doc::ContourType::BoundingBox)
+    );
+    // Every side and contour type survives export and import (detected edges included, which
+    // composition follows as the frame's path).
+    d.item_mut(id).unwrap().wrap.side = designcraft_doc::WrapSide::AwayFromSpine;
+    d.item_mut(id).unwrap().wrap.contour = designcraft_doc::ContourType::DetectEdges;
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let w = back.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().wrap.clone();
+    assert_eq!((w.side, w.contour), (designcraft_doc::WrapSide::AwayFromSpine, designcraft_doc::ContourType::DetectEdges));
+    assert!(!w.inside_edges);
+    // An Alpha Channel contour with Include Inside Edges.
+    d.item_mut(id).unwrap().wrap.contour = designcraft_doc::ContourType::AlphaChannel;
+    d.item_mut(id).unwrap().wrap.inside_edges = true;
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let w = back.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().wrap.clone();
+    assert_eq!((w.contour, w.inside_edges), (designcraft_doc::ContourType::AlphaChannel, true));
+}
+
+/// One single-column text frame at (0, 0)-(300, 200) on page 1, beside a 100 pt wide rectangle
+/// with a bounding-box wrap and `wrap_props` inside its `TextWrapPreference/Properties`.
+fn custom_wrap_fixture(wrap_props: &str) -> Vec<u8> {
+    let rect = |w: f64, h: f64| {
+        format!(
+            r#"<PathGeometry><GeometryPathType PathOpen="false"><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="0 {h}"/><PathPointType Anchor="{w} {h}"/><PathPointType Anchor="{w} 0"/></PathPointArray></GeometryPathType></PathGeometry>"#
+        )
+    };
+    let spread = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Spread Self="sp1" PageCount="2" ItemTransform="1 0 0 1 0 0">
+    <Page Self="p1" AppliedMaster="m1" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 -500 -350"/>
+    <Page Self="p2" AppliedMaster="m1" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 0 -350"/>
+    <TextFrame Self="t1" ParentStory="s1" PreviousTextFrame="n" NextTextFrame="n" ItemLayer="L1" ItemTransform="1 0 0 1 -450 -300">
+      <Properties>{frame}</Properties>
+    </TextFrame>
+    <Rectangle Self="w" ItemLayer="L1" ItemTransform="1 0 0 1 -450 -300">
+      <Properties>{obj}</Properties>
+      <TextWrapPreference TextWrapMode="BoundingBoxTextWrap" TextWrapSide="BothSides"><Properties>{wrap_props}<TextWrapOffset Top="0" Left="0" Bottom="0" Right="0"/></Properties></TextWrapPreference>
+    </Rectangle>
+  </Spread>
+</idPkg:Spread>"#,
+        frame = rect(300.0, 200.0),
+        obj = rect(100.0, 200.0),
+    );
+    let words = "wrap ".repeat(120);
+    let story = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>{words}</Content></CharacterStyleRange></ParagraphStyleRange></Story>
+</idPkg:Story>"#
+    );
+    zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", &story),
+    ])
+}
+
+/// The custom boundary: 40 pt wide, the full height of the 100 pt wide rectangle.
+const NARROW_WRAP_PATH: &str = r#"<PathGeometry><GeometryPathType PathOpen="false"><PathPointArray><PathPointType Anchor="0 0" LeftDirection="0 0" RightDirection="0 0"/><PathPointType Anchor="0 200" LeftDirection="0 200" RightDirection="0 200"/><PathPointType Anchor="40 200" LeftDirection="40 200" RightDirection="40 200"/><PathPointType Anchor="40 0" LeftDirection="40 0" RightDirection="40 0"/></PathPointArray></GeometryPathType></PathGeometry>"#;
+
+fn wrapping_item(d: &Document) -> &designcraft_doc::Item {
+    d.spreads[0].items.iter().find(|i| i.wrap.mode != designcraft_doc::WrapMode::None).unwrap()
+}
+
+/// Leftmost line start in the frame.
+fn first_line_x(d: &Document) -> f64 {
+    let sid = *d.stories.keys().next().unwrap();
+    let cs = designcraft_compose::compose_story(d, sid, &Default::default());
+    assert!(cs.frames[0].lines.len() > 3);
+    cs.frames[0].lines.iter().map(|l| l.x0).fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+fn custom_wrap_boundary_imports_composes_and_round_trips() {
+    let plain = import_idml_with(&custom_wrap_fixture(""), &|_| None).unwrap();
+    assert_eq!(wrapping_item(&plain).wrap.path, None);
+    assert!(first_line_x(&plain) >= 100.0 - 1e-6, "the frame's bounds push text to x = 100");
+
+    let d = import_idml_with(&custom_wrap_fixture(NARROW_WRAP_PATH), &|_| None).unwrap();
+    let path = wrapping_item(&d).wrap.path.clone().unwrap();
+    assert_eq!(path.bounds(), Some(Rect::new(0.0, 0.0, 40.0, 200.0)));
+    let x = first_line_x(&d);
+    assert!((40.0 - 1e-6..100.0).contains(&x), "lines start at the custom boundary's edge, not the frame's: {x}");
+
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(wrapping_item(&back).wrap.path, Some(path));
+}
+
+#[test]
+fn hostile_custom_wrap_boundary_is_dropped() {
+    let nan = NARROW_WRAP_PATH.replacen(r#"Anchor="40 200""#, r#"Anchor="NaN 200""#, 1);
+    let inf = NARROW_WRAP_PATH.replacen(r#"Anchor="40 200""#, r#"Anchor="inf 200""#, 1);
+    let huge = format!(
+        r#"<PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>{}</PathPointArray></GeometryPathType></PathGeometry>"#,
+        r#"<PathPointType Anchor="1 1"/>"#.repeat(50_000)
+    );
+    let empty = r#"<PathGeometry><GeometryPathType PathOpen="false"><PathPointArray/></GeometryPathType></PathGeometry>"#;
+    for props in [nan.as_str(), inf.as_str(), huge.as_str(), empty] {
+        let d = import_idml_with(&custom_wrap_fixture(props), &|_| None).unwrap();
+        let it = wrapping_item(&d);
+        assert_eq!(it.wrap.mode, designcraft_doc::WrapMode::BoundingBox);
+        assert_eq!(it.wrap.path, None);
+        assert!(first_line_x(&d) >= 100.0 - 1e-6);
+    }
+}
