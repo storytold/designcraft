@@ -59,6 +59,14 @@ pub fn start() {
         }
         let runner = eframe::WebRunner::new();
         let creator_graphics = graphics.clone();
+        let mut invite = match craft_cloud_client::invite::arrive().await {
+            craft_cloud_client::invite::Arrival::Ordinary => None,
+            craft_cloud_client::invite::Arrival::Refused(reason) => {
+                craft_cloud_client::invite::refuse(&reason);
+                return;
+            }
+            craft_cloud_client::invite::Arrival::Invited(invitation) => Some(invitation),
+        };
         let result = runner
             .start(
                 canvas.clone(),
@@ -74,7 +82,7 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
-                    if has_query_flag(&query(), "sample") {
+                    if invite.is_none() && has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
                     app.cloud.connect(crate::cloud::Service::new(cc.egui_ctx.clone()));
@@ -82,7 +90,9 @@ pub fn start() {
                         app.share.connect(share.for_app("designcraft"));
                     }
                     cloud::start(&mut app);
-                    Ok(Box::new(WebShell { app, inbox }))
+                    if let Some(invitation) = invite.take() {
+                        open_invite(&mut app, invitation);
+                    }
                     Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
                 }),
             )
@@ -340,6 +350,25 @@ fn add_document_recovery_controls(snapshots: Vec<RecoveryDocument>) -> Result<bo
     // The inserted element's id also prevents duplicate buttons on repeated loss notifications.
     actions.insert_before(&documents, actions.first_child().as_ref())?;
     Ok(true)
+}
+
+fn open_invite(app: &mut DesignApp, invitation: craft_cloud_client::invite::Invitation) {
+    let name = invitation.name.clone();
+    match designcraft_ui_egui::cloud::CloudApp::open_bytes(app, &name, invitation.document.clone()) {
+        Ok(Some(_)) => {
+            let mode = if invitation.read_only() { " (view only)" } else { "" };
+            let who = if invitation.recipient.is_empty() { String::new() } else { format!(" (shared with {})", invitation.recipient) };
+            app.status(format!("Opened \"{name}\"{mode}{who}"));
+            if let Err(e) = invitation.join() {
+                log::warn!("invite relay join failed: {e}");
+            }
+        }
+        Ok(None) => app.status(format!("Shared \"{name}\" needs a choice before it opens")),
+        Err(e) => {
+            log::error!("invite open failed: {e}");
+            craft_cloud_client::invite::refuse(&format!("The shared layout could not be opened. {e}"));
+        }
+    }
 }
 
 fn query() -> String {
