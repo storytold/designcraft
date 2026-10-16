@@ -298,16 +298,16 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.colorSettings",
             ">Interface Language",
             "ui:app.language|English|{\"lang\": \"\"}",
-            "ui:app.language|Deutsch|{\"lang\": \"de\"}",
-            "ui:app.language|Français|{\"lang\": \"fr\"}",
-            "ui:app.language|Español|{\"lang\": \"es\"}",
-            "ui:app.language|日本語|{\"lang\": \"ja\"}",
-            "ui:app.language|简体中文|{\"lang\": \"zh\"}",
-            "ui:app.language|العربية|{\"lang\": \"ar\"}",
-            "ui:app.language|Português (Brasil)|{\"lang\": \"pt-br\"}",
-            "ui:app.language|Italiano|{\"lang\": \"it\"}",
-            "ui:app.language|Українська|{\"lang\": \"uk\"}",
-            "ui:app.language|ქართული|{\"lang\": \"ka\"}",
+            "ui:app.language|Deutsch (German)|{\"lang\": \"de\"}",
+            "ui:app.language|Français (French)|{\"lang\": \"fr\"}",
+            "ui:app.language|Español (Spanish)|{\"lang\": \"es\"}",
+            "ui:app.language|日本語 (Japanese)|{\"lang\": \"ja\"}",
+            "ui:app.language|简体中文 (Simplified Chinese)|{\"lang\": \"zh\"}",
+            "ui:app.language|العربية (Arabic)|{\"lang\": \"ar\"}",
+            "ui:app.language|Português do Brasil (Brazilian Portuguese)|{\"lang\": \"pt-br\"}",
+            "ui:app.language|Italiano (Italian)|{\"lang\": \"it\"}",
+            "ui:app.language|Українська (Ukrainian)|{\"lang\": \"uk\"}",
+            "ui:app.language|ქართული (Georgian)|{\"lang\": \"ka\"}",
             "<",
             ">Transparency Flattener Presets",
             "ui:app.flattener|None (keep transparency)|{\"preset\": \"\"}",
@@ -2272,7 +2272,7 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
             }
             Item::Sub(name, children) => {
                 let sub = format!("{path}/{name}");
-                let shown = crate::i18n::tr(&app.ui.language, name).to_owned();
+                let shown = crate::i18n::menu_label(&app.ui.language, name);
                 menu_button(ui, crate::rtl::widget(ui, shown), |ui| {
                     hidden += menu_items(app, ui, children, &sub);
                 });
@@ -3062,7 +3062,7 @@ mod tests {
         assert_eq!(crate::i18n::tr(&restored.language, "A custom name"), "A custom name");
         assert!(menu_tree().iter().flat_map(|(_, entries)| entries.iter()).any(|entry| {
             matches!(entry, Item::Sub(label, children) if label == "Interface Language" && children.iter().any(|child| {
-                matches!(child, Item::Cmd { label, id, params, .. } if label == "Українська" && id == "app.language" && params["lang"] == "uk")
+                matches!(child, Item::Cmd { label, id, params, .. } if label == "Українська (Ukrainian)" && id == "app.language" && params["lang"] == "uk")
             }))
         }));
     }

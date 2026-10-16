@@ -3130,6 +3130,14 @@ fn column(lang: &str) -> Option<usize> {
     }
 }
 
+/// A menu or submenu title in `lang`. The Interface Language submenu keeps its English name beside
+/// the translation, so a language whose script the UI can't draw (no font for it) can still be
+/// switched back.
+pub fn menu_label(lang: &str, s: &str) -> String {
+    let shown = tr(lang, s);
+    if s == "Interface Language" && shown != s { format!("{shown} ({s})") } else { shown.to_owned() }
+}
+
 /// `s` in `lang` (English, or the string itself, when there's no translation).
 pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static GERMAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -3396,5 +3404,30 @@ mod tests {
         assert_eq!(tr("de", "Low Quality Print"), "Low Quality Print");
         // Fixed standard names stay identical in every language.
         assert_eq!(tr("ja", "PDF/X-4"), "PDF/X-4");
+    }
+
+    #[test]
+    fn interface_language_menu_stays_readable_in_every_language() {
+        // A language the UI has no font for draws as "?": its menu must still lead back to English.
+        for (code, _) in LANGUAGES {
+            let title = menu_label(code, "Interface Language");
+            assert!(title.contains("Interface Language"), "{code}: {title}");
+        }
+        assert_eq!(menu_label("", "Interface Language"), "Interface Language");
+        assert_eq!(menu_label("ar", "File"), tr("ar", "File"));
+        let entries = crate::menus::menu_tree().into_iter().flat_map(|(_, entries)| entries);
+        let Some(crate::menus::Item::Sub(_, langs)) =
+            entries.into_iter().find(|e| matches!(e, crate::menus::Item::Sub(name, _) if name == "Interface Language"))
+        else {
+            panic!("no Interface Language submenu");
+        };
+        let labels: Vec<&str> =
+            langs.iter().filter_map(|it| if let crate::menus::Item::Cmd { label, .. } = it { Some(label.as_str()) } else { None }).collect();
+        assert_eq!(labels.len(), LANGUAGES.len());
+        for label in labels {
+            // Every entry names its language in Latin script (English, or "native (English)").
+            assert!(label == "English" || label.ends_with(')'), "{label}");
+            assert!(label.chars().any(|c| c.is_ascii_alphabetic()), "{label}");
+        }
     }
 }
