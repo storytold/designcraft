@@ -2371,6 +2371,20 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("object.transparencyGroup", json!({"knockout": ko}));
         }
     });
+    // The fx button, as at the bottom of InDesign's Effects panel: each effect opens the Effects
+    // dialog on its page.
+    let fx = ui
+        .add(egui::Button::new(egui::RichText::new("fx").italics().strong()).min_size(vec2(28.0, 20.0)))
+        .on_hover_text(crate::i18n::tr(&app.ui.language, "Add an object effect to the selected target"));
+    egui::Popup::menu(&fx).show(|ui| {
+        for (page, label) in crate::effects_dialog::PAGES {
+            let text = format!("{}…", crate::i18n::tr(&app.ui.language, label));
+            if ui.button(crate::rtl::widget(ui, text)).clicked() {
+                crate::effects_dialog::open(app, page);
+                ui.close();
+            }
+        }
+    });
 }
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {

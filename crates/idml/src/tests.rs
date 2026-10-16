@@ -2274,6 +2274,28 @@ fn frame_preference_property_color_resolves_for_frames_and_object_styles() {
     assert_eq!(d.styles.object_style("Child").unwrap().text_frame.as_ref().unwrap().column_rule_color, "Near");
 }
 
+#[test]
+fn feather_choke_and_corners_round_trip() {
+    use designcraft_doc::{Effects, FeatherCorners, FeatherOptions, Item, ItemId};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let feathers = [(6.0, 40.0, FeatherCorners::Sharp), (4.0, 0.0, FeatherCorners::Rounded), (3.0, 12.5, FeatherCorners::Diffused)];
+    let fx = |(w, choke, corners): (f64, f64, FeatherCorners)| Effects {
+        feather: w,
+        feather_options: FeatherOptions { choke, corners },
+        ..Default::default()
+    };
+    for (i, f) in feathers.into_iter().enumerate() {
+        let x = 40.0 + 120.0 * i as f64;
+        let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(x, 40.0, x + 100.0, 140.0)));
+        it.effects = fx(f);
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let got: Vec<_> = back.spreads[0].items.iter().map(|i| i.effects.clone()).collect();
+    assert_eq!(got, feathers.map(fx));
+}
+
 /// A two-page spread with ruler guides on its pages (and one on the parent), in `origin` ruler
 /// coordinates.
 fn guides_package(origin: &str) -> Vec<u8> {

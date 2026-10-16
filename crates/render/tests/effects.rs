@@ -123,6 +123,7 @@ fn drop_shadow_of_text_follows_the_glyphs() {
     d.story_mut(sid).unwrap().format_chars(0..6, |f| f.over.size = Some(40.0));
     let ds = &mut d.item_mut(fid).unwrap().effects.drop_shadow;
     ds.on = true;
+    ds.angle = 135.0;
     ds.distance = 4.0;
     ds.size = 3.0;
     let img = render(&d);
@@ -155,6 +156,7 @@ fn inner_shadow_darkens_inside_the_lit_edge() {
     let id = rect_item(&mut d, Rect::new(30.0, 30.0, 130.0, 130.0), "C=0 M=0 Y=100 K=0");
     let s = &mut d.item_mut(id).unwrap().effects.inner_shadow;
     s.on = true;
+    s.angle = 135.0;
     s.distance = 8.0;
     s.size = 8.0;
     s.opacity = 1.0;
@@ -221,6 +223,47 @@ fn multithreaded_effects_match_single_threaded() {
         let worst = a.pixels.iter().zip(&b.pixels).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
         assert!(worst <= 4, "case {i}: max channel difference {worst}");
     }
+}
+
+#[test]
+fn inner_glow_mode_and_technique() {
+    let mut d = doc();
+    let id = rect_item(&mut d, Rect::new(30.0, 30.0, 130.0, 130.0), "[Paper]");
+    let g = &mut d.item_mut(id).unwrap().effects.inner_glow;
+    g.on = true;
+    g.color = "[Black]".into();
+    g.opacity = 1.0;
+    g.size = 20.0;
+    // Screen (the default) can't darken white paper; Multiply can.
+    let screen = render(&d);
+    assert!(lum(screen.pixel(32, 80)) > 740, "{:?}", screen.pixel(32, 80));
+    d.item_mut(id).unwrap().effects.inner_glow.mode = designcraft_color::BlendMode::Multiply;
+    let soft = render(&d);
+    assert!(lum(soft.pixel(32, 80)) + 150 < lum(screen.pixel(32, 80)), "a dark edge: {:?}", soft.pixel(32, 80));
+    // Precise keeps the glow nearer the edge than Softer.
+    d.item_mut(id).unwrap().effects.inner_glow.technique = designcraft_doc::GlowTechnique::Precise;
+    let precise = render(&d);
+    assert!(lum(precise.pixel(42, 80)) > lum(soft.pixel(42, 80)) + 30, "{:?} vs {:?}", precise.pixel(42, 80), soft.pixel(42, 80));
+}
+
+#[test]
+fn feather_choke_and_corners() {
+    let mut d = doc();
+    let id = rect_item(&mut d, Rect::new(30.0, 30.0, 130.0, 130.0), "[Black]");
+    d.item_mut(id).unwrap().effects.feather = 16.0;
+    let diffused = render(&d);
+    golden("feather", &diffused);
+    // Choke: half the width stays opaque, so the fade is shorter.
+    d.item_mut(id).unwrap().effects.feather_options.choke = 50.0;
+    let choked = render(&d);
+    assert!(lum(choked.pixel(38, 80)) + 60 < lum(diffused.pixel(38, 80)), "{:?} vs {:?}", choked.pixel(38, 80), diffused.pixel(38, 80));
+    assert!(lum(choked.pixel(30, 80)) > 500, "still transparent at the path");
+    // Sharp corners keep more of the corner than Rounded ones (past the fade, near the corner).
+    d.item_mut(id).unwrap().effects.feather_options = designcraft_doc::FeatherOptions { choke: 0.0, corners: designcraft_doc::FeatherCorners::Sharp };
+    let sharp = render(&d);
+    d.item_mut(id).unwrap().effects.feather_options.corners = designcraft_doc::FeatherCorners::Rounded;
+    let rounded = render(&d);
+    assert!(lum(sharp.pixel(41, 41)) + 20 < lum(rounded.pixel(41, 41)), "{:?} vs {:?}", sharp.pixel(41, 41), rounded.pixel(41, 41));
 }
 
 /// A frame (30..130) holding a pasted-in black square that overhangs it (Edit › Paste Into).

@@ -767,7 +767,7 @@ impl Default for DropShadow {
             on: false,
             color: designcraft_color::swatch::BLACK.into(),
             opacity: 0.75,
-            angle: 135.0,
+            angle: 120.0,
             distance: 7.0,
             size: 5.0,
             spread: 0.0,
@@ -799,7 +799,7 @@ impl Default for InnerShadow {
             on: false,
             color: designcraft_color::swatch::BLACK.into(),
             opacity: 0.75,
-            angle: 135.0,
+            angle: 120.0,
             distance: 7.0,
             size: 7.0,
             choke: 0.0,
@@ -838,6 +838,9 @@ pub struct Effects {
     pub drop_shadow: DropShadow,
     /// Basic feather width (0 = off).
     pub feather: f64,
+    /// Basic feather's choke and corners.
+    #[serde(skip_serializing_if = "is_default")]
+    pub feather_options: FeatherOptions,
     #[serde(skip_serializing_if = "is_default")]
     pub inner_shadow: InnerShadow,
     #[serde(skip_serializing_if = "is_default")]
@@ -852,6 +855,39 @@ pub struct Effects {
     pub satin: Satin,
     #[serde(skip_serializing_if = "is_default")]
     pub directional_feather: DirectionalFeather,
+}
+
+/// Basic Feather › Corners: how the fade follows the shape's corners.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FeatherCorners {
+    /// Mitred: the fade keeps the corners sharp.
+    Sharp,
+    /// The fade rounds the corners by its width.
+    Rounded,
+    /// From opaque to transparent, softly (InDesign's default).
+    #[default]
+    Diffused,
+}
+
+/// Basic Feather options besides its width.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FeatherOptions {
+    /// Percentage (0–100) of the width that stays opaque: the fade gets shorter.
+    pub choke: f64,
+    pub corners: FeatherCorners,
+}
+
+/// Inner/Outer Glow › Technique.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GlowTechnique {
+    /// A soft, blurred glow.
+    #[default]
+    Softer,
+    /// A glow that keeps closer to the shape's edges.
+    Precise,
 }
 
 /// Directional Feather: each side fades over its own width (item space, before rotation).
@@ -875,11 +911,23 @@ pub struct InnerGlow {
     pub choke: f64,
     /// Glow from the centre instead of the edges.
     pub center: bool,
+    /// How the glow blends with the object (InDesign: Screen).
+    pub mode: BlendMode,
+    pub technique: GlowTechnique,
 }
 
 impl Default for InnerGlow {
     fn default() -> Self {
-        InnerGlow { on: false, color: designcraft_color::swatch::PAPER.into(), opacity: 0.75, size: 7.0, choke: 0.0, center: false }
+        InnerGlow {
+            on: false,
+            color: designcraft_color::swatch::PAPER.into(),
+            opacity: 0.75,
+            size: 7.0,
+            choke: 0.0,
+            center: false,
+            mode: BlendMode::Screen,
+            technique: GlowTechnique::Softer,
+        }
     }
 }
 

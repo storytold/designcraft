@@ -1818,7 +1818,18 @@ impl<'a> Ex<'a> {
                 );
             }
             if it.effects.feather > 0.0 {
-                t.push(El::new("FeatherSetting").attr("Mode", "Standard").attr("Width", num(it.effects.feather)));
+                let corners = match it.effects.feather_options.corners {
+                    designcraft_doc::FeatherCorners::Sharp => "Sharp",
+                    designcraft_doc::FeatherCorners::Rounded => "Rounded",
+                    designcraft_doc::FeatherCorners::Diffused => "Diffusion",
+                };
+                t.push(
+                    El::new("FeatherSetting")
+                        .attr("Mode", "Standard")
+                        .attr("Width", num(it.effects.feather))
+                        .attr("ChokeAmount", num(it.effects.feather_options.choke))
+                        .attr("CornerType", corners),
+                );
             }
             el.push(t);
         }

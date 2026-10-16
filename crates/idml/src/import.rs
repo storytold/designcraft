@@ -2419,7 +2419,17 @@ impl<'r> Importer<'r> {
             if let Some(f) = t.find("FeatherSetting")
                 && f.get("Mode").is_some_and(|m| m != "None")
             {
-                it.effects = Effects { feather: f.num("Width").unwrap_or(9.0), ..it.effects.clone() };
+                let choke = f.num("ChokeAmount").filter(|c| c.is_finite()).unwrap_or(0.0).clamp(0.0, 100.0);
+                let corners = match f.get("CornerType") {
+                    Some("Sharp") => designcraft_doc::FeatherCorners::Sharp,
+                    Some("Rounded") => designcraft_doc::FeatherCorners::Rounded,
+                    _ => designcraft_doc::FeatherCorners::Diffused,
+                };
+                it.effects = Effects {
+                    feather: f.num("Width").unwrap_or(9.0),
+                    feather_options: designcraft_doc::FeatherOptions { choke, corners },
+                    ..it.effects.clone()
+                };
             }
         }
         // Text wrap.
