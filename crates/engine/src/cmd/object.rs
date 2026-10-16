@@ -4369,6 +4369,22 @@ mod line_end_tests {
         s.execute("note.edit", &json!({"story": n["story"], "id": n["id"], "text": "Three\r\nFour"})).unwrap();
         assert_eq!(note(&mut s), "Three\nFour");
     }
+
+    /// "One\u{B}Two" kept the vertical tab, drawn as a missing-glyph box, where Word and
+    /// PowerPoint text (Chr(11)) means a forced line break.
+    #[test]
+    fn vertical_tabs_are_forced_line_breaks() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "One\u{B}Two"})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let story = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!((story(&s).text.as_str(), story(&s).paras.len()), ("One\u{2028}Two", 1));
+        s.execute("text.insert", &json!({"text": "\u{B}Three", "raw": true})).unwrap();
+        assert_eq!((story(&s).text.as_str(), story(&s).paras.len()), ("One\u{2028}Two\u{2028}Three", 1));
+        s.execute("story.setText", &json!({"story": sid.0, "text": "A\u{B}B\rC"})).unwrap();
+        assert_eq!((story(&s).text.as_str(), story(&s).paras.len()), ("A\u{2028}B\nC", 2));
+    }
 }
 
 #[cfg(test)]
