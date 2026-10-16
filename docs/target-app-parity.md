@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (Based on Parent) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (parent pages' overrides and Show Parent Items) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -426,7 +426,7 @@ It is evidence of breadth: each item exists. It is not a claim of InDesign-level
 - Stroke panel: cap, join, miter limit, alignment, type, Start/End arrowheads (12 kinds, drawn on screen and in PDF; the path is shortened under pointed heads) and gap colour under dashes and dots.
 - Preferences (⌘K: General, Type, Units & Increments, Grids, Guides & Pasteboard, Display Performance) backed by `prefs.set` (application) and `document.preferences` (units, increments, grids — undoable, saved with the document; right-click a ruler to pick its units, the horizontal and vertical rulers each have their own); scaling applies to content and scales stroke weights (Include Stroke Weight), and X/Y/W/H measure the stroke's outer edge (Dimensions Include Stroke Weight). Quick Apply (⌘Return) finds paragraph, character and object styles as well as commands.
 - Parent item overrides: Cmd+Shift-click a parent item on a page (or Override All Parent Page Items, ⌥⇧⌘L) makes an editable local copy that hides the parent's; Remove All Local Overrides and Detach All Objects from Parent in the Pages panel menu.
-- Based on Parent (`layout.parents.options {parent, basedOn}`): a parent shows its base parent's items under its own, on its pages and on the parent itself; chains work, cycles are refused, and items from any parent in the chain can be overridden. IDML carries it as the parent pages' `AppliedMaster`; a cycle or missing base in a file is cleared with a warning on open. The Pages panel has no Parent Options dialog yet.
+- Based on Parent (`layout.parents.options {parent, basedOn}`): a parent shows its base parent's items under its own, on its pages and on the parent itself; chains work, cycles are refused, and items from any parent in the chain can be overridden. A parent page's own overrides (IDML `OverrideList`) and Show Parent Items apply wherever it shows. IDML carries it as the parent pages' `AppliedMaster`; a cycle or missing base in a file is cleared with a warning on open. The Pages panel has no Parent Options dialog yet.
 - Place PDF: placed PDF pages are sized by their crop box, drawn on screen through hayro (with mip levels) and embedded in exported PDFs as vector form XObjects (krilla), `<PDF>` in IDML.
 - Menus expose the engine's features (TOC, numbering & sections, text variables, hyperlinks, cross-references, footnotes, step and repeat, spelling, fitting/content, effects, Data Merge, Preflight, EPUB); any menu command with parameters gets a dialog generated from its parameter documentation.
 - Table of contents (generate/update, dot leaders) and text variables (running headers, last page number, chapter number, file name, dates, custom) resolved per page.
