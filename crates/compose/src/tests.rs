@@ -1603,7 +1603,7 @@ fn kashidas_stretch_justified_arabic_before_spaces() {
 #[test]
 fn kashidas_without_tatweel_fall_back_to_spaces() {
     // A private database excludes host fonts without mutating the global database
-    // used by parallel tests. Bundled Latin/Japanese fonts have no tatweel.
+    // used by parallel tests. The helper selects a synthetic font without tatweel.
     let db = FontDb::with_font_dirs(Vec::new());
     db.set_system_fallback(false);
     check_kashida_justification(&db, true);
@@ -1618,8 +1618,18 @@ fn check_kashida_justification(db: &FontDb, require_fallback: bool) {
         ..Default::default()
     };
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 260.0, 400.0), lid, text, pf).unwrap();
-    // The Arabic is drawn from a fallback font when the database has one.
-    d.settings.glyph_fallback = true;
+    // Exercise the no-tatweel case with explicit glyph coverage, independently
+    // of the real Arabic fonts supplied by the manifest or the operating system.
+    if require_fallback {
+        const FAMILY: &str = "DC Test Arabic Without Tatweel";
+        let glyphs: Vec<_> =
+            text.chars().collect::<std::collections::BTreeSet<_>>().into_iter().map(|ch| (ch, if ch == ' ' { ' ' } else { 'X' })).collect();
+        assert_eq!(db.add_font(designcraft_fonts::testing::font_mapping(FAMILY, &glyphs).unwrap()), 1);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        d.settings.glyph_fallback = false;
+    } else {
+        d.settings.glyph_fallback = true;
+    }
     let composed = |d: &Document| compose_with_db(d, d.story(sid).unwrap(), &frame_specs(d, sid), &ComposeOptions::default(), db);
     let first = |d: &Document| composed(d).frames[0].lines[0].clone();
     let with = first(&d);
@@ -3262,8 +3272,22 @@ fn arabic_explicit_isolated_forms_disable_contextual_joining() {
     d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.positional_form = Some("Isolated".into()));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let gs = &cs.frames[0].lines[0].glyphs;
-    for g in gs {
-        assert_eq!(g.gid, g.face.glyph_for('ب'));
+    assert!(!gs.is_empty());
+    if gs.iter().any(|g| g.face.glyph_for('ب') == 0) {
+        eprintln!("skipped: no Arabic font covers the fixture (set CRAFT_FONTS_DIR to a checkout with Arabic fonts)");
+        return;
+    }
+    assert!(gs.iter().all(|g| text.char_indices().any(|(byte, _)| byte == g.byte)));
+    for (byte, ch) in text.char_indices() {
+        let cluster: Vec<_> = gs.iter().filter(|g| g.byte == byte).collect();
+        assert!(!cluster.is_empty(), "missing character cluster at {byte}");
+        // OpenType ccmp may decompose one letter into a base and a dot glyph.
+        // Compare the complete ordered sequence to the same letter shaped alone.
+        let isolated = designcraft_fonts::shape(&cluster[0].face, &ch.to_string(), &[], |c| c);
+        assert!(!isolated.is_empty() && isolated.iter().all(|g| g.cluster == 0 && g.gid != 0));
+        assert_eq!(cluster.iter().map(|g| g.gid).collect::<Vec<_>>(), isolated.iter().map(|g| g.gid).collect::<Vec<_>>());
+        assert_eq!(cluster[0].len, ch.len_utf8());
+        assert!(cluster.iter().skip(1).all(|g| g.len == 0));
     }
 }
 

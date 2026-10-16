@@ -8,10 +8,20 @@ const HANGUL: char = '한';
 const KANA: char = 'あ';
 const BOPOMOFO: char = 'ㄅ';
 
+// These fixtures model Japanese-only Craft fonts plus synthetic installed chain fonts.
+// Full-manifest registration is covered separately by works_without_craft_fonts.
+fn japanese_fixture(db: FontDb) -> FontDb {
+    db.faces
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|face| !crate::CRAFT_FONTS.iter().any(|font| !font.scripts.contains(&"Jpan") && font.family == face.family));
+    db
+}
+
 /// A database of the bundled fonts (and the craft-fonts Japanese faces, when built with them)
 /// only, no system fonts, plus `fonts` as (family, chars).
 fn db_with(fonts: &[(&str, &[char])]) -> FontDb {
-    let db = FontDb::with_font_dirs(vec![]);
+    let db = japanese_fixture(FontDb::with_font_dirs(vec![]));
     for (family, chars) in fonts {
         assert_eq!(db.add_font(font_with(family, chars).unwrap()), 1, "{family}");
     }
@@ -112,7 +122,7 @@ fn chain_fonts_load_from_the_font_folders_when_first_needed() {
     // An added font covers the ideograph, so the language-blind search never scans the folder.
     let other = || font_with("Other CJK", &[HAN]).unwrap();
 
-    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let db = japanese_fixture(FontDb::with_font_dirs(vec![dir.clone()]));
     db.add_font(other());
     assert_eq!(family(&db, HAN, None).as_deref(), Some(first_loaded("Other CJK")));
     assert!(!db.is_loaded("Songti SC"), "no language, no chain font loaded");
@@ -121,7 +131,7 @@ fn chain_fonts_load_from_the_font_folders_when_first_needed() {
     assert_eq!(family(&db, HAN, None).as_deref(), Some(first_loaded("Other CJK")), "once loaded, still not used without the language");
 
     // With the system fallback off, installed chain fonts aren't loaded.
-    let db = FontDb::with_font_dirs(vec![dir]);
+    let db = japanese_fixture(FontDb::with_font_dirs(vec![dir]));
     db.add_font(other());
     db.set_system_fallback(false);
     assert_eq!(family(&db, HAN, Some("ko")).as_deref(), Some(first_loaded("Other CJK")));
@@ -152,7 +162,8 @@ fn malayalam_fonts_load_from_the_font_folders_when_first_needed() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("noto.ttf"), font_with("Noto Sans Malayalam", &[KA]).unwrap()).unwrap();
-    let db = FontDb::with_font_dirs(vec![dir]);
+    // This test measures lazy loading from the fixture folder, not embedded input faces.
+    let db = japanese_fixture(FontDb::with_font_dirs(vec![dir]));
     db.add_font(font_with("Arial Unicode MS", &[KA]).unwrap());
     assert!(!db.is_loaded("Noto Sans Malayalam"));
     assert_eq!(family(&db, KA, None).as_deref(), Some("Noto Sans Malayalam"));

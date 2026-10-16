@@ -48,8 +48,24 @@ pub fn japanese_fonts() -> impl Iterator<Item = &'static CraftFont> {
 /// Japanese faces in document-fallback order: Mincho (serif) families first, matching the
 /// serif default text font, then the others; Regular before other styles.
 pub fn japanese_document_fonts() -> Vec<&'static CraftFont> {
-    let mut v: Vec<_> = japanese_fonts().collect();
+    japanese_document_fonts_from(CRAFT_FONTS)
+}
+
+fn japanese_document_fonts_from(fonts: &[CraftFont]) -> Vec<&CraftFont> {
+    let mut v: Vec<_> = fonts.iter().filter(|f| f.scripts.contains(&"Jpan")).collect();
     v.sort_by_key(|f| (!f.family.contains("Mincho"), f.style != "Regular"));
+    v
+}
+
+/// All faces from the optional craft-fonts input, with Japanese document fallbacks first.
+/// Remaining faces keep manifest order. Empty when built without craft-fonts.
+pub fn document_fonts() -> Vec<&'static CraftFont> {
+    document_fonts_from(CRAFT_FONTS)
+}
+
+fn document_fonts_from(fonts: &[CraftFont]) -> Vec<&CraftFont> {
+    let mut v = japanese_document_fonts_from(fonts);
+    v.extend(fonts.iter().filter(|f| !f.scripts.contains(&"Jpan")));
     v
 }
 
@@ -553,6 +569,38 @@ mod tests {
         for language in [Some("ja"), None] {
             let fb = db.fallback_for('語', latin.id(), language).unwrap();
             assert!(fb.family.contains("Mincho"), "{language:?}: {fb:?}");
+        }
+    }
+
+    #[test]
+    fn document_fonts_keep_japanese_priority_and_include_every_face_once() {
+        let font = |family, style, scripts| CraftFont { family, style, scripts, bytes: &[] };
+        let fonts = [
+            font("Chinese", "Regular", &["Hans"]),
+            font("Gothic", "Regular", &["Jpan"]),
+            font("Mincho", "Bold", &["Jpan"]),
+            font("Arabic", "Regular", &["Arab"]),
+            font("Mincho", "Regular", &["Jpan", "Hans"]),
+            font("Thai", "Regular", &["Thai"]),
+        ];
+        let ordered: Vec<_> = document_fonts_from(&fonts).into_iter().map(|f| (f.family, f.style)).collect();
+        assert_eq!(
+            ordered,
+            [("Mincho", "Regular"), ("Mincho", "Bold"), ("Gothic", "Regular"), ("Chinese", "Regular"), ("Arabic", "Regular"), ("Thai", "Regular"),]
+        );
+        assert!(document_fonts_from(&[]).is_empty());
+    }
+
+    #[test]
+    fn all_supplied_craft_font_families_are_registered_without_system_fonts() {
+        if CRAFT_FONTS.is_empty() {
+            eprintln!("skipped: built without craft-fonts (set CRAFT_FONTS_DIR to a checkout)");
+            return;
+        }
+        let db = FontDb::with_font_dirs(vec![]);
+        db.set_system_fallback(false);
+        for font in CRAFT_FONTS {
+            assert_eq!(db.face(font.family, font.style).family, font.family, "{} {}", font.family, font.style);
         }
     }
 
