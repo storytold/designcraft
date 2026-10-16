@@ -673,10 +673,41 @@ pub(crate) fn collapse_tcy(glyphs: &mut [Glyph], vertical: bool) {
     }
 }
 
+/// A character the "Roman Only" kerning methods leave alone: what is set upright in vertical
+/// text (ideographs, kana, Hangul, CJK symbols and punctuation, full-width forms), the half-width
+/// forms and the reference mark U+203B.
+pub(crate) fn is_cjk_char(c: char) -> bool {
+    crate::upright_in_vertical(c) || matches!(c as u32, 0xFF61..=0xFFEF) || c == '\u{203B}'
+}
+
+/// `run` of `src` split where it passes between CJK and other characters, each part with whether
+/// it is CJK; the whole run, not CJK, when `split` is off. A combining mark or variation selector
+/// stays with the character it follows, so an ideographic variation sequence is shaped whole.
+pub(crate) fn kerning_runs(src: &str, run: std::ops::Range<usize>, split: bool) -> Vec<(std::ops::Range<usize>, bool)> {
+    let Some(text) = src.get(run.clone()).filter(|_| split) else { return vec![(run, false)] };
+    let mut out: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
+    for (i, c) in text.char_indices() {
+        let (start, end, cjk) = (run.start + i, run.start + i + c.len_utf8(), is_cjk_char(c));
+        match out.last_mut() {
+            Some((r, k)) if *k == cjk || is_mark(c) || is_variation_selector(c) => r.end = end,
+            _ => out.push((start..end, cjk)),
+        }
+    }
+    if out.is_empty() {
+        out.push((run, false));
+    }
+    out
+}
+
+/// A variation selector (U+FE00..FE0F, U+E0100..E01EF): shaped with the character before it.
+fn is_variation_selector(c: char) -> bool {
+    matches!(c as u32, 0xFE00..=0xFE0F | 0xE0100..=0xE01EF)
+}
+
 fn features_for(p: &CharProps) -> Vec<Feature> {
     let mut v = Vec::new();
     // Optical kerning replaces the font's pairs with measured ones (`crate::optical`).
-    if p.kerning != Kerning::Metrics {
+    if !matches!(p.kerning, Kerning::Metrics | Kerning::MetricsRomanOnly) {
         v.extend(feature("-kern"));
     }
     if !p.ligatures || p.tracking.abs() > 1e-9 {
@@ -1215,14 +1246,29 @@ fn shape_segment(
     // Tate-chu-yoko is set across the line, so it stays horizontal.
     let mut shaped: Vec<ShapedGlyph> = Vec::new();
     let mut upright: Vec<bool> = Vec::new();
-    for (r, up) in upright_runs(src, vertical && !p.tate_chu_yoko, mode.rotate_roman) {
+    // "Metrics - Roman Only": the CJK characters of the run are shaped without pair kerning.
+    let roman_only = p.kerning == Kerning::MetricsRomanOnly;
+    let (mut unkerned_feats, mut unkerned_upright_feats) = (feats.clone(), upright_feats.clone());
+    if roman_only {
+        unkerned_feats.extend(feature("-kern"));
+        unkerned_upright_feats.extend(feature("-kern"));
+    }
+    for (run, up) in upright_runs(src, vertical && !p.tate_chu_yoko, mode.rotate_roman) {
+        for (r, cjk) in kerning_runs(src, run, roman_only) {
         let around = match replacement {
             None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
             Some(_) => ("", ""),
         };
-        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around);
+            let f = match (up, cjk) {
+                (true, true) => &unkerned_upright_feats,
+                (true, false) => &upright_feats,
+                (false, true) => &unkerned_feats,
+                (false, false) => &feats,
+            };
+            let g = shape_cached(face, &src[r.clone()], f, lang, caps, up, around);
         upright.extend(std::iter::repeat_n(up, g.len()));
         shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: g.cluster + r.start, ..g }));
+    }
     }
     // Upright glyphs fill the ideographic em box across the line.
     let (em_top, em_bottom) = face.em_box();

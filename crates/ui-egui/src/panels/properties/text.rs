@@ -597,6 +597,7 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
     let kind = k["kind"].as_str().unwrap_or("metrics");
     let manual = k["value"].as_f64().filter(|v| kind == "manual" && v.is_finite());
     let label = match (kind, manual) {
+        ("metricsRomanOnly", _) => "Metrics - Roman Only".to_string(),
         ("optical", _) => "Optical".to_string(),
         ("none", _) => "0".to_string(),
         ("manual", Some(v)) => format!("{v}"),
@@ -606,7 +607,7 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
     let name = crate::i18n::tr(&app.ui.language, "Kerning");
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, name));
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        for (text, v) in [("Metrics", json!({"kind": "metrics"})), ("Optical", json!({"kind": "optical"})), ("0", json!({"kind": "none"}))] {
+        for (text, v) in [("Metrics", json!({"kind": "metrics"})), ("Metrics - Roman Only", json!({"kind": "metricsRomanOnly"})), ("Optical", json!({"kind": "optical"})), ("0", json!({"kind": "none"}))] {
             if ui.selectable_label(label == text, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, text))).clicked() {
                 let _ = app.run("type.kernPair", json!({"kerning": v}));
                 ui.close();

@@ -935,6 +935,50 @@ fn set_with_kerning(text: &str, kerning: designcraft_doc::Kerning) -> (f64, Vec<
 }
 
 #[test]
+fn roman_only_kerning_keeps_the_fonts_pairs_for_roman_text() {
+    use designcraft_doc::Kerning;
+    // With no CJK character in the run, "Metrics - Roman Only" sets exactly what "Metrics" sets.
+    for text in ["AV", "To", "Wa"] {
+        let (metrics, _) = set_with_kerning(text, Kerning::Metrics);
+        let (roman_only, _) = set_with_kerning(text, Kerning::MetricsRomanOnly);
+        assert!((metrics - roman_only).abs() < 1e-9, "{text}: {metrics} vs {roman_only}");
+    }
+}
+
+#[test]
+fn roman_only_kerning_splits_a_run_at_cjk_characters_only() {
+    use crate::shape::{is_cjk_char, kerning_runs};
+    // Ideographs, kana, Hangul, full-width and half-width forms and U+203B are CJK.
+    for c in ['日', 'あ', 'カ', '한', '，', 'Ａ', 'ｱ', '\u{203B}', '\u{20000}'] {
+        assert!(is_cjk_char(c), "{c:?}");
+    }
+    // Letters of other scripts that sit inside the old U+2E80..U+D7FF range are not.
+    for c in ['A', 'é', 'Ж', '\u{A640}', '\u{A500}', '\u{A840}', '\u{A4D0}', '\u{A722}', '\u{A7B0}'] {
+        assert!(!is_cjk_char(c), "{c:?}");
+    }
+    let src = "AB日本CD";
+    let runs = kerning_runs(src, 0..src.len(), true);
+    assert_eq!(runs, vec![(0..2, false), (2..8, true), (8..10, false)]);
+    // Off, the whole run is one non-CJK part.
+    assert_eq!(kerning_runs(src, 0..src.len(), false), vec![(0..src.len(), false)]);
+}
+
+#[test]
+fn roman_only_kerning_keeps_a_variation_selector_with_its_ideograph() {
+    use crate::shape::kerning_runs;
+    // U+845B U+E0100 is one ideographic variation sequence; U+20DD (combining enclosing circle)
+    // after a Latin letter stays with it.
+    let src = "A\u{845B}\u{E0100}B";
+    let runs = kerning_runs(src, 0..src.len(), true);
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(&src[runs[1].0.clone()], "\u{845B}\u{E0100}");
+    assert!(runs[1].1 && !runs[0].1 && !runs[2].1);
+    let src = "A\u{20DD}日";
+    let runs = kerning_runs(src, 0..src.len(), true);
+    assert_eq!(&src[runs[0].0.clone()], "A\u{20DD}");
+}
+
+#[test]
 fn optical_kerning_closes_open_pairs_and_leaves_stems() {
     use designcraft_doc::Kerning;
     // `AV` and `To` set tighter than unkerned; `nn`, the reference pair, stays as the font set it.

@@ -2141,6 +2141,7 @@ fn automatic_kerning_does_not_import_inactive_numeric_values() {
     for (attributes, expected) in [
         (r#"KerningMethod="$ID/Optical" KerningValue="1e+11""#, Some(designcraft_doc::Kerning::Optical)),
         (r#"KerningMethod="$ID/Metrics" KerningValue="0""#, Some(designcraft_doc::Kerning::Metrics)),
+        (r#"KerningMethod="$ID/Metrics - Roman Only" KerningValue="0""#, Some(designcraft_doc::Kerning::MetricsRomanOnly)),
         (r#"KerningValue="-40""#, Some(designcraft_doc::Kerning::Manual(-40.0))),
         (r#"KerningValue="1e+11""#, None),
     ] {
@@ -2154,6 +2155,21 @@ fn automatic_kerning_does_not_import_inactive_numeric_values() {
         let s = d.stories.values().find(|s| s.text.contains("甲乙")).unwrap();
         assert_eq!(s.runs().next().unwrap().1.over.kerning, expected, "{attributes}");
     }
+}
+
+#[test]
+fn roman_only_kerning_is_exported_and_survives_a_round_trip() {
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+        <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" KerningMethod="$ID/Metrics - Roman Only"><Content>甲乙AV</Content></CharacterStyleRange>
+        </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let d = import_idml(&fixture_with_story(story)).unwrap();
+    let kerning = |d: &Document| d.stories.values().find(|s| s.text.contains("甲乙")).unwrap().runs().next().unwrap().1.over.kerning;
+    assert_eq!(kerning(&d), Some(designcraft_doc::Kerning::MetricsRomanOnly));
+    let bytes = export_idml(&d);
+    let text = zip_text(&bytes, "Stories/");
+    assert!(text.contains(r#"KerningMethod="$ID/Metrics - Roman Only""#), "{text}");
+    assert_eq!(kerning(&import_idml(&bytes).unwrap()), Some(designcraft_doc::Kerning::MetricsRomanOnly));
 }
 
 #[test]
