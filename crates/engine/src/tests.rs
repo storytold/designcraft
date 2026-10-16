@@ -1110,3 +1110,34 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(!overset(&mut s, 78.5), "the line is set; its descenders hang below the frame");
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
+
+#[test]
+fn direct_selection_on_a_selected_frame_deletes_only_its_image() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
+    let dir = std::env::temp_dir().join(format!("dc-direct-delete-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("photo.png");
+    std::fs::write(&png, designcraft_render::Rendered { width: 100, height: 100, pixels: vec![40u8; 100 * 100 * 4] }.to_png()).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let frame = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("file.place", &json!({"path": png.to_string_lossy(), "frame": frame})).unwrap();
+    let v = ViewInfo::at_zoom(1.0);
+    let click = |s: &mut Session| {
+        s.pointer(&PointerEvent::new(PointerKind::Down, 150.0, 150.0), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Up, 150.0, 150.0), v).unwrap();
+    };
+    // The frame is selected with the Selection tool, then the image is clicked with Direct Selection.
+    s.set_tool("selection");
+    click(&mut s);
+    assert!(!s.doc().unwrap().selection.content);
+    s.set_tool("directSelection");
+    click(&mut s);
+    assert!(s.doc().unwrap().selection.content, "Direct Selection selects the image inside the selected frame");
+    assert!(s.tool_key(ToolKey::Delete, Mods::default(), v).unwrap());
+    let st = s.doc().unwrap();
+    let it = st.doc.item(designcraft_doc::ItemId(frame)).expect("the frame stays");
+    assert!(matches!(it.content, designcraft_doc::Content::Unassigned), "{:?}", it.content);
+    assert_eq!(st.selection.items, vec![designcraft_doc::ItemId(frame)]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

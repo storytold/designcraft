@@ -225,6 +225,11 @@ pub fn handles(r: Rect) -> [Point; 8] {
     ]
 }
 
+/// The item is a frame holding a placed graphic.
+fn has_graphic(cx: &ToolContext, id: ItemId) -> bool {
+    cx.doc.item(id).is_some_and(|it| matches!(it.content, designcraft_doc::Content::Graphic(_)))
+}
+
 fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
     let b = cx.selection_bounds()?;
     let tol = cx.tol(5.0);
@@ -538,7 +543,8 @@ impl Tool for SelectionTool {
                             } else {
                                 out.push(Action::Exec("selection.toggle".into(), json!({"id": id.0})));
                             }
-                        } else if !cx.selection.contains(id) {
+                        } else if !cx.selection.contains(id) || (self.direct && !cx.selection.content && has_graphic(cx, id)) {
+                            // Direct Selection on a selected frame selects the graphic inside it.
                             out.push(Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": self.direct})));
                         }
                         self.drag = Drag::Pending { start: p, hit: true };
