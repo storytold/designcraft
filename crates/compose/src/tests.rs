@@ -170,6 +170,41 @@ fn wrap_doc(para: ParaAttrs, objects: &[(Rect, [f64; 4], WrapMode)]) -> (Documen
     (d, sid)
 }
 
+/// A wrap object inside a group wraps text on its own, as in InDesign; only top-level items used
+/// to count, so text ran over a grouped wrap shape.
+#[test]
+fn wrap_inside_a_group_pushes_text() {
+    use designcraft_doc::{Content, Item, Shape};
+    let (mut d, sid) = wrap_doc(ParaAttrs::default(), &[]);
+    let lid = d.default_layer();
+    let mut wrap = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(200.0, 100.0, 330.0, 200.0)));
+    wrap.wrap.mode = WrapMode::BoundingBox;
+    let other = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(400.0, 400.0, 420.0, 420.0)));
+    let mut g = Item::new(ItemId(d.alloc()), lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = Content::Group { items: vec![std::sync::Arc::new(wrap), std::sync::Arc::new(other)] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let beside = cs.frames[0].lines.iter().find(|l| l.baseline > 120.0 && l.baseline < 190.0).unwrap();
+    assert!(beside.x1 <= 200.5, "the line stops at the grouped wrap: {}", beside.x1);
+}
+
+/// An object on a hidden layer keeps wrapping text unless the layer suppresses its wrap (Layer
+/// Options › Suppress Text Wrap When Layer Is Hidden), as in InDesign.
+#[test]
+fn hidden_layer_wraps_unless_it_suppresses_wrap() {
+    let beside = |suppress: bool| {
+        let (mut d, sid) = wrap_doc(ParaAttrs::default(), &[(Rect::new(200.0, 100.0, 330.0, 200.0), [0.0; 4], WrapMode::BoundingBox)]);
+        for l in &mut d.layers {
+            l.visible = false;
+            l.suppress_wrap_when_hidden = suppress;
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines.iter().find(|l| l.baseline > 120.0 && l.baseline < 190.0).map_or(0.0, |l| l.x1)
+    };
+    assert!(beside(false) <= 200.5, "{}", beside(false));
+    assert!(beside(true) > 300.0, "{}", beside(true));
+}
+
 /// The first line whose baseline is below the top of `ex`.
 fn first_line_below<'a>(cs: &'a ComposedStory, ex: &Exclusion) -> &'a Line {
     cs.frames[0].lines.iter().find(|l| l.baseline > ex.rect.y0).unwrap()
@@ -4405,6 +4440,8 @@ fn cache_recomposes_when_a_wrap_layer_is_hidden() {
     let cache = Cache::new();
     let a = cache.get(&d, sid, None);
     assert!(a.frames[0].lines[0].x0 >= 120.0 - 1e-6);
+    // A hidden layer's objects stop wrapping text only when the layer suppresses it.
+    d.layer_mut(lid).unwrap().suppress_wrap_when_hidden = true;
     d.layer_mut(lid).unwrap().visible = false;
     let b = cache.get(&d, sid, None);
     assert!(!Arc::ptr_eq(&a, &b));

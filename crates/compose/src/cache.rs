@@ -299,10 +299,13 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
             if !spreads.contains(&loc.spread) {
                 spreads.push(loc.spread);
                 for it in &sp.items {
-                    if it.wrap.mode != WrapMode::None {
+                    // Wrap objects, also inside groups (they wrap text on their own).
+                    let mut wraps = false;
+                    it.walk(&mut |c| wraps |= c.wrap.mode != WrapMode::None);
+                    if wraps {
                         sig.push(Arc::as_ptr(it) as usize);
-                        // Wrap objects on hidden layers don't wrap text.
-                        sig.push(usize::from(doc.layer(it.layer).is_some_and(|l| l.visible)));
+                        // Wrap objects on a hidden layer that suppresses their wrap don't wrap text.
+                        sig.push(usize::from(doc.layer(it.layer).is_some_and(|l| l.visible || !l.suppress_wrap_when_hidden)));
                         keep.push(it.clone());
                     }
                 }

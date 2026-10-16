@@ -385,26 +385,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
         if !tf.options.ignore_wrap
             && let Some(sp) = spread
         {
-            for other in &sp.items {
-                if other.id == item.id || other.wrap.mode == WrapMode::None || other.hidden {
-                    continue;
-                }
-                if doc.layer(other.layer).is_some_and(|l| !l.visible) {
-                    continue;
-                }
-                let o = other.wrap.offsets;
-                let b = other.bounds();
-                let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
-                let inner = inv.transform_rect_bbox(r);
-                // Only objects that reach the frame wrap its text: one elsewhere on the spread
-                // leaves it alone (a small frame beside it would otherwise lose its gaps to the
-                // minimum gap width, see `free_slot`).
-                let reach = inner.intersect(item.inner_bounds());
-                if !(reach.width() > 0.0 && reach.height() > 0.0) {
-                    continue;
-                }
-                exclusions.push(Exclusion { rect: inner, mode: other.wrap.mode });
-            }
+            wrap_exclusions(doc, &sp.items, designcraft_geom::Affine::IDENTITY, item, inv, &mut exclusions, 0);
         }
         let (page_name, page, left_page) = match (loc.spread, spread) {
             (designcraft_doc::SpreadRef::Doc(si), Some(sp)) => {
@@ -3755,6 +3736,49 @@ pub fn path_glyphs(
         }
     }
     runs
+}
+
+/// Text-wrap exclusions from `items` (and the items inside their groups, which wrap text on their
+/// own as in InDesign) for the frame `frame`, in its inner space (`inv` takes spread space there).
+/// `to_spread` takes the items' space to spread space.
+fn wrap_exclusions(
+    doc: &Document,
+    items: &[Arc<designcraft_doc::Item>],
+    to_spread: designcraft_geom::Affine,
+    frame: &designcraft_doc::Item,
+    inv: designcraft_geom::Affine,
+    out: &mut Vec<Exclusion>,
+    depth: usize,
+) {
+    if depth > 64 {
+        return;
+    }
+    for other in items {
+        // A hidden layer's objects keep wrapping text unless the layer suppresses it (Layer Options ›
+        // Suppress Text Wrap When Layer Is Hidden), as in InDesign.
+        if other.id == frame.id || other.hidden || doc.layer(other.layer).is_some_and(|l| !l.visible && l.suppress_wrap_when_hidden) {
+            continue;
+        }
+        if other.shape == designcraft_doc::Shape::Group {
+            let children: Vec<Arc<designcraft_doc::Item>> = other.shown_children().cloned().collect();
+            wrap_exclusions(doc, &children, to_spread * other.xf, frame, inv, out, depth + 1);
+        }
+        if other.wrap.mode == WrapMode::None {
+            continue;
+        }
+        let o = other.wrap.offsets;
+        let b = to_spread.transform_rect_bbox(other.bounds());
+        let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
+        let inner = inv.transform_rect_bbox(r);
+        // Only objects that reach the frame wrap its text: one elsewhere on the spread leaves it
+        // alone (a small frame beside it would otherwise lose its gaps to the minimum gap width,
+        // see `free_slot`).
+        let reach = inner.intersect(frame.inner_bounds());
+        if !(reach.width() > 0.0 && reach.height() > 0.0) {
+            continue;
+        }
+        out.push(Exclusion { rect: inner, mode: other.wrap.mode });
+    }
 }
 
 #[cfg(test)]
