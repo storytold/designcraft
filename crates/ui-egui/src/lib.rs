@@ -23,6 +23,7 @@ pub mod panels;
 mod prefs;
 pub mod render_worker;
 mod rtl;
+mod section_options;
 pub mod story_editor;
 pub mod taskbar;
 pub mod theme;

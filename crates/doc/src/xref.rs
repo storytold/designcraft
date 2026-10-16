@@ -367,7 +367,7 @@ impl Document {
             para_num,
             page: String::new(),
             anchor_name: self.anchor(id).map(|a| a.name.clone()).unwrap_or_default(),
-            chapter: self.settings.chapter_number.to_string(),
+            chapter: self.chapter_label(),
             file_name: self.title.clone(),
         })
     }

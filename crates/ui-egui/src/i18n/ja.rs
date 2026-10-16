@@ -30,6 +30,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "カット"),
     ("Copy", "コピー"),
     ("Paste", "ペースト"),
+    ("New Section", "新規セクション"),
     ("Bulleted & Numbered Lists", "箇条書き"),
     ("Apply Color (,)", "カラーを適用 (,)"),
     ("Apply Gradient (.)", "グラデーションを適用 (.)"),

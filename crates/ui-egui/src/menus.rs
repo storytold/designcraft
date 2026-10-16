@@ -2063,6 +2063,10 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         crate::dialogs::open_print(app);
         return;
     }
+    if params.is_null() && id == "layout.section" {
+        crate::section_options::open(app);
+        return;
+    }
     if params.is_null() && id == "layout.createGuides" {
         crate::dialogs::open_create_guides(app);
         return;
