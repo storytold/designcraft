@@ -73,79 +73,8 @@ impl Cache {
     /// sections restart their numbering.
     pub fn get(&self, doc: &Document, sid: StoryId, page: Option<usize>) -> Arc<ComposedStory> {
         let Some(story) = doc.stories.get(&sid) else { return Arc::new(ComposedStory { story: sid, ..Default::default() }) };
-        let (mut sig, keep_items) = signature(doc, story);
+        let (sig, keep_items) = composition_signature(doc, sid, story, page);
         let key = (sid, page);
-        // The key holds the page's index, which a renumbering doesn't change: its name (section
-        // start number, style, prefix) is part of the signature.
-        let page_name = page.map(|p| doc.page_name(p));
-        let section_marker = page.map(|p| crate::section_marker(doc, p));
-        if let Some(name) = &page_name {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            (name, &section_marker).hash(&mut h);
-            sig.push(h.finish() as usize);
-        }
-        if story.text.contains(designcraft_doc::story::SECTION_MARKER) {
-            // Frames on document pages show their section's marker text.
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            doc.sections.iter().for_each(|s| (s.start, &s.marker).hash(&mut h));
-            sig.push(h.finish() as usize);
-        }
-        let with_vars = crate::vars::has_vars(story);
-        let running = with_vars && crate::vars::has_running(doc, story);
-        if with_vars {
-            // Variables depend on the page count, sections and definitions (and running headers on
-            // the whole document).
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            format!("{:?}", doc.text_variables).hash(&mut h);
-            sig.extend([doc.page_count(), h.finish() as usize]);
-            if running {
-                sig.push(doc_signature(doc) as usize);
-            }
-        }
-        let with_xrefs = crate::xref::has_xrefs(story);
-        if with_xrefs {
-            // Cross-references show other stories' text and pages.
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            format!("{:?}", doc.xref_formats).hash(&mut h);
-            sig.extend([doc_signature(doc) as usize, h.finish() as usize]);
-        }
-        if !story.notes.is_empty() {
-            // Footnote numbers continue from earlier stories; layout follows the options.
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            format!("{:?}", doc.footnote_options).hash(&mut h);
-            sig.extend([doc.footnote_start(sid) as usize, h.finish() as usize]);
-        }
-        // Endnote numbers continue from stories on earlier pages.
-        if !story.endnotes.is_empty() {
-            sig.push(doc.endnote_start(sid) as usize);
-        }
-        // User hyphenation exceptions.
-        if !doc.hyphenation_exceptions.is_empty() {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            doc.hyphenation_exceptions.hash(&mut h);
-            sig.push(h.finish() as usize);
-        }
-        // Hidden conditions take their text out of the layout.
-        for (i, c) in doc.conditions.iter().enumerate() {
-            if !c.visible {
-                sig.push(usize::MAX - i);
-            }
-        }
-        // Advanced Type sizes super/subscripts.
-        let a = doc.settings.advanced_type;
-        sig.extend([a.superscript_size, a.superscript_position, a.subscript_size, a.subscript_position].map(|v| v.to_bits() as usize));
-        // Missing glyphs: fallback fonts or the font's box.
-        sig.push(usize::from(doc.settings.glyph_fallback));
-        // Named lists continue from earlier stories.
-        for l in &doc.settings.lists {
-            sig.push(doc.list_start(sid, &l.name) as usize);
-        }
         {
             let mut g = self.map.lock().unwrap_or_else(|e| e.into_inner());
             g.1 += 1;
@@ -157,6 +86,11 @@ impl Cache {
                 return e.out.clone();
             }
         }
+        let page_name = page.map(|p| doc.page_name(p));
+        let section_marker = page.map(|p| crate::section_marker(doc, p));
+        let with_vars = crate::vars::has_vars(story);
+        let running = with_vars && crate::vars::has_running(doc, story);
+        let with_xrefs = crate::xref::has_xrefs(story);
         // Parent-page items are composed per page: markers show its name, variables need its index.
         let page = page.filter(|_| with_vars);
         let running = running.then(|| self.running_index(doc));
@@ -178,6 +112,14 @@ impl Cache {
             self.previous.lock().unwrap_or_else(|e| e.into_inner()).insert(sid, (old.sig, old.out));
         }
         out
+    }
+
+    /// Whether a story has the same inputs under the composition cache's conservative
+    /// invalidation policy. This neither composes nor changes cache state; both documents
+    /// retain the allocations whose identities appear in their signatures.
+    pub fn same_inputs(before: &Document, after: &Document, sid: StoryId) -> bool {
+        let (Some(old), Some(new)) = (before.stories.get(&sid), after.stories.get(&sid)) else { return false };
+        composition_signature(before, sid, old, None).0 == composition_signature(after, sid, new, None).0
     }
 
     /// The cached composition of `sid` made from exactly this version of `doc` (the current
@@ -311,4 +253,81 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         }
     }
     (sig, keep)
+}
+
+// Share every cache-key dependency with the engine without requiring a composition.
+fn composition_signature(doc: &Document, sid: StoryId, story: &Arc<Story>, page: Option<usize>) -> (Vec<usize>, Vec<Arc<Item>>) {
+    let (mut sig, keep_items) = signature(doc, story);
+    // The key holds the page's index, which a renumbering doesn't change: its name (section
+    // start number, style, prefix) is part of the signature.
+    let page_name = page.map(|p| doc.page_name(p));
+    let section_marker = page.map(|p| crate::section_marker(doc, p));
+    if let Some(name) = &page_name {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (name, &section_marker).hash(&mut h);
+        sig.push(h.finish() as usize);
+    }
+    if story.text.contains(designcraft_doc::story::SECTION_MARKER) {
+        // Frames on document pages show their section's marker text.
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        doc.sections.iter().for_each(|s| (s.start, &s.marker).hash(&mut h));
+        sig.push(h.finish() as usize);
+    }
+    let with_vars = crate::vars::has_vars(story);
+    let running = with_vars && crate::vars::has_running(doc, story);
+    if with_vars {
+        // Variables depend on the page count, sections and definitions (and running headers on
+        // the whole document).
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", doc.text_variables).hash(&mut h);
+        sig.extend([doc.page_count(), h.finish() as usize]);
+        if running {
+            sig.push(doc_signature(doc) as usize);
+        }
+    }
+    let with_xrefs = crate::xref::has_xrefs(story);
+    if with_xrefs {
+        // Cross-references show other stories' text and pages.
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", doc.xref_formats).hash(&mut h);
+        sig.extend([doc_signature(doc) as usize, h.finish() as usize]);
+    }
+    if !story.notes.is_empty() {
+        // Footnote numbers continue from earlier stories; layout follows the options.
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", doc.footnote_options).hash(&mut h);
+        sig.extend([doc.footnote_start(sid) as usize, h.finish() as usize]);
+    }
+    // Endnote numbers continue from stories on earlier pages.
+    if !story.endnotes.is_empty() {
+        sig.push(doc.endnote_start(sid) as usize);
+    }
+    // User hyphenation exceptions.
+    if !doc.hyphenation_exceptions.is_empty() {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        doc.hyphenation_exceptions.hash(&mut h);
+        sig.push(h.finish() as usize);
+    }
+    // Hidden conditions take their text out of the layout.
+    for (i, c) in doc.conditions.iter().enumerate() {
+        if !c.visible {
+            sig.push(usize::MAX - i);
+        }
+    }
+    // Advanced Type sizes super/subscripts.
+    let a = doc.settings.advanced_type;
+    sig.extend([a.superscript_size, a.superscript_position, a.subscript_size, a.subscript_position].map(|v| v.to_bits() as usize));
+    // Missing glyphs: fallback fonts or the font's box.
+    sig.push(usize::from(doc.settings.glyph_fallback));
+    // Named lists continue from earlier stories.
+    for l in &doc.settings.lists {
+        sig.push(doc.list_start(sid, &l.name) as usize);
+    }
+    (sig, keep_items)
 }

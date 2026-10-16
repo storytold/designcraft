@@ -238,18 +238,26 @@ pub fn layout(it: &mut Item) -> bool {
 }
 
 /// Lay out every container among `items` and the objects nested in them, inner containers first
-/// (an Auto container's size is its parent's object size). Only changed items are copied.
-pub fn layout_all(items: &mut [std::sync::Arc<Item>]) {
+/// (an Auto container's size is its parent's object size). Preserve unchanged Item identities;
+/// return whether this level or any descendant changed.
+pub fn layout_all(items: &mut [std::sync::Arc<Item>]) -> bool {
+    let mut changed = false;
     for a in items.iter_mut() {
         if !contains_flex(a) {
             continue;
         }
-        let it = std::sync::Arc::make_mut(a);
-        if let Content::Group { items } = &mut it.content {
-            layout_all(items);
+        let mut it = (**a).clone();
+        let nested = match &mut it.content {
+            Content::Group { items } => layout_all(items),
+            _ => false,
+        };
+        let moved = layout(&mut it);
+        if nested || moved {
+            *a = std::sync::Arc::new(it);
+            changed = true;
         }
-        layout(it);
     }
+    changed
 }
 
 /// Is `it` a container, or does it hold one?
@@ -337,5 +345,65 @@ mod tests {
         let a = arrange(&f, r(0.0, 0.0, 10.0, 10.0), &[r(0.0, 0.0, 50.0, 50.0), r(0.0, 0.0, 50.0, 50.0)]);
         assert!(a.moves.iter().all(|m| m.x.is_finite() && m.y.is_finite()));
         assert!(arrange(&f, r(0.0, 0.0, 10.0, 10.0), &[]).moves.is_empty());
+    }
+
+    fn flex_test_item(id: u64, rect: Rect) -> Item {
+        Item::new(crate::ItemId(id), crate::LayerId(1), crate::Shape::Rectangle, shapes::rectangle(rect))
+    }
+
+    #[test]
+    fn settled_flex_subtrees_keep_item_arcs() {
+        use std::sync::Arc;
+
+        let child = Arc::new(flex_test_item(1, r(0.0, 0.0, 30.0, 20.0)));
+        let mut flex = flex_test_item(2, r(0.0, 0.0, 100.0, 40.0));
+        flex.flex = Some(FlexLayout::default());
+        flex.content = Content::Group { items: vec![child] };
+        let mut group = Item::new(crate::ItemId(3), crate::LayerId(1), crate::Shape::Group, Default::default());
+        group.content = Content::Group { items: vec![Arc::new(flex)] };
+        let mut items = vec![Arc::new(group), Arc::new(flex_test_item(4, r(200.0, 0.0, 10.0, 10.0)))];
+        let before = items.clone();
+        layout_all(&mut items);
+        assert_eq!(serde_json::to_value(&items).unwrap(), serde_json::to_value(&before).unwrap());
+        assert!(Arc::ptr_eq(&items[0], &before[0]), "a settled subtree must keep its ancestor identity");
+        assert!(Arc::ptr_eq(&items[0].children()[0], &before[0].children()[0]));
+        assert!(Arc::ptr_eq(&items[0].children()[0].children()[0], &before[0].children()[0].children()[0]));
+        assert!(Arc::ptr_eq(&items[1], &before[1]));
+    }
+
+    #[test]
+    fn changed_flex_descendants_propagate_through_groups_and_auto_ancestors() {
+        use std::sync::Arc;
+
+        for auto in [false, true] {
+            let child = Arc::new(flex_test_item(1, r(20.0, 10.0, 30.0, 20.0)));
+            let mut inner = flex_test_item(2, r(0.0, 0.0, 100.0, 40.0));
+            let size = if auto { FlexSize::Auto } else { FlexSize::Fixed };
+            inner.flex = Some(FlexLayout { width: size, height: size, ..Default::default() });
+            inner.content = Content::Group { items: vec![child.clone()] };
+            let mut group = Item::new(crate::ItemId(3), crate::LayerId(1), crate::Shape::Group, Default::default());
+            group.content = Content::Group { items: vec![Arc::new(inner)] };
+            let mut outer = flex_test_item(4, r(0.0, 0.0, 100.0, 40.0));
+            outer.flex = Some(FlexLayout { width: FlexSize::Auto, height: FlexSize::Auto, ..Default::default() });
+            outer.content = Content::Group { items: vec![Arc::new(group)] };
+            let mut items = vec![Arc::new(outer)];
+            let before = items.clone();
+            layout_all(&mut items);
+            let changed_group = &items[0].children()[0];
+            let changed_inner = &changed_group.children()[0];
+            let moved = &changed_inner.children()[0];
+            assert!(!Arc::ptr_eq(&items[0], &before[0]));
+            assert!(!Arc::ptr_eq(changed_group, &before[0].children()[0]));
+            assert!(!Arc::ptr_eq(changed_inner, &before[0].children()[0].children()[0]));
+            assert!(!Arc::ptr_eq(moved, &child));
+            assert_eq!(moved.bounds(), r(0.0, 0.0, 30.0, 20.0));
+            assert_eq!(child.bounds(), r(20.0, 10.0, 30.0, 20.0));
+            let expected = if auto { r(0.0, 0.0, 30.0, 20.0) } else { r(0.0, 0.0, 100.0, 40.0) };
+            assert_eq!(changed_inner.inner_bounds(), expected);
+            assert_eq!(items[0].inner_bounds(), expected, "Auto parent uses the updated descendant size");
+            let settled = items.clone();
+            layout_all(&mut items);
+            assert!(Arc::ptr_eq(&items[0], &settled[0]), "a second sync must be inert");
+        }
     }
 }

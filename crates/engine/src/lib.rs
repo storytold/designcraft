@@ -478,7 +478,8 @@ impl Session {
         }
         self.record_transform(id, params);
         if self.prefs.smart_text_reflow && spec.undoable {
-            self.smart_reflow();
+            let old = before.as_ref().filter(|(uid, _)| self.active().is_some_and(|st| st.uid == *uid)).map(|(_, doc)| doc.as_ref());
+            self.smart_reflow(old);
         }
         // Live captions follow their sources.
         if spec.undoable
@@ -510,13 +511,33 @@ impl Session {
 
     /// Smart Text Reflow for the primary story: add threaded pages while it oversets; remove
     /// trailing pages whose only object is an empty frame of it.
-    fn smart_reflow(&mut self) {
+    fn smart_reflow(&mut self, before: Option<&Document>) {
         let Some(st) = self.active() else { return };
         if st.interaction.is_some() {
             return;
         }
         let Some(sid) = st.doc.settings.primary_story else { return };
         let Some(story) = st.doc.story(sid) else { return };
+        if let Some(old) = before.filter(|doc| doc.settings.primary_story == Some(sid)) {
+            // Removing a page or a primary frame is deliberate, even when the remaining
+            // text becomes overset. Compare the next command with this reduced document.
+            if old.page_count() > st.doc.page_count() {
+                return;
+            }
+            if let Some(previous) = old.story(sid)
+                && previous.frames != story.frames
+            {
+                let remaining: std::collections::BTreeSet<_> = story.frames.iter().copied().collect();
+                if previous.frames.iter().any(|frame| !remaining.contains(frame)) {
+                    return;
+                }
+            }
+            // Use the renderer's existing dependency policy, including when its cache is
+            // cold. No pre-command composition or independent document comparison is needed.
+            if Cache::same_inputs(old, &st.doc, sid) {
+                return;
+            }
+        }
         let cs = self.cache.get(&st.doc, sid, None);
         let overset = cs.overset_at.is_some();
         let empty_tail = story.frames.len() > 1 && story.frames.last().is_some_and(|f| cs.frame(*f).is_none_or(|ft| ft.range.is_empty()));
