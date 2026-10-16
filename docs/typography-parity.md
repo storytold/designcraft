@@ -35,7 +35,7 @@ Fidelity: **unmeasured** unless stated.
 | Paragraph Composer | Adobe's multi-line composer | Knuth–Plass total fit, fitness classes, hyphen penalties | ~ | same family of algorithm, Adobe's weights unknown; breaks will differ on some paragraphs |
 | Single-line Composer | greedy | greedy with the same ranges | ✓ | |
 | World-Ready composers | Paragraph / Single-line World-Ready | RTL, Arabic and bidi in the main composer | ~ | Indic scripts (Devanagari etc.) shape through harfrust but are untested |
-| Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab now justifies after the tab (#284) |
+| Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab now justifies after the tab (#284); InDesign's composers also shrink word spaces below the Minimum when every choice breaks a limit: Preferences › Composition › Squeeze Word Spaces Below the Minimum (`document.preferences {squeezeWordSpaces}`, off by default) does the same, down to 60% |
 | Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt) and Norwegian (hyph-no); zone, limits, exceptions in the user dictionary | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
 | Spelling | per-language dictionaries | English (Moby) + document/user dictionary | ~ | |
 | Kerning | Metrics, Optical, manual, none | Metrics, manual, none | ~ | **Optical treated as Metrics** (#181): imported display text sets wider and can overset |

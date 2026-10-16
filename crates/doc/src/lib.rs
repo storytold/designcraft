@@ -349,6 +349,12 @@ pub struct DocSettings {
     /// Documents saved before the setting existed read as on, the way they were drawn.
     #[serde(default = "yes")]
     pub glyph_fallback: bool,
+    /// Preferences › Composition › Squeeze Word Spaces Below the Minimum: justified lines may
+    /// shrink their word spaces past the paragraph's Minimum (down to 60% of the desired width)
+    /// when that costs less than a very loose line, as InDesign's composers often set them. Off
+    /// (new documents, IDML imports and documents saved before it existed), word spaces never go
+    /// below the Minimum.
+    pub squeeze_word_spaces: bool,
 }
 
 impl Default for DocSettings {
@@ -381,6 +387,7 @@ impl Default for DocSettings {
             overprint_black: true,
             track_changes: false,
             glyph_fallback: false,
+            squeeze_word_spaces: false,
         }
     }
 }

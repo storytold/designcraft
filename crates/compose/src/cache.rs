@@ -142,6 +142,8 @@ impl Cache {
         sig.extend([a.superscript_size, a.superscript_position, a.subscript_size, a.subscript_position].map(|v| v.to_bits() as usize));
         // Missing glyphs: fallback fonts or the font's box.
         sig.push(usize::from(doc.settings.glyph_fallback));
+        // Squeeze Word Spaces Below the Minimum changes justified lines.
+        sig.push(usize::from(doc.settings.squeeze_word_spaces));
         // Named lists continue from earlier stories.
         for l in &doc.settings.lists {
             sig.push(doc.list_start(sid, &l.name) as usize);

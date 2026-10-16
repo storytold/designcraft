@@ -1153,6 +1153,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 f["horizontalUnits"] = doc["horizontalUnits"].clone();
                 f["overprintBlack"] = doc["overprintBlack"].clone();
                 f["glyphFallback"] = doc["glyphFallback"].clone();
+                f["squeezeWordSpaces"] = doc["squeezeWordSpaces"].clone();
                 for k in ["superscriptSize", "superscriptPosition", "subscriptSize", "subscriptPosition"] {
                     f[format!("adv.{k}")] = json!(format!("{}", doc["advancedType"][k].as_f64().unwrap_or(0.0)));
                 }

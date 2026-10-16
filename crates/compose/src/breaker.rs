@@ -50,6 +50,11 @@ pub struct Spacing {
     pub optical: bool,
     /// Korean text breaks between syllables instead of at spaces.
     pub korean_char_breaks: bool,
+    /// Justified lines may shrink word spaces past the minimum ([`overshrink_units`]): the
+    /// document's Squeeze Word Spaces Below the Minimum preference, off by default. Never where
+    /// kashidas justify Arabic: the composer doesn't count their stretch yet, so it would squeeze
+    /// lines the kashidas could fill.
+    pub overshrink: bool,
 }
 
 impl Default for Spacing {
@@ -71,6 +76,7 @@ impl Default for Spacing {
             hyph_zone: 0.0,
             optical: false,
             korean_char_breaks: false,
+            overshrink: false,
         }
     }
 }
@@ -105,9 +111,35 @@ impl Spacing {
 /// Relative cost of using each tier of elastic material (word, letter, glyph).
 pub const TIER_COST: [f64; 3] = [1.0, 0.75, 1.0];
 
+/// With [`Spacing::overshrink`], word spaces may shrink past the minimum down to this fraction of
+/// their desired width: an H&J violation, like stretching past the maximum. InDesign's composers
+/// do this when every choice breaks a limit (measured on InDesign output: justified lines at
+/// 61–72% of the space width with an 80% minimum, no tracking).
+pub const WORD_FLOOR: f64 = 0.6;
+
+/// How much a range of shrink past the minimum costs, against a range of stretch past the maximum:
+/// InDesign takes a loose line over a tight one when the violations are alike.
+pub const OVERSHRINK_COST: f64 = 2.0;
+
+/// How far word spaces may shrink beyond the minimum, in units of their shrink range (desired −
+/// minimum): from the minimum down to [`WORD_FLOOR`]. Zero when the paragraph doesn't allow it
+/// ([`Spacing::overshrink`]) or has no shrink range.
+pub fn overshrink_units(sp: &Spacing) -> f64 {
+    let range = sp.word_desired - sp.word_min;
+    if !sp.justify || !sp.overshrink || range <= 1e-9 { 0.0 } else { ((sp.word_min - WORD_FLOOR) / range).max(0.0) }
+}
+
 /// Effective adjustment ratio for `d` points of stretch (`d > 0`) or shrink (`d < 0`), consuming
 /// the tiers in priority order. Returns `(r, feasible)`; shrinking beyond all tiers is infeasible.
 pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3]) -> (f64, bool) {
+    tiered_ratio_over(d, y, z, 0.0)
+}
+
+/// [`tiered_ratio`], where word spaces may also shrink `over` shrink ranges past their minimum.
+/// InDesign treats the minimum like the maximum: a limit it breaks when every choice breaks one,
+/// taking the smaller violation. A line shrunk past the minimum rates like one stretched past the
+/// maximum by the same number of ranges.
+pub fn tiered_ratio_over(d: f64, y: [f64; 3], z: [f64; 3], over: f64) -> (f64, bool) {
     const EPS: f64 = 1e-9;
     if d.abs() < EPS {
         return (0.0, true);
@@ -122,6 +154,9 @@ pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3]) -> (f64, bool) {
         }
     }
     if d < 0.0 {
+        if rem > 1e-6 && z[0] > EPS && rem <= over * z[0] + 1e-6 {
+            return (-(r + OVERSHRINK_COST * rem / z[0]), true);
+        }
         return (-r, rem <= 1e-6);
     }
     if rem > 1e-6 {
@@ -493,6 +528,7 @@ fn kp_pass(
     emergency: bool,
 ) -> Option<Vec<Break>> {
     let m = items.len();
+    let over = overshrink_units(sp);
     // Prefix sums (before item i).
     let mut sw = vec![0.0; m + 1];
     let mut sy = vec![[0.0; 3]; m + 1];
@@ -543,7 +579,7 @@ fn kp_pass(
             // A line that overruns its measure by a rounding error fits exactly.
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
-            let (mut r, feasible) = tiered_ratio(d, y, z);
+            let (mut r, feasible) = tiered_ratio_over(d, y, z, over);
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
                 // space it leaves, so the fullest piece wins (the break at the last glyph that fits).
@@ -882,5 +918,9 @@ mod tests {
         // Shrink beyond the tiers is infeasible.
         assert!(!tiered_ratio(-25.0, [0.0; 3], [10.0, 10.0, 0.0]).1);
         assert!(tiered_ratio(-15.0, [0.0; 3], [10.0, 10.0, 0.0]).1);
+        // Past every minimum, word spaces may shrink `over` more ranges, at OVERSHRINK_COST each.
+        let (r, ok) = tiered_ratio_over(-25.0, [0.0; 3], [10.0, 10.0, 0.0], 1.0);
+        assert!(ok && (r + (1.0 + TIER_COST[1] + OVERSHRINK_COST * 0.5)).abs() < 1e-9, "{r}");
+        assert!(!tiered_ratio_over(-35.0, [0.0; 3], [10.0, 10.0, 0.0], 1.0).1);
     }
 }
