@@ -170,7 +170,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     }
                     "cFont" => fmt.over.font_family = (!value.is_empty()).then(|| value.to_string()),
                     "cTypeface" => fmt.over.font_style = (!value.is_empty()).then(|| value.to_string()),
-                    "cSize" => fmt.over.size = value.trim().parse().ok(),
+                    "cSize" => fmt.over.size = value.trim().parse().ok().filter(|s: &f64| s.is_finite()),
                     "DefineParaStyle" | "DefineCharStyle" => {
                         let nm = value.split('=').next().unwrap_or("").trim().to_string();
                         let list = if name == "DefineParaStyle" { &mut para_styles } else { &mut char_styles };
@@ -243,6 +243,17 @@ mod tests {
         assert_eq!(back.story.text, i.story.text);
         // Half a pair is not a character: it is still left out.
         assert_eq!(import("<ASCII-WIN>\r\n<ParaStyle:Body>A<0xD83D>B<0xDE00>C".as_bytes()).unwrap().story.text, "ABC");
+    }
+
+    /// `f64::from_str` accepts "NaN" and "inf"; a non-finite size must not reach the story.
+    #[test]
+    fn non_finite_char_size_is_ignored() {
+        for v in ["NaN", "inf", "infinity", "-inf"] {
+            let src = format!("<ASCII-WIN>\r\n<ParaStyle:Body><cSize:{v}>big<cSize:>");
+            let i = import(src.as_bytes()).unwrap();
+            let size = i.story.char_format_at(i.story.text.find("big").unwrap() + 1).over.size;
+            assert!(size.is_none_or(f64::is_finite), "{v}: size {size:?}");
+        }
     }
 
     #[test]
