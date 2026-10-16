@@ -618,3 +618,456 @@ mod tests_idml;
 mod tests_roots;
 #[cfg(test)]
 mod tests_table;
+
+#[cfg(test)]
+mod resize_anchor_tests {
+    use std::sync::Arc;
+
+    use designcraft_doc::{ItemId, SpreadRef};
+    use designcraft_geom::{Point, Rect, Unit};
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, SnapView};
+    use serde_json::json;
+
+    use super::{Session, ViewInfo};
+
+    fn assert_rect(actual: Rect, expected: Rect) {
+        for (have, want) in [(actual.x0, expected.x0), (actual.y0, expected.y0), (actual.x1, expected.x1), (actual.y1, expected.y1)] {
+            assert!((have - want).abs() < 1e-6, "{actual:?}, want {expected:?}");
+        }
+    }
+
+    #[test]
+    fn resize_alt_and_shift_anchors_survive_previews_and_history() {
+        for (mods, down, previews, anchor) in [
+            (
+                Mods { alt: true, shift: true, ..Mods::default() },
+                Point::new(200.0, 150.0),
+                [
+                    (Point::new(190.0, 140.0), Rect::new(110.0, 105.0, 190.0, 145.0)),
+                    (Point::new(175.0, 135.0), Rect::new(125.0, 112.5, 175.0, 137.5)),
+                ],
+                Point::new(150.0, 125.0),
+            ),
+            (
+                Mods { shift: true, ..Mods::default() },
+                Point::new(200.0, 125.0),
+                [(Point::new(220.0, 125.0), Rect::new(100.0, 95.0, 220.0, 155.0)), (Point::new(180.0, 125.0), Rect::new(100.0, 105.0, 180.0, 145.0))],
+                Point::new(100.0, 125.0),
+            ),
+        ] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 1})).unwrap();
+            let id =
+                ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 150], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+            s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "[None]", "weight": 0})).unwrap();
+            s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+            s.set_tool("selection");
+            let before = s.doc().unwrap().doc.clone();
+            let undo = s.doc().unwrap().history.undo.len();
+            let journal = s.journal.len();
+            let view = ViewInfo { zoom: 1.0, snap: SnapView::OFF, unit: Unit::Points, stroke_in_front: false };
+            let layout = s.layout();
+            let at = layout.to_canvas(SpreadRef::Doc(0), down);
+            s.pointer(&PointerEvent::new(PointerKind::Down, at.x, at.y).with_mods(mods), view).unwrap();
+            assert!(s.doc().unwrap().interaction.is_some());
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+            for (at, expected) in previews {
+                let at = layout.to_canvas(SpreadRef::Doc(0), at);
+                s.pointer(&PointerEvent::new(PointerKind::Drag, at.x, at.y).with_mods(mods), view).unwrap();
+                let item = s.doc().unwrap().doc.item(id).unwrap();
+                assert_rect(item.path.bounds().unwrap(), expected);
+                assert_rect(item.bounds(), expected);
+                let actual_anchor = if mods.alt { item.bounds().center() } else { Point::new(item.bounds().x0, item.bounds().center().y) };
+                assert!((actual_anchor - anchor).hypot() < 1e-6);
+                assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+                assert_eq!(s.journal.len(), journal);
+            }
+            let at = layout.to_canvas(SpreadRef::Doc(0), previews[1].0);
+            s.pointer(&PointerEvent::new(PointerKind::Up, at.x, at.y).with_mods(mods), view).unwrap();
+            let after = s.doc().unwrap().doc.clone();
+            assert_rect(after.item(id).unwrap().bounds(), previews[1].1);
+            assert_eq!(s.doc().unwrap().selection.items, vec![id]);
+            assert!(s.doc().unwrap().interaction.is_none());
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+            assert_eq!(s.journal.len(), journal + 1);
+            assert_eq!(s.journal.last().unwrap().0, "transform.resize");
+            after.check().unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &after));
+        }
+    }
+
+    fn resize_cancel_fixture() -> (Session, ItemId, ViewInfo) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let id = ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 150], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "[Black]", "weight": 4})).unwrap();
+        let target = s.execute("frame.create", &json!({"rect": [400, 100, 534, 200], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.stroke", &json!({"ids": [target], "swatch": "[None]", "weight": 0})).unwrap();
+        s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+        s.doc_mut().unwrap().selection.key = Some(id);
+        // Content scaling has a fixed physical stroke for the successful Cmd control.
+        s.execute("prefs.set", &json!({"scaleStrokes": false})).unwrap();
+        s.execute("transform.move", &json!({"dx": 7, "dy": 0})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(!s.doc().unwrap().history.redo.is_empty());
+        assert_rect(s.doc().unwrap().doc.item(id).unwrap().bounds(), Rect::new(100.0, 100.0, 200.0, 150.0));
+        s.set_tool("selection");
+        let view = ViewInfo {
+            zoom: 1.0,
+            snap: SnapView { smart_guides: true, smart_dimensions: true, ..SnapView::OFF },
+            unit: Unit::Points,
+            stroke_in_front: false,
+        };
+        (s, id, view)
+    }
+
+    fn assert_resize_history(actual: &super::History, expected: &super::History) {
+        assert_eq!(actual.limit, expected.limit);
+        assert_eq!(actual.undo.len(), expected.undo.len());
+        assert_eq!(actual.redo.len(), expected.redo.len());
+        for (have, want) in actual.undo.iter().zip(&expected.undo).chain(actual.redo.iter().zip(&expected.redo)) {
+            assert_eq!(have.label, want.label);
+            assert!(Arc::ptr_eq(&have.doc, &want.doc));
+            assert_eq!(have.selection, want.selection);
+        }
+    }
+
+    #[test]
+    fn resize_escape_restores_whole_document_selection_history_and_redo() {
+        let (mut s, id, view) = resize_cancel_fixture();
+        let before = s.doc().unwrap().doc.clone();
+        let selection = s.doc().unwrap().selection.clone();
+        let history = s.doc().unwrap().history.clone();
+        let journal = s.journal.clone();
+        let layout = s.layout();
+        let down = layout.to_canvas(SpreadRef::Doc(0), Point::new(200.0, 125.0));
+        let at = layout.to_canvas(SpreadRef::Doc(0), Point::new(228.0, 125.0));
+        s.pointer(&PointerEvent::new(PointerKind::Down, down.x, down.y), view).unwrap();
+        assert!(s.doc().unwrap().interaction.is_some());
+        assert!(s.tool_busy());
+        s.pointer(&PointerEvent::new(PointerKind::Drag, at.x, at.y), view).unwrap();
+        assert!(!Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+        assert_rect(s.doc().unwrap().doc.item(id).unwrap().bounds(), Rect::new(100.0, 100.0, 230.0, 150.0));
+        assert!(!s.overlays(view).is_empty());
+        assert_resize_history(&s.doc().unwrap().history, &history);
+        assert_eq!(s.journal, journal);
+        assert!(s.tool_key(designcraft_tools::ToolKey::Escape, Mods::default(), view).unwrap());
+        let assert_restored = |s: &Session| {
+            let st = s.doc().unwrap();
+            assert!(Arc::ptr_eq(&st.doc, &before), "cancellation must restore the whole original document");
+            assert_eq!(st.selection, selection);
+            assert_resize_history(&st.history, &history);
+            assert_eq!(s.journal, journal);
+            assert!(st.interaction.is_none());
+            assert!(!s.tool_busy());
+        };
+        assert_restored(&s);
+        assert!(s.overlays(view).is_empty());
+        for kind in [PointerKind::Up, PointerKind::Drag, PointerKind::Move, PointerKind::Up] {
+            s.pointer(&PointerEvent::new(kind, at.x, at.y), view).unwrap();
+            assert_restored(&s);
+            assert!(s.overlays(view).is_empty());
+        }
+        // Idle Escape still deselects rather than reopening or cancelling an interaction.
+        assert!(s.tool_key(designcraft_tools::ToolKey::Escape, Mods::default(), view).unwrap());
+        assert!(s.doc().unwrap().selection.is_empty());
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+        assert_resize_history(&s.doc().unwrap().history, &history);
+        assert!(s.doc().unwrap().interaction.is_none());
+    }
+
+    #[test]
+    fn resize_cmd_snaps_fixed_stroke_and_commits_one_history_step() {
+        let (mut s, id, view) = resize_cancel_fixture();
+        let before = s.doc().unwrap().doc.clone();
+        let selection = s.doc().unwrap().selection.clone();
+        let undo = s.doc().unwrap().history.undo.len();
+        let journal = s.journal.len();
+        let layout = s.layout();
+        let down = layout.to_canvas(SpreadRef::Doc(0), Point::new(200.0, 125.0));
+        let at = layout.to_canvas(SpreadRef::Doc(0), Point::new(228.0, 125.0));
+        let mods = Mods { cmd: true, ..Mods::default() };
+        s.pointer(&PointerEvent::new(PointerKind::Down, down.x, down.y).with_mods(mods), view).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Drag, at.x, at.y).with_mods(mods), view).unwrap();
+        let item = s.doc().unwrap().doc.item(id).unwrap();
+        assert_rect(item.bounds(), Rect::new(100.0, 100.0, 230.0, 150.0));
+        assert_eq!(item.stroke.weight, 4.0);
+        assert!((item.visible_bounds().width() - 134.0).abs() < 1e-6);
+        assert!(!s.overlays(view).is_empty());
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+        assert_eq!(s.journal.len(), journal);
+        s.pointer(&PointerEvent::new(PointerKind::Up, at.x, at.y).with_mods(mods), view).unwrap();
+        let after = s.doc().unwrap().doc.clone();
+        assert_rect(after.item(id).unwrap().bounds(), Rect::new(100.0, 100.0, 230.0, 150.0));
+        assert_eq!(s.doc().unwrap().selection, selection);
+        assert!(s.doc().unwrap().interaction.is_none());
+        assert!(!s.tool_busy());
+        assert!(s.overlays(view).is_empty());
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+        assert!(s.doc().unwrap().history.redo.is_empty());
+        assert_eq!(s.journal.len(), journal + 1);
+        let committed = s.journal.last().unwrap();
+        assert_eq!(committed.0, "transform.resize");
+        assert_eq!(committed.1["content"], true);
+        after.check().unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+        assert_eq!(s.doc().unwrap().selection, selection);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &after));
+        assert_eq!(s.doc().unwrap().selection, selection);
+    }
+
+    #[test]
+    fn resize_releasing_cmd_uses_original_stroke_for_dimension_snap_and_history() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let id = ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 150], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "[Black]", "weight": 4})).unwrap();
+        let target = s.execute("frame.create", &json!({"rect": [400, 100, 406, 400], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.stroke", &json!({"ids": [target], "swatch": "[None]", "weight": 0})).unwrap();
+        s.execute("prefs.set", &json!({"scaleStrokes": true})).unwrap();
+        s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+        s.doc_mut().unwrap().selection.key = Some(id);
+        s.execute("transform.move", &json!({"dx": 7, "dy": 0})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.set_tool("selection");
+        let before = s.doc().unwrap().doc.clone();
+        let selection = s.doc().unwrap().selection.clone();
+        let history = s.doc().unwrap().history.clone();
+        let journal = s.journal.clone();
+        assert!(s.prefs.scale_strokes);
+        assert!(!selection.content);
+        assert!(!history.redo.is_empty());
+        assert_rect(before.item(id).unwrap().path.bounds().unwrap(), Rect::new(100.0, 100.0, 200.0, 150.0));
+        assert_eq!(before.item(id).unwrap().stroke.weight, 4.0);
+        assert!((before.item(id).unwrap().visible_bounds().width() - 104.0).abs() < 1e-6);
+        let view = ViewInfo {
+            zoom: 1.0,
+            snap: SnapView { smart_guides: true, smart_dimensions: true, zone_px: 8.0, ..SnapView::OFF },
+            unit: Unit::Points,
+            stroke_in_front: false,
+        };
+        let layout = s.layout();
+        let event = |kind, at: Point, mods| {
+            let at = layout.to_canvas(SpreadRef::Doc(0), at);
+            PointerEvent::new(kind, at.x, at.y).with_mods(mods)
+        };
+        let cmd = Mods { cmd: true, ..Mods::default() };
+        s.pointer(&event(PointerKind::Down, Point::new(200.0, 150.0), cmd), view).unwrap();
+        assert!(s.doc().unwrap().interaction.is_some());
+        assert!(s.tool_busy());
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+        s.pointer(&event(PointerKind::Drag, Point::new(300.0, 200.0), cmd), view).unwrap();
+        let scaled = s.doc().unwrap().doc.item(id).unwrap();
+        assert_rect(scaled.path.bounds().unwrap(), Rect::new(100.0, 100.0, 300.0, 200.0));
+        assert_rect(scaled.bounds(), Rect::new(100.0, 100.0, 300.0, 200.0));
+        assert_eq!(scaled.stroke.weight, 8.0, "the held Cmd preview must actually scale the stroke");
+        assert!((scaled.visible_bounds().width() - 208.0).abs() < 1e-6);
+        assert!(s.overlays(view).is_empty());
+        assert_eq!(s.doc().unwrap().selection, selection);
+        assert_resize_history(&s.doc().unwrap().history, &history);
+        assert_eq!(s.journal, journal);
+
+        // Only the literal final path may differ from the original document. In particular,
+        // the Cmd preview's stroke 8 and doubled height must not leak into the ordinary preview.
+        let mut expected = (*before).clone();
+        expected.item_mut(id).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 102.0, 150.0));
+        for _ in 0..2 {
+            s.pointer(&event(PointerKind::Drag, Point::new(103.0, 150.0), Mods::default()), view).unwrap();
+            let item = s.doc().unwrap().doc.item(id).unwrap();
+            assert_eq!(item.stroke.weight, 4.0, "ordinary preview restores the original stroke");
+            assert!(
+                (item.visible_bounds().width() - 6.0).abs() < 1e-6,
+                "releasing Cmd must snap to feasible physical width 6, got {}",
+                item.visible_bounds().width()
+            );
+            assert_rect(item.path.bounds().unwrap(), Rect::new(100.0, 100.0, 102.0, 150.0));
+            assert_rect(item.bounds(), Rect::new(100.0, 100.0, 102.0, 150.0));
+            assert_eq!(s.doc().unwrap().doc.as_ref(), &expected);
+            assert_eq!(s.doc().unwrap().selection, selection);
+            assert!(s.doc().unwrap().interaction.is_some());
+            assert!(s.tool_busy());
+            assert_resize_history(&s.doc().unwrap().history, &history);
+            assert_eq!(s.journal, journal);
+            let overlays = s.overlays(view);
+            assert_eq!(overlays.iter().filter(|o| matches!(o, designcraft_tools::Overlay::Measure { .. })).count(), 1);
+            assert_eq!(overlays.iter().filter(|o| matches!(o, designcraft_tools::Overlay::Guide { .. })).count(), 1);
+        }
+        let after = s.doc().unwrap().doc.clone();
+        s.pointer(&event(PointerKind::Up, Point::new(103.0, 150.0), Mods::default()), view).unwrap();
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &after));
+        assert_eq!(s.doc().unwrap().selection, selection);
+        assert!(s.doc().unwrap().interaction.is_none());
+        assert!(!s.tool_busy());
+        assert!(s.overlays(view).is_empty());
+        let mut committed_history = history.clone();
+        committed_history.redo.clear();
+        committed_history.undo.push(super::HistoryEntry { label: "Resize".into(), doc: before.clone(), selection: selection.clone() });
+        assert_resize_history(&s.doc().unwrap().history, &committed_history);
+        let mut committed_journal = journal;
+        committed_journal.push((
+            "transform.resize".into(),
+            json!({"from": [100.0, 100.0, 200.0, 150.0], "to": [100.0, 100.0, 102.0, 150.0], "content": false, "distribute": false}),
+        ));
+        assert_eq!(s.journal, committed_journal);
+        after.check().unwrap();
+
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+        assert_eq!(s.doc().unwrap().selection, selection);
+        let mut undone_history = history;
+        undone_history.redo = vec![super::HistoryEntry { label: "Resize".into(), doc: after.clone(), selection: selection.clone() }];
+        assert_resize_history(&s.doc().unwrap().history, &undone_history);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &after));
+        assert_eq!(s.doc().unwrap().doc.as_ref(), &expected);
+        assert_eq!(s.doc().unwrap().selection, selection);
+        assert_resize_history(&s.doc().unwrap().history, &committed_history);
+    }
+
+    #[test]
+    fn resize_flex_releasing_cmd_preserves_first_preview_commit_and_cancel() {
+        for cancel in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 1})).unwrap();
+            let id =
+                ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 150], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+            s.execute("flex.convert", &json!({"ids": [id.0]})).unwrap();
+            s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "[Black]", "weight": 4})).unwrap();
+            let target = s.execute("frame.create", &json!({"rect": [400, 100, 406, 400], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+            s.execute("object.stroke", &json!({"ids": [target], "swatch": "[None]", "weight": 0})).unwrap();
+            s.execute("prefs.set", &json!({"scaleStrokes": false})).unwrap();
+            s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+            s.doc_mut().unwrap().selection.key = Some(id);
+            s.execute("transform.move", &json!({"dx": 7, "dy": 0})).unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            s.set_tool("selection");
+            let before = s.doc().unwrap().doc.clone();
+            let selection = s.doc().unwrap().selection.clone();
+            let history = s.doc().unwrap().history.clone();
+            let journal = s.journal.clone();
+            assert!(!s.prefs.scale_strokes);
+            assert!(!selection.content);
+            assert!(!history.redo.is_empty());
+            let original = before.item(id).unwrap();
+            assert!(original.flex.is_some());
+            assert!(matches!(&original.content, designcraft_doc::Content::Group { items } if items.is_empty()));
+            assert_rect(original.path.bounds().unwrap(), Rect::new(100.0, 100.0, 200.0, 150.0));
+            assert_rect(original.bounds(), Rect::new(100.0, 100.0, 200.0, 150.0));
+            assert_eq!(original.stroke.weight, 4.0);
+            assert!((original.visible_bounds().width() - 104.0).abs() < 1e-6);
+            let view = ViewInfo {
+                zoom: 1.0,
+                snap: SnapView { smart_guides: true, smart_dimensions: true, zone_px: 8.0, ..SnapView::OFF },
+                unit: Unit::Points,
+                stroke_in_front: false,
+            };
+            let layout = s.layout();
+            let event = |kind, at: Point, mods| {
+                let at = layout.to_canvas(SpreadRef::Doc(0), at);
+                PointerEvent::new(kind, at.x, at.y).with_mods(mods)
+            };
+            let cmd = Mods { cmd: true, ..Mods::default() };
+            s.pointer(&event(PointerKind::Down, Point::new(200.0, 150.0), cmd), view).unwrap();
+            assert!(s.doc().unwrap().interaction.is_some());
+            assert!(s.tool_busy());
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+            s.pointer(&event(PointerKind::Drag, Point::new(300.0, 200.0), cmd), view).unwrap();
+            let scaled = s.doc().unwrap().doc.item(id).unwrap();
+            assert_rect(scaled.path.bounds().unwrap(), Rect::new(100.0, 100.0, 200.0, 150.0));
+            assert_rect(scaled.bounds(), Rect::new(100.0, 100.0, 300.0, 200.0));
+            assert_eq!(scaled.stroke.weight, 2.0, "held Cmd must exercise the Flex group's temporary stroke compensation");
+            assert!((scaled.visible_bounds().width() - 202.0).abs() < 1e-6);
+            assert!(s.overlays(view).is_empty());
+            assert_eq!(s.doc().unwrap().selection, selection);
+            assert_resize_history(&s.doc().unwrap().history, &history);
+            assert_eq!(s.journal, journal);
+
+            // An ordinary Flex resize bakes only its frame. The first released-Cmd preview
+            // must already agree with an identical repeated event, using the original stroke 4.
+            let mut expected = (*before).clone();
+            expected.item_mut(id).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 102.0, 150.0));
+            for preview in 0..2 {
+                s.pointer(&event(PointerKind::Drag, Point::new(103.0, 150.0), Mods::default()), view).unwrap();
+                let item = s.doc().unwrap().doc.item(id).unwrap();
+                assert!(
+                    (item.visible_bounds().width() - 6.0).abs() < 1e-6,
+                    "Flex Cmd-release preview {preview}: expected visible width 6, got {}",
+                    item.visible_bounds().width()
+                );
+                assert_rect(item.path.bounds().unwrap(), Rect::new(100.0, 100.0, 102.0, 150.0));
+                assert_rect(item.bounds(), Rect::new(100.0, 100.0, 102.0, 150.0));
+                assert_eq!(item.stroke.weight, 4.0);
+                assert_eq!(s.doc().unwrap().doc.as_ref(), &expected, "only the literal frame path may change");
+                assert_eq!(s.doc().unwrap().selection, selection);
+                assert!(s.doc().unwrap().interaction.is_some());
+                assert!(s.tool_busy());
+                assert_resize_history(&s.doc().unwrap().history, &history);
+                assert_eq!(s.journal, journal);
+                let overlays = s.overlays(view);
+                assert_eq!(overlays.iter().filter(|o| matches!(o, designcraft_tools::Overlay::Measure { .. })).count(), 1);
+                assert_eq!(overlays.iter().filter(|o| matches!(o, designcraft_tools::Overlay::Guide { .. })).count(), 1);
+            }
+
+            if cancel {
+                assert!(s.tool_key(designcraft_tools::ToolKey::Escape, Mods::default(), view).unwrap());
+                let assert_restored = |s: &mut Session| {
+                    let st = s.doc().unwrap();
+                    assert!(Arc::ptr_eq(&st.doc, &before));
+                    assert_eq!(st.doc.as_ref(), before.as_ref());
+                    assert_eq!(st.selection, selection);
+                    assert_resize_history(&st.history, &history);
+                    assert_eq!(s.journal, journal);
+                    assert!(st.interaction.is_none());
+                    assert!(!s.tool_busy());
+                    assert!(s.overlays(view).is_empty());
+                };
+                assert_restored(&mut s);
+                for kind in [PointerKind::Up, PointerKind::Drag, PointerKind::Move, PointerKind::Up] {
+                    s.pointer(&event(kind, Point::new(103.0, 150.0), Mods::default()), view).unwrap();
+                    assert_restored(&mut s);
+                }
+                // Cancellation keeps the pre-existing redo usable, not just its count.
+                let redo = history.redo.last().unwrap().doc.clone();
+                s.execute("edit.redo", &json!({})).unwrap();
+                assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &redo));
+                s.doc().unwrap().doc.check().unwrap();
+                continue;
+            }
+
+            let after = s.doc().unwrap().doc.clone();
+            s.pointer(&event(PointerKind::Up, Point::new(103.0, 150.0), Mods::default()), view).unwrap();
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &after));
+            assert_eq!(s.doc().unwrap().selection, selection);
+            assert!(s.doc().unwrap().interaction.is_none());
+            assert!(!s.tool_busy());
+            assert!(s.overlays(view).is_empty());
+            let mut committed_history = history.clone();
+            committed_history.redo.clear();
+            committed_history.undo.push(super::HistoryEntry { label: "Resize".into(), doc: before.clone(), selection: selection.clone() });
+            assert_resize_history(&s.doc().unwrap().history, &committed_history);
+            let mut committed_journal = journal;
+            committed_journal.push((
+                "transform.resize".into(),
+                json!({"from": [100.0, 100.0, 200.0, 150.0], "to": [100.0, 100.0, 102.0, 150.0], "content": false, "distribute": false}),
+            ));
+            assert_eq!(s.journal, committed_journal);
+            after.check().unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+            assert_eq!(s.doc().unwrap().selection, selection);
+            let mut undone_history = history;
+            undone_history.redo = vec![super::HistoryEntry { label: "Resize".into(), doc: after.clone(), selection: selection.clone() }];
+            assert_resize_history(&s.doc().unwrap().history, &undone_history);
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &after));
+            assert_eq!(s.doc().unwrap().doc.as_ref(), &expected);
+            assert_eq!(s.doc().unwrap().selection, selection);
+            assert_resize_history(&s.doc().unwrap().history, &committed_history);
+        }
+    }
+}

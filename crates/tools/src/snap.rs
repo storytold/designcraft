@@ -52,6 +52,11 @@ fn rect_finite(r: Rect) -> bool {
 /// pixels, converted with [`ToolContext::tol`]. A zone of 0 or less is no hit.
 /// Rotate does not run the position passes, so a locked axis still leaves room for [`Snap::angle`].
 pub fn snap(cx: &ToolContext, req: SnapRequest<'_>) -> Snap {
+    snap_with_min_lengths(cx, req, [None; 2])
+}
+
+/// Caller-known minimum dimension lengths. Position passes keep their normal precedence.
+pub(crate) fn snap_with_min_lengths(cx: &ToolContext, req: SnapRequest<'_>, min_lengths: [Option<f64>; 2]) -> Snap {
     if !rect_finite(req.rect) || !cx.snap.any() {
         return Snap::default();
     }
@@ -66,8 +71,8 @@ pub fn snap(cx: &ToolContext, req: SnapRequest<'_>) -> Snap {
     // Three false flags lock the axis: do not move it and do not draw a guide for it.
     let x_free = req.x_edges != [false; 3];
     let y_free = req.y_edges != [false; 3];
-    let x_hit = x_free.then(|| first_on_axis(cx, &req, Axis::X, tol)).flatten();
-    let y_hit = y_free.then(|| first_on_axis(cx, &req, Axis::Y, tol)).flatten();
+    let x_hit = x_free.then(|| first_on_axis(cx, &req, Axis::X, tol, min_lengths[0])).flatten();
+    let y_hit = y_free.then(|| first_on_axis(cx, &req, Axis::Y, tol, min_lengths[1])).flatten();
     let mut out = Snap::default();
     if let Some(hit) = &x_hit {
         out.delta.x = hit.delta;
@@ -374,12 +379,12 @@ fn format_angle(deg: f64) -> String {
     if nearest.is_finite() && (deg - nearest).abs() < 1e-6 { format!("{nearest:.0}") } else { format!("{deg:.1}") }
 }
 
-fn first_on_axis(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> Option<AxisHit> {
+fn first_on_axis(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64, min_length: Option<f64>) -> Option<AxisHit> {
     pass_grid(cx, req, axis, tol)
         .or_else(|| nearer(pass_baseline(cx, req, axis, tol), pass_guides(cx, req, axis, tol)))
         .or_else(|| pass_align(cx, req, axis, tol))
         .or_else(|| pass_spacing(cx, req, axis, tol))
-        .or_else(|| pass_dimensions(cx, req, axis, tol))
+        .or_else(|| pass_dimensions(cx, req, axis, tol, min_length))
 }
 
 /// The baseline grid and the guides (ruler guides, margins, columns) compete by distance, so a
@@ -765,7 +770,7 @@ fn gap_ends(axis: Axis, left: f64, right: f64, perp_lo: f64, perp_hi: f64) -> Op
 /// sides. Rotation is dropped. Width and height are both candidates for whichever length is set.
 /// The closest length inside the zone wins. Delta is the length difference applied from the moving
 /// edge. A rotated rectangle contributes its side lengths, not the axis-aligned box.
-fn pass_dimensions(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> Option<AxisHit> {
+fn pass_dimensions(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64, min_length: Option<f64>) -> Option<AxisHit> {
     if !matches!(req.gesture, Gesture::Resize | Gesture::Create) || !cx.snap.smart_guides || !cx.snap.smart_dimensions {
         return None;
     }
@@ -776,9 +781,10 @@ fn pass_dimensions(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64
     if !proposed.is_finite() {
         return None;
     }
+    let min_length = min_length.filter(|length| length.is_finite() && *length >= 0.0);
     let mut best: Option<(f64, f64)> = None;
     for len in dimension_lengths(cx, req) {
-        if !len.is_finite() || len < 0.0 {
+        if !len.is_finite() || len < 0.0 || min_length.is_some_and(|minimum| len < minimum) {
             continue;
         }
         let dist = (len - proposed).abs();

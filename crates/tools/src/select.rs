@@ -30,6 +30,8 @@ enum Drag {
         start: Point,
         from: Rect,
         spread: SpreadRef,
+        /// Fixed-stroke padding from the same original document as `from`.
+        fixed_stroke_pad: Option<(f64, f64)>,
     },
     Rotate {
         center: Point,
@@ -349,8 +351,17 @@ fn finish_snapped_resize(
     y_edges: [bool; 3],
     hit: &crate::Snap,
 ) -> Rect {
+    let mut w = proposed.x1 - proposed.x0;
+    let mut h = proposed.y1 - proposed.y0;
     if !mods.alt {
-        let mut to = crate::snap::nudge_edges(proposed, x_edges, y_edges, hit.delta);
+        let mut delta = hit.delta;
+        if w < 0.0 && hit.length_delta[0].is_some() {
+            delta.x = -delta.x;
+        }
+        if h < 0.0 && hit.length_delta[1].is_some() {
+            delta.y = -delta.y;
+        }
+        let mut to = crate::snap::nudge_edges(proposed, x_edges, y_edges, delta);
         if mods.shift && from.width() > 1e-9 && from.height() > 1e-9 {
             let s = if driver_x { (to.x1 - to.x0) / from.width() } else { (to.y1 - to.y0) / from.height() };
             if s.is_finite() {
@@ -359,10 +370,8 @@ fn finish_snapped_resize(
         }
         return to;
     }
-    let mut w = proposed.x1 - proposed.x0;
-    let mut h = proposed.y1 - proposed.y0;
-    w += centered_size_delta(x_edges, hit.delta.x, hit.length_delta[0]);
-    h += centered_size_delta(y_edges, hit.delta.y, hit.length_delta[1]);
+    w += centered_size_delta(w, x_edges, hit.delta.x, hit.length_delta[0]);
+    h += centered_size_delta(h, y_edges, hit.delta.y, hit.length_delta[1]);
     if mods.shift && from.width() > 1e-9 && from.height() > 1e-9 {
         if driver_x {
             let s = w / from.width();
@@ -382,10 +391,10 @@ fn finish_snapped_resize(
     centered_rect(from, w, h)
 }
 
-/// Length match: add the difference once. Position match: the flagged edge moves and the other side mirrors.
-fn centered_size_delta(edges: [bool; 3], delta: f64, length_delta: Option<f64>) -> f64 {
+/// Length match: apply the physical difference once in the span's direction. Position matches mirror the edge movement.
+fn centered_size_delta(span: f64, edges: [bool; 3], delta: f64, length_delta: Option<f64>) -> f64 {
     if let Some(diff) = length_delta.filter(|d| d.is_finite()) {
-        return diff;
+        return if span < 0.0 { -diff } else { diff };
     }
     let edge = axis_size_delta(edges, delta);
     if edge.is_finite() { edge * 2.0 } else { 0.0 }
@@ -459,6 +468,34 @@ fn positive_pad(v: f64) -> f64 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
+/// Fixed-stroke eligibility is independent of modifiers and the current preview's bounds.
+fn fixed_resize_frame(cx: &ToolContext, spread: SpreadRef) -> bool {
+    if cx.selection.content {
+        return false;
+    }
+    let [id] = cx.selection.items.as_slice() else { return false };
+    let Some(loc) = cx.doc.find(*id) else { return false };
+    if loc.spread != spread || loc.path.len() != 1 {
+        return false;
+    }
+    let Some(it) = cx.doc.item_at(&loc) else { return false };
+    // Flex containers bake their frame on ordinary resize; other grouped content scales.
+    it.flex.is_some() || !matches!(it.content, designcraft_doc::Content::Group { .. })
+}
+
+/// Ordinary frame previews restore the original geometry and fixed stroke before resizing.
+fn resize_min_lengths(cx: &ToolContext, spread: SpreadRef, from: Rect, mods: Mods, pad: (f64, f64)) -> [Option<f64>; 2] {
+    if mods.cmd || !fixed_resize_frame(cx, spread) {
+        return [None; 2];
+    }
+    [(from.width(), pad.0), (from.height(), pad.1)].map(|(span, padding)| {
+        // transform.resize clamps each absolute scale to 1e-3; zero stroke keeps its existing policy.
+        let span = span.abs();
+        let minimum = padding + span * 1e-3;
+        (padding > 0.0 && span >= 1e-9 && minimum.is_finite()).then_some(minimum)
+    })
+}
+
 impl Tool for SelectionTool {
     fn id(&self) -> &'static str {
         if self.direct { "directSelection" } else { "selection" }
@@ -514,8 +551,13 @@ impl Tool for SelectionTool {
                     // On a turned spread the canvas handle is another one of the spread's.
                     let turns = cx.layout.slot(loc.spread).map_or(0, |s| s.rotation as usize);
                     let handle = (h + 8 - 2 * turns) % 8;
-                    self.drag =
-                        Drag::Resize { handle, start: p, from: cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b), spread: loc.spread };
+                    self.drag = Drag::Resize {
+                        handle,
+                        start: p,
+                        from: cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b),
+                        spread: loc.spread,
+                        fixed_stroke_pad: fixed_resize_frame(cx, loc.spread).then(|| single_stroke_pad(cx)),
+                    };
                     return vec![Action::Begin("Resize".into())];
                 }
                 // Cmd+Shift-click a parent item on a page: override it there and select the copy.
@@ -664,7 +706,7 @@ impl Tool for SelectionTool {
                     }
                     vec![Action::Preview("transform.move".into(), params)]
                 }
-                Drag::Resize { handle, start, from, spread } => {
+                Drag::Resize { handle, start, from, spread, fixed_stroke_pad } => {
                     let _ = start;
                     let pointer = cx.layout.to_spread(spread, p);
                     let raw = resize_edges_rect(from, handle, pointer);
@@ -675,7 +717,8 @@ impl Tool for SelectionTool {
                     // Command still scales content. It does not skip the snap.
                     if !distribute && cx.snap.any() {
                         let (mut x_edges, mut y_edges) = resize_edge_flags(handle);
-                        let driver_x = drives_x(handle, from, raw);
+                        let aspect_rect = if ev.mods.alt { apply_alt(from, handle, raw) } else { raw };
+                        let driver_x = drives_x(handle, from, aspect_rect);
                         if ev.mods.shift {
                             if driver_x {
                                 y_edges = [false, false, false];
@@ -684,9 +727,12 @@ impl Tool for SelectionTool {
                             }
                         }
                         let exclude = cx.selection.items.clone();
-                        let (pad_x, pad_y) = single_stroke_pad(cx);
+                        // The engine restores the original stroke for ordinary frame previews.
+                        // Cmd and other resize contexts retain their existing live-padding behavior.
+                        let (pad_x, pad_y) =
+                            fixed_stroke_pad.filter(|_| !ev.mods.cmd && fixed_resize_frame(cx, spread)).unwrap_or_else(|| single_stroke_pad(cx));
                         let proposed = to;
-                        let mut hit = crate::snap::snap(
+                        let mut hit = crate::snap::snap_with_min_lengths(
                             cx,
                             SnapRequest {
                                 spread,
@@ -701,6 +747,7 @@ impl Tool for SelectionTool {
                                 radius: 0.0,
                                 pointer,
                             },
+                            resize_min_lengths(cx, spread, from, ev.mods, (pad_x, pad_y)),
                         );
                         to = finish_snapped_resize(from, handle, proposed, ev.mods, driver_x, x_edges, y_edges, &hit);
                         crate::snap::lay_dimension_guides(&mut hit.guides, cx.layout.xf(spread), proposed, to, x_edges, y_edges, hit.length_delta);
@@ -837,9 +884,11 @@ impl Tool for SelectionTool {
     }
 
     fn key(&mut self, cx: &ToolContext, key: ToolKey, mods: Mods) -> Vec<Action> {
-        if key == ToolKey::Escape && self.loaded.take().is_some() {
-            // Unload; the selection stays. Cancel (no interaction runs) marks the key handled.
+        if key == ToolKey::Escape && (self.loaded.take().is_some() || matches!(self.drag, Drag::Resize { .. })) {
+            // Cancel the resize or unload placement without deselecting. A later release stays inert.
             self.drag = Drag::None;
+            self.guides.clear();
+            self.shift_release = None;
             return vec![Action::Cancel];
         }
         let inc = cx.doc.settings.keyboard_increment * if mods.shift { 10.0 } else { 1.0 };

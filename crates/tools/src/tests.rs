@@ -8,6 +8,8 @@ use designcraft_geom::{Point, Rect, Unit};
 
 use super::*;
 
+mod resize;
+
 fn ctx<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout) -> ToolContext<'a> {
     ToolContext {
         doc: d,
