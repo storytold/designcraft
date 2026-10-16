@@ -602,7 +602,13 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             continue 'paras;
         }
         let pf = &story.paras[pi];
-        let (pp, base_chars) = doc.styles.resolve_para(pf);
+        let (pp, mut base_chars) = doc.styles.resolve_para(pf);
+        if prange.is_empty() && prange.start < story.len() {
+            // The terminating LF lies outside prange but supplies an empty paragraph's metrics.
+            base_chars = doc.styles.resolve_char(&base_chars, story.format_after(prange.start));
+        } else if prange.is_empty() && prange.start == story.len() && story.text.ends_with('\n') && pf.eof_inherited_chars.is_some() {
+            base_chars = doc.styles.resolve_char(&base_chars, &story.typing_format(prange.start));
+        }
         // A break character that ends the previous paragraph sends this one on, like a start option.
         let after_break = pi
             .checked_sub(1)

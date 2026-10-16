@@ -1944,7 +1944,7 @@ impl<'r> Importer<'r> {
                         let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
                         let para = self.para_attrs(c);
                         let chars = self.char_attrs(c);
-                        let npf = ParaFormat { style, para, chars: CharAttrs::default(), table: None };
+                        let npf = ParaFormat { style, para, chars: CharAttrs::default(), eof_inherited_chars: None, table: None };
                         if b.fresh
                             && let Some(last) = b.paras.last_mut()
                         {

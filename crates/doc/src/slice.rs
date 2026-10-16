@@ -53,6 +53,7 @@ impl Story {
                 out.tables.insert(id, t.clone());
             }
         }
+        out.clear_consumed_eof_formats();
         out.fix_tables();
         out
     }
@@ -89,6 +90,7 @@ impl Story {
                 *p = crate::story::ParaFormat { table: None, ..pf.clone() };
             }
         }
+        self.clear_consumed_eof_formats();
         // Marker payloads in text order, keeping newly allocated destination note ids.
         let first = |m: char| self.text[..pos].matches(m).count();
         let (nf, nx, ni, na) = (first(FOOTNOTE_REF), first(XREF_MARK), first(INDEX_MARK), first(ANCHOR_MARK));
@@ -191,14 +193,18 @@ impl Story {
                 p.table = p.table.and_then(|id| ids.get(&id).copied());
             }
         }
+        // Preserve EOF typing overrides on the separator, not as paragraph defaults.
+        let separator = self.typing_format(self.len());
         self.text.push('\n');
         self.text.push_str(&other.text);
-        // The paragraph end takes the last run's format.
-        if let Some(last) = self.chars.last_mut() {
+        if let Some(last) = self.chars.last_mut().filter(|last| last.format == separator) {
             last.len += 1;
+        } else {
+            self.chars.push(CharRun { len: 1, format: separator });
         }
         self.chars.extend(other.chars.into_iter().filter(|r| r.len > 0));
         self.paras.extend(other.paras);
+        self.clear_consumed_eof_formats();
         for n in other.notes {
             let id = self.next_note_id();
             self.notes.push(Arc::new(crate::notes::Footnote { id, text: n.text.clone() }));

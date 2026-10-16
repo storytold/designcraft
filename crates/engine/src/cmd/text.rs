@@ -221,7 +221,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     Some(v) => v,
                     None => !format_targets(s).first().is_some_and(|t| {
                         s.doc().ok().and_then(|d| d.doc.text_story(t.story, t.cell)).is_some_and(|st| {
-                            st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over.tate_chu_yoko == Some(true)
+                            let format =
+                                if t.range.is_empty() { st.typing_format(t.range.start) } else { st.char_format_at(t.range.start + 1).clone() };
+                            format.over.tate_chu_yoko == Some(true)
                         })
                     }),
                 };
@@ -249,7 +251,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     Some(v) => v,
                     None => !format_targets(s).first().is_some_and(|t| {
                         s.doc().ok().and_then(|d| d.doc.text_story(t.story, t.cell)).is_some_and(|st| {
-                            st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over.kenten == Some(true)
+                            let format =
+                                if t.range.is_empty() { st.typing_format(t.range.start) } else { st.char_format_at(t.range.start + 1).clone() };
+                            format.over.kenten == Some(true)
                         })
                     }),
                 };
@@ -614,7 +618,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if tracking && t.cell.is_none() {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
             let at = super::changes::mark_deleted(st, r.clone());
-            let mut fmt = st.char_format_at(at).clone();
+            let mut fmt = if r.is_empty() { st.typing_format(at) } else { st.char_format_at(at).clone() };
             if let Some(f) = &typing {
                 apply_typing_format(&mut fmt, f);
             }
@@ -624,11 +628,16 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
             return Ok(json!({"pos": pos}));
         }
-        st.replace(r.clone(), &text);
         if let Some(f) = &typing
             && !text.is_empty()
         {
-            st.format_chars(r.start..r.start + text.len(), |fmt| apply_typing_format(fmt, f));
+            // Match replacement's boundary format before deletion, then capture pending EOF typing.
+            let mut fmt = if r.is_empty() { st.typing_format(r.start) } else { st.format_after(r.start).clone() };
+            apply_typing_format(&mut fmt, f);
+            st.delete(r.clone());
+            st.insert_with(r.start, &text, fmt);
+        } else {
+            st.replace(r.clone(), &text);
         }
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
@@ -661,7 +670,7 @@ fn smart_quotes(s: &Session, text: &str) -> String {
             let pos = t.range().start.min(story.len());
             let pi = story.para_at(pos).min(story.paras.len().saturating_sub(1));
             let base = st.doc.styles.resolve_para(story.paras.get(pi)?).1;
-            Some(st.doc.styles.resolve_char(&base, story.char_format_at(pos)).language)
+            Some(st.doc.styles.resolve_char(&base, &story.typing_format(pos)).language)
         })
         .unwrap_or_default();
     let [dq_open, dq_close, sq_open, sq_close] = quote_marks(&language);
@@ -1039,10 +1048,10 @@ fn warichu_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => v,
         None if has_opts => true,
         None => !format_targets(s).first().is_some_and(|t| {
-            s.doc()
-                .ok()
-                .and_then(|d| d.doc.text_story(t.story, t.cell))
-                .is_some_and(|st| st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over.warichu == Some(true))
+            s.doc().ok().and_then(|d| d.doc.text_story(t.story, t.cell)).is_some_and(|st| {
+                let format = if t.range.is_empty() { st.typing_format(t.range.start) } else { st.char_format_at(t.range.start + 1).clone() };
+                format.over.warichu == Some(true)
+            })
         }),
     };
     let mut body = serde_json::Map::new();
@@ -1100,13 +1109,14 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
     validate_char_fill(&s.doc()?.doc, &a, "type.char")?;
     let cleared: Vec<String> = attrs.as_object().map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
     let targets = format_targets(s);
-    // A caret in text: the format is for the next typing — unless it sits on an empty paragraph's
-    // hidden mark, which takes the format immediately (there is nothing else on that line to type
-    // into first).
+    // Ordinary carets keep a pending format. An interior blank paragraph's LF and an outer
+    // blank EOF instead persist their formatting immediately on their respective carriers.
     if let [t] = targets.as_slice()
         && t.range.is_empty()
         && let Some(at) = s.doc()?.selection.text
-        && s.doc()?.doc.text_story(t.story, t.cell).is_some_and(|st| !st.is_empty() && !empty_para_mark(st, t.range.start))
+        && s.doc()?.doc.text_story(t.story, t.cell).is_some_and(|st| {
+            !st.is_empty() && !empty_para_mark(st, t.range.start) && !(t.cell.is_none() && t.range.start == st.len() && st.text.ends_with('\n'))
+        })
     {
         let doc = s.doc()?.uid;
         let mut f = typing_format(s).cloned().unwrap_or(TypingFormat { doc, at, attrs: CharAttrs::default(), cleared: vec![] });
@@ -1143,6 +1153,18 @@ pub(crate) fn apply_char_attrs(d: &mut designcraft_doc::Document, targets: &[Tar
                         let _ = f.over.set_json(k, &Value::Null);
                     }
                 });
+            } else if t.cell.is_none() && r.start == st.len() && st.text.ends_with('\n') && (!a.is_empty() || !cleared.is_empty()) {
+                let mut over = st.char_format_at(r.start).over.clone();
+                over.change = None;
+                let Some(pf) = st.paras.last_mut() else { continue };
+                if pf.eof_inherited_chars.is_none() {
+                    pf.eof_inherited_chars = Some(std::mem::replace(&mut pf.chars, over));
+                }
+                pf.chars.merge(a);
+                for key in cleared {
+                    let _ = pf.chars.set_json(key, &Value::Null);
+                }
+                st.rev = st.rev.wrapping_add(1);
             }
             continue;
         }
@@ -1212,7 +1234,12 @@ fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
                     let (pp, pc) = styles.resolve_para(pf);
                     pf.style = designcraft_doc::styles::NO_PARA_STYLE.into();
                     pf.para = ParaProps::default().delta(&pp);
-                    pf.chars = CharProps::default().delta(&pc);
+                    let baseline = CharProps::default().delta(&pc);
+                    if let Some(inherited) = pf.eof_inherited_chars.as_mut() {
+                        *inherited = baseline;
+                    } else {
+                        pf.chars = baseline;
+                    }
                 });
             } else {
                 let ranges = st.para_ranges();
@@ -1288,7 +1315,7 @@ fn selection_attrs(s: &mut Session, _p: &Value) -> Result<Value> {
 /// inheritance separate from paragraph defaults for style creation from the selection.
 pub(crate) fn effective_char_format(s: &Session, target: &Target) -> Result<designcraft_doc::CharFormat> {
     let story = s.doc()?.doc.text_story(target.story, target.cell).ok_or(designcraft_doc::DocError::NoStory(target.story))?;
-    let mut format = if target.range.is_empty() { story.char_format_at(target.range.start) } else { story.format_after(target.range.start) }.clone();
+    let mut format = if target.range.is_empty() { story.typing_format(target.range.start) } else { story.format_after(target.range.start).clone() };
     if let Some(pending) = typing_format(s)
         && target.story == pending.at.story
         && target.cell == pending.at.cell
@@ -2786,6 +2813,10 @@ mod sentence_selection_tests {
         assert_eq!(para_bounds(s, s.len()), (s.len(), s.len()));
     }
 }
+
+#[cfg(test)]
+#[path = "text/tests_eof.rs"]
+mod tests_eof;
 
 #[cfg(test)]
 mod open_type_features_tests {

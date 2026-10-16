@@ -169,7 +169,7 @@ impl Story {
     /// Insert a footnote reference at `pos` with the given footnote text. Returns the footnote id.
     pub fn insert_note(&mut self, pos: usize, text: &str, para: ParaFormat) -> u64 {
         let pos = crate::story::floor_char_boundary(&self.text, pos.min(self.len()));
-        let fmt = self.char_format_at(pos).clone();
+        let fmt = self.typing_format(pos);
         self.insert_with(pos, &FOOTNOTE_REF.to_string(), fmt);
         let k = self.notes_before(pos);
         let note = Arc::make_mut(&mut self.notes[k]);

@@ -90,7 +90,7 @@ impl Story {
     /// Insert an endnote reference at `pos` with the given text. Returns the endnote id.
     pub fn insert_endnote(&mut self, pos: usize, text: &str, para: ParaFormat) -> u64 {
         let pos = crate::story::floor_char_boundary(&self.text, pos.min(self.len()));
-        let fmt = self.char_format_at(pos).clone();
+        let fmt = self.typing_format(pos);
         self.insert_with(pos, &ENDNOTE_REF.to_string(), fmt);
         let k = self.endnotes_before(pos);
         let note = Arc::make_mut(&mut self.endnotes[k]);

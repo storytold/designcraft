@@ -21,7 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let at = ts.anchor.max(ts.focus);
             s.edit(|d, sel| {
                 let story = d.story_mut(ts.story).ok_or_else(|| bad("note.new", "no such story"))?;
-                let fmt = story.char_format_at(at).clone();
+                let fmt = if ts.range().is_empty() { story.typing_format(at) } else { story.char_format_at(at).clone() };
                 story.insert_with(at, &NOTE_MARK.to_string(), fmt);
                 let k = story.text[..at].matches(NOTE_MARK).count();
                 let n = Arc::make_mut(&mut story.editorial[k]);

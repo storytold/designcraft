@@ -1080,8 +1080,8 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
             let cur = st.selection.text.and_then(|t| {
                 let story = st.doc.text_story(t.story, t.cell)?;
-                let at = if t.range().is_empty() { t.range().start } else { t.range().start + 1 };
-                story.char_format_at(at).over.ruby.clone()
+                let format = if t.is_caret() { story.typing_format(t.focus) } else { story.char_format_at(t.range().start + 1).clone() };
+                format.over.ruby
             });
             app.ui.dialog = Some(crate::dialogs::Dialog::new("ruby", json!({"text": cur.unwrap_or_default()})));
             Ok(Value::Null)

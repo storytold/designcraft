@@ -70,9 +70,14 @@ pub struct ParaFormat {
     pub style: String,
     #[serde(default, skip_serializing_if = "ParaAttrs::is_empty")]
     pub para: ParaAttrs,
-    /// Paragraph-level character overrides are stored on the char runs; this holds nothing.
+    /// Paragraph defaults, or direct typing overrides while a blank EOF is staged.
     #[serde(default, skip_serializing_if = "CharAttrs::is_empty")]
     pub chars: CharAttrs,
+    /// Original paragraph defaults below the live character style while `chars` holds EOF
+    /// typing overrides. Some(empty) distinguishes an explicit clear from unstaged inheritance.
+    /// Absent in old native files and omitted for ordinary paragraphs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eof_inherited_chars: Option<CharAttrs>,
     /// The table anchored in this paragraph (key into [`Story::tables`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub table: Option<u64>,
@@ -80,7 +85,7 @@ pub struct ParaFormat {
 
 impl Default for ParaFormat {
     fn default() -> Self {
-        ParaFormat { style: BASIC_PARAGRAPH.into(), para: ParaAttrs::default(), chars: CharAttrs::default(), table: None }
+        ParaFormat { style: BASIC_PARAGRAPH.into(), para: ParaAttrs::default(), chars: CharAttrs::default(), eof_inherited_chars: None, table: None }
     }
 }
 
@@ -218,6 +223,7 @@ impl Story {
     pub fn with_text(id: StoryId, text: &str, para: ParaFormat) -> Self {
         let mut s = Story::new(id);
         s.paras[0] = para;
+        s.clear_consumed_eof_formats();
         s.insert(0, text);
         s
     }
@@ -262,6 +268,31 @@ impl Story {
         self.chars.last().map_or(&NO_FORMAT, |r| &r.format)
     }
 
+    /// The format of newly typed bytes. A staged blank EOF has no character run of its own;
+    /// its named style remains the preceding run's live link, with separate direct overrides.
+    pub fn typing_format(&self, pos: usize) -> CharFormat {
+        let mut format = self.char_format_at(pos).clone();
+        if pos == self.len()
+            && self.text.ends_with('\n')
+            && let Some(pf) = self.paras.last().filter(|pf| pf.eof_inherited_chars.is_some())
+        {
+            format.over = pf.chars.clone();
+        }
+        format
+    }
+
+    /// Typing overrides must not become defaults on paragraphs that gain actual bytes.
+    pub(crate) fn clear_consumed_eof_formats(&mut self) {
+        let eof = self.paras.len().checked_sub(1).filter(|_| self.text.ends_with('\n'));
+        for (index, pf) in self.paras.iter_mut().enumerate() {
+            if Some(index) != eof
+                && let Some(inherited) = pf.eof_inherited_chars.take()
+            {
+                pf.chars = inherited;
+            }
+        }
+    }
+
     /// Iterate `(range, format)` of character runs.
     pub fn runs(&self) -> impl Iterator<Item = (std::ops::Range<usize>, &CharFormat)> {
         let mut start = 0;
@@ -274,7 +305,7 @@ impl Story {
 
     /// Insert `text` at byte `pos` using the format at that position.
     pub fn insert(&mut self, pos: usize, text: &str) {
-        let fmt = self.char_format_at(pos).clone();
+        let fmt = self.typing_format(pos);
         self.insert_with(pos, text, fmt);
     }
 
@@ -286,7 +317,7 @@ impl Story {
 
     /// Insert without the table fix-up (callers fix up themselves).
     pub(crate) fn insert_raw(&mut self, pos: usize, text: &str) {
-        let fmt = self.char_format_at(pos).clone();
+        let fmt = self.typing_format(pos);
         self.insert_with_raw(pos, text, fmt);
     }
 
@@ -296,6 +327,23 @@ impl Story {
             return;
         }
         let pos = floor_char_boundary(&self.text, pos);
+        let continuation = if pos == self.len() && text.ends_with('\n') {
+            self.paras.last().filter(|pf| pf.eof_inherited_chars.is_some() || !fmt.over.is_empty() || fmt.style != NO_CHAR_STYLE).map(|pf| {
+                let inherited = pf.eof_inherited_chars.as_ref().unwrap_or(&pf.chars).clone();
+                let mut over = fmt.over.clone();
+                over.change = None; // An empty continuation is not itself an inserted change.
+                (over, inherited)
+            })
+        } else {
+            None
+        };
+        if pos == self.len()
+            && self.text.ends_with('\n')
+            && let Some(pf) = self.paras.last_mut()
+            && let Some(inherited) = pf.eof_inherited_chars.take()
+        {
+            pf.chars = inherited;
+        }
         let refs = text.matches(crate::notes::FOOTNOTE_REF).count();
         if refs > 0 {
             let k = self.notes_before(pos);
@@ -328,6 +376,12 @@ impl Story {
         // Character runs.
         self.splice_runs(pos, 0, text.len(), fmt);
         self.normalize();
+        if let Some((over, inherited)) = continuation
+            && let Some(pf) = self.paras.last_mut()
+        {
+            pf.chars = over;
+            pf.eof_inherited_chars = Some(inherited);
+        }
         self.rev += 1;
     }
 
@@ -392,7 +446,7 @@ impl Story {
 
     /// Replace a range with text (delete + insert using the format at the start of the range).
     pub fn replace(&mut self, range: std::ops::Range<usize>, text: &str) {
-        let fmt = if range.start < range.end { self.format_after(range.start).clone() } else { self.char_format_at(range.start).clone() };
+        let fmt = if range.start < range.end { self.format_after(range.start).clone() } else { self.typing_format(range.start) };
         self.delete(range.clone());
         self.insert_with(range.start, text, fmt);
     }
@@ -538,6 +592,7 @@ impl Story {
     }
 
     fn normalize(&mut self) {
+        self.clear_consumed_eof_formats();
         let mut out: Vec<CharRun> = Vec::with_capacity(self.chars.len());
         for r in self.chars.drain(..) {
             if r.len == 0 && !out.is_empty() {

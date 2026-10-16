@@ -413,6 +413,9 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
                     if clear {
                         f.para = ParaAttrs::default();
                         f.chars = CharAttrs::default();
+                        if let Some(inherited) = f.eof_inherited_chars.as_mut() {
+                            *inherited = CharAttrs::default();
+                        }
                     }
                 });
                 if clear {
@@ -1269,6 +1272,12 @@ fn rename_in_story(st: &mut designcraft_doc::Story, from: &str, to: &str, depth:
         }
     }
     for pf in &mut st.paras {
+        // Paragraph defaults and staged EOF typing both retain character color references.
+        for o in std::iter::once(&mut pf.chars).chain(pf.eof_inherited_chars.iter_mut()) {
+            for c in [&mut o.fill, &mut o.stroke, &mut o.underline_color, &mut o.strikethrough_color].into_iter().flatten() {
+                f(c);
+            }
+        }
         let a = &mut pf.para;
         for c in [&mut a.shading_color, &mut a.border_color].into_iter().flatten() {
             f(c);

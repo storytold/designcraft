@@ -121,8 +121,13 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let style = d.endnote_options.para_style.clone();
         let story = d.story_mut(ts.story).ok_or_else(|| bad(ID, "no such story"))?;
+        // A selected range still inserts after its last character using that run's format.
+        let selected_format = (!ts.range().is_empty()).then(|| story.char_format_at(at).clone());
         let id = story.insert_endnote(at, &text, ParaFormat { style, ..Default::default() });
         let caret = at + designcraft_doc::ENDNOTE_REF.len_utf8();
+        if let Some(format) = selected_format {
+            story.format_chars(at..caret, |f| *f = format.clone());
+        }
         if let Some(t) = &mut sel.text {
             (t.anchor, t.focus) = (caret, caret);
         }

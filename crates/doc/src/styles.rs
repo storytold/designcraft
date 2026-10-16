@@ -729,7 +729,7 @@ impl Styles {
             cp.apply(&s.chars);
         }
         pp.apply(&p.para);
-        cp.apply(&p.chars);
+        cp.apply(p.eof_inherited_chars.as_ref().unwrap_or(&p.chars));
         (pp, cp)
     }
 

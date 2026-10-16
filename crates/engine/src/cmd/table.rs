@@ -408,8 +408,12 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         table.options.direction = para_direction(d, t.story, t.range().start);
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.insert", "no story"))?;
         // Cells start with the paragraph format at the caret.
-        let pf = st.paras[st.para_at(t.range().start)].clone();
-        let cf = st.char_format_at(t.range().start).clone();
+        let mut pf = st.paras[st.para_at(t.range().start)].clone();
+        let cf = if t.range().is_empty() { st.typing_format(t.range().start) } else { st.char_format_at(t.range().start).clone() };
+        // A cell's empty run keeps the typing overrides; its paragraph keeps ordinary defaults.
+        if let Some(inherited) = pf.eof_inherited_chars.take() {
+            pf.chars = inherited;
+        }
         for c in &mut table.cells {
             c.text.paras[0] = designcraft_doc::ParaFormat { table: None, ..pf.clone() };
             c.text.chars[0].format = cf.clone();
