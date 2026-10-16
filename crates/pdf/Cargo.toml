@@ -14,6 +14,7 @@ designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
 designcraft-fonts = { workspace = true }
 designcraft-compose = { workspace = true }
+designcraft-postscript = { workspace = true }
 craft-pdf = { workspace = true, features = ["write-pdf"] }
 krilla-svg = { workspace = true }
 designcraft-images = { workspace = true }

@@ -312,12 +312,16 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     if lname.ends_with(".idml") || lname.ends_with(".designcraft") {
         return place_layout_page(s, p, &name, &bytes);
     }
-    // EPS: shown and printed through its preview (or a placeholder) at its bounding box size.
-    let (bytes, eps_size) = if designcraft_images::is_eps(&bytes) {
-        let (proxy, size) = designcraft_images::eps_proxy(&bytes).ok_or_else(|| bad("file.place", "the EPS has no bounding box"))?;
-        (proxy, Some(size))
+    // EPS: kept as it is (links stay up to date) and drawn through its PostScript, at its
+    // bounding box size; one that won't run shows its preview.
+    let eps_size = if designcraft_images::is_eps(&bytes) {
+        Some(
+            designcraft_images::eps_bounding_box(&bytes)
+                .map(|b| (b[2] - b[0], b[3] - b[1]))
+                .ok_or_else(|| bad("file.place", "the EPS has no bounding box"))?,
+        )
     } else {
-        (bytes, None)
+        None
     };
     // Video and sound: a media frame (Window › Interactive › Media).
     if let Some(mime) = designcraft_doc::media_mime(&name) {

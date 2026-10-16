@@ -42,6 +42,9 @@ pub fn mime(bytes: &[u8]) -> &'static str {
     if is_svg(bytes) {
         return "image/svg+xml";
     }
+    if is_eps(bytes) {
+        return "application/postscript";
+    }
     match image::guess_format(bytes) {
         Ok(image::ImageFormat::Png) => "image/png",
         Ok(image::ImageFormat::Jpeg) => "image/jpeg",

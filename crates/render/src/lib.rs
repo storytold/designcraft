@@ -1076,6 +1076,13 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
     if is_pdf(bytes) {
         return render_pdf_page(bytes, page as usize, 3000);
     }
+    // An EPS draws through its PostScript (as a PDF); one that won't run shows its preview.
+    if designcraft_postscript::is_eps(bytes)
+        && let Some(pdf) = designcraft_postscript::cached_pdf(bytes)
+        && let Some(pm) = render_pdf_page(&pdf, 0, 3000)
+    {
+        return Some(pm);
+    }
     if designcraft_images::is_svg(bytes) {
         let (px, w, h) = designcraft_images::render_svg(bytes, 3000)?;
         let data = px.as_chunks::<4>().0.iter().map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect();
@@ -1136,6 +1143,10 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if is_pdf(bytes) {
         // Placed PDFs are sized by their page (crop box) in points.
         return pdf_page_size(bytes, 0).map(|(w, h)| (w.round().max(1.0) as u32, h.round().max(1.0) as u32));
+    }
+    if designcraft_images::is_eps(bytes) {
+        // EPS by its bounding box in points.
+        return designcraft_images::natural_size(bytes).map(|(w, h)| (w.round().max(1.0) as u32, h.round().max(1.0) as u32));
     }
     if designcraft_images::is_svg(bytes) {
         // SVGs by their width and height (CSS pixels → points).

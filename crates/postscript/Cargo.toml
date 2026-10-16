@@ -1,0 +1,16 @@
+[package]
+name = "designcraft-postscript"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft PostScript interpreter: runs EPS programs and writes what they paint as PDF"
+
+[lints]
+workspace = true
+
+[dependencies]
+pdf-writer = { workspace = true }
+miniz_oxide = { workspace = true }
+weezl = { workspace = true }
+skrifa = { workspace = true }
+kurbo = { workspace = true }

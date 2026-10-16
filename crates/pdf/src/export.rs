@@ -1332,9 +1332,20 @@ impl Exporter<'_> {
             s.pop();
             return;
         }
-        // Placed PDFs go in as vectors (the page as a form XObject).
+        // Placed PDFs go in as vectors (the page as a form XObject), and so do EPS files, through
+        // the PDF their PostScript paints.
         let doc = self.doc;
-        if let Some(asset) = doc.assets.get(&g.asset)
+        let eps_pdf =
+            doc.assets.get(&g.asset).filter(|a| designcraft_postscript::is_eps(&a.data)).and_then(|a| designcraft_postscript::cached_pdf(&a.data));
+        let eps_asset;
+        let asset = match (doc.assets.get(&g.asset), eps_pdf) {
+            (Some(a), Some(pdf)) => {
+                eps_asset = designcraft_doc::Asset { data: pdf, mime: "application/pdf".into(), page: 0, ..(**a).clone() };
+                Some(&eps_asset)
+            }
+            (a, _) => a.map(|a| &**a),
+        };
+        if let Some(asset) = asset
             && asset.data.starts_with(b"%PDF")
         {
             let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };

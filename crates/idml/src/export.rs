@@ -1880,7 +1880,12 @@ impl<'a> Ex<'a> {
 
     fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
-        let mut el = El::new(if is_pdf { "PDF" } else { "Image" }).attr("Self", self.fresh());
+        let kind = match asset.mime.as_str() {
+            "application/pdf" => "PDF",
+            "application/postscript" => "EPS",
+            _ => "Image",
+        };
+        let mut el = El::new(kind).attr("Self", self.fresh());
         if let Some((pw, ph)) = asset.pixels
             && g.size.0 > 0.0
             && g.size.1 > 0.0
@@ -2690,6 +2695,7 @@ fn format_name(mime: &str) -> &'static str {
         "image/gif" => "GIF",
         "image/tiff" => "TIFF",
         "application/pdf" => "Adobe Portable Document Format (PDF)",
+        "application/postscript" => "Encapsulated PostScript (EPS)",
         _ => "Portable Network Graphics (PNG)",
     }
 }

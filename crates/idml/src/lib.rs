@@ -124,6 +124,12 @@ pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
         return (Some("image/png"), be32(16).zip(be32(20)));
     }
+    // EPS keeps its own type: it is drawn through its PostScript.
+    if b.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6])
+        || (b.starts_with(b"%!PS-Adobe") && b.get(..b.len().min(64)).is_some_and(|h| h.windows(4).any(|w| w == b"EPSF")))
+    {
+        return (Some("application/postscript"), None);
+    }
     if b.starts_with(&[0xFF, 0xD8]) {
         let mut i = 2;
         while i + 9 < b.len() {

@@ -14,6 +14,7 @@ designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
 designcraft-fonts = { workspace = true }
 designcraft-compose = { workspace = true }
+designcraft-postscript = { workspace = true }
 vello_cpu = { workspace = true }
 vello_common = { workspace = true }
 image = { workspace = true }

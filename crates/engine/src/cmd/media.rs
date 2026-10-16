@@ -212,4 +212,24 @@ mod tests {
         // Renders (the placeholder) and exports.
         assert!(s.execute("file.exportPdf", &json!({})).is_ok());
     }
+
+    #[test]
+    fn placed_eps_keeps_its_file_and_draws_its_postscript() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 10 10 154 82\n1 0 0 setrgbcolor 10 10 144 72 rectfill\n%%EOF\n";
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(eps), "name": "red.eps", "x": 72, "y": 72})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let asset = d.assets.values().next().unwrap();
+        // The EPS itself is the graphic (so its link compares equal to the file), drawn red.
+        assert_eq!(asset.data.as_slice(), eps.as_slice());
+        assert_eq!(asset.mime, "application/postscript");
+        let pm = designcraft_render::decode_pixmap(&asset.data).expect("drawn");
+        let mid = pm.data()[(pm.height() as usize / 2) * pm.width() as usize + pm.width() as usize / 2];
+        assert!(mid.r > 200 && mid.g < 40 && mid.b < 40, "{mid:?}");
+        assert!(s.execute("file.exportPdf", &json!({})).is_ok());
+        // A program that fails before painting falls back to the placeholder.
+        let broken = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n1 0 div\n%%EOF\n";
+        assert!(designcraft_render::decode_pixmap(broken).is_some());
+    }
 }

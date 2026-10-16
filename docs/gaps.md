@@ -176,10 +176,10 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 20–35 h.
 
 ### 19. Placed graphics depth (FF)
-- **Missing:** EPS is shown through its preview only (no PostScript interpreter); PSD layer
-  comps beyond visibility; Edit Original / Edit With; PDF placed as editable vectors (#227, #24);
+- **Missing:** (EPS runs through DesignCraft's own PostScript interpreter, shown and exported as
+  vectors, the whole imaging model EPS files use.) PSD layer comps beyond visibility; Edit Original / Edit With; PDF placed as editable vectors (#227, #24);
   QuarkXPress import (#73).
-- **Estimate:** 30–60 h (PostScript interpreter is a large separate project: +80–150 h).
+- **Estimate:** 30–60 h, plus 20–40 h for the rest of the PostScript imaging model.
 
 ### 20. Performance on large documents (P)
 - **Missing:** incremental composition (recompose from the edited paragraph; 8 ms keystroke
