@@ -43,7 +43,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move",
             ["Object", "Transform"],
             None,
-            "{dx, dy, copy?: bool, ids?, toSpread?} → {moved, ids: the objects moved (with copy, the copies)}",
+            "{dx, dy, copy?: bool, ids?, toSpread?, content?: bool (default: the selection's content flag, as the Direct Selection tool sets it; a frame's placed graphic then moves inside the frame, which stays)} → {moved, ids: the objects moved (with copy, the copies)}",
             has_selection,
             transform_move
         ),
@@ -1058,6 +1058,14 @@ fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
     let (dx, dy) = (f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
     let copy = bool_or(p, "copy", false);
     let to: Option<SpreadRef> = p.get("toSpread").and_then(|v| serde_json::from_value(v.clone()).ok());
+    // Content selected (the Direct Selection tool, or `content: true`): a frame's placed graphic
+    // moves inside the frame, which stays; anything else moves as a whole. Copies and moves to
+    // another spread always take the frame.
+    let content = p.get("content").and_then(Value::as_bool).unwrap_or_else(|| {
+        let explicit = p.get("ids").is_some() || p.get("id").is_some();
+        !explicit && s.doc().is_ok_and(|st| st.selection.content)
+    }) && !copy
+        && to.is_none();
     s.edit(|d, sel| {
         let ids = if copy {
             let src = d.clone();
@@ -1083,6 +1091,15 @@ fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
             }
             let it = d.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
             if it.locked {
+                continue;
+            }
+            // dx, dy are in the frame's outer space; the graphic lives in its inner space.
+            let inner = it.xf.inverse() * Affine::translate((dx, dy)) * it.xf;
+            if content
+                && inner.as_coeffs().iter().all(|c| c.is_finite())
+                && let Content::Graphic(g) = &mut it.content
+            {
+                g.xf = inner * g.xf;
                 continue;
             }
             it.xf = Affine::translate((dx, dy)) * it.xf;
@@ -2793,6 +2810,49 @@ mod again_tests {
         assert_eq!(d.spreads[0].items.len(), n + 2);
         let ys: Vec<f64> = d.spreads[0].items[n..].iter().map(|i| i.bounds().y0.round()).collect();
         assert_eq!(ys[1] - ys[0], 60.0, "{ys:?}");
+    }
+
+    /// The Direct Selection tool (content selected) moves a placed graphic inside its frame,
+    /// also when the frame is rotated; the frame itself, text frames and explicit
+    /// `content: false` move as a whole.
+    #[test]
+    fn direct_selection_moves_the_graphic_inside_its_frame() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+        // (frame bounds, graphic bounds) on the spread.
+        let state = |s: &Session| {
+            let it = s.doc().unwrap().doc.item(ItemId(f)).unwrap().clone();
+            let Content::Graphic(g) = &it.content else { panic!("graphic") };
+            (it.bounds(), it.xf.transform_rect_bbox(g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1))))
+        };
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        let (frame0, content0) = state(&s);
+        s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+        s.execute("transform.move", &json!({"dx": 30, "dy": -10})).unwrap();
+        let (frame1, content1) = state(&s);
+        assert_eq!(frame1, frame0);
+        assert!(near(content1.x0, content0.x0 + 30.0) && near(content1.y0, content0.y0 - 10.0), "{content1:?}");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(state(&s), (frame0, content0));
+        // Explicit ids (or `content: false`) move the frame with its graphic.
+        s.execute("transform.move", &json!({"dx": 30, "dy": 0, "ids": [f]})).unwrap();
+        let (frame2, content2) = state(&s);
+        assert!(near(frame2.x0, frame0.x0 + 30.0) && near(content2.x0, content0.x0 + 30.0), "{frame2:?} {content2:?}");
+        // A rotated frame: the graphic still moves by (dx, dy) on the spread.
+        s.execute("transform.rotate", &json!({"angle": 90, "ids": [f]})).unwrap();
+        let (frame3, content3) = state(&s);
+        s.execute("transform.move", &json!({"dx": 0, "dy": 25, "ids": [f], "content": true})).unwrap();
+        let (frame4, content4) = state(&s);
+        assert_eq!(frame4, frame3);
+        assert!(near(content4.x0, content3.x0) && near(content4.y0, content3.y0 + 25.0), "{content3:?} → {content4:?}");
+        // Content selected on a text frame: the frame moves.
+        let t = s.execute("frame.create", &json!({"rect": [400, 100, 500, 200], "content": "text"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [t], "content": true})).unwrap();
+        s.execute("transform.move", &json!({"dx": 5, "dy": 5})).unwrap();
+        assert!(near(s.doc().unwrap().doc.item(ItemId(t)).unwrap().bounds().x0, 405.0));
     }
 }
 

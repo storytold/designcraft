@@ -31,7 +31,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Selection tool: click, marquee, move, Alt-duplicate, resize handles, rotate from corners | ✓ | ✓ | ✓ | |
 | Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | moving reference point "0" fails (#337) |
 | Live corners (yellow handle) | ✓ | ✓ | ~ | not working for some users (#186) |
-| Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
+| Content grabber, frame fitting by double-click | ✓ | ✓ | ~ | Direct Selection (A) drag and arrows move the graphic inside its frame; the Selection tool's content grabber (centre circle) still moves the frame |
 | Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ~ | vertical smart spacing between two rectangles (#188) |
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
 | Document views: scrollbars (each split pane), Hand tool by Space, middle drag, or Alt while editing text | ✓ | ✓ | ✓ | `canvas.rs` `scrollbar_tests` |
