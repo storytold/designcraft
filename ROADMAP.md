@@ -343,6 +343,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-10-16** · Releases embed the craft-fonts set with the Simplified Chinese and Arabic UI faces again: the release and FreeBSD workflows' craft-fonts pin had stayed at the Japanese-only first manifest, so a release's Chinese interface drew its Simplified-only characters as tofu on machines without the post-#814 installed-font fallback (0.8.0 shipped exactly that way, predating the fallback itself). Regression tests cover the Chinese interface both with a full craft set and with a Japanese-only one (the installed system face supplies the glyphs). No readiness percentage change.
 - **2026-10-13** · Switching between document and parent pages refreshes the canvas immediately, preventing black parent pages and stale document objects when the zoom stays the same. Ordinary edits retain partial repainting. No readiness percentage change.
 
 Newest first.

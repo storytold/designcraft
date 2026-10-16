@@ -736,6 +736,92 @@ mod japanese_font_tests {
 }
 
 #[cfg(test)]
+mod chinese_font_tests {
+    fn families() -> [egui::FontFamily; 3] {
+        [egui::FontFamily::Proportional, egui::FontFamily::Monospace, egui::FontFamily::Name("semibold".into())]
+    }
+
+    /// The Chinese interface draws real glyphs — the Han characters it shares with Japanese and
+    /// the Simplified-only ones — in every family, whatever the build's craft set and the
+    /// machine's installed fonts between them supply.
+    #[test]
+    fn chinese_ui_glyphs_are_available_in_every_family() {
+        const TEXT: &str = "简体中文界面文字车门东见说对们，。";
+        let db = designcraft_fonts::FontDb::global();
+        let craft_hans = designcraft_fonts::CRAFT_FONTS.iter().any(|f| f.scripts.contains(&"Hans"));
+        let system_hans = super::SYSTEM_UI_FONTS.iter().any(|(script, _, families)| *script == "Hans" && families.iter().any(|f| db.has_family(f)));
+        if !craft_hans && !system_hans {
+            eprintln!("skipped: built without craft-fonts' Hans face and no installed Chinese font");
+            return;
+        }
+        let craft = designcraft_fonts::CRAFT_FONTS;
+        let mut defs = super::font_definitions(craft, "zh");
+        if let Some(system) = super::system_ui_fonts(craft) {
+            super::add_system_fallbacks(&mut defs, system, "zh");
+        }
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx.fonts_mut(|fonts| {
+            for family in families() {
+                let font = egui::FontId::new(13.0, family);
+                for ch in TEXT.chars() {
+                    assert!(fonts.has_glyph(&font, ch), "missing {ch} in {font:?}");
+                }
+            }
+        });
+    }
+
+    /// A release's craft set can lack a Hans face (0.8.0's pinned a Japanese-only craft-fonts
+    /// checkout, and the release predates the installed-font fallback besides, so the Chinese
+    /// interface drew its Simplified-only characters as tofu). The installed system face must
+    /// draw them, in the interface language's forms ahead of the craft Japanese faces.
+    #[test]
+    fn chinese_ui_glyphs_with_a_japanese_only_craft_set() {
+        let dir = std::env::temp_dir().join(format!("dc-ui-hans-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // An installed Hans face under a family name the UI looks for, covering shared and
+        // Simplified-only characters alike.
+        const HANS: &[char] = &['中', '文', '字', '简', '体', '界', '车', '门', '东', '见', '说', '对', '们', '，', '。'];
+        std::fs::write(dir.join("hans.ttf"), designcraft_fonts::testing::font_with("Microsoft YaHei", HANS).unwrap()).unwrap();
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.clone()]);
+        // The craft set as that release embedded it: Japanese faces (shared kanji) only.
+        let jp = designcraft_fonts::testing::font_with("DC Craft Gothic", &['中', '文', '字', 'あ']).unwrap();
+        let craft: &'static [designcraft_fonts::CraftFont] = Box::leak(
+            vec![designcraft_fonts::CraftFont {
+                family: "DC Craft Gothic",
+                style: "Regular",
+                scripts: &["Jpan"],
+                bytes: Box::leak(jp.into_boxed_slice()),
+            }]
+            .into_boxed_slice(),
+        );
+        let mut defs = super::font_definitions(craft, "zh");
+        let system = super::installed_ui_fonts(&db, craft);
+        let _ = std::fs::remove_dir_all(&dir);
+        let picked: Vec<(&str, &str)> = system.iter().map(|f| (f.script, f.family.as_str())).collect();
+        assert!(system.iter().any(|f| f.script == "Hans"), "the craft set lacks a Hans face; the installed one must be picked: {picked:?}");
+        super::add_system_fallbacks(&mut defs, &system, "zh");
+        let stack = &defs.families[&egui::FontFamily::Proportional];
+        let at = |n: &str| stack.iter().position(|x| x == n).unwrap();
+        assert!(at("system-Microsoft YaHei") < at("craft-DC Craft Gothic-Regular"), "{stack:?}");
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx.fonts_mut(|fonts| {
+            for family in families() {
+                let font = egui::FontId::new(13.0, family);
+                for ch in HANS {
+                    assert!(fonts.has_glyph(&font, *ch), "missing {ch} in {font:?}");
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)]
 mod ukrainian_font_tests {
     #[test]
     fn every_catalog_cyrillic_glyph_exists_in_the_bundled_ui_fonts() {
