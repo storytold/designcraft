@@ -1,0 +1,11 @@
+kind = "app"
+categories = ["Graphics"]
+icon = "assets/app-icon/hicolor/256x256/apps/ai.storyteller.designcraft.png"
+
+[linux.x86_64]
+asset = "designcraft-{version}-linux-x86_64.tar.gz"
+exec = "designcraft-{version}-linux-x86_64/usr/bin/designcraft"
+
+[linux.aarch64]
+asset = "designcraft-{version}-linux-aarch64.tar.gz"
+exec = "designcraft-{version}-linux-aarch64/usr/bin/designcraft"
