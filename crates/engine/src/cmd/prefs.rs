@@ -22,6 +22,7 @@ const DOC_KEYS: &[&str] = &[
     "advancedType",
     "overprintBlack",
     "glyphFallback",
+    "squeezeWordSpaces",
     "rulerOrigin",
 ];
 
@@ -65,7 +66,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Preferences",
             [],
             None,
-            "{horizontalUnits?, verticalUnits?: points|picas|inches|millimeters|…, keyboardIncrement? (pt), kerningIncrement? (1/1000 em: Alt+Left/Right in text), baselineGrid?: {start, increment, relativeTo, color, viewThreshold}, grid?: {horizontal, vertical, subdivisions, color, inBack}, pasteboard?: [h, v], marginColor?, columnColor?, bleedColor?, slugColor?: [r, g, b], advancedType?: {superscriptSize, superscriptPosition, subscriptSize, subscriptPosition} (%), overprintBlack?, glyphFallback? (draw characters the font lacks from fallback fonts; off: as the font's missing-glyph box), rulerOrigin?: spread|page|spine (what rulers and X/Y measure from, with the zero point)} → those settings",
+            "{horizontalUnits?, verticalUnits?: points|picas|inches|millimeters|…, keyboardIncrement? (pt), kerningIncrement? (1/1000 em: Alt+Left/Right in text), baselineGrid?: {start, increment, relativeTo, color, viewThreshold}, grid?: {horizontal, vertical, subdivisions, color, inBack}, pasteboard?: [h, v], marginColor?, columnColor?, bleedColor?, slugColor?: [r, g, b], advancedType?: {superscriptSize, superscriptPosition, subscriptSize, subscriptPosition} (%), overprintBlack?, glyphFallback? (draw characters the font lacks from fallback fonts; off: as the font's missing-glyph box), squeezeWordSpaces? (justified lines may shrink word spaces below the paragraph's Minimum, down to 60%, when that costs less than a loose line; off by default), rulerOrigin?: spread|page|spine (what rulers and X/Y measure from, with the zero point)} → those settings",
             has_doc,
             |s, p| {
                 let cur = serde_json::to_value(&s.doc()?.doc.settings).map_err(|e| bad("document.preferences", e.to_string()))?;
@@ -303,5 +304,27 @@ mod glyph_fallback_tests {
         s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
         let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
         assert!(!back.settings.glyph_fallback, "as InDesign draws them");
+    }
+}
+
+#[cfg(test)]
+mod squeeze_word_spaces_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// Squeeze Word Spaces Below the Minimum is an undoable document preference, off in new
+    /// documents and in IDML imports (InDesign has no such setting to read).
+    #[test]
+    fn squeeze_word_spaces_is_an_undoable_document_preference_off_by_default() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert_eq!(s.execute("document.preferences", &json!({})).unwrap()["squeezeWordSpaces"], false, "new documents: off");
+        assert_eq!(s.execute("document.preferences", &json!({"squeezeWordSpaces": true})).unwrap()["squeezeWordSpaces"], true);
+        assert!(s.doc().unwrap().doc.settings.squeeze_word_spaces);
+        let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+        assert!(!back.settings.squeeze_word_spaces, "IDML imports: off");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(!s.doc().unwrap().doc.settings.squeeze_word_spaces);
     }
 }

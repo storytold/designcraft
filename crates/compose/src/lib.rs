@@ -1180,7 +1180,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         let cols_here = &cols[cur.fi];
         let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
         let col = SplitCfg::of(pp).map_or(col, |c| c.sub_rect(col, 0));
-        let spacing = spacing_for(pp, base_chars.size, story);
+        let spacing = paragraph_spacing(pp, base_chars.size, story, &sp.glyphs, doc.settings.squeeze_word_spaces);
         let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
@@ -2411,7 +2411,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
-    let spacing = spacing_for(pp, base_size, story);
+    let spacing = paragraph_spacing(pp, base_size, story, &glyphs, doc.settings.squeeze_word_spaces);
     // An empty paragraph takes its height from its paragraph mark's character format.
     let mark_chars = if glyphs.is_empty() { doc.styles.resolve_char(base_chars, story.char_format_of(prange.start)) } else { base_chars.clone() };
     let mark_leading = match mark_chars.leading {
@@ -3361,7 +3361,18 @@ fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
             "KinsokuPushOutOnly" => 3,
             _ => 0,
         },
+        overshrink: false,
     }
+}
+
+/// [`spacing_for`] a paragraph with its `glyphs`. `squeeze` (the document's Squeeze Word Spaces
+/// Below the Minimum) lets justified lines shrink word spaces past the minimum, except where
+/// kashidas will justify the Arabic (see [`Spacing::overshrink`]).
+fn paragraph_spacing(pp: &ParaProps, base_size: f64, story: &Story, glyphs: &[Glyph], squeeze: bool) -> Spacing {
+    let mut sp = spacing_for(pp, base_size, story);
+    let kashidas = pp.kashidas && pp.arabic_justification != "DefaultJustification" && !kashida_points(glyphs).is_empty();
+    sp.overshrink = squeeze && sp.justify && !kashidas;
+    sp
 }
 
 /// Desired word spacing, letter spacing and glyph scaling apply to every line (any alignment).
@@ -4894,8 +4905,12 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     rem -= tg;
     let sign = if stretch { 1.0 } else { -1.0 };
     // Stretch left over beyond every limit is shared equally by the word spaces (fixed-width spaces
-    // keep their width), else by the letter gaps; shrink never goes past the minimums (that would
-    // overlap glyphs), so an overfull line stays overfull.
+    // keep their width), else by the letter gaps. Shrink left over goes on shrinking the word
+    // spaces, in proportion to their shrink range, down to the floor the composer allows
+    // ([`breaker::overshrink_units`]); past that an overfull line stays overfull.
+    let units = breaker::overshrink_units(sp);
+    let deeper: f64 = if stretch || rem <= 1e-9 { 0.0 } else { yw * units };
+    let squeeze = if deeper > 1e-9 { rem.min(deeper) } else { 0.0 };
     let elastic = spaces.iter().filter(|&&i| line[i].is_word_space()).count();
     let gaps = line.iter().enumerate().filter(|&(i, g)| is_box(i, g)).count();
     let (over, over_gap) = match (stretch && rem > 0.0, elastic, gaps) {
@@ -4906,7 +4921,8 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     };
     for (k, &i) in spaces.iter().enumerate() {
         let share = if yw > 1e-9 { tw * word[k] / yw } else { 0.0 };
-        add[i] += sign * share + if line[i].is_word_space() { over } else { 0.0 };
+        let deep = if deeper > 1e-9 { squeeze * word[k] * units / deeper } else { 0.0 };
+        add[i] += sign * (share + deep) + if line[i].is_word_space() { over } else { 0.0 };
     }
     if yl > 1e-9 && tl > 0.0 {
         for (i, l) in letter.iter().enumerate() {

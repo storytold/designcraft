@@ -91,6 +91,54 @@ fn justified_lines_fill_the_measure() {
     assert!(last.end_x < last.x1 - 1.0, "last line is ragged");
 }
 
+/// With Squeeze Word Spaces Below the Minimum, a justified line squeezes its word spaces past the
+/// 80% minimum (down to 60%) rather than leave a long word for the next line and gape, as
+/// InDesign's composers often do. Off (the default), word spaces stay at the minimum and the word
+/// goes to the next line.
+#[test]
+fn justified_line_squeezes_past_the_minimum_only_when_the_document_allows_it() {
+    let text = "Aaaa bbbb cccc dddd Wwwwwwwwwwwwwwwwww eee";
+    // Natural word widths and the space, from one unjustified line.
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 100.0), ParaAttrs::default());
+    let line = all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].clone();
+    let space = line.glyphs.iter().find(|g| text[g.byte..].starts_with(' ')).unwrap().adv;
+    let end_of = |w: &str| {
+        let at = text.find(w).unwrap() + w.len();
+        line.glyphs.iter().filter(|g| g.byte < at).map(|g| g.x + g.adv).fold(0.0, f64::max)
+    };
+    // The first five words fit with their four spaces at 70%.
+    let words = end_of("Wwwwwwwwwwwwwwwwww") - 4.0 * space;
+    let first_line = |measure: f64, squeeze: bool| {
+        let para = ParaAttrs { align: Some(Align::LeftJustified), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, measure, 100.0), para);
+        d.settings.squeeze_word_spaces = squeeze;
+        all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].clone()
+    };
+    let measure = words + 4.0 * space * 0.7;
+    assert!(first_line(measure, false).range.end <= text.find("Wwww").unwrap(), "off: the long word goes to the next line");
+    let first = first_line(measure, true);
+    assert!(first.range.end >= text.find(" eee").unwrap(), "the long word stays on the first line: {:?}", first.range);
+    let gaps: Vec<f64> = first.glyphs.windows(2).filter(|w| text[w[0].byte..].starts_with(' ')).map(|w| w[1].x - w[0].x).collect();
+    assert_eq!(gaps.len(), 4);
+    for g in &gaps {
+        assert!(*g > space * 0.6 - 0.01 && *g < space * 0.8, "a squeezed space {g} of {space}");
+    }
+    // Room for less than 60%: the word goes to the next line after all.
+    assert!(first_line(words + 4.0 * space * 0.5, true).range.end <= text.find("Wwww").unwrap());
+}
+
+/// The composition cache recomposes when Squeeze Word Spaces Below the Minimum changes.
+#[test]
+fn cache_recomposes_when_squeezing_word_spaces_is_switched() {
+    let para = ParaAttrs { align: Some(Align::LeftJustified), ..Default::default() };
+    let (mut d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 800.0), para);
+    let cache = Cache::new();
+    let a = cache.get(&d, sid, None);
+    d.settings.squeeze_word_spaces = true;
+    let b = cache.get(&d, sid, None);
+    assert!(!Arc::ptr_eq(&a, &b));
+}
+
 #[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());

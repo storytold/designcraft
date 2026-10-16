@@ -55,6 +55,11 @@ pub struct Spacing {
     pub korean_char_breaks: bool,
     /// 0: minimum adjustment; 1: push in; 2: push out first; 3: push out only.
     pub kinsoku_priority: u8,
+    /// Justified lines may shrink word spaces past the minimum ([`overshrink_units`]): the
+    /// document's Squeeze Word Spaces Below the Minimum preference, off by default. Never where
+    /// kashidas justify Arabic: the composer doesn't count their stretch yet, so it would squeeze
+    /// lines the kashidas could fill.
+    pub overshrink: bool,
 }
 
 impl Default for Spacing {
@@ -78,6 +83,7 @@ impl Default for Spacing {
             optical_size: None,
             korean_char_breaks: false,
             kinsoku_priority: 0,
+            overshrink: false,
         }
     }
 }
@@ -131,12 +137,39 @@ const OVERFLOW_STRETCH: f64 = 0.33;
 /// Relative cost of using each tier of elastic material (word, letter, glyph).
 pub const TIER_COST: [f64; 3] = [1.0, 0.75, 1.0];
 
+/// With [`Spacing::overshrink`], word spaces may shrink past the minimum down to this fraction of
+/// their desired width: an H&J violation, like stretching past the maximum. InDesign's composers
+/// do this when every choice breaks a limit (measured on InDesign output: justified lines at
+/// 61–72% of the space width with an 80% minimum, no tracking).
+pub const WORD_FLOOR: f64 = 0.6;
+
+/// How much a range of shrink past the minimum costs, against a range of stretch past the maximum:
+/// InDesign takes a loose line over a tight one when the violations are alike.
+pub const OVERSHRINK_COST: f64 = 2.0;
+
+/// How far word spaces may shrink beyond the minimum, in units of their shrink range (desired −
+/// minimum): from the minimum down to [`WORD_FLOOR`]. Zero when the paragraph doesn't allow it
+/// ([`Spacing::overshrink`]) or has no shrink range.
+pub fn overshrink_units(sp: &Spacing) -> f64 {
+    let range = sp.word_desired - sp.word_min;
+    if !sp.justify || !sp.overshrink || range <= 1e-9 { 0.0 } else { ((sp.word_min - WORD_FLOOR) / range).max(0.0) }
+}
+
 /// Effective adjustment ratio for `d` points of stretch (`d > 0`) or shrink (`d < 0`), consuming
 /// the tiers in priority order. Returns `(r, feasible)`; shrinking beyond all tiers is infeasible.
 /// Stretch past every tier goes into the word spaces and is rated in units of `over` (their
 /// overflow stretch, see [`Spacing::space_overflow`]); a line without word spaces rates it
 /// against its letter and glyph stretch.
 pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3], over: f64) -> (f64, bool) {
+    tiered_ratio_overshrink(d, y, z, over, 0.0, 0.0)
+}
+
+/// [`tiered_ratio`], where the line's word spaces (`under`: their shrink range, the part of the
+/// word tier's shrink that is theirs) may also shrink `overshrink` ranges past their minimum
+/// ([`overshrink_units`]). InDesign treats the minimum like the maximum: a limit it breaks when
+/// every choice breaks one, taking the smaller violation. A range of shrink past the minimum costs
+/// [`OVERSHRINK_COST`] ranges of stretch past the maximum.
+pub fn tiered_ratio_overshrink(d: f64, y: [f64; 3], z: [f64; 3], over: f64, under: f64, overshrink: f64) -> (f64, bool) {
     const EPS: f64 = 1e-9;
     if d.abs() < EPS {
         return (0.0, true);
@@ -151,6 +184,9 @@ pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3], over: f64) -> (f64, bool) 
         }
     }
     if d < 0.0 {
+        if rem > 1e-6 && under > EPS && rem <= overshrink * under + 1e-6 {
+            return (-(r + OVERSHRINK_COST * rem / under), true);
+        }
         return (-r, rem <= 1e-6);
     }
     if rem > 1e-6 {
@@ -189,6 +225,9 @@ struct Item {
     emergency: bool,
     /// Glue: stretch past the maximum word spacing ([`Spacing::space_overflow`]).
     over: f64,
+    /// Glue and justify-space boxes: the word space's shrink range, which may shrink past the
+    /// minimum ([`overshrink_units`]).
+    under: f64,
 }
 
 const NONE: usize = usize::MAX;
@@ -209,6 +248,7 @@ impl Item {
             zone_from: NONE,
             emergency: false,
             over: 0.0,
+            under: 0.0,
         }
     }
     fn glue(w: f64, st: f64, sh: f64) -> Item {
@@ -226,6 +266,7 @@ impl Item {
             zone_from: NONE,
             emergency: false,
             over: 0.0,
+            under: 0.0,
         }
     }
     fn penalty(w: f64, p: f64, flagged: bool) -> Item {
@@ -243,6 +284,7 @@ impl Item {
             zone_from: NONE,
             emergency: false,
             over: 0.0,
+            under: 0.0,
         }
     }
 }
@@ -423,6 +465,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                     gl.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
                 }
                 gl.over = sp.space_overflow(g);
+                gl.under = sh;
                 last_space = it.len();
                 it.push(gl);
                 ig.push(i);
@@ -454,6 +497,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         }
         let (st, sh) = sp.box_elastic(g);
         let mut bx = Item::boxed(g.adv, st, sh);
+        if sp.justify && g.is_justify_space() {
+            bx.under = sp.space_elastic(g).1;
+        }
         bx.hang = hang_left(g, sp) - g.moji.start;
         bx.start_elastic = crate::mojikumi::start_elastic(g, sp.justify, sp.kinsoku_priority != 3);
         it.push(bx);
@@ -506,6 +552,7 @@ struct Node {
     ty: [f64; 3],
     tz: [f64; 3],
     to: f64,
+    tu: f64,
     demerits: f64,
     prev: Option<usize>,
     hyphens: u32,
@@ -664,12 +711,13 @@ fn break_demerits(n: Node, r: f64, pp: f64, flagged: bool, priority: u8) -> (usi
     (fit, n.demerits + d)
 }
 
-/// Width, stretch, shrink and overhang totals before each item.
+/// Width, stretch, shrink, overhang and word-space shrink totals before each item.
 struct PrefixSums {
     sw: Vec<f64>,
     sy: Vec<[f64; 3]>,
     sz: Vec<[f64; 3]>,
     so: Vec<f64>,
+    su: Vec<f64>,
 }
 
 fn prefix_sums(items: &[Item]) -> PrefixSums {
@@ -677,6 +725,7 @@ fn prefix_sums(items: &[Item]) -> PrefixSums {
     let mut sy = vec![[0.0; 3]; items.len() + 1];
     let mut sz = vec![[0.0; 3]; items.len() + 1];
     let mut so = vec![0.0; items.len() + 1];
+    let mut su = vec![0.0; items.len() + 1];
     for (i, it) in items.iter().enumerate() {
         let (w, y, z) = match it.kind {
             Kind::Box | Kind::Glue => (it.w, it.st, it.sh),
@@ -684,18 +733,20 @@ fn prefix_sums(items: &[Item]) -> PrefixSums {
         };
         sw[i + 1] = sw[i] + w;
         so[i + 1] = so[i] + it.over;
+        su[i + 1] = su[i] + it.under;
         for t in 0..3 {
             sy[i + 1][t] = sy[i][t] + y[t];
             sz[i + 1][t] = sz[i][t] + z[t];
         }
     }
-    PrefixSums { sw, sy, sz, so }
+    PrefixSums { sw, sy, sz, so, su }
 }
 
 fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
     let PassInput { items, item_glyphs, glyphs, spacing: sp, width, tolerance: tol, emergency } = input;
     let m = items.len();
-    let PrefixSums { sw, sy, sz, so } = prefix_sums(items);
+    let PrefixSums { sw, sy, sz, so, su } = prefix_sums(items);
+    let overshrink = overshrink_units(sp);
     let first_box = items.iter().find(|i| i.kind == Kind::Box);
     let first_hang = first_box.map_or(0.0, |b| b.hang);
     let first_elastic = first_box.map_or([0.0; 2], |b| b.start_elastic);
@@ -707,6 +758,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
         ty: [-first_elastic[0], 0.0, 0.0],
         tz: [-first_elastic[1], 0.0, 0.0],
         to: 0.0,
+        tu: 0.0,
         demerits: 0.0,
         prev: None,
         hyphens: 0,
@@ -746,7 +798,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             // A line that overruns its measure by a rounding error fits exactly.
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
-            let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
+            let (mut r, feasible) = tiered_ratio_overshrink(d, y, z, so[b] - n.to, su[b] - n.tu, overshrink);
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
                 // space it leaves, so the fullest piece wins (the break at the last glyph that fits).
@@ -786,7 +838,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             continue;
         }
         // Totals after the break: skip glue and penalties up to the next box.
-        let (mut tw, mut ty, mut tz, mut to) = (sw[b], sy[b], sz[b], so[b]);
+        let (mut tw, mut ty, mut tz, mut to, mut tu) = (sw[b], sy[b], sz[b], so[b], su[b]);
         let mut i = b;
         while i < m {
             let x = items[i];
@@ -800,6 +852,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
                 Kind::Glue => {
                     tw += x.w;
                     to += x.over;
+                    tu += x.under;
                     for t in 0..3 {
                         ty[t] += x.st[t];
                         tz[t] += x.sh[t];
@@ -825,6 +878,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
                     ty,
                     tz,
                     to,
+                    tu,
                     demerits: d,
                     prev: Some(a),
                     hyphens: if flagged { prev.hyphens + 1 } else { 0 },
@@ -1069,5 +1123,18 @@ mod tests {
         // Shrink beyond the tiers is infeasible.
         assert!(!tiered_ratio(-25.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0).1);
         assert!(tiered_ratio(-15.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0).1);
+        // Past every minimum, word spaces may shrink `overshrink` more ranges, at OVERSHRINK_COST
+        // each; beyond those the line is infeasible again.
+        let (r, ok) = tiered_ratio_overshrink(-25.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0, 10.0, 1.0);
+        assert!(ok && (r + (1.0 + TIER_COST[1] + OVERSHRINK_COST * 0.5)).abs() < 1e-9, "{r}");
+        assert!(!tiered_ratio_overshrink(-35.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0, 10.0, 1.0).1);
+        // Only word spaces squeeze: shrink in the word tier that isn't theirs (mojikumi) doesn't.
+        assert!(!tiered_ratio_overshrink(-25.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0, 0.0, 1.0).1);
+        // A paragraph that doesn't allow it, or isn't justified, gets none.
+        let sp = Spacing { justify: true, overshrink: true, ..Spacing::default() };
+        assert!((overshrink_units(&sp) - 1.0).abs() < 1e-9, "80% minimum, 100% desired: one range down to 60%");
+        assert_eq!(overshrink_units(&Spacing { overshrink: false, ..sp }), 0.0);
+        assert_eq!(overshrink_units(&Spacing { justify: false, ..sp }), 0.0);
+        assert_eq!(overshrink_units(&Spacing { word_min: 1.0, ..sp }), 0.0, "no shrink range");
     }
 }
