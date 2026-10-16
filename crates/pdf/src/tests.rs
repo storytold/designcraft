@@ -612,6 +612,33 @@ fn fills_open_contours_without_changing_strokes() {
     assert!(paths.iter().any(|r| (r.width() - 22.0).abs() < 0.01 && (r.height() - 17.0).abs() < 0.01), "{paths:?}");
 }
 
+/// Anchor, at the end of `host`, a 300 pt wide text frame `h` high (above the line) showing a new
+/// story with `text`; returns that story.
+fn anchor_text_frame(d: &mut Document, host: designcraft_doc::StoryId, text: &str, h: f64) -> designcraft_doc::StoryId {
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, h), d.default_layer(), text, ParaFormat::default()).unwrap();
+    let it = d.item(fid).unwrap().clone();
+    d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+    let st = d.story_mut(host).unwrap();
+    let n = st.len();
+    let above = designcraft_doc::AnchorPosition::AboveLine { align: Default::default(), space_before: 0.0, space_after: 0.0 };
+    st.insert_object(n, designcraft_doc::AnchoredObject::new(it, above));
+    sid
+}
+
+#[test]
+fn anchored_text_frames_are_tagged_as_stories_of_their_own() {
+    let mut d = doc_with_text("Host words");
+    let host = d.spreads[0].items[0].text_frame().unwrap().story;
+    let inner = anchor_text_frame(&mut d, host, "Inner words", 120.0);
+    anchor_text_frame(&mut d, inner, "Deeper words", 40.0);
+    d.check().unwrap();
+    let text = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions { tagged: true, ..Default::default() }).unwrap());
+    assert!(text[0].contains("Host") && text[0].contains("Inner") && text[0].contains("Deeper"), "{text:?}");
+    // A paragraph element per story, not the anchored text inside the host's paragraph.
+    let s = uncompressed(&d, PdfOptions { tagged: true, ..Default::default() });
+    assert_eq!(s.matches("/Type/StructElem/S/P/").count(), 3, "{s}");
+}
+
 #[test]
 fn column_rules_are_drawn() {
     let rules = |on: bool| {

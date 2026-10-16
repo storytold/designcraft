@@ -4777,3 +4777,40 @@ fn epub_split_document_round_trips() {
         assert_eq!(import_idml(&export_idml(&d)).unwrap().settings.epub_split, want, "{attrs}");
     }
 }
+
+/// A story part holding `before`, then the anchored text frame `a1` (120 × 40 pt) with
+/// attributes `attrs` (its story reference), then `after`.
+fn story_with_anchored_text_frame(before: &str, attrs: &str, after: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content>{before}</Content>
+        <TextFrame Self="a1" {attrs} PreviousTextFrame="n" NextTextFrame="n" ItemTransform="1 0 0 1 10 5">
+          <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+            <PathPointType Anchor="-10 -45"/><PathPointType Anchor="-10 -5"/><PathPointType Anchor="110 -5"/><PathPointType Anchor="110 -45"/>
+          </PathPointArray></GeometryPathType></PathGeometry></Properties>
+          <AnchoredObjectSetting AnchoredPosition="InlinePosition"/>
+        </TextFrame>
+        <Content>{after}</Content>
+      </CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#
+    )
+}
+
+#[test]
+fn anchored_text_frames_with_unknown_stories_import_with_empty_ones() {
+    for attrs in [r#"ParentStory="nope""#, ""] {
+        let d = import_idml_with(&fixture_with_story(&story_with_anchored_text_frame("Before ", attrs, " after")), &|_| None).unwrap();
+        d.check().unwrap();
+        let host = d.stories.values().find(|s| s.text.starts_with("Before")).unwrap();
+        let frame = &host.objects[0].item;
+        let shown = d.story(frame.text_frame().unwrap().story).unwrap();
+        assert!(shown.text.is_empty(), "{attrs}");
+        assert_eq!(shown.frames, vec![frame.id], "{attrs}");
+    }
+}

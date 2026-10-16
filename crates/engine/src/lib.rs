@@ -349,8 +349,10 @@ pub struct Session {
     pub clipboard_origin: f64,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
-    /// Copied text with its formatting (a frameless story slice) and its plain text.
-    pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String)>,
+    /// Copied text with its formatting (a frameless story slice), its plain text, and the stories
+    /// its anchored text frames show (and theirs).
+    pub text_clipboard:
+        Option<(Arc<designcraft_doc::Story>, String, Arc<std::collections::BTreeMap<designcraft_doc::StoryId, Arc<designcraft_doc::Story>>>)>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
@@ -491,11 +493,18 @@ impl Session {
             self.active = Some(i);
         }
     }
-    pub fn add_document(&mut self, d: DocState) -> usize {
+    pub fn add_document(&mut self, mut d: DocState) -> usize {
         if let Err(e) = self.end_composition() {
             log::warn!("ending the IME composition: {e}");
         }
         self.reset_find_scope();
+        // A built document (a data merge, say) may hold copies of anchored text frames.
+        if d.doc.has_anchored_items() {
+            let mut doc = (*d.doc).clone();
+            if doc.fix_anchored_text_frames() > 0 {
+                d.doc = Arc::new(doc);
+            }
+        }
         self.stop_data_preview();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
@@ -743,6 +752,10 @@ impl Session {
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
         doc.sync_endnote_story();
+        // Text and frames copied or deleted: anchored items keep ids and stories of their own.
+        if st.doc.has_anchored_items() || doc.has_anchored_items() {
+            doc.fix_anchored_text_frames();
+        }
         st.doc = Arc::new(doc);
         st.selection = sel;
         st.bump_revision();

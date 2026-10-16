@@ -392,7 +392,17 @@ impl Exporter<'_> {
                         s.push_transform(&tf(local));
                     }
                     self.text_area = (local.determinant().abs() > 1e-12).then(|| local.inverse().transform_rect_bbox(it.inner_bounds()));
+                    // An anchored text frame's story is tagged as a story of its own.
+                    let outer = self.tag_story;
+                    if outer.is_some_and(|o| o != tfr.story) {
+                        if let std::collections::hash_map::Entry::Vacant(e) = self.story_tags.entry(tfr.story) {
+                            e.insert(Vec::new());
+                            self.tags.push(TagEntry::Story(tfr.story));
+                        }
+                        self.tag_story = Some(tfr.story);
+                    }
                     self.frame_text(s, &cs, ft, text);
+                    self.tag_story = outer;
                     self.text_area = None;
                     if local != Affine::IDENTITY {
                         s.pop();
