@@ -18,9 +18,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
         cmd!(query "file.presets", "Document Presets", [], None, "{}", always, |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default())),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — .designcraft or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped (and, for .idml, package parts missing)}",
+            "{path} — .designcraft or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, damaged embedded files (opened as missing) and, for .idml, package parts missing}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON or an IDML package", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON or an IDML package → {index, warnings: damaged embedded files (opened as missing)}", always, file_open_bytes),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
@@ -115,7 +115,12 @@ pub fn to_bytes(d: &Document) -> Vec<u8> {
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
-    designcraft_format::load(b).map_err(|e| EngineError::Other(e.to_string()))
+    from_bytes_with_warnings(b).map(|(d, _)| d)
+}
+
+/// [`from_bytes`], plus the damaged embedded files that opened as missing.
+fn from_bytes_with_warnings(b: &[u8]) -> Result<(Document, Vec<String>)> {
+    designcraft_format::load_with_warnings(b).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
@@ -182,10 +187,11 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
             return super::interchange::open_idml(s, p);
         }
         let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
-        let mut d = from_bytes(&bytes)?;
+        let (mut d, damaged) = from_bytes_with_warnings(&bytes)?;
         super::interchange::resolve_packaged_links(&mut d, std::path::Path::new(path).parent());
         super::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
-        let (fonts, faces, warnings) = load_document_fonts(&mut d, path);
+        let (fonts, faces, mut warnings) = load_document_fonts(&mut d, path);
+        warnings.extend(damaged);
         let mut st = DocState::new(d, Some(path.to_string()));
         st.fonts = fonts;
         let i = s.add_document(st);
@@ -249,13 +255,13 @@ fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if designcraft_idml::is_idml(&b) {
         return super::interchange::open_idml(s, p);
     }
-    let mut d = from_bytes(&b)?;
+    let (mut d, warnings) = from_bytes_with_warnings(&b)?;
     super::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
         d.title = n.to_string();
     }
     let i = s.add_document(DocState::new(d, None));
-    Ok(json!({"index": i}))
+    Ok(json!({"index": i, "warnings": warnings}))
 }
 
 fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
@@ -918,6 +924,29 @@ mod document_fonts_tests {
         assert!(r["warnings"].to_string().contains("broken.otf"), "a damaged font is reported, not fatal: {r}");
         let f = font_entry(&mut s, FAMILY);
         assert_eq!((f["missing"].clone(), f["source"].clone()), (json!(false), json!("document")), "{f}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_a_document_with_a_damaged_asset_reports_it() {
+        let dir = temp_dir("damaged-asset");
+        let path = dir.join("Damaged.designcraft");
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![200u8; 64] }.to_png();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("file.place", &json!({"base64": super::base64_encode(&png), "name": "a.png", "x": 72, "y": 72})).unwrap();
+        s.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
+        // PNG assets are stored uncompressed: flip one payload byte so the CRC check fails.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes.windows(png.len()).position(|w| w == png.as_slice()).unwrap();
+        bytes[at + png.len() / 2] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        let r = open(&mut Session::new(), &path);
+        assert!(r["warnings"].to_string().contains("assets/"), "a damaged asset is reported, not fatal: {r}");
+        // Opened from bytes, it is reported the same way.
+        let r = Session::new().execute("file.openBytes", &json!({"name": "Damaged", "base64": super::base64_encode(&bytes)})).unwrap();
+        assert!(r["warnings"].to_string().contains("assets/"), "a damaged asset is reported, not fatal: {r}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
