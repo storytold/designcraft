@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc};
 use crate::{Result, Session};
 
+/// The parent item override commands: override, remove local overrides, detach.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -16,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Override All Parent Page Items",
             ["Layout", "Pages"],
             Some("Cmd+Alt+Shift+L"),
-            "{page (0-based), ids?: parent items (default: all on the page's parent page)} → {ids} the page's editable copies",
+            "{page (0-based), ids?: parent items (default: all that show on the page)} → {ids} the page's editable copies",
             has_doc,
             override_items
         ),
@@ -55,39 +56,26 @@ fn page_param(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
 }
 
 /// The parent items that show on a document page (its parent's and that parent's bases', back to
-/// front), each with the offset from its parent spread to the document spread.
+/// front, less those already overridden), each with the offset from its parent spread to the
+/// document spread. `None` when the page has no parent.
 fn parent_items(d: &Document, page: usize) -> Option<Vec<(ItemId, Vec2)>> {
     let (si, pi) = d.page_loc(page)?;
-    let pg = d.spreads.get(si)?.pages.get(pi)?;
-    let shown = d.shown_parent_pages(SpreadRef::Doc(si), pi);
-    if shown.is_empty() {
+    let sr = SpreadRef::Doc(si);
+    if d.shown_parent_pages(sr, pi).is_empty() {
         return None;
     }
-    let mut out = Vec::new();
-    for (ppi, ppage) in shown {
-        let Some(parent) = d.parents.get(ppi) else { continue };
-        let Some(ppg) = parent.pages.get(ppage) else { continue };
-        let off = Vec2::new(pg.x - ppg.x, 0.0);
-        out.extend(
-            parent
-                .items
-                .iter()
-                .filter(|it| parent.pages.len() <= 1 || parent.page_at_x(it.bounds().center().x) == Some(ppage))
-                .map(|it| (it.id, off)),
-        );
-    }
-    Some(out)
+    Some(d.shown_parent_items(sr, pi).into_iter().map(|s| (s.item.id, Vec2::new(s.dx, 0.0))).collect())
 }
 
+/// `layout.overrideParentItems`: local copies on the page of the parent items it shows (all, or
+/// those in `ids`), each hiding the item it overrides.
 fn override_items(s: &mut Session, p: &Value) -> Result<Value> {
     let page = page_param(s, p, "layout.overrideParentItems")?;
     let wanted: Option<Vec<ItemId>> = super::ids_param(p, "ids");
     s.edit(|d, sel| {
         let all = parent_items(d, page).ok_or_else(|| bad("layout.overrideParentItems", "the page has no parent"))?;
         let (si, pi) = d.page_loc(page).ok_or_else(|| bad("layout.overrideParentItems", "no such page"))?;
-        let already = d.spreads[si].pages[pi].overridden.clone();
-        let picked: Vec<(ItemId, Vec2)> =
-            all.into_iter().filter(|(i, _)| wanted.as_ref().is_none_or(|w| w.contains(i)) && !already.contains(i)).collect();
+        let picked: Vec<(ItemId, Vec2)> = all.into_iter().filter(|(i, _)| wanted.as_ref().is_none_or(|w| w.contains(i))).collect();
         if picked.is_empty() {
             return Ok(json!({"ids": []}));
         }
@@ -214,6 +202,37 @@ mod tests {
         let rest: Vec<ItemId> = r["ids"].as_array().unwrap().iter().map(|v| ItemId(v.as_u64().unwrap())).collect();
         let d = s.doc().unwrap().doc.clone();
         assert_eq!(rest.iter().map(|i| d.item(*i).unwrap().overrides).collect::<Vec<_>>(), vec![Some(b_item)]);
+        d.check().unwrap();
+    }
+
+    /// B based on A, and B's page overrides one of A's items (as an IDML parent page's
+    /// OverrideList does): that item doesn't show on pages using B, so it isn't copied there.
+    #[test]
+    fn override_skips_base_items_the_parent_page_overrides() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+        let on = |s: &mut Session, index: usize, rect: [f64; 4]| {
+            let r = s.execute("frame.create", &json!({"spread": {"kind": "parent", "index": index}, "rect": rect, "content": "unassigned"})).unwrap();
+            ItemId(r["id"].as_u64().unwrap())
+        };
+        let hidden = on(&mut s, 0, [72.0, 72.0, 200.0, 200.0]);
+        let shown = on(&mut s, 0, [72.0, 300.0, 200.0, 400.0]);
+        let b_item = on(&mut s, 1, [300.0, 72.0, 400.0, 200.0]);
+        s.execute("layout.parents.options", &json!({"parent": "B", "basedOn": "A"})).unwrap();
+        s.execute("layout.pages.applyParent", &json!({"pages": [1], "parent": "B"})).unwrap();
+        s.edit(|d, _| {
+            std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(hidden);
+            Ok(())
+        })
+        .unwrap();
+        let r = s.execute("layout.overrideParentItems", &json!({"page": 1, "ids": [hidden.0]})).unwrap();
+        assert_eq!(r["ids"], json!([]));
+        let r = s.execute("layout.overrideParentItems", &json!({"page": 1})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let copies: Vec<Option<ItemId>> =
+            r["ids"].as_array().unwrap().iter().map(|v| d.item(ItemId(v.as_u64().unwrap())).unwrap().overrides).collect();
+        assert_eq!(copies, vec![Some(shown), Some(b_item)]);
         d.check().unwrap();
     }
 
