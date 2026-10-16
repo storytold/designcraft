@@ -9,6 +9,7 @@ mod it;
 mod ja;
 mod ka;
 mod pt_br;
+mod sv;
 mod uk;
 
 /// Supported interface languages: (code, name in that language).
@@ -24,6 +25,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("it", "Italiano"),
     ("uk", "Українська"),
     ("ka", "ქართული"),
+    ("sv", "Svenska"),
 ];
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
@@ -3140,6 +3142,7 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static PORTUGUESE_BR: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static ITALIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static SWEDISH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -3164,6 +3167,9 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     if lang == "ka" {
         return GEORGIAN.get_or_init(|| ka::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
+    if lang == "sv" {
+        return SWEDISH.get_or_init(|| sv::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     if lang == "uk" {
         return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -3176,12 +3182,21 @@ pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
     if lang == "uk" {
         return uk::CONTEXT.iter().find(|(key, scope, _)| *key == s && *scope == context).map_or_else(|| tr(lang, s), |(_, _, text)| text);
     }
+    if lang == "sv" {
+        return sv::CONTEXT.iter().find(|(key, scope, _)| *key == s && *scope == context).map_or_else(|| tr(lang, s), |(_, _, text)| text);
+    }
     tr(lang, s)
 }
 
 #[cfg(test)]
 pub(crate) fn ukrainian_catalog() -> Vec<&'static str> {
     uk::TABLE.iter().map(|(_, text)| *text).chain(uk::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
+}
+
+/// Whether the Swedish catalog has an entry for `s` (many Swedish labels read like the English ones).
+#[cfg(test)]
+pub(crate) fn swedish_has(s: &str) -> bool {
+    sv::TABLE.iter().any(|(key, _)| *key == s)
 }
 
 /// Count captions in Ukrainian and Georgian put the category before the value so every count
@@ -3247,8 +3262,11 @@ mod tests {
         for (key, expected) in ka::TABLE {
             assert_eq!(tr("ka", key), *expected, "ka: {key}");
         }
+        for (key, expected) in sv::TABLE {
+            assert_eq!(tr("sv", key), *expected, "sv: {key}");
+        }
         let unknown = String::from("A user-defined untranslated label");
-        for lang in ["uk", "ar", "pt-br", "it", "ka", "zh", "ja", "de", "fr", "es", "", "unknown"] {
+        for lang in ["uk", "ar", "pt-br", "it", "ka", "sv", "zh", "ja", "de", "fr", "es", "", "unknown"] {
             assert!(std::ptr::eq(tr(lang, &unknown), unknown.as_str()));
         }
     }
@@ -3354,6 +3372,28 @@ mod tests {
         for n in [1, 2, 5, 21] {
             assert_eq!(count_label("ka", "pages", n), format!("გვერდი: {n}"));
         }
+    }
+
+    #[test]
+    fn swedish_catalog_preserves_placeholders_and_ellipses() {
+        let catalog: HashMap<_, _> = sv::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), sv::TABLE.len(), "duplicate Swedish keys");
+        let placeholders = |s: &str| {
+            s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<std::collections::BTreeSet<_>>()
+        };
+        for (key, translation) in sv::TABLE {
+            assert!(!translation.trim().is_empty(), "empty {key}");
+            assert_eq!(placeholders(key), placeholders(translation), "placeholders: {key}");
+            assert_eq!(key.ends_with('…'), translation.ends_with('…'), "ellipsis: {key}");
+        }
+        for (key, context, expected) in sv::CONTEXT {
+            assert_eq!(tr_context("sv", key, context), *expected, "sv {context}: {key}");
+        }
+        assert_eq!(tr("sv", "File"), "Arkiv");
+        assert_eq!(tr("sv", "Save As…"), "Spara som…");
+        assert_eq!(tr("sv", "Unknown label"), "Unknown label");
+        assert!(!is_rtl("sv"));
+        assert_eq!(count_label("sv", "pages", 5), "5 sidor");
     }
 
     #[test]

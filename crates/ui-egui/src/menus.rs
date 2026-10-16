@@ -40,7 +40,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "app.language",
         "Interface Language",
         None,
-        "{lang: \"\"|de|fr|es|ja|zh|ar|pt-br|it|uk|ka} — menus and panel names (the macOS menu bar follows on the next launch)",
+        "{lang: \"\"|de|fr|es|ja|zh|ar|pt-br|it|uk|ka|sv} — menus and panel names (the macOS menu bar follows on the next launch)",
     ),
     (
         "app.flattener",
@@ -308,6 +308,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.language|Italiano|{\"lang\": \"it\"}",
             "ui:app.language|Українська|{\"lang\": \"uk\"}",
             "ui:app.language|ქართული|{\"lang\": \"ka\"}",
+            "ui:app.language|Svenska|{\"lang\": \"sv\"}",
             "<",
             ">Transparency Flattener Presets",
             "ui:app.flattener|None (keep transparency)|{\"preset\": \"\"}",
@@ -3041,6 +3042,31 @@ mod tests {
                 .extend(labels.into_iter().filter(|l| l.chars().any(char::is_alphabetic) && !size(l) && crate::i18n::tr("ka", l) == l.as_str()));
         }
         assert!(untranslated.is_empty(), "untranslated Georgian menu labels: {untranslated:?}");
+
+        run_ui(&mut app, "app.language", &json!({"lang": "sv"})).unwrap().unwrap();
+        assert_eq!(app.ui.language, "sv");
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "sv"})), Some(true));
+        assert_eq!(crate::i18n::tr("sv", "File"), "Arkiv");
+        // Every menu title, item and submenu has a Swedish entry.
+        let mut untranslated = Vec::new();
+        for (title, entries) in menu_tree() {
+            let mut labels = vec![title.to_string()];
+            let mut stack: Vec<&Item> = entries.iter().collect();
+            while let Some(entry) = stack.pop() {
+                match entry {
+                    Item::Sub(label, children) => {
+                        labels.push(label.clone());
+                        stack.extend(children.iter());
+                    }
+                    Item::Cmd { label, id, .. } if id != "app.language" => labels.push(label.clone()),
+                    _ => {}
+                }
+            }
+            // Swedish shares many words with English ("Layout", "Cyan"), so look for a catalog entry.
+            let size = |l: &str| l.strip_suffix(" pt").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            untranslated.extend(labels.into_iter().filter(|l| l.chars().any(char::is_alphabetic) && !size(l) && !crate::i18n::swedish_has(l)));
+        }
+        assert!(untranslated.is_empty(), "untranslated Swedish menu labels: {untranslated:?}");
     }
 
     #[test]
@@ -3094,7 +3120,7 @@ mod tests {
         crate::dialogs::confirm(&mut app).unwrap();
         frame(&mut app);
         assert_eq!(app.session.documents().len(), 1);
-        for lang in ["uk", "zh", "", "ar", "pt-br", "it", "ka"] {
+        for lang in ["uk", "zh", "", "ar", "pt-br", "it", "ka", "sv"] {
             app.run("app.language", json!({"lang": lang})).unwrap();
             frame(&mut app);
         }
