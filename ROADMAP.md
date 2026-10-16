@@ -388,6 +388,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-05** · Regression tests now cover the Chinese interface both with a full craft set and with a Japanese-only one (the installed system face supplies the glyphs, ahead of the craft Japanese faces). An installed face that lacks one of the listed characters skips the environment test instead of failing. Releases embed Noto Sans CJK SC, Noto Sans Arabic and Noto Sans Thai through the current craft-fonts pin, which already contains those faces; the pin is not moved back to an earlier commit. No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 
 - **2026-11-02** · EPUB Export Options names a cover image file (PNG or JPEG, typed or chosen with Choose…) for the reflowable export; left empty, the first page stays the cover (#1934). No readiness percentage change.
