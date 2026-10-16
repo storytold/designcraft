@@ -63,7 +63,7 @@ pub fn start() {
                     }
                     app.cloud.connect(crate::cloud::Service::new(cc.egui_ctx.clone()));
                     if let Some(share) = collabcraft_share::CollabCraft::from_env() {
-                        app.share.connect(share);
+                        app.share.connect(share.for_app("designcraft"));
                     }
                     cloud::start(&mut app);
                     Ok(Box::new(WebShell { app, inbox }))
