@@ -356,17 +356,15 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             }
         }
         let (page_name, page, left_page) = match (spread_ref, spread) {
-            (Some(designcraft_doc::SpreadRef::Doc(si)), Some(sp)) => {
-                let c = item.bounds().center();
-                let pi = sp.page_at_x(c.x).unwrap_or(0);
-                let abs = doc.first_page_of_spread(si) + pi;
-                (Some(doc.page_name(abs)), Some(abs), sp.pages.get(pi).is_some_and(|p| p.side == designcraft_doc::PageSide::Left))
-            }
-            (Some(designcraft_doc::SpreadRef::Parent(pi)), Some(sp)) => {
-                let prefix = sp.parent.as_ref().map(|p| p.prefix.clone()).unwrap_or_else(|| "A".into());
-                let _ = pi;
-                (Some(prefix), None, false)
-            }
+            (Some(r), Some(sp)) => page_info(doc, r, sp, item),
+            // An anchored text frame is on the page of the frame its host story is in.
+            (None, _) => doc
+                .anchored_page_frame(fid)
+                .and_then(|pf| {
+                    let loc = doc.find(pf)?;
+                    Some(page_info(doc, loc.spread, doc.spread(loc.spread)?, doc.item_at(&loc)?))
+                })
+                .unwrap_or((None, None, false)),
             _ => (None, None, false),
         };
         // The page under the frame and its margins, in inner space (bounding boxes).
@@ -427,6 +425,27 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
         });
     }
     out
+}
+
+/// The page name, absolute page and left-page flag of a frame on a spread.
+fn page_info(
+    doc: &Document,
+    r: designcraft_doc::SpreadRef,
+    sp: &designcraft_doc::Spread,
+    item: &designcraft_doc::Item,
+) -> (Option<String>, Option<usize>, bool) {
+    match r {
+        designcraft_doc::SpreadRef::Doc(si) => {
+            let c = item.bounds().center();
+            let pi = sp.page_at_x(c.x).unwrap_or(0);
+            let abs = doc.first_page_of_spread(si) + pi;
+            (Some(doc.page_name(abs)), Some(abs), sp.pages.get(pi).is_some_and(|p| p.side == designcraft_doc::PageSide::Left))
+        }
+        designcraft_doc::SpreadRef::Parent(_) => {
+            let prefix = sp.parent.as_ref().map(|p| p.prefix.clone()).unwrap_or_else(|| "A".into());
+            (Some(prefix), None, false)
+        }
+    }
 }
 
 /// Compose a story of `doc` through its frames.

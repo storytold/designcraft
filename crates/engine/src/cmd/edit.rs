@@ -46,7 +46,9 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
     let slice = story.extract(t.range());
     let text = plain(&slice);
-    s.text_clipboard = Some((Arc::new(slice), text.clone()));
+    // Anchored text frames take their stories along.
+    let stories = st.doc.anchored_stories(&slice);
+    s.text_clipboard = Some((Arc::new(slice), text.clone(), Arc::new(stories)));
     Ok(Some(text))
 }
 
@@ -61,9 +63,14 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
         && t.cell.is_none()
         && let Some(items) = s.clipboard.clone()
     {
-        let list: Vec<designcraft_doc::Item> = items.spreads.first().map(|sp| sp.items.iter().map(|i| (**i).clone()).collect()).unwrap_or_default();
+        let mut list: Vec<designcraft_doc::Item> =
+            items.spreads.first().map(|sp| sp.items.iter().map(|i| (**i).clone()).collect()).unwrap_or_default();
         if !list.is_empty() && list.iter().all(|i| !i.is_text_frame()) {
             return s.edit(|d, sel| {
+                // Copies: ids of their own, and text frames in groups copies of their stories.
+                for it in &mut list {
+                    d.adopt_item(it, &|id| items.stories.get(&id).cloned());
+                }
                 let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
                 let r = t.range();
                 st.delete(r.start.min(st.len())..r.end.min(st.len()));
@@ -73,11 +80,13 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             });
         }
     }
-    let use_clip = formatted && clip.as_ref().is_some_and(|(_, p)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
+    let use_clip = formatted && clip.as_ref().is_some_and(|(_, p, _)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
     // Footnotes, cross-references and tables only paste into story text, not cells or footnotes.
-    if use_clip && let Some((slice, _)) = clip {
-        let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+    if use_clip && let Some((slice, _, stories)) = clip {
+        let mut slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
         return s.edit(|d, sel| {
+            // Anchored items get ids of their own, anchored text frames copies of their stories.
+            d.adopt_anchored(&mut slice, &|id| stories.get(&id).cloned());
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
@@ -87,7 +96,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             Ok(json!({"pos": end, "formatted": true}))
         });
     }
-    let text = text.or_else(|| clip.map(|(_, p)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
+    let text = text.or_else(|| clip.map(|(_, p, _)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
     s.execute("text.insert", &json!({"text": text.replace("\r\n", "\n").replace('\r', "\n"), "raw": true}))
 }
 
@@ -297,7 +306,11 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     for p in d.parents.iter_mut() {
         Arc::make_mut(p).items.clear();
     }
-    d.stories.retain(|_, st| st.frames.iter().any(|f| frames.contains(f)));
+    // Stories shown by text frames anchored in the kept stories go along (and theirs).
+    let anchored: std::collections::HashSet<designcraft_doc::StoryId> =
+        d.stories.values().filter(|st| st.frames.iter().any(|f| frames.contains(f))).flat_map(|st| d.anchored_stories(st).into_keys()).collect();
+    d.stories.retain(|id, st| st.frames.iter().any(|f| frames.contains(f)) || anchored.contains(id));
+    frames.extend(d.anchored_items().into_iter().map(|(_, i)| i.id));
     for st in d.stories.values_mut() {
         Arc::make_mut(st).frames.retain(|f| frames.contains(f));
     }
