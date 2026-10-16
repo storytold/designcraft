@@ -1780,6 +1780,9 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "object.textFrameOptions" {
+        return !crate::dialogs::text_frame_options_targets(app).is_empty();
+    }
     match designcraft_engine::find_command(id) {
         Some(c) => (c.enabled)(&app.session).is_ok(),
         None => true,
@@ -2072,7 +2075,7 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         return;
     }
     if params.is_null() && id == "object.textFrameOptions" {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
+        crate::dialogs::open_text_frame_options(app);
         return;
     }
     // New Paragraph/Character Style…: the style options for the new style.
@@ -2392,6 +2395,9 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
             if app.native_shortcuts.contains(&id) && !app.ui.shortcuts.contains_key(&id) {
                 continue; // The native menu handles it.
             }
+            if id == "object.textFrameOptions" && !enabled(app, &id) {
+                continue;
+            }
             // The key press belongs to the shortcut: what it opens (Quick Apply's list, a dialog's
             // default button) must not see the same press as Enter or Space this frame.
             ctx.input_mut(|i| i.consume_key(modifiers, key));
@@ -2677,6 +2683,362 @@ mod tests {
         }
         assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
         assert!(!egui::Popup::is_any_open(&ctx), "choosing a command dismisses the menu");
+    }
+
+    fn dialog_control(app: &mut crate::DesignApp, method: &str, params: Value) -> Value {
+        let (request, _reply) = crate::control::ControlRequest::new(method, params);
+        let crate::control::Outcome::Done(response) = crate::control::handle(app, &egui::Context::default(), &request) else {
+            panic!("dialog command must finish without a screenshot");
+        };
+        assert_eq!(response["ok"], true, "{method}: {response}");
+        response["result"].clone()
+    }
+
+    fn app_with_mixed_column_rules() -> (crate::DesignApp, [designcraft_doc::ItemId; 2]) {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frames = [20, 260].map(|x| {
+            let frame = app.run("frame.create", json!({"rect": [x, 20, x + 220, 220], "content": "text"})).unwrap();
+            designcraft_doc::ItemId(frame["id"].as_u64().unwrap())
+        });
+        app.run(
+            "object.textFrameOptions",
+            json!({"ids": [frames[0]], "columns": 3, "gutter": 18, "inset": [2, 4, 6, 8], "verticalJustification": "center",
+                "columnRule": false, "columnRuleWeight": 1, "columnRuleColor": "[Black]", "columnRuleTint": 0.5,
+                "columnRuleTopInset": 2, "columnRuleBottomInset": 3, "columnRuleOffset": 4}),
+        )
+        .unwrap();
+        app.run(
+            "object.textFrameOptions",
+            json!({"ids": [frames[1]], "columns": 2, "gutter": 12, "inset": [10, 20, 30, 40], "verticalJustification": "bottom",
+                "columnRule": true, "columnRuleWeight": 4, "columnRuleColor": "[Paper]", "columnRuleTint": 0.25,
+                "columnRuleTopInset": 5, "columnRuleBottomInset": 6, "columnRuleOffset": 7}),
+        )
+        .unwrap();
+        app.run("selection.set", json!({"ids": frames})).unwrap();
+        (app, frames)
+    }
+
+    fn text_frame_dialog_harness(mut app: crate::DesignApp) -> egui_kittest::Harness<'static, crate::DesignApp> {
+        activate(&mut app, "object.textFrameOptions", &Value::Null);
+        let mut fonts_installed = false;
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 800.0)).build_ui_state(
+            move |ui, app| {
+                if fonts_installed {
+                    crate::dialogs::show(app, ui.ctx());
+                } else {
+                    crate::theme::install_fonts(ui.ctx(), "en");
+                    ui.ctx().request_repaint();
+                    fonts_installed = true;
+                }
+            },
+            app,
+        );
+        harness.run();
+        harness
+    }
+
+    fn assert_text_frame_edit_roundtrips(
+        app: &mut crate::DesignApp,
+        before: &designcraft_doc::Document,
+        expected: &designcraft_doc::Document,
+        selection: &designcraft_doc::Selection,
+        undo_len: usize,
+    ) {
+        let st = app.session.doc().unwrap();
+        assert_eq!(*st.doc, *expected, "only the explicitly edited properties may change");
+        assert_eq!(st.selection, *selection);
+        assert_eq!(st.history.undo.len(), undo_len + 1, "one confirmation is one undo step for both frames");
+        app.run("edit.undo", json!({})).unwrap();
+        let st = app.session.doc().unwrap();
+        assert_eq!(*st.doc, *before);
+        assert_eq!(st.selection, *selection);
+        assert_eq!(st.history.undo.len(), undo_len);
+        app.run("edit.redo", json!({})).unwrap();
+        let st = app.session.doc().unwrap();
+        assert_eq!(*st.doc, *expected);
+        assert_eq!(st.selection, *selection);
+        assert_eq!(st.history.undo.len(), undo_len + 1);
+    }
+
+    #[test]
+    fn mixed_column_rules_survive_no_edit_and_widget_edits_undo() {
+        use egui_kittest::kittest::Queryable;
+
+        for toggles in 0..=2 {
+            let (app, frames) = app_with_mixed_column_rules();
+            let st = app.session.doc().unwrap();
+            let before = st.doc.clone();
+            let selection = st.selection.clone();
+            let revision = st.revision;
+            let undo_len = st.history.undo.len();
+            let mut harness = text_frame_dialog_harness(app);
+            for _ in 0..toggles {
+                harness.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Insert Column Rule").click();
+                harness.run();
+            }
+            // Confirm through the actual dialog's keyboard path, including the no-edit case.
+            harness.key_press(egui::Key::Enter);
+            harness.run();
+            assert!(harness.state().ui.dialog.is_none());
+            if toggles == 0 {
+                let st = harness.state().session.doc().unwrap();
+                assert!(std::sync::Arc::ptr_eq(&st.doc, &before));
+                assert_eq!(st.selection, selection);
+                assert_eq!(st.revision, revision);
+                assert_eq!(st.history.undo.len(), undo_len);
+            } else {
+                let mut expected = (*before).clone();
+                for id in frames {
+                    expected.item_mut(id).unwrap().text_frame_mut().unwrap().options.column_rule = toggles == 1;
+                }
+                assert_text_frame_edit_roundtrips(harness.state_mut(), &before, &expected, &selection, undo_len);
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_text_frame_widget_edits_preserve_other_fields_and_inset_edges() {
+        use egui_kittest::kittest::Queryable;
+
+        for (label, field, intermediate, final_value) in [
+            ("Number of columns", "columns", "4", "3"),
+            ("Gutter", "gutter", "19 pt", "18 pt"),
+            ("Top", "insetTop", "7 pt", "2 pt"),
+            ("Left", "insetLeft", "9 pt", "4 pt"),
+            ("Bottom", "insetBottom", "11 pt", "6 pt"),
+            ("Right", "insetRight", "13 pt", "8 pt"),
+        ] {
+            let (app, frames) = app_with_mixed_column_rules();
+            let st = app.session.doc().unwrap();
+            let before = st.doc.clone();
+            let selection = st.selection.clone();
+            let undo_len = st.history.undo.len();
+            let mut harness = text_frame_dialog_harness(app);
+            harness.get_by_role_and_label(egui::accesskit::Role::TextInput, label).click();
+            harness.run();
+            // A changed value followed by the original value must remain an explicit edit.
+            for value in [intermediate, final_value] {
+                harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+                harness.run();
+                harness.get_by_role_and_label(egui::accesskit::Role::TextInput, label).type_text(value);
+                harness.run();
+            }
+            assert_eq!(harness.state().ui.dialog.as_ref().unwrap().fields[field], json!(final_value));
+            harness.key_press(egui::Key::Enter);
+            harness.run();
+            assert!(harness.state().ui.dialog.is_none());
+            let mut expected = (*before).clone();
+            for id in frames {
+                let options = &mut expected.item_mut(id).unwrap().text_frame_mut().unwrap().options;
+                match field {
+                    "columns" => options.columns = 3,
+                    "gutter" => options.gutter = 18.0,
+                    "insetTop" => options.inset[0] = 2.0,
+                    "insetLeft" => options.inset[1] = 4.0,
+                    "insetBottom" => options.inset[2] = 6.0,
+                    "insetRight" => options.inset[3] = 8.0,
+                    _ => panic!("unexpected widget field: {field}"),
+                }
+            }
+            assert_text_frame_edit_roundtrips(harness.state_mut(), &before, &expected, &selection, undo_len);
+        }
+    }
+
+    #[test]
+    fn mixed_text_frame_control_no_edit_preserves_layout_and_redo_history() {
+        let (mut app, frames) = app_with_mixed_column_rules();
+        app.run("object.textFrameOptions", json!({"ids": [frames[0]], "columns": 4})).unwrap();
+        app.run("edit.undo", json!({})).unwrap();
+        let st = app.session.doc().unwrap();
+        let before = st.doc.clone();
+        let selection = st.selection.clone();
+        let revision = st.revision;
+        let undo_len = st.history.undo.len();
+        let redo_len = st.history.redo.len();
+        assert!(redo_len > 0);
+        for explicit_open in [false, true] {
+            if explicit_open {
+                dialog_control(&mut app, "ui.dialog.open", json!({"id": "textFrameOptions", "fields": {}}));
+            } else {
+                activate(&mut app, "object.textFrameOptions", &Value::Null);
+            }
+            assert_eq!(dialog_control(&mut app, "ui.dialog.confirm", json!({})), Value::Null);
+            assert!(app.ui.dialog.is_none());
+            let st = app.session.doc().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&st.doc, &before));
+            assert_eq!(st.selection, selection);
+            assert_eq!(st.revision, revision);
+            assert_eq!(st.history.undo.len(), undo_len);
+            assert_eq!(st.history.redo.len(), redo_len);
+        }
+        app.run("edit.redo", json!({})).unwrap();
+        let mut expected = (*before).clone();
+        expected.item_mut(frames[0]).unwrap().text_frame_mut().unwrap().options.columns = 4;
+        assert_eq!(*app.session.doc().unwrap().doc, expected);
+    }
+
+    #[test]
+    fn mixed_text_frame_control_set_and_open_apply_only_explicit_fields_and_undo() {
+        for (field, value) in [
+            ("columns", json!(3)),
+            ("gutter", json!("18 pt")),
+            ("verticalJustification", json!("center")),
+            ("insetTop", json!("2 pt")),
+            ("insetLeft", json!("4 pt")),
+            ("insetBottom", json!("6 pt")),
+            ("insetRight", json!("8 pt")),
+            ("columnRule", json!(false)),
+            ("columnRuleWeight", json!("1 pt")),
+            ("columnRuleColor", json!("[Black]")),
+            ("columnRuleTint", json!("50")),
+            ("columnRuleTopInset", json!("2 pt")),
+            ("columnRuleBottomInset", json!("3 pt")),
+            ("columnRuleOffset", json!("4 pt")),
+        ] {
+            for explicit_open in [false, true] {
+                let (mut app, frames) = app_with_mixed_column_rules();
+                let st = app.session.doc().unwrap();
+                let before = st.doc.clone();
+                let selection = st.selection.clone();
+                let undo_len = st.history.undo.len();
+                // Each explicit value equals A's displayed value; B still needs that property set.
+                let dialog = if explicit_open {
+                    let mut fields = serde_json::Map::new();
+                    fields.insert(field.into(), value.clone());
+                    dialog_control(&mut app, "ui.dialog.open", json!({"id": "textFrameOptions", "fields": fields}))
+                } else {
+                    activate(&mut app, "object.textFrameOptions", &Value::Null);
+                    dialog_control(&mut app, "ui.dialog.set", json!({"field": field, "value": value}))
+                };
+                assert_eq!(dialog["fields"][field], value, "control responses retain the field-map shape");
+                dialog_control(&mut app, "ui.dialog.confirm", json!({}));
+                let mut expected = (*before).clone();
+                for id in frames {
+                    let options = &mut expected.item_mut(id).unwrap().text_frame_mut().unwrap().options;
+                    match field {
+                        "columns" => options.columns = 3,
+                        "gutter" => options.gutter = 18.0,
+                        "verticalJustification" => options.vertical_justification = designcraft_doc::VerticalJustification::Center,
+                        "insetTop" => options.inset[0] = 2.0,
+                        "insetLeft" => options.inset[1] = 4.0,
+                        "insetBottom" => options.inset[2] = 6.0,
+                        "insetRight" => options.inset[3] = 8.0,
+                        "columnRule" => options.column_rule = false,
+                        "columnRuleWeight" => options.column_rule_weight = 1.0,
+                        "columnRuleColor" => options.column_rule_color = "[Black]".into(),
+                        "columnRuleTint" => options.column_rule_tint = 0.5,
+                        "columnRuleTopInset" => options.column_rule_top_inset = 2.0,
+                        "columnRuleBottomInset" => options.column_rule_bottom_inset = 3.0,
+                        "columnRuleOffset" => options.column_rule_offset = 4.0,
+                        _ => panic!("unexpected test field: {field}"),
+                    }
+                }
+                assert_text_frame_edit_roundtrips(&mut app, &before, &expected, &selection, undo_len);
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_text_frame_open_numeric_seeds_preserve_omitted_edges_and_point_units() {
+        let (mut app, frames) = app_with_mixed_column_rules();
+        let st = app.session.doc().unwrap();
+        let before = st.doc.clone();
+        let selection = st.selection.clone();
+        let undo_len = st.history.undo.len();
+        dialog_control(
+            &mut app,
+            "ui.dialog.open",
+            json!({"id": "textFrameOptions", "fields": {"columns": 4, "gutter": 24, "insetTop": 7, "insetRight": 11,
+                "verticalJustification": "justify", "columnRule": true, "columnRuleWeight": 2, "columnRuleColor": "[Paper]",
+                "columnRuleTint": 60, "columnRuleTopInset": 7, "columnRuleBottomInset": 8, "columnRuleOffset": -3}}),
+        );
+        dialog_control(&mut app, "ui.dialog.confirm", json!({}));
+        let mut expected = (*before).clone();
+        for id in frames {
+            let options = &mut expected.item_mut(id).unwrap().text_frame_mut().unwrap().options;
+            options.columns = 4;
+            options.gutter = 24.0;
+            options.inset[0] = 7.0;
+            options.inset[3] = 11.0;
+            options.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+            options.column_rule = true;
+            options.column_rule_weight = 2.0;
+            options.column_rule_color = "[Paper]".into();
+            options.column_rule_tint = 0.6;
+            options.column_rule_top_inset = 7.0;
+            options.column_rule_bottom_inset = 8.0;
+            options.column_rule_offset = -3.0;
+        }
+        assert_text_frame_edit_roundtrips(&mut app, &before, &expected, &selection, undo_len);
+    }
+
+    #[test]
+    fn control_open_keeps_other_dialog_seed_behavior() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        dialog_control(
+            &mut app,
+            "ui.dialog.open",
+            json!({"id": "frameSize", "fields": {"spread": 0, "x": 40, "y": 30, "width": "10p0", "height": "5p0", "shape": "rectangle", "content": "text"}}),
+        );
+        let created = dialog_control(&mut app, "ui.dialog.confirm", json!({}));
+        let id = designcraft_doc::ItemId(created["id"].as_u64().unwrap());
+        let after = app.session.doc().unwrap().doc.clone();
+        assert_eq!(after.item(id).unwrap().bounds(), designcraft_geom::Rect::new(40.0, 30.0, 160.0, 90.0));
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(*app.session.doc().unwrap().doc, *before);
+        app.run("edit.redo", json!({})).unwrap();
+        assert_eq!(*app.session.doc().unwrap().doc, *after);
+    }
+
+    #[test]
+    fn mixed_text_frame_legacy_scalar_inset_set_and_open_preserve_other_fields() {
+        for open_with_scalar in [false, true] {
+            let (mut app, frames) = app_with_mixed_column_rules();
+            let st = app.session.doc().unwrap();
+            let before = st.doc.clone();
+            let selection = st.selection.clone();
+            let undo_len = st.history.undo.len();
+            if open_with_scalar {
+                dialog_control(&mut app, "ui.dialog.open", json!({"id": "textFrameOptions", "fields": {"inset": "0p6"}}));
+            } else {
+                activate(&mut app, "object.textFrameOptions", &Value::Null);
+                dialog_control(&mut app, "ui.dialog.set", json!({"field": "inset", "value": "0p6"}));
+            }
+            // The existing explicit scalar takes precedence even beside a per-edge edit.
+            dialog_control(&mut app, "ui.dialog.set", json!({"field": "insetTop", "value": "99 pt"}));
+            dialog_control(&mut app, "ui.dialog.confirm", json!({}));
+            let mut expected = (*before).clone();
+            for id in frames {
+                expected.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset = [6.0; 4];
+            }
+            assert_text_frame_edit_roundtrips(&mut app, &before, &expected, &selection, undo_len);
+        }
+    }
+
+    #[test]
+    fn text_frame_dialog_preserves_existing_settings_and_applies_column_rules() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let frame = app.session.execute("frame.create", &json!({"rect": [20, 20, 220, 220], "content": "text"})).unwrap();
+        let id = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+        app.session.doc_mut().unwrap().selection = designcraft_doc::Selection::items(vec![id]);
+        app.run("object.textFrameOptions", json!({"columns": 3, "gutter": 18, "inset": [2, 4, 6, 8], "verticalJustification": "center"})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        activate(&mut app, "object.textFrameOptions", &Value::Null);
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_eq!(*app.session.doc().unwrap().doc, *before, "opening and confirming must not reset a frame");
+        activate(&mut app, "object.textFrameOptions", &Value::Null);
+        dialog_control(&mut app, "ui.dialog.set", json!({"field": "columnRule", "value": true}));
+        dialog_control(&mut app, "ui.dialog.set", json!({"field": "columnRuleWeight", "value": "2 pt"}));
+        crate::dialogs::confirm(&mut app).unwrap();
+        let options = &app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options;
+        assert!(options.column_rule);
+        assert_eq!(options.column_rule_weight, 2.0);
+        assert_eq!(options.inset, [2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(options.columns, 3);
     }
 
     #[test]
@@ -4229,3 +4591,7 @@ mod tests {
         assert!(!open, "an open submenu closes when its row becomes fully clipped");
     }
 }
+
+#[cfg(test)]
+#[path = "menus/tests_text_frame_options.rs"]
+mod text_frame_options_tests;

@@ -9,10 +9,66 @@ use serde_json::{Map, Value, json};
 use crate::DesignApp;
 use crate::theme::semibold;
 
+/// Dialog values keep their serialized map shape while recording explicit edits. Hydration
+/// fills the value map directly, so defaults and current selection values are not edits.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct DialogFields {
+    values: Map<String, Value>,
+    #[serde(skip)]
+    edited: std::collections::BTreeSet<String>,
+}
+
+impl DialogFields {
+    /// Shared by widgets and ui.dialog.set, including an explicit edit to the initial value.
+    pub fn insert(&mut self, key: String, value: Value) -> Option<Value> {
+        self.edited.insert(key.clone());
+        self.values.insert(key, value)
+    }
+
+    fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
+        if self.values.contains_key(key) {
+            self.edited.insert(key.into());
+        }
+        self.values.get_mut(key)
+    }
+
+    fn was_edited(&self, key: &str) -> bool {
+        self.edited.contains(key)
+    }
+
+    // Default values and preview bookkeeping retain the upstream map operations.
+    fn entry(&mut self, key: &str) -> serde_json::map::Entry<'_> {
+        self.values.entry(key)
+    }
+
+    fn remove(&mut self, key: &str) -> Option<Value> {
+        self.edited.remove(key);
+        self.values.remove(key)
+    }
+}
+
+impl std::ops::Deref for DialogFields {
+    type Target = Map<String, Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TextFrameTargets {
+    document_uid: Option<u64>,
+    document: Option<std::sync::Arc<designcraft_doc::Document>>,
+    ids: Vec<designcraft_doc::ItemId>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Dialog {
     pub id: String,
-    pub fields: Map<String, Value>,
+    pub fields: DialogFields,
+    #[serde(skip)]
+    text_frame_targets: Option<TextFrameTargets>,
     /// The document's ruler unit: what a bare number such as `12` means in a measurement field.
     /// Set from the active document when the dialog is shown or confirmed (picas without one).
     #[serde(skip)]
@@ -73,6 +129,23 @@ impl Dialog {
         if id == "paragraphStyleOptions" || id == "characterStyleOptions" {
             fields.entry("section".to_string()).or_insert(json!("general"));
         }
+        if id == "textFrameOptions" {
+            for key in [
+                "gutter",
+                "insetTop",
+                "insetLeft",
+                "insetBottom",
+                "insetRight",
+                "columnRuleWeight",
+                "columnRuleTopInset",
+                "columnRuleBottomInset",
+                "columnRuleOffset",
+            ] {
+                if let Some(value) = fields.get(key).and_then(Value::as_f64) {
+                    fields.insert(key.into(), json!(format!("{value} pt")));
+                }
+            }
+        }
         if id == "frameSize" {
             for k in ["width", "height"] {
                 if let Some(v) = fields.get(k).and_then(Value::as_f64) {
@@ -80,7 +153,8 @@ impl Dialog {
                 }
             }
         }
-        Dialog { id: id.into(), fields, unit: Unit::Picas }
+        let edited = if id == "textFrameOptions" { fields.keys().cloned().collect() } else { std::collections::BTreeSet::new() };
+        Dialog { id: id.into(), fields: DialogFields { values: fields, edited }, text_frame_targets: None, unit: Unit::Picas }
     }
     /// Set a field and report a genuine Find domain/mode transition to the caller.
     pub(crate) fn set_field(&mut self, key: &str, value: Value) -> bool {
@@ -126,9 +200,42 @@ impl Dialog {
     }
 }
 
+/// The UI can target selected text frames or the actual caret frame without widening engine enablement.
+pub(crate) fn text_frame_options_targets(app: &DesignApp) -> Vec<designcraft_doc::ItemId> {
+    let Some(st) = app.session.active() else { return Vec::new() };
+    if st.selection.items.is_empty() {
+        if let Some(text) = st.selection.text
+            && let Some(id) = text.frame
+            && st.doc.item(id).and_then(designcraft_doc::Item::text_frame).is_some_and(|frame| frame.story == text.story)
+        {
+            return vec![id];
+        }
+        Vec::new()
+    } else {
+        st.selection.items.iter().copied().filter(|id| st.doc.item(*id).and_then(designcraft_doc::Item::text_frame).is_some()).collect()
+    }
+}
+
+/// Hydrate without recording edits and bind the frames represented when the dialog opens.
+pub(crate) fn text_frame_options_dialog(app: &DesignApp, seeds: Value) -> Dialog {
+    let mut dialog = Dialog::new("textFrameOptions", seeds);
+    seed_text_frame_options(app, &mut dialog);
+    dialog
+}
+
+pub(crate) fn open_text_frame_options(app: &mut DesignApp) {
+    app.ui.dialog = Some(text_frame_options_dialog(app, Value::Null));
+}
+
 fn text_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32) {
+    text_field_with_label(ui, d, key, w, None);
+}
+
+fn text_field_with_label(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32, label: Option<egui::Id>) {
     let mut s = d.s(key);
-    if ui.add(egui::TextEdit::singleline(&mut s).desired_width(w).horizontal_align(egui::Align::Min)).changed() {
+    let response = ui.add(egui::TextEdit::singleline(&mut s).desired_width(w).horizontal_align(egui::Align::Min));
+    let response = if let Some(label) = label { response.labelled_by(label) } else { response };
+    if response.changed() {
         d.fields.insert(key.into(), Value::String(s));
     }
 }
@@ -365,8 +472,8 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.add_space(6.0);
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, t)).font(semibold(12.0)));
     };
-    // Snapshot the non-preset fields so a manual edit can be detected after drawing.
-    let before = d.fields.clone();
+    // Compare values only: recording an explicit edit to the same value keeps the preset.
+    let before = d.fields.values.clone();
     let mut preset_clicked = false;
 
     head(ui, "General");
@@ -419,26 +526,23 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     check(ui, d, "tagged", crate::i18n::tr(lang, "Tagged PDF"));
 
     // Any edit other than picking a preset means the settings are no longer that preset.
-    if !preset_clicked && d.fields != before {
+    if !preset_clicked && d.fields.values != before {
         d.fields.insert("preset".into(), json!("Custom"));
     }
 }
 
-/// The options of the selected text frame (the first selected item, or the frame of the caret).
-fn selected_frame_options(app: &DesignApp) -> Option<designcraft_doc::TextFrameOptions> {
-    let st = app.session.active()?;
-    let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))?;
-    st.doc.item(fid)?.text_frame().map(|t| t.options.clone())
-}
-
-/// Object › Text Frame Options shows the selected frame's options. `_shown` keeps what it showed,
-/// so OK sends only the fields the user changed. Fields given when the dialog opened count as
-/// changed.
+/// Hydrate once in the document's units, without turning displayed values into edits.
 fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
-    if d.fields.contains_key("_shown") {
+    if d.text_frame_targets.is_some() {
         return;
     }
-    let o = selected_frame_options(app).unwrap_or_default();
+    let targets = text_frame_options_targets(app);
+    let owner = app.session.active();
+    let o = owner
+        .and_then(|st| targets.first().and_then(|id| st.doc.item(*id)))
+        .and_then(designcraft_doc::Item::text_frame)
+        .map(|frame| frame.options.clone())
+        .unwrap_or_default();
     let units = app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
     let fm = |v: f64| json!(format_measure(v, units));
     let shown = json!({
@@ -451,10 +555,11 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
     });
     if let Value::Object(m) = &shown {
         for (k, v) in m {
-            d.fields.entry(k.clone()).or_insert_with(|| v.clone());
+            d.fields.values.entry(k.clone()).or_insert_with(|| v.clone());
         }
     }
-    d.fields.insert("_shown".into(), shown);
+    d.text_frame_targets =
+        Some(TextFrameTargets { document_uid: owner.map(|st| st.uid), document: owner.map(|st| std::sync::Arc::clone(&st.doc)), ids: targets });
 }
 
 /// A 0..1 tint as a percentage ("40", "12.5").
@@ -463,23 +568,23 @@ fn percent(t: f32) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+fn show_text_frame_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
     let tr = |s: &'static str| crate::i18n::tr(&lang, s);
     egui::Grid::new("tfo").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, tr("Number of columns"));
-        text_field(ui, d, "columns", 80.0);
+        let label = crate::rtl::label(ui, tr("Number of columns"));
+        text_field_with_label(ui, d, "columns", 80.0, Some(label.id));
         ui.end_row();
-        crate::rtl::label(ui, tr("Gutter"));
-        text_field(ui, d, "gutter", 80.0);
+        let label = crate::rtl::label(ui, tr("Gutter"));
+        text_field_with_label(ui, d, "gutter", 80.0, Some(label.id));
         ui.end_row();
     });
     ui.add_space(6.0);
     crate::rtl::label(ui, egui::RichText::new(tr("Inset spacing")).font(semibold(12.0)));
     egui::Grid::new("tfo_inset").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         for (label, key) in [("Top", "insetTop"), ("Bottom", "insetBottom"), ("Left", "insetLeft"), ("Right", "insetRight")] {
-            crate::rtl::label(ui, tr(label));
-            text_field(ui, d, key, 80.0);
+            let label = crate::rtl::label(ui, tr(label));
+            text_field_with_label(ui, d, key, 80.0, Some(label.id));
             ui.end_row();
         }
     });
@@ -491,6 +596,7 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
             for v in ["top", "center", "bottom", "justify"] {
                 if ui.selectable_label(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&lang, v))).clicked() {
                     d.fields.insert("verticalJustification".into(), json!(v));
+                    ui.close();
                 }
             }
         });
@@ -513,8 +619,8 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
         .unwrap_or_default();
     let opts: Vec<(&str, &str)> = swatches.iter().map(|n| (n.as_str(), n.as_str())).collect();
     egui::Grid::new("tfo_rule").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, tr("Weight"));
-        text_field(ui, d, "columnRuleWeight", 70.0);
+        let label = crate::rtl::label(ui, tr("Weight"));
+        text_field_with_label(ui, d, "columnRuleWeight", 70.0, Some(label.id));
         ui.end_row();
         crate::rtl::label(ui, tr("Color"));
         combo(ui, d, "columnRuleColor", &opts);
@@ -525,21 +631,31 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
             ("Bottom Inset", "columnRuleBottomInset"),
             ("Horizontal Offset", "columnRuleOffset"),
         ] {
-            crate::rtl::label(ui, tr(label));
-            text_field(ui, d, key, 70.0);
+            let label = crate::rtl::label(ui, tr(label));
+            text_field_with_label(ui, d, key, 70.0, Some(label.id));
             ui.end_row();
         }
     });
 }
 
-/// Whether the user changed `key` from what the dialog showed.
+/// Explicit edits include changing a value back to the initially displayed value.
 fn edited(d: &Dialog, key: &str) -> bool {
-    let shown = match d.fields.get("_shown").and_then(|s| s.get(key)) {
-        Some(Value::String(s)) => s.clone(),
-        Some(v) => v.to_string(),
-        None => return d.fields.contains_key(key),
-    };
-    d.fields.contains_key(key) && d.s(key).trim() != shown.trim()
+    d.fields.was_edited(key)
+}
+
+fn validate_text_frame_options_owner(app: &DesignApp, d: &Dialog) -> Result<(), String> {
+    if let Some(targets) = &d.text_frame_targets {
+        let Some(st) = app.session.active().filter(|st| Some(st.uid) == targets.document_uid) else {
+            return Err("text frame options document is no longer active".into());
+        };
+        if !targets.document.as_ref().is_some_and(|document| std::sync::Arc::ptr_eq(document, &st.doc)) {
+            return Err("text frame options document changed while the dialog was open".into());
+        }
+        if targets.ids.is_empty() {
+            return Err("no text frame selected".into());
+        }
+    }
+    Ok(())
 }
 
 fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
@@ -593,12 +709,9 @@ fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Val
     if p.is_empty() {
         return Ok(Value::Null);
     }
-    // Typing in a frame: the options apply to that frame.
-    if let Some(st) = app.session.active()
-        && st.selection.items.is_empty()
-        && let Some(f) = st.selection.text.and_then(|t| t.frame)
-    {
-        p.insert("ids".into(), json!([f.0]));
+    validate_text_frame_options_owner(app, d)?;
+    if let Some(targets) = &d.text_frame_targets {
+        p.insert("ids".into(), json!(targets.ids));
     }
     app.run("object.textFrameOptions", Value::Object(p))
 }
@@ -1487,6 +1600,18 @@ fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.dialog.clone() else { return };
     let mut result: Option<bool> = None;
+    // An open dropdown owns Enter only while focus is in its popup layer.
+    // Tab can move focus back to the dialog's checkbox or Cancel button.
+    let text_frame_options_popup_focused = d.id == "textFrameOptions"
+        && egui::Popup::is_any_open(ctx)
+        && ctx
+            .memory(|memory| memory.focused().zip(memory.top_modal_layer()))
+            .is_some_and(|(focused, modal)| ctx.read_response(focused).is_some_and(|response| response.layer_id != modal));
+    // Otherwise consume Enter before a focused checkbox can toggle again.
+    // The footer still lets a focused Cancel button handle that Enter.
+    let confirm_text_frame_options = d.id == "textFrameOptions"
+        && !text_frame_options_popup_focused
+        && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     let alert_title = d.s("title");
     let title = match d.id.as_str() {
         "alert" => crate::i18n::tr(&app.ui.language, &alert_title),
@@ -2187,7 +2312,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 "marginsAndColumns" => margins_and_columns_dialog(app, ui, &mut d),
                 "textFrameOptions" => {
                     seed_text_frame_options(app, &mut d);
-                    text_frame_options_dialog(app, ui, &mut d);
+                    show_text_frame_options(app, ui, &mut d);
                 }
                 "documentSetup" => document_setup(app, ui, &mut d),
                 "pdfExport" => pdf_export(app, ui, &mut d),
@@ -2201,6 +2326,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 }
                 _ => {}
             });
+        // The popup may have closed while choosing an item. Its Enter must not
+        // also activate the footer in the same frame.
+        if text_frame_options_popup_focused {
+            ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        }
         ui.add_space(12.0);
         let ok_label = match d.id.as_str() {
             "closeDocument" => "  Save  ",
@@ -2218,12 +2348,16 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
+                    || confirm_text_frame_options
                     || ui.input(|i| i.key_pressed(egui::Key::Enter))
                 {
                     result = Some(true);
                 }
                 // An alert only has OK.
-                let cancel = d.id != "alert" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked();
+                let cancel = d.id != "alert" && {
+                    let cancel = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel")));
+                    cancel.clicked() || (confirm_text_frame_options && cancel.has_focus())
+                };
                 if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     result = Some(false);
                 }
@@ -2336,7 +2470,10 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             let r = confirm_text_frame_options(app, &mut d);
             if let Err(e) = &r {
                 app.status(e.clone());
-                app.ui.dialog = Some(d);
+                // Correctable input stays open; a stale owner must be reopened and hydrated.
+                if validate_text_frame_options_owner(app, &d).is_ok() {
+                    app.ui.dialog = Some(d);
+                }
             }
             r
         }
@@ -2352,7 +2489,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             let name = d.s("name");
             let mut para = serde_json::Map::new();
             let mut chars = serde_json::Map::new();
-            for (k, v) in &d.fields {
+            for (k, v) in d.fields.iter() {
                 if let Some(a) = k.strip_prefix("p.") {
                     // `p.ruleAbove.weight`: one field of a rule (the command keeps the others).
                     match a.split_once('.') {
@@ -2415,7 +2552,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         "characterStyleOptions" => {
             let name = d.s("name");
             let mut chars = Map::new();
-            for (k, v) in &d.fields {
+            for (k, v) in d.fields.iter() {
                 if let Some(a) = k.strip_prefix("c.") {
                     chars.insert(a.into(), v.clone());
                 }
@@ -2671,7 +2808,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             )
         }
         "qrCode" => {
-            let mut p = Value::Object(d.fields.clone());
+            let mut p = Value::Object(d.fields.values.clone());
             // Nothing selected: a 2-inch code at the top left of the page in view.
             if let Some(st) = app.session.active().filter(|s| s.selection.items.is_empty()) {
                 let abs = crate::canvas::current_page(app).unwrap_or(0);
@@ -3870,6 +4007,9 @@ fn combo(ui: &mut egui::Ui, d: &mut Dialog, key: &str, opts: &[(&str, &str)]) {
         for (v, label) in opts {
             if ui.selectable_label(cur == *v, crate::rtl::widget(ui, *label)).clicked() {
                 d.fields.insert(key.into(), json!(v));
+                if d.id == "textFrameOptions" {
+                    ui.close();
+                }
             }
         }
     });
@@ -3911,7 +4051,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
         _ => Map::new(),
     };
     let edited = format!("{prefix}{which}.");
-    for (k, v) in &d.fields {
+    for (k, v) in d.fields.iter() {
         if let Some(field) = k.strip_prefix(&edited) {
             r.insert(field.into(), v.clone());
         }
@@ -6456,9 +6596,9 @@ mod tests {
         d.fields.insert("marksBleed".into(), json!(true));
         d.fields.insert("marksPageInfo".into(), json!(true));
         d.fields.insert("flatten".into(), json!("high"));
-        let before = d.fields.clone();
+        let before = d.fields.values.clone();
         apply_pdf_preset(&mut d, "Custom");
-        assert_eq!(d.fields, before);
+        assert_eq!(d.fields.values, before);
     }
 
     #[test]

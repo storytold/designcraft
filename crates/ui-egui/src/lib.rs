@@ -772,7 +772,13 @@ impl DesignApp {
         for r in reqs {
             let was_find = self.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange");
             match r {
-                UiRequest::Dialog { id, params } => self.ui.dialog = Some(dialogs::Dialog::new(&id, params)),
+                UiRequest::Dialog { id, params } => {
+                    self.ui.dialog = Some(if id == "textFrameOptions" {
+                        dialogs::text_frame_options_dialog(self, params)
+                    } else {
+                        dialogs::Dialog::new(&id, params)
+                    });
+                }
                 UiRequest::View { params } => canvas::apply_view_request(self, &params),
                 UiRequest::Pick { purpose, params } => {
                     let _ = params;

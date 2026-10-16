@@ -1844,8 +1844,11 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     if resp.clicked() || resp.drag_started() {
         resp.request_focus();
     }
-    // Both split panes show the same document, but only the focused pane dispatches its keys.
-    if app.pane != app.focus_pane || (ui.ctx().text_edit_focused() && !resp.has_focus()) {
+    // Only the focused pane on an interactive layer dispatches keys to the document.
+    if app.pane != app.focus_pane
+        || !ui.ctx().memory(|memory| memory.allows_interaction(resp.layer_id))
+        || (ui.ctx().text_edit_focused() && !resp.has_focus())
+    {
         return;
     }
     // The engine drops composed text when something else edits or the caret moves; the input
