@@ -74,3 +74,12 @@ designcraft-cli app --method ui.screenshot '{"path": "/tmp/w.png"}' # any contro
 
 `ui.menu.invoke {command}` without params acts like choosing the menu item: a command labelled "…" opens its
 dialog, which `ui.dialog.set` / `ui.dialog.confirm` fill in and close like a user would.
+
+## Parent pages
+
+In the Pages panel, right-click a parent row and choose **Delete Parent**. The equivalent
+command is `layout.parents.delete {id}`, using the parent spread's numeric ID. It deletes that
+parent's shared artwork and clears its assignments from document pages and other parents.
+Local override copies remain as ordinary editable objects; document pages and their own content
+remain. Undo restores the parent and its relationships in one step. Deleting the last parent
+returns the canvas to document pages. Parent navigation is a separate operation.

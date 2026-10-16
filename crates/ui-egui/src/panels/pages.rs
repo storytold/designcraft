@@ -81,12 +81,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let mut drop: Option<(PageDrag, usize)> = None;
     ui.spacing_mut().item_spacing.y = 0.0;
     // ---- Parents: [None] and each parent, 29 pt rows with a blank thumbnail at the right.
-    let mut rows: Vec<(String, Option<String>, usize)> = vec![("[None]".into(), None, 1)];
+    let mut rows = vec![("[None]".to_string(), None, 1, None)];
     for p in &doc.parents {
         let label = p.parent.as_ref().map(|i| i.label()).unwrap_or_default();
-        rows.push((label, p.parent.as_ref().map(|i| i.prefix.clone()), p.pages.len()));
+        rows.push((label, p.parent.as_ref().map(|i| i.prefix.clone()), p.pages.len(), Some(p.id)));
     }
-    for (label, prefix, n) in rows {
+    for (label, prefix, n, id) in rows {
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
         let active = editing_parents && prefix.is_some();
         if active {
@@ -103,6 +103,17 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         if resp.dragged() {
             drag_ghost(ui, &label, &t);
+        }
+        if let Some(id) = id {
+            resp.context_menu(|ui| {
+                let label = crate::i18n::tr(&app.ui.language, "Delete Parent");
+                if ui.button(crate::rtl::widget(ui, label)).clicked() {
+                    if app.run("layout.parents.delete", json!({"id": id.0})).is_ok() {
+                        app.views.clear();
+                    }
+                    ui.close();
+                }
+            });
         }
     }
     ui.add_space(4.0);
@@ -422,6 +433,31 @@ mod tests {
         );
         h.run_steps(3);
         h
+    }
+
+    #[test]
+    fn parent_context_menu_deletes_the_clicked_id_even_with_a_shared_prefix() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+        let original = app.session.doc().unwrap().doc.parents[0].id;
+        let added = app.run("layout.parents.new", json!({"prefix": "A", "name": "Other"})).unwrap()["id"].as_u64().unwrap();
+        let mut h = harness(app);
+        // [None], A-Parent, then A-Other: target the actual row, not a menu helper.
+        let at = egui::pos2(40.0, ROW_H * 2.5);
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(3);
+        h.get_by_label("Delete Parent").click();
+        h.run_steps(3);
+        let doc = &h.state().session.doc().unwrap().doc;
+        assert_eq!(doc.parents.len(), 1);
+        assert_eq!(doc.parents[0].id, original);
+        assert!(doc.parents.iter().all(|p| p.id.0 != added));
+        assert_eq!(doc.page_count(), 2, "document pages are not deleted");
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.doc().unwrap().doc.parents.len(), 2);
     }
 
     #[test]

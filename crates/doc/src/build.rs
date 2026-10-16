@@ -1,7 +1,7 @@
 //! Creating documents (File → New → Document), presets, and page/spread structure edits
 //! (insert/delete/move pages, repagination into spreads, parents).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use designcraft_geom::{Affine, Unit, units};
@@ -249,6 +249,53 @@ impl Document {
         sp.relayout();
         self.parents.push(Arc::new(sp));
         id
+    }
+
+    /// Delete a parent spread and unapply it wherever it is used. Local overrides survive as
+    /// ordinary items; the deleted parent's own items leave their text threads normally.
+    pub fn delete_parent(&mut self, id: SpreadId) -> Result<()> {
+        let index = self.parent_index(id).ok_or_else(|| DocError::Invalid(format!("no parent {id}")))?;
+        let parent = self.parents.get(index).ok_or_else(|| DocError::Invalid(format!("no parent {id}")))?;
+        let roots: Vec<_> = parent.items.iter().map(|item| item.id).collect();
+        let mut deleted = HashSet::new();
+        for item in &parent.items {
+            item.walk(&mut |item| {
+                deleted.insert(item.id);
+            });
+        }
+        for item in roots {
+            self.remove_item(item)?;
+        }
+        self.parents.remove(index);
+
+        let mut detached = Vec::new();
+        for spread in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
+            let spread = Arc::make_mut(spread);
+            if let Some(parent) = &mut spread.parent
+                && parent.based_on == Some(id)
+            {
+                parent.based_on = None;
+            }
+            for page in &mut spread.pages {
+                if page.parent == Some(id) {
+                    page.parent = None;
+                }
+                page.overridden.retain(|item| !deleted.contains(item));
+            }
+            for item in &spread.items {
+                item.walk(&mut |item| {
+                    if item.overrides.is_some_and(|source| deleted.contains(&source)) {
+                        detached.push(item.id);
+                    }
+                });
+            }
+        }
+        for item in detached {
+            if let Some(item) = self.item_mut(item) {
+                item.overrides = None;
+            }
+        }
+        Ok(())
     }
 
     pub fn parent_index(&self, id: SpreadId) -> Option<usize> {
