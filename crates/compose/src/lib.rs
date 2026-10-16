@@ -753,7 +753,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     (col.width() - pp.left_indent - pp.right_indent - ind).max(1.0)
                 };
                 apply_desired_spacing(&mut gl, &pp);
-                let hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
+                let hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions);
                 let breaks = if pp.composer == Composer::SingleLine || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                     let tab = |j: usize, x: f64, i: usize| {
                         let ind = pp.left_indent + if j == 0 { pp.first_line_indent } else { 0.0 };
@@ -851,7 +851,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         );
         bidi::resolve_mirroring(&mut glyphs, &bidi_info);
         apply_desired_spacing(&mut glyphs, &pp);
-        let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
+        let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions);
         let base_size = base_chars.size;
         let spacing = spacing_for(&pp, base_size);
         // A paragraph set across the columns moves on to the next frame where others move on to
@@ -2500,8 +2500,8 @@ fn layout_line(
             g.shift += cjk_alignment_shift(g, &reference);
         }
     }
-    if hyphen && let Some(g) = line.last() {
-        let h = shape::hyphen_after(g);
+    if hyphen && let Some(g) = shape::hyphen_base(&line) {
+        let h = shape::hyphen_after(g, shape::source_end(&line));
         line.push(h);
     }
     // Tabs: compute widths left to right.
@@ -3119,45 +3119,17 @@ fn prepend_label(
 }
 
 type LimitsKey = (usize, usize, usize, bool);
+type HyphenationWordCache = HashMap<(hyphen::Lang, Box<str>), Box<[usize]>>;
 
-/// Mark glyphs after which a hyphen may be inserted (dictionary/pattern points within the
-/// paragraph's limits; words with discretionary hyphens break only there).
-/// Whether a language (a name or locale code, see [`designcraft_doc::language_tag`]) uses the
-/// English hyphenation and spelling dictionaries.
+/// Whether a language name or locale code uses the bundled English spelling dictionary.
 pub fn is_english(language: &str) -> bool {
     // InDesign's English names first: composition asks this for every run.
     language.starts_with("English") || designcraft_doc::language_tag(language).is_some_and(|t| designcraft_doc::language_subtag(t) == "en")
 }
 
-/// Byte ranges of paragraph `prange` set in a language other than English, with the hyphenator
-/// for that language (None: not hyphenated).
-fn foreign_ranges(
-    doc: &Document,
-    story: &designcraft_doc::Story,
-    prange: Range<usize>,
-    base: &designcraft_doc::CharProps,
-) -> Vec<(Range<usize>, Option<hyphen::Lang>)> {
-    if is_english(&base.language)
-        && story.runs().all(|(_, f)| f.over.language.as_deref().is_none_or(is_english) && f.style == designcraft_doc::story::NO_CHAR_STYLE)
-    {
-        return vec![];
-    }
-    story
-        .runs()
-        .filter(|(r, _)| r.start < prange.end && r.end > prange.start)
-        .map(|(r, f)| (r, doc.styles.resolve_char(base, f).language.clone()))
-        .filter(|(_, l)| !is_english(l))
-        .map(|(r, l)| (r, hyphen::Lang::for_language(&l)))
-        .collect()
-}
-
-fn hyphenation_points(
-    text: &str,
-    glyphs: &[Glyph],
-    pp: &ParaProps,
-    exceptions: &HashMap<String, Vec<usize>>,
-    foreign: &[(Range<usize>, Option<hyphen::Lang>)],
-) -> Vec<bool> {
+/// Mark glyphs after which a hyphen may be inserted (language-specific dictionary/pattern
+/// points within paragraph limits; words with discretionary hyphens break only there).
+fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: &HashMap<String, Vec<usize>>) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
         return out;
@@ -3169,7 +3141,7 @@ fn hyphenation_points(
         capitalized: pp.hyph_capitalized,
     };
     // Words repeat a lot: remember their points per set of limits.
-    static CACHE: Mutex<Vec<(LimitsKey, HashMap<(hyphen::Lang, Box<str>), Box<[usize]>>)>> = Mutex::new(Vec::new());
+    static CACHE: Mutex<Vec<(LimitsKey, HyphenationWordCache)>> = Mutex::new(Vec::new());
     let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let idx = match guard.iter().position(|e| e.0 == key) {
@@ -3188,39 +3160,70 @@ fn hyphenation_points(
     }
     let mut i = 0;
     while i < glyphs.len() {
-        if !glyphs[i].is_letter() || glyphs[i].len == 0 {
+        // Source-owning marks and format prefixes belong to the complete lookup run,
+        // including its exception/language gates and discretionary-hyphen suppression.
+        if (!glyphs[i].is_letter()
+            && !unicode_normalization::char::is_combining_mark(glyphs[i].ch)
+            && !matches!(glyphs[i].ch, '\u{200C}' | '\u{200D}' | shape::SOFT_HYPHEN))
+            || glyphs[i].len == 0
+        {
             i += 1;
             continue;
         }
         let mut j = i;
-        while j < glyphs.len() && (glyphs[j].is_letter() || glyphs[j].len == 0 || glyphs[j].ch == shape::SOFT_HYPHEN) && !glyphs[j].no_break {
+        // A style boundary can give a mark or joiner its own source bytes. Keep the
+        // complete word for language/exception lookup, including unsupported graphemes;
+        // No Break gates each candidate cluster below rather than splitting the word.
+        while j < glyphs.len()
+            && (glyphs[j].is_letter()
+                || unicode_normalization::char::is_combining_mark(glyphs[j].ch)
+                || matches!(glyphs[j].ch, '\u{200C}' | '\u{200D}')
+                || glyphs[j].len == 0
+                || glyphs[j].ch == shape::SOFT_HYPHEN)
+        {
             j += 1;
         }
-        // A no-break letter can't start a hyphenatable word.
         if j == i {
             i += 1;
             continue;
         }
         // A discretionary hyphen in a word (or right before it) replaces automatic hyphenation.
         let discretionary = glyphs[i..j].iter().any(|g| g.ch == shape::SOFT_HYPHEN) || (i > 0 && glyphs[i - 1].ch == shape::SOFT_HYPHEN);
-        let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
+        let (a, b) = (glyphs[i].byte, shape::source_end(&glyphs[i..j]));
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
-            let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
-            if !is_last_word && let Some(lang) = lang {
+            // Shaping already resolved character, nested and GREP styles. Use that language,
+            // and require agreement across the word, including supported/unsupported boundaries.
+            let language = glyphs[i].lang.and_then(hyphen::Lang::from_tag);
+            if !is_last_word
+                && let Some(language) = language
+                && glyphs[i..j].iter().all(|g| g.lang.and_then(hyphen::Lang::from_tag) == Some(language))
+            {
                 let user = (!exceptions.is_empty()).then(|| exceptions.get(&word.to_lowercase())).flatten();
                 let pts: &[usize] = match user {
                     // User dictionary exceptions win over the patterns and the built-in list.
                     Some(v) => v,
-                    None => cache.entry((lang, word.into())).or_insert_with(|| hyphen::hyphen_points_in(word, &lim, lang).into_boxed_slice()),
+                    None => cache.entry((language, word.into())).or_insert_with(|| hyphen::hyphen_points_in(word, &lim, language).into_boxed_slice()),
                 };
                 for &p in pts.iter() {
-                    // char index p → byte → glyph whose cluster ends at that byte.
-                    let byte = a + word.char_indices().nth(p).map(|(bi, _)| bi).unwrap_or(word.len());
-                    if let Some(k) = (i..j).find(|&k| glyphs[k].byte + glyphs[k].len == byte && glyphs[k].len > 0) {
-                        out[k] = true;
+                    // Source char index → byte-owning glyph → final glyph of that cluster.
+                    // Shaped clusters may split a source grapheme at a style boundary;
+                    // even a user exception must not split the base from its marks.
+                    let Some((offset, _)) = word.char_indices().nth(p) else { continue };
+                    let byte = a + offset;
+                    let mut boundary = unicode_segmentation::GraphemeCursor::new(byte, text.len(), true);
+                    if boundary.is_boundary(text, 0) != Ok(true) {
+                        continue;
+                    }
+                    if let Some(k) = (i..j).find(|&k| glyphs[k].len > 0 && glyphs[k].byte.saturating_add(glyphs[k].len) == byte) {
+                        let end = (k + 1..j).find(|&next| glyphs[next].byte != glyphs[k].byte).unwrap_or(j);
+                        // Never expose a break before a continuation outside the scanned word,
+                        // or after a protected cluster (including a separately styled mark).
+                        if glyphs.get(end).is_none_or(|next| next.byte != glyphs[k].byte) && glyphs[k..end].iter().all(|g| !g.no_break) {
+                            out[end - 1] = true;
+                        }
                     }
                 }
             }

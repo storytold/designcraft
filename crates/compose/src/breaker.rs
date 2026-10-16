@@ -8,7 +8,7 @@
 //! ([`TIER_COST`]), so the composer prefers word-space changes, then hyphenation, then letter
 //! spacing, then glyph scaling.
 
-use crate::shape::{Glyph, SOFT_HYPHEN};
+use crate::shape::{self, Glyph, SOFT_HYPHEN};
 
 /// One line chosen by a breaker: glyphs `start..end` are visible; `next` is where the next line starts.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -354,14 +354,16 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             continue;
         }
         if g.ch == SOFT_HYPHEN {
-            let hw = glyphs[..i].iter().rev().find(|g| g.ch != SOFT_HYPHEN).map_or(g.size * 0.33, |p| hyphen_width(p, &mut hy_cache));
-            let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
-            p.auto = true;
-            p.zone_from = last_space;
-            if sp.optical {
-                p.hang = hw * hang('-').1;
+            if !g.no_break && g.break_after != Some(false) {
+                let hw = shape::hyphen_base(&glyphs[..i]).map_or(g.size * 0.33, |base| hyphen_width(base, &mut hy_cache));
+                let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
+                p.auto = true;
+                p.zone_from = last_space;
+                if sp.optical {
+                    p.hang = hw * hang('-').1;
+                }
+                push_inword(&mut it, &mut ig, p, i + 1, sp);
             }
-            push_inword(&mut it, &mut ig, p, i + 1, sp);
             continue;
         }
         let (st, sh) = sp.box_elastic(g);
@@ -382,7 +384,8 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 p.hang = right_hang(g, sp);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if hyph_after[i] {
-                let hw = hyphen_width(g, &mut hy_cache);
+                let base = shape::hyphen_base(&glyphs[..=i]).unwrap_or(g);
+                let hw = hyphen_width(base, &mut hy_cache);
                 let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
                 p.auto = true;
                 p.zone_from = last_space;
@@ -718,7 +721,10 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
 /// split: before `i`, or earlier where kinsoku forbids that (no line starts with closing
 /// punctuation).
 fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
-    let allowed = |j: usize| matches!((glyphs.get(j.wrapping_sub(1)), glyphs.get(j)), (Some(a), Some(b)) if kinsoku_allows(a.ch, b.ch));
+    let allowed = |j: usize| {
+        matches!((glyphs.get(j.wrapping_sub(1)), glyphs.get(j)), (Some(a), Some(b))
+            if !a.no_break && a.break_after != Some(false) && kinsoku_allows(a.ch, b.ch))
+    };
     (start + 1..=i).rev().find(|&j| allowed(j)).unwrap_or(i)
 }
 
@@ -788,13 +794,27 @@ pub fn greedy(
             if sp.justify {
                 shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             }
+            // SHY can carry Jidori spacing, so account for its advance before its
+            // discretionary break. Do not let generic break_after replace that with a bare break.
+            if g.ch == SOFT_HYPHEN {
+                if !g.no_break && g.break_after != Some(false) && may_hyphenate(hyphens) {
+                    let base = shape::hyphen_base(&glyphs[start..i]).unwrap_or(g);
+                    let hy = hyphen_width(base, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
+                    if x + hy <= w + shrink + FIT_EPS {
+                        last_ok = Some((i + 1, true));
+                    }
+                }
+                i += 1;
+                continue;
+            }
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
                 if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
                     last_ok = Some((i + 1, false));
                 } else if hyph_after[i] && may_hyphenate(hyphens) {
-                    let hy = hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
+                    let base = shape::hyphen_base(&glyphs[..=i]).unwrap_or(g);
+                    let hy = hyphen_width(base, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
                     if x + hy <= w + shrink + FIT_EPS {
                         last_ok = Some((i + 1, true));
                     }
@@ -832,8 +852,11 @@ pub fn greedy(
 
 /// Natural width of a broken line (with its inserted hyphen).
 pub fn line_width(glyphs: &[Glyph], b: &Break) -> f64 {
-    let w: f64 = glyphs[b.start..b.end.max(b.start)].iter().map(|g| g.adv).sum();
-    w + if b.hyphen && b.end > 0 { glyphs[b.end - 1].size * 0.33 } else { 0.0 }
+    let line = glyphs.get(b.start..b.end.max(b.start)).unwrap_or(&[]);
+    let w: f64 = line.iter().map(|g| g.adv).sum();
+    // Match layout_line's letter-based face and scale, including styled marks and SHY.
+    let hyphen = if b.hyphen { shape::hyphen_base(line).map_or(0.0, |base| shape::hyphen_after(base, shape::source_end(line)).adv) } else { 0.0 };
+    w + hyphen
 }
 
 /// Balance Ragged Lines: keep the composer's line count but make the lines as even as possible,

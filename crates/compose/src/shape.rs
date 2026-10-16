@@ -51,7 +51,7 @@ pub struct Glyph {
     /// Width of a word space (U+0020) in this glyph's font, size and horizontal scale: the unit of
     /// word and letter spacing in justification.
     pub space: f64,
-    /// Resolved CJK boundary constraint, independent of glyph outlines.
+    /// Resolved source-grapheme and CJK boundary constraint, independent of glyph outlines.
     pub break_after: Option<bool>,
     pub cjk_hang: f64,
     pub ideographic_space_elastic: bool,
@@ -365,7 +365,31 @@ pub(crate) fn shape_para(
         }
     }
     collapse_tcy(&mut glyphs, sub.vertical);
+    constrain_source_graphemes(&story.text, range.start, &mut glyphs);
     ShapedPara { glyphs, range }
+}
+
+/// Keep source graphemes intact across style runs, including zero-length glyphs.
+/// Shaping emits clusters in source order, before visual bidi reordering.
+pub(crate) fn constrain_source_graphemes(text: &str, start: usize, glyphs: &mut [Glyph]) {
+    if glyphs.len() < 2 {
+        return;
+    }
+    // Start at this paragraph, but retain full-source context when its start is inside
+    // a grapheme. Advancing one cursor caches RI parity instead of rescanning the run
+    // before every glyph; set_cursor would discard that cached state too.
+    let mut cursor = unicode_segmentation::GraphemeCursor::new(start, text.len(), true);
+    let mut boundary = if cursor.is_boundary(text, 0) == Ok(true) { Some(start) } else { cursor.next_boundary(text, 0).ok().flatten() };
+    for i in 1..glyphs.len() {
+        let (left, right) = glyphs.split_at_mut(i);
+        let (Some(prev), Some(next)) = (left.last_mut(), right.first()) else { continue };
+        while boundary.is_some_and(|byte| byte < next.byte) {
+            boundary = cursor.next_boundary(text, 0).ok().flatten();
+        }
+        if prev.byte == next.byte || boundary != Some(next.byte) {
+            prev.break_after = Some(false);
+        }
+    }
 }
 
 /// Combining marks that start a run are shaped with the letter before them when the two runs
@@ -1036,15 +1060,28 @@ fn upright_runs(src: &str, vertical: bool) -> Vec<(std::ops::Range<usize>, bool)
     runs
 }
 
-/// A hyphen glyph in the face/size of `g`, placed after it (zero source length).
-pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
+/// Complete source end, including clusters whose final glyph does not own source bytes.
+pub(crate) fn source_end(glyphs: &[Glyph]) -> usize {
+    glyphs.iter().fold(0, |end, g| end.max(g.byte.saturating_add(g.len)))
+}
+
+/// Use the letter's face and size even when separately styled marks or joiners own source bytes.
+pub(crate) fn hyphen_base(glyphs: &[Glyph]) -> Option<&Glyph> {
+    glyphs
+        .iter()
+        .rfind(|g| g.len > 0 && !matches!(g.ch, SOFT_HYPHEN | '\u{200C}' | '\u{200D}') && !unicode_normalization::char::is_combining_mark(g.ch))
+        .or(glyphs.last())
+}
+
+/// A hyphen in the base's face/size, anchored at the complete cluster's source end.
+pub(crate) fn hyphen_after(g: &Glyph, source_end: usize) -> Glyph {
     let gid = designcraft_fonts::first_glyph(&g.face, &['-', '\u{2010}']);
     let mut h = g.clone();
     h.gid = gid;
     h.adv = g.face.advance(gid) * g.sx;
     h.dx = 0.0;
     h.dy = 0.0;
-    h.byte = g.byte + g.len;
+    h.byte = source_end;
     h.len = 0;
     h.ch = '-';
     h
