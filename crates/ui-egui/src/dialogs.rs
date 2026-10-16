@@ -1525,6 +1525,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
         "keyboardShortcuts" => crate::i18n::tr(&app.ui.language, "Keyboard Shortcuts"),
         "colorPicker" => crate::i18n::tr(&app.ui.language, "Color Picker"),
+        crate::effects_dialog::ID => crate::i18n::tr(&app.ui.language, "Effects"),
         id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
             Some(c) => crate::i18n::tr(&app.ui.language, c.label.trim_end_matches('…')),
             None => crate::i18n::tr(&app.ui.language, "Dialog"),
@@ -1538,6 +1539,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
             "closeDocument" | "updateLink" => 380.0,
+            crate::effects_dialog::ID => 720.0,
             "newDocument" if crate::i18n::is_rtl(&app.ui.language) => 380.0,
             _ => 640.0,
         };
@@ -2149,6 +2151,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         ui.end_row();
                     });
                 }
+                crate::effects_dialog::ID => crate::effects_dialog::show(app, ui, &mut d),
                 STEP_AND_REPEAT => step_and_repeat_dialog(app, ui, &mut d),
                 TOC => toc_dialog(app, ui, &mut d),
                 id if id.starts_with("cmd:") => command_form(app, ui, &mut d),
@@ -2250,8 +2253,12 @@ pub fn cancel(app: &mut DesignApp) {
     if app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
         app.session.reset_find_scope();
     }
-    if app.ui.dialog.take().is_some_and(|d| d.fields.contains_key(PREVIEWED)) {
-        app.session.cancel_interaction();
+    if let Some(d) = app.ui.dialog.take() {
+        if d.id == crate::effects_dialog::ID {
+            crate::effects_dialog::cancel(app, &d);
+        } else if d.fields.contains_key(PREVIEWED) {
+            app.session.cancel_interaction();
+        }
     }
     app.cancel_pdf_import();
 }
@@ -2727,6 +2734,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             app.run("footnote.options", p)
         }
         "alert" => Ok(Value::Null),
+        crate::effects_dialog::ID => crate::effects_dialog::confirm(app, &d),
         "findChange" => {
             let result = if d.b("objectMode") { Ok(Value::Null) } else { app.run("find.change", find_change_params(&d)) };
             // Confirmation consumes retained bounds before closing, even on an error.

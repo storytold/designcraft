@@ -551,6 +551,38 @@ pub fn specs() -> Vec<CommandSpec> {
                 )
             }
         ),
+        cmd!(
+            "object.effects",
+            "Effects",
+            [],
+            None,
+            "{effects?: {dropShadow?: {on?, color?, opacity?, angle?, globalLight?, distance?, size?, spread?}, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, feather? (width), directionalFeather?, gradientFeather?} (the fields given replace the object's, as the Effects dialog sets them), opacity?: 0..1, blend?, ids?} — every effect at once, one undo step",
+            has_selection,
+            set_effects
+        ),
+        cmd!(
+            "object.clearEffects",
+            "Clear Effects",
+            [],
+            None,
+            "{opaque?: bool (also Normal 100 %: the Effects panel's Clear All button), ids?} — removes every effect (the Effects panel's trash button)",
+            has_selection,
+            |s, p| {
+                let opaque = bool_or(p, "opaque", false);
+                set_flag(
+                    s,
+                    p,
+                    move |i| {
+                        i.effects = Default::default();
+                        if opaque {
+                            i.opacity = 1.0;
+                            i.blend = Default::default();
+                        }
+                    },
+                    false,
+                )
+            }
+        ),
         cmd!("object.feather", "Basic Feather", ["Object", "Effects"], None, "{width (0 = off), ids?}", has_selection, |s, p| {
             let w = f64_or(p, "width", 9.0).max(0.0);
             set_flag(s, p, move |i| i.effects.feather = w, false)
@@ -1533,6 +1565,136 @@ fn ungroup(s: &mut Session, p: &Value) -> Result<Value> {
         }
         *sel = Selection::items(out);
         ok()
+    })
+}
+
+/// `patch` merged into `base`: objects field by field (recursively), anything else replaced.
+fn merge_json(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(b), Value::Object(p)) => {
+            for (k, v) in p {
+                merge_json(b.entry(k.clone()).or_insert(Value::Null), v);
+            }
+        }
+        (b, p) => *b = p.clone(),
+    }
+}
+
+/// Keep effect values in their ranges: opacities 0–1, sizes and distances ≥ 0, percentages 0–100.
+fn sanitize_effects(e: &mut designcraft_doc::Effects) -> Result<()> {
+    const ID: &str = "object.effects";
+    let len = |v: &mut f64| -> Result<()> {
+        if !v.is_finite() {
+            return Err(bad(ID, "values must be finite"));
+        }
+        *v = v.clamp(0.0, 10_000.0);
+        Ok(())
+    };
+    let pct = |v: &mut f64| -> Result<()> {
+        if !v.is_finite() {
+            return Err(bad(ID, "values must be finite"));
+        }
+        *v = v.clamp(0.0, 100.0);
+        Ok(())
+    };
+    let ang = |v: &mut f64| -> Result<()> {
+        if !v.is_finite() {
+            return Err(bad(ID, "values must be finite"));
+        }
+        *v = (*v + 180.0).rem_euclid(360.0) - 180.0;
+        Ok(())
+    };
+    let op = |v: &mut f32| -> Result<()> {
+        if !v.is_finite() {
+            return Err(bad(ID, "values must be finite"));
+        }
+        *v = v.clamp(0.0, 1.0);
+        Ok(())
+    };
+    let ds = &mut e.drop_shadow;
+    op(&mut ds.opacity)?;
+    ang(&mut ds.angle)?;
+    len(&mut ds.distance)?;
+    len(&mut ds.size)?;
+    pct(&mut ds.spread)?;
+    let is = &mut e.inner_shadow;
+    op(&mut is.opacity)?;
+    ang(&mut is.angle)?;
+    len(&mut is.distance)?;
+    len(&mut is.size)?;
+    pct(&mut is.choke)?;
+    let og = &mut e.outer_glow;
+    op(&mut og.opacity)?;
+    len(&mut og.size)?;
+    pct(&mut og.spread)?;
+    let ig = &mut e.inner_glow;
+    op(&mut ig.opacity)?;
+    len(&mut ig.size)?;
+    pct(&mut ig.choke)?;
+    let bv = &mut e.bevel;
+    len(&mut bv.size)?;
+    len(&mut bv.depth)?;
+    ang(&mut bv.angle)?;
+    op(&mut bv.highlight_opacity)?;
+    op(&mut bv.shadow_opacity)?;
+    let sa = &mut e.satin;
+    op(&mut sa.opacity)?;
+    ang(&mut sa.angle)?;
+    len(&mut sa.distance)?;
+    len(&mut sa.size)?;
+    len(&mut e.feather)?;
+    for w in &mut e.directional_feather.widths {
+        len(w)?;
+    }
+    let gf = &mut e.gradient_feather;
+    ang(&mut gf.angle)?;
+    op(&mut gf.start)?;
+    op(&mut gf.end)?;
+    Ok(())
+}
+
+fn set_effects(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.effects";
+    let patch = match p.get("effects") {
+        None | Some(Value::Null) => None,
+        Some(v @ Value::Object(_)) => Some(v.clone()),
+        Some(_) => return Err(bad(ID, "effects must be an object")),
+    };
+    let opacity = match p.get("opacity") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_f64().filter(|o| o.is_finite()).ok_or_else(|| bad(ID, "opacity must be a number"))?.clamp(0.0, 1.0) as f32),
+    };
+    let blend = match p.get("blend") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let raw = v.as_str().ok_or_else(|| bad(ID, "blend must be a string"))?;
+            Some(BlendMode::parse(raw).ok_or_else(|| bad(ID, format!("unknown blend mode `{raw}`")))?)
+        }
+    };
+    let ids = targets(s, p)?;
+    s.edit(|d, _| {
+        let mut changed = 0;
+        for id in &ids {
+            let Some(it) = d.item_mut(*id) else { continue };
+            if it.locked {
+                continue;
+            }
+            if let Some(patch) = &patch {
+                let mut cur = serde_json::to_value(&it.effects).map_err(|e| bad(ID, e.to_string()))?;
+                merge_json(&mut cur, patch);
+                let mut fx: designcraft_doc::Effects = serde_json::from_value(cur).map_err(|e| bad(ID, format!("effects: {e}")))?;
+                sanitize_effects(&mut fx)?;
+                it.effects = fx;
+            }
+            if let Some(o) = opacity {
+                it.opacity = o;
+            }
+            if let Some(b) = blend {
+                it.blend = b;
+            }
+            changed += 1;
+        }
+        Ok(json!({"changed": changed}))
     })
 }
 
@@ -3458,6 +3620,72 @@ mod spread_target_tests {
             assert!(s.execute("line.create", &json!({"spread": bad, "a": [0, 0], "b": [50, 50]})).is_err(), "line.create spread {bad}");
         }
         assert!(s.doc().unwrap().doc.spreads[0].items.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod effects_command_tests {
+    use designcraft_doc::ItemId;
+    use serde_json::json;
+
+    #[test]
+    fn effects_set_together_in_one_undo_step_and_keep_what_is_not_given() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.dropShadow", &json!({"on": true, "distance": 10, "ids": [id]})).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s
+            .execute(
+                "object.effects",
+                &json!({"ids": [id], "opacity": 0.5, "blend": "multiply",
+                    "effects": {"innerShadow": {"on": true, "angle": 120, "distance": 7, "size": 7}, "dropShadow": {"size": 9}, "feather": 4}}),
+            )
+            .unwrap();
+        assert_eq!(r["changed"], 1);
+        let st = s.doc().unwrap();
+        assert_eq!(st.history.undo.len(), undo + 1, "one undo step");
+        let it = st.doc.item(ItemId(id)).unwrap();
+        let e = &it.effects;
+        assert!(e.inner_shadow.on && e.inner_shadow.angle == 120.0 && e.inner_shadow.size == 7.0);
+        assert!(e.drop_shadow.on && e.drop_shadow.distance == 10.0 && e.drop_shadow.size == 9.0, "untouched fields stay");
+        assert_eq!((e.feather, it.opacity, it.blend), (4.0, 0.5, designcraft_color::BlendMode::Multiply));
+        // Out of range values are kept in range; garbage changes nothing.
+        s.execute("object.effects", &json!({"ids": [id], "effects": {"outerGlow": {"on": true, "opacity": 3, "spread": 400, "size": -5}}})).unwrap();
+        let og = s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.outer_glow.clone();
+        assert_eq!((og.opacity, og.spread, og.size), (1.0, 100.0, 0.0));
+        let before = s.doc().unwrap().doc.clone();
+        for bad in [json!({"effects": {"dropShadow": {"distance": "far"}}}), json!({"effects": 5}), json!({"blend": "loud"}), json!({"opacity": "x"})]
+        {
+            let mut p = bad.clone();
+            p["ids"] = json!([id]);
+            assert!(s.execute("object.effects", &p).is_err(), "{bad}");
+        }
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+    }
+}
+
+#[cfg(test)]
+mod clear_effects_tests {
+    use serde_json::json;
+
+    #[test]
+    fn clear_effects_removes_them_and_opaque_resets_transparency() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        let item = |s: &crate::Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+        s.execute("object.effects", &json!({"ids": [id], "opacity": 0.5, "blend": "multiply", "effects": {"innerGlow": {"on": true}, "feather": 4}}))
+            .unwrap();
+        s.execute("object.clearEffects", &json!({"ids": [id]})).unwrap();
+        let it = item(&s);
+        assert!(!it.effects.any());
+        assert_eq!(it.opacity, 0.5, "the trash button keeps the transparency");
+        s.execute("object.clearEffects", &json!({"ids": [id], "opaque": true})).unwrap();
+        let it = item(&s);
+        assert_eq!((it.opacity, it.blend), (1.0, designcraft_color::BlendMode::Normal));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(item(&s).opacity, 0.5);
     }
 }
 

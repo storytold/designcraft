@@ -123,6 +123,7 @@ fn drop_shadow_of_text_follows_the_glyphs() {
     d.story_mut(sid).unwrap().format_chars(0..6, |f| f.over.size = Some(40.0));
     let ds = &mut d.item_mut(fid).unwrap().effects.drop_shadow;
     ds.on = true;
+    ds.angle = 135.0;
     ds.distance = 4.0;
     ds.size = 3.0;
     let img = render(&d);
@@ -155,6 +156,7 @@ fn inner_shadow_darkens_inside_the_lit_edge() {
     let id = rect_item(&mut d, Rect::new(30.0, 30.0, 130.0, 130.0), "C=0 M=0 Y=100 K=0");
     let s = &mut d.item_mut(id).unwrap().effects.inner_shadow;
     s.on = true;
+    s.angle = 135.0;
     s.distance = 8.0;
     s.size = 8.0;
     s.opacity = 1.0;

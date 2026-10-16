@@ -1831,4 +1831,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Remove Flex Layout", "მოქნილი განლაგების წაშლა"),
     ("Show Flex Controls", "მოქნილი მართვის ელემენტების ჩვენება"),
     ("Export PowerPoint…", "PowerPoint-ად ექსპორტი…"),
+    ("Transparency…", "გამჭვირვალობა…"),
+    ("Effects…", "ეფექტები…"),
 ];
