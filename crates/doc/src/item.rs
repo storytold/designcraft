@@ -1034,6 +1034,9 @@ pub struct Item {
     /// Script Label (for scripts and agents).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    /// Keyed script labels (InDesign's `insertLabel`/`extractLabel`, IDML `KeyValuePair`s).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
     /// Alternative text (Object Export Options) for tagged PDF and EPUB.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub alt_text: String,
@@ -1108,6 +1111,7 @@ impl Item {
             content: Content::Unassigned,
             overrides: None,
             label: String::new(),
+            labels: std::collections::BTreeMap::new(),
             alt_text: String::new(),
             xml_tag: String::new(),
             button: None,

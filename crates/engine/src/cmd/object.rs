@@ -875,21 +875,105 @@ pub fn specs() -> Vec<CommandSpec> {
                 )
             }
         ),
-        cmd!(query "object.findByLabel", "Find by Script Label", [], None, "{label} → ids of objects whose label is `label`", has_doc, |s, p| {
-            let label = str_param(p, "label").unwrap_or("");
-            let d = &s.doc()?.doc;
-            let mut ids = Vec::new();
-            for sp in d.spreads.iter().chain(d.parents.iter()) {
-                for it in &sp.items {
+        cmd!(
+            query "object.findByLabel",
+            "Find by Script Label",
+            [],
+            None,
+            "{label} → ids of objects whose Script Label is `label`; {key, value?} → ids of objects with that keyed label (and value). Anchored objects included.",
+            has_doc,
+            |s, p| {
+                let d = &s.doc()?.doc;
+                let key = str_param(p, "key");
+                let value = str_param(p, "value");
+                let label = str_param(p, "label").unwrap_or("");
+                let matches = |x: &Item| match key {
+                    Some(k) => x.labels.get(k).is_some_and(|v| value.is_none_or(|want| v == want)),
+                    None => x.label == label,
+                };
+                let mut ids = Vec::new();
+                let mut visit = |it: &Item| {
                     it.walk(&mut |x| {
-                        if x.label == label {
+                        if matches(x) {
                             ids.push(x.id.0);
                         }
-                    });
+                    })
+                };
+                for sp in d.spreads.iter().chain(d.parents.iter()) {
+                    for it in &sp.items {
+                        visit(it);
+                    }
                 }
+                for st in d.stories.values() {
+                    for o in &st.objects {
+                        visit(&o.item);
+                    }
+                }
+                Ok(json!({"ids": ids}))
             }
-            Ok(json!({"ids": ids}))
-        }),
+        ),
+        cmd!(
+            "object.insertLabel",
+            "Insert Label",
+            [],
+            None,
+            "{key, value, ids?} — a keyed script label (InDesign's insertLabel); an empty value removes the key. Anchored objects included.",
+            has_doc,
+            |s, p| {
+                let key = str_param(p, "key").ok_or_else(|| bad("object.insertLabel", "missing key"))?.to_string();
+                let value = str_param(p, "value").unwrap_or("").to_string();
+                let ids = targets(s, p)?;
+                s.edit(|d, _| {
+                    let mut changed = 0;
+                    for id in &ids {
+                        let it = d.item_any_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
+                        if value.is_empty() {
+                            it.labels.remove(&key);
+                        } else {
+                            it.labels.insert(key.clone(), value.clone());
+                        }
+                        changed += 1;
+                    }
+                    Ok(json!({"changed": changed}))
+                })
+            }
+        ),
+        cmd!(
+            query "object.extractLabel",
+            "Extract Label",
+            [],
+            None,
+            "{key, id?} → {value}: an object's keyed script label, \"\" when it has none (InDesign's extractLabel). Anchored objects included.",
+            has_doc,
+            |s, p| {
+                let key = str_param(p, "key").ok_or_else(|| bad("object.extractLabel", "missing key"))?;
+                let id = one_target(s, p, "object.extractLabel")?;
+                let it = s.doc()?.doc.item_any(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+                Ok(json!({"value": it.labels.get(key).cloned().unwrap_or_default()}))
+            }
+        ),
+        cmd!(
+            query "object.graphic",
+            "Placed Graphic",
+            [],
+            None,
+            "{id?} → {kind: image|pdf|eps|svg|psd, mime, name, link, pixels, page, size, bounds, spreadBounds, scale, ppi}: the graphic placed in a frame. size is its natural size (pt); bounds are its corners in the frame's space and spreadBounds on the spread (null for an anchored frame); ppi is its effective resolution. Anchored frames included.",
+            has_doc,
+            graphic_info
+        ),
+        cmd!(
+            query "object.labels",
+            "Script Labels",
+            [],
+            None,
+            "{id?} → {label, labels: {key: value}}: an object's Script Label and keyed labels. Anchored objects included.",
+            has_doc,
+            |s, p| {
+                let id = one_target(s, p, "object.labels")?;
+                let it = s.doc()?.doc.item_any(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+                Ok(json!({"label": it.label, "labels": it.labels}))
+            }
+        ),
         cmd!("object.setLayer", "Move to Layer", [], None, "{layer, ids?}", has_selection, |s, p| {
             let l = designcraft_doc::LayerId(p.get("layer").and_then(Value::as_u64).unwrap_or(0));
             set_flag(s, p, move |i| i.layer = l, false)
@@ -1534,6 +1618,57 @@ fn ungroup(s: &mut Session, p: &Value) -> Result<Value> {
         *sel = Selection::items(out);
         ok()
     })
+}
+
+/// What `object.graphic` tells about the graphic in a frame.
+fn graphic_info(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.graphic";
+    let id = one_target(s, p, ID)?;
+    let d = &s.doc()?.doc;
+    let it = d.item_any(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+    let Content::Graphic(g) = &it.content else { return Err(bad(ID, "that frame holds no placed graphic")) };
+    let asset = d.assets.get(&g.asset);
+    let (mime, name) = asset.map_or(("", ""), |a| (a.mime.as_str(), a.name.as_str()));
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let kind = match (mime, ext.as_str()) {
+        (_, "eps" | "ai") | ("application/postscript", _) => "eps",
+        ("application/pdf", _) => "pdf",
+        ("image/svg+xml", _) => "svg",
+        ("image/vnd.adobe.photoshop", _) => "psd",
+        _ => "image",
+    };
+    let natural = Rect::new(0.0, 0.0, g.size.0, g.size.1);
+    let local = g.xf.transform_rect_bbox(natural);
+    // On a spread: through the frame and the groups it sits in.
+    let spread = d.find(id).map(|loc| (d.parent_xf(&loc) * it.xf * g.xf).transform_rect_bbox(natural));
+    let [a, b, c, dd, ..] = g.xf.as_coeffs();
+    let (sx, sy) = (a.hypot(b), c.hypot(dd));
+    let pixels = asset.and_then(|a| a.pixels);
+    let ppi = pixels
+        .filter(|_| g.size.0 > 0.0 && g.size.1 > 0.0 && sx > 0.0 && sy > 0.0)
+        .map(|(w, h)| [f64::from(w) * 72.0 / (g.size.0 * sx), f64::from(h) * 72.0 / (g.size.1 * sy)]);
+    Ok(json!({
+        "kind": kind,
+        "mime": mime,
+        "name": name,
+        "link": asset.and_then(|a| a.link.clone()),
+        "pixels": pixels,
+        "page": asset.map_or(0, |a| a.page + 1),
+        "size": [g.size.0, g.size.1],
+        "bounds": [local.x0, local.y0, local.x1, local.y1],
+        "spreadBounds": spread.map(|r| [r.x0, r.y0, r.x1, r.y1]),
+        "scale": [sx, sy],
+        "ppi": ppi,
+    }))
+}
+
+/// The one object a query is about: `id`, or the single selected object.
+fn one_target(s: &Session, p: &Value, cmd: &str) -> Result<ItemId> {
+    match targets(s, p)?.as_slice() {
+        [id] => Ok(*id),
+        [] => Err(bad(cmd, "no object: give `id` or select one")),
+        _ => Err(bad(cmd, "more than one object: give `id`")),
+    }
 }
 
 fn set_flag(s: &mut Session, p: &Value, f: impl Fn(&mut Item), deselect: bool) -> Result<Value> {
@@ -3491,5 +3626,116 @@ mod fill_tint_tests {
         let stroke_of = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().stroke.clone();
         assert_eq!((stroke_of(&s, a).swatch.as_str(), stroke_of(&s, a).tint, stroke_of(&s, a).weight), ("C=100 M=0 Y=0 K=0", 0.5, 2.0));
         assert!(stroke_of(&s, b).is_none());
+    }
+}
+
+#[cfg(test)]
+mod script_label_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn id(v: &serde_json::Value) -> u64 {
+        v["id"].as_u64().unwrap()
+    }
+
+    #[test]
+    fn keyed_labels_reach_anchored_objects_and_survive_files() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text with a picture"})).unwrap();
+        let story = r["story"].as_u64().unwrap();
+        let free = id(&s.execute("frame.create", &json!({"rect": [10, 10, 40, 40], "content": "unassigned"})).unwrap());
+        let a = id(&s.execute("frame.create", &json!({"rect": [0, 0, 30, 20], "content": "unassigned"})).unwrap());
+        let b = id(&s.execute("frame.create", &json!({"rect": [0, 30, 30, 50], "content": "unassigned"})).unwrap());
+        let g = id(&s.execute("object.group", &json!({"ids": [a, b]})).unwrap());
+        s.execute("anchored.insert", &json!({"ids": [g], "story": story, "pos": 4})).unwrap();
+        // A child of an anchored group, and an object on the spread.
+        s.execute("object.insertLabel", &json!({"key": "imagepath", "value": "file:/images/a.png", "ids": [a]})).unwrap();
+        s.execute("object.insertLabel", &json!({"key": "signet", "value": "is_signet", "ids": [a, free]})).unwrap();
+        let get = |s: &mut Session, id: u64, key: &str| s.execute("object.extractLabel", &json!({"id": id, "key": key})).unwrap()["value"].clone();
+        assert_eq!(get(&mut s, a, "imagepath"), "file:/images/a.png");
+        assert_eq!(get(&mut s, free, "imagepath"), "", "a missing key reads as empty, as in InDesign");
+        let found = s.execute("object.findByLabel", &json!({"key": "signet", "value": "is_signet"})).unwrap();
+        let mut ids: Vec<u64> = found["ids"].as_array().unwrap().iter().filter_map(|v| v.as_u64()).collect();
+        ids.sort();
+        let mut want = vec![free, a];
+        want.sort();
+        assert_eq!(ids, want);
+        assert_eq!(s.execute("object.findByLabel", &json!({"key": "imagepath"})).unwrap()["ids"], json!([a]));
+        assert_eq!(s.execute("object.labels", &json!({"id": a})).unwrap()["labels"]["signet"], "is_signet");
+
+        // The native file and IDML keep them, anchored objects included.
+        let d = s.doc().unwrap().doc.clone();
+        let back = crate::cmd::file_from(&crate::cmd::file_bytes(&d)).unwrap();
+        assert_eq!(back.item_any(designcraft_doc::ItemId(a)).unwrap().labels.get("imagepath").map(String::as_str), Some("file:/images/a.png"));
+        let idml = designcraft_idml::export_idml(&d);
+        let again = designcraft_idml::import_idml(&idml).unwrap();
+        let labelled: Vec<_> = again
+            .stories
+            .values()
+            .flat_map(|st| st.objects.iter())
+            .flat_map(|o| o.item.children().iter().map(|c| c.labels.clone()).collect::<Vec<_>>())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(labelled.len(), 1, "the anchored child's labels");
+        assert_eq!(labelled[0].get("signet").map(String::as_str), Some("is_signet"));
+        let spread = again.spreads.iter().flat_map(|sp| sp.items.iter()).find(|it| !it.labels.is_empty()).unwrap();
+        assert_eq!(spread.labels.get("signet").map(String::as_str), Some("is_signet"));
+
+        // An empty value removes the key; undo brings it back.
+        s.execute("object.insertLabel", &json!({"key": "signet", "value": "", "ids": [a]})).unwrap();
+        assert_eq!(get(&mut s, a, "signet"), "");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(get(&mut s, a, "signet"), "is_signet");
+
+        // Mistakes are errors, not panics.
+        assert!(s.execute("object.extractLabel", &json!({"id": a})).is_err(), "no key");
+        assert!(s.execute("object.extractLabel", &json!({"id": 999_999, "key": "k"})).is_err(), "no object");
+        assert!(s.execute("object.insertLabel", &json!({"key": "k", "value": "v", "ids": [999_999]})).is_err());
+        assert!(s.execute("object.labels", &json!({"ids": [a, free]})).is_err(), "one object at a time");
+    }
+}
+
+#[cfg(test)]
+mod graphic_info_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn a_frames_graphic_reports_its_kind_size_bounds_and_resolution() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // A 20 × 10 pixel PNG: 20 × 10 points at 72 ppi.
+        let png = designcraft_render::Rendered { width: 20, height: 10, pixels: vec![255; 20 * 10 * 4] }.to_png();
+        let r = s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "logo.png", "x": 100, "y": 200})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        let g = s.execute("object.graphic", &json!({"id": id})).unwrap();
+        assert_eq!(g["kind"], "image");
+        assert_eq!(g["name"], "logo.png");
+        assert_eq!(g["pixels"], json!([20, 10]));
+        assert_eq!(g["size"], json!([20.0, 10.0]));
+        assert_eq!(g["ppi"], json!([72.0, 72.0]));
+        let sb: Vec<f64> = g["spreadBounds"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).collect();
+        assert!((sb[2] - sb[0] - 20.0).abs() < 1e-6 && (sb[3] - sb[1] - 10.0).abs() < 1e-6, "{sb:?}");
+
+        // Half size: twice the resolution.
+        s.execute("object.fit", &json!({"mode": "fitContentToFrame", "ids": [id]})).unwrap();
+        s.execute("transform.set", &json!({"width": 10, "height": 5, "ids": [id]})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitContentToFrame", "ids": [id]})).unwrap();
+        let g = s.execute("object.graphic", &json!({"id": id})).unwrap();
+        let ppi: Vec<f64> = g["ppi"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).collect();
+        assert!((ppi[0] - 144.0).abs() < 1e-6 && (ppi[1] - 144.0).abs() < 1e-6, "{g}");
+
+        // Anchored in text: no spread bounds, the rest the same.
+        let t = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Picture: here"})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [id], "story": t["story"], "pos": 9})).unwrap();
+        let g = s.execute("object.graphic", &json!({"id": id})).unwrap();
+        assert!(g["spreadBounds"].is_null() && g["kind"] == "image", "{g}");
+
+        // A frame without a graphic, or no frame: errors.
+        assert!(s.execute("object.graphic", &json!({"id": t["id"]})).is_err());
+        assert!(s.execute("object.graphic", &json!({"id": 999_999})).is_err());
     }
 }

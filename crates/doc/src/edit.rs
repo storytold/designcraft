@@ -103,6 +103,53 @@ impl Document {
         self.item_mut_at(&loc)
     }
 
+    /// An item wherever it is: on a spread, or anchored in a story (in a group there too).
+    pub fn item_any(&self, id: ItemId) -> Option<&Item> {
+        if let Some(it) = self.item(id) {
+            return Some(it);
+        }
+        let (story, index, path) = self.find_anchored(id)?;
+        let mut it: &Item = &self.stories.get(&story)?.objects.get(index)?.item;
+        for i in path {
+            it = it.children().get(i)?;
+        }
+        Some(it)
+    }
+
+    /// [`Document::item_any`], to change it.
+    pub fn item_any_mut(&mut self, id: ItemId) -> Option<&mut Item> {
+        if self.find(id).is_some() {
+            return self.item_mut(id);
+        }
+        let (story, index, path) = self.find_anchored(id)?;
+        let st = Arc::make_mut(self.stories.get_mut(&story)?);
+        let mut it: &mut Item = &mut Arc::make_mut(st.objects.get_mut(index)?).item;
+        for i in path {
+            it = Arc::make_mut(it.children_mut()?.get_mut(i)?);
+        }
+        Some(it)
+    }
+
+    /// Where an anchored item is: its story, its anchored object, and the path through groups
+    /// inside that object.
+    fn find_anchored(&self, id: ItemId) -> Option<(StoryId, usize, Vec<usize>)> {
+        fn path_to(it: &Item, id: ItemId, depth: usize) -> Option<Vec<usize>> {
+            if it.id == id {
+                return Some(Vec::new());
+            }
+            // Groups nest; a document can't make them deeper than this.
+            if depth >= 64 {
+                return None;
+            }
+            it.children().iter().enumerate().find_map(|(i, c)| {
+                let mut p = path_to(c, id, depth + 1)?;
+                p.insert(0, i);
+                Some(p)
+            })
+        }
+        self.stories.iter().find_map(|(sid, st)| st.objects.iter().enumerate().find_map(|(i, o)| path_to(&o.item, id, 0).map(|p| (*sid, i, p))))
+    }
+
     /// The top-level item (group root) containing `id`.
     pub fn top_level_of(&self, id: ItemId) -> Option<ItemId> {
         let loc = self.find(id)?;
