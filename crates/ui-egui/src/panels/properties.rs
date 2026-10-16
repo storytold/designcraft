@@ -1518,7 +1518,11 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             crate::menus::menu_button(ui, "☰", |ui| {
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph Rules…"))).clicked() {
+                let mut b = egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph Rules…")));
+                if let Some(sc) = crate::menus::shortcut_of(app, "app.paragraphRulesDialog") {
+                    b = b.shortcut_text(crate::menus::shortcut_text(&sc));
+                }
+                if ui.add(b).clicked() {
                     let _ = app.run("app.paragraphRulesDialog", json!({}));
                     ui.close();
                 }

@@ -67,7 +67,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     (
         "app.paragraphRulesDialog",
         "Paragraph Rules…",
-        None,
+        Some("Cmd+Alt+J"),
         "{rule?: ruleAbove|ruleBelow} — Rule Above / Rule Below of the selected paragraphs (type.para)",
     ),
     ("app.findFontDialog", "Find/Replace Font…", None, "{} — fonts used (missing ones flagged) and replacing them"),
@@ -82,6 +82,8 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.characterStylesPanel", "Character Styles", Some("Cmd+Shift+F11"), "{} — the Character Styles panel"),
     ("app.paragraphStylesPanel", "Paragraph Styles", Some("Cmd+F11"), "{} — the Paragraph Styles panel"),
     ("app.insertCurrentPageNumber", "Current Page Number", Some("Cmd+Alt+Shift+N"), "{} — the Current Page Number marker at the insertion point"),
+    ("app.insertEmSpace", "Em Space", Some("Cmd+Shift+M"), "{} — an em space at the insertion point"),
+    ("app.insertEnSpace", "En Space", Some("Cmd+Shift+N"), "{} — an en space at the insertion point"),
     ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{}"),
@@ -460,8 +462,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "<",
             ">Insert White Space",
-            "cmd:text.insert|Em Space|{\"text\": \"\u{2003}\", \"raw\": true}",
-            "cmd:text.insert|En Space|{\"text\": \"\u{2002}\", \"raw\": true}",
+            "ui:app.insertEmSpace",
+            "ui:app.insertEnSpace",
             "cmd:text.insert|Nonbreaking Space|{\"text\": \"\u{a0}\", \"raw\": true}",
             "cmd:text.insert|Hair Space|{\"text\": \"\u{200a}\", \"raw\": true}",
             "cmd:text.insert|Sixth Space|{\"text\": \"\u{2006}\", \"raw\": true}",
@@ -1380,6 +1382,8 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
         }
         "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
+        "app.insertEmSpace" => app.run("text.insert", json!({"text": "\u{2003}", "raw": true})),
+        "app.insertEnSpace" => app.run("text.insert", json!({"text": "\u{2002}", "raw": true})),
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties").to_string();
             // A panel in the workspace's icon groups opens from there (Essentials Classic's Pages).
@@ -2015,6 +2019,9 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
     }
+    if matches!(id, "app.insertEmSpace" | "app.insertEnSpace") {
+        return enabled(app, "text.insert");
+    }
     if ui_label(id).is_some() {
         return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.") || id.starts_with("help.");
     }
@@ -2194,6 +2201,11 @@ pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, param
     if params.is_null() && ctx.text_edit_focused() && forward_to_text_edit(app, ctx, id) {
         return;
     }
+    // The menu bar takes ⇧⌘M before the window: with a field focused (Story Editor, Find/Change)
+    // the character would land at the canvas caret, not where the person is typing.
+    if params.is_null() && ctx.text_edit_focused() && TEXT_INSERTS.contains(&id) {
+        return;
+    }
     // The canvas text editor is not an egui TextEdit, so its clipboard events must pass through
     // egui for the desktop integration to read/write the macOS clipboard.
     if params.is_null() && app.session.wants_text() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") && forward_to_text_edit(app, ctx, id) {
@@ -2207,6 +2219,9 @@ pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, param
 pub fn native_menu_enabled(app: &DesignApp, ctx: &egui::Context, id: &str) -> bool {
     (ctx.text_edit_focused() && TEXT_FIELD_COMMANDS.contains(&id)) || menu_enabled(app, id)
 }
+
+/// Menu items that type a character at the canvas insertion point.
+const TEXT_INSERTS: [&str; 3] = ["app.insertCurrentPageNumber", "app.insertEmSpace", "app.insertEnSpace"];
 
 /// The editing commands a focused text field takes from the native menu bar.
 const TEXT_FIELD_COMMANDS: [&str; 6] = ["edit.selectAll", "edit.copy", "edit.cut", "edit.paste", "edit.undo", "edit.redo"];
@@ -3915,6 +3930,101 @@ mod tests {
         activate(&mut app, "app.insertCurrentPageNumber", &Value::Null);
         let d = &app.session.doc().unwrap().doc;
         assert_eq!(d.story(designcraft_doc::StoryId(story.as_u64().unwrap())).unwrap().text, "Page \u{e000}");
+    }
+
+    /// A key press with `modifiers` through the window's shortcut dispatch, one frame.
+    fn press(app: &mut crate::DesignApp, ctx: &egui::Context, key: egui::Key, modifiers: egui::Modifiers) {
+        let events = [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }).to_vec();
+        native_frame(app, ctx, events, None);
+    }
+
+    fn story_text(app: &crate::DesignApp, story: &Value) -> String {
+        let d = &app.session.doc().unwrap().doc;
+        d.story(designcraft_doc::StoryId(story.as_u64().unwrap())).unwrap().text.clone()
+    }
+
+    #[test]
+    fn indesigns_type_shortcuts_insert_spaces_justify_all_lines_and_open_paragraph_rules() {
+        use egui::{Key, Modifiers};
+        let ctx = egui::Context::default();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap();
+        let story = frame["story"].clone();
+        // A selected frame and no insertion point: the spaces have nowhere to go, as in InDesign.
+        app.run("selection.set", json!({"ids": [frame["id"]]})).unwrap();
+        assert!(app.session.doc().unwrap().selection.text.is_none());
+        assert!(!menu_enabled(&app, "app.insertEmSpace") && !menu_enabled(&app, "app.insertEnSpace"));
+        press(&mut app, &ctx, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(story_text(&app, &story), "ab");
+        app.run("text.select", json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
+        assert!(menu_enabled(&app, "app.insertEmSpace") && menu_enabled(&app, "app.insertEnSpace"));
+        press(&mut app, &ctx, Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(story_text(&app, &story), "a\u{2003}b", "⇧⌘M types an em space at the caret");
+        press(&mut app, &ctx, Key::N, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(story_text(&app, &story), "a\u{2003}\u{2002}b", "⇧⌘N an en space after it");
+        app.run("type.justify", json!({})).unwrap();
+        press(&mut app, &ctx, Key::F, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["align"], "fullyJustified", "⇧⌘F justifies all lines");
+        // Guard: ⌥⇧⌘J is another chord (InDesign's Justification…); the rules want Shift up.
+        press(&mut app, &ctx, Key::J, Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT);
+        assert!(app.ui.dialog.as_ref().is_none_or(|d| d.id != "paragraphRules"));
+        press(&mut app, &ctx, Key::J, Modifiers::COMMAND | Modifiers::ALT);
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("paragraphRules"), "⌥⌘J opens Paragraph Rules");
+        // Each chord belongs to one command only, so the editor shows no conflict and nothing else fires.
+        let all = effective_shortcuts(&app);
+        for (sc, id) in [
+            ("Cmd+Shift+F", "type.justifyAll"),
+            ("Cmd+Shift+M", "app.insertEmSpace"),
+            ("Cmd+Shift+N", "app.insertEnSpace"),
+            ("Cmd+Alt+J", "app.paragraphRulesDialog"),
+        ] {
+            let owners: Vec<&str> = all.iter().filter(|(_, s)| s == sc).map(|(i, _)| i.as_str()).collect();
+            assert_eq!(owners, [id], "{sc}");
+        }
+    }
+
+    #[test]
+    fn insert_white_space_shows_the_em_and_en_space_shortcuts() {
+        let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+        let white = ty
+            .iter()
+            .find_map(|i| match i {
+                Item::Sub(n, c) if n == "Insert White Space" => Some(c.clone()),
+                _ => None,
+            })
+            .unwrap();
+        // Null params, so the macOS menu bar carries the accelerator too.
+        for (label, sc) in [("Em Space", "Cmd+Shift+M"), ("En Space", "Cmd+Shift+N")] {
+            assert!(
+                white
+                    .iter()
+                    .any(|i| matches!(i, Item::Cmd { label: l, shortcut: Some(s), params, .. } if l == label && *s == sc && params.is_null())),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_insert_shortcuts_leave_the_document_alone_while_a_field_has_focus() {
+        // On the Mac the menu bar takes ⇧⌘M before the window: with Quick Apply's field focused it
+        // must not type into the story behind it.
+        let ctx = egui::Context::default();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let story = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+        app.run("text.select", json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
+        app.ui.palette = Some("x".into());
+        for _ in 0..3 {
+            native_frame(&mut app, &ctx, vec![], None);
+        }
+        assert!(ctx.text_edit_focused());
+        for id in ["app.insertEmSpace", "app.insertEnSpace", "app.insertCurrentPageNumber"] {
+            native_frame(&mut app, &ctx, vec![], Some(id));
+            native_frame(&mut app, &ctx, vec![], None);
+            assert_eq!(story_text(&app, &story), "ab", "{id}");
+        }
+        assert_eq!(app.ui.palette.as_deref(), Some("x"));
     }
 
     #[test]
