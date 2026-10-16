@@ -81,8 +81,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Ink Manager")), |ui| {
                     let Ok(l) = app.session.execute("ink.list", &json!({})) else { return };
                     let mut all = l["allToProcess"].as_bool().unwrap_or(false);
-                    if ui.checkbox(&mut all, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "All Spots to Process"))).changed() {
+                    let response = crate::widgets::native_checkbox(
+                        ui,
+                        &mut all,
+                        crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "All Spots to Process")),
+                    );
+                    if response.changed() {
                         let _ = app.run("ink.options", json!({"allToProcess": all}));
+                    }
+                    if crate::widgets::checkbox_clicked(ui, &response) {
                         ui.close();
                     }
                     ui.separator();
@@ -94,8 +101,16 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let name = ink["name"].as_str().unwrap_or("").to_string();
                         let mut process = ink["process"].as_bool().unwrap_or(false);
                         ui.add_enabled_ui(!all, |ui| {
-                            if ui.checkbox(&mut process, format!("{name} → process")).changed() {
+                            let response = ui
+                                .push_id(("ink_to_process", &name), |ui| {
+                                    crate::widgets::native_checkbox(ui, &mut process, format!("{name} → process"))
+                                })
+                                .inner;
+                            // Aliased rows show resolved output; only write a changed raw flag.
+                            if response.changed() && doc.inks.to_process.contains(&name) != process {
                                 let _ = app.run("ink.options", json!({"ink": name, "toProcess": process}));
+                            }
+                            if crate::widgets::checkbox_clicked(ui, &response) {
                                 ui.close();
                             }
                         });
@@ -691,6 +706,576 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("object.gradient", json!({"target": target, "stops": stops}));
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ink_frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) -> Vec<(String, egui::Rect)> {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0));
+        let time = ctx.input(|i| i.time) + 1.0 / 60.0;
+        let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| {
+            ui.set_max_width(280.0);
+            show(app, ui);
+        });
+        output.textures_delta.clear();
+        fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let rect = text.visual_bounding_rect();
+                    if clip.contains_rect(rect) {
+                        labels.push((text.galley.job.text.trim().to_owned(), rect));
+                    }
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, clip, labels);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut labels = Vec::new();
+        for shape in output.shapes {
+            collect(&shape.shape, shape.clip_rect.intersect(screen), &mut labels);
+        }
+        labels
+    }
+
+    fn label_center(labels: &[(String, egui::Rect)], label: &str) -> egui::Pos2 {
+        labels.iter().find(|(text, _)| text == label).unwrap_or_else(|| panic!("{label} is visibly painted")).1.center()
+    }
+
+    fn pointer(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    fn open_ink_manager(app: &mut DesignApp, ctx: &egui::Context) -> Vec<(String, egui::Rect)> {
+        for label in ["☰", "Ink Manager"] {
+            let labels = ink_frame(app, ctx, vec![]);
+            let pos = label_center(&labels, label);
+            for pressed in [true, false] {
+                ink_frame(app, ctx, vec![egui::Event::PointerMoved(pos), pointer(pos, pressed)]);
+            }
+            // Settle the real popup's sizing pass before looking up its next row.
+            for _ in 0..3 {
+                ink_frame(app, ctx, vec![]);
+            }
+        }
+        ink_frame(app, ctx, vec![])
+    }
+
+    fn assert_ink_state(
+        app: &mut DesignApp,
+        baseline: &designcraft_engine::DocState,
+        names: &[String; 2],
+        individual: [bool; 2],
+        all: bool,
+        edits: usize,
+    ) {
+        assert!(baseline.doc.inks.aliases.is_empty());
+        assert_resolved_ink_state(app, baseline, names, individual, individual.map(|on| all || on), all, edits);
+    }
+
+    fn assert_resolved_ink_state(
+        app: &mut DesignApp,
+        baseline: &designcraft_engine::DocState,
+        names: &[String; 2],
+        individual: [bool; 2],
+        effective: [bool; 2],
+        all: bool,
+        edits: usize,
+    ) {
+        let list = app.session.execute("ink.list", &json!({})).unwrap();
+        assert_eq!(list["allToProcess"], all);
+        let inks = list["inks"].as_array().unwrap();
+        assert_eq!(inks.len(), 2);
+        for (name, process) in names.iter().zip(effective) {
+            let ink = inks.iter().find(|ink| ink["name"] == *name).unwrap();
+            assert_eq!(ink["process"], process);
+            let alias = baseline.doc.inks.aliases.iter().find(|(from, _)| from == name).map(|(_, to)| to);
+            assert_eq!(ink["alias"], json!(alias));
+        }
+        let st = app.session.active().unwrap();
+        let mut expected = baseline.doc.inks.clone();
+        expected.all_to_process = all;
+        expected.to_process = names.iter().zip(individual).filter(|(_, on)| *on).map(|(name, _)| name.clone()).collect();
+        assert_eq!(st.doc.inks, expected);
+        assert_eq!(st.doc.swatches, baseline.doc.swatches);
+        assert_eq!(st.revision, baseline.revision + edits as u64);
+        assert_eq!(st.history.undo.len(), baseline.history.undo.len() + edits);
+        assert_eq!(st.history.redo.len(), baseline.history.redo.len());
+        assert!(st.history.undo[baseline.history.undo.len()..].iter().all(|entry| entry.label == "Ink Manager"));
+    }
+
+    #[test]
+    fn ink_manager_held_origin_cannot_follow_queued_spot_replacement() {
+        use designcraft_color::Color;
+        use designcraft_engine::{DocState, HistoryEntry, Session};
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        use serde_json::Value;
+        use std::sync::Arc;
+
+        fn same(a: &DocState, e: &DocState) {
+            macro_rules! fields {
+            ($($f:ident),*) => {$(assert_eq!(a.$f, e.$f, stringify!($f));)*}
+        }
+            // Fail narrowly before the full model comparison if another ink was touched.
+            assert_eq!(a.doc.inks.to_process, e.doc.inks.to_process);
+            fields!(doc, selection, uid, revision, saved_revision, saved_doc, active_layer, path, editing_parents, preview_stash, preview_record);
+            assert_eq!(a.is_dirty(), e.is_dirty());
+            assert!(a.interaction.is_none() && e.interaction.is_none());
+            assert!(a.fonts.is_none() && e.fonts.is_none());
+            assert_eq!((a.history.undo.len(), a.history.redo.len(), a.history.limit), (e.history.undo.len(), e.history.redo.len(), e.history.limit));
+            for (x, y) in a.history.undo.iter().chain(&a.history.redo).zip(e.history.undo.iter().chain(&e.history.redo)) {
+                assert_eq!((&x.label, x.doc.as_ref(), &x.selection), (&y.label, y.doc.as_ref(), &y.selection));
+            }
+        }
+        fn edited(before: &DocState, document: designcraft_doc::Document, label: &str) -> DocState {
+            let mut e = before.clone();
+            e.doc = Arc::new(document);
+            e.revision += 1;
+            e.history.undo.push(HistoryEntry { label: label.into(), doc: before.doc.clone(), selection: before.selection.clone() });
+            e.history.redo.clear();
+            e
+        }
+        fn state(app: &DesignApp, expected: &DocState, prefs: &Value, ui: &Value) {
+            assert_eq!(app.session.documents().len(), 1);
+            assert_eq!(app.session.active_index(), Some(0));
+            same(app.session.active().unwrap(), expected);
+            assert_eq!(&serde_json::to_value(&app.session.prefs).unwrap(), prefs);
+            assert_eq!(&serde_json::to_value(&app.ui).unwrap(), ui);
+        }
+        fn blank_guard(h: &Harness<'_, DesignApp>, point: egui::Pos2, layer: egui::LayerId) {
+            assert!(h.ctx.content_rect().contains(point));
+            assert_eq!(h.ctx.layer_id_at(point), Some(layer), "blank stays inside Ink Manager's popup layer");
+            for n in h.root().children_recursive().filter(|n| n.accesskit_node().role() == egui::accesskit::Role::CheckBox) {
+                assert!(!n.rect().expand(0.5).contains(point), "blank never visits a checkbox");
+            }
+        }
+
+        let mut donor = Session::new();
+        donor.execute("file.new", &json!({})).unwrap();
+        donor
+            .execute(
+                "swatch.create",
+                &json!({"name":"Held Ink A", "spot":false,
+        "color":{"c":0,"m":100,"y":0,"k":0}}),
+            )
+            .unwrap();
+        let payload = donor.execute("swatch.save", &json!({"names":["Held Ink A"]})).unwrap()["base64"].as_str().unwrap().to_owned();
+        assert!(!payload.is_empty());
+        for replace in [false, true] {
+            let mut app = DesignApp::new(Session::new(), crate::Services::default());
+            app.ui.language = "en".into();
+            app.run("file.new", json!({"facingPages":false,"primaryTextFrame":false})).unwrap();
+            for name in ["Held Ink A", "Held Ink B", "Held Ink C"] {
+                assert_eq!(
+                    app.run(
+                        "swatch.create",
+                        json!({"name":name,"spot":true,
+                "color":{"c":0,"m":100,"y":0,"k":0}})
+                    )
+                    .unwrap()["name"],
+                    json!(name)
+                );
+            }
+            let restored = app.session.active().unwrap().doc.clone();
+            app.run("layout.documentSetup", json!({"facingPages":true})).unwrap();
+            assert_ne!(app.session.active().unwrap().doc, restored);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.active().unwrap().doc, restored);
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.control_rx = Some(rx);
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        ready = true;
+                        return;
+                    }
+                    app.logic(ui.ctx());
+                    if !app.fonts_ready {
+                        return;
+                    }
+                    ui.set_max_width(280.0);
+                    show(app, ui);
+                },
+                app,
+            );
+            h.input_mut().max_texture_side = Some(8192);
+            h.run_steps(8);
+            for label in ["☰", "Ink Manager ⏵"] {
+                h.get_by_label(label).click();
+                h.run_steps(3);
+            }
+            let before = h.state().session.active().unwrap().clone();
+            assert!(!before.history.undo.is_empty());
+            assert_eq!(before.history.redo.len(), 1);
+            assert!(!before.doc.inks.all_to_process && before.doc.inks.to_process.is_empty() && before.doc.inks.aliases.is_empty());
+            for name in ["Held Ink A", "Held Ink B", "Held Ink C"] {
+                let sw = before.doc.swatch(name).unwrap();
+                assert!(!sw.locked && !sw.hidden && sw.named);
+                assert_eq!(sw.value, SwatchValue::Color { color: Color::Cmyk { c: 0.0, m: 1.0, y: 0.0, k: 0.0 }, color_type: ColorType::Spot });
+                assert!(h.query_by_label(&format!("{name} → process")).is_some());
+            }
+            let prefs = serde_json::to_value(&h.state().session.prefs).unwrap();
+            let ui_before = serde_json::to_value(&h.state().ui).unwrap();
+            let mut document = (*before.doc).clone();
+            document.inks.to_process = vec!["Held Ink A".into()];
+            let origin_expected = edited(&before, document, "Ink Manager");
+            let mut document = (*origin_expected.doc).clone();
+            let sw = document.swatches.iter_mut().find(|s| s.name == "Held Ink A").unwrap();
+            sw.value = SwatchValue::Color { color: Color::Cmyk { c: 0.0, m: 1.0, y: 0.0, k: 0.0 }, color_type: ColorType::Process };
+            sw.hidden = false;
+            let replaced_expected = edited(&origin_expected, document, "Load Swatches…");
+            let n = h.get_by_label("Held Ink A → process");
+            let local = n.accesskit_node().locate().0;
+            let rect = n.rect();
+            assert_eq!(n.accesskit_node().role(), egui::accesskit::Role::CheckBox);
+            assert!(!n.accesskit_node().is_disabled());
+            let p = rect.center();
+            h.input_mut().events.push(egui::Event::PointerMoved(p));
+            h.run_steps(1);
+            assert_eq!(h.get_by_label("Held Ink A → process").rect(), rect);
+            assert_eq!(h.get_by_label("Held Ink A → process").accesskit_node().locate().0, local);
+            let id = h
+                .ctx
+                .interaction_snapshot(|s| s.hovered.iter().copied().find(|id| id.accesskit_id() == local))
+                .expect("real labelled origin receives hover");
+            let origin = h.ctx.read_response(id).unwrap();
+            assert!(origin.enabled() && origin.interact_rect.contains(p));
+            assert_eq!(h.ctx.layer_id_at(p), Some(origin.layer_id));
+            // The popup's left padding is outside every checkbox and stays on the same row.
+            let blank = egui::pos2(rect.left() - 2.0, rect.center().y);
+            assert!(p.distance(blank) > 6.0 && !origin.interact_rect.contains(blank));
+            blank_guard(&h, blank, origin.layer_id);
+            state(h.state(), &before, &prefs, &ui_before);
+            h.input_mut().events.extend([egui::Event::PointerMoved(p), pointer(p, true)]);
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| i.pointer.primary_pressed()
+                && i.pointer.primary_down()
+                && !i.pointer.primary_released()
+                && i.pointer.interact_pos() == Some(p)));
+            state(h.state(), &origin_expected, &prefs, &ui_before);
+            h.input_mut().events.push(egui::Event::PointerMoved(blank));
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| !i.pointer.primary_pressed()
+                && i.pointer.primary_down()
+                && !i.pointer.primary_released()
+                && i.pointer.is_decidedly_dragging()));
+            assert_eq!(h.ctx.dragged_id(), Some(id));
+            assert!(h.ctx.read_response(id).unwrap().is_pointer_button_down_on());
+            blank_guard(&h, blank, origin.layer_id);
+            state(h.state(), &origin_expected, &prefs, &ui_before);
+            assert!(h.input().events.is_empty());
+            if replace {
+                let (request, reply) = crate::ControlRequest::new(
+                    "engine.execute",
+                    json!({
+                "command":"swatch.load", "params":{"base64":payload,"replace":true}}),
+                );
+                tx.send(request).unwrap();
+                h.run_steps(1);
+                let reply = reply.try_recv().unwrap();
+                assert_eq!(reply["ok"], json!(true));
+                assert_eq!(reply["result"], json!({"added":0,"replaced":1}));
+                assert!(h.query_by_label("Held Ink A → process").is_none());
+                assert_eq!(
+                    h.state().session.active().unwrap().doc.swatches,
+                    replaced_expected.doc.swatches,
+                    "only A's color type changed; outer names, count, order and other swatch fields are exact"
+                );
+            } else {
+                h.run_steps(1);
+            }
+            assert!(h.ctx.input(|i| i.pointer.primary_down()
+                && !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()
+                && i.pointer.interact_pos() == Some(blank)
+                && !i.events.iter().any(|e| matches!(e, egui::Event::Key { .. }))));
+            let label = if replace { "Held Ink B → process" } else { "Held Ink A → process" };
+            let n = h.get_by_label(label);
+            let current = n.accesskit_node().locate().0;
+            let current_rect = n.rect();
+            assert_eq!(n.accesskit_node().role(), egui::accesskit::Role::CheckBox);
+            assert!(!n.accesskit_node().is_disabled());
+            assert_eq!(current_rect.min, rect.min, "replacement occupies the original first ink row");
+            assert!(h.ctx.content_rect().contains_rect(current_rect) && !current_rect.contains(blank));
+            assert_eq!(h.ctx.layer_id_at(current_rect.center()), Some(origin.layer_id));
+            assert!(!h.ctx.interaction_snapshot(|s| s.contains_pointer.iter().any(|id| id.accesskit_id() == current)));
+            blank_guard(&h, blank, origin.layer_id);
+            let alias = current == id.accesskit_id();
+            eprintln!("replace={replace} alias={alias} origin={id:?} current={current:?} blank={blank:?}");
+            if alias {
+                assert_eq!(h.ctx.dragged_id(), Some(id));
+                assert!(h.ctx.read_response(id).unwrap().is_pointer_button_down_on());
+            } else {
+                assert_ne!(h.ctx.dragged_id().map(|id| id.accesskit_id()), Some(current));
+            }
+            let expected = if replace { &replaced_expected } else { &origin_expected };
+            state(h.state(), expected, &prefs, &ui_before);
+            h.run_steps(1);
+            state(h.state(), expected, &prefs, &ui_before);
+            h.input_mut().events.push(pointer(blank, false));
+            h.run_steps(1);
+            state(h.state(), expected, &prefs, &ui_before);
+            for _ in 0..2 {
+                h.run_steps(1);
+                assert!(h.query_by_label("Held Ink B → process").is_some());
+                assert!(h.query_by_label("Held Ink C → process").is_some());
+                state(h.state(), expected, &prefs, &ui_before);
+            }
+        }
+    }
+
+    #[test]
+    fn ink_manager_drag_changes_each_ink_once_and_closes_only_on_completed_click() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let names: [String; 2] = [("Drag Ink A", [0, 50, 100, 0]), ("Drag Ink B", [100, 0, 0, 0])].map(|(name, color)| {
+            app.run("swatch.create", json!({"name": name, "spot": true, "color": {"c": color[0], "m": color[1], "y": color[2], "k": color[3]}}))
+                .unwrap()["name"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        });
+        let baseline = app.session.active().unwrap().clone();
+        assert_ink_state(&mut app, &baseline, &names, [false; 2], false, 0);
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::default()));
+        for _ in 0..3 {
+            ink_frame(&mut app, &ctx, vec![]);
+        }
+        let labels = open_ink_manager(&mut app, &ctx);
+        let row_labels = names.each_ref().map(|name| format!("{name} → process"));
+        let mut points = row_labels.each_ref().map(|label| label_center(&labels, label));
+        let mut edits = 0;
+        for target in [true, false] {
+            ink_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(points[0]), pointer(points[0], true)]);
+            edits += 1;
+            assert_ink_state(&mut app, &baseline, &names, [target, !target], false, edits);
+            let labels = ink_frame(&mut app, &ctx, vec![]);
+            points = row_labels.each_ref().map(|label| label_center(&labels, label));
+            assert_ink_state(&mut app, &baseline, &names, [target, !target], false, edits);
+            ink_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(points[1])]);
+            edits += 1;
+            assert_ink_state(&mut app, &baseline, &names, [target; 2], false, edits);
+            for events in [
+                vec![egui::Event::PointerMoved(points[0])],
+                vec![],
+                vec![egui::Event::PointerMoved(points[1])],
+                vec![pointer(points[1], false)],
+                vec![],
+            ] {
+                let labels = ink_frame(&mut app, &ctx, events);
+                for label in &row_labels {
+                    label_center(&labels, label);
+                }
+                assert_ink_state(&mut app, &baseline, &names, [target; 2], false, edits);
+            }
+        }
+        // An ordinary individual click commits on press and closes only on release.
+        ink_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(points[0]), pointer(points[0], true)]);
+        edits += 1;
+        assert_ink_state(&mut app, &baseline, &names, [true, false], false, edits);
+        label_center(&ink_frame(&mut app, &ctx, vec![]), &row_labels[1]);
+        ink_frame(&mut app, &ctx, vec![pointer(points[0], false)]);
+        let labels = ink_frame(&mut app, &ctx, vec![]);
+        assert!(!labels.iter().any(|(text, _)| row_labels.contains(text)), "completed click closes Ink Manager");
+        assert_ink_state(&mut app, &baseline, &names, [true, false], false, edits);
+
+        // The global checkbox has the same click lifetime; disabled individual rows do not dispatch.
+        let labels = open_ink_manager(&mut app, &ctx);
+        let all = label_center(&labels, "All Spots to Process");
+        ink_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(all), pointer(all, true)]);
+        edits += 1;
+        assert_ink_state(&mut app, &baseline, &names, [true, false], true, edits);
+        label_center(&ink_frame(&mut app, &ctx, vec![]), &row_labels[1]);
+        ink_frame(&mut app, &ctx, vec![pointer(all, false)]);
+        let labels = ink_frame(&mut app, &ctx, vec![]);
+        assert!(!labels.iter().any(|(text, _)| row_labels.contains(text)));
+        assert_ink_state(&mut app, &baseline, &names, [true, false], true, edits);
+
+        let labels = open_ink_manager(&mut app, &ctx);
+        points = row_labels.each_ref().map(|label| label_center(&labels, label));
+        for events in [
+            vec![egui::Event::PointerMoved(points[0]), pointer(points[0], true)],
+            vec![egui::Event::PointerMoved(points[1])],
+            vec![pointer(points[1], false)],
+            vec![],
+        ] {
+            ink_frame(&mut app, &ctx, events);
+            assert_ink_state(&mut app, &baseline, &names, [true, false], true, edits);
+        }
+
+        // A resolves to B, but the individual command stores A's raw flag.
+        // While B stays opposite to the drag target, repeated held frames must
+        // not dispatch the same raw assignment again.
+        for target in [false, true] {
+            let outside = egui::pos2(900.0, 760.0);
+            for pressed in [true, false] {
+                ink_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(outside), pointer(outside, pressed)]);
+            }
+            app.run("ink.options", json!({"allToProcess": false, "ink": names[0], "alias": names[1], "toProcess": !target})).unwrap();
+            app.run("ink.options", json!({"ink": names[1], "toProcess": !target})).unwrap();
+            let alias_baseline = app.session.active().unwrap().clone();
+            assert_resolved_ink_state(&mut app, &alias_baseline, &names, [!target; 2], [!target; 2], false, 0);
+            let labels = open_ink_manager(&mut app, &ctx);
+            points = row_labels.each_ref().map(|label| label_center(&labels, label));
+            ink_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(points[0]), pointer(points[0], true)]);
+            assert_resolved_ink_state(&mut app, &alias_baseline, &names, [target, !target], [!target; 2], false, 1);
+            for _ in 0..2 {
+                let labels = ink_frame(&mut app, &ctx, vec![]);
+                label_center(&labels, &row_labels[1]);
+                assert_resolved_ink_state(&mut app, &alias_baseline, &names, [target, !target], [!target; 2], false, 1);
+            }
+            // Crossing B is a second intentional edit; returning to A and
+            // releasing adds none. Aliases and allToProcess are never changed.
+            ink_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(points[1])]);
+            assert_resolved_ink_state(&mut app, &alias_baseline, &names, [target; 2], [target; 2], false, 2);
+            for events in [vec![egui::Event::PointerMoved(points[0])], vec![], vec![pointer(points[0], false)], vec![]] {
+                ink_frame(&mut app, &ctx, events);
+                assert_resolved_ink_state(&mut app, &alias_baseline, &names, [target; 2], [target; 2], false, 2);
+            }
+        }
+    }
+
+    #[test]
+    fn ink_manager_completed_short_batches_settle_before_close_and_keep_ordinary_clicks() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for reverse in [false, true] {
+            for target in [false, true] {
+                for neighbor_equal in [false, true] {
+                    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+                    app.run("file.new", json!({})).unwrap();
+                    let names: [String; 3] =
+                        ["Batch Ink A", "Batch Ink B", "Untouched Ink"].map(|name| {
+                            app.run("swatch.create", json!({"name": name, "spot": true, "color": {"c": 0, "m": 50, "y": 100, "k": 0}}))
+                            .unwrap()["name"].as_str().unwrap().to_owned()
+                        });
+                    let (origin, neighbor) = if reverse { (1, 0) } else { (0, 1) };
+                    let mut initial = [!target; 3];
+                    if neighbor_equal {
+                        initial[neighbor] = target;
+                    }
+                    for (name, on) in names.iter().zip(initial) {
+                        app.run("ink.options", json!({"ink": name, "toProcess": on})).unwrap();
+                    }
+                    let baseline = app.session.active().unwrap().clone();
+                    let assert_state = |app: &DesignApp, assignments: &[(usize, bool)]| {
+                        let st = app.session.active().unwrap();
+                        let mut expected = (*baseline.doc).clone();
+                        // Literal command order also preserves the raw Vec's insertion order.
+                        for &(index, on) in assignments {
+                            if on {
+                                assert!(!expected.inks.to_process.contains(&names[index]));
+                                expected.inks.to_process.push(names[index].clone());
+                            } else {
+                                let at = expected.inks.to_process.iter().position(|name| name == &names[index]).unwrap();
+                                expected.inks.to_process.remove(at);
+                            }
+                        }
+                        let edits = assignments.len();
+                        assert_eq!(*st.doc, expected, "aliases, allToProcess, swatches and unrelated content stay exact");
+                        assert_eq!(st.selection, baseline.selection);
+                        assert_eq!(st.revision, baseline.revision + edits as u64);
+                        assert_eq!(st.history.undo.len(), baseline.history.undo.len() + edits);
+                        assert_eq!(st.history.redo.len(), baseline.history.redo.len());
+                        assert!(st.history.undo[baseline.history.undo.len()..].iter().all(|entry| entry.label == "Ink Manager"));
+                    };
+                    let mut h = Harness::builder().with_size(vec2(1000.0, 800.0)).build_ui_state(
+                        |ui, app: &mut DesignApp| {
+                            let key = egui::Id::new("ink-batch-test-fonts");
+                            if !ui.data(|d| d.get_temp::<bool>(key).unwrap_or(false)) {
+                                crate::theme::install_fonts(ui.ctx(), "en");
+                                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(crate::theme::Brightness::default()));
+                                ui.data_mut(|d| d.insert_temp(key, true));
+                                return;
+                            }
+                            ui.set_max_width(280.0);
+                            show(app, ui);
+                        },
+                        app,
+                    );
+                    h.run_steps(3);
+                    for label in ["☰", "Ink Manager ⏵"] {
+                        h.get_by_label(label).click();
+                        h.run_steps(3);
+                    }
+                    let labels = names.each_ref().map(|name| format!("{name} → process"));
+                    // AccessKit bounds are the native Response.rect, not its painted label.
+                    let rects = labels.each_ref().map(|label| h.get_by_label(label).rect());
+                    let from = rects[origin];
+                    let to = rects[neighbor];
+                    let x = from.left().max(to.left()) + 1.0;
+                    let (p, q) = if reverse {
+                        (egui::pos2(x, from.top() + 0.25), egui::pos2(x, to.bottom() - 0.25))
+                    } else {
+                        (egui::pos2(x, from.bottom() - 0.25), egui::pos2(x, to.top() + 0.25))
+                    };
+                    assert!(from.contains(p) && to.contains(q) && !from.contains(q));
+                    assert!(p.distance(q) > 0.0 && p.distance(q) < 6.0, "real popup edge {p:?} -> {q:?}");
+                    // input_mut preserves this exact batch; queued Harness events would
+                    // instead split it into separate frames and miss the regression.
+                    h.input_mut().events.extend([egui::Event::PointerMoved(p), pointer(p, true), egui::Event::PointerMoved(q), pointer(q, false)]);
+                    h.run_steps(1);
+                    let mut assignments = vec![(origin, target)];
+                    if !reverse && !neighbor_equal {
+                        assignments.push((neighbor, target));
+                    }
+                    assert_state(h.state(), &assignments);
+                    for label in &labels {
+                        assert!(h.query_by_label(label).is_some());
+                    }
+                    h.run_steps(1);
+                    if reverse && !neighbor_equal {
+                        assignments.push((neighbor, target));
+                    }
+                    assert_eq!(assignments.len(), 1 + usize::from(!neighbor_equal));
+                    assert_state(h.state(), &assignments);
+                    for label in &labels {
+                        assert!(h.query_by_label(label).is_some(), "the endpoint must survive clicked-close through settlement");
+                    }
+                    h.input_mut().events.push(egui::Event::PointerMoved(rects[2].center()));
+                    h.run_steps(1);
+                    assert_state(h.state(), &assignments);
+                    h.run_steps(2);
+                    assert_state(h.state(), &assignments);
+
+                    // Genuine same-origin complete clicks still change once and close.
+                    let point = h.get_by_label(&labels[0]).rect().center();
+                    h.input_mut().events.extend([egui::Event::PointerMoved(point), pointer(point, true), pointer(point, false)]);
+                    h.run_steps(1);
+                    assignments.push((0, !target));
+                    assert_state(h.state(), &assignments);
+                    h.run_steps(1);
+                    assert!(h.query_by_label(&labels[0]).is_none());
+                    assert_state(h.state(), &assignments);
+                    // Keyboard activation is also a completed ordinary click.
+                    for label in ["☰", "Ink Manager ⏵"] {
+                        h.get_by_label(label).click();
+                        h.run_steps(3);
+                    }
+                    h.get_by_label(&labels[0]).focus();
+                    h.run_steps(1);
+                    h.key_down(egui::Key::Space);
+                    h.run_steps(1);
+                    assignments.push((0, target));
+                    assert_state(h.state(), &assignments);
+                    h.key_up(egui::Key::Space);
+                    h.run_steps(1);
+                    assert!(h.query_by_label(&labels[0]).is_none());
+                    assert_state(h.state(), &assignments);
+                }
+            }
+        }
     }
 }
 

@@ -567,7 +567,7 @@ fn control_text(app: &mut DesignApp, ui: &mut egui::Ui) {
         panels::para_style_picker(app, ui, &ps, ov > 0, 170.0);
         let hy = para["hyphenate"].as_bool().unwrap_or(true);
         let mut h = hy;
-        if ui.checkbox(&mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
+        if crate::widgets::native_checkbox(ui, &mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
             let _ = app.run("type.para", json!({"attrs": {"hyphenate": h}}));
         }
     });

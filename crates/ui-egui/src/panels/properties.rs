@@ -1587,11 +1587,13 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     ui.horizontal(|ui| {
         let mut h = p["hyphenate"].as_bool().unwrap_or(true);
-        if ui.checkbox(&mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
+        if crate::widgets::native_checkbox(ui, &mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
             let _ = app.run("type.para", json!({"attrs": {"hyphenate": h}}));
         }
         let mut grid = p["gridAlign"].as_str() == Some("allLines");
-        if ui.checkbox(&mut grid, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Align to baseline grid"))).changed() {
+        if crate::widgets::native_checkbox(ui, &mut grid, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Align to baseline grid")))
+            .changed()
+        {
             let _ = app.run("type.para", json!({"attrs": {"gridAlign": if grid { "allLines" } else { "none" }}}));
         }
     });
@@ -1615,7 +1617,7 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     for (on_key, color_key, label) in [("shadingOn", "shadingColor", "Shading"), ("borderOn", "borderColor", "Border")] {
         ui.horizontal(|ui| {
             let mut on = p[on_key].as_bool().unwrap_or(false);
-            if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).changed() {
+            if crate::widgets::native_checkbox(ui, &mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).changed() {
                 let _ = app.run("type.para", json!({ on_key: on }));
             }
             if on {
@@ -2318,10 +2320,10 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     divider(ui);
     let ds = it.effects.drop_shadow.clone();
     let mut on = ds.on;
-    if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Drop Shadow"))).changed() {
+    if crate::widgets::native_checkbox(ui, &mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Drop Shadow"))).changed() {
         let _ = app.run("object.dropShadow", json!({"on": on}));
     }
-    if ds.on {
+    if on {
         egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
             caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
             if let Some(v) = number(ui, "dsd", Some(ds.distance), " pt", 56.0, 1) {
@@ -2342,7 +2344,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             crate::rtl::label(ui, "");
             caption(ui, "");
             let mut gl = ds.global_light;
-            if ui.checkbox(&mut gl, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Use Global Light"))).changed() {
+            if crate::widgets::native_checkbox(ui, &mut gl, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Use Global Light"))).changed() {
                 let _ = app.run("object.dropShadow", json!({"on": true, "globalLight": gl}));
             }
             ui.end_row();
@@ -2362,12 +2364,12 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         let mut iso = it.isolate;
         let label = crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Isolate Blending"));
-        if ui.add_enabled(group, egui::Checkbox::new(&mut iso, label)).changed() {
+        if ui.add_enabled(group, |ui: &mut Ui| crate::widgets::native_checkbox(ui, &mut iso, label)).changed() {
             let _ = app.run("object.transparencyGroup", json!({"isolate": iso}));
         }
         let mut ko = it.knockout;
         let label = crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Knockout Group"));
-        if ui.add_enabled(group, egui::Checkbox::new(&mut ko, label)).changed() {
+        if ui.add_enabled(group, |ui: &mut Ui| crate::widgets::native_checkbox(ui, &mut ko, label)).changed() {
             let _ = app.run("object.transparencyGroup", json!({"knockout": ko}));
         }
     });
@@ -2431,7 +2433,7 @@ pub fn attributes_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     egui::Grid::new("attributes_panel").num_columns(2).spacing(vec2(16.0, 6.0)).show(ui, |ui| {
         for (i, (key, label, on)) in rows.into_iter().enumerate() {
             let mut v = on;
-            if ui.checkbox(&mut v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).changed() {
+            if crate::widgets::native_checkbox(ui, &mut v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).changed() {
                 let _ = app.run("object.attributes", json!({ key: v }));
             }
             if i % 2 == 1 {
@@ -2856,6 +2858,101 @@ mod effects_panel_tests {
     }
 
     #[test]
+    fn effects_parent_off_sweep_keeps_child_settings_and_global_click_keeps_parent_on() {
+        // The sweep must turn only the parent off. Ordinary child clicks still toggle both ways.
+        for (sweep, global_light) in [(true, true), (false, true), (false, false)] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+            app.run("file.new", json!({})).unwrap();
+            let target = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Keep é🙂 unchanged"})).unwrap();
+            let id = designcraft_doc::ItemId(target["id"].as_u64().unwrap());
+            let story = designcraft_doc::StoryId(target["story"].as_u64().unwrap());
+            app.run("frame.create", json!({"rect": [320, 72, 400, 200]})).unwrap();
+            app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+            app.run("object.globalLight", json!({"angle": 135})).unwrap();
+            app.run("object.opacity", json!({"opacity": 0.75, "blend": "multiply"})).unwrap();
+            app.run(
+                "object.dropShadow",
+                json!({"on": true, "globalLight": global_light, "distance": 13, "angle": 27, "opacity": 0.42, "size": 9, "spread": 11}),
+            )
+            .unwrap();
+            let ctx = egui::Context::default();
+            crate::theme::install_fonts(&ctx, "en");
+            crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::default()));
+            for _ in 0..3 {
+                frame(&mut app, &ctx, vec![]);
+            }
+            let labels = frame(&mut app, &ctx, vec![]);
+            let center = |label: &str| labels.iter().find(|(text, _)| text == label).unwrap_or_else(|| panic!("{label} is painted")).1.center();
+            let parent = center("Drop Shadow");
+            let child = center("Use Global Light");
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(320.0, 400.0));
+            assert!(screen.contains(parent) && screen.contains(child));
+            assert!(parent.distance(child) > 6.0);
+            let before = app.session.doc().unwrap().clone();
+            assert!(before.history.redo.is_empty());
+            let mut expected = (*before.doc).clone();
+            let shadow = &mut expected.item_mut(id).unwrap().effects.drop_shadow;
+            if sweep {
+                shadow.on = false;
+            } else {
+                shadow.global_light = !global_light;
+            }
+            let assert_state = |app: &DesignApp| {
+                let st = app.session.doc().unwrap();
+                assert_eq!(*st.doc, expected, "only the intended effect flag changes; sweep={sweep}, global={global_light}");
+                assert_eq!(st.selection, before.selection);
+                assert_eq!(st.doc.story(story).unwrap().text, "Keep é🙂 unchanged");
+                let shadow = &st.doc.item(id).unwrap().effects.drop_shadow;
+                assert_eq!(shadow.on, !sweep);
+                assert_eq!(shadow.global_light, if sweep { global_light } else { !global_light });
+                assert_eq!(st.history.undo.len(), before.history.undo.len() + 1);
+                assert!(st.history.redo.is_empty());
+                let entry = st.history.undo.last().unwrap();
+                assert_eq!(entry.label, "Drop Shadow");
+                assert!(std::sync::Arc::ptr_eq(&entry.doc, &before.doc));
+                assert_eq!(entry.selection, before.selection);
+                st.doc.check().unwrap();
+            };
+            let pointer =
+                |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let origin = if sweep { parent } else { child };
+            let events = vec![egui::Event::PointerMoved(origin), pointer(origin, true), egui::Event::PointerMoved(child)];
+            let time = ctx.input(|i| i.time) + 1.0 / 60.0;
+            let mut passes = 0;
+            let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| {
+                passes += 1;
+                effects_panel(&mut app, ui);
+            });
+            output.textures_delta.clear();
+            assert_eq!(passes, 1, "the immediate model must not rely on a repair pass");
+            assert_state(&app);
+            if sweep {
+                frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+                assert_state(&app);
+                frame(&mut app, &ctx, vec![]); // Still held after cancellation.
+                assert_state(&app);
+            }
+            // In the ordinary control this completes a genuine Global Light click, without Escape.
+            frame(&mut app, &ctx, vec![pointer(child, false)]);
+            assert_state(&app);
+            for _ in 0..2 {
+                frame(&mut app, &ctx, vec![]);
+                assert_state(&app);
+            }
+        }
+    }
+
+    #[test]
     fn pasted_into_frames_keep_object_level_and_disable_group_blending() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
         app.run("file.new", json!({})).unwrap();
@@ -3203,4 +3300,193 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
 pub fn flex_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
     flex_section(app, ui);
+}
+
+#[cfg(test)]
+mod typography_route_tests {
+    use super::*;
+
+    fn frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) -> (Vec<(String, egui::Rect)>, usize) {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 1400.0));
+        let time = ctx.input(|i| i.time) + 1.0 / 60.0;
+        let mut passes = 0;
+        let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| {
+            passes += 1;
+            ui.set_max_width(320.0);
+            if app.ui.open_panel.as_deref() == Some("typography") {
+                crate::panels::typography::show(app, ui);
+            } else {
+                character_panel(app, ui);
+            }
+        });
+        output.textures_delta.clear();
+        fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let rect = text.visual_bounding_rect();
+                    if clip.contains_rect(rect) {
+                        labels.push((text.galley.job.text.trim().to_owned(), rect));
+                    }
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, clip, labels);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut labels = Vec::new();
+        for shape in output.shapes {
+            collect(&shape.shape, shape.clip_rect.intersect(screen), &mut labels);
+        }
+        (labels, passes)
+    }
+
+    fn center(labels: &[(String, egui::Rect)], label: &str) -> egui::Pos2 {
+        labels.iter().find(|(text, _)| text == label).unwrap_or_else(|| panic!("{label} is visibly painted")).1.center()
+    }
+
+    fn set_center(labels: &[(String, egui::Rect)], number: u32) -> egui::Pos2 {
+        let generic = format!("Stylistic Set {number:02}");
+        let named_suffix = format!("(ss{number:02})");
+        labels
+            .iter()
+            .find(|(text, _)| text == &generic || text.ends_with(&named_suffix))
+            .unwrap_or_else(|| panic!("stylistic set {number} is visibly painted"))
+            .1
+            .center()
+    }
+
+    fn pointer(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    fn attrs(app: &mut DesignApp) -> Value {
+        let mut value = app.session.execute("type.selectionAttrs", &json!({})).unwrap();
+        let mut features: Vec<String> = value["chars"]["otfFeatures"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_owned()).collect();
+        features.sort();
+        value["chars"]["otfFeatures"] = json!(features);
+        value
+    }
+
+    #[test]
+    fn stylistic_sets_typography_route_keeps_both_assignments_and_other_features() {
+        for target in [true, false] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "before target after", "caret": true})).unwrap();
+            let story = app.session.doc().unwrap().selection.text.unwrap().story;
+            app.run("text.select", json!({"story": story.0, "anchor": 7, "focus": 13})).unwrap();
+            let sets = if target { vec![3] } else { vec![1, 2, 3] };
+            app.run("type.openType", json!({"stylisticSets": sets, "feature": "dlig", "on": true, "figures": "tabularLining"})).unwrap();
+            app.run("type.openType", json!({"feature": "calt", "on": false})).unwrap();
+            let original_attrs = attrs(&mut app);
+            assert_eq!(
+                original_attrs["chars"]["otfFeatures"],
+                if target {
+                    json!(["-calt", "dlig", "lnum", "ss03", "tnum"])
+                } else {
+                    json!(["-calt", "dlig", "lnum", "ss01", "ss02", "ss03", "tnum"])
+                }
+            );
+            let baseline = app.session.active().unwrap().clone();
+            let mut expected = original_attrs.clone();
+            expected["chars"]["otfFeatures"] = if target {
+                json!(["-calt", "dlig", "lnum", "ss01", "ss02", "ss03", "tnum"])
+            } else {
+                json!(["-calt", "dlig", "lnum", "ss03", "tnum"])
+            };
+            let mut expected_first = original_attrs.clone();
+            expected_first["chars"]["otfFeatures"] = if target {
+                json!(["-calt", "dlig", "lnum", "ss01", "ss03", "tnum"])
+            } else {
+                json!(["-calt", "dlig", "lnum", "ss02", "ss03", "tnum"])
+            };
+            let offered = app.session.execute("type.openTypeFeatures", &json!({})).unwrap();
+            for tag in ["ss01", "ss02"] {
+                let set = offered["stylisticSets"].as_array().unwrap().iter().find(|set| set["tag"] == tag).unwrap();
+                assert_eq!(set["available"], "all", "the bundled font offers {tag}");
+                assert_eq!(set["applied"], if target { "none" } else { "all" });
+            }
+            let ctx = egui::Context::default();
+            crate::theme::install_fonts(&ctx, "en");
+            crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::default()));
+            for _ in 0..3 {
+                frame(&mut app, &ctx, vec![]);
+            }
+            // Character now opens Typography; exercise its real controls, not the removed popup.
+            let (labels, _) = frame(&mut app, &ctx, vec![]);
+            let open_type = center(&labels, "OpenType");
+            for pressed in [true, false] {
+                frame(&mut app, &ctx, vec![egui::Event::PointerMoved(open_type), pointer(open_type, pressed)]);
+            }
+            assert_eq!(app.ui.open_panel.as_deref(), Some("typography"));
+            for _ in 0..3 {
+                frame(&mut app, &ctx, vec![]);
+            }
+            let (labels, _) = frame(&mut app, &ctx, vec![]);
+            assert!(set_center(&labels, 1).distance(set_center(&labels, 2)) > 6.0, "distinct actual Typography rows");
+            assert_eq!(attrs(&mut app), original_attrs);
+            assert_eq!(app.session.doc().unwrap().doc, baseline.doc);
+            assert_eq!(app.session.doc().unwrap().history.undo.len(), baseline.history.undo.len());
+
+            // Typography uses ordinary clicks and one type.feature command per activation.
+            // The removed popup's press-and-drag/same-frame oracle does not apply to this route.
+            let mut after_first = None;
+            for (number, before, after) in [(1, &original_attrs, &expected_first), (2, &expected_first, &expected)] {
+                let (labels, _) = frame(&mut app, &ctx, vec![]);
+                let pos = set_center(&labels, number);
+                frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos), pointer(pos, true)]);
+                assert_eq!(&attrs(&mut app), before, "ordinary checkbox has not activated on press");
+                let (_, passes) = frame(&mut app, &ctx, vec![pointer(pos, false)]);
+                assert_eq!(passes, 1, "the assignment oracle must not rely on a repair pass");
+                assert_eq!(&attrs(&mut app), after, "immediate target={target}, set={number}");
+                let st = app.session.doc().unwrap();
+                assert_eq!(st.selection, baseline.selection);
+                assert_eq!(st.history.undo.len(), baseline.history.undo.len() + number as usize);
+                if number == 1 {
+                    after_first = Some(st.doc.clone());
+                }
+            }
+            let after_first = after_first.unwrap();
+            let after_both = app.session.doc().unwrap().doc.clone();
+            let assert_state = |app: &mut DesignApp| {
+                assert_eq!(attrs(app), expected);
+                let st = app.session.doc().unwrap();
+                assert_eq!(st.selection, baseline.selection);
+                let text = &st.doc.stories[&story];
+                let original = &baseline.doc.stories[&story];
+                assert_eq!(text.text, "before target after");
+                for at in [0, 14] {
+                    assert_eq!(text.char_format_at(at), original.char_format_at(at), "unselected neighbor at {at}");
+                }
+                assert_eq!(st.history.undo.len(), baseline.history.undo.len() + 2);
+                assert_eq!(st.history.redo.len(), baseline.history.redo.len());
+                assert!(st.history.undo[baseline.history.undo.len()..].iter().all(|entry| entry.label == "Set OpenType Features"));
+            };
+            assert_state(&mut app);
+            for events in [
+                vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+                vec![],
+                vec![],
+            ] {
+                frame(&mut app, &ctx, events);
+                assert_state(&mut app);
+            }
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc, after_first);
+            assert_eq!(attrs(&mut app), expected_first);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc, baseline.doc);
+            assert_eq!(app.session.doc().unwrap().selection, baseline.selection);
+            assert_eq!(attrs(&mut app), original_attrs);
+            app.run("edit.redo", json!({})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc, after_first);
+            assert_eq!(attrs(&mut app), expected_first);
+            app.run("edit.redo", json!({})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc, after_both);
+            assert_state(&mut app);
+        }
+    }
 }

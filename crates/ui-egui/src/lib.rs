@@ -543,6 +543,7 @@ pub struct DesignApp {
     fonts_system: bool,
     pub restyle: bool,
     fonts_ready: bool,
+    checkbox_context: Option<egui::Context>,
     pub integrated_titlebar: bool,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
     pub native_menu: bool,
@@ -610,6 +611,7 @@ impl DesignApp {
             fonts_system: false,
             restyle: false,
             fonts_ready: false,
+            checkbox_context: None,
             integrated_titlebar: false,
             native_menu: false,
             native_shortcuts: Default::default(),
@@ -667,38 +669,49 @@ impl DesignApp {
 
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
-        if let Some(r) = menus::run_ui(self, id, &params) {
-            return r;
-        }
-        // Only user-initiated runs touch the system clipboard, never the control channel's.
-        let system_clipboard = !self.in_control && !self.control_input_frame.load(std::sync::atomic::Ordering::Relaxed);
-        let params = if system_clipboard { self.with_system_clipboard(id, params) } else { params };
-        let r = self.session.execute(id, &params).map_err(|e| e.to_string());
-        self.after_engine();
-        match &r {
-            Err(e) => self.status(e.clone()),
-            // Copied text goes to the system clipboard too, whichever way Copy was chosen.
-            Ok(v) if system_clipboard && matches!(id, "edit.copy" | "edit.cut") => {
-                let text = match v.get("text").and_then(Value::as_str) {
-                    Some(t) => {
-                        self.object_clip_text = None;
-                        Some(t.to_string())
+        // Deleted or replaced rows can reuse the captured row's name or index.
+        let resets_checkbox_rows = matches!(id, "edit.undo" | "edit.redo" | "file.revert" | "guide.delete" | "guide.deleteAll" | "article.delete")
+            || (id == "layout.createGuides" && params.get("removeExisting").and_then(Value::as_bool) == Some(true));
+        let r = if let Some(r) = menus::run_ui(self, id, &params) {
+            r
+        } else {
+            // Only user-initiated runs touch the system clipboard, never the control channel's.
+            let system_clipboard = !self.in_control && !self.control_input_frame.load(std::sync::atomic::Ordering::Relaxed);
+            let params = if system_clipboard { self.with_system_clipboard(id, params) } else { params };
+            let r = self.session.execute(id, &params).map_err(|e| e.to_string());
+            self.after_engine();
+            match &r {
+                Err(e) => self.status(e.clone()),
+                // Copied text goes to the system clipboard too, whichever way Copy was chosen.
+                Ok(v) if system_clipboard && matches!(id, "edit.copy" | "edit.cut") => {
+                    let text = match v.get("text").and_then(Value::as_str) {
+                        Some(t) => {
+                            self.object_clip_text = None;
+                            Some(t.to_string())
+                        }
+                        None if !self.native_menu => {
+                            self.object_clip_text = Some(self.copied_objects_text());
+                            self.object_clip_text.clone()
+                        }
+                        None => {
+                            self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f());
+                            None
+                        }
+                    };
+                    if let (Some(t), Some(ctx)) = (text, &self.egui_ctx) {
+                        ctx.copy_text(t);
+                        ctx.request_repaint();
                     }
-                    None if !self.native_menu => {
-                        self.object_clip_text = Some(self.copied_objects_text());
-                        self.object_clip_text.clone()
-                    }
-                    None => {
-                        self.object_clip_text = self.services.clipboard_text.as_mut().and_then(|f| f());
-                        None
-                    }
-                };
-                if let (Some(t), Some(ctx)) = (text, &self.egui_ctx) {
-                    ctx.copy_text(t);
-                    ctx.request_repaint();
                 }
+                Ok(_) => {}
             }
-            Ok(_) => {}
+            r
+        };
+        if let Some(ctx) = &self.checkbox_context {
+            widgets::checkbox_context(ctx, self.session.active().map(|document| (document.uid, &document.selection, document.doc.as_ref())));
+            if r.is_ok() && resets_checkbox_rows {
+                widgets::cancel_checkbox_gesture(ctx);
+            }
         }
         r
     }
@@ -917,6 +930,8 @@ impl DesignApp {
         if self.egui_ctx.is_none() {
             self.egui_ctx = Some(ctx.clone());
         }
+        self.checkbox_context = Some(ctx.clone());
+        widgets::checkbox_context(ctx, self.session.active().map(|document| (document.uid, &document.selection, document.doc.as_ref())));
         if !self.color_applied {
             self.color_applied = true;
             if let Some(cs) = self.ui.color_settings.clone() {
@@ -989,6 +1004,7 @@ impl DesignApp {
             }
         }
         self.handle_quit(ctx);
+        widgets::checkbox_context(ctx, self.session.active().map(|document| (document.uid, &document.selection, document.doc.as_ref())));
     }
 
     /// Quit: close the window the way its close button does, so unsaved documents ask first.

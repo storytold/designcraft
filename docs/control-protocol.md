@@ -14,6 +14,9 @@ in the preview before its undo entry is committed. On macOS, default shortcuts o
 menu (including Command-Z) are skipped by the egui shortcut handler. `ui.key` does not send a Cocoa
 menu event; use `ui.menu.invoke` for a menu-command test and test physical accelerators separately.
 
+After changing dialog controls with queued input, wait for `ui.inspect` to report the intended
+`dialog.fields` before calling `ui.dialog.confirm`, which applies the current draft immediately.
+
 **Only requests are read.** Every line must be a JSON object with a string `method` (`id` and `params`
 are optional; blank lines are skipped). Anything else gets one error reply
 (`{"ok": false, "error": "… closing the connection"}`) and the server **closes the connection**, so

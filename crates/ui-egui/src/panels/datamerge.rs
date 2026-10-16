@@ -60,7 +60,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.separator();
 
     let mut preview_on = preview_record > 0;
-    if ui.checkbox(&mut preview_on, w(ui, &lang, "Preview")).changed() {
+    if crate::widgets::native_checkbox(ui, &mut preview_on, w(ui, &lang, "Preview")).changed() {
         if preview_on {
             let _ = app.run("data.preview", json!({"record": 1}));
         } else {
@@ -158,11 +158,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let _ = app.run("data.options", json!({"fitting": fitting}));
     }
     let mut center = options.center;
-    if ui.checkbox(&mut center, w(ui, &lang, "Center in frame")).changed() {
+    if crate::widgets::native_checkbox(ui, &mut center, w(ui, &lang, "Center in frame")).changed() {
         let _ = app.run("data.options", json!({"center": center}));
     }
     let mut link_images = options.link_images;
-    if ui.checkbox(&mut link_images, w(ui, &lang, "Link images")).changed() {
+    if crate::widgets::native_checkbox(ui, &mut link_images, w(ui, &lang, "Link images")).changed() {
         let _ = app.run("data.options", json!({"linkImages": link_images}));
     }
     let mut limit = options.limit.unwrap_or(0);

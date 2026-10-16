@@ -13,6 +13,10 @@ use crate::theme::semibold;
 pub struct Dialog {
     pub id: String,
     pub fields: Map<String, Value>,
+    #[serde(skip)]
+    pending_confirm: Option<crate::widgets::CheckboxCompletion>,
+    #[serde(skip)]
+    shown: bool,
     /// The document's ruler unit: what a bare number such as `12` means in a measurement field.
     /// Set from the active document when the dialog is shown or confirmed (picas without one).
     #[serde(skip)]
@@ -80,7 +84,7 @@ impl Dialog {
                 }
             }
         }
-        Dialog { id: id.into(), fields, unit: Unit::Picas }
+        Dialog { id: id.into(), fields, pending_confirm: None, shown: false, unit: Unit::Picas }
     }
     /// Set a field and report a genuine Find domain/mode transition to the caller.
     pub(crate) fn set_field(&mut self, key: &str, value: Value) -> bool {
@@ -1479,14 +1483,22 @@ fn color_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str) {
 
 fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
     let mut b = d.b(key);
-    if ui.checkbox(&mut b, crate::rtl::widget(ui, label)).changed() {
+    // Keep a different field from inheriting a pending endpoint at the same row.
+    if ui.push_id(key, |ui| crate::widgets::native_checkbox(ui, &mut b, crate::rtl::widget(ui, label))).inner.changed() {
         d.fields.insert(key.into(), Value::Bool(b));
     }
 }
 
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.dialog.clone() else { return };
-    let mut result: Option<bool> = None;
+    if !d.shown {
+        crate::widgets::cancel_checkbox_gesture(ctx);
+        d.shown = true;
+    }
+    // A fresh action supersedes a queued confirmation. Mere hover does not.
+    let fresh_action = ctx.input(|i| i.pointer.any_pressed() || i.events.iter().any(|event| matches!(event, egui::Event::Key { pressed: true, .. })));
+    let pending_confirm = d.pending_confirm.take().filter(|_| !fresh_action);
+    let mut result = None;
     let alert_title = d.s("title");
     let title = match d.id.as_str() {
         "alert" => crate::i18n::tr(&app.ui.language, &alert_title),
@@ -1866,7 +1878,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                     for l in &mut layers {
                         let mut on = l["visible"].as_bool().unwrap_or(true);
-                        if ui.checkbox(&mut on, l["name"].as_str().unwrap_or("")).changed() {
+                        let name = l["name"].as_str().unwrap_or("");
+                        if ui.push_id(("pdf_layer_visibility", name), |ui| crate::widgets::native_checkbox(ui, &mut on, name)).inner.changed() {
                             l["visible"] = json!(on);
                         }
                     }
@@ -1933,13 +1946,17 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             let key = crate::menus::menu_key(&menu, &label);
                             let mut visible = !app.ui.hidden_menu_items.contains(&key);
                             if ui
-                                .checkbox(
-                                    &mut visible,
-                                    crate::rtl::widget(
+                                .push_id(("menu_visibility", &key), |ui| {
+                                    crate::widgets::native_checkbox(
                                         ui,
-                                        format!("{} › {}", crate::i18n::tr(&app.ui.language, &menu), crate::i18n::tr(&app.ui.language, &label)),
-                                    ),
-                                )
+                                        &mut visible,
+                                        crate::rtl::widget(
+                                            ui,
+                                            format!("{} › {}", crate::i18n::tr(&app.ui.language, &menu), crate::i18n::tr(&app.ui.language, &label)),
+                                        ),
+                                    )
+                                })
+                                .inner
                                 .changed()
                             {
                                 let _ = app.run("window.hideMenuItem", json!({"item": key, "hidden": !visible}));
@@ -2234,6 +2251,25 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             });
         });
     });
+    if result.is_none()
+        && let Some(completion) = pending_confirm
+    {
+        if crate::widgets::checkbox_completion_settled(ctx, completion) {
+            result = Some(true);
+        } else if crate::widgets::checkbox_completion_pending(ctx) == Some(completion) {
+            // A repeated layout pass in this frame must keep the same authorized
+            // confirmation until the endpoint can settle on the next frame.
+            d.pending_confirm = Some(completion);
+        }
+    }
+    if result == Some(true)
+        && let Some(completion) = crate::widgets::checkbox_completion_pending(ctx)
+    {
+        // Draw the pending endpoint before committing this same dialog's fields.
+        d.pending_confirm = Some(completion);
+        result = None;
+        ctx.request_repaint();
+    }
     app.ui.dialog = Some(d);
     match result {
         Some(true) => {
@@ -2269,7 +2305,8 @@ fn find_change_params(d: &Dialog) -> Value {
 
 /// Apply the open dialog.
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
-    let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
+    let Some(mut d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
+    d.pending_confirm = None;
     if d.id != "pdfImport" || !d.b("async") {
         app.cancel_pdf_import();
     }
@@ -2910,7 +2947,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                 });
                 for (label, key) in [("Align Left Edge", "dropCapAlignLeft"), ("Scale for Descenders", "dropCapScaleDescenders")] {
                     let mut on = cur(d, &format!("p.{key}"), &pv[key]).as_bool().unwrap_or(false);
-                    if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).changed() {
+                    if crate::widgets::native_checkbox(ui, &mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).changed() {
                         d.fields.insert(format!("p.{key}"), json!(on));
                     }
                 }
@@ -3175,7 +3212,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             "rules" => paragraph_rules(app, ui, d, "p.", &pv),
             "hyph" => {
                 let mut h = cur(d, "p.hyphenate", &pv["hyphenate"]).as_bool().unwrap_or(true);
-                if ui.checkbox(&mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
+                if crate::widgets::native_checkbox(ui, &mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
                     d.fields.insert("p.hyphenate".into(), json!(h));
                 }
                 egui::Grid::new("psh").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -3223,15 +3260,24 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     ui.end_row();
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Insert Kashidas:"));
                     let mut k = cur(d, "p.kashidas", &pv["kashidas"]).as_bool().unwrap_or(true);
-                    if ui.checkbox(&mut k, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "In justified Arabic text"))).changed() {
+                    if crate::widgets::native_checkbox(
+                        ui,
+                        &mut k,
+                        crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "In justified Arabic text")),
+                    )
+                    .changed()
+                    {
                         d.fields.insert("p.kashidas".into(), json!(k));
                     }
                     ui.end_row();
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Korean Line Breaks:"));
                     let mut kb = cur(d, "p.koreanCharBreaks", &pv["koreanCharBreaks"]).as_bool().unwrap_or(false);
-                    if ui
-                        .checkbox(&mut kb, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Between syllables (not only at spaces)")))
-                        .changed()
+                    if crate::widgets::native_checkbox(
+                        ui,
+                        &mut kb,
+                        crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Between syllables (not only at spaces)")),
+                    )
+                    .changed()
                     {
                         d.fields.insert("p.koreanCharBreaks".into(), json!(kb));
                     }
@@ -3545,19 +3591,25 @@ fn char_choice(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, k
 
 /// An on/off attribute; for a character style a third, mixed state leaves it unset (clicks go
 /// unset → on → off → unset).
-fn char_check(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, label: &str) {
-    let cur = cf.get(d, key);
-    let mut on = cur.as_bool().unwrap_or(false);
-    let unset = cf.sparse && cur.is_null();
-    if ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, label)).indeterminate(unset)).clicked() {
-        let next = match cur.as_bool() {
-            _ if !cf.sparse => json!(on),
-            None => json!(true),
-            Some(true) => json!(false),
-            Some(false) => Value::Null,
-        };
-        cf.set(d, key, next);
+fn char_check(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, label: &str) -> egui::Response {
+    let mut value = cf.get(d, key).as_bool();
+    let label = crate::rtl::widget(ui, label);
+    let response = ui
+        .push_id(("character_check", key), |ui| {
+            if cf.sparse {
+                crate::widgets::sparse_checkbox(ui, &mut value, label)
+            } else {
+                let mut on = value.unwrap_or(false);
+                let response = crate::widgets::native_checkbox(ui, &mut on, label);
+                value = Some(on);
+                response
+            }
+        })
+        .inner;
+    if response.changed() {
+        cf.set(d, key, value.map_or(Value::Null, Value::Bool));
     }
+    response
 }
 
 /// A swatch attribute from a menu; `text_color` names the "" entry (the text's own colour).
@@ -3755,7 +3807,7 @@ fn open_type_features(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFi
     egui::Grid::new("csot").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
         for (i, (tag, label, _)) in otf::TOGGLES.iter().enumerate() {
             let mut on = otf::is_on(&list, tag);
-            if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).changed() {
+            if crate::widgets::native_checkbox(ui, &mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).changed() {
                 otf::set(&mut list, tag, on);
                 changed = true;
             }
@@ -3966,7 +4018,13 @@ fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &
         );
         ui.add_space(12.0);
         let mut on = rule["on"].as_bool().unwrap_or(false);
-        if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, "Rule On"))).changed() {
+        if ui
+            .push_id(("paragraph_rule", prefix, which), |ui| {
+                crate::widgets::native_checkbox(ui, &mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, "Rule On")))
+            })
+            .inner
+            .changed()
+        {
             d.fields.insert(key("on"), json!(on));
         }
     });
@@ -4922,6 +4980,1829 @@ mod tests {
         assert_eq!(toc_rows(d).iter().map(|r| r.style.as_str()).collect::<Vec<_>>(), ["Headline"]);
     }
 
+    fn checkbox_pointer(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    #[test]
+    fn checkbox_sparse_pending_confirm_apply_cancel_and_replacement() {
+        for action in ["apply", "cancel_button", "cancel_direct", "replace"] {
+            let mut app = styled_app();
+            for name in ["Emphasis", "Base"] {
+                app.run(
+                    "style.character.edit",
+                    json!({
+                        "name": name, "chars": {"underline": false, "strikethrough": false}
+                    }),
+                )
+                .unwrap();
+            }
+            let before = CharAttrs { font_style: Some("Italic".into()), underline: Some(false), strikethrough: Some(false), ..Default::default() };
+            let other_before =
+                CharAttrs { font_style: Some("Bold".into()), underline: Some(false), strikethrough: Some(false), ..Default::default() };
+            assert_eq!(char_style(&app, "Emphasis").unwrap().chars, before);
+            assert_eq!(char_style(&app, "Base").unwrap().chars, other_before);
+            open_style_options(&mut app, false, "Emphasis");
+            app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("chars"));
+            let ctx = dialog_context("en");
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+            let key =
+                |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+            let clear_focus = || {
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                })
+            };
+            for _ in 0..4 {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            let p = visible_label(&labels, screen, "Strikethrough").center();
+            let q = visible_label(&labels, screen, "Underline").center();
+            clear_focus();
+            let labels = dialog_frame(
+                &mut app,
+                &ctx,
+                screen,
+                vec![egui::Event::PointerMoved(p), checkbox_pointer(p, true), egui::Event::PointerMoved(q), checkbox_pointer(q, false), key(true)],
+            );
+            assert!(app.ui.dialog.is_some(), "{action}: reverse endpoint must settle first");
+            assert_eq!(char_style(&app, "Emphasis").unwrap().chars, before);
+            if action == "apply" {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+                assert!(app.ui.dialog.is_none(), "one repaint completes confirmation");
+                let expected =
+                    CharAttrs { font_style: Some("Italic".into()), underline: Some(true), strikethrough: Some(true), ..Default::default() };
+                assert_eq!(char_style(&app, "Emphasis").unwrap().chars, expected);
+                open_style_options(&mut app, false, "Emphasis");
+                dialog_frame(&mut app, &ctx, screen, vec![key(false)]);
+                clear_focus();
+                dialog_frame(&mut app, &ctx, screen, vec![key(true)]);
+                assert!(app.ui.dialog.is_none(), "ordinary Enter remains synchronous");
+                assert_eq!(char_style(&app, "Emphasis").unwrap().chars, expected);
+            } else {
+                if action == "cancel_button" {
+                    let p = visible_label(&labels, screen, "Cancel").center();
+                    click_dialog(&mut app, &ctx, screen, p);
+                    assert!(app.ui.dialog.is_none());
+                } else if action == "cancel_direct" {
+                    cancel(&mut app); // No pointer press may clear the queued endpoint.
+                    assert!(app.ui.dialog.is_none());
+                }
+                let name = if action == "replace" { "Base" } else { "Emphasis" };
+                // Reopen/replace before any intervening frame, with the same modal IDs.
+                open_style_options(&mut app, false, name);
+                app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("chars"));
+                let base = json!({"underline": false, "strikethrough": false});
+                for events in [vec![key(false)], vec![]] {
+                    dialog_frame(&mut app, &ctx, screen, events);
+                    let d = app.ui.dialog.as_ref().expect("fresh dialog must stay open");
+                    assert_eq!(d.s("name"), name);
+                    let cf = CharFields { base: &base, sparse: true };
+                    assert_eq!(
+                        [cf.get(d, "underline"), cf.get(d, "strikethrough")],
+                        [json!(false), json!(false)],
+                        "{action}: draft must remain baseline"
+                    );
+                    assert!(!d.fields.keys().any(|k| k.starts_with("c.")), "{action}: a fresh sparse draft has no character overrides");
+                }
+                assert_eq!(char_style(&app, "Emphasis").unwrap().chars, before);
+                assert_eq!(char_style(&app, "Base").unwrap().chars, other_before);
+                clear_focus();
+                dialog_frame(&mut app, &ctx, screen, vec![key(true)]);
+                assert!(app.ui.dialog.is_none(), "ordinary Enter confirms fresh dialog");
+                assert_eq!(char_style(&app, "Emphasis").unwrap().chars, before);
+            }
+            assert_eq!(char_style(&app, "Base").unwrap().chars, other_before);
+        }
+    }
+
+    #[test]
+    fn checkbox_held_menu_origin_cannot_follow_queued_filter() {
+        use designcraft_engine::DocState;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+
+        fn same(a: &DocState, e: &DocState) {
+            macro_rules! fields {
+            ($($f:ident),*) => {$(assert_eq!(a.$f, e.$f, stringify!($f));)*}
+        }
+            fields!(doc, selection, uid, revision, saved_revision, saved_doc, active_layer, path, editing_parents, preview_stash, preview_record);
+            assert_eq!(a.is_dirty(), e.is_dirty());
+            assert!(a.interaction.is_none() && e.interaction.is_none());
+            assert!(a.fonts.is_none() && e.fonts.is_none());
+            assert_eq!((a.history.undo.len(), a.history.redo.len(), a.history.limit), (e.history.undo.len(), e.history.redo.len(), e.history.limit));
+            for (x, y) in a.history.undo.iter().chain(&a.history.redo).zip(e.history.undo.iter().chain(&e.history.redo)) {
+                assert_eq!((&x.label, x.doc.as_ref(), &x.selection), (&y.label, y.doc.as_ref(), &y.selection));
+            }
+        }
+        fn state(app: &DesignApp, before: &DocState, prefs: &Value, ui_prefs: &Value) {
+            assert_eq!(app.session.documents().len(), 1);
+            assert_eq!(app.session.active_index(), Some(0));
+            same(app.session.active().unwrap(), before);
+            assert_eq!(&serde_json::to_value(&app.session.prefs).unwrap(), prefs);
+            assert_eq!(&serde_json::to_value(&app.ui).unwrap(), ui_prefs);
+        }
+        fn layer() -> egui::LayerId {
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dialog"))
+        }
+        fn measure(h: &mut Harness<'_, DesignApp>, label: &str) -> egui::Response {
+            let n = h.get_by_label(label);
+            let composite = n.accesskit_node().id();
+            let local = n.accesskit_node().locate().0;
+            let rect = n.rect();
+            assert_eq!(n.accesskit_node().role(), egui::accesskit::Role::CheckBox);
+            assert!(h.ctx.content_rect().contains_rect(rect));
+            assert_eq!(h.ctx.layer_id_at(rect.center()), Some(layer()));
+            assert!(!h.ctx.input(|i| i.pointer.any_down()));
+            h.input_mut().events.push(egui::Event::PointerMoved(rect.center()));
+            h.run_steps(1);
+            assert_eq!(h.get_by_label(label).accesskit_node().id(), composite);
+            assert_eq!(h.get_by_label(label).rect(), rect);
+            let id = h
+                .ctx
+                .interaction_snapshot(|s| s.hovered.iter().copied().find(|id| id.accesskit_id() == local))
+                .expect("PREREQUISITE: measured real checkbox receives hover");
+            let r = h.ctx.read_response(id).unwrap();
+            assert!(r.enabled() && r.interact_rect.contains(rect.center()));
+            assert_eq!(r.layer_id, layer());
+            r
+        }
+        fn occupied(h: &Harness<'_, DesignApp>) -> Vec<egui::Rect> {
+            use egui::accesskit::Role;
+            h.root()
+                .children_recursive()
+                .filter(|n| matches!(n.accesskit_node().role(), Role::CheckBox | Role::Button | Role::TextInput | Role::ScrollBar | Role::Label))
+                .filter(|n| n.accesskit_node().bounding_box().is_some())
+                .map(|n| n.rect())
+                .collect()
+        }
+        fn blank_guard(h: &Harness<'_, DesignApp>, p: egui::Pos2) {
+            assert!(h.ctx.content_rect().contains(p));
+            assert_eq!(h.ctx.layer_id_at(p), Some(layer()));
+            assert!(occupied(h).iter().all(|r| !r.expand(8.0).contains(p)), "PREREQUISITE: blank outside ALL checkboxes/query/footer controls");
+        }
+
+        for switch in [false, true] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "en".into();
+            app.run("file.new", json!({"facingPages":false, "primaryTextFrame":false})).unwrap();
+            app.run("style.character.create", json!({"name":"Menu sentinel", "chars":{"fontStyle":"Italic"}})).unwrap();
+            let restored = app.session.active().unwrap().clone();
+            app.run("layout.documentSetup", json!({"facingPages":true})).unwrap();
+            assert_ne!(app.session.active().unwrap().doc, restored.doc);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.active().unwrap().doc, restored.doc);
+            let before = app.session.active().unwrap().clone();
+            assert!(!before.history.undo.is_empty());
+            assert_eq!(before.history.redo.len(), 1);
+            let prefs = serde_json::to_value(&app.session.prefs).unwrap();
+            let items = crate::menus::all_menu_items();
+            for (menu, label, literal) in [("File", "Open…", "File/Open…"), ("Edit", "Undo", "Edit/Undo"), ("Edit", "Redo", "Edit/Redo")] {
+                assert!(items.contains(&(menu.into(), label.into())));
+                assert_eq!(crate::menus::menu_key(menu, label), literal);
+            }
+            // Ensure each filter identifies exactly the intended one-row replacement.
+            for (query, label) in [("undo", "Undo"), ("redo", "Redo")] {
+                let filtered: Vec<_> =
+                    items.iter().filter(|(m, l)| m.to_lowercase().contains(query) || l.to_lowercase().contains(query)).cloned().collect();
+                assert_eq!(filtered, vec![("Edit".to_owned(), label.to_owned())]);
+            }
+            app.ui.hidden_menu_items = vec!["File/Open…".into()];
+            app.ui.show_full_menus = true; // Origin command must set this false.
+            app.run("app.menus", json!({})).unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.control_rx = Some(rx);
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        ready = true;
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    if !app.fonts_ready {
+                        return;
+                    }
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    show(app, &ctx);
+                },
+                app,
+            );
+            h.input_mut().max_texture_side = Some(8192);
+            h.run_steps(8);
+            let query = |h: &mut Harness<'_, DesignApp>, value: &str| {
+                let (req, reply) = crate::ControlRequest::new("ui.dialog.set", json!({"field":"query", "value":value}));
+                tx.send(req).unwrap();
+                h.run_steps(1); // Real app.logic drains queue before show.
+                let r = reply.try_recv().unwrap();
+                assert_eq!(r["ok"], json!(true));
+                assert_eq!(r["result"]["fields"]["query"], json!(value));
+            };
+            query(&mut h, "redo");
+            h.run_steps(3);
+            let redo = measure(&mut h, "Edit › Redo");
+            let redo_occupied = occupied(&h);
+            query(&mut h, "undo");
+            h.run_steps(3);
+            let undo = measure(&mut h, "Edit › Undo");
+            let ui_before = serde_json::to_value(&h.state().ui).unwrap();
+            state(h.state(), &before, &prefs, &ui_before);
+            assert_eq!(h.state().ui.hidden_menu_items, vec!["File/Open…".to_owned()]);
+            assert!(h.state().ui.show_full_menus);
+            let mut expected_ui = h.state().ui.clone();
+            expected_ui.hidden_menu_items = vec!["File/Open…".into(), "Edit/Undo".into()];
+            expected_ui.show_full_menus = false;
+            let expected_ui = serde_json::to_value(expected_ui).unwrap();
+            let check_origin = |h: &Harness<'_, DesignApp>| {
+                assert_eq!(h.state().ui.hidden_menu_items, vec!["File/Open…".to_owned(), "Edit/Undo".to_owned()]);
+                assert!(!h.state().ui.show_full_menus);
+                state(h.state(), &before, &prefs, &expected_ui);
+            };
+            let p = undo.interact_rect.center();
+            let blank = egui::pos2(undo.interact_rect.right().max(redo.interact_rect.right()) + 32.0, p.y);
+            assert!(p.distance(blank) > 32.0);
+            assert!(!undo.interact_rect.expand(8.0).contains(blank));
+            assert!(!redo.interact_rect.expand(8.0).contains(blank));
+            assert!(redo_occupied.iter().all(|r| !r.expand(8.0).contains(blank)));
+            blank_guard(&h, blank);
+            assert_eq!(h.ctx.layer_id_at(p), Some(layer()));
+            // Separate actual press and held-motion frames, as accepted Rules/Char fixtures.
+            h.input_mut().events.extend([egui::Event::PointerMoved(p), checkbox_pointer(p, true)]);
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| i.pointer.primary_pressed()
+                && i.pointer.primary_down()
+                && !i.pointer.primary_released()
+                && i.pointer.interact_pos() == Some(p)));
+            check_origin(&h); // Literal positive live edit, never snapshot a possibly bad result.
+            h.input_mut().events.push(egui::Event::PointerMoved(blank));
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| !i.pointer.primary_pressed()
+                && i.pointer.primary_down()
+                && !i.pointer.primary_released()
+                && i.pointer.is_decidedly_dragging()));
+            assert_eq!(h.get_by_label("Edit › Undo").accesskit_node().locate().0, undo.id.accesskit_id());
+            assert_eq!(h.ctx.dragged_id(), Some(undo.id), "PREREQUISITE: actual origin capture");
+            assert!(h.ctx.read_response(undo.id).unwrap().is_pointer_button_down_on());
+            blank_guard(&h, blank);
+            check_origin(&h);
+            assert!(h.input().events.is_empty());
+            if switch {
+                query(&mut h, "redo");
+            } else {
+                h.run_steps(1);
+            }
+            assert!(h.ctx.input(|i| i.pointer.primary_down()
+                && !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()
+                && i.pointer.interact_pos() == Some(blank)
+                && !i.events.iter().any(|e| matches!(e, egui::Event::Key { .. }))));
+            let (label, warmed) = if switch { ("Edit › Redo", &redo) } else { ("Edit › Undo", &undo) };
+            let n = h.get_by_label(label);
+            assert_eq!(n.accesskit_node().locate().0, warmed.id.accesskit_id());
+            let rect = n.rect();
+            assert_eq!(rect, warmed.rect, "PREREQUISITE: actual row retained warmed geometry");
+            let current = h.ctx.read_response(warmed.id).unwrap();
+            assert!(current.enabled() && h.ctx.content_rect().contains_rect(rect));
+            assert_eq!(current.layer_id, layer());
+            assert_eq!(h.ctx.layer_id_at(rect.center()), Some(layer()));
+            assert!(!rect.contains(blank) && !current.interact_rect.contains(blank));
+            assert!(!h.ctx.interaction_snapshot(|s| s.contains_pointer.contains(&warmed.id)));
+            blank_guard(&h, blank);
+            let alias = warmed.id == undo.id;
+            eprintln!("switch={switch} alias={alias} origin={:?} current={:?} blank={blank:?}", undo.id, warmed.id);
+            if alias {
+                assert_eq!(h.ctx.dragged_id(), Some(undo.id));
+                assert!(current.is_pointer_button_down_on());
+            } else {
+                assert!(!current.is_pointer_button_down_on());
+            }
+            // C13 negative must pass all above guards before this is product evidence.
+            check_origin(&h);
+            let d = h.state().ui.dialog.as_ref().unwrap();
+            assert_eq!(d.id, "menus");
+            assert_eq!(d.s("query"), if switch { "redo" } else { "undo" });
+            assert!(d.pending_confirm.is_none());
+            h.run_steps(1);
+            check_origin(&h);
+            h.input_mut().events.push(checkbox_pointer(blank, false));
+            h.run_steps(1);
+            check_origin(&h);
+            for _ in 0..2 {
+                h.run_steps(1);
+                check_origin(&h);
+            }
+            // Menus edits are already live. Escape is close-only, not rollback.
+            h.ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            h.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+            assert!(h.state().ui.dialog.is_none());
+            check_origin(&h);
+            h.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            for _ in 0..2 {
+                h.run_steps(1);
+                assert!(h.state().ui.dialog.is_none());
+                check_origin(&h);
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_held_layer_origin_cannot_follow_queued_reorder() {
+        use designcraft_engine::DocState;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+
+        fn same(a: &DocState, e: &DocState) {
+            macro_rules! fields { ($($f:ident),*) => {$(assert_eq!(a.$f, e.$f, stringify!($f));)*} }
+            fields!(doc, selection, uid, revision, saved_revision, saved_doc, active_layer, path, editing_parents, preview_stash, preview_record);
+            assert_eq!(a.is_dirty(), e.is_dirty());
+            assert!(a.interaction.is_none() && e.interaction.is_none());
+            assert!(a.fonts.is_none() && e.fonts.is_none());
+            assert_eq!((a.history.undo.len(), a.history.redo.len(), a.history.limit), (e.history.undo.len(), e.history.redo.len(), e.history.limit));
+            for (x, y) in a.history.undo.iter().chain(&a.history.redo).zip(e.history.undo.iter().chain(&e.history.redo)) {
+                assert_eq!((&x.label, x.doc.as_ref(), &x.selection), (&y.label, y.doc.as_ref(), &y.selection));
+            }
+        }
+        fn world(app: &DesignApp, before: &DocState, prefs: &Value, ui: &Value) {
+            assert_eq!(app.session.documents().len(), 1);
+            assert_eq!(app.session.active_index(), Some(0));
+            same(app.session.active().unwrap(), before);
+            assert_eq!(&serde_json::to_value(&app.session.prefs).unwrap(), prefs);
+            assert_eq!(&serde_json::to_value(&app.ui).unwrap(), ui); // dialog is serde-skipped
+        }
+        fn draft(h: &Harness<'_, DesignApp>, expected: &Value) {
+            let d = h.state().ui.dialog.as_ref().unwrap();
+            assert_eq!(d.id, "layerOptions");
+            assert!(d.shown && d.pending_confirm.is_none());
+            assert_eq!(serde_json::to_value(&d.fields).unwrap(), json!({"layers":expected}));
+        }
+        fn layer() -> egui::LayerId {
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dialog"))
+        }
+        fn measure(h: &mut Harness<'_, DesignApp>, label: &str) -> egui::Response {
+            let n = h.get_by_label(label);
+            let composite = n.accesskit_node().id();
+            let local = n.accesskit_node().locate().0;
+            let rect = n.rect();
+            assert_eq!(n.accesskit_node().role(), egui::accesskit::Role::CheckBox);
+            assert!(h.ctx.content_rect().contains_rect(rect));
+            assert_eq!(h.ctx.layer_id_at(rect.center()), Some(layer()));
+            assert!(!h.ctx.input(|i| i.pointer.any_down()));
+            h.input_mut().events.push(egui::Event::PointerMoved(rect.center()));
+            h.run_steps(1);
+            assert_eq!(h.get_by_label(label).accesskit_node().id(), composite);
+            assert_eq!(h.get_by_label(label).rect(), rect);
+            let id = h
+                .ctx
+                .interaction_snapshot(|s| s.hovered.iter().copied().find(|id| id.accesskit_id() == local))
+                .expect("PREREQUISITE: real checkbox hover");
+            let r = h.ctx.read_response(id).unwrap();
+            assert!(r.enabled() && r.interact_rect.contains(rect.center()));
+            assert_eq!(r.layer_id, layer());
+            r
+        }
+        fn blank_guard(h: &Harness<'_, DesignApp>, p: egui::Pos2) {
+            use egui::accesskit::Role;
+            assert!(h.ctx.content_rect().contains(p));
+            assert_eq!(h.ctx.layer_id_at(p), Some(layer()));
+            for n in h
+                .root()
+                .children_recursive()
+                .filter(|n| matches!(n.accesskit_node().role(), Role::CheckBox | Role::Button | Role::TextInput | Role::ScrollBar | Role::Label))
+            {
+                if n.accesskit_node().bounding_box().is_some() {
+                    assert!(!n.rect().expand(8.0).contains(p), "PREREQUISITE: blank clear of controls");
+                }
+            }
+        }
+
+        for switch in [false, true] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "en".into();
+            app.run("file.new", json!({"facingPages":false,"primaryTextFrame":false})).unwrap();
+            app.run(
+                "style.character.create",
+                json!({"name":"Layer sentinel",
+            "chars":{"fontStyle":"Italic","underline":false,"strikethrough":false}}),
+            )
+            .unwrap();
+            let restored = app.session.active().unwrap().clone();
+            app.run("layout.documentSetup", json!({"facingPages":true})).unwrap();
+            assert_ne!(app.session.active().unwrap().doc, restored.doc);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.active().unwrap().doc, restored.doc);
+            let before = app.session.active().unwrap().clone();
+            assert!(!before.history.undo.is_empty());
+            assert_eq!(before.history.redo.len(), 1);
+            let prefs = serde_json::to_value(&app.session.prefs).unwrap();
+            let initial = json!([{"name":"Layer A","visible":true,"default":false},
+                             {"name":"Layer B","visible":true,"default":true}]);
+            let origin_expected = json!([{"name":"Layer A","visible":false,"default":false},
+                                     {"name":"Layer B","visible":true,"default":true}]);
+            let reordered = json!([{"name":"Layer B","visible":true,"default":true},
+                               {"name":"Layer A","visible":false,"default":false}]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.control_rx = Some(rx);
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        ready = true;
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    if !app.fonts_ready {
+                        return;
+                    }
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    show(app, &ctx);
+                },
+                app,
+            );
+            h.input_mut().max_texture_side = Some(8192);
+            h.run_steps(8);
+            let request = |h: &mut Harness<'_, DesignApp>, method: &str, params: Value| {
+                let (req, reply) = crate::ControlRequest::new(method, params);
+                tx.send(req).unwrap();
+                h.run_steps(1);
+                let r = reply.try_recv().unwrap();
+                assert_eq!(r["ok"], json!(true));
+                assert_eq!(r["result"]["id"], json!("layerOptions"));
+                r
+            };
+            let r = request(&mut h, "ui.dialog.open", json!({"id":"layerOptions","fields":{"layers":initial}}));
+            assert_eq!(r["result"]["fields"], json!({"layers":initial}));
+            h.run_steps(3);
+            let ui_before = serde_json::to_value(&h.state().ui).unwrap();
+            world(h.state(), &before, &prefs, &ui_before);
+            draft(&h, &initial);
+            // Warm the replacement's real first-row geometry/ID, then restore the initial draft.
+            let r = request(&mut h, "ui.dialog.set", json!({"field":"layers","value":reordered}));
+            assert_eq!(r["result"]["fields"], json!({"layers":reordered}));
+            h.run_steps(3);
+            let b = measure(&mut h, "Layer B");
+            let r = request(&mut h, "ui.dialog.set", json!({"field":"layers","value":initial}));
+            assert_eq!(r["result"]["fields"], json!({"layers":initial}));
+            h.run_steps(3);
+            let a = measure(&mut h, "Layer A");
+            draft(&h, &initial);
+            world(h.state(), &before, &prefs, &ui_before);
+            let p = a.interact_rect.center();
+            let blank = egui::pos2(a.interact_rect.right().max(b.interact_rect.right()) + 32.0, p.y);
+            assert!(p.distance(blank) > 32.0);
+            assert!(!a.interact_rect.expand(8.0).contains(blank) && !b.interact_rect.expand(8.0).contains(blank));
+            blank_guard(&h, blank);
+            assert_eq!(h.ctx.layer_id_at(p), Some(layer()));
+            h.input_mut().events.extend([egui::Event::PointerMoved(p), checkbox_pointer(p, true)]);
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| i.pointer.primary_pressed()
+                && i.pointer.primary_down()
+                && !i.pointer.primary_released()
+                && i.pointer.interact_pos() == Some(p)));
+            world(h.state(), &before, &prefs, &ui_before);
+            draft(&h, &origin_expected);
+            h.input_mut().events.push(egui::Event::PointerMoved(blank));
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| !i.pointer.primary_pressed()
+                && i.pointer.primary_down()
+                && !i.pointer.primary_released()
+                && i.pointer.is_decidedly_dragging()));
+            assert_eq!(h.get_by_label("Layer A").accesskit_node().locate().0, a.id.accesskit_id());
+            assert_eq!(h.ctx.dragged_id(), Some(a.id), "PREREQUISITE: actual origin capture");
+            assert!(h.ctx.read_response(a.id).unwrap().is_pointer_button_down_on());
+            blank_guard(&h, blank);
+            world(h.state(), &before, &prefs, &ui_before);
+            draft(&h, &origin_expected);
+            assert!(h.input().events.is_empty());
+            let expected = if switch { &reordered } else { &origin_expected };
+            let r = request(&mut h, "ui.dialog.set", json!({"field":"layers","value":expected}));
+            assert_eq!(r["result"]["fields"], json!({"layers":expected}));
+            assert!(h.ctx.input(|i| i.pointer.primary_down()
+                && !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()
+                && i.pointer.interact_pos() == Some(blank)
+                && !i.events.iter().any(|e| matches!(e, egui::Event::Key { .. }))));
+            let (label, warmed) = if switch { ("Layer B", &b) } else { ("Layer A", &a) };
+            let n = h.get_by_label(label);
+            let current_local = n.accesskit_node().locate().0;
+            assert_eq!(current_local, warmed.id.accesskit_id());
+            let rect = n.rect();
+            assert_eq!(rect, warmed.rect, "PREREQUISITE: warmed row geometry");
+            let current = h.ctx.read_response(warmed.id).unwrap();
+            assert!(current.enabled() && h.ctx.content_rect().contains_rect(rect));
+            assert_eq!(current.layer_id, layer());
+            assert_eq!(h.ctx.layer_id_at(rect.center()), Some(layer()));
+            assert!(!rect.contains(blank) && !current.interact_rect.contains(blank));
+            assert!(!h.ctx.interaction_snapshot(|s| s.contains_pointer.contains(&warmed.id)));
+            blank_guard(&h, blank);
+            let alias = current_local == a.id.accesskit_id();
+            eprintln!("switch={switch} alias={alias} origin={:?} current={:?}", a.id, warmed.id);
+            if alias {
+                assert_eq!(h.ctx.dragged_id(), Some(a.id));
+                assert!(current.is_pointer_button_down_on());
+            } else {
+                assert_ne!(h.ctx.dragged_id().map(|id| id.accesskit_id()), Some(current_local));
+                assert!(!current.is_pointer_button_down_on());
+            }
+            world(h.state(), &before, &prefs, &ui_before); // reached before the draft product oracle
+            let d = h.state().ui.dialog.as_ref().unwrap();
+            let b_index = if switch { 0 } else { 1 };
+            assert_eq!(d.fields["layers"][b_index]["visible"], json!(true), "B must remain visible");
+            draft(&h, expected);
+            h.run_steps(1);
+            world(h.state(), &before, &prefs, &ui_before);
+            draft(&h, expected);
+            h.input_mut().events.push(checkbox_pointer(blank, false));
+            h.run_steps(1);
+            world(h.state(), &before, &prefs, &ui_before);
+            draft(&h, expected);
+            for _ in 0..2 {
+                h.run_steps(1);
+                world(h.state(), &before, &prefs, &ui_before);
+                draft(&h, expected);
+            }
+            // Escape closes a draft; this fixture claims no PDF import/confirm/persistence behavior.
+            h.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+            assert!(h.state().ui.dialog.is_none());
+            world(h.state(), &before, &prefs, &ui_before);
+            h.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            for _ in 0..2 {
+                h.run_steps(1);
+                assert!(h.state().ui.dialog.is_none());
+                world(h.state(), &before, &prefs, &ui_before);
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_held_character_origin_cannot_follow_queued_style_section() {
+        use designcraft_engine::{DocState, HistoryEntry};
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        use std::sync::Arc;
+
+        fn same(a: &DocState, e: &DocState) {
+            macro_rules! fields {
+          ($($f:ident),*) => {$(assert_eq!(a.$f, e.$f, stringify!($f));)*}
+        }
+            fields!(doc, selection, uid, revision, saved_revision, saved_doc, active_layer, path, editing_parents, preview_stash, preview_record);
+            assert_eq!(a.is_dirty(), e.is_dirty());
+            assert!(a.interaction.is_none() && e.interaction.is_none());
+            assert!(a.fonts.is_none() && e.fonts.is_none());
+            assert_eq!((a.history.undo.len(), a.history.redo.len(), a.history.limit), (e.history.undo.len(), e.history.redo.len(), e.history.limit));
+            for (x, y) in a.history.undo.iter().chain(&a.history.redo).zip(e.history.undo.iter().chain(&e.history.redo)) {
+                assert_eq!((&x.label, x.doc.as_ref(), &x.selection), (&y.label, y.doc.as_ref(), &y.selection));
+            }
+        }
+
+        fn draft_unchanged(app: &DesignApp, before: &DocState, prefs: &Value) {
+            assert_eq!(app.session.documents().len(), 1);
+            assert_eq!(app.session.active_index(), Some(0));
+            same(app.session.active().unwrap(), before);
+            assert_eq!(&serde_json::to_value(&app.session.prefs).unwrap(), prefs);
+            let d = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(d.id, "characterStyleOptions");
+            assert!(d.shown && d.pending_confirm.is_none());
+        }
+
+        fn layer() -> egui::LayerId {
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dialog"))
+        }
+
+        fn measure(h: &mut Harness<'_, DesignApp>, label: &str) -> egui::Response {
+            let n = h.get_by_label(label);
+            let node_id = n.accesskit_node().id();
+            let local_id = n.accesskit_node().locate().0;
+            let rect = n.rect();
+            assert_eq!(n.accesskit_node().role(), egui::accesskit::Role::CheckBox);
+            assert!(h.ctx.content_rect().contains_rect(rect));
+            assert_eq!(h.ctx.layer_id_at(rect.center()), Some(layer()));
+            assert!(!h.ctx.input(|i| i.pointer.any_down()));
+            h.input_mut().events.push(egui::Event::PointerMoved(rect.center()));
+            h.run_steps(1);
+            assert_eq!(h.get_by_label(label).accesskit_node().id(), node_id, "PREREQUISITE: semantic checkbox ID stable over a quiet hover");
+            assert_eq!(h.get_by_label(label).rect(), rect);
+            let id = h
+                .ctx
+                .interaction_snapshot(|s| s.hovered.iter().copied().find(|id| id.accesskit_id() == local_id))
+                .expect("PREREQUISITE: visible labelled checkbox really receives hover");
+            let r = h.ctx.read_response(id).unwrap();
+            assert_eq!(r.layer_id, layer());
+            assert!(r.enabled() && r.interact_rect.contains(rect.center()));
+            r
+        }
+
+        fn occupied(h: &Harness<'_, DesignApp>) -> Vec<egui::Rect> {
+            use egui::accesskit::Role;
+            h.root()
+                .children_recursive()
+                .filter(|n| {
+                    matches!(
+                        n.accesskit_node().role(),
+                        Role::CheckBox
+                            | Role::Button
+                            | Role::TextInput
+                            | Role::ComboBox
+                            | Role::SpinButton
+                            | Role::Slider
+                            | Role::ColorWell
+                            | Role::ScrollBar
+                            | Role::RadioButton
+                            | Role::Label
+                    )
+                })
+                .filter(|n| n.accesskit_node().bounding_box().is_some())
+                .map(|n| n.rect())
+                .collect()
+        }
+
+        fn blank_guard(h: &Harness<'_, DesignApp>, p: egui::Pos2) {
+            assert!(h.ctx.content_rect().contains(p));
+            assert_eq!(h.ctx.layer_id_at(p), Some(layer()));
+            assert!(occupied(h).iter().all(|r| !r.expand(8.0).contains(p)), "PREREQUISITE: measured blank is clear of form/sidebar/footer controls");
+        }
+
+        fn held_quiet(h: &Harness<'_, DesignApp>, blank: egui::Pos2) {
+            assert!(h.ctx.input(|i| i.pointer.primary_down()
+                && !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()
+                && i.pointer.interact_pos() == Some(blank)
+                && !i.events.iter().any(|e| matches!(e, egui::Event::Key { .. }))));
+        }
+
+        for switch in [false, true] {
+            // Positive control FIRST, each branch gets a fresh app/document/context.
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "en".into();
+            app.run(
+                "file.new",
+                json!({
+                  "title":"Held style section", "facingPages":false, "primaryTextFrame":false
+                }),
+            )
+            .unwrap();
+            for (name, font) in [("Emphasis", "Italic"), ("Base", "Bold")] {
+                app.run(
+                    "style.character.create",
+                    json!({"name":name, "chars":{
+                      "fontStyle":font, "underline":false, "strikethrough":false
+                    }}),
+                )
+                .unwrap();
+            }
+            let initial_chars =
+                CharAttrs { font_style: Some("Italic".into()), underline: Some(false), strikethrough: Some(false), ..Default::default() };
+            let sentinel_chars =
+                CharAttrs { font_style: Some("Bold".into()), underline: Some(false), strikethrough: Some(false), ..Default::default() };
+            assert_eq!(char_style(&app, "Emphasis").unwrap().chars, initial_chars);
+            assert_eq!(char_style(&app, "Base").unwrap().chars, sentinel_chars);
+
+            // Nonempty Undo and Redo make premature commits/history loss observable.
+            let restored = app.session.active().unwrap().clone();
+            app.run("layout.documentSetup", json!({"facingPages":true})).unwrap();
+            assert_ne!(app.session.active().unwrap().doc, restored.doc);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.active().unwrap().doc, restored.doc);
+            assert_eq!(app.session.active().unwrap().selection, restored.selection);
+            let before = app.session.active().unwrap().clone();
+            assert!(!before.history.undo.is_empty());
+            assert_eq!(before.history.redo.len(), 1);
+            let prefs = serde_json::to_value(&app.session.prefs).unwrap();
+            open_style_options(&mut app, false, "Emphasis");
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.control_rx = Some(rx);
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        ready = true;
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    if !app.fonts_ready {
+                        return;
+                    }
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    show(app, &ctx);
+                },
+                app,
+            );
+            h.input_mut().max_texture_side = Some(8192);
+            h.run_steps(8);
+            draft_unchanged(h.state(), &before, &prefs);
+
+            // Warm/measure both actual forms using the supported queued control.
+            let section = |h: &mut Harness<'_, DesignApp>, value: &str| {
+                let (request, reply) = crate::ControlRequest::new("ui.dialog.set", json!({"field":"section", "value":value}));
+                tx.send(request).unwrap();
+                h.run_steps(1); // app.logic drains BEFORE show.
+                let response = reply.try_recv().unwrap();
+                assert_eq!(response["ok"], json!(true));
+                assert_eq!(response["result"]["fields"]["section"], json!(value));
+            };
+            section(&mut h, "strikethrough");
+            h.run_steps(3);
+            let strike = measure(&mut h, "Strikethrough On");
+            let strike_occupied = occupied(&h);
+            draft_unchanged(h.state(), &before, &prefs);
+            section(&mut h, "underline");
+            h.run_steps(3);
+            let underline = measure(&mut h, "Underline On");
+            draft_unchanged(h.state(), &before, &prefs);
+
+            let p = underline.interact_rect.center();
+            assert!((underline.interact_rect.center().y - strike.interact_rect.center().y).abs() <= 1.0);
+            let blank = egui::pos2(underline.interact_rect.right().max(strike.interact_rect.right()) + 32.0, p.y);
+            assert!(p.distance(blank) > 32.0);
+            assert!(!underline.interact_rect.expand(8.0).contains(blank));
+            assert!(!strike.interact_rect.expand(8.0).contains(blank));
+            assert!(strike_occupied.iter().all(|r| !r.expand(8.0).contains(blank)));
+            blank_guard(&h, blank);
+            assert_eq!(h.ctx.layer_id_at(p), Some(layer()));
+            let mut expected_draft = h.state().ui.dialog.as_ref().unwrap().fields.clone();
+            assert!(!expected_draft.keys().any(|key| key.starts_with("c.")));
+            expected_draft.insert("c.underline".into(), json!(true));
+
+            h.input_mut().events.extend([egui::Event::PointerMoved(p), checkbox_pointer(p, true)]);
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| i.pointer.primary_pressed()
+                && i.pointer.primary_down()
+                && !i.pointer.primary_released()
+                && i.pointer.interact_pos() == Some(p)));
+            h.input_mut().events.push(egui::Event::PointerMoved(blank));
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| !i.pointer.primary_pressed()
+                && i.pointer.primary_down()
+                && !i.pointer.primary_released()
+                && i.pointer.is_decidedly_dragging()
+                && i.pointer.interact_pos() == Some(blank)));
+            assert_eq!(h.get_by_label("Underline On").accesskit_node().locate().0, underline.id.accesskit_id());
+            assert_eq!(h.ctx.dragged_id(), Some(underline.id), "PREREQUISITE: production established capture of actual origin");
+            assert!(h.ctx.read_response(underline.id).unwrap().is_pointer_button_down_on());
+            blank_guard(&h, blank);
+            draft_unchanged(h.state(), &before, &prefs);
+            assert_eq!(h.state().ui.dialog.as_ref().unwrap().fields, expected_draft, "PREREQUISITE: positive origin draft is exactly underline=true");
+
+            // The bad step has no pointer movement, fresh press, release or key.
+            assert!(h.input().events.is_empty());
+            if switch {
+                section(&mut h, "strikethrough");
+                expected_draft.insert("section".into(), json!("strikethrough"));
+            } else {
+                h.run_steps(1);
+            }
+            held_quiet(&h, blank);
+            let (label, current_id) = if switch { ("Strikethrough On", strike.id) } else { ("Underline On", underline.id) };
+            let n = h.get_by_label(label);
+            assert_eq!(n.accesskit_node().locate().0, current_id.accesskit_id(), "PREREQUISITE: live semantic widget retained its premeasured ID");
+            let rect = n.rect();
+            let current = h.ctx.read_response(current_id).unwrap();
+            // read_response may report the prior frame's rectangle for a reused ID.
+            // The live accessibility node must match this field's warmed geometry.
+            assert_eq!(rect, if switch { strike.rect } else { underline.rect });
+            assert!(current.enabled() && h.ctx.content_rect().contains_rect(rect));
+            assert_eq!(current.layer_id, layer());
+            assert_eq!(h.ctx.layer_id_at(rect.center()), Some(layer()));
+            assert!(!rect.contains(blank) && !current.interact_rect.contains(blank), "PREREQUISITE: pointer is NOT over the replacement checkbox");
+            assert!(!h.ctx.interaction_snapshot(|s| s.contains_pointer.contains(&current_id)));
+            blank_guard(&h, blank);
+            let alias = current_id == underline.id;
+            eprintln!("switch={switch} alias={alias} origin={:?} current={:?} blank={blank:?}", underline.id, current_id);
+            if alias {
+                assert_eq!(h.ctx.dragged_id(), Some(underline.id));
+                assert!(current.is_pointer_button_down_on(), "PREREQUISITE: reused origin actually owns held capture");
+            } else {
+                assert!(!current.is_pointer_button_down_on());
+            }
+            draft_unchanged(h.state(), &before, &prefs);
+            assert_eq!(
+                h.state().ui.dialog.as_ref().unwrap().fields,
+                expected_draft,
+                "wrong-field draft: a held underline origin must not enable strikethrough"
+            );
+            h.run_steps(1);
+            held_quiet(&h, blank);
+            draft_unchanged(h.state(), &before, &prefs);
+            assert_eq!(h.state().ui.dialog.as_ref().unwrap().fields, expected_draft);
+
+            h.input_mut().events.push(checkbox_pointer(blank, false));
+            h.run_steps(1);
+            draft_unchanged(h.state(), &before, &prefs);
+            h.run_steps(1);
+            draft_unchanged(h.state(), &before, &prefs);
+            assert_eq!(h.state().ui.dialog.as_ref().unwrap().fields, expected_draft);
+
+            // Ordinary footer Enter AFTER release/settlement, not direct confirm().
+            // Whole expected document/style/history are literal, no command oracle.
+            let expected_chars =
+                CharAttrs { font_style: Some("Italic".into()), underline: Some(true), strikethrough: Some(false), ..Default::default() };
+            let mut expected = before.clone();
+            Arc::make_mut(&mut expected.doc).styles_mut().char_style_mut("Emphasis").unwrap().chars = expected_chars.clone();
+            expected.revision += 1;
+            expected.history.undo.push(HistoryEntry {
+                label: "Character Style Options…".into(),
+                doc: before.doc.clone(),
+                selection: before.selection.clone(),
+            });
+            expected.history.redo.clear();
+            h.ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            h.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+            assert!(h.state().ui.dialog.is_none());
+            same(h.state().session.active().unwrap(), &expected);
+            assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs);
+            assert_eq!(char_style(h.state(), "Emphasis").unwrap().chars, expected_chars);
+            assert_eq!(char_style(h.state(), "Base").unwrap().chars, sentinel_chars);
+            h.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            for _ in 0..2 {
+                h.run_steps(1);
+                assert!(h.state().ui.dialog.is_none());
+                same(h.state().session.active().unwrap(), &expected);
+                assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs);
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_held_paragraph_rule_cannot_follow_queued_rule_switch() {
+        use designcraft_doc::Rule;
+        use designcraft_engine::{DocState, HistoryEntry};
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        use std::sync::Arc;
+
+        fn same_document(actual: &DocState, expected: &DocState) {
+            macro_rules! fields {
+                ($($field:ident),*) => {
+                    $(assert_eq!(actual.$field, expected.$field, stringify!($field));)*
+                };
+            }
+            fields!(doc, selection, uid, revision, saved_revision, saved_doc, active_layer, path, editing_parents, preview_stash, preview_record);
+            assert_eq!(actual.is_dirty(), expected.is_dirty());
+            assert!(actual.interaction.is_none() && expected.interaction.is_none());
+            assert!(actual.fonts.is_none() && expected.fonts.is_none());
+            assert_eq!(
+                (actual.history.undo.len(), actual.history.redo.len(), actual.history.limit),
+                (expected.history.undo.len(), expected.history.redo.len(), expected.history.limit)
+            );
+            for (a, e) in actual.history.undo.iter().chain(&actual.history.redo).zip(expected.history.undo.iter().chain(&expected.history.redo)) {
+                assert_eq!((&a.label, a.doc.as_ref(), &a.selection), (&e.label, e.doc.as_ref(), &e.selection));
+            }
+        }
+
+        for switch in [false, true] {
+            // Positive no-switch control FIRST; both rules start off with distinct sentinels.
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "en".into();
+            app.run("file.new", json!({"facingPages": false, "primaryTextFrame": false})).unwrap();
+            let above = Rule {
+                on: false,
+                weight: 2.0,
+                color: "[Black]".into(),
+                tint: 0.75,
+                column_width: false,
+                offset: 4.0,
+                left_indent: 6.0,
+                right_indent: 2.0,
+            };
+            let below = Rule {
+                on: false,
+                weight: 5.0,
+                color: "[Paper]".into(),
+                tint: 0.5,
+                column_width: true,
+                offset: -3.0,
+                left_indent: 1.0,
+                right_indent: 7.0,
+            };
+            app.run(
+                "style.paragraph.create",
+                json!({
+                    "name": "Held Rules", "para": {"ruleAbove": above, "ruleBelow": below},
+                    "chars": {"size": 17.0, "fontStyle": "Italic"}
+                }),
+            )
+            .unwrap();
+            // Preserve a nonempty Redo stack until the actual dialog confirmation.
+            let original_doc = app.session.active().unwrap().doc.clone();
+            app.run("layout.documentSetup", json!({"facingPages": true})).unwrap();
+            assert_ne!(app.session.active().unwrap().doc, original_doc);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.active().unwrap().doc, original_doc);
+            assert_eq!(app.session.active().unwrap().history.redo.len(), 1);
+            let before = app.session.active().unwrap().clone();
+            let style = before.doc.styles.para("Held Rules").unwrap();
+            assert_eq!(style.para.rule_above.as_ref(), Some(&above));
+            assert_eq!(style.para.rule_below.as_ref(), Some(&below));
+            let prefs = serde_json::to_value(&app.session.prefs).unwrap();
+            app.ui.dialog = Some(Dialog::new(
+                "paragraphStyleOptions",
+                json!({
+                    "name": "Held Rules", "section": "rules", "rule": "ruleAbove"
+                }),
+            ));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            app.control_rx = Some(receiver);
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        ready = true;
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    if !app.fonts_ready {
+                        return;
+                    }
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    show(app, &ctx);
+                },
+                app,
+            );
+            h.input_mut().max_texture_side = Some(8192);
+            h.run_steps(8);
+            same_document(h.state().session.active().unwrap(), &before);
+            let row = h.get_by_label("Rule On");
+            let row_local_id = row.accesskit_node().locate().0;
+            let rect = row.rect();
+            let screen = h.ctx.content_rect();
+            let p = rect.center();
+            // The first rule row has only the selector (left) and Rule On (right).
+            // Far right at that same y is blank, away from all lower rule controls.
+            let q = egui::pos2(screen.right() - 8.0, p.y);
+            let modal = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dialog"));
+            assert!(screen.contains_rect(rect) && screen.contains(q));
+            assert_eq!(h.ctx.layer_id_at(p), Some(modal));
+            assert!(q.x > rect.right() + 64.0 && p.distance(q) > 64.0 && !rect.contains(q));
+            h.ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            h.input_mut().events.extend([egui::Event::PointerMoved(p), checkbox_pointer(p, true)]);
+            h.run_steps(1);
+            assert_eq!(h.state().ui.dialog.as_ref().unwrap().fields["p.ruleAbove.on"], json!(true));
+            same_document(h.state().session.active().unwrap(), &before);
+            h.input_mut().events.push(egui::Event::PointerMoved(q));
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| i.pointer.primary_down()
+                && i.pointer.is_decidedly_dragging()
+                && !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()));
+            let origin = h.ctx.dragged_id().expect("the real checkbox must retain held capture outside");
+            assert_eq!(origin.accesskit_id(), row_local_id, "capture belongs to the measured Rule On checkbox");
+            let response = h.ctx.read_response(origin).expect("held origin response");
+            assert!(response.enabled() && response.is_pointer_button_down_on());
+            assert_eq!(response.layer_id, modal);
+            assert!(response.interact_rect.contains(p) && !response.interact_rect.contains(q));
+            assert!(h.ctx.memory(|m| m.allows_interaction(response.layer_id)));
+
+            let reply = if switch {
+                let (request, reply) = crate::ControlRequest::new("ui.dialog.set", json!({"field": "rule", "value": "ruleBelow"}));
+                sender.send(request).unwrap();
+                Some(reply)
+            } else {
+                None
+            };
+            h.run_steps(1); // Real queued mutation before layout; primary remains held outside.
+            assert!(h.ctx.input(|i| i.pointer.primary_down()
+                && i.pointer.is_decidedly_dragging()
+                && !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()
+                && !i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))));
+            if let Some(reply) = reply {
+                let result = reply.try_recv().unwrap();
+                assert_eq!(result["ok"], json!(true));
+                assert_eq!(result["result"]["fields"]["rule"], json!("ruleBelow"));
+            }
+            assert!(!h.get_by_label("Rule On").rect().contains(q));
+            let current = serde_json::to_value(&before.doc.styles.resolve_para_style("Held Rules").0).unwrap();
+            let mut expected_above = above.clone();
+            expected_above.on = true;
+            // Check while held, after release outside, and after a quiet frame.
+            for phase in 0..3 {
+                if phase == 1 {
+                    h.input_mut().events.push(checkbox_pointer(q, false));
+                    h.run_steps(1);
+                    assert!(h.ctx.input(|i| i.pointer.primary_released() && !i.pointer.primary_down()));
+                } else if phase == 2 {
+                    h.run_steps(1);
+                }
+                let d = h.state().ui.dialog.as_ref().expect("gesture does not close the dialog");
+                assert_eq!(d.s("rule"), if switch { "ruleBelow" } else { "ruleAbove" });
+                assert_eq!(shown_rule(d, "p.", "ruleAbove", &current), json!(expected_above), "above sentinel, switch={switch}, phase={phase}");
+                assert_eq!(
+                    shown_rule(d, "p.", "ruleBelow", &current),
+                    json!(below),
+                    "replacement below must stay off, switch={switch}, phase={phase}"
+                );
+                let edits: Map<String, Value> = d
+                    .fields
+                    .iter()
+                    .filter(|(key, _)| key.starts_with("p.") || key.starts_with("c."))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
+                assert_eq!(
+                    Value::Object(edits),
+                    json!({"p.ruleAbove.on": true}),
+                    "only the original rule was edited, switch={switch}, phase={phase}"
+                );
+                same_document(h.state().session.active().unwrap(), &before);
+                assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs);
+            }
+            // Confirm through the same real control queue. Derive the full expected state
+            // by one literal model edit, not by executing the production edit command.
+            let (request, reply) = crate::ControlRequest::new("ui.dialog.confirm", json!({}));
+            sender.send(request).unwrap();
+            h.run_steps(1);
+            assert_eq!(reply.try_recv().unwrap()["ok"], json!(true));
+            assert!(h.state().ui.dialog.is_none());
+            let mut expected = before.clone();
+            Arc::make_mut(&mut expected.doc).styles_mut().para_mut("Held Rules").unwrap().para.rule_above.as_mut().unwrap().on = true;
+            expected.revision += 1;
+            expected.history.undo.push(HistoryEntry {
+                label: "Paragraph Style Options…".into(),
+                doc: before.doc.clone(),
+                selection: before.selection.clone(),
+            });
+            expected.history.redo.clear();
+            same_document(h.state().session.active().unwrap(), &expected);
+            assert_eq!(h.state().session.documents().len(), 1);
+            assert_eq!(h.state().session.active_index(), Some(0));
+            assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs);
+        }
+    }
+
+    #[test]
+    fn checkbox_pending_preferences_confirm_is_cancelled_with_its_gesture() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for undo in [false, true] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "en".into();
+            app.run("file.new", json!({})).unwrap();
+            let before = app.session.active().unwrap().clone();
+            assert!(before.doc.settings.facing_pages);
+            app.run("layout.documentSetup", json!({"facingPages":false})).unwrap();
+            assert_eq!(app.session.active().unwrap().selection, before.selection, "setup edit preserves selection");
+            assert_ne!(*app.session.active().unwrap().doc, *before.doc, "setup edit really changes document");
+            app.run(
+                "prefs.set",
+                json!({"highlightKeeps":false,"highlightHj":false,"highlightCustomTracking":true,"highlightSubstitutedFonts":false}),
+            )
+            .unwrap();
+            let prefs = serde_json::to_value(&app.session.prefs).unwrap();
+            app.run("app.preferences", json!({})).unwrap();
+            app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("composition"));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            app.control_rx = Some(receiver);
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        ready = true;
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    if !app.fonts_ready {
+                        return;
+                    }
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    show(app, &ctx);
+                },
+                app,
+            );
+            h.input_mut().max_texture_side = Some(8192);
+            h.run_steps(8);
+            let first = h.get_by_label("Keep Violations").rect();
+            let second = h.get_by_label("H&J Violations").rect();
+            for rect in [first, second] {
+                assert!(h.ctx.content_rect().contains_rect(rect));
+                assert_eq!(h.ctx.layer_id_at(rect.center()), Some(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dialog"))));
+            }
+            h.ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            let p = second.center();
+            let q = first.center();
+            h.input_mut().events.extend([
+                egui::Event::PointerMoved(p),
+                checkbox_pointer(p, true),
+                egui::Event::PointerMoved(q),
+                checkbox_pointer(q, false),
+                egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            ]);
+            let frame = h.ctx.cumulative_frame_nr();
+            h.run_steps(1);
+            assert_eq!(h.ctx.cumulative_frame_nr(), frame + 1);
+            assert!(h.state().ui.dialog.is_some(), "reverse endpoint still pending");
+            assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs, "draft not applied yet");
+            let reply = if undo {
+                let (request, reply) = crate::ControlRequest::new("engine.execute", json!({"command":"edit.undo","params":{}}));
+                sender.send(request).unwrap();
+                Some(reply)
+            } else {
+                None
+            };
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()
+                && !i.pointer.primary_down()
+                && !i.events.iter().any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))));
+            if let Some(reply) = reply {
+                let response = reply.try_recv().unwrap();
+                assert_eq!(response["ok"], json!(true));
+                let state = h.state().session.active().unwrap();
+                assert_eq!(*state.doc, *before.doc, "Undo actually restored the document");
+                assert_eq!(state.selection, before.selection);
+                assert!(
+                    h.state().ui.dialog.is_some(),
+                    "cancelled gesture must not auto-apply a partial draft: {:?}",
+                    serde_json::to_value(&h.state().session.prefs).unwrap()
+                );
+                assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs);
+                assert_eq!(state.history.redo.len(), 1);
+                h.run_steps(2);
+                assert!(h.state().ui.dialog.is_some(), "queued confirmation stays cancelled");
+                assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs);
+            } else {
+                assert!(h.state().ui.dialog.is_none(), "positive control confirms on the next repaint");
+                let mut expected = prefs;
+                expected["highlightKeeps"] = json!(true);
+                expected["highlightHj"] = json!(true);
+                assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_pending_character_confirm_cannot_follow_queued_document_switch() {
+        use designcraft_engine::{DocState, HistoryEntry};
+        use egui_kittest::{Harness, kittest::Queryable};
+        use std::sync::Arc;
+        fn same(a: &DocState, e: &DocState) {
+            macro_rules! fields {($($f:ident),*) => {$(assert_eq!(a.$f,e.$f,stringify!($f));)*}}
+            fields!(doc, selection, uid, revision, saved_revision, saved_doc, active_layer, path, editing_parents, preview_stash, preview_record);
+            assert_eq!(a.is_dirty(), e.is_dirty());
+            assert!(a.interaction.is_none() && e.interaction.is_none());
+            assert!(a.fonts.is_none() && e.fonts.is_none());
+            assert_eq!((a.history.undo.len(), a.history.redo.len(), a.history.limit), (e.history.undo.len(), e.history.redo.len(), e.history.limit));
+            for (x, y) in a.history.undo.iter().chain(&a.history.redo).zip(e.history.undo.iter().chain(&e.history.redo)) {
+                assert_eq!((&x.label, x.doc.as_ref(), &x.selection), (&y.label, y.doc.as_ref(), &y.selection));
+            }
+        }
+        for switch in [false, true] {
+            // Positive control FIRST.
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "en".into();
+            for (title, font) in [("A", "Italic"), ("B", "Bold")] {
+                app.run("file.new", json!({"title":title,"facingPages":false,"primaryTextFrame":false})).unwrap();
+                app.run(
+                    "style.character.create",
+                    json!({"name":"Shared","chars":{
+      "fontStyle":font,"underline":false,"strikethrough":false}}),
+                )
+                .unwrap();
+            }
+            let b = app.session.active().unwrap().clone();
+            app.run("layout.documentSetup", json!({"facingPages":true})).unwrap();
+            assert_ne!(app.session.active().unwrap().doc, b.doc);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.active().unwrap().doc, b.doc);
+            assert_eq!(app.session.active().unwrap().selection, b.selection);
+            assert_eq!(app.session.active().unwrap().history.redo.len(), 1);
+            app.run("file.activate", json!({"index":0})).unwrap();
+            let before: [DocState; 2] = std::array::from_fn(|i| app.session.documents()[i].clone());
+            assert_ne!(before[0].uid, before[1].uid);
+            open_style_options(&mut app, false, "Shared");
+            app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("chars"));
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.control_rx = Some(rx);
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        ready = true;
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    if !app.fonts_ready {
+                        return;
+                    }
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    show(app, &ctx);
+                },
+                app,
+            );
+            h.input_mut().max_texture_side = Some(8192);
+            h.run_steps(8);
+            let p = h.get_by_label("Strikethrough").rect();
+            let q = h.get_by_label("Underline").rect();
+            assert!(h.ctx.content_rect().contains_rect(p) && h.ctx.content_rect().contains_rect(q));
+            for rect in [p, q] {
+                assert_eq!(h.ctx.layer_id_at(rect.center()), Some(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dialog"))));
+            }
+            h.ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            h.input_mut().events.extend([
+                egui::Event::PointerMoved(p.center()),
+                checkbox_pointer(p.center(), true),
+                egui::Event::PointerMoved(q.center()),
+                checkbox_pointer(q.center(), false),
+                egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            ]);
+            h.run_steps(1);
+            assert!(h.state().ui.dialog.as_ref().unwrap().pending_confirm.is_some());
+            for (i, expected_document) in before.iter().enumerate() {
+                same(&h.state().session.documents()[i], expected_document);
+            }
+            let reply = if switch {
+                let (req, reply) = crate::ControlRequest::new("engine.execute", json!({"command":"file.activate","params":{"index":1}}));
+                tx.send(req).unwrap();
+                Some(reply)
+            } else {
+                None
+            };
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()
+                && !i.pointer.primary_down()
+                && !i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))));
+            if let Some(reply) = reply {
+                assert_eq!(reply.try_recv().unwrap()["ok"], json!(true));
+            }
+            let mut expected = before.clone();
+            if !switch {
+                let c = &mut Arc::make_mut(&mut expected[0].doc).styles_mut().char_style_mut("Shared").unwrap().chars;
+                c.underline = Some(true);
+                c.strikethrough = Some(true);
+                expected[0].revision += 1;
+                expected[0].history.undo.push(HistoryEntry {
+                    label: "Character Style Options…".into(),
+                    doc: before[0].doc.clone(),
+                    selection: before[0].selection.clone(),
+                });
+                expected[0].history.redo.clear();
+            }
+            for settle in 0..3 {
+                if settle != 0 {
+                    h.run_steps(1);
+                }
+                assert_eq!(h.state().session.active_index(), Some(if switch { 1 } else { 0 }));
+                for (i, expected_document) in expected.iter().enumerate() {
+                    same(&h.state().session.documents()[i], expected_document);
+                }
+                assert_eq!(h.state().ui.dialog.is_some(), switch, "auto-close: switch={switch}");
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_pending_preferences_abandons_hidden_endpoint() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for hide in [false, true] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.ui.language = "en".into();
+            app.run("file.new", json!({})).unwrap();
+            app.run(
+                "prefs.set",
+                json!({"highlightKeeps":false,"highlightHj":false,
+            "highlightCustomTracking":true,"highlightSubstitutedFonts":false}),
+            )
+            .unwrap();
+            let prefs = serde_json::to_value(&app.session.prefs).unwrap();
+            app.run("app.preferences", json!({})).unwrap();
+            app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("composition"));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            app.control_rx = Some(receiver);
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        ready = true;
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    if !app.fonts_ready {
+                        return;
+                    }
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    show(app, &ctx);
+                },
+                app,
+            );
+            h.input_mut().max_texture_side = Some(8192);
+            h.run_steps(8);
+            let first = h.get_by_label("Keep Violations").rect();
+            let second = h.get_by_label("H&J Violations").rect();
+            for rect in [first, second] {
+                assert!(h.ctx.content_rect().contains_rect(rect));
+                assert_eq!(h.ctx.layer_id_at(rect.center()), Some(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dialog"))));
+            }
+            h.ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+            let p = second.center();
+            let q = first.center();
+            h.input_mut().events.extend([
+                egui::Event::PointerMoved(p),
+                checkbox_pointer(p, true),
+                egui::Event::PointerMoved(q),
+                checkbox_pointer(q, false),
+                egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            ]);
+            let frame = h.ctx.cumulative_frame_nr();
+            h.run_steps(1);
+            assert_eq!(h.ctx.cumulative_frame_nr(), frame + 1);
+            let d = h.state().ui.dialog.as_ref().expect("reverse endpoint still pending");
+            assert_eq!([d.b("highlightKeeps"), d.b("highlightHj")], [false, true]);
+            assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs);
+            let reply = if hide {
+                let (request, reply) = crate::ControlRequest::new("ui.dialog.set", json!({"field":"section","value":"general"}));
+                sender.send(request).unwrap();
+                Some(reply)
+            } else {
+                None
+            };
+            h.run_steps(1);
+            assert!(h.ctx.input(|i| !i.pointer.primary_pressed()
+                && !i.pointer.primary_released()
+                && !i.pointer.primary_down()
+                && !i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))));
+            if let Some(reply) = reply {
+                let response = reply.try_recv().unwrap();
+                assert_eq!(response["ok"], json!(true));
+                assert_eq!(response["result"]["fields"]["section"], json!("general"));
+                let actual = serde_json::to_value(&h.state().session.prefs).unwrap();
+                assert!(h.state().ui.dialog.is_some(), "hidden endpoint must abandon auto-Apply; prefs={actual}");
+                assert_eq!(actual, prefs, "hidden endpoint must not apply any global preference");
+                let d = h.state().ui.dialog.as_ref().unwrap();
+                assert_eq!(d.s("section"), "general");
+                assert_eq!([d.b("highlightKeeps"), d.b("highlightHj")], [false, true]);
+                assert!(h.query_by_label("Keep Violations").is_none());
+                assert!(h.query_by_label("H&J Violations").is_none());
+                h.run_steps(2);
+                assert!(h.state().ui.dialog.is_some(), "abandoned confirmation must not retry");
+                assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), prefs);
+            } else {
+                assert!(h.state().ui.dialog.is_none(), "unchanged section settles and confirms normally");
+                let mut expected = prefs;
+                expected["highlightKeeps"] = json!(true);
+                expected["highlightHj"] = json!(true);
+                assert_eq!(serde_json::to_value(&h.state().session.prefs).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn checkbox_completed_reverse_batch_enter_confirms_both_preferences() {
+        reverse_release_enter_preferences(false, false);
+    }
+
+    #[test]
+    fn checkbox_held_reverse_release_enter_confirms_both_preferences() {
+        reverse_release_enter_preferences(true, false);
+    }
+
+    #[test]
+    fn checkbox_held_reverse_release_enter_survives_layout_retry() {
+        reverse_release_enter_preferences(true, true);
+    }
+
+    fn reverse_release_enter_preferences(held: bool, retry_layout: bool) {
+        for same_frame_enter in [false, true] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            app.run(
+                "prefs.set",
+                json!({"highlightKeeps": false, "highlightHj": false,
+                "highlightCustomTracking": true, "highlightSubstitutedFonts": false}),
+            )
+            .unwrap();
+            app.run("app.preferences", json!({})).unwrap();
+            app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("composition"));
+            let ctx = dialog_context("en");
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+            for _ in 0..4 {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            let first = visible_label(&labels, screen, "Keep Violations").center();
+            let second = visible_label(&labels, screen, "H&J Violations").center();
+            let enter =
+                egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+            let prefs = serde_json::to_value(&app.session.prefs).unwrap();
+            let doc = app.session.active().unwrap().doc.clone();
+            let revision = app.session.active().unwrap().revision;
+            let selection = app.session.active().unwrap().selection.clone();
+            assert!(app.session.active().unwrap().history.undo.is_empty());
+            assert!(app.session.active().unwrap().history.redo.is_empty());
+            let mut events = vec![egui::Event::PointerMoved(second), checkbox_pointer(second, true)];
+            if held {
+                dialog_frame(&mut app, &ctx, screen, std::mem::take(&mut events));
+                assert!(ctx.input(|i| i.pointer.primary_down() && i.pointer.primary_pressed() && !i.pointer.primary_released()));
+                let d = app.ui.dialog.as_ref().unwrap();
+                assert_eq!([d.b("highlightKeeps"), d.b("highlightHj")], [false, true]);
+                assert_eq!(serde_json::to_value(&app.session.prefs).unwrap(), prefs);
+            }
+            events.extend([egui::Event::PointerMoved(first), checkbox_pointer(first, false)]);
+            if same_frame_enter {
+                events.push(enter.clone());
+            }
+            let mut pending = None;
+            if retry_layout {
+                let frame = ctx.cumulative_frame_nr();
+                let pass = ctx.cumulative_pass_nr();
+                let time = ctx.input(|i| i.time) + 1.0 / 60.0;
+                let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| {
+                    show(&mut app, ui.ctx());
+                    pending = crate::widgets::checkbox_completion_pending(ui.ctx());
+                    if ui.ctx().current_pass_index() == 0 {
+                        ui.ctx().request_discard("checkbox release dialog layout retry");
+                    }
+                });
+                output.textures_delta.clear();
+                assert_eq!(ctx.cumulative_frame_nr(), frame + 1);
+                assert_eq!(ctx.cumulative_pass_nr(), pass + 2, "one actual same-frame layout retry");
+            } else {
+                dialog_frame_observed(&mut app, &ctx, screen, events, &mut |ctx| {
+                    pending = crate::widgets::checkbox_completion_pending(ctx);
+                });
+            }
+            let pending = pending.expect("current release authorized one reverse endpoint");
+            let d = app.ui.dialog.as_ref().expect("release cannot commit a partial draft");
+            assert_eq!([d.b("highlightKeeps"), d.b("highlightHj")], [false, true]);
+            assert_eq!(serde_json::to_value(&app.session.prefs).unwrap(), prefs);
+            assert_eq!(app.session.active().unwrap().doc.as_ref(), doc.as_ref());
+            assert_eq!(app.session.active().unwrap().revision, revision);
+            if !same_frame_enter {
+                dialog_frame_observed(&mut app, &ctx, screen, vec![], &mut |ctx| {
+                    assert!(crate::widgets::checkbox_completion_settled(ctx, pending));
+                });
+                let d = app.ui.dialog.as_ref().unwrap();
+                assert_eq!([d.b("highlightKeeps"), d.b("highlightHj")], [true, true]);
+                assert_eq!(serde_json::to_value(&app.session.prefs).unwrap(), prefs);
+                dialog_frame(&mut app, &ctx, screen, vec![enter]);
+            }
+            if same_frame_enter {
+                assert!(app.ui.dialog.is_some(), "confirmation waits for the reverse endpoint");
+                dialog_frame_observed(&mut app, &ctx, screen, vec![], &mut |ctx| {
+                    assert!(crate::widgets::checkbox_completion_settled(ctx, pending));
+                });
+            }
+            assert!(app.ui.dialog.is_none(), "Enter confirms after settlement; held={held}, same_frame={same_frame_enter}");
+            let mut expected_prefs = prefs;
+            expected_prefs["highlightKeeps"] = json!(true);
+            expected_prefs["highlightHj"] = json!(true);
+            assert_eq!(serde_json::to_value(&app.session.prefs).unwrap(), expected_prefs);
+            assert_eq!(app.session.active().unwrap().doc.as_ref(), doc.as_ref());
+            // Apply sends User Dictionary and Document Preferences, each an
+            // edit even when those document settings retain their old values.
+            assert_eq!(app.session.active().unwrap().revision, revision + 2);
+            let history = &app.session.active().unwrap().history;
+            assert!(history.redo.is_empty());
+            assert_eq!(history.undo.iter().map(|entry| entry.label.as_str()).collect::<Vec<_>>(), ["User Dictionary", "Document Preferences"]);
+            for entry in &history.undo {
+                assert_eq!(entry.doc.as_ref(), doc.as_ref());
+                assert_eq!(entry.selection, selection);
+            }
+            app.run("app.preferences", json!({})).unwrap();
+            let d = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(
+                [d.b("highlightKeeps"), d.b("highlightHj"), d.b("highlightCustomTracking"), d.b("highlightSubstitutedFonts")],
+                [true, true, true, false],
+                "Enter must commit both reverse-batch endpoints; same_frame={same_frame_enter}"
+            );
+        }
+    }
+
+    #[test]
+    fn checkbox_drag_updates_preferences_fields_and_respects_apply_and_cancel() {
+        for apply in [false, true] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            app.run(
+                "prefs.set",
+                json!({
+                    "highlightKeeps": false, "highlightHj": false,
+                    "highlightCustomTracking": true, "highlightSubstitutedFonts": false,
+                }),
+            )
+            .unwrap();
+            app.run("app.preferences", json!({})).unwrap();
+            app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("composition"));
+            let ctx = dialog_context("en");
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+            for _ in 0..3 {
+                dialog_frame(&mut app, &ctx, screen, vec![]);
+            }
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            let first = visible_label(&labels, screen, "Keep Violations").center();
+            let second = visible_label(&labels, screen, "H&J Violations").center();
+            dialog_frame(&mut app, &ctx, screen, vec![egui::Event::PointerMoved(first), checkbox_pointer(first, true)]);
+            assert!(app.ui.dialog.as_ref().unwrap().b("highlightKeeps"), "first field changes on press");
+            dialog_frame(&mut app, &ctx, screen, vec![egui::Event::PointerMoved(second)]);
+            let d = app.ui.dialog.as_ref().unwrap();
+            assert!(d.b("highlightKeeps") && d.b("highlightHj"), "neighbor changes while held");
+            assert!(d.b("highlightCustomTracking"));
+            assert!(!d.b("highlightSubstitutedFonts"));
+            let fields = d.fields.clone();
+            dialog_frame(&mut app, &ctx, screen, vec![egui::Event::PointerMoved(first)]);
+            dialog_frame(&mut app, &ctx, screen, vec![checkbox_pointer(first, false)]);
+            assert_eq!(app.ui.dialog.as_ref().unwrap().fields, fields, "revisit/release do not undo the assignment");
+            let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+            click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, if apply { "OK" } else { "Cancel" }).center());
+            assert!(app.ui.dialog.is_none());
+            app.run("app.preferences", json!({})).unwrap();
+            let d = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(d.b("highlightKeeps"), apply);
+            assert_eq!(d.b("highlightHj"), apply);
+            assert!(d.b("highlightCustomTracking"));
+            assert!(!d.b("highlightSubstitutedFonts"));
+        }
+    }
+
+    fn sparse_check_frame(ctx: &egui::Context, d: &mut Dialog, base: &Value, events: Vec<egui::Event>) -> Vec<egui::Response> {
+        let mut responses = Vec::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 240.0))), events, ..Default::default() },
+            |ui| {
+                responses.clear();
+                let cf = CharFields { base, sparse: true };
+                for (key, label) in
+                    [("underline", "Underline"), ("ligatures", "Ligatures"), ("strikethrough", "Strikethrough"), ("noBreak", "No Break")]
+                {
+                    responses.push(char_check(ui, d, &cf, key, label));
+                }
+            },
+        );
+        output.textures_delta.clear();
+        responses
+    }
+
+    #[test]
+    fn checkbox_sparse_style_click_cycle_and_drag_assignment_keep_unset_attributes() {
+        let ctx = dialog_context("en");
+        let base = json!({"underline": false, "ligatures": true, "strikethrough": null, "noBreak": false});
+        let mut d = Dialog::new("characterStyleOptions", json!({"name": "Example"}));
+        sparse_check_frame(&ctx, &mut d, &base, vec![]);
+        let rows = sparse_check_frame(&ctx, &mut d, &base, vec![]);
+        let p: Vec<_> = rows.iter().map(|r| r.rect.center()).collect();
+        for expected in [json!(true), json!(false), Value::Null] {
+            let before = CharFields { base: &base, sparse: true }.get(&d, "strikethrough");
+            sparse_check_frame(&ctx, &mut d, &base, vec![egui::Event::PointerMoved(p[2]), checkbox_pointer(p[2], true)]);
+            assert_eq!(CharFields { base: &base, sparse: true }.get(&d, "strikethrough"), before);
+            sparse_check_frame(&ctx, &mut d, &base, vec![checkbox_pointer(p[2], false)]);
+            assert_eq!(d.fields["c.strikethrough"], expected);
+        }
+        sparse_check_frame(&ctx, &mut d, &base, vec![egui::Event::PointerMoved(p[0]), checkbox_pointer(p[0], true)]);
+        assert!(!d.fields.contains_key("c.underline"), "false click is not eagerly turned into true or unset");
+        for &pos in &p[1..] {
+            sparse_check_frame(&ctx, &mut d, &base, vec![egui::Event::PointerMoved(pos)]);
+        }
+        sparse_check_frame(&ctx, &mut d, &base, vec![checkbox_pointer(p[3], false)]);
+        assert_eq!(d.fields["c.underline"], true);
+        assert_eq!(d.fields["c.noBreak"], true);
+        assert_eq!(d.fields["c.strikethrough"], Value::Null);
+        assert!(!d.fields.contains_key("c.ligatures"), "already-equal inherited value receives no override");
+        // Start checked, drag back over the other checked controls: assign false, not null.
+        sparse_check_frame(&ctx, &mut d, &base, vec![egui::Event::PointerMoved(p[1]), checkbox_pointer(p[1], true)]);
+        for pos in [p[3], p[2], p[0]] {
+            sparse_check_frame(&ctx, &mut d, &base, vec![egui::Event::PointerMoved(pos)]);
+        }
+        sparse_check_frame(&ctx, &mut d, &base, vec![checkbox_pointer(p[0], false)]);
+        for key in ["c.underline", "c.ligatures", "c.noBreak"] {
+            assert_eq!(d.fields[key], false);
+        }
+        assert_eq!(d.fields["c.strikethrough"], Value::Null);
+        assert_eq!(d.s("name"), "Example");
+        // A keyboard activation still uses the sparse click cycle.
+        let rows = sparse_check_frame(&ctx, &mut d, &base, vec![]);
+        rows[0].request_focus();
+        sparse_check_frame(
+            &ctx,
+            &mut d,
+            &base,
+            vec![egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+        );
+        assert_eq!(d.fields["c.underline"], Value::Null);
+    }
+
+    fn sparse_grid_frame(ctx: &egui::Context, d: &mut Dialog, base: &Value, events: Vec<egui::Event>) -> Vec<egui::Response> {
+        sparse_grid_frame_observed(ctx, d, base, events, &mut |_| {})
+    }
+
+    fn sparse_grid_frame_observed(
+        ctx: &egui::Context,
+        d: &mut Dialog,
+        base: &Value,
+        events: Vec<egui::Event>,
+        observe: &mut dyn FnMut(&egui::Context),
+    ) -> Vec<egui::Response> {
+        let mut responses = Vec::new();
+        let time = ctx.input(|i| i.time) + 1.0 / 60.0;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 240.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                responses.clear();
+                let cf = CharFields { base, sparse: true };
+                // The real Basic Character Formats grid order and spacing.
+                egui::Grid::new("pscb").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                    for (index, (key, label)) in
+                        [("underline", "Underline"), ("ligatures", "Ligatures"), ("strikethrough", "Strikethrough"), ("noBreak", "No Break")]
+                            .into_iter()
+                            .enumerate()
+                    {
+                        responses.push(char_check(ui, d, &cf, key, label));
+                        if index % 2 == 1 {
+                            ui.end_row();
+                        }
+                    }
+                });
+                observe(ui.ctx());
+            },
+        );
+        output.textures_delta.clear();
+        responses
+    }
+
+    #[test]
+    fn checkbox_sparse_grid_short_release_matches_held_drag_in_both_row_directions() {
+        for target in [true, false] {
+            for reverse in [false, true] {
+                for batched in [false, true] {
+                    let ctx = dialog_context("en");
+                    let base = json!({"underline": !target, "strikethrough": !target, "ligatures": null, "noBreak": !target});
+                    let mut d = Dialog::new("characterStyleOptions", json!({"name": "Short edge"}));
+                    for _ in 0..3 {
+                        sparse_grid_frame(&ctx, &mut d, &base, vec![]);
+                    }
+                    let rows = sparse_grid_frame(&ctx, &mut d, &base, vec![]);
+                    let (origin, neighbor) = if reverse { (2, 0) } else { (0, 2) };
+                    let from = rows[origin].interact_rect;
+                    let to = rows[neighbor].interact_rect;
+                    let x = from.left().max(to.left()) + 1.0;
+                    let (p, q) = if reverse {
+                        (egui::pos2(x, from.top() + 0.25), egui::pos2(x, to.bottom() - 0.25))
+                    } else {
+                        (egui::pos2(x, from.bottom() - 0.25), egui::pos2(x, to.top() + 0.25))
+                    };
+                    assert!(from.contains(p) && to.contains(q) && !from.contains(q));
+                    assert!((p.distance(q) - 4.5).abs() < 0.1 && p.distance(q) < 6.0, "short grid edge: {p:?} -> {q:?}");
+                    let mut expected = d.fields.clone();
+                    sparse_grid_frame(&ctx, &mut d, &base, vec![egui::Event::PointerMoved(p), checkbox_pointer(p, true)]);
+                    assert_eq!(d.fields, expected, "sparse origin waits for the gesture");
+                    if !batched {
+                        sparse_grid_frame(&ctx, &mut d, &base, vec![egui::Event::PointerMoved(q)]);
+                    }
+                    let mut release_expected = expected.clone();
+                    release_expected.insert("c.strikethrough".into(), json!(target));
+                    if !(reverse && batched) {
+                        release_expected.insert("c.underline".into(), json!(target));
+                    }
+                    let mut pending = None;
+                    let mut release_frame = 0;
+                    let released = sparse_grid_frame_observed(
+                        &ctx,
+                        &mut d,
+                        &base,
+                        vec![egui::Event::PointerMoved(q), checkbox_pointer(q, false), egui::Event::PointerMoved(rows[3].rect.center())],
+                        &mut |ctx| {
+                            release_frame = ctx.cumulative_frame_nr();
+                            assert!(ctx.input(|i| i.pointer.primary_released() && !i.pointer.primary_pressed() && !i.pointer.primary_down()));
+                            pending = crate::widgets::checkbox_completion_pending(ctx);
+                            if let Some(token) = pending {
+                                assert!(!crate::widgets::checkbox_completion_settled(ctx, token));
+                            }
+                        },
+                    );
+                    assert_eq!(d.fields, release_expected, "release: target={target}, reverse={reverse}, batched={batched}");
+                    assert_eq!(pending.is_some(), reverse, "reverse release has an authorized receipt");
+                    for (i, r) in released.iter().enumerate() {
+                        assert_eq!(
+                            r.changed(),
+                            (i == origin && (batched || !reverse)) || (i == neighbor && batched && !reverse),
+                            "release changes: target={target}, reverse={reverse}, batched={batched}, row={i}"
+                        );
+                    }
+                    expected.insert("c.underline".into(), json!(target));
+                    expected.insert("c.strikethrough".into(), json!(target));
+                    let settled = sparse_grid_frame_observed(&ctx, &mut d, &base, vec![], &mut |ctx| {
+                        assert_eq!(ctx.cumulative_frame_nr(), release_frame + 1);
+                        assert!(ctx.input(|i| i.events.is_empty()
+                            && !i.pointer.primary_down()
+                            && !i.pointer.primary_pressed()
+                            && !i.pointer.primary_released()));
+                        assert!(crate::widgets::checkbox_completion_pending(ctx).is_none());
+                        if let Some(token) = pending {
+                            assert!(crate::widgets::checkbox_completion_settled(ctx, token));
+                        }
+                    });
+                    assert_eq!(d.fields, expected, "one quiet frame settles the exact full draft");
+                    for (i, r) in settled.iter().enumerate() {
+                        assert_eq!(r.changed(), reverse && batched && i == neighbor);
+                    }
+                    let idle = sparse_grid_frame_observed(&ctx, &mut d, &base, vec![], &mut |ctx| {
+                        if let Some(token) = pending {
+                            assert!(!crate::widgets::checkbox_completion_settled(ctx, token));
+                        }
+                    });
+                    assert!(idle.iter().all(|r| !r.changed()));
+                    assert_eq!(d.fields, expected, "no replay or later-hover field edit");
+                }
+            }
+        }
+        // A release within the same origin is still the ordinary false -> unset click.
+        let ctx = dialog_context("en");
+        let base = json!({"underline": false, "strikethrough": false, "ligatures": null, "noBreak": false});
+        let mut d = Dialog::new("characterStyleOptions", json!({"name": "Same origin"}));
+        for _ in 0..3 {
+            sparse_grid_frame(&ctx, &mut d, &base, vec![]);
+        }
+        let point = sparse_grid_frame(&ctx, &mut d, &base, vec![])[0].rect.center();
+        let mut expected = d.fields.clone();
+        sparse_grid_frame(&ctx, &mut d, &base, vec![egui::Event::PointerMoved(point), checkbox_pointer(point, true)]);
+        assert_eq!(d.fields, expected);
+        sparse_grid_frame(&ctx, &mut d, &base, vec![checkbox_pointer(point, false)]);
+        expected.insert("c.underline".into(), Value::Null);
+        assert_eq!(d.fields, expected);
+    }
+
     #[test]
     fn margins_and_columns_link_arithmetic_preview_and_one_undo_step() {
         // Adobe's "Set up a modern magazine layout" (1:41–3:04): linked margins to 0.4375 in, then
@@ -5041,9 +6922,20 @@ mod tests {
     }
 
     fn dialog_frame(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, events: Vec<egui::Event>) -> Vec<(String, egui::Rect, egui::Rect)> {
+        dialog_frame_observed(app, ctx, screen, events, &mut |_| {})
+    }
+
+    fn dialog_frame_observed(
+        app: &mut DesignApp,
+        ctx: &egui::Context,
+        screen: egui::Rect,
+        events: Vec<egui::Event>,
+        observe: &mut dyn FnMut(&egui::Context),
+    ) -> Vec<(String, egui::Rect, egui::Rect)> {
         let time = ctx.input(|i| i.time) + 1.0 / 60.0;
         let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| {
             show(app, ui.ctx());
+            observe(ui.ctx());
         });
         output.textures_delta.clear();
         fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect, egui::Rect)>) {
