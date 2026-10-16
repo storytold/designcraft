@@ -50,6 +50,15 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let size = vec2(tools_slot_width(ui.available_width(), tools_w), ui.available_height());
                     let tools = ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
+                        // Who is signed in and who else is here, at the far
+                        // right, where every office suite puts them. Drawn
+                        // first because this layout runs right to left. A
+                        // build with no service draws neither, and the bar
+                        // keeps the spacing it always had.
+                        if crate::cloud::available(app) {
+                            crate::cloud::who(app, ui);
+                            ui.add_space(8.0);
+                        }
                         // Search field.
                         let (r, _) = ui.allocate_exact_size(vec2(125.0, 18.0), Sense::click());
                         ui.painter().rect(r, 1.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
@@ -115,7 +124,16 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                             },
                         );
                         ui.add_space(6.0);
-                        if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
+                        // Share means share when there is somewhere to share
+                        // to. The dialog itself lives in craft-ui, so every
+                        // Craft app offers the same one. Without a service
+                        // that reports sharing this stays the export hint it
+                        // was, rather than offering a share that would fail.
+                        if crate::cloud::shares(app) {
+                            if let Some(id) = crate::cloud::share_button(app, ui, &crate::cloud::copies()) {
+                                let _ = app.run(&id, json!({}));
+                            }
+                        } else if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
                             app.status("Export a PDF, IDML or package to share — no cloud account needed.");
                         }
                         ui.add_space(8.0);
@@ -794,6 +812,9 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let _ = app.run("file.newSample", json!({}));
                 }
             });
+            // Cloud storage sits beside the local picker and never in place
+            // of it. Nothing is drawn without a service.
+            crate::cloud::open_section(app, ui);
             ui.add_space(20.0);
             community_card(app, ui);
             ui.add_space(24.0);

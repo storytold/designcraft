@@ -13,6 +13,15 @@ workspace = true
 [dependencies]
 designcraft-engine = { workspace = true }
 designcraft-ui-egui = { workspace = true }
+# How this app reaches CollabCraft. The pages in designcraft-ui-egui open no
+# socket, so the transport half lives here beside the session it collects.
+craft-cloud-client = { workspace = true }
+# The share dialog's backend. The dialog itself is drawn by
+# designcraft-ui-egui, which reaches no service of its own.
+collabcraft-share = { workspace = true }
+# The share dialog needs the same `ShareBackend` trait craft-ui states, so the
+# feature set here matches the one designcraft-ui-egui builds with.
+craft-ui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
 egui = { workspace = true }
 serde = { workspace = true }

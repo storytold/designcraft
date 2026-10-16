@@ -10,7 +10,18 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.openDialog", "Open…", Some("Cmd+O"), "{}"),
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{}"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{}"),
+    ("app.saveDialogLocal", "Save As on This Computer…", None, "{} — the system Save dialog, past the choice of destination"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
+    // ---- cloud storage. Every one of these answers with the whole cloud state.
+    ("cloud.open", "Open from the Cloud…", None, "{} — browse your cloud account and what other people shared with you"),
+    ("cloud.status", "Cloud Status", None, "{} → the account, the folder listed, transfers in flight and where the layout came from"),
+    ("cloud.browse", "Browse Cloud Folder", None, "{path?} — list one folder of your own files (\"\" is the root)"),
+    ("cloud.shared", "List Cloud Shares", None, "{} — the layouts other people shared with you"),
+    ("cloud.link", "Link a Cloud Account", None, "{} — connect the provider behind the service to your account"),
+    ("cloud.openFile", "Open a Cloud Layout", None, "{id?, name?} — open something the listing already holds"),
+    ("cloud.save", "Save to the Cloud", None, "{} — write back to the entry the layout came from"),
+    ("cloud.saveAs", "Save to the Cloud As…", None, "{folder?, name?} — asks when either is missing"),
+    ("cloud.reload", "Reload from the Cloud", None, "{} — replace the open layout with the stored copy"),
     ("app.quit", "Quit DesignCraft", Some("Cmd+Q"), "{} — close the window; each document with unsaved changes asks first"),
     ("app.saveCopyDialog", "Save a Copy…", Some("Cmd+Alt+S"), "{} — choose where to write a copy (the document stays as it is)"),
     ("app.loadSwatches", "Load Swatches…", None, "{} — pick a swatch exchange (.ase) file"),
@@ -231,6 +242,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
         &[
             "ui:app.newDocumentDialog",
             "ui:app.openDialog",
+            "ui:cloud.open",
             "-",
             "cmd:file.close",
             "ui:app.save",
@@ -896,15 +908,84 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             if app.session.active().is_some_and(|d| d.path.is_some()) {
                 return Some(app.run("file.save", json!({})));
             }
+            // A layout that came from the cloud and has no file on this
+            // computer saves back where it came from. Saving a local layout
+            // behaves exactly as it always did.
+            if crate::cloud::has_target(app) {
+                return Some(crate::cloud::save(app));
+            }
             return run_ui(app, "app.saveDialog", p);
         }
-        "app.saveDialog" => {
+        // With a service wired, Save As asks where first. Without one it is
+        // the system Save dialog, which is all it ever was.
+        "app.saveDialog" if crate::cloud::available(app) => {
+            app.cloud_page = Some(crate::cloud::Page::Save);
+            app.cloud.save_name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
+            Ok(crate::cloud::status(app))
+        }
+        "app.saveDialog" | "app.saveDialogLocal" => {
             let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
                 return Some(app.run("file.saveAs", json!({"path": path})));
             }
             Ok(Value::Null)
         }
+        // ---- cloud storage
+        id if id.starts_with("cloud.") && id != "cloud.status" && !crate::cloud::available(app) => {
+            return Some(Err(crate::cloud::UNAVAILABLE.to_owned()));
+        }
+        "cloud.status" => Ok(crate::cloud::status(app)),
+        "cloud.open" => {
+            app.cloud_page = Some(crate::cloud::Page::Open);
+            crate::cloud::start(app);
+            Ok(crate::cloud::status(app))
+        }
+        "cloud.browse" => {
+            let path = p.get("path").and_then(Value::as_str).unwrap_or("");
+            crate::cloud::browse(app, path);
+            Ok(json!({"folder": path}))
+        }
+        "cloud.shared" => {
+            crate::cloud::load_shared(app);
+            Ok(Value::Null)
+        }
+        "cloud.link" => {
+            crate::cloud::link(app);
+            Ok(crate::cloud::status(app))
+        }
+        // Opens something already listed, by id or by name. The listing is
+        // what the user can see, which keeps a scripted open and a clicked
+        // one on the same footing.
+        "cloud.openFile" => {
+            let id = p.get("id").and_then(Value::as_str);
+            let name = p.get("name").and_then(Value::as_str).unwrap_or("");
+            let found = app
+                .cloud
+                .mine
+                .entries
+                .iter()
+                .chain(app.cloud.shared.entries.iter())
+                .find(|e| id.is_some_and(|id| e.id == id) || (!name.is_empty() && e.name == name))
+                .cloned();
+            match found {
+                Some(entry) if crate::cloud::opens(&entry) => {
+                    crate::cloud::open_entry(app, entry, None);
+                    Ok(crate::cloud::status(app))
+                }
+                Some(entry) => return Some(Err(format!("DesignCraft cannot open {}", entry.name))),
+                None => return Some(Err("no such file in the cloud listing".to_owned())),
+            }
+        }
+        "cloud.save" => crate::cloud::save(app),
+        "cloud.saveAs" => match (p.get("folder").and_then(Value::as_str), p.get("name").and_then(Value::as_str)) {
+            (Some(folder), Some(name)) => crate::cloud::save_as(app, folder, name),
+            _ => {
+                app.cloud_page = Some(crate::cloud::Page::Save);
+                app.save_to_cloud = Some(true);
+                Ok(crate::cloud::status(app))
+            }
+        },
+        "cloud.reload" => crate::cloud::reload_active(app),
         "app.quit" => {
             app.request_quit();
             Ok(Value::Null)
@@ -2012,6 +2093,11 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    // Nothing cloud-shaped is offered in a build with no service configured.
+    // Browsing needs no layout open; everything else acts on one.
+    if id.starts_with("cloud.") {
+        return crate::cloud::available(app) && (id == "cloud.open" || app.session.active().is_some());
+    }
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
     }

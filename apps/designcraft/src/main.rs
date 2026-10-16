@@ -11,6 +11,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod cloud;
 mod control_server;
 mod gpu;
 mod logging;
@@ -343,6 +344,14 @@ fn main() -> eframe::Result {
                 app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
             }
             load_prefs(&mut app);
+            // Cloud storage, when a service is configured. Without one the
+            // interface offers nothing cloud-shaped at all.
+            if let Some(backend) = cloud::service(cc.egui_ctx.clone()) {
+                app.cloud.connect(backend);
+            }
+            // The share dialog reaches the same service through its own
+            // client, so a sign-in through either half serves both.
+            app.share.connect(collabcraft_share::CollabCraft::from_fn(cloud::client).for_app("designcraft"));
             app.integrated_titlebar = cfg!(target_os = "macos");
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());

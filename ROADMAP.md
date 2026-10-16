@@ -347,6 +347,15 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-14 (cloud)** · Open and Save reach cloud storage through CollabCraft. The start screen
+  grows a Cloud section listing your own layouts and what other people shared. The same service is
+  offered beside This Computer in Save As. The application bar gains an account menu, a Share split
+  button and a presence row. The pages, the menus and every string a user reads are craft-ui's. All
+  twelve Craft apps therefore offer the same ones. DesignCraft answers three things of its own.
+  What a layout is, how bytes become one and back, and where the worker runs. A save carries the
+  etag the layout was read at as its condition. A stored copy somebody else has moved on therefore
+  refuses it. No provider credential, provider URL or provider protocol lives in this repository.
+  No readiness percentage change.
 - **2026-10-14** · The Type tool draws a new text frame over a locked empty frame, as InDesign does, instead of turning the locked frame into a text frame. No readiness percentage change.
 - **2026-10-14** · 100% black shows as pure black on screen by default, as InDesign's Appearance of Black does out of the box (Display All Blacks as Rich Black); Preferences › Appearance of Black › Display All Blacks Accurately still shows it as the dark grey it prints, and a saved choice is kept. No readiness percentage change.
 - **2026-10-14** · Pathfinder keeps the frontmost object, as InDesign does: a photo placed over shapes and intersected with them shows through the shapes (it was dropped, and the shapes kept their black fill); Add, Exclude Overlap and Minus Back take the front object's fill too, Subtract still keeps the back one. No readiness percentage change.

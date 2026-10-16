@@ -449,6 +449,15 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.circle(8.5, 8.5, 5.0);
             pen.line(&[(12.5, 12.5), (17.0, 17.0)]);
         }
+        "folder" => {
+            // A tabbed folder, for a row of a cloud file list.
+            pen.closed(&[(3.0, 6.0), (8.0, 6.0), (9.5, 8.0), (17.0, 8.0), (17.0, 16.0), (3.0, 16.0)]);
+        }
+        "document" => {
+            // A page with a folded corner: one layout in a file list.
+            pen.closed(&[(5.0, 3.0), (12.0, 3.0), (16.0, 7.0), (16.0, 17.0), (5.0, 17.0)]);
+            pen.line(&[(12.0, 3.0), (12.0, 7.0), (16.0, 7.0)]);
+        }
         "share" => {
             pen.line(&[(10.0, 3.0), (10.0, 13.0)]);
             pen.line(&[(6.5, 6.5), (10.0, 3.0), (13.5, 6.5)]);
