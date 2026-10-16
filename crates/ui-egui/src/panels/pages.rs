@@ -51,6 +51,25 @@ enum PageDrag {
     Parent(Option<String>),
 }
 
+/// A spread's label under its thumbnails, as InDesign's: one name for a single page, "2–3" for
+/// pages numbered on in one section (an en dash), and the names apart ("2, 1", "8, A") when a section starts
+/// inside the spread.
+pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, first: usize, n: usize) -> String {
+    let names: Vec<String> = (first..first + n).map(|abs| app.session.page_label(abs)).collect();
+    let starts = |abs: usize| abs == 0 || doc.sections.iter().any(|s| s.start == abs);
+    match (names.first(), names.last()) {
+        (Some(a), Some(b)) if names.len() > 1 => {
+            if !app.session.prefs.absolute_page_numbers && (first + 1..first + n).any(starts) {
+                names.join(", ")
+            } else {
+                format!("{a}\u{2013}{b}")
+            }
+        }
+        (Some(a), _) => a.clone(),
+        _ => String::new(),
+    }
+}
+
 /// Selected-page tint (multiplied over the thumbnail).
 const SELECTED_TINT: Color32 = Color32::from_rgb(0x88, 0xc7, 0xfb);
 /// Page-number badge of the selected page.
@@ -112,6 +131,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // ---- Document spreads.
     let cur = crate::canvas::current_page(app).unwrap_or(0);
     let cur_spread = doc.page_loc(cur).map(|l| l.0);
+    let followed_id = egui::Id::new("pages_panel_followed");
     let center = ui.available_width() / 2.0;
     let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
     let tallest = doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.height)).fold(doc.settings.page_height, f64::max).max(1.0);
@@ -123,12 +143,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let scale = (THUMB_H / doc.settings.page_height.max(1.0) as f32).min(1.8 * THUMB_H / tallest as f32);
         let row_h = sp.pages.iter().map(|p| p.height as f32 * scale).fold(0.0, f32::max).max(THUMB_H * 0.25);
         let spine = sp.spine_x() as f32;
-        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0 + row_h + 22.0), Sense::hover());
+        let (row, row_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0 + row_h + 22.0), Sense::hover());
         let top = row.min.y + 8.0;
-        // Marker above the current spread.
-        if cur_spread == Some(si) && !editing_parents {
-            let c = egui::pos2(row.min.x + center, row.min.y + 3.5);
-            ui.painter().add(egui::Shape::convex_polygon(vec![c + vec2(-5.0, -3.0), c + vec2(5.0, -3.0), c + vec2(0.0, 3.0)], t.icon, Stroke::NONE));
+        // The panel follows the page in view (InDesign scrolls to the selected page).
+        if cur_spread == Some(si) && !editing_parents && ui.data(|d| d.get_temp::<usize>(followed_id)) != Some(cur) {
+            row_resp.scroll_to_me(None);
+            ui.data_mut(|d| d.insert_temp(followed_id, cur));
         }
         for (pi, p) in sp.pages.iter().enumerate() {
             let abs = first + pi;
@@ -143,6 +163,22 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ui.painter().rect_filled(pr, 0.0, tint);
             }
             ui.painter().rect_stroke(pr, 0.0, Stroke::new(0.5, Color32::from_gray(0x4a)), StrokeKind::Outside);
+            // A section starts here: InDesign's small triangle above the page.
+            if abs == 0 || doc.sections.iter().any(|s| s.start == abs) {
+                let c = egui::pos2(pr.center().x, row.min.y + 4.0);
+                ui.painter().add(egui::Shape::convex_polygon(
+                    vec![c + vec2(-4.5, -3.0), c + vec2(4.5, -3.0), c + vec2(0.0, 3.0)],
+                    t.icon,
+                    Stroke::NONE,
+                ));
+            }
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(abs)),
+                )
+            });
             // Parent prefix in the outer top corner (black on white).
             if let Some(pid) = p.parent
                 && let Some(pp) = doc.parents.iter().find(|x| x.id == pid)
@@ -177,15 +213,20 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::canvas::go_to_page(app, abs);
             }
             resp.context_menu(|ui| page_menu(app, ui, &doc, abs, si));
-            // Page number under the page: white on a blue badge when selected.
-            let name = app.session.page_label(abs);
-            let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), Color32::WHITE);
-            let c = egui::pos2(pr.center().x, pr.max.y + 11.0);
-            if selected {
-                let br = egui::Rect::from_center_size(c, vec2(g.size().x.max(7.0) + 7.0, 12.5));
-                ui.painter().rect_filled(br, 0.0, BADGE);
-            }
-            ui.painter().galley(c - g.size() / 2.0, g, Color32::WHITE);
+        }
+        // The spread's label under its pages: white on a blue badge when it holds the page in view.
+        let label = spread_label(app, &doc, first, sp.pages.len());
+        let g = ui.painter().layout_no_wrap(label.clone(), crate::theme::semibold(11.0), Color32::WHITE);
+        let c = egui::pos2(row.min.x + center, top + row_h + 11.0);
+        let br = egui::Rect::from_center_size(c, vec2(g.size().x.max(7.0) + 7.0, 12.5));
+        if cur_spread == Some(si) && !editing_parents {
+            ui.painter().rect_filled(br, 0.0, BADGE);
+        }
+        ui.painter().galley(c - g.size() / 2.0, g, Color32::WHITE);
+        let lr = ui.interact(br, ui.id().with(("spread_label", si)), Sense::click());
+        lr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
+        if lr.clicked() {
+            crate::canvas::go_to_page(app, first);
         }
     }
     ui.add_space(6.0);
@@ -473,5 +514,66 @@ mod tests {
         let (si, pi) = d.page_loc(2).unwrap();
         assert_eq!(d.spreads[si].pages[pi].width, 612.0, "a copy of the letterhead");
         let _ = h.get_by_label("Edit page size");
+    }
+}
+
+#[cfg(test)]
+mod spread_label_tests {
+    use egui_kittest::{Harness, kittest::Queryable};
+    use serde_json::json;
+
+    use super::*;
+
+    fn app() -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"facingPages": true, "pages": 9})).unwrap();
+        app
+    }
+
+    fn labels(app: &DesignApp) -> Vec<String> {
+        let doc = app.session.doc().unwrap().doc.clone();
+        (0..doc.spreads.len()).map(|si| spread_label(app, &doc, doc.first_page_of_spread(si), doc.spreads[si].pages.len())).collect()
+    }
+
+    #[test]
+    fn spreads_are_labelled_as_indesign_labels_them() {
+        // Chris Nielsen's "Numbering Page Sections": sections starting at 1 on pages 3 and 7,
+        // the second in letters, label their spreads "2, 1" and "6, A".
+        let mut app = app();
+        assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+        app.run("layout.section", json!({"page": 3, "startNumber": 1})).unwrap();
+        app.run("layout.section", json!({"page": 7, "startNumber": 1, "style": "upperLetters"})).unwrap();
+        assert_eq!(labels(&app), ["1", "2, 1", "2–3", "4, A", "B–C"]);
+        // Absolute numbering: positions, always a range.
+        app.session.prefs.absolute_page_numbers = true;
+        assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+    }
+
+    #[test]
+    fn the_panel_shows_spread_labels_and_a_click_on_one_goes_to_its_spread() {
+        let mut app = app();
+        app.run("layout.section", json!({"page": 3, "startNumber": 1})).unwrap();
+        // The canvas the panel's clicks move (not drawn here).
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1000.0, 800.0)));
+        let mut h = Harness::builder().with_size(vec2(260.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| show(app, ui));
+            },
+            app,
+        );
+        h.run_steps(3);
+        let _ = h.get_by_label("2, 1");
+        assert!(h.query_by_label("2 1").is_none());
+        // Each page is named for screen readers: two pages are numbered 1.
+        assert_eq!(h.query_all_by_label("Page 1").count(), 2);
+        h.get_by_label("2–3").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.doc().unwrap().doc.page_loc(crate::canvas::current_page(h.state()).unwrap()).unwrap().0, 2);
     }
 }
