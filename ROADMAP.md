@@ -343,6 +343,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-10-16** · Tables for scripts: `table.list` lists a document's, a story's or a text frame's tables with the frame and column they are set in, `table.setWidth` scales a table's columns to a width, `table.paragraphStyle` styles every paragraph in its cells, and table style, column width and row height commands take a named table without a caret in it (they were disabled then). No readiness percentage change.
 - **2026-10-13** · Switching between document and parent pages refreshes the canvas immediately, preventing black parent pages and stale document objects when the zoom stays the same. Ordinary edits retain partial repainting. No readiness percentage change.
 
 Newest first.
