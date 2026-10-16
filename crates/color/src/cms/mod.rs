@@ -230,6 +230,42 @@ pub fn register_icc(bytes: &[u8], name: Option<String>) -> Result<ProfileInfo, C
     Ok(info)
 }
 
+/// Name and kind of an ICC profile, without registering it.
+pub fn inspect_icc(bytes: &[u8]) -> Result<ProfileInfo, CmsError> {
+    let p = IccProfile::from_bytes(None, bytes)?;
+    Ok(ProfileInfo { name: p.name, kind: p.kind, builtin: false })
+}
+
+/// The folders this platform keeps ICC profiles in (system, user and Adobe's), existing or not.
+/// Reading them is the engine's job (`color.installedProfiles`): this crate touches no file.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn installed_profile_dirs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if cfg!(target_os = "macos") {
+        dirs.extend(
+            ["/Library/ColorSync/Profiles", "/System/Library/ColorSync/Profiles", "/Library/Application Support/Adobe/Color/Profiles"]
+                .map(PathBuf::from),
+        );
+        if let Some(h) = &home {
+            dirs.push(h.join("Library/ColorSync/Profiles"));
+        }
+    } else if cfg!(target_os = "windows") {
+        let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        dirs.push(root.join(r"System32\spool\drivers\color"));
+        dirs.push(PathBuf::from(r"C:\Program Files (x86)\Common Files\Adobe\Color\Profiles"));
+        dirs.push(PathBuf::from(r"C:\Program Files\Common Files\Adobe\Color\Profiles"));
+    } else {
+        dirs.extend(["/usr/share/color/icc", "/usr/local/share/color/icc"].map(PathBuf::from));
+        if let Some(h) = &home {
+            dirs.push(h.join(".local/share/icc"));
+            dirs.push(h.join(".color/icc"));
+        }
+    }
+    dirs
+}
+
 /// A colour-management context: resolved working spaces plus conversion settings.
 #[derive(Clone)]
 pub struct Cms {

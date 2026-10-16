@@ -77,9 +77,50 @@ impl Mode {
     }
 }
 
+/// Resolution (horizontal, vertical pixels per inch) from the ResolutionInfo image resource
+/// (id 1005, 16.16 fixed point); `None` without one or when the file is damaged.
+pub(crate) fn resolution(bytes: &[u8]) -> Option<(f64, f64)> {
+    let mut r = Reader { b: bytes };
+    if r.take(4)? != b"8BPS" {
+        return None;
+    }
+    r.take(22)?; // version, reserved, channels, height, width, depth, mode
+    r.block(false)?; // colour mode data
+    let mut res = Reader { b: r.block(false)? };
+    while res.take(4)? == b"8BIM" {
+        let id = res.u16()?;
+        // Pascal name, padded so that length byte + name take an even number of bytes.
+        let n = usize::from(*res.take(1)?.first()?);
+        res.take(n + (n + 1) % 2)?;
+        let len = usize::try_from(res.u32()?).ok()?;
+        let data = res.take(len)?;
+        if len % 2 == 1 {
+            res.take(1)?;
+        }
+        if id == 1005 && data.len() >= 16 {
+            let fixed = |at: usize| Some(f64::from(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?)) / 65536.0);
+            let (h, v) = (fixed(0)?, fixed(8)?);
+            return (h > 0.0 && v > 0.0).then_some((h, v));
+        }
+    }
+    None
+}
+
 /// The merged composite as straight RGBA8, `None` when the file is damaged or unsupported (32-bit,
 /// Multichannel, ZIP-compressed composite).
-pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
+/// The composite's stored channel values (four slots per pixel, the first `colours` used,
+/// matted against white where partly transparent) and its straight alpha (empty when opaque).
+struct Planes {
+    mode: Mode,
+    w: u32,
+    h: u32,
+    colours: usize,
+    data: Vec<u8>,
+    alpha: Vec<u8>,
+    palette: Option<[[u8; 256]; 3]>,
+}
+
+fn planes(bytes: &[u8]) -> Option<Planes> {
     let mut r = Reader { b: bytes };
     if r.take(4)? != b"8BPS" {
         return None;
@@ -141,6 +182,38 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
         })?;
     }
 
+    Some(Planes { mode, w, h, colours, data: rgba, alpha, palette })
+}
+
+/// Whether the file is a Photoshop document in CMYK mode.
+pub(crate) fn is_cmyk(bytes: &[u8]) -> bool {
+    bytes.len() >= 26 && &bytes[..4] == b"8BPS" && bytes[24..26] == [0, 4]
+}
+
+/// A CMYK composite's ink values (0 = no ink) with straight alpha, as [`decode`] would convert
+/// them to RGB; `None` unless the document is CMYK (or when it is damaged or unsupported).
+pub(crate) fn decode_cmyk(bytes: &[u8]) -> Option<crate::CmykRaster> {
+    let p = planes(bytes)?;
+    if p.mode != Mode::Cmyk {
+        return None;
+    }
+    let mut cmyk = p.data;
+    for (i, px) in cmyk.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let a = p.alpha.get(i).copied().unwrap_or(255);
+        for v in px.iter_mut() {
+            // Stored inverted (255 = no ink) and matted against white: un-matte, then invert.
+            let mut stored = f32::from(*v);
+            if a > 0 && a < 255 {
+                stored = (255.0 + (stored - 255.0) * 255.0 / f32::from(a)).round().clamp(0.0, 255.0);
+            }
+            *v = 255 - stored as u8;
+        }
+    }
+    Some(crate::CmykRaster { width: p.w, height: p.h, cmyk, alpha: (!p.alpha.is_empty()).then_some(p.alpha) })
+}
+
+pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
+    let Planes { mode, w, h, colours, data: mut rgba, alpha, palette } = planes(bytes)?;
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let byte = |v: f32| v.round().clamp(0.0, 255.0) as u8;
     let white = mode.white();

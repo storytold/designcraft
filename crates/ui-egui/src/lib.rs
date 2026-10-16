@@ -147,6 +147,33 @@ pub struct PdfExportSettings {
     pub marks_offset: String,
     /// File › Export PDF › Advanced › Tagged PDF.
     pub tagged: bool,
+    /// Marks and Bleeds › the export's own bleed (as typed, measures) when `bleed` (Use
+    /// Document Bleed Settings) is off.
+    pub bleed_top: String,
+    pub bleed_bottom: String,
+    pub bleed_inside: String,
+    pub bleed_outside: String,
+    /// Marks and Bleeds › Include Slug Area.
+    pub slug: bool,
+    /// Compression › Color Images: Bicubic Downsampling to `ppi` for images above `above`;
+    /// Image Quality `maximum`, `high`, `medium`, `low`, `minimum` or `lossless` (ZIP).
+    pub color_downsample: bool,
+    pub color_ppi: String,
+    pub color_above: String,
+    pub color_quality: String,
+    /// Compression › Grayscale Images.
+    pub gray_downsample: bool,
+    pub gray_ppi: String,
+    pub gray_above: String,
+    pub gray_quality: String,
+    /// Compression › Monochrome Images (always lossless).
+    pub mono_downsample: bool,
+    pub mono_ppi: String,
+    pub mono_above: String,
+    /// Output › Color Conversion: `none`, `destination` or `preserveNumbers`.
+    pub color_conversion: String,
+    /// Output › Destination: a CMYK profile name, `""` = Document CMYK (the working space).
+    pub destination: String,
 }
 
 impl Default for PdfExportSettings {
@@ -164,6 +191,26 @@ impl Default for PdfExportSettings {
             marks_weight: "0.25".into(),
             marks_offset: "6".into(),
             tagged: true,
+            bleed_top: String::new(),
+            bleed_bottom: String::new(),
+            bleed_inside: String::new(),
+            bleed_outside: String::new(),
+            slug: false,
+            // InDesign's High Quality Print: 300 ppi above 450 at maximum quality; monochrome
+            // 1200 above 1800.
+            color_downsample: true,
+            color_ppi: "300".into(),
+            color_above: "450".into(),
+            color_quality: "maximum".into(),
+            gray_downsample: true,
+            gray_ppi: "300".into(),
+            gray_above: "450".into(),
+            gray_quality: "maximum".into(),
+            mono_downsample: true,
+            mono_ppi: "1200".into(),
+            mono_above: "1800".into(),
+            color_conversion: "none".into(),
+            destination: String::new(),
         }
     }
 }

@@ -162,8 +162,9 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     usvg::Tree::from_data(bytes, svg_options()).ok()
 }
 
-/// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
-/// likewise, SVGs from their width/height (CSS pixels), PDFs are the caller's.
+/// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs at
+/// their own resolution (as InDesign places them; 72 ppi without a sane ResolutionInfo), SVGs
+/// from their width/height (CSS pixels), PDFs are the caller's.
 pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     if is_svg(bytes) {
         let s = svg_tree(bytes)?.size();
@@ -174,6 +175,13 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
         return Some((bb[2] - bb[0], bb[3] - bb[1])).filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0);
     }
     let (w, h) = pixel_size(bytes)?;
+    if is_psd(bytes)
+        && let Some((x, y)) = psd::resolution(bytes)
+        && (1.0..=10_000.0).contains(&x)
+        && (1.0..=10_000.0).contains(&y)
+    {
+        return Some((f64::from(w) * 72.0 / x, f64::from(h) * 72.0 / y));
+    }
     Some((w as f64, h as f64))
 }
 
@@ -188,6 +196,18 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         return Some((be(18), be(14)));
     }
     image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+}
+
+/// Whether the file is a Photoshop document in CMYK mode (its inks are kept by
+/// [`decode_cmyk_psd`]; [`decode_rgba`] converts them to RGB).
+pub fn is_cmyk_psd(bytes: &[u8]) -> bool {
+    psd::is_cmyk(bytes)
+}
+
+/// The ink values of a CMYK Photoshop document's composite, with straight alpha; `None` for
+/// other modes or a damaged file.
+pub fn decode_cmyk_psd(bytes: &[u8]) -> Option<CmykRaster> {
+    psd::decode_cmyk(bytes)
 }
 
 /// Straight (non-premultiplied) RGBA8 of a raster.
@@ -535,6 +555,29 @@ mod tests {
         b.extend(0u16.to_be_bytes()); // raw
         b.extend([255, 0, 0, 255, 0, 0]); // R, G, B planes: a red pixel, then a green one
         b
+    }
+
+    /// A 300 ppi PSD places at its resolution (2 px = 0.48 pt); without ResolutionInfo at 72 ppi.
+    #[test]
+    fn psd_natural_size_follows_its_resolution() {
+        assert_eq!(natural_size(&tiny_psd()), Some((2.0, 1.0)));
+        let mut b = tiny_psd();
+        // Insert a ResolutionInfo resource (id 1005, name "", 16 bytes) at the image-resources slot.
+        let mut res = Vec::new();
+        res.extend(b"8BIM");
+        res.extend(1005u16.to_be_bytes());
+        res.extend([0, 0]);
+        res.extend(16u32.to_be_bytes());
+        for v in [300u32 << 16, 0x0001_0002, 300 << 16, 0x0001_0002] {
+            res.extend(v.to_be_bytes());
+        }
+        let at = 26 + 4; // header, empty colour mode data; then the image resources length
+        b.splice(at..at + 4, (res.len() as u32).to_be_bytes());
+        b.splice(at + 4..at + 4, res);
+        let (w, h) = natural_size(&b).unwrap();
+        assert!((w - 0.48).abs() < 1e-9 && (h - 0.24).abs() < 1e-9, "{w} {h}");
+        assert_eq!(pixel_size(&b), Some((2, 1)));
+        assert!(decode_rgba(&b).is_some(), "the resource does not disturb decoding");
     }
 
     #[test]

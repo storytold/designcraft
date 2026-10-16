@@ -568,3 +568,242 @@ fn empty_and_populated_export_metadata_preserve_key_presence() {
     }
     assert!(s.contains("Synthetic title") && s.contains("Test author"));
 }
+
+/// Width, height and filter of each image XObject.
+fn image_dicts(bytes: &[u8]) -> Vec<(i32, i32, String)> {
+    use hayro_syntax::object::Name;
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    pdf.objects()
+        .into_iter()
+        .filter_map(|o| o.into_stream())
+        .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image") && s.dict().get::<Name>("SMask").is_none())
+        .map(|s| {
+            let d = s.dict();
+            (
+                d.get::<i32>("Width").unwrap_or(-1),
+                d.get::<i32>("Height").unwrap_or(-1),
+                d.get::<Name>("Filter").map_or("none".into(), |n| n.as_str().to_string()),
+            )
+        })
+        .collect()
+}
+
+/// Marks and Bleeds: the export's own bleed amounts replace the document's, and the slug area
+/// can be included in the media box.
+#[test]
+fn bleed_override_and_slug_area() {
+    let mut d = doc_with_text("x");
+    d.settings.bleed = [9.0; 4];
+    d.settings.slug = [0.0, 36.0, 0.0, 0.0];
+    let s = uncompressed(&d, PdfOptions { bleed: true, bleed_override: Some([18.0; 4]), ..Default::default() });
+    assert!(s.contains("/TrimBox[18 18 630 810]"), "{}", &s[..s.len().min(3000)]);
+    assert!(s.contains("/BleedBox[0 0 648 828]"));
+    assert!(s.contains("/MediaBox[0 0 648 828]"));
+    // The override needs `bleed`; a negative amount counts as none.
+    let s = uncompressed(&d, PdfOptions { bleed: false, bleed_override: Some([18.0; 4]), ..Default::default() });
+    assert!(s.contains("/MediaBox[0 0 612 792]"), "{}", &s[..s.len().min(3000)]);
+    let s = uncompressed(&d, PdfOptions { bleed: true, bleed_override: Some([-5.0, 0.0, 0.0, 0.0]), ..Default::default() });
+    assert!(s.contains("/MediaBox[0 0 612 792]"), "{}", &s[..s.len().min(3000)]);
+    // Slug (36 pt below the page) widens the media box only; trim and bleed stay.
+    let s = uncompressed(&d, PdfOptions { bleed: true, slug: true, ..Default::default() });
+    assert!(s.contains("/TrimBox[9 36 621 828]"), "{}", &s[..s.len().min(3000)]);
+    assert!(s.contains("/BleedBox[0 27 630 837]"));
+    assert!(s.contains("/MediaBox[0 0 630 837]"));
+}
+
+/// Compression: images above the class's threshold are downsampled to its resolution (also a
+/// CMYK TIFF, kept lossless); a JPEG quality makes DCT streams; a JPEG that is not downsampled
+/// is passed through.
+#[test]
+fn compression_downsamples_per_class_and_sets_jpeg_quality() {
+    use crate::{ImageClass, ImageCompression};
+    // A 4×2 raster placed 200 pt wide = 1.44 ppi (the test placement scales 50×).
+    let class = |to: f64, above: f64, quality: Option<u8>| ImageClass { downsample_to: Some(to), above, quality };
+    let mut d = doc_with_text("x");
+    place(&mut d, raster(image::ImageFormat::Png, false), (8, 8));
+    let export = |d: &Document, color: ImageClass| {
+        let opts = PdfOptions { images: ImageCompression { color, ..ImageCompression::NONE }, ..Default::default() };
+        image_dicts(&export_pdf(d, &Cache::new(), &opts).unwrap())
+    };
+    // 8×8 placed 400 pt wide = 1.44 ppi: above 1.2 → down to 0.72 ppi = 4×4, lossless.
+    assert_eq!(export(&d, class(0.72, 1.2, None)), vec![(4, 4, "FlateDecode".into())]);
+    // The threshold is not reached: every pixel stays.
+    assert_eq!(export(&d, class(0.72, 2.0, None)), vec![(8, 8, "FlateDecode".into())]);
+    // A quality makes a JPEG, downsampled or not.
+    assert_eq!(export(&d, class(0.72, 1.2, Some(60))), vec![(4, 4, "DCTDecode".into())]);
+    assert_eq!(export(&d, ImageClass { downsample_to: None, above: 0.0, quality: Some(60) }), vec![(8, 8, "DCTDecode".into())]);
+    // A placed JPEG is passed through unless downsampled.
+    let mut j = doc_with_text("x");
+    let bytes = raster(image::ImageFormat::Jpeg, false);
+    place(&mut j, bytes.clone(), (8, 8));
+    let opts = PdfOptions {
+        images: ImageCompression { color: ImageClass { downsample_to: None, above: 0.0, quality: Some(20) }, ..ImageCompression::NONE },
+        ..Default::default()
+    };
+    let pdf = export_pdf(&j, &Cache::new(), &opts).unwrap();
+    assert!(pdf.windows(bytes.len()).any(|w| w == bytes.as_slice()), "original JPEG bytes embedded");
+    assert_eq!(export(&j, class(0.72, 1.2, Some(60))), vec![(4, 4, "DCTDecode".into())]);
+    // A CMYK TIFF is downsampled too and stays CMYK: lossless without a quality, a CMYK JPEG
+    // (Adobe-inverted samples with a Decode array) with one.
+    let (tif, _) = cmyk_tiff();
+    let mut c = doc_with_text("x");
+    place(&mut c, tif, (4, 2));
+    let opts = PdfOptions { images: ImageCompression { color: class(0.72, 1.2, None), ..ImageCompression::NONE }, ..Default::default() };
+    let pdf = export_pdf(&c, &Cache::new(), &opts).unwrap();
+    assert_eq!(image_dicts(&pdf), vec![(2, 1, "FlateDecode".into())]);
+    assert_eq!(image_xobjects(&pdf)[0].0, "DeviceCMYK");
+    let opts = PdfOptions { images: ImageCompression { color: class(0.72, 1.2, Some(60)), ..ImageCompression::NONE }, ..Default::default() };
+    let s = uncompressed(&c, opts);
+    assert!(
+        s.contains("/Filter/DCTDecode") && s.contains("/ColorSpace/DeviceCMYK") && s.contains("/Decode[1 0 1 0 1 0 1 0]"),
+        "{}",
+        &s[..s.len().min(3000)]
+    );
+    // The grey class governs grey images; monochrome ones are never JPEG.
+    let mut g = doc_with_text("x");
+    let grey = {
+        let img = image::GrayImage::from_fn(8, 8, |x, _| image::Luma([if x < 4 { 40 } else { 200 }]));
+        let mut b = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png).unwrap();
+        b
+    };
+    place(&mut g, grey, (8, 8));
+    let opts = PdfOptions { images: ImageCompression { gray: class(0.72, 1.2, Some(60)), ..ImageCompression::NONE }, ..Default::default() };
+    assert_eq!(image_dicts(&export_pdf(&g, &Cache::new(), &opts).unwrap()), vec![(4, 4, "DCTDecode".into())]);
+    let mut m = doc_with_text("x");
+    let mono = {
+        let img = image::GrayImage::from_fn(8, 8, |x, _| image::Luma([if x < 4 { 0 } else { 255 }]));
+        let mut b = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png).unwrap();
+        b
+    };
+    place(&mut m, mono, (8, 8));
+    let opts = PdfOptions {
+        images: ImageCompression { gray: class(0.72, 1.2, Some(60)), mono: class(0.36, 1.2, Some(60)), ..ImageCompression::NONE },
+        ..Default::default()
+    };
+    assert_eq!(image_dicts(&export_pdf(&m, &Cache::new(), &opts).unwrap()), vec![(2, 2, "FlateDecode".into())]);
+}
+
+/// A minimal Photoshop file: 2×1 RGB, no layers, raw merged image (red, then green).
+fn tiny_psd() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend(b"8BPS");
+    b.extend(1u16.to_be_bytes());
+    b.extend([0u8; 6]);
+    b.extend(3u16.to_be_bytes());
+    b.extend(1u32.to_be_bytes());
+    b.extend(2u32.to_be_bytes());
+    b.extend(8u16.to_be_bytes());
+    b.extend(3u16.to_be_bytes());
+    b.extend(0u32.to_be_bytes());
+    b.extend(0u32.to_be_bytes());
+    b.extend(0u32.to_be_bytes());
+    b.extend(0u16.to_be_bytes());
+    b.extend([255, 0, 0, 255, 0, 0]);
+    b
+}
+
+/// A placed PSD (read by `designcraft_images`, not by `image`) still exports with Compression
+/// on: lossless as it is, downsampled when its class asks for it.
+#[test]
+fn psd_exports_through_compression() {
+    use crate::{ImageClass, ImageCompression};
+    let mut d = doc_with_text("x");
+    place(&mut d, tiny_psd(), (2, 1));
+    let export = |color: ImageClass| {
+        let opts = PdfOptions { images: ImageCompression { color, ..ImageCompression::NONE }, ..Default::default() };
+        let r = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        image_dicts(&r.bytes)
+    };
+    assert_eq!(export(ImageClass::LOSSLESS), vec![(2, 1, "FlateDecode".into())]);
+    assert_eq!(export(ImageClass { downsample_to: None, above: 0.0, quality: Some(60) }), vec![(2, 1, "DCTDecode".into())]);
+    // 2 px over 100 pt = 1.44 ppi; above 1.2 → down to 0.72 ppi = 1×1.
+    assert_eq!(export(ImageClass { downsample_to: Some(0.72), above: 1.2, quality: None }), vec![(1, 1, "FlateDecode".into())]);
+}
+
+/// A minimal CMYK Photoshop file, 2×1: 100% K, then 100% C (channels stored inverted).
+fn tiny_cmyk_psd() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend(b"8BPS");
+    b.extend(1u16.to_be_bytes());
+    b.extend([0u8; 6]);
+    b.extend(4u16.to_be_bytes());
+    b.extend(1u32.to_be_bytes());
+    b.extend(2u32.to_be_bytes());
+    b.extend(8u16.to_be_bytes());
+    b.extend(4u16.to_be_bytes()); // CMYK
+    b.extend(0u32.to_be_bytes());
+    b.extend(0u32.to_be_bytes());
+    b.extend(0u32.to_be_bytes());
+    b.extend(0u16.to_be_bytes());
+    b.extend([255, 0, 255, 255, 255, 255, 0, 255]); // C, M, Y, K planes
+    b
+}
+
+/// A CMYK Photoshop file keeps its inks (100% K stays K only); PDF/A gets it as RGB.
+#[test]
+fn cmyk_psd_keeps_its_inks() {
+    let mut d = doc_with_text("x");
+    place(&mut d, tiny_cmyk_psd(), (2, 1));
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(image_xobjects(&r.bytes), vec![("DeviceCMYK".to_string(), vec![0, 0, 0, 255, 255, 0, 0, 0])]);
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, ..Default::default() }).unwrap();
+    assert_ne!(image_xobjects(&r.bytes)[0].0, "DeviceCMYK");
+}
+
+/// Output › Convert to Destination: RGB swatches and RGB rasters become CMYK; CMYK and grey
+/// keep their numbers and spaces; PDF/A stays RGB.
+#[test]
+fn color_conversion_to_destination_makes_cmyk() {
+    use crate::{ColorConversion, Output};
+    let convert = Output { conversion: ColorConversion::ToDestination, destination: None };
+    let mut d = doc_with_text("x");
+    d.swatches.push(Swatch::color("Web Red", Color::rgb(1.0, 0.0, 0.0)));
+    add_box(&mut d, Rect::new(36.0, 36.0, 136.0, 136.0), "Web Red");
+    add_box(&mut d, Rect::new(36.0, 200.0, 136.0, 300.0), "[Black]");
+    let plain = uncompressed(&d, PdfOptions::default());
+    assert!(plain.contains("1 0 0 rg"), "RGB fill stays RGB without conversion");
+    let s = uncompressed(&d, PdfOptions { output: convert.clone(), ..Default::default() });
+    assert!(!s.contains(" rg\n") && !s.contains(" rg "), "no RGB fills left:\n{}", &s[..s.len().min(2500)]);
+    assert!(s.contains("0 0 0 1 k"), "black keeps its numbers");
+    // An RGB PNG becomes a DeviceCMYK image; a grey one stays grey.
+    let mut d = doc_with_text("x");
+    place(&mut d, raster(image::ImageFormat::Png, false), (8, 8));
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { output: convert.clone(), ..Default::default() }).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(image_xobjects(&r.bytes)[0].0, "DeviceCMYK");
+    // With an image quality the converted raster is a CMYK JPEG.
+    let jpeg_opts = PdfOptions {
+        output: convert.clone(),
+        images: crate::ImageCompression {
+            color: crate::ImageClass { downsample_to: None, above: 0.0, quality: Some(70) },
+            ..crate::ImageCompression::NONE
+        },
+        ..Default::default()
+    };
+    let s = uncompressed(&d, jpeg_opts);
+    assert!(
+        s.contains("/Filter/DCTDecode") && s.contains("/ColorSpace/DeviceCMYK") && s.contains("/Decode[1 0 1 0 1 0 1 0]"),
+        "{}",
+        &s[..s.len().min(3000)]
+    );
+    let r =
+        export_pdf_with_report(&d, &Cache::new(), &PdfOptions { output: convert.clone(), standard: Standard::PdfA2b, ..Default::default() }).unwrap();
+    assert_ne!(image_xobjects(&r.bytes)[0].0, "DeviceCMYK", "PDF/A stays RGB");
+    let mut g = doc_with_text("x");
+    let grey = {
+        let img = image::GrayImage::from_fn(8, 8, |x, _| image::Luma([if x < 4 { 40 } else { 200 }]));
+        let mut b = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png).unwrap();
+        b
+    };
+    place(&mut g, grey, (8, 8));
+    let r = export_pdf_with_report(&g, &Cache::new(), &PdfOptions { output: convert, ..Default::default() }).unwrap();
+    assert_eq!(image_xobjects(&r.bytes)[0].0, "DeviceGray");
+    // An unknown destination is an error, not a silent RGB file.
+    let bad = Output { conversion: ColorConversion::PreserveNumbers, destination: Some("No Such Profile".into()) };
+    assert!(export_pdf(&g, &Cache::new(), &PdfOptions { output: bad, ..Default::default() }).is_err());
+}

@@ -30,6 +30,50 @@ fn set(p: &Value) -> Result<Value> {
     Ok(state())
 }
 
+/// The RGB and CMYK ICC profiles installed on this machine (`cms::installed_profile_dirs`, two
+/// folder levels deep), by name, with their paths. Read through the checked reader; nothing is
+/// registered; a damaged or oversized file is skipped. Empty on the web.
+pub fn installed_profiles() -> Vec<(cms::ProfileInfo, std::path::PathBuf)> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        Vec::new()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        const MAX_BYTES: u64 = 32 << 20;
+        fn walk(dir: &std::path::Path, depth: usize, out: &mut Vec<(cms::ProfileInfo, std::path::PathBuf)>) {
+            let Ok(entries) = crate::io::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+                if !matches!(ext.as_deref(), Some("icc" | "icm")) {
+                    // A folder (one that lists) is walked one level down; anything else is skipped.
+                    if depth > 0 {
+                        walk(&path, depth - 1, out);
+                    }
+                    continue;
+                }
+                let Ok(bytes) = crate::io::read_capped(&path, MAX_BYTES) else { continue };
+                if bytes.len() as u64 > MAX_BYTES {
+                    continue;
+                }
+                if let Ok(info) = cms::inspect_icc(&bytes)
+                    && info.kind != cms::ProfileKind::Gray
+                {
+                    out.push((info, path));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for dir in cms::installed_profile_dirs() {
+            walk(&dir, 1, &mut out);
+        }
+        out.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()).then_with(|| a.1.cmp(&b.1)));
+        out.dedup_by(|a, b| a.0.name == b.0.name);
+        out
+    }
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -55,6 +99,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 Err(bad("color.loadProfile", "no file system on the web"))
             }
         }),
+        cmd!(query "color.installedProfiles", "Installed Profiles", [], None,
+            "{} → {profiles: [{name, kind: rgb|cmyk, path}]} — the RGB and CMYK ICC profiles in the platform's profile folders (system, user, Adobe), none registered until loaded",
+            always, |_s, _p| Ok(json!({"profiles": installed_profiles().iter().map(|(info, path)| json!({"name": info.name, "kind": info.kind, "path": path.to_string_lossy()})).collect::<Vec<_>>()}))),
         cmd!(query "color.convert", "Convert Color", [], None, "{color: {model: rgb, r, g, b} | {model: cmyk, c, m, y, k} | {model: gray, k}, to: rgb|cmyk|gray|lab} — through the working spaces", always, |_s, p| {
             let c: designcraft_color::Color = serde_json::from_value(p.get("color").cloned().unwrap_or_default()).map_err(|e| bad("color.convert", e.to_string()))?;
             let a = cms::active();

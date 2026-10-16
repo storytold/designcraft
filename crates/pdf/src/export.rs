@@ -21,6 +21,7 @@ use krilla::paint::{Fill, FillRule, LinearGradient, RadialGradient, SpreadMethod
 use krilla::surface::Surface;
 use krilla::tagging::{Artifact, ArtifactType, ContentTag, Identifier, Tag, TagGroup, TagTree};
 
+use crate::color_out::{CmykConverter, ColorOut};
 use crate::{ExportReport, PdfError, PdfOptions, Result, Standard};
 
 /// Export `doc` as PDF bytes.
@@ -62,34 +63,43 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
     if let Some(bad) = pages.iter().find(|p| **p >= count) {
         return Err(PdfError::BadPage(bad.saturating_add(1)));
     }
-    let b = doc.settings.bleed.map(|v| if opts.bleed { v.max(0.0) } else { 0.0 });
+    let b = opts.bleed_amounts(doc);
+    let slug = opts.slug_amounts(doc);
     let mut out: Vec<Sheet> = Vec::new();
     let mut seen_spreads: Vec<usize> = Vec::new();
     for abs in pages {
         let (si, pi) = doc.page_loc(abs).ok_or(PdfError::BadPage(abs.saturating_add(1)))?;
         let sp: &Spread = &doc.spreads[si];
-        let (trim, l, r, label) = if opts.spreads {
+        // The trim and the page sides at its left and right edges (inside/outside amounts
+        // depend on them).
+        let (trim, left_side, right_side, label) = if opts.spreads {
             if seen_spreads.contains(&si) {
                 continue;
             }
             seen_spreads.push(si);
             let first = doc.first_page_of_spread(si);
-            let (l, _) = sp.pages.first().map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
-            let (_, r) = sp.pages.last().map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            let left = sp.pages.first().map(|p| p.side).unwrap_or(PageSide::Single);
+            let right = sp.pages.last().map(|p| p.side).unwrap_or(PageSide::Single);
             let names: Vec<String> = (0..sp.pages.len()).map(|i| doc.page_name(first + i)).collect();
-            (sp.bounds(), l, r, names.join("–"))
+            (sp.bounds(), left, right, names.join("–"))
         } else {
             let p = &sp.pages[pi];
-            let (l, r) = bleed_lr(p.side, b);
-            (p.bounds(), l, r, doc.page_name(abs))
+            (p.bounds(), p.side, p.side, doc.page_name(abs))
         };
-        let bleed = Rect::new(trim.x0 - l, trim.y0 - b[0], trim.x1 + r, trim.y1 + b[1]);
+        let around = |amounts: [f64; 4]| {
+            let (l, _) = bleed_lr(left_side, amounts);
+            let (_, r) = bleed_lr(right_side, amounts);
+            Rect::new(trim.x0 - l, trim.y0 - amounts[0], trim.x1 + r, trim.y1 + amounts[1])
+        };
+        let bleed = around(b);
         let media = if opts.marks.any() {
             let m = mark_start(opts, b) + MARK_LEN + 6.0;
             trim.inflate(m, m)
         } else {
             bleed
         };
+        // The slug area, when included, extends the media box (marks may already reach it).
+        let media = if opts.slug { media.union(around(slug)) } else { media };
         out.push(Sheet { spread: si, trim, bleed, media, label });
     }
     Ok(out)
@@ -134,6 +144,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         opts,
         clip: Rect::ZERO,
         warnings,
+        placed_widths: placed_widths(doc),
         images: HashMap::new(),
         images_by_content: ImageContentCache::default(),
         #[cfg(test)]
@@ -145,6 +156,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: archival.is_some(),
+        to_cmyk: if archival.is_some() { None } else { CmykConverter::for_output(&opts.output)? },
         interpolate: archival.is_none(),
         tags: Vec::new(),
         story_tags: HashMap::new(),
@@ -321,6 +333,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         opts: &pdf_opts,
         clip: Rect::ZERO,
         warnings: Vec::new(),
+        placed_widths: placed_widths(doc),
         images: HashMap::new(),
         images_by_content: ImageContentCache::default(),
         #[cfg(test)]
@@ -333,6 +346,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: false,
+        to_cmyk: None,
         interpolate: true,
         tags: Vec::new(),
         story_tags: HashMap::new(),
@@ -456,6 +470,9 @@ pub(crate) struct Exporter<'a> {
     /// Current sheet's visible area (spread space) for culling.
     pub clip: Rect,
     pub warnings: Vec<String>,
+    /// The narrowest placement of each raster asset, in points: with the asset's pixel width it
+    /// gives the effective resolution that Compression › downsampling compares.
+    placed_widths: HashMap<AssetId, f64>,
     images: HashMap<AssetId, Option<Image>>,
     // Immutable export options (including rgb_only) make bytes the complete conversion key.
     // PDF-page/SVG/media routing precedes this path. Failures remain per AssetId.
@@ -474,6 +491,8 @@ pub(crate) struct Exporter<'a> {
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
     pub rgb_only: bool,
+    /// Output › Convert to Destination: RGB colours and rasters become CMYK.
+    pub to_cmyk: Option<Arc<CmykConverter>>,
     /// Ask viewers to smooth upscaled images (`/Interpolate`). Off for PDF/A, which forbids it.
     interpolate: bool,
     /// Tagged PDF: the structure in reading order (stories gather their frames' content).
@@ -521,9 +540,10 @@ fn q(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-fn regular(c: &Color, rgb_only: bool) -> krilla::color::RegularColor {
+fn regular(c: &Color, out: &ColorOut<'_>) -> krilla::color::RegularColor {
     use krilla::color::RegularColor as R;
-    if rgb_only && matches!(c, Color::Cmyk { .. }) {
+    let c = &out.resolve(c);
+    if out.rgb_only && matches!(c, Color::Cmyk { .. }) {
         let [r, g, b] = c.to_rgb();
         return R::Rgb(rgb::Color::new(q(r), q(g), q(b)));
     }
@@ -536,9 +556,10 @@ fn regular(c: &Color, rgb_only: bool) -> krilla::color::RegularColor {
 }
 
 /// A process colour in its own device space (CMYK → DeviceCMYK, RGB → DeviceRGB, Gray → DeviceGray).
-/// `rgb_only` converts CMYK to RGB (PDF/A without a CMYK output profile).
-pub(crate) fn device(c: &Color, rgb_only: bool) -> krilla::color::Color {
-    match regular(c, rgb_only) {
+/// `out.rgb_only` converts CMYK to RGB (PDF/A without a CMYK output profile); `out.to_cmyk`
+/// converts RGB to CMYK (Output › Convert to Destination).
+pub(crate) fn device(c: &Color, out: &ColorOut<'_>) -> krilla::color::Color {
+    match regular(c, out) {
         krilla::color::RegularColor::Rgb(v) => v.into(),
         krilla::color::RegularColor::Cmyk(v) => v.into(),
         krilla::color::RegularColor::Luma(v) => v.into(),
@@ -546,9 +567,9 @@ pub(crate) fn device(c: &Color, rgb_only: bool) -> krilla::color::Color {
 }
 
 /// `[Registration]` prints on every plate: `/Separation /All`.
-pub(crate) fn registration(tint: f32, rgb_only: bool) -> krilla::color::Color {
+pub(crate) fn registration(tint: f32, out: &ColorOut<'_>) -> krilla::color::Color {
     use krilla::color::separation::{Color as SepColor, SeparationColorant, SeparationSpace};
-    let alt = regular(&Color::cmyk(1.0, 1.0, 1.0, 1.0), rgb_only);
+    let alt = regular(&Color::cmyk(1.0, 1.0, 1.0, 1.0), out);
     SepColor::new(q(tint), SeparationSpace::new(SeparationColorant::AllColorants, alt)).into()
 }
 
@@ -608,12 +629,12 @@ impl Exporter<'_> {
                 // [Paper] prints no ink (it knocks out what lies below); its colour is only what
                 // the screen shows. Written as RGB white (`1 1 1 rg`) it would put DeviceRGB in a
                 // CMYK print file.
-                SwatchValue::Paper { .. } if self.for_print() => return Some(device(&Color::cmyk(0.0, 0.0, 0.0, 0.0), self.rgb_only)),
+                SwatchValue::Paper { .. } if self.for_print() => return Some(device(&Color::cmyk(0.0, 0.0, 0.0, 0.0), &self.color_out())),
                 SwatchValue::Tint { base, tint: bt } => {
                     t *= bt;
                     n = base;
                 }
-                SwatchValue::Registration => return Some(registration(t, self.rgb_only)),
+                SwatchValue::Registration => return Some(registration(t, &self.color_out())),
                 SwatchValue::Color { color: _, color_type: ColorType::Spot } => {
                     // Ink Manager: an alias prints on another ink; converted inks go to process.
                     let (ink, process) = self.doc.inks.resolve(&sw.name);
@@ -621,15 +642,15 @@ impl Exporter<'_> {
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { break };
                     if process {
-                        return Some(device(&designcraft_color::swatch::apply_tint(*color, t), self.rgb_only));
+                        return Some(device(&designcraft_color::swatch::apply_tint(*color, t), &self.color_out()));
                     }
-                    let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(color, self.rgb_only));
+                    let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(color, &self.color_out()));
                     return Some(SepColor::new(q(t), space).into());
                 }
                 _ => break,
             }
         }
-        self.doc.resolve_color(name, tint).map(|c| device(&c, self.rgb_only))
+        self.doc.resolve_color(name, tint).map(|c| device(&c, &self.color_out()))
     }
 
     fn spread(&mut self, s: &mut Surface, si: usize) {
@@ -1020,6 +1041,7 @@ impl Exporter<'_> {
             // when every authored stop is CMYK/Gray; PDF/A can also change the output space.
             let components = |c: &Color| match c {
                 Color::Cmyk { .. } if !self.rgb_only => 4,
+                Color::Rgb { .. } if self.to_cmyk.is_some() && !self.rgb_only => 4,
                 Color::Gray { .. } => 1,
                 _ => 3,
             };
@@ -1038,7 +1060,7 @@ impl Exporter<'_> {
                 } else {
                     // Preserve RGB values, including already-interpolated display RGB, and
                     // leave every homogeneous gradient on its existing device-space path.
-                    device(&c, self.rgb_only)
+                    device(&c, &self.color_out())
                 };
                 stops.push(Stop { offset: norm(o), color, opacity: norm(a) });
             }
@@ -1242,6 +1264,11 @@ impl Exporter<'_> {
         None
     }
 
+    /// How this export writes colours.
+    pub(crate) fn color_out(&self) -> ColorOut<'_> {
+        ColorOut { rgb_only: self.rgb_only, to_cmyk: self.to_cmyk.as_deref() }
+    }
+
     /// Fail with the names of placed PDFs too new for this export (see [`Exporter::placed_pdf`]).
     fn check_placed_versions(&self) -> Result<()> {
         if self.too_new.is_empty() {
@@ -1275,20 +1302,32 @@ impl Exporter<'_> {
         let mut warning = None;
         let mut mode = RasterMode::for_standard(self.opts.standard);
         mode.interpolate &= self.interpolate;
+        let placed = self.placed_widths.get(&id).copied();
+        let compression = Compression {
+            classes: self.opts.images,
+            legacy_jpeg: self.opts.compress_images,
+            placed,
+            to_cmyk: if self.rgb_only { None } else { self.to_cmyk.clone() },
+        };
         let img = match fmt {
-            Some(image::ImageFormat::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
+            // A CMYK Photoshop file keeps its inks like a CMYK TIFF.
+            _ if !self.rgb_only && designcraft_images::is_cmyk_psd(&data) => match designcraft_images::decode_cmyk_psd(&data) {
+                Some(r) => cmyk_image(r, mode, &compression),
+                None => raster(&data, fmt, mode, &compression.lossless()),
+            },
             // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
             // as four-colour black). PDF/A exports are RGB only.
-            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
+            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode, &compression)
+            {
                 Some(img) => Some(img),
                 None => {
                     warning = Some(CMYK_FALLBACK_WARNING);
                     self.warn(format!("{}: {CMYK_FALLBACK_WARNING}", asset.name));
-                    lossless(&data, fmt, mode)
+                    // The fallback keeps the samples exact (no JPEG), as before.
+                    raster(&data, fmt, mode, &compression.lossless())
                 }
             },
-            _ if self.opts.compress_images => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
-            _ => lossless(&data, fmt, mode),
+            _ => raster(&data, fmt, mode, &compression),
         };
         if img.is_none() {
             if data.is_empty() {
@@ -1570,28 +1609,223 @@ impl krilla::image::CustomImage for CmykImage {
 }
 
 /// A CMYK TIFF as a DeviceCMYK image. `None` when it can't be read as CMYK.
-fn cmyk_tiff(data: &[u8], mode: RasterMode) -> Option<Image> {
-    let r = designcraft_images::decode_cmyk_tiff(data)?;
+/// A CMYK TIFF as a DeviceCMYK image, downsampled when its colour class asks for it (always
+/// lossless: the inks are kept exactly).
+fn cmyk_tiff(data: &[u8], mode: RasterMode, compression: &Compression) -> Option<Image> {
+    cmyk_image(designcraft_images::decode_cmyk_tiff(data)?, mode, compression)
+}
+
+/// A decoded CMYK raster as a DeviceCMYK image, downsampled when the colour class asks for it
+/// and a JPEG at its quality (lossless without one or with transparency).
+fn cmyk_image(mut r: designcraft_images::CmykRaster, mode: RasterMode, compression: &Compression) -> Option<Image> {
     // krilla panics when the channel lengths don't match the size.
     let pixels = usize::try_from(r.width).ok()?.checked_mul(usize::try_from(r.height).ok()?)?;
     if r.cmyk.len() != pixels.checked_mul(4)? || r.alpha.as_ref().is_some_and(|a| a.len() != pixels) {
         return None;
     }
+    // The class's own quality only: the legacy `compress_images` switch never touched CMYK
+    // rasters, and callers rely on their inks staying exact.
+    let plan = compression.plan(compression.classes.color, true, (r.width, r.height));
+    let quality = plan.quality.filter(|_| compression.classes.color.quality.is_some());
+    if let Some((w, h)) = plan.size {
+        // Four 8-bit channels resample like RGBA; alpha like a grey image.
+        let cmyk = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(r.width, r.height, std::mem::take(&mut r.cmyk))?;
+        let alpha = match r.alpha.take() {
+            Some(a) => Some(
+                image::imageops::resize(&image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(r.width, r.height, a)?, w, h, DOWNSAMPLE)
+                    .into_raw(),
+            ),
+            None => None,
+        };
+        r = designcraft_images::CmykRaster { width: w, height: h, cmyk: image::imageops::resize(&cmyk, w, h, DOWNSAMPLE).into_raw(), alpha };
+    }
+    cmyk_raster_image(r, mode, quality)
+}
+
+/// A CMYK raster as a DeviceCMYK image: a JPEG at `quality` when it is opaque and within
+/// JPEG's size (the encoder writes Adobe-inverted samples, which krilla's Decode array turns
+/// back), otherwise lossless with its alpha.
+fn cmyk_raster_image(r: designcraft_images::CmykRaster, mode: RasterMode, quality: Option<u8>) -> Option<Image> {
+    if let Some(q) = quality
+        && r.alpha.is_none()
+        && let (Ok(w), Ok(h)) = (u16::try_from(r.width), u16::try_from(r.height))
+        && w > 0
+        && h > 0
+    {
+        let mut buf = Vec::new();
+        let enc = jpeg_encoder::Encoder::new(&mut buf, q);
+        if enc.encode(&r.cmyk, w, h, jpeg_encoder::ColorType::Cmyk).is_ok()
+            && let Ok(img) = Image::from_jpeg(buf.into(), mode.interpolate)
+        {
+            return Some(img);
+        }
+    }
     Image::from_custom(CmykImage(Arc::new(r)), mode.interpolate).ok()
 }
 
-/// Opaque raster → JPEG (quality 90). `None` when the image has transparency or can't be decoded.
-/// With `tag_rgb`, the JPEG keeps the source's RGB profile, or gets sRGB.
-fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
-    let img = image::load_from_memory(data).ok()?;
-    if img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255) {
-        return None;
+/// InDesign's "Bicubic Downsampling".
+const DOWNSAMPLE: image::imageops::FilterType = image::imageops::FilterType::CatmullRom;
+
+/// Export PDF › Compression as it applies to one asset.
+struct Compression {
+    classes: crate::ImageCompression,
+    /// `PdfOptions::compress_images`: JPEG quality 90 for classes without a quality of their own.
+    legacy_jpeg: bool,
+    /// The asset's narrowest placement in points (`None`: not placed, so never downsampled).
+    placed: Option<f64>,
+    /// Output › Convert to Destination: RGB rasters become CMYK (lossless).
+    to_cmyk: Option<Arc<CmykConverter>>,
+}
+
+/// How a raster goes into the PDF: resized to `size` (when downsampling applies) and JPEG at
+/// `quality` (`None` = lossless).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RasterPlan {
+    size: Option<(u32, u32)>,
+    quality: Option<u8>,
+}
+
+impl Compression {
+    /// The same downsampling without any JPEG.
+    fn lossless(&self) -> Compression {
+        let keep = |c: crate::ImageClass| crate::ImageClass { quality: None, ..c };
+        let classes = crate::ImageCompression { color: keep(self.classes.color), gray: keep(self.classes.gray), mono: keep(self.classes.mono) };
+        Compression { classes, legacy_jpeg: false, placed: self.placed, to_cmyk: self.to_cmyk.clone() }
     }
-    let rgb = img.to_rgb8();
-    let mut buf = Vec::new();
-    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
-    image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
-    jpeg(buf.into(), || embedded_icc(data).filter(|p| is_rgb_icc(p)), mode)
+
+    /// The plan for a raster of `px` pixels in `class`; `lossy` allows JPEG (not for monochrome).
+    fn plan(&self, class: crate::ImageClass, lossy: bool, px: (u32, u32)) -> RasterPlan {
+        let quality = if lossy { class.quality.or(self.legacy_jpeg.then_some(90)).map(|q| q.clamp(1, 100)) } else { None };
+        let size = (|| {
+            let to = class.downsample_to.filter(|t| t.is_finite() && *t > 0.0)?;
+            let placed = self.placed.filter(|w| w.is_finite() && *w > 1e-6)?;
+            let ppi = f64::from(px.0) / (placed / 72.0);
+            if !ppi.is_finite() || ppi <= class.above.max(to) {
+                return None;
+            }
+            let k = to / ppi;
+            let w = ((f64::from(px.0) * k).round() as u32).max(1);
+            let h = ((f64::from(px.1) * k).round() as u32).max(1);
+            (w < px.0 || h < px.1).then_some((w, h))
+        })();
+        RasterPlan { size, quality }
+    }
+}
+
+/// The narrowest placement of each graphic asset in points (parent transforms included), over
+/// spreads and parent pages.
+fn placed_widths(doc: &Document) -> HashMap<AssetId, f64> {
+    fn walk(items: &[Arc<Item>], xf: Affine, out: &mut HashMap<AssetId, f64>, depth: usize) {
+        if depth > 64 {
+            return;
+        }
+        for it in items {
+            let m = xf * it.xf;
+            match &it.content {
+                Content::Graphic(g) => {
+                    let [a, b, c, d, ..] = (m * g.xf).as_coeffs();
+                    let w = g.size.0 * (a * d - b * c).abs().sqrt();
+                    if w.is_finite() && w > 0.0 {
+                        out.entry(g.asset).and_modify(|v| *v = v.min(w)).or_insert(w);
+                    }
+                }
+                Content::Group { items } => walk(items, m, out, depth + 1),
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for sp in doc.spreads.iter().chain(doc.parents.iter()) {
+        walk(&sp.items, Affine::IDENTITY, &mut out, 0);
+    }
+    out
+}
+
+/// Whether every pixel is black or white (a 1-bit image decoded to grey).
+fn is_mono(img: &image::DynamicImage) -> bool {
+    !img.color().has_alpha() && img.to_luma8().pixels().all(|p| p[0] == 0 || p[0] == 255)
+}
+
+/// A raster (anything but a CMYK TIFF) per its Compression plan: a JPEG is passed through
+/// unchanged unless downsampled; otherwise the image is decoded, downsampled when its class
+/// asks for it, and written as JPEG at the class's quality (opaque colour and grey images) or
+/// lossless. `None` when it can't be decoded.
+fn raster(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>, mode: RasterMode, compression: &Compression) -> Option<Image> {
+    use image::ImageDecoder;
+    // Formats `image` reads are probed from their header; a PSD (which only `designcraft_images`
+    // reads) is decoded up front and counts as colour with transparency.
+    let probe = image::ImageReader::new(std::io::Cursor::new(&data[..])).with_guessed_format().ok().and_then(|r| r.into_decoder().ok());
+    let mut decoded: Option<image::DynamicImage> = None;
+    let (px, gray, typed_alpha) = match probe {
+        Some(dec) => {
+            let ct = dec.color_type();
+            let gray = matches!(ct, image::ColorType::L8 | image::ColorType::La8 | image::ColorType::L16 | image::ColorType::La16);
+            (dec.dimensions(), gray, ct.has_alpha())
+        }
+        None => {
+            let rgba = designcraft_images::decode_rgba(data)?;
+            let px = rgba.dimensions();
+            decoded = Some(image::DynamicImage::ImageRgba8(rgba));
+            (px, false, true)
+        }
+    };
+    // Monochrome is told from the pixels, so a grey image starts in the grey class.
+    let classes = &compression.classes;
+    let plan = compression.plan(if gray { classes.gray } else { classes.color }, true, px);
+    // Decoding is needed to downsample or to (re)compress; a grey image may turn out to be
+    // monochrome, whose class may downsample when the grey class doesn't.
+    let mono_may_shrink = gray && compression.plan(classes.mono, false, px).size.is_some();
+    // Grey images stay DeviceGray (they print as K); colour ones convert to the destination.
+    let convert = compression.to_cmyk.as_deref().filter(|_| !gray);
+    if plan.size.is_none() && !mono_may_shrink && convert.is_none() {
+        // A JPEG is never re-encoded (a second lossy generation) unless it is downsampled.
+        if fmt == Some(image::ImageFormat::Jpeg) {
+            return jpeg(data.clone().into(), || embedded_icc(data), mode);
+        }
+        if plan.quality.is_none() {
+            return lossless(data, fmt, mode);
+        }
+    }
+    let img = match decoded {
+        Some(img) => img,
+        None => image::load_from_memory(data).ok()?,
+    };
+    let plan = if gray && is_mono(&img) { compression.plan(classes.mono, false, px) } else { plan };
+    if plan.size.is_none() && plan.quality.is_none() && convert.is_none() {
+        return lossless(data, fmt, mode);
+    }
+    let img = match plan.size {
+        Some((w, h)) => img.resize_exact(w, h, DOWNSAMPLE),
+        None => img,
+    };
+    if let Some(conv) = convert {
+        return cmyk_raster_image(conv.raster(&img.to_rgba8()), mode, plan.quality);
+    }
+    let transparent = typed_alpha && img.to_rgba8().pixels().any(|p| p[3] < 255);
+    if let Some(q) = plan.quality.filter(|_| !transparent) {
+        let mut buf = Vec::new();
+        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q);
+        let written = if gray {
+            let l = img.to_luma8();
+            image::ImageEncoder::write_image(enc, l.as_raw(), l.width(), l.height(), image::ExtendedColorType::L8)
+        } else {
+            let rgb = img.to_rgb8();
+            image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        };
+        if written.is_ok() {
+            return jpeg(buf.into(), || embedded_icc(data).filter(|p| is_rgb_icc(p)), mode);
+        }
+    }
+    // Not downsampled (transparent, or lossless by choice): the file goes in as it is.
+    if plan.size.is_none() {
+        return lossless(data, fmt, mode);
+    }
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    if mode.tag_rgb {
+        return SrgbImage::new(rgba).and_then(|i| Image::from_custom(i, mode.interpolate).ok());
+    }
+    Some(Image::from_rgba8(rgba.into_raw(), w, h))
 }
 
 #[cfg(test)]
@@ -1620,6 +1854,7 @@ mod image_content_cache_tests {
             opts,
             clip: Rect::ZERO,
             warnings: Vec::new(),
+            placed_widths: placed_widths(doc),
             images: HashMap::new(),
             images_by_content: ImageContentCache::default(),
             image_conversions: 0,
@@ -1630,6 +1865,7 @@ mod image_content_cache_tests {
             fonts: HashMap::new(),
             reverse_cmaps: HashMap::new(),
             rgb_only: false,
+            to_cmyk: None,
             interpolate: true,
             tags: Vec::new(),
             story_tags: HashMap::new(),

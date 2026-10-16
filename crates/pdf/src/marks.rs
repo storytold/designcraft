@@ -15,7 +15,7 @@ impl Exporter<'_> {
         if !m.any() {
             return;
         }
-        let bleed = if self.opts.bleed { self.doc.settings.bleed.map(|v| v.max(0.0)) } else { [0.0; 4] };
+        let bleed = self.opts.bleed_amounts(self.doc);
         let start = mark_start(self.opts, bleed);
         let t = sh.trim;
         let mut bp = BezPath::new();
@@ -46,7 +46,7 @@ impl Exporter<'_> {
         if let Some(p) = to_path(&bp) {
             s.set_fill(None);
             s.set_stroke(Some(Stroke {
-                paint: registration(1.0, self.rgb_only).into(),
+                paint: registration(1.0, &self.color_out()).into(),
                 width: m.weight.max(0.05) as f32,
                 miter_limit: 4.0,
                 line_cap: LineCap::Butt,
@@ -63,7 +63,7 @@ impl Exporter<'_> {
                 info.push_str(&format!("    {:04}-{:02}-{:02} {:02}:{:02} UTC", c.0, c.1, c.2, c.3, c.4));
             }
             let at = (t.x0 + start + 6.0, t.y1 + start + 10.0);
-            self.plain_text(s, &info, at, 6.0, registration(1.0, self.rgb_only));
+            self.plain_text(s, &info, at, 6.0, registration(1.0, &self.color_out()));
         }
     }
 }
