@@ -26,6 +26,7 @@ fn draw_body_fill(ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, x
 }
 
 impl Renderer {
+    /// Spread `sr`: paper, then layer by layer the parent items its pages show and its own items.
     pub(crate) fn draw_spread(&mut self, ctx: &mut RenderContext, f: &Frame, sr: SpreadRef) {
         let doc = f.doc;
         let Some(sp) = doc.spread(sr) else { return };
@@ -70,12 +71,13 @@ impl Renderer {
         if isolate {
             ctx.push_layer(None, None, None, None, None);
         }
+        // Document pages show their parent and its bases; a parent spread shows its bases.
+        let shown: Vec<_> = (0..sp.pages.len()).map(|pi| doc.shown_parent_items(sr, pi)).collect();
         // Layers back to front; within each layer parent items first.
         for layer in doc.layers.iter().rev() {
             if !layer.visible || f.opts.printing_only && !layer.printable {
                 continue;
             }
-            // Document pages show their parent and its bases; a parent spread shows its bases.
             let first = match sr {
                 SpreadRef::Doc(si) => Some(doc.first_page_of_spread(si)),
                 SpreadRef::Parent(_) => None,
@@ -86,24 +88,9 @@ impl Renderer {
                 (_, Some(a)) => ShownOn::Page(a + pi),
                 (_, None) => ShownOn::Own,
             };
-            for (pi, page) in sp.pages.iter().enumerate() {
-                if !page.show_parent_items {
-                    continue;
-                }
-                for (ppi, ppage) in doc.shown_parent_pages(sr, pi) {
-                    let Some(parent) = doc.parents.get(ppi) else { continue };
-                    let Some(ppg) = parent.pages.get(ppage) else { continue };
-                    let dx = page.x - ppg.x;
-                    for it in &parent.items {
-                        if it.layer != layer.id || page.overridden.contains(&it.id) {
-                            continue;
-                        }
-                        // Parent items belong to the parent page they sit on.
-                        if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
-                            continue;
-                        }
-                        self.draw_item(ctx, f, it, Affine::translate((dx, 0.0)), shown_on(pi));
-                    }
+            for (pi, items) in shown.iter().enumerate() {
+                for s in items.iter().filter(|s| s.item.layer == layer.id) {
+                    self.draw_item(ctx, f, s.item, Affine::translate((s.dx, 0.0)), shown_on(pi));
                 }
             }
             for it in &sp.items {
