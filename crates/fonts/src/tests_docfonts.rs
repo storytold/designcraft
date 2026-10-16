@@ -230,3 +230,26 @@ fn a_wws_family_that_is_also_the_legacy_family_finds_the_optical_size_face() {
     assert_eq!(fonts.face("DocFont Kepler", "Light").style, "Light");
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+#[test]
+fn a_family_named_in_its_native_language_finds_the_font() {
+    // IDML names a Japanese font by its Japanese family name (`游明朝`), not the English one.
+    let folder = temp_dir("native-name");
+    let font = crate::testing::font_with("DocFont Mincho", &['a']).unwrap();
+    let font = crate::testing::with_code_pages(font, 1 | 1 << 17, 0).unwrap();
+    let font =
+        crate::testing::with_names(&font, &[(3, 1, 0x409, 1, "DocFont Mincho"), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x411, 1, "文書明朝")]).unwrap();
+    std::fs::write(folder.join("mincho.otf"), font).unwrap();
+
+    let db = FontDb::with_font_dirs(vec![]);
+    let r = db.load_document_fonts(&folder, &|_| Ok(()));
+    assert_eq!((r.faces, r.skipped.len()), (1, 0), "{:?}", r.skipped);
+    let scoped = db.scoped(r.scope);
+    assert!(scoped.has_family("文書明朝"));
+    assert!(!scoped.has_family("文書ゴシック"));
+    let by_native = scoped.face("文書明朝", "Regular");
+    assert_eq!(by_native.family, "DocFont Mincho");
+    assert!(Arc::ptr_eq(&by_native, &scoped.face("DocFont Mincho", "Regular")));
+    assert_eq!(scoped.styles("文書明朝"), vec!["Regular".to_string()]);
+    let _ = std::fs::remove_dir_all(&folder);
+}

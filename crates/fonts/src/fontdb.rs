@@ -1755,7 +1755,11 @@ impl ScopedFonts<'_> {
         if !v.is_empty() {
             return v;
         }
-        alternate_names(family).map(|f| self.exact_style_traits(f)).find(|v| !v.is_empty()).unwrap_or_default()
+        alternate_names(family)
+            .map(|f| self.exact_style_traits(f))
+            .find(|v| !v.is_empty())
+            .or_else(|| self.family_named_natively(family).map(|english| self.exact_style_traits(&english)))
+            .unwrap_or_default()
     }
 
     fn exact_style_traits(&self, family: &str) -> Vec<(bool, f32, String)> {
@@ -1802,6 +1806,10 @@ impl ScopedFonts<'_> {
             .or_else(|| alternate_names(family).find_map(|f| self.canonical_family(f)))
             .unwrap_or_else(|| self.substitute_family(alternate_names(family).last().unwrap_or(family)));
         if let Some(f) = self.find_or_load(&canonical, style) {
+            return f;
+        }
+        // A family named in its native language (IDML writes `游明朝`, not `Yu Mincho`).
+        if let Some(f) = self.family_named_natively(family).and_then(|english| self.find_or_load(&english, style)) {
             return f;
         }
         self.find(FALLBACK_FAMILY, style)
@@ -1858,6 +1866,24 @@ impl ScopedFonts<'_> {
         None
     }
 
+    /// The (English) family whose native-language name is `name` (`游明朝` → `Yu Mincho`), among the
+    /// document's, loaded and installed fonts. None when `name` is no family's native name, or is
+    /// itself a family of the fonts.
+    fn family_named_natively(&self, name: &str) -> Option<String> {
+        if name.is_empty() || self.canonical_family(name).is_some() {
+            return None;
+        }
+        let native_of = |f: &Arc<FontFace>| f.menu_group().1.is_some_and(|n| n.eq_ignore_ascii_case(name));
+        if let Some(f) = self.own().iter().chain(self.db.read_faces().iter()).find(|f| native_of(f)) {
+            return Some(f.family.clone());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(c) = self.db.read_catalog().iter().find(|c| c.native.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))) {
+            return Some(c.family.clone());
+        }
+        None
+    }
+
     /// The family and style of the face whose PostScript name is `name`, ignoring case (the
     /// document's, loaded, or installed on the system, not loading it). SVGs exported from
     /// Illustrator name fonts this way (`font-family="'MyriadPro-Regular'"`).
@@ -1876,7 +1902,9 @@ impl ScopedFonts<'_> {
     /// Is `family` available (the document's, loaded, or installed on the system), as named or
     /// under an alternate name (see [`ScopedFonts::face`])?
     pub fn has_family(&self, family: &str) -> bool {
-        self.canonical_family(family).is_some() || alternate_names(family).any(|f| self.canonical_family(f).is_some())
+        self.canonical_family(family).is_some()
+            || alternate_names(family).any(|f| self.canonical_family(f).is_some())
+            || self.family_named_natively(family).is_some()
     }
 
     /// A variable font's axes: (tag, name, min, default, max), empty for static fonts.
