@@ -38,7 +38,7 @@ score below).
 | PDF (print) | `.pdf` | ✓ all presets, PDF/X-1a/3/4, PDF/A, PDF/UA | ✓ krilla: real text with subset fonts, DeviceCMYK/RGB, spot Separations, bleed/slug, marks, spreads, compression options, remembered settings (#196); **PDF/X-4** with output intent and a validator (#223, #200); **PDF/A-2b**; tagged PDF | 53 tests in `crates/pdf`; no PDF/X-1a or X-3 (needs flattening to PDF 1.3/1.4); no presets / `.joboptions`; no external validator (veraPDF / callas) in CI | 18% |
 | PDF (interactive) | `.pdf` | ✓ | ✓ links, bookmarks, buttons, AcroForm fields, page transitions, object states | | 2% |
 | JPEG / PNG | `.jpg`, `.png` | ✓ | PNG from the UI; JPEG from the CLI only | no resolution / colour space options dialog for JPEG | 3% |
-| EPUB reflowable | `.epub` | ✓ | ✓ stories in article order, CSS from styles, images, nav | | 2% |
+| EPUB reflowable | `.epub` | ✓ | ✓ stories in article order, tables, footnotes and endnotes, CSS from styles, images, nav | | 2% |
 | EPUB fixed layout | `.epub` | ✓ (live HTML/CSS) | ~ page images with text kept for search | not live text | 1% |
 | HTML | `.html` | ✓ | ~ one self-contained page (#314) | | 1% |
 | HTML5 ZIP / Publish Online | | ✓ | ✗ (Publish Online out of scope) | | <1% |
@@ -55,12 +55,12 @@ score below).
 |---|---|---|---|---|---|
 | PDF / AI (PDF-compatible) | `.pdf`, `.ai` | ✓ page boxes, layers, pages | ✓ rendered with hayro, embedded as vector in PDF export, crop to page boxes | layer visibility depth; editable vectors not offered (#227) | 3% |
 | JPEG, PNG, GIF, BMP, WebP | | ✓ | ✓ | CMYK JPEG/TIFF keep inks in PDF (#35) | 2% |
-| TIFF | `.tif` | ✓ incl. CMYK, alpha, paths | ✓ incl. CMYK | clipping paths from 8BIM resources unverified | 1% |
+| TIFF | `.tif` | ✓ incl. CMYK, alpha, indexed colour, paths | ✓ incl. CMYK | clipping paths from 8BIM resources unverified | 1% |
 | PSD | `.psd` | ✓ layers, comps, alpha, paths | ~ composite + Object Layer Options | layer comps partial | 1% |
 | EPS | `.eps` | ✓ (PostScript) | ~ preview only (no interpreter) | | <1% |
 | SVG | `.svg` | ✓ | ✓ (usvg) | | <1% |
 | HEIC | `.heic` | ✓ | ✗ | | <1% |
-| Word | `.docx` | ✓ styles, footnotes, tables, track changes, options | ✓ styles by name, footnotes, tables, tabs, breaks, moved text (#257), style mapping and conflicts | `.doc` not supported (InDesign reads it) | 2% |
+| Word | `.docx` | ✓ styles, footnotes, tables, track changes, options | ✓ styles by name, footnotes, tables, tabs, breaks, moved text (#257), bullets and numbering from `numbering.xml` (#626; parent levels in a label are fixed text), style mapping and conflicts | `.doc` not supported (InDesign reads it) | 2% |
 | RTF | `.rtf` | ✓ | ✓ | | <1% |
 | Excel | `.xlsx`, `.xls` | ✓ | ~ `.xlsx` first sheet's used range | no sheet/range options; `.xls` ✗ | <1% |
 | Plain text, Markdown | `.txt`, `.md` | ✓ (txt) | ✓ | | <1% |

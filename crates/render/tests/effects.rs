@@ -222,3 +222,51 @@ fn multithreaded_effects_match_single_threaded() {
         assert!(worst <= 4, "case {i}: max channel difference {worst}");
     }
 }
+
+/// A frame (30..130) holding a pasted-in black square that overhangs it (Edit › Paste Into).
+fn pasted_into(d: &mut Document) -> ItemId {
+    let id = rect_item(d, Rect::new(30.0, 30.0, 130.0, 130.0), "[None]");
+    let kid = Item {
+        fill: Fill::swatch("[Black]"),
+        ..Item::new(ItemId(d.alloc()), d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 160.0, 160.0)))
+    };
+    d.item_mut(id).unwrap().content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(kid)] };
+    assert!(d.item(id).unwrap().has_nested_items());
+    id
+}
+
+#[test]
+fn effects_apply_to_a_frame_with_pasted_in_items() {
+    let mut d = doc();
+    let id = pasted_into(&mut d);
+    let plain = render(&d);
+    let black = lum(plain.pixel(80, 80));
+    assert!(black < 200 && lum(plain.pixel(31, 80)) <= black + 6, "the content fills the frame: {:?} {:?}", plain.pixel(31, 80), plain.pixel(80, 80));
+    assert_eq!(lum(plain.pixel(27, 80)), WHITE, "clipped by the frame");
+    // Basic Feather fades the frame's edge, content and all.
+    d.item_mut(id).unwrap().effects.feather = 16.0;
+    let img = render(&d);
+    assert!(lum(img.pixel(30, 80)) > 600, "nearly transparent at the path: {:?}", img.pixel(30, 80));
+    assert!(lum(img.pixel(80, 80)) <= black + 6, "solid inside");
+    assert_eq!(lum(img.pixel(27, 80)), WHITE, "still clipped");
+    // Inner Glow: white screened in from the edges.
+    d.item_mut(id).unwrap().effects.feather = 0.0;
+    let g = &mut d.item_mut(id).unwrap().effects.inner_glow;
+    g.on = true;
+    g.size = 12.0;
+    g.opacity = 1.0;
+    let img = render(&d);
+    assert!(lum(img.pixel(32, 80)) > black + 150, "lit at the edge: {:?}", img.pixel(32, 80));
+    assert!(lum(img.pixel(80, 80)) <= black + 6, "dark in the middle");
+    // Drop shadow: cast by the content's silhouette, outside the frame.
+    d.item_mut(id).unwrap().effects.inner_glow.on = false;
+    let ds = &mut d.item_mut(id).unwrap().effects.drop_shadow;
+    ds.on = true;
+    ds.angle = 180.0;
+    ds.global_light = false;
+    ds.distance = 12.0;
+    ds.size = 0.0;
+    ds.opacity = 1.0;
+    let img = render(&d);
+    assert!(lum(img.pixel(136, 80)) < 300, "the shadow to the right: {:?}", img.pixel(136, 80));
+}

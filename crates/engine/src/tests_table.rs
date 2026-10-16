@@ -492,6 +492,43 @@ fn file_roundtrip_keeps_tables() {
     assert_eq!(st.tables.values().next().unwrap().cells[0].text.text, "A1");
 }
 
+#[test]
+fn backspace_and_paste_between_tables_keep_both_and_the_file_reopens() {
+    let n = designcraft_doc::TABLE_ANCHOR.len_utf8();
+    let anchor_of = |s: &Session, sid: u64, tid: u64| s.doc().unwrap().doc.story(doc::StoryId(sid)).unwrap().table_anchor(tid).unwrap();
+    let reopens_with = |s: &Session, sid: u64, ids: &[u64]| {
+        let back = crate::cmd::file_from(&crate::cmd::file_bytes(&s.doc().unwrap().doc)).unwrap();
+        let st = back.story(doc::StoryId(sid)).unwrap();
+        assert!(ids.iter().all(|id| st.table_anchor(*id).is_some()), "{:?}", st.tables.keys());
+        assert_eq!(st.tables.len(), ids.len());
+    };
+    // Backspace at the start of the second of two consecutive tables.
+    let (mut s, sid, _) = session_with_frame();
+    let t1 = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let len = s.doc().unwrap().doc.story(doc::StoryId(sid)).unwrap().len();
+    s.execute("text.select", &json!({"story": sid, "anchor": len})).unwrap();
+    let t2 = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let a2 = anchor_of(&s, sid, t2);
+    s.execute("text.select", &json!({"story": sid, "anchor": a2})).unwrap();
+    s.execute("text.delete", &json!({})).unwrap();
+    check(&s);
+    reopens_with(&s, sid, &[t1, t2]);
+    // Pasting a copy of a table right after its anchor.
+    let (mut s, sid, _) = session_with_frame();
+    let t1 = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let a1 = anchor_of(&s, sid, t1);
+    s.execute("text.select", &json!({"story": sid, "anchor": a1, "focus": a1 + n})).unwrap();
+    s.execute("edit.copy", &json!({})).unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": a1 + n})).unwrap();
+    let pasted = s.execute("edit.paste", &json!({})).unwrap();
+    check(&s);
+    assert_eq!(pasted["pos"], a1 + 2 * n + 1);
+    let st = s.doc().unwrap().doc.story(doc::StoryId(sid)).unwrap().clone();
+    let copy = st.tables.keys().copied().find(|id| *id != t1).unwrap();
+    assert_eq!((st.table_anchor(t1), st.table_anchor(copy)), (Some(a1), Some(a1 + n + 1)));
+    reopens_with(&s, sid, &[t1, copy]);
+}
+
 fn table_for(s: &Session, sid: u64, tid: u64) -> &doc::Table {
     s.doc().unwrap().doc.story(doc::StoryId(sid)).unwrap().tables.get(&tid).unwrap()
 }

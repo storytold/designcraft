@@ -1094,9 +1094,15 @@ fn pass_guides(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) ->
     let flags = axis_flags(req, axis);
     let (moving_lo, moving_hi) = perp_ends(req.rect, axis);
     let mut best: Option<Best> = None;
-    for page in &sp.pages {
+    let first_abs = match req.spread {
+        SpreadRef::Doc(si) => Some(cx.doc.first_page_of_spread(si)),
+        _ => None,
+    };
+    for (pidx, page) in sp.pages.iter().enumerate() {
         let page_bounds = page.bounds();
-        for guide in &page.guides {
+        // Guides set on the applied parent page count as this page's guides.
+        let inherited = first_abs.map(|f| cx.doc.inherited_guides(f + pidx)).unwrap_or_default();
+        for guide in page.guides.iter().chain(inherited.iter()) {
             if !guide.visible_in(cx.doc) || !guide.position.is_finite() || guide.orientation != axis_orientation(axis) {
                 continue;
             }
@@ -1302,9 +1308,10 @@ fn offer_parent_chain(
     offer_parent_chain(best, cx, req, flags, axis, tol, doc_x, doc_side, overridden, next_index, seen);
 }
 
-/// Left page of a facing parent, otherwise the last page. Same choice as `Document::parent_page_for`.
+/// First page of a multi-page parent for a left-hand or single-sided page, otherwise the last page.
+/// Same choice as `Document::parent_page_for`.
 fn shown_parent_page_index(page_count: usize, side: PageSide) -> Option<usize> {
-    if page_count >= 2 && side == PageSide::Left { Some(0) } else { page_count.checked_sub(1) }
+    if page_count >= 2 && matches!(side, PageSide::Left | PageSide::Single) { Some(0) } else { page_count.checked_sub(1) }
 }
 
 fn shift_x(r: Rect, dx: f64) -> Rect {
@@ -1455,6 +1462,16 @@ mod tests {
 
     use super::*;
 
+    /// Snapping offers the parent page the canvas shows: a single-sided page uses a two-page parent's first page.
+    #[test]
+    fn shown_parent_page_matches_page_side() {
+        assert_eq!(shown_parent_page_index(2, PageSide::Single), Some(0));
+        assert_eq!(shown_parent_page_index(2, PageSide::Left), Some(0));
+        assert_eq!(shown_parent_page_index(2, PageSide::Right), Some(1));
+        assert_eq!(shown_parent_page_index(1, PageSide::Single), Some(0));
+        assert_eq!(shown_parent_page_index(0, PageSide::Single), None);
+    }
+
     // The factory flags are const. Pin them anyway.
     #[test]
     #[allow(clippy::assertions_on_constants)]
@@ -1484,7 +1501,17 @@ mod tests {
     }
 
     fn ctx_on<'a>(doc: &'a Document, sel: &'a Selection, cache: &'a Cache, layout: &'a CanvasLayout) -> ToolContext<'a> {
-        ToolContext { doc, selection: sel, cache, layout, zoom: 1.0, layer: doc.default_layer(), snap: SnapView::FACTORY, unit: Unit::Points }
+        ToolContext {
+            doc,
+            selection: sel,
+            cache,
+            layout,
+            zoom: 1.0,
+            layer: doc.default_layer(),
+            snap: SnapView::FACTORY,
+            unit: Unit::Points,
+            stroke_in_front: false,
+        }
     }
 
     fn y_req(rect: Rect) -> SnapRequest<'static> {

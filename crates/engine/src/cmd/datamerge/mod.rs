@@ -24,6 +24,13 @@ use parse::{
     tile,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use parse::fingerprint_from;
+
+pub(crate) fn fingerprint_from_path(path: &str) -> Option<designcraft_doc::Fingerprint> {
+    fingerprint_of(Path::new(path))
+}
+
 const PARENT_WARNING: &str = "A parent-page placeholder was left unfilled.";
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -619,7 +626,7 @@ pub(crate) fn refresh_relative_paths(doc: &mut Document, doc_path: &Path) {
 /// again as `relative_path` beside the document.
 pub(crate) fn resolve_sources_on_open(doc: &mut Document, doc_path: Option<&Path>) {
     for src in &mut doc.data_merge.sources {
-        let abs_exists = src.path.as_deref().is_some_and(|p| Path::new(p).is_file());
+        let abs_exists = src.path.as_deref().is_some_and(crate::io::is_file);
         if abs_exists {
             if let Some(path) = src.path.clone() {
                 src.status = status_of(Path::new(&path), src.fingerprint);
@@ -630,7 +637,7 @@ pub(crate) fn resolve_sources_on_open(doc: &mut Document, doc_path: Option<&Path
             && let Some(dir) = doc_path.parent()
         {
             let candidate = dir.join(&rel);
-            if candidate.is_file() {
+            if crate::io::is_file(&candidate) {
                 let saved = candidate.to_string_lossy().into_owned();
                 src.fingerprint = fingerprint_of(Path::new(&saved));
                 src.status = SourceStatus::Ok;
@@ -767,17 +774,26 @@ fn read_path(path: &str) -> std::result::Result<Vec<u8>, String> {
     read_path_capped(path, MAX_DATA_FILE_BYTES)
 }
 
-fn read_path_capped(path: &str, cap: u64) -> std::result::Result<Vec<u8>, String> {
-    match std::fs::metadata(path) {
-        Ok(m) if m.len() > cap => return Err(format!("{path}: the data file is larger than {} MiB", cap / (1024 * 1024))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{path}: the data file is missing")),
+/// The file at `path`, refused when it is larger than `cap` bytes. The read itself stops past
+/// `cap`, so a device or a file that grows while it is read can't exhaust memory.
+pub(crate) fn read_path_capped(path: &str, cap: u64) -> std::result::Result<Vec<u8>, String> {
+    let too_big = || format!("{path}: the file is larger than {} MiB", cap / (1024 * 1024));
+    match crate::io::metadata(path) {
+        Ok(m) if m.len() > cap => return Err(too_big()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{path}: the file is missing")),
         _ => {}
     }
-    match std::fs::read(path) {
-        Ok(b) => Ok(b),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{path}: the data file is missing")),
-        Err(e) => Err(format!("{path}: {e}")),
+    // The roots' own message when they refuse the path.
+    crate::file_access::check_read(path)?;
+    let b = match crate::io::read_capped(path, cap) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{path}: the file is missing")),
+        Err(e) => return Err(format!("{path}: {e}")),
+    };
+    if b.len() as u64 > cap {
+        return Err(too_big());
     }
+    Ok(b)
 }
 
 fn parent_dir(path: &str) -> Option<PathBuf> {

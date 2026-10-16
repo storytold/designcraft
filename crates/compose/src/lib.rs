@@ -50,6 +50,8 @@ pub struct RunStyle {
     pub stroke: String,
     pub stroke_tint: f32,
     pub stroke_weight: f64,
+    /// The stroke goes under the fill at double width, so its full weight shows outside the glyphs.
+    pub stroke_behind_fill: bool,
     pub underline: bool,
     pub strikethrough: bool,
     /// The underline and strikethrough bars (Underline / Strikethrough Options resolved).
@@ -317,6 +319,8 @@ pub struct FrameSpec {
     pub vertical: bool,
     pub exclusions: Vec<Exclusion>,
     pub page_name: Option<String>,
+    /// Marker text of the section the frame's page is in (None on parent pages).
+    pub section_marker: Option<String>,
     /// Absolute document page the frame is on (None on parent pages).
     pub page: Option<usize>,
     /// Baseline grid in inner space: (first grid line y, increment).
@@ -344,11 +348,18 @@ impl FrameSpec {
     }
 }
 
+/// The marker text of the section absolute page `abs` is in (empty when it has none).
+pub fn section_marker(doc: &Document, abs: usize) -> String {
+    doc.section_of(abs).map(|s| s.marker.clone()).unwrap_or_default()
+}
+
 /// Composition inputs that are not in the story itself.
 #[derive(Clone, Debug, Default)]
 pub struct ComposeOptions {
     /// Page name for page-number markers when the story is composed for a specific page (parent items).
     pub page_name: Option<String>,
+    /// Section marker text when the story is composed for a specific page (parent items).
+    pub section_marker: Option<String>,
     /// Absolute page for text variables when composed for a specific page (parent items).
     pub page: Option<usize>,
     /// Running-header index (needed when the story contains running-header variables).
@@ -385,6 +396,13 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
                 let b = other.bounds();
                 let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
                 let inner = inv.transform_rect_bbox(r);
+                // Only objects that reach the frame wrap its text: one elsewhere on the spread
+                // leaves it alone (a small frame beside it would otherwise lose its gaps to the
+                // minimum gap width, see `free_slot`).
+                let reach = inner.intersect(item.inner_bounds());
+                if !(reach.width() > 0.0 && reach.height() > 0.0) {
+                    continue;
+                }
                 exclusions.push(Exclusion { rect: inner, mode: other.wrap.mode });
             }
         }
@@ -402,6 +420,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             }
             _ => (None, None, false),
         };
+        let section_marker = page.map(|abs| section_marker(doc, abs));
         // The page under the frame and its margins, in inner space (bounding boxes).
         let page_rect = match (loc.spread, spread) {
             (_, Some(sp)) => sp
@@ -454,6 +473,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             vertical,
             exclusions: if tf.options.path.is_some() { vec![] } else { exclusions },
             page_name,
+            section_marker,
             page,
             grid,
             left_page,
@@ -637,7 +657,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         };
         let mut sub = SubstCtx {
             page_name: opts.page_name.clone().or_else(|| cur_frame.and_then(|f| f.page_name.clone())),
-            section_marker: None,
+            section_marker: opts.section_marker.clone().or_else(|| cur_frame.and_then(|f| f.section_marker.clone())),
             vars: var_values,
             hidden_conditions: doc.conditions.iter().filter(|c| !c.visible).map(|c| c.name.clone()).collect(),
             vertical: cur_frame.is_some_and(|f| f.vertical),
@@ -688,9 +708,19 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             &[],
             (drop_end, &pp.drop_cap_style),
         );
+        // An empty paragraph has no glyphs of its own, so its only addressable character is its
+        // hidden paragraph mark (the `\n` just past `prange.end`). A leading/size override applied
+        // there (e.g. selecting the pilcrow to adjust line height) still needs to set the line's
+        // height, so resolve the mark's own run instead of the paragraph's plain default when present.
+        let mark_chars = prange
+            .is_empty()
+            .then(|| story.runs().find(|(r, _)| r.contains(&prange.end)))
+            .flatten()
+            .map(|(_, fmt)| doc.styles.resolve_char(&base_chars, fmt));
+        let leading_chars = mark_chars.as_ref().unwrap_or(&base_chars);
         // Drop cap: the size and indent come from the text beside it (`base_*` when there's none).
-        let base_leading = match base_chars.leading {
-            designcraft_doc::Leading::Auto => base_chars.size * pp.auto_leading,
+        let base_leading = match leading_chars.leading {
+            designcraft_doc::Leading::Auto => leading_chars.size * pp.auto_leading,
             designcraft_doc::Leading::Points(v) => v,
         };
         let base_cap = {
@@ -936,6 +966,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     pi = j;
                     continue 'paras;
                 }
+                // An empty last paragraph (the story ends with a return) isn't overset text, as in
+                // InDesign: nothing of it is left to show.
+                if prange.is_empty() && prange.start >= story.text.len() {
+                    break 'paras;
+                }
                 out.overset_at = Some(glyphs.get(g0).map(|g| g.byte).unwrap_or(prange.start));
                 // The part of the paragraph that fits keeps its shading and border.
                 para_box_decos(&mut out, pi, &pp);
@@ -1021,10 +1056,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 // Footnotes referenced on this line need room at the bottom of the column too
                 // (a line at the top of a column is set anyway).
                 let line_notes = if notes.active() { notes.refs_in(line_glyphs) } else { Vec::new() };
-                let col_w = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)].width();
+                let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
                 let reserve = notes.reserve(doc, cur.fi, cur.col, &line_notes, col_w, f, opts);
                 let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, cur.fi, cur.col, &[], col_w, f, opts) } else { reserve };
-                let fits = baseline + desc <= col.y1 - reserve + 0.01 && !capped;
+                // As in InDesign, a line is set when its baseline fits: its descenders may hang below the frame.
+                let fits = baseline <= col.y1 - reserve + 0.01 && !capped;
                 if !fits {
                     if cur.can_next_sub() {
                         g0 = s;
@@ -1169,8 +1205,21 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     keep_violation: false,
                     drop_cap: drop_box,
                 });
+                let placed_notes = !line_notes.is_empty();
                 for k in line_notes {
                     notes.place(doc, k, cur.fi, cur.col, col_w, f, opts);
+                }
+                // Notes spanning the columns take room from the columns before this one too: re-lay
+                // the frame with that room left.
+                if placed_notes {
+                    let r = notes.reserve(doc, cur.fi, cur.col, &[], col_w, f, opts);
+                    if notes.earlier_columns_collide(&out.frames[cur.fi].lines, cur.fi, cur.col, &cols[cur.fi], r)
+                        && let Some(j) = out.frames[cur.fi].lines.first().map(|l| l.para)
+                    {
+                        rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                        pi = j;
+                        continue 'paras;
+                    }
                 }
                 if !sub_objects.is_empty() {
                     let ft = &mut out.frames[cur.fi];
@@ -1623,7 +1672,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
         if g.locked_advance {
             continue;
         }
-        if g.ch == ' ' || (g.ch == '\u{3000}' && g.ideographic_space_elastic) {
+        if g.is_word_space() {
             g.adv += g.space * (ws - 1.0);
         } else if !g.is_space() && g.adv > 0.0 {
             g.adv = g.adv * gs + ls * g.space;
@@ -2296,15 +2345,22 @@ fn wrap_slot(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump:
     None
 }
 
-/// Widest free horizontal interval of `col` in the band, or None if blocked.
+/// Widest free horizontal interval of `col` in the band, or None if blocked. A gap a wrap object
+/// cuts narrower than 1.5 em of `size` is skipped (a sliver beside the object); when no object
+/// reaches the column in the band the whole column is free, however narrow (a one-character frame
+/// such as an article's closing tombstone, or a narrow column beside another that wraps).
 fn free_slot(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64) -> Option<(f64, f64)> {
     let mut free = vec![(col.x0, col.x1)];
+    let mut cut = false;
     for ex in &f.exclusions {
         let r = ex.rect;
         let overlaps_band = r.y0 < y1 && r.y1 > y0;
         match ex.mode {
             WrapMode::JumpToNextColumn if y1 > r.y0 && r.x0 < col.x1 && r.x1 > col.x0 => return None,
             WrapMode::BoundingBox | WrapMode::Contour if overlaps_band => {
+                // Held to the minimum width only when the object reaches this column: one beside
+                // another column of the frame leaves this one whole, however narrow.
+                cut |= r.x0 < col.x1 && r.x1 > col.x0;
                 let mut next = Vec::new();
                 for (a, b) in free {
                     if r.x1 <= a || r.x0 >= b {
@@ -2322,6 +2378,9 @@ fn free_slot(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64) -> Option<(f
             }
             _ => {}
         }
+    }
+    if !cut {
+        return Some((col.x0, col.x1));
     }
     free.into_iter().filter(|(a, b)| b - a >= size * 1.5).max_by(|x, y| (x.1 - x.0).total_cmp(&(y.1 - y.0)))
 }
@@ -2507,7 +2566,8 @@ fn layout_line(
     // a line whose last tab is a right, centre, character or right-indent tab is not justified.
     let seg = last_tab.map_or(0, |(i, _)| i + 1);
     let seg_justifies = last_tab.is_none_or(|(_, left)| left);
-    let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_space() && !g.no_break).map(|(i, _)| i).collect();
+    // Spaces inside a jidori run keep the run's fitted width, as in the breaker.
+    let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_justify_space() && !g.locked_advance).map(|(i, _)| i).collect();
     let align = match pp.align {
         Align::TowardsSpine => {
             if left_page {
@@ -2608,7 +2668,7 @@ fn layout_line(
     let mut ratio_n = 0usize;
     for &i in &spaces {
         let g = &line[i];
-        if g.ch == ' ' && g.space > 0.0 {
+        if matches!(g.ch, ' ' | shape::NBSP) && g.space > 0.0 {
             ratio_sum += (g.adv + add[i]) / g.space;
             ratio_n += 1;
         }
@@ -2794,7 +2854,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         .iter()
         .map(|&i| {
             let g = &line[i];
-            if g.ch != ' ' && !(g.ch == '\u{3000}' && g.ideographic_space_elastic) {
+            if !g.is_word_space() {
                 0.0
             } else if stretch {
                 g.space * (sp.word_max - sp.word_desired).max(0.0)
@@ -2804,8 +2864,8 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         })
         .collect();
     // Letter gaps: between visible glyphs (not after the line's last glyph).
-    let last_box = line.iter().rposition(|g| !g.is_space() && g.adv > 0.0).unwrap_or(0);
-    let is_box = |i: usize, g: &Glyph| i < last_box && !g.is_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false));
+    let last_box = line.iter().rposition(|g| !g.is_justify_space() && g.adv > 0.0).unwrap_or(0);
+    let is_box = |i: usize, g: &Glyph| i < last_box && !g.is_justify_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false));
     let letter: Vec<f64> = line
         .iter()
         .enumerate()
@@ -2822,7 +2882,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     let glyph: Vec<f64> = line
         .iter()
         .map(|g| {
-            if g.is_space() || g.adv <= 0.0 || g.locked_advance {
+            if g.is_justify_space() || g.adv <= 0.0 || g.locked_advance {
                 0.0
             } else {
                 let natural = g.adv / sp.glyph_desired.max(0.01);
@@ -3709,6 +3769,7 @@ mod column_allocation_safety_tests {
             vertical: false,
             exclusions: vec![],
             page_name: None,
+            section_marker: None,
             page: None,
             grid: None,
             left_page: false,

@@ -74,6 +74,8 @@ struct OutputRoot {
 
 impl OutputRoot {
     fn new(path: PathBuf) -> Result<Self> {
+        // Before anything is created: the folder must be inside the automation write root.
+        crate::file_access::check_write(&path).map_err(EngineError::Other)?;
         ensure_real_directory(&path, false)?;
         let canonical = std::fs::canonicalize(&path).map_err(|e| path_error(&path, e))?;
         Ok(Self { path, canonical })
@@ -292,6 +294,11 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
             continue;
         }
         let Some(a) = d.assets.get(&id) else { continue };
+        // A missing link has no bytes: an empty file under its name would read as present, so it
+        // keeps its old (missing) path instead.
+        if a.data.is_empty() {
+            continue;
+        }
         let name = link_name(a.link.as_deref().unwrap_or(&a.name), id, &mut taken);
         let path = dir.join(&name);
         root.write(&path, a.data.as_slice())?;
@@ -468,6 +475,49 @@ mod tests {
             assert_eq!(asset.link.as_deref(), expected.to_str(), "{extension}: use the relocated Links file");
             let links = opened.execute("links.list", &json!({})).unwrap();
             assert_eq!(links[0]["status"], "ok", "{extension}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A link whose file is gone has no bytes to copy: the package leaves it out of Links/, the
+    /// report lists it as missing, and the packaged document keeps it missing (#908).
+    #[test]
+    fn package_leaves_missing_links_missing() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("dc-package-missing-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>"##;
+        let (gone, kept) = (dir.join("gone.svg"), dir.join("kept.svg"));
+        std::fs::write(&gone, svg).unwrap();
+        std::fs::write(&kept, svg.replace("<rect", "<circle r=\"9\"/><rect")).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "TwoLinks"})).unwrap();
+        s.execute("file.place", &json!({"path": gone.to_string_lossy(), "x": 10, "y": 10})).unwrap();
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        s.execute("file.place", &json!({"path": kept.to_string_lossy(), "x": 10, "y": 200})).unwrap();
+        let idml = dir.join("TwoLinks.idml");
+        s.execute("file.exportIdml", &json!({"path": idml.to_string_lossy(), "embedImages": false})).unwrap();
+        std::fs::remove_file(&gone).unwrap();
+        let mut s = Session::new();
+        s.execute("file.openIdml", &json!({"path": idml.to_string_lossy()})).unwrap();
+        let status = |s: &mut Session, name: &str| {
+            let links = s.execute("links.list", &json!({})).unwrap();
+            links.as_array().unwrap().iter().find(|l| l["name"] == name).map(|l| l["status"].clone())
+        };
+        assert_eq!(status(&mut s, "gone.svg"), Some(json!("missing")));
+
+        let out = dir.join("Pkg");
+        let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": true})).unwrap();
+        assert!(!out.join("Links").join("gone.svg").exists(), "a missing link is not copied");
+        assert!(out.join("Links").join("kept.svg").exists());
+        assert!(!r["files"].to_string().contains("gone.svg"), "{}", r["files"]);
+        let report = r["report"].as_str().unwrap();
+        assert!(report.contains("gone.svg (missing)"), "{report}");
+        for (command, extension) in [("file.open", "designcraft"), ("file.openIdml", "idml")] {
+            let mut opened = Session::new();
+            opened.execute(command, &json!({"path": out.join(format!("TwoLinks.{extension}")).to_string_lossy()})).unwrap();
+            assert_eq!(status(&mut opened, "gone.svg"), Some(json!("missing")), "{extension}");
+            assert_eq!(status(&mut opened, "kept.svg"), Some(json!("ok")), "{extension}");
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

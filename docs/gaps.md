@@ -131,7 +131,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 25–40 h.
 
 ### 13. Hyphenation and spelling languages (T, L)
-- **Missing:** hyphenation patterns for every language but English and Spanish; spelling for
+- **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese and Norwegian; spelling for
   every language but English. InDesign ships dictionaries for ~40 languages.
 - **Estimate:** 30–60 h (permissively licensed patterns exist for most; spelling word lists need
   licence review). **Doc:** [typography-parity.md](typography-parity.md)
@@ -160,7 +160,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   Window ▸ Arrange (2-up … 6-up), Trap Presets, Overlays, Edit ▸ Assign Profiles / Convert to
   Profile / Edit Original, File ▸ File Info / Open PDF / Document and Print Presets / User
   Settings, Type ▸ Size presets, Table ▸ Table Options / Cell Options submenus, Paste Before/After,
-  Convert Rows/Columns, Object ▸ Interactive ▸ Convert to (form fields), Flex Layout (new in 2026),
+  Convert Rows/Columns, Object ▸ Interactive ▸ Convert to (form fields),
   View ▸ Extras badges and Story Editor options.
 - **Estimate:** 40–70 h (most are thin wrappers over existing engine features).
 - **Doc:** [ui-parity.md](ui-parity.md)

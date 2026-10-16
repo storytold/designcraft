@@ -283,7 +283,10 @@ fn start_el(e: &quick_xml::events::BytesStart) -> Result<El, String> {
     for a in e.attributes().with_checks(false) {
         let a = a.map_err(|e| e.to_string())?;
         let k = String::from_utf8_lossy(a.key.as_ref()).to_string();
-        let v = a.unescape_value().map(|v| v.to_string()).unwrap_or_else(|_| String::from_utf8_lossy(&a.value).to_string());
+        let v = a
+            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|_| String::from_utf8_lossy(&a.value).to_string());
         el.attrs.push((k, v));
     }
     Ok(el)

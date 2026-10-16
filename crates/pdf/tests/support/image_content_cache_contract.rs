@@ -3,6 +3,8 @@
 //! All images and placed PDFs are tiny procedural fixtures.
 use std::sync::Arc;
 
+use craft_pdf::write::backend as krilla;
+
 use designcraft_compose::Cache;
 use designcraft_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, Shape, SpreadRef};
 use designcraft_geom::{Affine, Rect, shapes};

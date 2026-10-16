@@ -1,6 +1,6 @@
 # DesignCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (cancelable macOS Dock Quit) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (shared PDF writing) · **Target:** Adobe InDesign 2026
 
 How DesignCraft is built today. The design notes behind it are in `plan/architecture.md`
 (local, gitignored); this file describes what the code on `main` does. Agents: AGENTS.md has the
@@ -21,7 +21,7 @@ lines of Rust, 1,122 tests (2026-10-10). Pure Rust, no C dependencies by default
 | L2 | `compose` | the text engine: style resolution, shaping, Knuth–Plass and single-line breaking, Liang hyphenation, justification, tabs, keeps, columns, span/split, baseline grid, vertical justification, wrap, threading, overset, anchored objects, footnotes, tables, bidi, CJK (ruby, warichu, kinsoku), caret and hit testing | 11.7k |
 | L2 | `images` | decoding placed graphics (PNG, JPEG, GIF, WebP, TIFF incl. CMYK, BMP, PSD composite, EPS preview) | 1.6k |
 | L3 | `render` | document to pixels with vello_cpu (SIMD, multithreaded): items, composed text, images with mips, gradients, effects, damage regions, placed PDF via hayro | 3.5k |
-| L3 | `pdf` | PDF export with krilla: real text with subset fonts, CMYK and spot, bleed and marks, tagged PDF, links, forms, transitions, PDF/X-4 and PDF/A-2b | 5.0k |
+| L3 | `pdf` | PDF export through craft-pdf with Krilla: real text with subset fonts, CMYK and spot, bleed and marks, tagged PDF, links, forms, transitions, PDF/X-4 and PDF/A-2b | 5.0k |
 | L3 | `idml` | IDML import and export (designmap, spreads, parents, stories, styles, graphics, preferences; CJK and Arabic attributes) | 8.0k |
 | L3 | `epub` | EPUB 3 reflowable and fixed-layout export | 0.9k |
 | L3 | `textimport` | Word (.docx), RTF, Excel (.xlsx), Tagged Text import; text export | 1.8k |
@@ -82,6 +82,12 @@ before the window exists, with a start-up fallback list in `gpu.json`.
 Native `.designcraft` (zip + JSON); IDML both ways; PDF, EPUB, HTML, PNG/JPEG, text, XML export;
 placed graphics through `images` (PDF/AI pages through hayro); Word/RTF/Excel/Tagged Text through
 `textimport`. INDD is not readable. Details: [file-format-parity.md](file-format-parity.md).
+
+PDF authoring uses the independently pinned `craft-pdf` writer and patched Krilla. Document,
+booklet and merge entry points guard the full export; a failed native drawing unwind returns
+an error and incomplete backend state cannot serialize. Layout, shaping, PDF/X processing and
+print preparation remain app-owned. Reader dependencies and the UI/print pins are unchanged.
+See [pdf-backend.md](pdf-backend.md) for dependency and failure contracts.
 
 ## Agent control
 

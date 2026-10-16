@@ -88,7 +88,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
         missing_glyphs(&cs, &story.text, 0, &mut missing);
         if cs.is_overset() {
             let last = story.frames.last().copied();
-            let page = last.and_then(|f| d.find(f).zip(d.item(f))).and_then(|(loc, it)| page_of(d, loc.spread, it, Affine::IDENTITY));
+            let page = last.and_then(|f| d.find(f).zip(d.item(f))).and_then(|(loc, it)| page_of(d, loc.spread, it, d.parent_xf(&loc)));
             let n = story.text[cs.overset_at.unwrap_or(0).min(story.len())..].chars().count();
             out.push(Issue { severity: "error", kind: "overset", message: format!("Overset text: {n} characters"), item: last.map(|i| i.0), page });
         }
@@ -327,5 +327,31 @@ mod missing_glyph_tests {
         let found = missing_glyphs(&mut s);
         assert_eq!(found.len(), 1);
         assert!(found[0].1.ends_with(" and 10 more"), "{}", found[0].1);
+    }
+}
+
+#[cfg(test)]
+mod overset_page_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// An overset frame inside a group moved onto the right-hand page was reported on the left one.
+    #[test]
+    fn overset_frame_in_a_moved_group_names_its_displayed_page() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"facingPages": true, "pages": 3, "width": 612, "height": 792})).unwrap();
+        let frame = json!({"spread": 1, "rect": [72, 72, 140, 100], "content": "text", "text": "overflowing words ".repeat(100)});
+        let a = s.execute("frame.create", &frame).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"spread": 1, "rect": [300, 300, 350, 350]})).unwrap()["id"].as_u64().unwrap();
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        let overset_page = |s: &mut Session| {
+            let r = s.execute("preflight.run", &json!({})).unwrap();
+            let issue = r["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "overset").unwrap().clone();
+            issue["page"].as_u64().unwrap()
+        };
+        assert_eq!(overset_page(&mut s), 1);
+        s.execute("transform.move", &json!({"dx": 612, "dy": 0, "ids": [g]})).unwrap();
+        assert_eq!(overset_page(&mut s), 2);
     }
 }

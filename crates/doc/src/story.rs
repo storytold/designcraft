@@ -155,6 +155,40 @@ pub struct Story {
     /// Place and Link: the parent story this one copies, and the parent's revision when copied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<(StoryId, u64)>,
+    /// File › Place with Create Links: the text file the story was placed from (Links panel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_link: Option<TextFileLink>,
+}
+
+/// A linked text file: where a placed story came from, what the file held, and the Word Import
+/// Options that brought it in, so Update Link can import it again the same way.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextFileLink {
+    pub path: String,
+    /// The file's size and FNV-1a hash (hex) when it was placed or last updated.
+    pub size: u64,
+    pub hash: String,
+    /// Its modification time then (seconds since 1970; 0: unknown), as Data Merge keeps for its
+    /// source: while size and time are unchanged, the Links panel doesn't read the file.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub mtime: i64,
+    /// Imported style name → document style (`styleMap`), including the names Auto Rename chose.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub style_map: BTreeMap<String, String>,
+    /// `styleConflicts`: useExisting, redefine or autoRename.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub style_conflicts: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove_styles: bool,
+    /// Hash of the story's text and formatting right after the import: a different one means it
+    /// was edited in the layout (an update replaces those edits).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub story_hash: String,
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }
 
 impl Story {
@@ -177,6 +211,7 @@ impl Story {
             objects: Vec::new(),
             editorial: Vec::new(),
             link: None,
+            file_link: None,
         }
     }
 
@@ -255,7 +290,8 @@ impl Story {
         self.insert_with_raw(pos, text, fmt);
     }
 
-    fn insert_with_raw(&mut self, pos: usize, text: &str, fmt: CharFormat) {
+    /// [`Story::insert_with`] without the table fix-up.
+    pub(crate) fn insert_with_raw(&mut self, pos: usize, text: &str, fmt: CharFormat) {
         if text.is_empty() {
             return;
         }
@@ -332,20 +368,25 @@ impl Story {
         self.marks_deleted(a, b);
         let pi = self.para_at(a);
         let removed = self.text[a..b].bytes().filter(|c| *c == b'\n').count();
-        // Merged paragraphs keep a table whose anchor survives the deletion.
+        // Merged paragraphs keep the tables whose anchors survive the deletion (the fix-up gives
+        // each its own paragraph again).
+        let mut claims = Vec::new();
         if removed > 0 && !self.tables.is_empty() {
             let ranges = self.para_ranges();
-            let first = self.paras[pi].table.filter(|_| self.text[ranges[pi].start..a].contains(TABLE_ANCHOR));
-            let last = self.paras[pi + removed]
-                .table
-                .filter(|_| self.text[b.min(ranges[pi + removed].end)..ranges[pi + removed].end].contains(TABLE_ANCHOR));
-            self.paras[pi].table = first.or(last);
+            let anchor = |pi: usize, r: std::ops::Range<usize>| {
+                self.paras[pi].table.and_then(|id| self.text[r.clone()].find(TABLE_ANCHOR).map(|k| (r.start + k, id)))
+            };
+            let first = anchor(pi, ranges[pi].start..a);
+            let end = ranges[pi + removed].end;
+            let last = anchor(pi + removed, b.min(end)..end).map(|(at, id)| (at.saturating_sub(b - a), id));
+            self.paras[pi].table = first.or(last).map(|(_, id)| id);
+            claims.extend(first.into_iter().chain(last));
         }
         self.paras.drain(pi + 1..pi + 1 + removed);
         self.text.replace_range(a..b, "");
         self.remove_run_bytes(a, b - a);
         self.normalize();
-        self.fix_tables();
+        self.fix_tables_with(&claims);
         self.rev += 1;
     }
 

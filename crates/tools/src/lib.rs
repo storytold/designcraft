@@ -30,7 +30,7 @@ use designcraft_geom::{Affine, BezPath, Point, Rect, Unit, Vec2};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use catalog::{TOOL_GROUPS, ToolInfo, tool_for_shortcut, tool_info};
+pub use catalog::{SPLIT_IN_TWO_COLUMNS, TOOL_GROUPS, ToolInfo, tool_for_shortcut, tool_info};
 pub use layout::CanvasLayout;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +214,8 @@ pub struct ToolContext<'a> {
     pub layer: designcraft_doc::LayerId,
     pub snap: SnapView,
     pub unit: Unit,
+    /// The toolbox's Stroke box is in front: sampled colours go to strokes (the Eyedropper).
+    pub stroke_in_front: bool,
 }
 
 impl ToolContext<'_> {
@@ -371,8 +373,16 @@ pub enum Cursor {
     ResizeNeSw,
     Rotate,
     Pen,
+    /// The pen over a segment of a selected path: a click adds an anchor there.
+    PenAdd,
+    /// The pen over an anchor of a selected path: a click deletes it.
+    PenDelete,
+    /// The pen over the first anchor of the path it is drawing: a click closes it.
+    PenClose,
     /// The Pen over an open path's end point: a click continues the path.
     PenContinue,
+    /// Convert Direction Point.
+    PenConvert,
     /// Over a type-on-a-path bracket: dragging it moves where the text starts or ends.
     PathBracket,
     Text,

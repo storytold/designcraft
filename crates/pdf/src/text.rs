@@ -10,17 +10,52 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use craft_pdf::write::backend as krilla;
 use designcraft_compose::{ComposedStory, FrameText, PlacedGlyph};
 use designcraft_fonts::{FontDb, FontFace};
 use designcraft_geom::kurbo::Shape as _;
 use designcraft_geom::{Affine, BezPath, Rect};
 use krilla::geom::Point;
-use krilla::paint::Stroke;
+use krilla::num::NormalizedF32;
+use krilla::paint::{Fill, FillRule, Paint, Stroke};
 use krilla::surface::Surface;
 use krilla::tagging::{Artifact, ArtifactType, ContentTag, SpanTag};
 use krilla::text::{Font, GlyphId, KrillaGlyph};
 
 use crate::export::{Exporter, solid_fill, tf, to_path};
+
+impl Exporter<'_> {
+    /// A text run's paint: solid, or a gradient spanning the frame's box (`area`, text space),
+    /// for glyphs drawn under `origin` (text space ← run space).
+    fn text_paint(&mut self, swatch: &str, tint: f32, origin: Affine, area: Rect) -> Option<Paint> {
+        if designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch).is_some() && origin.determinant().abs() > 1e-12 {
+            let fill = designcraft_doc::Fill { swatch: swatch.into(), tint, ..designcraft_doc::Fill::none() };
+            return self.fill_paint_in(&fill, self.text_area.unwrap_or(area), origin.inverse());
+        }
+        self.swatch_color(swatch, tint).map(Into::into)
+    }
+}
+
+/// The box a gradient on a cell's or a note's text spans: its lines, each padded by its ascent as
+/// the screen renderer pads them, so both lay the gradient out alike.
+fn lines_area(ft: &FrameText) -> Option<Rect> {
+    ft.lines
+        .iter()
+        .filter_map(|l| {
+            let first = l.glyphs.first()?;
+            let x0 = l.glyphs.iter().map(|g| g.x).fold(first.x, f64::min);
+            let x1 = l.glyphs.iter().map(|g| g.x + g.adv.max(0.0)).fold(l.end_x, f64::max);
+            let pad = l.ascent.max(1.0);
+            let bottom = l.drop_cap.map_or(l.baseline + l.descent.max(0.0), |dc| dc.rect.y1.max(l.baseline + l.descent.max(0.0)));
+            Some(Rect::new(x0 - pad, l.baseline - l.ascent - pad, x1 + pad, bottom + pad))
+        })
+        .reduce(|a, b| a.union(b))
+}
+
+/// An opaque nonzero fill with `paint`.
+fn paint_fill(paint: Paint) -> Fill {
+    Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }
+}
 
 /// Private-use characters DesignCraft stores for markers (page numbers, section markers, breaks).
 fn is_marker(c: char) -> bool {
@@ -66,13 +101,11 @@ impl Exporter<'_> {
         self.fonts
             .entry(face.id())
             .or_insert_with(|| {
-                if face.is_variable() {
-                    // A named instance: krilla embeds the font at these axis settings.
-                    let coords: Vec<(krilla::text::Tag, f32)> = face.coords.iter().map(|(t, v)| (krilla::text::Tag::new(t), *v)).collect();
-                    Font::new_variable(face.data().to_vec().into(), face.index(), &coords)
-                } else {
-                    Font::new(face.data().to_vec().into(), face.index())
-                }
+                // Keep the existing outline fallback and warning when embedding fails.
+                let variations = face.is_variable().then_some(face.coords.as_slice());
+                craft_pdf::write::font(face.data(), face.index(), variations)
+                    .inspect_err(|error| log::warn!("PDF font `{} {}` could not be embedded: {error}", face.family, face.style))
+                    .ok()
             })
             .clone()
     }
@@ -177,7 +210,9 @@ impl Exporter<'_> {
             for n in &ft.notes {
                 if let Some(nft) = n.text.frames.first() {
                     s.push_transform(&tf(Affine::translate(n.origin.to_vec2())));
+                    let area = std::mem::replace(&mut me.text_area, lines_area(nft));
                     me.frame_text(s, &n.text, nft, &n.source);
+                    me.text_area = area;
                     s.pop();
                 }
             }
@@ -205,7 +240,9 @@ impl Exporter<'_> {
                     }
                 } else if let Some(cft) = c.text.frames.first() {
                     s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
+                    let area = std::mem::replace(&mut self.text_area, lines_area(cft));
                     self.frame_text(s, &c.text, cft, &c.source);
+                    self.text_area = area;
                     s.pop();
                 }
             }
@@ -289,27 +326,70 @@ impl Exporter<'_> {
     fn run(&mut self, s: &mut Surface, cs: &ComposedStory, glyphs: &[PlacedGlyph], baseline: f64, story: &str) {
         let g0 = &glyphs[0];
         let st = &cs.styles[g0.style as usize];
-        let fill = self.swatch_color(&st.fill, st.fill_tint);
-        let stroke =
-            if st.stroke != designcraft_color::swatch::NONE && st.stroke_weight > 0.0 { self.swatch_color(&st.stroke, st.stroke_tint) } else { None };
-        if fill.is_none() && stroke.is_none() {
-            return;
-        }
         let face = g0.face;
         let size = g0.sy * face.upem;
         let hs = g0.sx / g0.sy;
         let skew = if st.skew != 0.0 { Affine::new([1.0, 0.0, -st.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
         let origin = Affine::translate((g0.x, baseline + g0.y)) * skew * Affine::scale_non_uniform(hs, 1.0);
-        // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
-        if g0.gid == 0 {
-            self.outline_run(s, glyphs, origin, size, fill, stroke, st.stroke_weight);
+        // Outside a frame (no text area), a gradient spans the run.
+        let end = glyphs.last().map_or(g0.x, |g| g.x + g.adv);
+        let run_area = Rect::new(g0.x, baseline - size, end.max(g0.x + 1.0), baseline + size * 0.25);
+        let fill = self.text_paint(&st.fill, st.fill_tint, origin, run_area);
+        let stroke = if st.stroke != designcraft_color::swatch::NONE && st.stroke_weight > 0.0 {
+            self.text_paint(&st.stroke, st.stroke_tint, origin, run_area)
+        } else {
+            None
+        };
+        if fill.is_none() && stroke.is_none() {
             return;
         }
-        let Some(font) = self.font(&face) else {
-            self.warn(format!("font `{} {}` could not be embedded; its text was drawn as outlines", face.family, face.style));
-            self.outline_run(s, glyphs, origin, size, fill, stroke, st.stroke_weight);
-            return;
+        // Stroke behind fill: a double-width stroke first, as outlines so the text is not
+        // duplicated, then the fill over its inner half. With no fill, the stroke is clipped
+        // to the outside of the glyphs instead.
+        let behind = st.stroke_behind_fill && stroke.is_some();
+        let weight = if behind { st.stroke_weight * 2.0 } else { st.stroke_weight };
+        let mut clipped = false;
+        let stroke = if behind {
+            let outlines = glyph_outlines(glyphs, size);
+            if fill.is_some() {
+                self.paint_outlines(s, &outlines, origin, None, stroke, weight);
+                None
+            } else {
+                clipped = self.push_outside_clip(s, &outlines, origin, weight);
+                stroke
+            }
+        } else {
+            stroke
         };
+        // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
+        if g0.gid == 0 {
+            self.paint_outlines(s, &glyph_outlines(glyphs, size), origin, fill, stroke, weight);
+        } else if let Some(font) = self.font(&face) {
+            self.text_run(s, glyphs, story, font, origin, size, hs, fill, stroke, weight);
+        } else {
+            self.warn(format!("font `{} {}` could not be embedded; its text was drawn as outlines", face.family, face.style));
+            self.paint_outlines(s, &glyph_outlines(glyphs, size), origin, fill, stroke, weight);
+        }
+        if clipped {
+            s.pop();
+        }
+    }
+
+    /// A run as real text.
+    #[allow(clippy::too_many_arguments)]
+    fn text_run(
+        &mut self,
+        s: &mut Surface,
+        glyphs: &[PlacedGlyph],
+        story: &str,
+        font: Font,
+        origin: Affine,
+        size: f64,
+        hs: f64,
+        fill: Option<Paint>,
+        stroke: Option<Paint>,
+        stroke_weight: f64,
+    ) {
         let (text, ranges) = self.run_text(glyphs, story);
         let k = 1.0 / (hs * size);
         let kg: Vec<KrillaGlyph> = glyphs
@@ -322,44 +402,43 @@ impl Exporter<'_> {
             })
             .collect();
         s.push_transform(&tf(origin));
-        s.set_fill(fill.map(|c| solid_fill(c, 1.0)));
-        s.set_stroke(stroke.map(|c| Stroke { paint: c.into(), width: st.stroke_weight as f32, ..Default::default() }));
+        s.set_fill(fill.map(paint_fill));
+        s.set_stroke(stroke.map(|paint| Stroke { paint, width: stroke_weight as f32, ..Default::default() }));
         s.draw_glyphs(Point::from_xy(0.0, 0.0), &kg, font, &text, size as f32, false);
         s.set_fill(None);
         s.set_stroke(None);
         s.pop();
     }
 
-    /// Fallback for faces krilla can't embed: glyph outlines as paths.
-    #[allow(clippy::too_many_arguments)]
-    fn outline_run(
+    /// Glyph outlines as paths (faces krilla can't embed, missing glyphs, strokes behind fill).
+    fn paint_outlines(
         &mut self,
         s: &mut Surface,
-        glyphs: &[PlacedGlyph],
+        outlines: &BezPath,
         origin: Affine,
-        size: f64,
-        fill: Option<krilla::color::Color>,
-        stroke: Option<krilla::color::Color>,
+        fill: Option<Paint>,
+        stroke: Option<Paint>,
         stroke_weight: f64,
     ) {
-        let db = FontDb::global();
-        let g0 = &glyphs[0];
-        let k = size / g0.face.upem;
-        let mut bp = BezPath::new();
-        for g in glyphs {
-            let a = Affine::translate(((g.x - g0.x) / (g0.sx / g0.sy), 0.0)) * Affine::scale(k);
-            let mut o = (*db.outline(&g.face, g.gid)).clone();
-            o.apply_affine(a);
-            bp.extend(o.iter());
-        }
-        let Some(p) = to_path(&bp) else { return };
+        let Some(p) = to_path(outlines) else { return };
         s.push_transform(&tf(origin));
-        s.set_fill(fill.map(|c| solid_fill(c, 1.0)));
-        s.set_stroke(stroke.map(|c| Stroke { paint: c.into(), width: stroke_weight as f32, ..Default::default() }));
+        s.set_fill(fill.map(paint_fill));
+        s.set_stroke(stroke.map(|paint| Stroke { paint, width: stroke_weight as f32, ..Default::default() }));
         s.draw_path(&p);
         s.set_fill(None);
         s.set_stroke(None);
         s.pop();
+    }
+
+    /// Clip to everything outside the glyphs (a frame around them plus their outlines,
+    /// even-odd). False when there was nothing to clip with.
+    fn push_outside_clip(&mut self, s: &mut Surface, outlines: &BezPath, origin: Affine, weight: f64) -> bool {
+        let m = weight * 2.0 + 10.0;
+        let mut outside = outlines.bounding_box().inflate(m, m).to_path(0.1);
+        outside.extend(outlines.iter());
+        let Some(p) = to_path(&(origin * outside)) else { return false };
+        s.push_clip_path(&p, &krilla::paint::FillRule::EvenOdd);
+        true
     }
 
     /// One line of plain text in the bundled UI face (page information mark).
@@ -390,4 +469,19 @@ impl Exporter<'_> {
         s.draw_glyphs(Point::from_xy(at.0 as f32, at.1 as f32), &glyphs, font, text, size as f32, false);
         s.set_fill(None);
     }
+}
+
+/// A run's glyph outlines at `size`, relative to its first glyph's origin.
+fn glyph_outlines(glyphs: &[PlacedGlyph], size: f64) -> BezPath {
+    let db = FontDb::global();
+    let mut bp = BezPath::new();
+    let Some(g0) = glyphs.first() else { return bp };
+    let k = size / g0.face.upem;
+    for g in glyphs {
+        let a = Affine::translate(((g.x - g0.x) / (g0.sx / g0.sy), 0.0)) * Affine::scale(k);
+        let mut o = (*db.outline(&g.face, g.gid)).clone();
+        o.apply_affine(a);
+        bp.extend(o.iter());
+    }
+    bp
 }

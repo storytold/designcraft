@@ -452,6 +452,7 @@ impl RgbScan {
 
 #[cfg(test)]
 mod tests {
+    use craft_pdf::write::backend as krilla;
     use std::sync::Arc;
 
     use designcraft_color::{Color, Swatch};

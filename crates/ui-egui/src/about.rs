@@ -52,7 +52,7 @@ pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
         let mut res = vello_cpu::Resources::new();
         rc.render(&mut pm, &mut res);
         let ci = egui::ColorImage::from_rgba_premultiplied([px as usize, px as usize], pm.data_as_u8_slice());
-        let t = ctx.load_texture("artcraft_mark", ci, egui::TextureOptions::LINEAR);
+        let t = crate::widgets::load_texture(ctx, "artcraft_mark", ci, egui::TextureOptions::LINEAR);
         ctx.data_mut(|d| d.insert_temp(key, t.clone()));
         t
     });
@@ -106,8 +106,18 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     }
     let t = Tokens::get(ctx);
     let mut open: Option<&'static str> = None;
-    let resp = egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
+    let area = egui::Id::new("about");
+    let instance = area.with("placement");
+    let resp = crate::modal_drag::modal(ctx, area, instance).show(ctx, |ui| {
         ui.set_width(if app.ui.about_tab == 0 { 460.0 } else { 640.0 });
+        // The tab row is the title row. The tabs register after the drag area, so they stay clickable.
+        let margin = egui::Frame::popup(ui.style()).inner_margin;
+        let top = ui.cursor().top();
+        let title_row = Rect::from_min_max(
+            pos2(ui.max_rect().left() - margin.leftf(), top - margin.topf()),
+            pos2(ui.max_rect().right() + margin.rightf(), top + ui.spacing().interact_size.y),
+        );
+        crate::modal_drag::title_drag(ui, instance, title_row);
         ui.horizontal(|ui| {
             for (i, l) in ABOUT_TABS.iter().enumerate() {
                 let i = i as u8;

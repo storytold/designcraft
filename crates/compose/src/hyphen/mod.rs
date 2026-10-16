@@ -1,7 +1,8 @@
 //! Hyphenation. English uses the bundled dictionary and patterns below. Other languages use the
 //! Liang patterns compiled into `hypher`, one cargo feature per language: Spanish is Javier Bezos's
 //! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
-//! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause (see NOTICE).
+//! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
+//! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE).
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -409,6 +410,26 @@ mod tests {
         assert_eq!(h("Universidade"), "Uni-ver-si-dade");
         assert_eq!(h("experiência"), "ex-pe-ri-ên-cia");
         assert_eq!(h("pós-graduação"), "pós-gra-du-a-ção", "each part of a compound");
+    }
+
+    #[test]
+    fn norwegian_uses_the_hyph_no_patterns() {
+        let nb = Lang::for_language("Norwegian: Bokmål").unwrap();
+        assert_eq!(nb, Lang::for_language("Norwegian").unwrap());
+        assert_eq!(nb, Lang::for_language("Norwegian: Nynorsk").unwrap());
+        assert_eq!(nb, Lang::for_language("nb").unwrap());
+        assert_eq!(nb, Lang::for_language("nn").unwrap());
+        assert_eq!(nb, Lang::for_language("no").unwrap());
+        assert_ne!(nb, Lang::for_language("Spanish").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), nb);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("kaller"), "kal-ler");
+        assert_eq!(h("bilde"), "bil-de");
+        assert_eq!(h("sjøfugl"), "sjø-fugl");
+        assert_eq!(h("sirkulasjonen"), "sir-ku-la-sjo-nen");
+        assert_eq!(h("beveger"), "be-ve-ger");
     }
 
     #[test]

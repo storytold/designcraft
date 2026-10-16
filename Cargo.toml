@@ -11,6 +11,8 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
+# Shared writer; the immutable revision must be published before this consumer.
+craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "c3487320b2d1de657b860b3c8abb44e1f2b32bd8", version = "=0.1.0", default-features = false }
 craft-print = { git = "https://github.com/storytold/craft-libs", version = "0.1.0", rev = "d991bf6792f8ade99c51358bf3c1d902c8cd96b5" }
 # internal
 designcraft-geom = { path = "crates/geom" }
@@ -23,6 +25,7 @@ designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }
 designcraft-epub = { path = "crates/epub" }
+designcraft-pptx = { path = "crates/pptx" }
 designcraft-textimport = { path = "crates/textimport" }
 designcraft-format = { path = "crates/format" }
 designcraft-tools = { path = "crates/tools" }
@@ -46,6 +49,7 @@ unicode-segmentation = "1"
 caseless = "0.2"
 regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
 tempfile = "3"
+same-file = "1.0.6"
 
 # text / rendering / formats
 skrifa = "0.47"
@@ -57,14 +61,13 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 tiff = "0.11"
 # SVG (same usvg as krilla-svg).
 resvg = { version = "0.47", default-features = false, features = ["text"] }
-krilla-svg = "0.8"
+krilla-svg = "=0.8.1"
 # Boolean operations on Bézier paths (Pathfinder).
 flo_curves = "0.8"
 # QR codes (Object › Generate QR Code); MIT.
 qrcodegen = "1.8"
-krilla = { version = "0.8", features = ["pdf"] }
 hayro = "0.7"
-quick-xml = "0.38"
+quick-xml = "0.41"
 zip = { version = "3", default-features = false, features = ["deflate"] }
 
 # ui
@@ -114,6 +117,7 @@ debug = 0
 
 # Opt-in cancelable macOS termination on the pinned winit 0.30 line.
 [patch.crates-io]
+krilla = { git = "https://github.com/storytold/craft-libs", rev = "c3487320b2d1de657b860b3c8abb44e1f2b32bd8", version = "=0.8.2" }
 winit = { git = "https://github.com/skylartaylor/winit.git", rev = "3d51077fd1a966f84df9ef287839dc84fd5b4ca7" }
 # The hayro crates from pdfcraft's vendor/ directory, with the patches its README lists.
 hayro = { git = "https://github.com/storytold/pdfcraft", rev = "b5467d93a0ffaa5e5e6658bccdf8655a3ba689c9" }

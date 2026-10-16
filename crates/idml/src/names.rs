@@ -74,6 +74,31 @@ pub fn fitting_in(s: &str) -> designcraft_doc::Fitting {
     }
 }
 
+pub fn liquid_rule_out(rule: designcraft_doc::LiquidRule) -> &'static str {
+    use designcraft_doc::LiquidRule as R;
+    match rule {
+        R::Off => "Off",
+        R::Scale => "Scale",
+        R::ReCenter => "Recenter",
+        R::GuideBased => "GuideBased",
+        R::ObjectBased => "ObjectBased",
+        R::ControlledByParent => "UseMaster",
+    }
+}
+
+pub fn liquid_rule_in(s: &str) -> designcraft_doc::LiquidRule {
+    use designcraft_doc::LiquidRule as R;
+    match s {
+        "Off" => R::Off,
+        "Scale" => R::Scale,
+        "Recenter" => R::ReCenter,
+        "GuideBased" => R::GuideBased,
+        "ObjectBased" => R::ObjectBased,
+        "UseMaster" => R::ControlledByParent,
+        _ => R::Off,
+    }
+}
+
 pub fn escape_id(s: &str) -> String {
     s.replace('%', "%25").replace(':', "%3a")
 }

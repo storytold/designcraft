@@ -52,6 +52,12 @@ list (author, source, license) is in ASSETS.md.
   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
   LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+- Norwegian hyphenation patterns, embedded through the hypher crate (feature "norwegian"):
+  hyph-no.tex from hyph-utf8, https://github.com/hyphenation/tex-hyphen.
+  Copyright (C) Rune Kleveland and Ole Michael Selberg. Copying and distribution of this file,
+  with or without modification, is permitted in any medium without royalty provided the copyright
+  notice and this notice are preserved (additionally distributed under the LaTeX Project Public
+  License in CTAN distributions).
 - Japanese fonts (craft-fonts): builds made with craft-fonts (CRAFT_FONTS_DIR; all official
   releases) embed the fonts listed in
   https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, BIZ UDMincho,

@@ -7,6 +7,7 @@ mod assets;
 mod ico;
 mod layers;
 mod parity;
+mod pdf_deps;
 mod stats;
 mod version;
 
@@ -24,6 +25,7 @@ commands:
   corpus [--download]
                   show where test corpora live; --download fetches PngSuite into corpus/pngsuite
   stats [--exact] count tests and lines per crate (--exact: ask the test harness via `-- --list`)
+  pdf-deps        verify the pinned shared PDF writer and patched Krilla
   parity          recompute the InDesign feature-parity summary in docs/parity-checklist.md
   ico <out.ico> <in.png>...
                   pack square PNGs (<= 256 px) into a Windows .ico (see packaging/icons.sh)
@@ -39,6 +41,7 @@ fn main() -> ExitCode {
         Some("ci") => cmd_ci(),
         Some("corpus") => cmd_corpus(rest.contains(&"--download")),
         Some("stats") => stats::run(&root(), rest.contains(&"--exact")),
+        Some("pdf-deps") => pdf_deps::run(&root()),
         Some("parity") => parity::run(&root()),
         Some("ico") => ico::run(&rest),
         Some("version") => version::run(&root(), &rest),
@@ -175,6 +178,7 @@ fn cmd_ci() -> Result<(), String> {
                 run(c, "cargo test --workspace")
             }),
         ),
+        ("pdf-deps", Box::new(|| pdf_deps::run(&root()))),
         ("assets", Box::new(|| assets::run(&root()))),
         ("layers", Box::new(cmd_layers)),
         ("wasm", Box::new(cmd_wasm)),

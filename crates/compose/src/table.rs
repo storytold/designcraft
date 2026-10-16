@@ -112,6 +112,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, left
         vertical: false,
         exclusions: vec![],
         page_name: opts.page_name.clone(),
+        section_marker: opts.section_marker.clone(),
         page: opts.page,
         grid: None,
         left_page,

@@ -11,8 +11,8 @@ use crate::Result;
 fn copy_into(d: &mut Document, parent: StoryId, child: StoryId) -> Result<()> {
     let src = d.story(parent).ok_or_else(|| bad("story.link", format!("no story {}", parent.0)))?.clone();
     let st = d.story_mut(child).ok_or_else(|| bad("story.link", format!("no story {}", child.0)))?;
-    let (frames, rev) = (std::mem::take(&mut st.frames), st.rev);
-    *st = Story { id: child, frames, rev: rev + 1, link: Some((parent, src.rev)), ..src };
+    let (frames, rev, file_link) = (std::mem::take(&mut st.frames), st.rev, st.file_link.take());
+    *st = Story { id: child, frames, rev: rev + 1, link: Some((parent, src.rev)), file_link, ..src };
     Ok(())
 }
 

@@ -340,11 +340,11 @@ fn place_image(
     let cands = image_candidates(cell, data_dir, doc_dir);
     let found = cands.iter().find_map(|p| {
         // Refuse huge files before reading them; a too-large image counts as missing.
-        let len = std::fs::metadata(p).ok()?.len();
+        let len = crate::io::metadata(p).ok()?.len();
         if len == 0 || len > super::MAX_IMAGE_FILE_BYTES {
             return None;
         }
-        std::fs::read(p).ok().filter(|b| !b.is_empty()).map(|b| (p.clone(), b))
+        crate::io::read_file(p).ok().filter(|b| !b.is_empty()).map(|b| (p.clone(), b))
     });
     let Some((path, bytes)) = found else {
         if let Some(it) = doc.item_mut(item) {

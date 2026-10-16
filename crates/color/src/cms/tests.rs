@@ -188,10 +188,8 @@ fn bad_icc_rejected() {
 #[test]
 fn loads_system_cmyk_icc() {
     let path = std::path::Path::new("/System/Library/ColorSync/Profiles/Generic CMYK Profile.icc");
-    if !path.exists() {
-        return;
-    }
-    let info = load_icc_file(path).unwrap();
+    let Ok(bytes) = std::fs::read(path) else { return };
+    let info = register_icc(&bytes, None).unwrap();
     assert_eq!(info.kind, ProfileKind::Cmyk);
     assert!(profiles().iter().any(|p| p.name == info.name && !p.builtin));
     let c = Cms::new(&ColorSettings { cmyk: info.name.clone(), ..Default::default() }).unwrap();

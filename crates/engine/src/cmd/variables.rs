@@ -153,6 +153,38 @@ mod tests {
         assert_eq!(shown(&s, 2), 3, "page 102 after renumbering");
     }
 
+    /// A section marker character shows the marker text of the section of the page it is composed
+    /// for: on each document page a parent-page frame is shown on, and in a frame on a document
+    /// page. A section without marker text shows nothing; the parent page itself shows "Section".
+    #[test]
+    fn section_marker_shows_the_pages_section_marker() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 4, "facingPages": false})).unwrap();
+        s.execute("layout.section", &json!({"page": 3, "startNumber": 1, "marker": "Intro"})).unwrap();
+        let marker = designcraft_doc::story::SECTION_MARKER.to_string();
+        let r = s
+            .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 30, 500, 60], "content": "text", "text": marker}))
+            .unwrap();
+        let parent = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        let sp = s.doc().unwrap().doc.page_loc(3).unwrap().0;
+        let r = s.execute("frame.create", &json!({"spread": sp, "rect": [72, 200, 400, 260], "content": "text", "text": marker})).unwrap();
+        let own = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        let shown = |s: &Session, sid, page: Option<usize>| -> usize {
+            let d = s.doc().unwrap().doc.clone();
+            let cs = s.cache.get(&d, sid, page);
+            cs.frames.iter().flat_map(|f| f.lines.iter()).map(|l| l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).count()).sum()
+        };
+        assert_eq!(shown(&s, parent, Some(0)), 0, "the first section has no marker");
+        assert_eq!(shown(&s, parent, Some(2)), "Intro".len());
+        assert_eq!(shown(&s, parent, Some(3)), "Intro".len());
+        assert_eq!(shown(&s, own, None), "Intro".len(), "a frame on a document page");
+        assert_eq!(shown(&s, parent, None), "Section".len(), "the parent page itself");
+        // Editing the marker recomposes.
+        s.execute("layout.section", &json!({"page": 3, "marker": "Appendix"})).unwrap();
+        assert_eq!(shown(&s, parent, Some(2)), "Appendix".len());
+        assert_eq!(shown(&s, own, None), "Appendix".len());
+    }
+
     /// Two sections that both number from 1 repeat page names ("1, 2, 1, 2"). A parent-page running
     /// header is composed for the page it is shown on, not the first page with that name.
     #[test]

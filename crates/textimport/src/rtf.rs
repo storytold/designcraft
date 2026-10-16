@@ -157,7 +157,9 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 }
                 let word: String = chars[i + 1..j].iter().collect();
                 let mut k = j;
-                if k < chars.len() && (chars[k] == '-' || chars[k].is_ascii_digit()) {
+                // A '-' only starts the parameter when a digit follows; otherwise it is text.
+                let negative = chars.get(k) == Some(&'-') && chars.get(k + 1).is_some_and(char::is_ascii_digit);
+                if negative || chars.get(k).is_some_and(char::is_ascii_digit) {
                     k += 1;
                     while k < chars.len() && chars[k].is_ascii_digit() {
                         k += 1;
@@ -291,6 +293,14 @@ Caf\'e9 \u8364? price\tab tab\line next\par
         assert_eq!(st.format_after(st.text.find("plain").unwrap()).over.font_style, None);
         assert_eq!(st.format_after(0).over.size, Some(12.0));
         assert!(!st.text.contains("Times"), "font table skipped");
+    }
+
+    /// A '-' right after a control word is text unless a digit follows it (then it is a negative
+    /// parameter). It used to be swallowed.
+    #[test]
+    fn hyphen_after_control_word_without_digits_is_text() {
+        let i = import(br"{\rtf1\ansi Rock\emdash-roll, x\tab-y, a\li-720 b}").unwrap();
+        assert_eq!(i.story.text, "Rock\u{2014}-roll, x\t-y, ab");
     }
 
     /// Characters past U+FFFF are written as two `\uN` words, a UTF-16 surrogate pair (the form

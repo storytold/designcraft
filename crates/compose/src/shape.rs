@@ -78,12 +78,24 @@ impl Glyph {
     pub fn is_space(&self) -> bool {
         matches!(self.ch, ' ' | '\u{2002}'..='\u{200A}') || (self.ch == '\u{3000}' && self.ideographic_space_elastic)
     }
+    /// A space whose width justification and word spacing vary: U+0020, the nonbreaking space
+    /// U+00A0 and an elastic ideographic space. Fixed-width spaces (U+2002–U+200A, U+202F) get no
+    /// word-space stretch or shrink.
+    pub fn is_word_space(&self) -> bool {
+        matches!(self.ch, ' ' | NBSP) || (self.ch == '\u{3000}' && self.ideographic_space_elastic)
+    }
+    /// A space that justification treats as a word space rather than a letter: [`Self::is_space`]
+    /// plus U+00A0, which is never a break opportunity.
+    pub fn is_justify_space(&self) -> bool {
+        self.is_space() || self.ch == NBSP
+    }
     pub fn is_letter(&self) -> bool {
         self.ch.is_alphabetic() || matches!(self.ch, '\'' | '’')
     }
 }
 
 pub const SOFT_HYPHEN: char = '\u{AD}';
+pub const NBSP: char = '\u{A0}';
 
 /// Shaped paragraph.
 pub struct ShapedPara {
@@ -96,6 +108,7 @@ pub struct ShapedPara {
 #[derive(Clone, Debug, Default)]
 pub struct SubstCtx {
     pub page_name: Option<String>,
+    /// The section marker text of the page being composed (`None` on parent pages: "Section").
     pub section_marker: Option<String>,
     /// Text variable values by index (on the page being composed).
     pub vars: Arc<Vec<String>>,
@@ -146,6 +159,7 @@ impl StyleTable<'_> {
             stroke: p.stroke.clone(),
             stroke_tint: p.stroke_tint,
             stroke_weight: p.stroke_weight,
+            stroke_behind_fill: p.stroke_behind_fill,
             underline: p.underline,
             strikethrough: p.strikethrough,
             underline_rule: crate::Rule {
@@ -291,6 +305,7 @@ pub(crate) fn shape_para(
             resolved.push((a, b, props, fmt, para_chars.clone()));
         }
     }
+    let resolved = marks_join_their_base(&story.text, resolved);
     for (a, b, props, fmt, resolved_base) in resolved {
         let style = table.intern(db, &props);
         // A missing font's substitute stands in for the whole font: fallback fonts help it.
@@ -351,6 +366,38 @@ pub(crate) fn shape_para(
     }
     collapse_tcy(&mut glyphs, sub.vertical);
     ShapedPara { glyphs, range }
+}
+
+/// Combining marks that start a run are shaped with the letter before them when the two runs
+/// differ only in OpenType features (ligatures, kerning, `otf_features`): the shaper attaches each
+/// mark to its base, in its base's face. A run in another font, size or colour keeps its marks.
+fn marks_join_their_base<'f>(
+    text: &str,
+    resolved: Vec<(usize, usize, CharProps, &'f designcraft_doc::CharFormat, CharProps)>,
+) -> Vec<(usize, usize, CharProps, &'f designcraft_doc::CharFormat, CharProps)> {
+    let same_but_features = |a: &CharProps, b: &CharProps| {
+        *b == CharProps { ligatures: b.ligatures, kerning: b.kerning, otf_features: b.otf_features.clone(), ..a.clone() }
+    };
+    let is_base = |c: char| !c.is_whitespace() && !c.is_control() && !matches!(c, designcraft_doc::FOOTNOTE_REF | designcraft_doc::ENDNOTE_REF);
+    let mut out: Vec<(usize, usize, CharProps, &designcraft_doc::CharFormat, CharProps)> = Vec::with_capacity(resolved.len());
+    for (a, b, props, fmt, base) in resolved {
+        let run = text.get(a..b).unwrap_or("");
+        let marks = run.char_indices().find(|(_, c)| !is_mark(*c)).map_or(run.len(), |(i, _)| i);
+        if let Some(prev) = out.last_mut()
+            && marks > 0
+            && prev.1 == a
+            && text.get(prev.0..prev.1).and_then(|s| s.chars().next_back()).is_some_and(is_base)
+            && same_but_features(&prev.2, &props)
+        {
+            prev.1 = a + marks;
+            if a + marks < b {
+                out.push((a + marks, b, props, fmt, base));
+            }
+            continue;
+        }
+        out.push((a, b, props, fmt, base));
+    }
+    out
 }
 
 /// Tate-chu-yoko: in vertical text each run of marked glyphs takes one em along the line, its
@@ -619,7 +666,14 @@ fn shape_run_raw(
                     } else {
                         sub.page_name.clone().unwrap_or_else(|| "#".into())
                     };
-                    shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, style, out, sub.vertical);
+                    if s.is_empty() {
+                        // A section without marker text: the character takes no space.
+                        let mut g = control_glyph(&primary, p, auto_leading, style, i, c);
+                        g.adv = 0.0;
+                        out.push(g);
+                    } else {
+                        shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, style, out, sub.vertical);
+                    }
                 }
                 designcraft_doc::OBJECT_MARK => {
                     let mut g = control_glyph(&primary, p, auto_leading, style, i, c);

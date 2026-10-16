@@ -118,7 +118,8 @@ pub fn tool_definitions() -> Vec<Value> {
              and message (earlier commands stay applied; use edit.undo to revert them). Later steps can use earlier results: a \
              parameter string \"$N.path\" is replaced by that value of step N's result (0-based; \"$last.path\" for the previous \
              step), e.g. after frame.create → {\"id\": 8, \"story\": 9}, {\"story\": \"$0.story\"} passes 9; \"${N.path}\" \
-             interpolates into longer strings. Give `commands`, or `script` text (one `command.id {json}` per line).",
+             interpolates into longer strings. Other strings starting with $ stay as written; \"$$\" is a literal $ \
+             (\"$$1\" passes the GREP group $1). Give `commands`, or `script` text (one `command.id {json}` per line).",
             obj(
                 json!({
                     "commands": {
@@ -232,7 +233,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            false,
         ),
         tool(
             "export_png",
@@ -249,7 +250,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "Screenshot",
             &app_only("Capture the whole app window (menus, panels, canvas) and return it as a PNG image. Optionally also keep it at `path`."),
             obj(json!({"path": string("Also write the PNG here")}), &[]),
-            true,
+            false,
         ),
         // ----- input -----
         tool(
@@ -480,7 +481,7 @@ fn render_page(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
     let path = a.get("path").and_then(Value::as_str);
     if let Some(path) = path {
         let png = designcraft_engine::cmd::base64_decode(&b64);
-        designcraft_engine::atomic::write_atomic(std::path::Path::new(path), &png).map_err(|e| format!("write {path}: {e}"))?;
+        b.write_file(path, &png)?;
     }
     Ok(ToolResult::image(b64, &json!({"width": r.get("width"), "height": r.get("height"), "path": path})))
 }

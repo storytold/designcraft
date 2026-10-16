@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (stage re-normalized to pre-alpha by the core-workflow gate; earlier today: major, first version) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (document views row: scrollbars, Alt pans while editing text) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -34,6 +34,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
 | Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ~ | vertical smart spacing between two rectangles (#188) |
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
+| Document views: scrollbars (each split pane), Hand tool by Space, middle drag, or Alt while editing text | ✓ | ✓ | ✓ | `canvas.rs` `scrollbar_tests` |
 | Gridify while drawing, Gap tool, Live Distribute | ✓ | ✓ | ✓ | |
 | Type tool: caret, selection, double/triple click, drag-and-drop text | ✓ | ✓ | ~ | formatting at a caret discarded (#289); text editing complaints (#23, #174) |
 | Threading: click out port, load text cursor, click frame | ✓ | ✗ ports drawn only; no thread/unthread command; Primary Text Frame and autoflow on Place | ✗ | **alpha blocker** (#352, #194, #165, #140) |
@@ -47,14 +48,14 @@ basics of editing fail for too many users on Windows and Linux.
 | Colour fields: hex, picker from any swatch field | ✓ | ✓ | ~ | hex entry and picker issues (#323, #190) |
 | Panels: Pages, Layers, Swatches, Color, Stroke, Character, Paragraph, Styles, Links, Effects, Text Wrap, Align, Pathfinder, Table, Index, TOC, Hyperlinks, Bookmarks, Articles, Tags, Notes, Track Changes, Object States, Buttons and Forms, Preflight, Data Merge, Library, Scripts, Glyphs, Info | ✓ | all present | ~ | **Tabs panel missing** (#326); Navigator, Trap Presets, Animation, Timing missing; pull-down panels can't scroll on Linux (#267) |
 | Dialogs: New Document, Document Setup, Preferences (all pages), Paragraph/Character/Object/Table/Cell Style Options, Export PDF, Print, Package, Find/Change | ✓ | present | ~ | generated command dialogs fill the long tail; depth varies |
-| Workspaces | Essentials, Advanced, Book, Digital Publishing, Interactive for PDF, Printing and Proofing, Typography, Touch | ✓ named workspaces + custom | ~ | tab bar overlaps menus in Book/Advanced (#182) |
+| Workspaces | Essentials, Essentials Classic, Advanced, Book, Digital Publishing, Interactive for PDF, Printing and Proofing, Review, Typography, Touch | ✓ named workspaces (Essentials Classic: Control panel and iconic panel groups) + custom; Window › Workspace; no Review or Touch | ~ | tab bar overlaps menus in Book/Advanced (#182) |
 | Story Editor | ✓ | ✓ | ~ | style-name column, depth ruler missing |
 | Undo granularity (a drag = one step) | ✓ | ✓ (Begin/Preview/Commit) | ✓ | |
 | Closing with unsaved changes asks | ✓ | ✓ File › Close and window/menu quit (#146, #545) | ✓ | macOS Dock Quit still bypasses the prompt (#544) |
 | UI scaling, System appearance | ✓ | scaling ✓ (#281); follows macOS light/dark ✗ (#237) | ~ | |
 | Window controls, full screen | ✓ | ~ | ~ | misaligned on macOS (#333) |
 
-Counted 2026-10-10: 27 rows, 11 ✓, 14 ~, 2 ✗ → **67% presence**, scoring ✓ = 1, ~ = 0.5. Ready
+Counted 2026-10-11: 28 rows, 12 ✓, 14 ~, 2 ✗ → **68% presence**, scoring ✓ = 1, ~ = 0.5. Ready
 for real work is lower, ~45%, because threading is missing and three of the ~ rows (copy/paste,
 context menus, typing at a caret) are things a layout artist does every minute, and their failures stop work.
 

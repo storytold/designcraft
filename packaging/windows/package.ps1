@@ -93,7 +93,7 @@ Copy-Item (Join-Path $Bin 'designcraft.exe'), (Join-Path $Bin 'designcraft-cli.e
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "designcraft-$Version-windows-$Arch.msi"
 Invoke-Native 'wix build' {
-  wix build (Join-Path $PSScriptRoot 'designcraft.wxs') -arch $Arch `
+  wix build (Join-Path $PSScriptRoot 'designcraft.wxs') (Join-Path $PSScriptRoot 'installer-ui.wxs') -arch $Arch `
     -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\designcraft.ico')" `
     -o $Msi
 }

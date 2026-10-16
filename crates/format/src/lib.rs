@@ -87,22 +87,51 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
     load_legacy_json(bytes)
 }
 
+/// Most entries a `.designcraft` archive may hold.
+const MAX_ENTRIES: usize = 100_000;
+/// Most bytes `meta.json` or `document.json` may expand to.
+const MAX_JSON_BYTES: u64 = 256 << 20;
+/// Most bytes one embedded asset may expand to.
+const MAX_ASSET_BYTES: u64 = 1 << 30;
+/// Most bytes all the entries read from one archive may expand to together.
+const MAX_TOTAL_BYTES: u64 = 4 << 30;
+
+/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses an entry that
+/// expands past `limit` bytes or past what is `left` of the archive's budget, without
+/// decompressing more than that: the sizes the archive claims are not trusted.
+fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, left: &mut u64) -> Result<Option<Vec<u8>>, FormatError> {
+    let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive is larger than {MAX_TOTAL_BYTES} bytes)"));
+    let Ok(f) = z.by_name(name) else { return Ok(None) };
+    let limit = limit.min(*left);
+    if f.size() > limit {
+        return Err(too_big());
+    }
+    let mut v = Vec::new();
+    if f.take(limit.saturating_add(1)).read_to_end(&mut v).is_err() {
+        return Ok(None);
+    }
+    let n = v.len() as u64;
+    if n > limit {
+        return Err(too_big());
+    }
+    *left = left.saturating_sub(n);
+    Ok(Some(v))
+}
+
 fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::NotOurs(e.to_string()))?;
-    let read = |z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str| -> Option<Vec<u8>> {
-        let mut f = z.by_name(name).ok()?;
-        let mut v = Vec::new();
-        f.read_to_end(&mut v).ok()?;
-        Some(v)
-    };
-    let version = read(&mut z, "meta.json")
+    if z.len() > MAX_ENTRIES {
+        return Err(FormatError::NotOurs(format!("{} entries (at most {MAX_ENTRIES})", z.len())));
+    }
+    let mut left = MAX_TOTAL_BYTES;
+    let version = read_entry(&mut z, "meta.json", MAX_JSON_BYTES, &mut left)?
         .and_then(|meta| serde_json::from_slice::<Value>(&meta).ok())
         .and_then(|m| m.get("version").and_then(Value::as_u64))
         .map_or(1, |v| u32::try_from(v).unwrap_or(u32::MAX));
     if version > VERSION {
         return Err(FormatError::TooNew(version));
     }
-    let json = read(&mut z, "document.json").ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
+    let json = read_entry(&mut z, "document.json", MAX_JSON_BYTES, &mut left)?.ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
     let mut v: Value = serde_json::from_slice(&json).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     upgrade_json(&mut v);
     let mut doc: Document = serde_json::from_value(v).map_err(|e| FormatError::NotOurs(e.to_string()))?;
@@ -114,7 +143,11 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     for name in names {
         let Some(stem) = name.strip_prefix("assets/") else { continue };
         let Some(id) = stem.split('.').next().and_then(|s| s.parse::<u64>().ok()) else { continue };
-        if let (Some(data), Some(a)) = (read(&mut z, &name), doc.assets.get_mut(&AssetId(id))) {
+        // Entries for assets the document doesn't have are never decompressed.
+        if !doc.assets.contains_key(&AssetId(id)) {
+            continue;
+        }
+        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, MAX_ASSET_BYTES, &mut left)?, doc.assets.get_mut(&AssetId(id))) {
             let same = loaded.entry(fingerprint.hash_one(data.as_slice())).or_default();
             let data = match same.iter().find(|d| ***d == data) {
                 Some(d) => d.clone(),
@@ -612,5 +645,80 @@ mod tests {
             z.finish().unwrap();
         }
         assert!(matches!(load(&buf.into_inner()), Err(FormatError::TooNew(99))));
+    }
+
+    /// Write `len` bytes of `fill` to the current entry of `z`.
+    fn write_fill(z: &mut zip::ZipWriter<Cursor<Vec<u8>>>, len: usize, fill: u8) {
+        let chunk = vec![fill; 1 << 20];
+        let mut left = len;
+        while left > 0 {
+            let n = left.min(chunk.len());
+            z.write_all(&chunk[..n]).unwrap();
+            left -= n;
+        }
+    }
+
+    /// Make the archive claim that entry `name` expands to `size` bytes, in both its local header
+    /// and its central directory record (the archive has no ZIP64 fields or data descriptors).
+    fn claim_size(bytes: &mut [u8], name: &str, size: u32) {
+        let mut patched = 0;
+        for i in 0..bytes.len().saturating_sub(46) {
+            let (size_at, len_at, name_at) = match &bytes[i..i + 4] {
+                b"PK\x03\x04" => (22, 26, 30),
+                b"PK\x01\x02" => (24, 28, 46),
+                _ => continue,
+            };
+            let len = u16::from_le_bytes([bytes[i + len_at], bytes[i + len_at + 1]]) as usize;
+            if bytes.get(i + name_at..i + name_at + len) == Some(name.as_bytes()) {
+                bytes[i + size_at..i + size_at + 4].copy_from_slice(&size.to_le_bytes());
+                patched += 1;
+            }
+        }
+        assert_eq!(patched, 2, "{name} not found in both headers");
+    }
+
+    /// A small archive whose `document.json` expands past the 256 MiB limit while claiming to
+    /// hold one byte is refused once the limit is reached, with an error that says so, instead of
+    /// being read whole into memory.
+    #[test]
+    fn oversized_document_json_is_refused() {
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        z.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
+        write_fill(&mut z, (256 << 20) + 1, b' ');
+        let mut bytes = z.finish().unwrap().into_inner();
+        assert!(bytes.len() < 4 << 20, "{}", bytes.len());
+        claim_size(&mut bytes, "document.json", 1);
+        let Err(err) = load(&bytes) else { panic!("an oversized document.json loaded") };
+        assert!(err.to_string().contains("limit"), "{err}");
+    }
+
+    /// An embedded file that expands past the 1 GiB limit (and says so) is refused too.
+    #[test]
+    fn oversized_asset_is_refused() {
+        let mut d = Document::new(&NewDocument::default());
+        let aid = png_asset(&mut d, &[1]);
+        place(&mut d, aid, 0.0);
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        z.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(&serde_json::to_vec(&d).unwrap()).unwrap();
+        z.start_file(format!("assets/{}.png", aid.0), zip::write::SimpleFileOptions::default()).unwrap();
+        write_fill(&mut z, (1 << 30) + 1, 0);
+        let Err(err) = load(&z.finish().unwrap().into_inner()) else { panic!("an oversized asset loaded") };
+        assert!(err.to_string().contains("limit"), "{err}");
+    }
+
+    /// An archive with more entries than any document needs is refused before any is read.
+    #[test]
+    fn too_many_entries_are_refused() {
+        let d = Document::new(&NewDocument::default());
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        z.start_file("document.json", stored).unwrap();
+        z.write_all(&serde_json::to_vec(&d).unwrap()).unwrap();
+        for i in 0..100_000 {
+            z.start_file(format!("junk/{i}"), stored).unwrap();
+        }
+        let Err(err) = load(&z.finish().unwrap().into_inner()) else { panic!("an archive with 100 001 entries loaded") };
+        assert!(err.to_string().contains("entries"), "{err}");
     }
 }

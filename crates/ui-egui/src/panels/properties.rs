@@ -16,6 +16,14 @@ use crate::widgets::{
 };
 use crate::{DesignApp, icons};
 
+/// A link to another panel. `window.panel` shows it in the docked layout or as a flyout; it
+/// toggles the flyout, so a flyout that is already open is left as it is.
+fn show_panel(app: &mut DesignApp, panel: &str) {
+    if app.ui.open_panel.as_deref() != Some(panel) {
+        let _ = app.run("window.panel", json!({"panel": panel}));
+    }
+}
+
 fn units(app: &DesignApp) -> Unit {
     app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
 }
@@ -120,6 +128,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     section(ui, crate::i18n::tr(&app.ui.language, "Align"), true);
     align_row(app, ui);
+    divider(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Flex Layout"), true);
+    flex_section(app, ui);
     divider(ui);
     if i.count > 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Pathfinder"), true);
@@ -252,7 +263,14 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     // Margins.
     section(ui, crate::i18n::tr(&app.ui.language, "Margins"), true);
     let cur = crate::canvas::current_page(app).unwrap_or(0);
-    if let Some(p) = d.page(cur).cloned() {
+    // While parent spreads are edited the fields belong to the parent page in view; they used to
+    // show (and change) the document pages instead, so nothing changed on the parent.
+    let parent_target = crate::canvas::current_parent_page(app);
+    let shown = match parent_target {
+        Some((pi, qi)) => d.parents.get(pi).and_then(|s| s.pages.get(qi)).cloned(),
+        None => d.page(cur).cloned(),
+    };
+    if let Some(p) = shown {
         let linked = temp_bool(ui, "margins_linked", true);
         let b = block(ui, 2.0 * FIELD_H + 5.0);
         let mut set: Option<designcraft_doc::Margins> = None;
@@ -295,7 +313,15 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
             set_temp_bool(ui, "margins_linked", !linked);
         }
         if let Some(m) = set {
-            let _ = app.run("layout.marginsAndColumns", json!({"margins": m}));
+            let params = match parent_target {
+                // Both pages of a facing parent spread, so the margins show wherever the parent is used.
+                Some((pi, _)) => {
+                    let n = app.session.active().and_then(|st| st.doc.parents.get(pi)).map_or(1, |sp| sp.pages.len());
+                    json!({"margins": m, "parent": pi, "pages": (0..n).collect::<Vec<_>>()})
+                }
+                None => json!({"margins": m}),
+            };
+            let _ = app.run("layout.marginsAndColumns", params);
         }
     }
     ui.add_space(6.0);
@@ -468,7 +494,7 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     }
     transform_angles(app, ui, rp);
     if more_options(ui, &app.ui.language).clicked() {
-        app.ui.open_panel = Some("info".into());
+        show_panel(app, "info");
     }
 }
 
@@ -655,7 +681,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         let _ = app.run("object.stroke", json!({"swatch": n}));
     });
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
-        app.ui.open_panel = Some("stroke".into());
+        show_panel(app, "stroke");
     }
     const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 20.0, 30.0, 40.0, 50.0, 100.0];
     if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
@@ -696,7 +722,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let b = block(ui, FIELD_H);
     icons::paint(ui.painter(), sub(b, 3.0, 1.0, 19.0, 19.0), "opacity", t.icon);
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Opacity"), 56.0)).clicked() {
-        app.ui.open_panel = Some("effects".into());
+        show_panel(app, "effects");
     }
     if let Some(v) = place(ui, sub(b, 96.0, 0.0, 51.0, FIELD_H), |ui| {
         NumField::number("opacity", Some((i.opacity * 100.0).round()), "%", 0).width(51.0).range(0.0, 100.0).show(ui)
@@ -708,13 +734,13 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     ui.painter().rect(more, 0.0, if mresp.hovered() { t.hover } else { t.input }, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     icons::paint(ui.painter(), more.shrink(4.0), "chevron-right", t.icon);
     if mresp.clicked() {
-        app.ui.open_panel = Some("effects".into());
+        show_panel(app, "effects");
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         if icon_toggle(ui, "frame-dashed", false, crate::i18n::tr(&app.ui.language, "Frame Fitting")).clicked() {
-            app.ui.open_panel = Some("textWrap".into());
+            show_panel(app, "textWrap");
         }
         if icon_toggle(ui, "fx", i.shadow, crate::i18n::tr(&app.ui.language, "Effects: Drop Shadow")).clicked() {
             let _ = app.run("object.dropShadow", json!({"on": !i.shadow}));
@@ -726,16 +752,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
 fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &designcraft_doc::Document, cur: &str, on_pick: impl FnOnce(&mut DesignApp, String)) {
     let mut picked = None;
     egui::Popup::menu(resp).show(|ui| {
-        ui.set_min_width(200.0);
-        ui.set_max_width(280.0);
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for sw in &doc.swatches {
-                if super::swatch_menu_row(ui, doc, &sw.name, cur) {
-                    picked = Some(sw.name.clone());
-                    ui.close();
-                }
-            }
-        });
+        picked = super::swatch_list(ui, doc, cur);
     });
     if let Some(p) = picked {
         on_pick(app, p);
@@ -802,7 +819,7 @@ fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         }
     });
     if more_options(ui, &app.ui.language).clicked() {
-        app.ui.open_panel = Some("textWrap".into());
+        show_panel(app, "textWrap");
     }
 }
 
@@ -1019,7 +1036,7 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             );
         } else {
             if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, label), 56.0)).clicked() {
-                app.ui.open_panel = Some("stroke".into());
+                show_panel(app, "stroke");
             }
             const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0];
             if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
@@ -1029,6 +1046,10 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             }
         }
         ui.add_space(4.0);
+    }
+    let mut behind = c["strokeBehindFill"].as_bool().unwrap_or(false);
+    if ui.checkbox(&mut behind, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stroke Behind Fill"))).changed() {
+        let _ = app.run("type.char", json!({"attrs": {"strokeBehindFill": behind}}));
     }
 }
 
@@ -1088,24 +1109,7 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     }
     // Kerning / tracking.
     icons::paint(ui.painter(), sub(b, 0.0, 27.0, 19.0, 19.0), "kerning", t.icon);
-    let kern = c["kerning"]["kind"].as_str().unwrap_or("metrics").to_string();
-    let kern_label = match kern.as_str() {
-        "optical" => "Optical".to_string(),
-        "none" => "0".to_string(),
-        "manual" => format!("{}", c["kerning"]["value"].as_f64().unwrap_or(0.0)),
-        _ => "Metrics".to_string(),
-    };
-    place(ui, sub(b, 24.0, 26.0, half - 24.0, FIELD_H), |ui| {
-        let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &kern_label), half - 24.0);
-        egui::Popup::menu(&resp).show(|ui| {
-            for (label, v) in [("Metrics", json!({"kind": "metrics"})), ("Optical", json!({"kind": "optical"})), ("0", json!({"kind": "none"}))] {
-                if ui.selectable_label(kern_label == label, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    let _ = app.run("type.char", json!({"attrs": {"kerning": v}}));
-                    ui.close();
-                }
-            }
-        });
-    });
+    place(ui, sub(b, 24.0, 26.0, half - 24.0, FIELD_H), |ui| kerning_control(app, ui, "ckern", &c["kerning"], half - 24.0));
     icons::paint(ui.painter(), sub(b, half + 10.0, 27.0, 19.0, 19.0), "tracking", t.icon);
     const TRACK: &[f64] = &[-100.0, -75.0, -50.0, -25.0, -10.0, -5.0, 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 200.0];
     if let Some(v) = place(ui, sub(b, half + 34.0, 26.0, lw, FIELD_H), |ui| {
@@ -1126,7 +1130,7 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| language_menu(app, ui, &lang));
     });
     if more_options(ui, &app.ui.language).clicked() {
-        app.ui.open_panel = Some("character".into());
+        show_panel(app, "character");
     }
 }
 
@@ -1158,7 +1162,7 @@ fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
         }
     });
     if more_options(ui, &app.ui.language).clicked() {
-        app.ui.open_panel = Some("paragraph".into());
+        show_panel(app, "paragraph");
     }
 }
 
@@ -1176,7 +1180,7 @@ fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
             if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 66.0).clicked() {
-                app.ui.open_panel = Some("paragraph".into());
+                show_panel(app, "paragraph");
             }
         });
     });
@@ -1257,6 +1261,7 @@ pub(crate) const LANGUAGES: &[&str] = &[
     "Greek",
     "Russian",
     "Ukrainian",
+    "Georgian",
     "Turkish",
     "Japanese",
     "Chinese",
@@ -1276,6 +1281,37 @@ fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
             ui.close();
         }
     }
+}
+
+/// Kerning for the text selection: the label shows Metrics, Optical, 0 or the manual value; its
+/// menu sets one of the first three or a manual value in 1/1000 em (typed or stepped).
+fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, width: f32) {
+    let kind = k["kind"].as_str().unwrap_or("metrics");
+    let manual = k["value"].as_f64().filter(|v| kind == "manual" && v.is_finite());
+    let label = match (kind, manual) {
+        ("optical", _) => "Optical".to_string(),
+        ("none", _) => "0".to_string(),
+        ("manual", Some(v)) => format!("{v}"),
+        _ => "Metrics".to_string(),
+    };
+    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &label), width);
+    let name = crate::i18n::tr(&app.ui.language, "Kerning");
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, name));
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        for (text, v) in [("Metrics", json!({"kind": "metrics"})), ("Optical", json!({"kind": "optical"})), ("0", json!({"kind": "none"}))] {
+            if ui.selectable_label(label == text, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, text))).clicked() {
+                let _ = app.run("type.char", json!({"attrs": {"kerning": v}}));
+                ui.close();
+            }
+        }
+        ui.separator();
+        // A manual value: between the selected character and the next, in 1/1000 em.
+        let field = format!("{id}_manual");
+        if let Some(v) = NumField::number(&field, Some(manual.unwrap_or(0.0)), "", 0).width(90.0).spinner().step(5.0).range(-1000.0, 10000.0).show(ui)
+        {
+            let _ = app.run("type.char", json!({"attrs": {"kerning": {"kind": "manual", "value": v}}}));
+        }
+    });
 }
 
 pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -1330,10 +1366,13 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
         }
         ui.end_row();
+        caption(ui, crate::i18n::tr(&app.ui.language, "Kerning"));
+        kerning_control(app, ui, "pck", &c["kerning"], 60.0);
         caption(ui, crate::i18n::tr(&app.ui.language, "Tracking"));
-        if let Some(v) = number(ui, "pct", c["tracking"].as_f64(), "", 60.0, 0) {
+        if let Some(v) = number(ui, "pct", c["tracking"].as_f64(), "", 70.0, 0) {
             let _ = app.run("type.char", json!({"attrs": {"tracking": v}}));
         }
+        ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Baseline"));
         if let Some(v) = number(ui, "pcb", c["baselineShift"].as_f64(), " pt", 70.0, 2) {
             let _ = app.run("type.char", json!({"attrs": {"baselineShift": v}}));
@@ -1416,9 +1455,15 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         {
             let _ = app.run("type.char", json!({"attrs": {"position": if sup { "normal" } else { "superscript" }}}));
         }
-        let features: Vec<String> =
-            c["otfFeatures"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        crate::menus::menu_button(ui, "OpenType", |ui| open_type_menu(app, ui, &features));
+        if ui
+            .button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "OpenType")))
+            .on_hover_ui(|ui| {
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Show the Typography panel"));
+            })
+            .clicked()
+        {
+            show_typography_panel(app);
+        }
     });
     // Underline / Strikethrough Options.
     for (key, title) in [("underline", "Underline Options"), ("strikethrough", "Strikethrough Options")] {
@@ -1453,37 +1498,13 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// The Character panel's OpenType menu: feature toggles, figure styles and stylistic sets.
-pub fn open_type_menu(app: &mut DesignApp, ui: &mut egui::Ui, features: &[String]) {
-    use designcraft_doc::otf;
-    ui.set_min_width(220.0);
-    for (tag, label, _) in otf::TOGGLES {
-        let mut on = otf::is_on(features, tag);
-        if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-            let _ = app.run("type.openType", json!({"feature": tag, "on": on}));
-            ui.close();
-        }
+/// Opens the Typography panel, or focuses it when it is already showing. `window.panel` toggles a
+/// flyout, so it is skipped while the Typography flyout is open.
+pub fn show_typography_panel(app: &mut DesignApp) {
+    if app.ui.open_panel.as_deref() == Some("typography") {
+        return;
     }
-    ui.separator();
-    let fig = otf::figures(features);
-    for (id, label, ..) in otf::FIGURES {
-        if ui.radio(fig == *id, *label).clicked() {
-            let _ = app.run("type.openType", json!({"figures": id}));
-            ui.close();
-        }
-    }
-    ui.separator();
-    crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stylistic Sets")), |ui| {
-        let mask = otf::stylistic_sets(features);
-        for n in 1..=20u32 {
-            let mut on = mask & (1 << (n - 1)) != 0;
-            if ui.checkbox(&mut on, crate::rtl::widget(ui, format!("{} {n}", crate::i18n::tr(&app.ui.language, "Set")))).clicked() {
-                let sets: Vec<u32> = (1..=20).filter(|k| if *k == n { on } else { mask & (1 << (k - 1)) != 0 }).collect();
-                let _ = app.run("type.openType", json!({"stylisticSets": sets}));
-                ui.close();
-            }
-        }
-    });
+    let _ = app.run("window.panel", json!({"panel": "typography"}));
 }
 
 pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -1574,6 +1595,10 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("type.para", json!({"attrs": {"gridAlign": if grid { "allLines" } else { "none" }}}));
         }
     });
+    let mut optical = p["opticalMargin"].as_bool().unwrap_or(false);
+    if ui.checkbox(&mut optical, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Optical Margin Alignment"))).changed() {
+        let _ = app.run("type.para", json!({"attrs": {"opticalMargin": optical}}));
+    }
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Composer"));
         let single = p["composer"].as_str() == Some("singleLine");
@@ -1797,27 +1822,76 @@ fn arrow_preview(ui: &mut egui::Ui, a: Arrowhead, start: bool, color: egui::Colo
 
 pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let info = sel_info(app);
+    let mode = info.as_ref().map_or("none", |i| i.wrap);
+    // As InDesign's Text Wrap panel: the five wrap buttons and Invert, then the four offsets
+    // (top and bottom, left and right) with the link button that makes them all the same.
     ui.horizontal(|ui| {
-        for (icon, mode, tip) in [
+        for (icon, m, tip) in [
             ("wrap-none", "none", "No Text Wrap"),
             ("wrap-bbox", "boundingBox", "Wrap Around Bounding Box"),
             ("wrap-contour", "contour", "Wrap Around Object Shape"),
             ("wrap-jump", "jumpObject", "Jump Object"),
             ("wrap-next", "jumpToNextColumn", "Jump to Next Column"),
         ] {
-            let on = info.as_ref().is_some_and(|i| i.wrap == mode);
-            if icons::button(ui, icon, 26.0, on, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.textWrap", json!({"mode": mode}));
+            if icons::button(ui, icon, 26.0, mode == m, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                let _ = app.run("object.textWrap", json!({"mode": m}));
             }
+        }
+        ui.add_space(6.0);
+        let mut inv = info.as_ref().is_some_and(|i| i.wrap_invert);
+        let r = ui.add_enabled_ui(mode != "none", |ui| widgets::checkbox(ui, &mut inv, crate::i18n::tr(&app.ui.language, "Invert"))).inner;
+        if r.changed() {
+            let _ = app.run("object.textWrap", json!({"mode": mode, "invert": inv}));
         }
     });
     let u = units(app);
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Offset"));
-        if let Some(v) = measure(ui, "wo", Some(0.0), u, 60.0) {
-            let _ = app.run("object.textWrap", json!({"mode": info.as_ref().map(|i| i.wrap).unwrap_or("boundingBox"), "offset": v}));
+    let offsets = info.as_ref().map(|i| i.wrap_offsets);
+    // Linked while the offsets are all the same, until the link is clicked.
+    let linked_id = egui::Id::new("wrap_offsets_linked");
+    let linked = ui.data(|d| d.get_temp::<bool>(linked_id)).unwrap_or_else(|| offsets.is_none_or(|o| o.iter().all(|v| (v - o[0]).abs() < 1e-9)));
+    let mut set: Option<[f64; 4]> = None;
+    ui.add_enabled_ui(mode != "none" && info.is_some(), |ui| {
+        // Two rows of fixed-width cells: Top | Left, then Bottom | Right; the link between them.
+        let cell = |ui: &mut Ui, w: f32, label: &str| {
+            let x0 = ui.cursor().min.x;
+            caption(ui, crate::i18n::tr(&app.ui.language, label));
+            ui.add_space((w - (ui.cursor().min.x - x0)).max(0.0));
+        };
+        // The second column starts where the first row's does (after the link button).
+        let mut col2_x: Option<f32> = None;
+        for (r, row) in [[(0, "Top"), (1, "Left")], [(2, "Bottom"), (3, "Right")]].into_iter().enumerate() {
+            ui.horizontal(|ui| {
+                for (k, (side, label)) in row.into_iter().enumerate() {
+                    if k == 1 {
+                        match col2_x {
+                            Some(x) => ui.add_space((x - ui.cursor().min.x).max(0.0)),
+                            None => col2_x = Some(ui.cursor().min.x),
+                        }
+                    }
+                    cell(ui, if k == 0 { 56.0 } else { 40.0 }, label);
+                    if let Some(v) = measure(ui, &format!("wo{side}"), offsets.map(|o| o[side]), u, 60.0) {
+                        let mut o = offsets.unwrap_or([0.0; 4]);
+                        if linked {
+                            o = [v; 4];
+                        } else {
+                            o[side] = v;
+                        }
+                        set = Some(o);
+                    }
+                    if k == 0 && r == 0 {
+                        let tip = crate::i18n::tr(&app.ui.language, "Make all settings the same");
+                        let link = widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, vec2(22.0, 21.0));
+                        if link.clicked() {
+                            ui.data_mut(|d| d.insert_temp(linked_id, !linked));
+                        }
+                    }
+                }
+            });
         }
     });
+    if let Some(o) = set {
+        let _ = app.run("object.textWrap", json!({"mode": mode, "offset": o}));
+    }
 }
 
 /// The Pathfinder operations, in the order of InDesign's Pathfinder buttons.
@@ -1841,26 +1915,79 @@ fn pathfinder_row(app: &mut DesignApp, ui: &mut Ui) {
     });
 }
 
-/// Pathfinder panel: combine the selected shapes; make or release compound paths.
+/// Pathfinder panel › Paths: (icon, command, params, tooltip).
+const PATHS: [(&str, &str, &str, &str); 4] = [
+    ("path-join", "path.join", "{}", "Join Path"),
+    ("path-open", "object.convertShape", r#"{"to": "openPath"}"#, "Open Path"),
+    ("path-close", "object.convertShape", r#"{"to": "closedPath"}"#, "Close Path"),
+    ("path-reverse", "path.reverse", "{}", "Reverse Path"),
+];
+
+/// Pathfinder panel › Convert Shape: (icon, shape, tooltip).
+const CONVERT_SHAPE: [(&str, &str, &str); 9] = [
+    ("shape-rect", "rectangle", "Rectangle"),
+    ("shape-rounded", "roundedRectangle", "Rounded Rectangle"),
+    ("shape-beveled", "beveledRectangle", "Beveled Rectangle"),
+    ("shape-inverse", "inverseRoundedRectangle", "Inverse Rounded Rectangle"),
+    ("shape-ellipse", "ellipse", "Ellipse"),
+    ("shape-triangle", "triangle", "Triangle"),
+    ("shape-polygon", "polygon", "Polygon"),
+    ("shape-line", "line", "Line"),
+    ("shape-orthogonal", "orthogonalLine", "Orthogonal Line"),
+];
+
+/// Pathfinder panel › Convert Point: (icon, kind, tooltip).
+const CONVERT_POINT: [(&str, &str, &str); 4] = [
+    ("point-plain", "plain", "Plain"),
+    ("point-corner", "corner", "Corner"),
+    ("point-smooth", "smooth", "Smooth"),
+    ("point-symmetrical", "symmetrical", "Symmetrical"),
+];
+
+/// Pathfinder panel, as InDesign's: Paths, Pathfinder, Convert Shape and Convert Point, each a row of
+/// icon buttons acting on the selection.
 pub fn pathfinder_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
-    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Pathfinder")).strong());
-    ui.horizontal_wrapped(|ui| {
-        for (label, op) in
-            [("Add", "add"), ("Subtract", "subtract"), ("Intersect", "intersect"), ("Exclude Overlap", "exclude"), ("Minus Back", "minusBack")]
-        {
-            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+    let section = |ui: &mut egui::Ui, app: &DesignApp, title: &str| {
+        ui.add_space(4.0);
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, title));
+        ui.add_space(2.0);
+    };
+    let row = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(12.0, 8.0);
+            add(ui);
+        });
+    };
+    section(ui, app, "Paths:");
+    row(ui, &mut |ui| {
+        for (icon, cmd, params, tip) in PATHS {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                let _ = app.run(cmd, serde_json::from_str(params).unwrap_or_default());
+            }
+        }
+    });
+    section(ui, app, "Pathfinder:");
+    row(ui, &mut |ui| {
+        for (icon, op, tip) in PATHFINDER {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
                 let _ = app.run("object.pathfinder", json!({"op": op}));
             }
         }
     });
-    ui.add_space(4.0);
-    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paths")).strong());
-    ui.horizontal(|ui| {
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Make Compound"))).clicked() {
-            let _ = app.run("object.makeCompoundPath", json!({}));
+    section(ui, app, "Convert Shape:");
+    row(ui, &mut |ui| {
+        for (icon, to, tip) in CONVERT_SHAPE {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                let _ = app.run("object.convertShape", json!({"to": to}));
+            }
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Release"))).clicked() {
-            let _ = app.run("object.releaseCompoundPath", json!({}));
+    });
+    section(ui, app, "Convert Point:");
+    row(ui, &mut |ui| {
+        for (icon, kind, tip) in CONVERT_POINT {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                let _ = app.run("path.convertPoints", json!({"kind": kind}));
+            }
         }
     });
 }
@@ -1904,7 +2031,7 @@ pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 }
 
 /// Links: status (missing / modified / embedded), page and effective resolution of every placed
-/// graphic; Relink, Go To Link, Update Link, Embed Link for the chosen row.
+/// graphic and linked text file; Relink, Go To Link, Update Link, Embed Link for the chosen row.
 pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     // Linked stories (Place and Link).
     let stories = app.session.execute("story.links", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
@@ -1951,21 +2078,43 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let sel_key = egui::Id::new("links_panel_sel");
     let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
+    // Leave room for Status and Page/PPI instead of widening the grid for long source paths.
+    let name_width = (ui.available_width() - 160.0).max(50.0);
     egui::Grid::new("links_grid").num_columns(3).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Name")).color(t.text_dim).size(11.0));
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Status")).color(t.text_dim).size(11.0));
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page · PPI")).color(t.text_dim).size(11.0));
         ui.end_row();
         for r in &rows {
-            let aid = r["asset"].as_u64().unwrap_or(0);
+            // Asset and story ids come from one counter: a row is chosen by either.
+            let aid = r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0);
             let name = r["name"].as_str().unwrap_or("");
-            if ui.selectable_label(chosen == Some(aid), name).clicked() {
+            let response = ui
+                .vertical(|ui| {
+                    ui.set_width(name_width);
+                    let name = ui.add(egui::Button::selectable(chosen == Some(aid), name).truncate());
+                    match r["path"].as_str().filter(|path| !path.is_empty()) {
+                        Some(path) => name.union(
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0))
+                                    .truncate()
+                                    .sense(Sense::click())
+                                    .show_tooltip_when_elided(false),
+                            )
+                            .on_hover_text(path),
+                        ),
+                        None => name,
+                    }
+                })
+                .inner;
+            if response.clicked() {
                 chosen = Some(aid);
             }
             let (txt, col) = match r["status"].as_str().unwrap_or("") {
                 "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
                 "modified" => ("\u{25B2} Modified", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 "embedded" => ("Embedded", t.text_dim),
+                "tooLarge" => ("Too large to check", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 _ => ("OK", t.text_dim),
             };
             crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, txt)).color(col).size(11.0));
@@ -1992,24 +2141,49 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.data_mut(|d| d.insert_temp(sel_key, c));
     }
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    if let Some(path) = rows.iter().find(|r| r["asset"].as_u64() == chosen).and_then(|r| r["path"].as_str()).filter(|path| !path.is_empty()) {
+        // A selected link stays distinguishable even if two rows truncate to the same prefix.
+        ui.add(egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0)).wrap());
+        ui.add_space(6.0);
+    }
+    ui.horizontal_wrapped(|ui| {
         let Some(aid) = chosen else {
             crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Choose a link.")).color(t.text_dim).size(11.0));
             return;
         };
+        // A linked text file is addressed by its story.
+        let is_text = rows.iter().any(|r| r["story"].as_u64() == Some(aid));
+        let target = if is_text { json!({"story": aid}) } else { json!({"asset": aid}) };
+        let with = |k: &str, v: Value| {
+            let mut p = target.clone();
+            p[k] = v;
+            p
+        };
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked()
             && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
         {
-            let _ = app.run("links.relink", json!({"asset": aid, "path": path}));
+            let _ = app.run("links.relink", with("path", json!(path)));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
-            let _ = app.run("links.goTo", json!({"asset": aid}));
+            let _ = app.run("links.goTo", target.clone());
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update"))).clicked() {
-            let _ = app.run("links.update", json!({"asset": aid}));
+        let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
+        let update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
+        let update = if edited {
+            update.on_hover_ui(|ui| {
+                crate::rtl::label(
+                    ui,
+                    crate::i18n::tr(&app.ui.language, "This story was edited in the layout: you'll be asked before those edits are replaced"),
+                );
+            })
+        } else {
+            update
+        };
+        if update.clicked() {
+            update_links(app, target.clone());
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Embed"))).clicked() {
-            let _ = app.run("links.embed", json!({"asset": aid}));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if is_text { "Unlink" } else { "Embed" }))).clicked() {
+            let _ = app.run("links.embed", target.clone());
         }
     });
     ui.horizontal(|ui| {
@@ -2029,6 +2203,35 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+/// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks
+/// first when a linked text story edited in the layout would lose those edits, as InDesign's
+/// Links panel does. The `links.update` command itself doesn't ask (as in InDesign scripting).
+pub fn update_links(app: &mut DesignApp, target: Value) {
+    let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let one = target.get("story").and_then(Value::as_u64);
+    let all = one.is_none() && target.get("asset").is_none();
+    let edited: Vec<&str> = rows
+        .iter()
+        .filter(|r| (all || (one.is_some() && r["story"].as_u64() == one)) && r["edited"] == true && r["status"] == "modified")
+        .filter_map(|r| r["name"].as_str())
+        .collect();
+    if edited.is_empty() {
+        let _ = run_update_links(app, target);
+    } else {
+        let files = edited.join(", ");
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("updateLink", json!({"target": target, "files": files})));
+    }
+}
+
+/// Run `links.update`; its first warning goes to the status bar.
+pub(crate) fn run_update_links(app: &mut DesignApp, target: Value) -> Result<Value, String> {
+    let r = app.run("links.update", target)?;
+    if let Some(w) = r["warnings"].as_array().and_then(|w| w.first()).and_then(Value::as_str) {
+        app.status(w.to_string());
+    }
+    Ok(r)
 }
 
 pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -2279,6 +2482,107 @@ mod tests {
         text_attrs(app).unwrap()["chars"]["language"].clone()
     }
 
+    fn linked_graphics(paths: &[Option<&str>]) -> (DesignApp, Vec<designcraft_doc::ItemId>, Vec<designcraft_doc::AssetId>) {
+        use designcraft_doc::{Asset, AssetId, Content, Graphic, ItemId};
+        use std::sync::Arc;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"title": "Linked graphics"})).unwrap();
+        let mut items = Vec::new();
+        let mut assets = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            let x = 72 + index * 100;
+            let id = ItemId(app.run("frame.create", json!({"rect": [x, 72, x + 72, 144]})).unwrap()["id"].as_u64().unwrap());
+            let doc = Arc::make_mut(&mut app.session.doc_mut().unwrap().doc);
+            let aid = AssetId(doc.alloc());
+            doc.assets.insert(
+                aid,
+                Arc::new(Asset {
+                    id: aid,
+                    name: "photo.svg".into(),
+                    mime: "image/svg+xml".into(),
+                    link: path.map(str::to_owned),
+                    data: Arc::new(
+                        br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#4488cc"/></svg>"##
+                            .to_vec(),
+                    ),
+                    pixels: Some((32, 32)),
+                    page: 0,
+                }),
+            );
+            doc.item_mut(id).unwrap().content = Content::Graphic(Graphic {
+                asset: aid,
+                size: (72.0, 72.0),
+                xf: designcraft_geom::Affine::IDENTITY,
+                auto_fit: Default::default(),
+                fit_align: 4,
+                crop: [0.0; 4],
+            });
+            items.push(id);
+            assets.push(aid);
+        }
+        (app, items, assets)
+    }
+
+    fn links_harness(app: DesignApp, width: f32) -> Harness<'static, DesignApp> {
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(vec2(width, 600.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                links_panel(app, ui);
+            },
+            app,
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        h.run_steps(3);
+        h
+    }
+
+    #[test]
+    fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
+        let first = "/project/assets/studio-a/photo.svg";
+        let second = "/project/assets/studio-b/photo.svg";
+        let (app, items, assets) = linked_graphics(&[Some(first), Some(second), None]);
+        let mut h = links_harness(app, 320.0);
+        assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
+        assert!(h.query_by_label(first).is_some(), "the first source path is visible in the row");
+        h.get_by_label(second).click();
+        h.run_steps(3);
+        h.get_by_label("Go To").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[1]]);
+        h.get_by_label("Embed").click();
+        h.run_steps(3);
+        assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
+        assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
+        assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");
+        assert_eq!(h.get_all_by_label("Embedded").count(), 2);
+        assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
+        h.get_by_label(first).click();
+        h.run_steps(3);
+        h.get_by_label("Go To").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[0]]);
+    }
+
+    #[test]
+    fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
+        let path = "/project/assets/studio-a/very-long-folder-name/another-long-folder-name/photo.svg";
+        let (app, _, _) = linked_graphics(&[Some(path)]);
+        let mut h = links_harness(app, 240.0);
+        let source = h.get_by_label(path).rect();
+        assert!(source.width() < 150.0, "the source is truncated to its column: {source:?}");
+        assert!(source.right() <= 240.0, "the source stays inside the narrow panel: {source:?}");
+        assert!(h.get_by_label("Page · PPI").rect().right() <= 240.0);
+        h.get_by_label(path).click();
+        h.run_steps(3);
+        assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the selected path is painted in full and wraps inside the panel");
+    }
+
     #[test]
     fn properties_character_section_sets_the_language() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -2305,6 +2609,63 @@ mod tests {
         h.get_by_label("French").click();
         h.run_steps(2);
         assert_eq!(language(h.state_mut()), "French");
+    }
+
+    fn kerning(app: &mut DesignApp) -> Value {
+        text_attrs(app).unwrap()["chars"]["kerning"].clone()
+    }
+
+    /// A harness drawing `panel` for `app` (fonts installed before the first frame).
+    fn panel_harness(app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, DesignApp> {
+        Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                panel(app, ui);
+            },
+            app,
+        )
+    }
+
+    fn text_app() -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "AVATAR", "caret": true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        app
+    }
+
+    #[test]
+    fn properties_kerning_menu_sets_zero_kerning() {
+        let mut h = panel_harness(text_app(), show);
+        h.run_steps(3);
+        assert_eq!(kerning(h.state_mut())["kind"], "metrics");
+        h.get_by_label("Kerning").click();
+        h.run_steps(2);
+        h.get_by_label("0").click();
+        h.run_steps(2);
+        assert_eq!(kerning(h.state_mut())["kind"], "none");
+    }
+
+    #[test]
+    fn character_panel_has_kerning_and_takes_a_typed_manual_value() {
+        let mut h = panel_harness(text_app(), character_panel);
+        h.run_steps(3);
+        // The caption and the control share the name: click the control.
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Kerning").click();
+        h.run_steps(2);
+        // The menu's field is drawn after the panel's own fields.
+        let field = h.get_all_by_role(egui::accesskit::Role::TextInput).last().unwrap();
+        field.focus();
+        field.type_text("-40");
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(kerning(h.state_mut()), json!({"kind": "manual", "value": -40.0}));
     }
 
     #[test]
@@ -2519,4 +2880,327 @@ mod effects_panel_tests {
         assert!(!it.isolate && !it.knockout, "group-only options stay disabled for a frame holding content");
         assert_eq!(st.history.undo.len(), undo, "disabled controls do not create undo steps");
     }
+}
+
+#[cfg(test)]
+mod wrap_panel_tests {
+    use super::*;
+
+    /// One frame of the Text Wrap panel: the text painted and where.
+    fn frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) -> Vec<(String, egui::Rect)> {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(360.0, 300.0));
+        let time = ctx.input(|i| i.time) + 1.0 / 60.0;
+        let mut out =
+            ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| wrap_panel(app, ui));
+        out.textures_delta.clear();
+        out.shapes
+            .into_iter()
+            .filter_map(|s| if let egui::Shape::Text(t) = s.shape { Some((t.galley.job.text.clone(), t.visual_bounding_rect())) } else { None })
+            .collect()
+    }
+
+    #[test]
+    fn the_text_wrap_panel_shows_each_offset_and_invert() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.textWrap", json!({"mode": "boundingBox", "offset": [1, 2, 3, 4]})).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        // Top and Left, then Bottom and Right, each with its own value (picas here: 0p1 = 1 pt).
+        let t: Vec<String> = frame(&mut app, &ctx, vec![]).into_iter().map(|(t, _)| t).filter(|t| !t.is_empty()).collect();
+        assert_eq!(t, ["Invert", "Top", "0p1", "Left", "0p2", "Bottom", "0p3", "Right", "0p4"]);
+        // Invert, next to the wrap buttons.
+        let pos = frame(&mut app, &ctx, vec![]).into_iter().find(|(t, _)| t == "Invert").unwrap().1.center();
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        assert!(app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().wrap.invert);
+    }
+}
+
+// ---------------------------------------------------------------- Flex Layout
+
+/// (justification, icon, label) in the Justification menu's order.
+const FLEX_JUSTIFY: [(&str, &str, &str); 6] = [
+    ("flexStart", "flex-start", "Flex Start"),
+    ("center", "flex-center", "Center"),
+    ("flexEnd", "flex-end", "Flex End"),
+    ("spaceBetween", "flex-between", "Space Between"),
+    ("spaceAround", "flex-around", "Space Around"),
+    ("spaceEvenly", "flex-evenly", "Space Evenly"),
+];
+
+/// The selected Flex Layout container (the first), with its objects' bounds.
+fn selected_container(app: &DesignApp) -> Option<(designcraft_doc::Item, Vec<designcraft_geom::Rect>)> {
+    let st = app.session.active()?;
+    let it = st.selection.items.iter().filter_map(|i| st.doc.item(*i)).find(|it| it.flex.is_some())?.clone();
+    let kids = match &it.content {
+        designcraft_doc::Content::Group { items } => items.iter().map(|c| c.bounds()).collect(),
+        _ => Vec::new(),
+    };
+    Some((it, kids))
+}
+
+/// The alignment grid: 3 × 3 cells (one column or row of three when a space justification spreads
+/// the objects along the main axis); the chosen cell shows the direction's arrow.
+fn flex_grid(ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> Option<u8> {
+    use designcraft_doc::{FlexAlign, FlexJustify};
+    let t = Tokens::get(ui.ctx());
+    let resp = ui.interact(r, ui.id().with("flex_grid"), Sense::click());
+    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    let cell = r.width() / 3.0;
+    let pos = |a: FlexAlign| match a {
+        FlexAlign::Start => 0,
+        FlexAlign::Center => 1,
+        FlexAlign::End => 2,
+    };
+    // The chosen (column, row), and whether a space justification leaves only one axis.
+    let (chosen, spread_row) = match f {
+        Some(f) => {
+            let main = match f.justify {
+                FlexJustify::Center => 1,
+                FlexJustify::FlexEnd => 2,
+                _ => 0,
+            };
+            let main = if f.direction.is_reverse() { 2 - main } else { main };
+            let cross = pos(f.align);
+            (if f.direction.is_row() { (main, cross) } else { (cross, main) }, f.justify.distributes().then_some(f.direction.is_row()))
+        }
+        None => ((0, 0), None),
+    };
+    let mut picked = None;
+    for row in 0..3usize {
+        for col in 0..3usize {
+            match spread_row {
+                Some(true) if col != 0 => continue,
+                Some(false) if row != 0 => continue,
+                _ => {}
+            }
+            let c = Rect::from_min_size(r.min + vec2(col as f32 * cell, row as f32 * cell), vec2(cell, cell));
+            let on = match spread_row {
+                Some(true) => row == chosen.1,
+                Some(false) => col == chosen.0,
+                None => (col, row) == chosen,
+            };
+            if on && f.is_some() {
+                ui.painter().rect_filled(c.shrink(2.0), 2.0, t.well);
+                let icon = match f.map(|f| f.direction) {
+                    Some(designcraft_doc::FlexDirection::RowReverse) => "flex-left",
+                    Some(designcraft_doc::FlexDirection::Column) => "flex-down",
+                    Some(designcraft_doc::FlexDirection::ColumnReverse) => "flex-up",
+                    _ => "flex-right",
+                };
+                icons::paint(ui.painter(), c.shrink(3.0), icon, t.text_strong);
+            } else {
+                ui.painter().circle_filled(c.center(), 1.5, t.icon);
+            }
+            if resp.clicked() && resp.interact_pointer_pos().is_some_and(|p| c.contains(p)) {
+                picked = Some((row * 3 + col) as u8);
+            }
+        }
+    }
+    picked
+}
+
+/// Flex Layout controls, as InDesign's panel: Create Flex Layout; alignment grid, width and height
+/// (Auto/Fixed); justification, direction and wrap; padding and spacing.
+fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
+    use designcraft_doc::{FlexSize, flex};
+    let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let u = units(app);
+    let has_sel = app.session.active().is_some_and(|s| !s.selection.items.is_empty());
+    let container = selected_container(app);
+    let f = container.as_ref().and_then(|(it, _)| it.flex.clone());
+    let mut on = f.is_some();
+    let resp = ui.add_enabled_ui(has_sel, |ui| widgets::checkbox(ui, &mut on, &tr("Create Flex Layout"))).inner;
+    if resp.changed() {
+        let _ = app.run(if on { "flex.add" } else { "flex.remove" }, json!({}));
+        return;
+    }
+    ui.add_space(4.0);
+    let enabled = f.is_some();
+    let rect = container.as_ref().map(|(it, _)| it.inner_bounds());
+    let arranged = container.as_ref().and_then(|(it, kids)| it.flex.as_ref().map(|f| flex::arrange(f, it.inner_bounds(), kids)));
+    let mut set: Option<Value> = None;
+    // Alignment grid, W and H with Auto/Fixed, constrain proportions.
+    let b = block(ui, 2.0 * FIELD_H + 5.0);
+    ui.add_enabled_ui(enabled, |ui| {
+        if let Some(c) = flex_grid(ui, sub(b, 0.0, 0.0, 48.0, 48.0), f.as_ref()) {
+            set = Some(json!({"cell": c}));
+        }
+        let linked = temp_bool(ui, "flex_size_linked", false);
+        for (k, (label, key, mode, len)) in [
+            ("W:", "width", f.as_ref().map(|f| f.width), rect.map(|r| r.width())),
+            ("H:", "height", f.as_ref().map(|f| f.height), rect.map(|r| r.height())),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let y = k as f32 * (FIELD_H + 5.0);
+            ui.painter().text(
+                sub(b, 56.0, y, 18.0, FIELD_H).right_center(),
+                egui::Align2::RIGHT_CENTER,
+                tr(label),
+                egui::FontId::proportional(11.5),
+                t.text,
+            );
+            let nv = place(ui, sub(b, 78.0, y, 66.0, FIELD_H), |ui| NumField::measure(key, len, u).width(66.0).range(0.0, 100_000.0).show(ui));
+            if let Some(v) = nv {
+                let mut p = json!({ key: v });
+                if linked
+                    && let (Some(r), Some(len)) = (rect, len)
+                    && len > 1e-9
+                {
+                    let other = if key == "width" { ("height", r.height()) } else { ("width", r.width()) };
+                    p[other.0] = json!(other.1 * v / len);
+                }
+                set = Some(p);
+            }
+            let names = [tr("Fixed"), tr("Auto")];
+            let cur = if mode == Some(FlexSize::Auto) { 1 } else { 0 };
+            if let Some(i) = place(ui, sub(b, 148.0, y, 62.0, FIELD_H), |ui| widgets::dropdown_list(ui, &names[cur], 62.0, &names, Some(cur))) {
+                set = Some(json!({ key: if i == 1 { "auto" } else { "fixed" } }));
+            }
+        }
+        let clicked = place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
+            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Constrain proportions"), vec2(22.0, 21.0))
+                .clicked()
+        });
+        if clicked {
+            set_temp_bool(ui, "flex_size_linked", !linked);
+        }
+    });
+    ui.add_space(6.0);
+    // Justification, direction, wrap.
+    let b = block(ui, FIELD_H);
+    ui.add_enabled_ui(enabled, |ui| {
+        let cur = f.as_ref().map(|f| f.justify).unwrap_or_default();
+        let cur = serde_json::to_value(cur).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        let icon = FLEX_JUSTIFY.iter().find(|j| j.0 == cur).map(|j| j.1).unwrap_or("flex-start");
+        let resp = place(ui, sub(b, 0.0, 0.0, 58.0, FIELD_H), |ui| {
+            preview_dropdown(ui, 58.0, |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
+        });
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(150.0);
+            for (id, icon, label) in FLEX_JUSTIFY {
+                let r = ui.horizontal(|ui| {
+                    let (ir, _) = ui.allocate_exact_size(vec2(22.0, 16.0), Sense::hover());
+                    icons::paint(ui.painter(), ir, icon, t.icon);
+                    ui.selectable_label(id == cur, crate::rtl::widget(ui, tr(label)))
+                });
+                if r.inner.clicked() {
+                    set = Some(json!({"justify": id}));
+                    ui.close();
+                }
+            }
+        });
+        let dir = f.as_ref().map(|f| f.direction).unwrap_or_default();
+        place(ui, sub(b, 78.0, 0.0, 132.0, FIELD_H), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (d, icon, tip) in [
+                (designcraft_doc::FlexDirection::Row, "flex-right", "Row"),
+                (designcraft_doc::FlexDirection::RowReverse, "flex-left", "Reverse Row"),
+                (designcraft_doc::FlexDirection::Column, "flex-down", "Column"),
+                (designcraft_doc::FlexDirection::ColumnReverse, "flex-up", "Reverse Column"),
+            ] {
+                if widgets::icon_toggle_sized(ui, icon, enabled && dir == d, &tr(tip), vec2(31.0, 21.0)).clicked() {
+                    set = Some(json!({"direction": d}));
+                }
+            }
+        });
+        let wrap = f.as_ref().is_some_and(|f| f.wrap);
+        if place(ui, sub(b, 214.0, 0.0, 22.0, FIELD_H), |ui| {
+            widgets::icon_toggle_sized(ui, "flex-wrap", wrap, &tr("Wrap Content"), vec2(22.0, 21.0)).clicked()
+        }) {
+            set = Some(json!({"wrap": !wrap}));
+        }
+    });
+    // Spacing: padding (linked by default) and the spacing between objects.
+    section(ui, &tr("Spacing"), true);
+    let b = block(ui, 3.0 * FIELD_H + 10.0);
+    ui.add_enabled_ui(enabled, |ui| {
+        let pad = f.as_ref().map(|f| f.padding).unwrap_or_default();
+        let linked = temp_bool(ui, "flex_padding_linked", true);
+        for (k, (icon, tip, x, y)) in [
+            ("margin-top", "Top", 0.0, 0.0),
+            ("margin-inside", "Left", 112.0, 0.0),
+            ("margin-bottom", "Bottom", 0.0, 26.0),
+            ("margin-outside", "Right", 112.0, 26.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+            icons::paint(ui.painter(), ir, icon, t.icon);
+            ui.interact(ir, ui.id().with(("flex_pad", k)), Sense::hover()).on_hover_ui(|ui| {
+                crate::rtl::label(ui, tr(tip));
+            });
+            let value = f.as_ref().map(|_| pad[k]);
+            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
+                NumField::measure(tip, value, u).width(76.0).spinner().range(0.0, 8000.0).show(ui)
+            });
+            if let Some(v) = nv {
+                let p = if linked {
+                    [v; 4]
+                } else {
+                    let mut p = pad;
+                    p[k] = v;
+                    p
+                };
+                set = Some(json!({"padding": p}));
+            }
+        }
+        if place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
+            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
+                .clicked()
+        }) {
+            set_temp_bool(ui, "flex_padding_linked", !linked);
+        }
+        // Spacing between objects: a space justification works the main axis' out (shown greyed);
+        // the cross axis' only counts when objects wrap.
+        let (row, distributes, wrap) = f.as_ref().map(|f| (f.direction.is_row(), f.justify.distributes(), f.wrap)).unwrap_or((true, false, false));
+        let main_gap = arranged.as_ref().map(|a| a.main_gap);
+        for (k, (icon, key, tip, x)) in
+            [("gap-h", "gapH", "Horizontal Spacing", 0.0), ("gap-v", "gapV", "Vertical Spacing", 112.0)].into_iter().enumerate()
+        {
+            let main = (k == 0) == row;
+            let live = if main { !distributes } else { wrap };
+            let value = match &f {
+                Some(_) if main && distributes => main_gap,
+                Some(f) => Some(if k == 0 { f.gap_h } else { f.gap_v }),
+                None => None,
+            };
+            let y = 2.0 * FIELD_H + 10.0;
+            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+            icons::paint(ui.painter(), ir, icon, if live { t.icon } else { t.text_dim });
+            ui.interact(ir, ui.id().with(("flex_gap", k)), Sense::hover()).on_hover_ui(|ui| {
+                crate::rtl::label(ui, tr(tip));
+            });
+            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
+                NumField::measure(key, value, u).width(76.0).spinner().range(0.0, 8000.0).enabled(live).show(ui)
+            });
+            if let Some(v) = nv {
+                set = Some(json!({ key: v }));
+            }
+        }
+    });
+    if let Some(p) = set {
+        let _ = app.run("flex.set", p);
+    }
+}
+
+/// Window › Flex Layout.
+pub fn flex_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
+    flex_section(app, ui);
 }

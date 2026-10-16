@@ -1,6 +1,7 @@
 //! Printer's marks drawn in the slug area: crop marks at the trim corners, bleed marks at the bleed
 //! corners, and a page-information line. All marks use `[Registration]` (every plate).
 
+use craft_pdf::write::backend as krilla;
 use designcraft_geom::{BezPath, Point};
 use krilla::num::NormalizedF32;
 use krilla::paint::{LineCap, LineJoin, Stroke};

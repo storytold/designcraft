@@ -1164,6 +1164,9 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.stroke_weight {
             el.set("StrokeWeight", num(v));
         }
+        if let Some(v) = a.stroke_behind_fill {
+            el.set("StrokeAlignment", if v { "OutsideAlignment" } else { "CenterAlignment" });
+        }
         if let Some(v) = a.capitalization {
             el.set("Capitalization", names::caps_out(v));
         }
@@ -1659,14 +1662,36 @@ impl<'a> Ex<'a> {
         for (i, pg) in sp.pages.iter().enumerate() {
             let name = if master { sp.parent.as_ref().map(|i| i.prefix.clone()).unwrap_or_default() } else { d.page_name(first_page + i) };
             let applied = if master { based_on } else { pg.parent };
+            let overrides: Vec<String> = pg.overridden.iter().map(|i| uid(i.0)).collect();
             let pe = El::new("Page")
                 .attr("Self", uid(pg.id.0))
                 .attr("Name", name)
                 .attr("AppliedMaster", applied.map(|s| uid(s.0)).unwrap_or_else(|| "n".into()))
-                .attr("OverrideList", "")
+                .attr("LayoutRule", names::liquid_rule_out(pg.liquid))
+                .attr("OverrideList", overrides.join(" "))
                 .attr("GeometricBounds", format!("0 0 {} {}", num(pg.height), num(pg.width)))
                 .attr("ItemTransform", format!("1 0 0 1 {} {}", num(pg.x - ox), num(-oy)))
                 .child(margin_el(pg));
+            let mut pe = pe;
+            // Ruler guides, measured from the spread's top left (RulerOrigin is SpreadOrigin).
+            let left = sp.pages.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+            let left = if left.is_finite() { left } else { 0.0 };
+            for g in &pg.guides {
+                let vertical = g.orientation == designcraft_doc::Orientation::Vertical;
+                let mut ge = El::new("Guide")
+                    .attr("Self", format!("{}g{}", uid(pg.id.0), pe.elements().count()))
+                    .attr("Orientation", if vertical { "Vertical" } else { "Horizontal" })
+                    .attr("Location", num(if vertical { g.position - left } else { g.position }))
+                    .attr("FitToPage", bool_s(!g.spread))
+                    .attr("ViewThreshold", "5")
+                    .attr("Locked", bool_s(g.locked))
+                    .attr("PageIndex", (first_page + i).to_string())
+                    .attr("GuideType", "Ruler");
+                if let Some(l) = g.layer {
+                    ge.set("ItemLayer", uid(l.0));
+                }
+                pe.push(ge);
+            }
             el.push(pe);
         }
         let origin = Affine::translate((-ox, -oy));
@@ -1695,6 +1720,9 @@ impl<'a> Ex<'a> {
             _ => "Rectangle",
         };
         let mut el = El::new(tag).attr("Self", uid(it.id.0));
+        if let Some(o) = it.overrides {
+            el.set("OverriddenPageItem", uid(o.0));
+        }
         if let Content::Text(t) = &it.content
             && let Some(pt) = &t.options.path
         {
@@ -1747,6 +1775,14 @@ impl<'a> Ex<'a> {
             el.set("GradientFillAngle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
         } else if let Some(a) = it.fill.gradient_angle {
             el.set("GradientFillAngle", num(a));
+        }
+        // The same on the stroke.
+        if let Some([x0, y0, x1, y1]) = it.stroke.gradient_vector {
+            el.set("GradientStrokeStart", format!("{} {}", num(x0), num(y0)));
+            el.set("GradientStrokeLength", num((x1 - x0).hypot(y1 - y0)));
+            el.set("GradientStrokeAngle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
+        } else if let Some(a) = it.stroke.gradient_angle {
+            el.set("GradientStrokeAngle", num(a));
         }
         self.stroke_attrs(&mut el, &it.stroke);
         // Corner options: map path-order corners to the named corners by geometry.
@@ -1884,6 +1920,11 @@ impl<'a> Ex<'a> {
                 .attr("ImportPolicy", "NoAutoImport")
                 .attr("ExportPolicy", "NoAutoExport"),
         );
+        if is_pdf && asset.page > 0 {
+            // PDF Import Options: the page is 1-based; page 1 (the default) needs no element, as
+            // InDesign omits it too.
+            el.push(El::new("PDFAttribute").attr("PageNumber", asset.page.saturating_add(1).to_string()));
+        }
         el
     }
 

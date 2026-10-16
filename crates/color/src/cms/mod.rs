@@ -230,13 +230,6 @@ pub fn register_icc(bytes: &[u8], name: Option<String>) -> Result<ProfileInfo, C
     Ok(info)
 }
 
-/// Load a `.icc`/`.icm` file from disk (native only).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn load_icc_file(path: &std::path::Path) -> Result<ProfileInfo, CmsError> {
-    let bytes = std::fs::read(path).map_err(|e| CmsError::Io(format!("{}: {e}", path.display())))?;
-    register_icc(&bytes, None)
-}
-
 /// A colour-management context: resolved working spaces plus conversion settings.
 #[derive(Clone)]
 pub struct Cms {

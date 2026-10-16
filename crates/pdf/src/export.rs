@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use craft_pdf::write::backend as krilla;
+use craft_pdf::write::{self, Metadata, Writer};
 use designcraft_color::swatch::{ColorType, SwatchValue};
 use designcraft_color::{BlendMode as DcBlend, Color, GradientKind};
 use designcraft_compose::Cache;
@@ -10,10 +12,9 @@ use designcraft_doc::{AssetId, Content, Document, Item, PageSide, Spread, Stroke
 use designcraft_geom::kurbo::{PathEl, Shape as _};
 use designcraft_geom::{Affine, BezPath, Rect, Vec2, corners};
 use krilla::color::{cmyk, luma, rgb};
-use krilla::configure::{Archival, ConfigurationBuilder, PdfVersion};
+use krilla::configure::{Archival, PdfVersion};
 use krilla::geom::{Path, PathBuilder, Size, Transform};
 use krilla::image::Image;
-use krilla::metadata::Metadata;
 use krilla::num::NormalizedF32;
 use krilla::page::PageSettings;
 use krilla::paint::{Fill, FillRule, LinearGradient, RadialGradient, SpreadMethod, Stop, Stroke, StrokeDash};
@@ -59,13 +60,13 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
         return Err(PdfError::NoPages);
     }
     if let Some(bad) = pages.iter().find(|p| **p >= count) {
-        return Err(PdfError::BadPage(bad + 1));
+        return Err(PdfError::BadPage(bad.saturating_add(1)));
     }
     let b = doc.settings.bleed.map(|v| if opts.bleed { v.max(0.0) } else { 0.0 });
     let mut out: Vec<Sheet> = Vec::new();
     let mut seen_spreads: Vec<usize> = Vec::new();
     for abs in pages {
-        let (si, pi) = doc.page_loc(abs).ok_or(PdfError::BadPage(abs + 1))?;
+        let (si, pi) = doc.page_loc(abs).ok_or(PdfError::BadPage(abs.saturating_add(1)))?;
         let sp: &Spread = &doc.spreads[si];
         let (trim, l, r, label) = if opts.spreads {
             if seen_spreads.contains(&si) {
@@ -101,6 +102,10 @@ pub(crate) fn mark_start(opts: &PdfOptions, bleed: [f64; 4]) -> f64 {
 
 /// Like [`export_pdf`], also returning warnings about approximated or dropped features.
 pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
+    write::guard(|| export_pdf_with_report_inner(doc, cache, opts))
+}
+
+fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
     let sheets = sheets(doc, opts)?;
     let warnings = Vec::new();
     let (version, archival) = match opts.standard {
@@ -108,37 +113,20 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         Standard::PdfX4 => (PdfVersion::Pdf16, None),
         Standard::PdfA2b => (PdfVersion::Pdf17, Some(Archival::A2_B)),
     };
-    let mut cb = ConfigurationBuilder::new().with_version(version);
-    if let Some(a) = archival {
-        cb = cb.with_archival_validator(a);
-    }
-    let configuration = cb.finish().map_err(|e| PdfError::Write(format!("{e:?}")))?;
+    let configuration = write::configuration(version, archival)?;
     let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, configuration, ..Default::default() };
-    let mut pdf = krilla::Document::new_with(settings);
-
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let mut meta = Metadata::new().creator("DesignCraft".into()).producer("DesignCraft".into());
-    if !title.is_empty() {
-        meta = meta.title(title.clone());
-    }
-    if let Some(a) = &opts.author {
-        meta = meta.authors(vec![a.clone()]);
-    }
     let created = opts.created.or_else(now_unix);
-    if let Some(t) = created {
-        let c = civil(t);
-        meta = meta.creation_date(
-            krilla::metadata::DateTime::new(c.0.clamp(0, 9999) as u16)
-                .month(c.1)
-                .day(c.2)
-                .hour(c.3)
-                .minute(c.4)
-                .second(c.5)
-                .utc_offset_hour(0)
-                .utc_offset_minute(0),
-        );
-    }
-    pdf.set_metadata(meta);
+    let metadata = Metadata {
+        creator: "DesignCraft".into(),
+        producer: "DesignCraft".into(),
+        title: Some(title.clone()),
+        authors: opts.author.iter().cloned().collect(),
+        created: created.map(date_time),
+        ..Default::default()
+    };
+    let mut writer = Writer::new(settings, metadata);
+    let pdf = writer.document_mut();
 
     let mut ex = Exporter {
         doc,
@@ -161,6 +149,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,
+        text_area: None,
         para_tags: HashMap::new(),
     };
     if ex.rgb_only {
@@ -182,6 +171,8 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         let settings = PageSettings::new(size).with_trim_box(local(sh.trim)).with_bleed_box(local(sh.bleed));
         let mut page = pdf.start_page_with(settings);
         let mut s = page.surface();
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        unwind_tests::inject(&mut s);
         s.push_transform(&tf(Affine::translate(-sh.media.origin().to_vec2())));
         ex.clip = sh.bleed;
         if let Some(clip) = to_path(&sh.bleed.to_path(0.1)) {
@@ -207,7 +198,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         pdf.set_tag_tree(ex.tag_tree());
     }
     ex.check_placed_versions()?;
-    let mut bytes = pdf.finish().map_err(|e| PdfError::Write(format!("{e:?}")))?;
+    let mut bytes = writer.finish().map_err(PdfError::from)?;
     // Transparency blends in the document's blend space: CMYK for print (and always in PDF/X).
     let mut warnings = ex.warnings;
     if !ex.rgb_only && (doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk || opts.standard == Standard::PdfX4) {
@@ -215,12 +206,16 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         // group that got past it, with its page.
         crate::pdfx::cmyk_group_spaces(&mut bytes);
     }
-    // Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X.
+    // Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X
+    // or PDF/A: this update comes after krilla's validator ran, and its NeedAppearances fields and
+    // Screen annotations aren't allowed in PDF/A.
     let fields = crate::forms::collect(doc, &sheets);
     let media = if opts.media { crate::forms::collect_media(doc, &sheets) } else { Vec::new() };
     if !fields.is_empty() || !media.is_empty() {
         if opts.standard == Standard::PdfX4 {
             warnings.push("PDF/X-4: form fields and media were left out".into());
+        } else if opts.standard == Standard::PdfA2b {
+            warnings.push("PDF/A-2b: form fields and media were left out".into());
         } else {
             match crate::forms::add_fields(&bytes, &fields, &media) {
                 Some(b) => bytes = b,
@@ -245,12 +240,13 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
 /// One PDF from several (a book's documents), every page carried over as vectors; each part
 /// comes with its pages' sizes (points).
 pub fn merge_pdfs(parts: &[(Vec<u8>, Vec<(f32, f32)>)], title: Option<&str>) -> Result<Vec<u8>> {
-    let mut pdf = krilla::Document::new_with(krilla::SerializeSettings::default());
-    let mut meta = Metadata::new().creator("DesignCraft".into()).producer("DesignCraft".into());
-    if let Some(t) = title {
-        meta = meta.title(t.to_string());
-    }
-    pdf.set_metadata(meta);
+    write::guard(|| merge_pdfs_inner(parts, title))
+}
+
+fn merge_pdfs_inner(parts: &[(Vec<u8>, Vec<(f32, f32)>)], title: Option<&str>) -> Result<Vec<u8>> {
+    let metadata = Metadata { creator: "DesignCraft".into(), producer: "DesignCraft".into(), title: title.map(str::to_owned), ..Default::default() };
+    let mut writer = Writer::new(krilla::SerializeSettings::default(), metadata);
+    let pdf = writer.document_mut();
     let mut pages = 0;
     for (bytes, sizes) in parts {
         let src = krilla::pdf::Pdf::new(Arc::new(bytes.clone())).map_err(|e| PdfError::Write(format!("{e:?}")))?;
@@ -259,6 +255,8 @@ pub fn merge_pdfs(parts: &[(Vec<u8>, Vec<(f32, f32)>)], title: Option<&str>) -> 
             let size = Size::from_wh(w.max(1.0), h.max(1.0)).ok_or(PdfError::NoPages)?;
             let mut page = pdf.start_page_with(PageSettings::new(size));
             let mut s = page.surface();
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            unwind_tests::inject(&mut s);
             s.draw_pdf_page(&doc, size, i);
             s.finish();
             page.finish();
@@ -268,7 +266,7 @@ pub fn merge_pdfs(parts: &[(Vec<u8>, Vec<(f32, f32)>)], title: Option<&str>) -> 
     if pages == 0 {
         return Err(PdfError::NoPages);
     }
-    pdf.finish().map_err(|e| PdfError::Write(format!("{e:?}")))
+    writer.finish().map_err(PdfError::from)
 }
 
 /// File › Print Booklet: how pages pair up on printer spreads.
@@ -303,19 +301,20 @@ pub fn booklet_pairs(n: usize, kind: BookletKind) -> Vec<(Option<usize>, Option<
 
 /// An imposed PDF: two document pages per sheet, in booklet order.
 pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> Result<ExportReport> {
+    write::guard(|| export_booklet_inner(doc, cache, opts))
+}
+
+fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) -> Result<ExportReport> {
     let n = doc.page_count();
     if n == 0 {
         return Err(PdfError::NoPages);
     }
     let pdf_opts = PdfOptions { title: opts.title.clone(), ..PdfOptions::default() };
     let settings = krilla::SerializeSettings { compress_content_streams: true, ..Default::default() };
-    let mut pdf = krilla::Document::new_with(settings);
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let mut meta = Metadata::new().creator("DesignCraft".into()).producer("DesignCraft".into());
-    if !title.is_empty() {
-        meta = meta.title(title);
-    }
-    pdf.set_metadata(meta);
+    let metadata = Metadata { creator: "DesignCraft".into(), producer: "DesignCraft".into(), title: Some(title), ..Default::default() };
+    let mut writer = Writer::new(settings, metadata);
+    let pdf = writer.document_mut();
     let mut ex = Exporter {
         doc,
         cache,
@@ -338,6 +337,7 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,
+        text_area: None,
         para_tags: HashMap::new(),
     };
     let pairs = booklet_pairs(n, opts.kind);
@@ -355,6 +355,8 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
     for (left, right) in &pairs {
         let mut page = pdf.start_page_with(PageSettings::new(size));
         let mut s = page.surface();
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        unwind_tests::inject(&mut s);
         for (slot, abs) in [(0.0, left), (pw + gap, right)] {
             let Some((si, pi)) = abs.and_then(|a| doc.page_loc(a)) else { continue };
             let p = &doc.spreads[si].pages[pi];
@@ -374,7 +376,7 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
         page.finish();
     }
     ex.check_placed_versions()?;
-    let mut bytes = pdf.finish().map_err(|e| PdfError::Write(format!("{e:?}")))?;
+    let mut bytes = writer.finish().map_err(PdfError::from)?;
     if doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk {
         crate::pdfx::cmyk_group_spaces(&mut bytes);
     }
@@ -391,6 +393,18 @@ fn now_unix() -> Option<i64> {
 #[cfg(target_arch = "wasm32")]
 fn now_unix() -> Option<i64> {
     None
+}
+
+fn date_time(t: i64) -> krilla::metadata::DateTime {
+    let c = civil(t);
+    krilla::metadata::DateTime::new(c.0.clamp(0, 9999) as u16)
+        .month(c.1)
+        .day(c.2)
+        .hour(c.3)
+        .minute(c.4)
+        .second(c.5)
+        .utc_offset_hour(0)
+        .utc_offset_minute(0)
 }
 
 /// Unix seconds (UTC) → (year, month, day, hour, minute, second), proleptic Gregorian.
@@ -468,6 +482,9 @@ pub(crate) struct Exporter<'a> {
     /// While drawing a story's frame for the structure tree: the story (text runs are tagged
     /// per paragraph, everything else in the frame is an artifact).
     pub(crate) tag_story: Option<designcraft_doc::StoryId>,
+    /// While drawing a frame's text: the frame's box in text space, which a gradient on the text
+    /// spans (as InDesign lays it across the frame).
+    pub(crate) text_area: Option<Rect>,
     /// Marked content of each (story, paragraph index).
     pub(crate) para_tags: HashMap<(designcraft_doc::StoryId, usize), Vec<Identifier>>,
 }
@@ -757,7 +774,7 @@ impl Exporter<'_> {
         }
         // Gradient feather: a luminosity mask (white = opaque) over the object.
         let xf = parent * it.xf;
-        let (p0, p1) = gf.points(it.inner_bounds());
+        let (p0, p1) = gf.points(it.feather_bounds());
         let gray = |a: f32| -> krilla::color::Color { luma::Color::new((a.clamp(0.0, 1.0) * 255.0).round() as u8).into() };
         let stops = vec![
             Stop { offset: NormalizedF32::ZERO, color: gray(gf.start), opacity: NormalizedF32::ONE },
@@ -772,7 +789,7 @@ impl Exporter<'_> {
                 cx: p0.x as f32,
                 cy: p0.y as f32,
                 cr: r,
-                transform: Transform::identity(),
+                transform: tf(xf),
                 spread_method: SpreadMethod::Pad,
                 stops,
                 anti_alias: false,
@@ -784,22 +801,21 @@ impl Exporter<'_> {
                 y1: p0.y as f32,
                 x2: p1.x as f32,
                 y2: p1.y as f32,
-                transform: Transform::identity(),
+                transform: tf(xf),
                 spread_method: SpreadMethod::Pad,
                 stops,
                 anti_alias: false,
             }
             .into()
         };
-        let area = it.inner_bounds().inflate(it.stroke.extent() + 4.0, it.stroke.extent() + 4.0);
+        // The gradient keeps its item-space geometry, but its mask covers the complete exported
+        // area (including bleed), so distant child shadows and thick strokes are never cut off.
         let mut sb = s.stream_builder();
         let mut ms = sb.surface();
-        ms.push_transform(&tf(xf));
-        if let Some(p) = to_path(&area.to_path(0.1)) {
+        if let Some(p) = to_path(&self.clip.to_path(0.1)) {
             ms.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
             ms.draw_path(&p);
         }
-        ms.pop();
         ms.finish();
         let stream = sb.finish();
         s.push_mask(krilla::mask::Mask::new(stream, krilla::mask::MaskType::Luminosity));
@@ -925,8 +941,10 @@ impl Exporter<'_> {
                     // Type on a path: the glyphs as outlines along the path.
                     for (si, gp) in designcraft_compose::path_glyphs(&cs, ft, &bp, pt) {
                         let st = &cs.styles[si as usize];
-                        if let (Some(c), Some(p)) = (self.swatch_color(&st.fill, st.fill_tint), to_path(&gp)) {
-                            s.set_fill(Some(Fill { paint: c.into(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
+                        // A gradient spans the path's box.
+                        let fill = designcraft_doc::Fill { swatch: st.fill.clone(), tint: st.fill_tint, ..designcraft_doc::Fill::none() };
+                        if let (Some(paint), Some(p)) = (self.fill_paint(&fill, bp.bounding_box()), to_path(&gp)) {
+                            s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
                             s.draw_path(&p);
                             s.set_fill(None);
                         }
@@ -937,7 +955,9 @@ impl Exporter<'_> {
                     if local != Affine::IDENTITY {
                         s.push_transform(&tf(local));
                     }
+                    self.text_area = (local.determinant().abs() > 1e-12).then(|| local.inverse().transform_rect_bbox(it.inner_bounds()));
                     self.frame_text(s, &cs, ft, text);
+                    self.text_area = None;
                     if local != Affine::IDENTITY {
                         s.pop();
                     }
@@ -977,8 +997,14 @@ impl Exporter<'_> {
     }
 
     /// A swatch fill (solid or gradient) in the item's inner space. `None` for [None]/unknown.
-    fn fill_paint(&mut self, fill: &designcraft_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
-        let (swatch, tint, angle) = (fill.swatch.as_str(), fill.tint, fill.gradient_angle);
+    pub(crate) fn fill_paint(&mut self, fill: &designcraft_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
+        self.fill_paint_in(fill, bounds, Affine::IDENTITY)
+    }
+
+    /// [`Self::fill_paint`] for a gradient laid out in a space that `xf` maps to the current one
+    /// (text runs: the frame's text space under the run's origin).
+    pub(crate) fn fill_paint_in(&mut self, fill: &designcraft_doc::Fill, bounds: Rect, xf: Affine) -> Option<krilla::paint::Paint> {
+        let (swatch, tint) = (fill.swatch.as_str(), fill.tint);
         if let Some(g) = designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
             let kind = g.kind;
             let mut expanded = g.expanded_stops();
@@ -1019,15 +1045,12 @@ impl Exporter<'_> {
             if stops.is_empty() {
                 return None;
             }
-            let c = bounds.center();
-            let v = fill.gradient_vector;
             return Some(match kind {
                 GradientKind::Radial => {
-                    let (c, r) = match v {
-                        Some([x0, y0, x1, y1]) => (designcraft_geom::Point::new(x0, y0), Vec2::new(x1 - x0, y1 - y0).hypot()),
-                        None => (c, bounds.width().max(bounds.height()) / 2.0),
-                    };
-                    let r = r.max(1e-3) as f32;
+                    // A circle stretched into the object's ellipse, as on screen.
+                    let (c, rx, ry) = fill.radial_ellipse(bounds);
+                    let rx = rx.max(1e-3);
+                    let stretch = Affine::translate(c.to_vec2()) * Affine::scale_non_uniform(1.0, ry / rx) * Affine::translate(-c.to_vec2());
                     let (cx, cy) = (c.x as f32, c.y as f32);
                     RadialGradient {
                         fx: cx,
@@ -1035,8 +1058,8 @@ impl Exporter<'_> {
                         fr: 0.0,
                         cx,
                         cy,
-                        cr: r,
-                        transform: Transform::identity(),
+                        cr: rx as f32,
+                        transform: tf(xf * stretch),
                         spread_method: SpreadMethod::Pad,
                         stops,
                         anti_alias: false,
@@ -1044,19 +1067,13 @@ impl Exporter<'_> {
                     .into()
                 }
                 _ => {
-                    let a = angle.unwrap_or(0.0).to_radians();
-                    let half = ((bounds.width() * a.cos().abs() + bounds.height() * a.sin().abs()) / 2.0).max(1e-3);
-                    let d = Vec2::new(a.cos(), -a.sin()) * half;
-                    let (p0, p1) = match v {
-                        Some([x0, y0, x1, y1]) => (designcraft_geom::Point::new(x0, y0), designcraft_geom::Point::new(x1, y1)),
-                        None => (c - d, c + d),
-                    };
+                    let (p0, p1) = fill.linear_axis(bounds);
                     LinearGradient {
                         x1: p0.x as f32,
                         y1: p0.y as f32,
                         x2: p1.x as f32,
                         y2: p1.y as f32,
-                        transform: Transform::identity(),
+                        transform: tf(xf),
                         spread_method: SpreadMethod::Pad,
                         stops,
                         anti_alias: false,
@@ -1070,7 +1087,14 @@ impl Exporter<'_> {
 
     fn stroke(&mut self, s: &mut Surface, it: &Item, bp: &BezPath, path: &Path) {
         let st = &it.stroke;
-        let Some(c) = self.swatch_color(&st.swatch, st.tint) else { return };
+        // A gradient swatch runs across the path's box, as on a fill.
+        let paint: krilla::paint::Paint = if designcraft_color::swatch::resolve_gradient(&self.doc.swatches, &st.swatch).is_some() {
+            let Some(p) = self.fill_paint(&st.as_fill(), bp.bounding_box()) else { return };
+            p
+        } else {
+            let Some(c) = self.swatch_color(&st.swatch, st.tint) else { return };
+            c.into()
+        };
         let closed = it.path.is_closed();
         let mut cap = match st.cap {
             designcraft_doc::Cap::Butt => krilla::paint::LineCap::Butt,
@@ -1091,7 +1115,7 @@ impl Exporter<'_> {
                 s.draw_path(path);
                 s.set_stroke(None);
             }
-            s.set_fill(Some(Fill { paint: c.into(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
+            s.set_fill(Some(Fill { paint: paint.clone(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
             s.draw_path(&op);
             s.set_fill(None);
             return;
@@ -1143,7 +1167,7 @@ impl Exporter<'_> {
             s.draw_path(path);
         }
         s.set_stroke(Some(Stroke {
-            paint: c.clone().into(),
+            paint: paint.clone(),
             width: width as f32,
             miter_limit: st.miter_limit.max(1.0) as f32,
             line_cap: cap,
@@ -1164,12 +1188,12 @@ impl Exporter<'_> {
             let Some(p) = to_path(&h.path) else { continue };
             match h.outline {
                 Some(w) => {
-                    s.set_stroke(Some(Stroke { paint: c.clone().into(), width: w as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
+                    s.set_stroke(Some(Stroke { paint: paint.clone(), width: w as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
                     s.draw_path(&p);
                     s.set_stroke(None);
                 }
                 None => {
-                    s.set_fill(Some(krilla::paint::Fill { paint: c.clone().into(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
+                    s.set_fill(Some(krilla::paint::Fill { paint: paint.clone(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
                     s.draw_path(&p);
                     s.set_fill(None);
                 }
@@ -1180,7 +1204,8 @@ impl Exporter<'_> {
     /// A placed PDF as krilla embeds it. krilla refuses a PDF newer than the file it writes (the
     /// export fails at the end with `VersionMismatch(Pdf17)`), and PDF/X-4 is PDF 1.6 while
     /// VectorCraft and most tools write 1.7. PDF 1.7 changed nothing in how a page draws, so a 1.7
-    /// file goes in as 1.6 (its header relabelled, as `qpdf --force-version=1.6` does). A newer
+    /// file goes in as 1.6 (its header and catalog `/Version` relabelled, as
+    /// `qpdf --force-version=1.6` does). A newer
     /// file is left out and the export fails naming it ([`Exporter::check_placed_versions`]).
     fn placed_pdf(&mut self, asset: &designcraft_doc::Asset) -> Option<krilla::pdf::PdfDocument> {
         use hayro_syntax::PdfVersion as V;
@@ -1201,8 +1226,8 @@ impl Exporter<'_> {
         }
         if have == V::Pdf17
             && max == V::Pdf16
-            && let Some(bytes) = relabel_pdf_header(&asset.data, b"%PDF-1.7", b"%PDF-1.6")
-            && let Ok(pdf) = krilla::pdf::Pdf::new(Arc::new(bytes))
+            && let bytes = relabel_pdf_header(&asset.data, b"%PDF-1.7", b"%PDF-1.6").unwrap_or_else(|| asset.data.to_vec())
+            && let Ok(pdf) = krilla::pdf::Pdf::new(Arc::new(relabel_catalog_version(bytes)))
             && pdf.version() <= max
         {
             self.warn(format!("{}: a PDF 1.7 placed in a PDF 1.6 file, embedded as PDF 1.6", asset.name));
@@ -1366,6 +1391,30 @@ fn relabel_pdf_header(data: &[u8], from: &[u8], to: &[u8]) -> Option<Vec<u8>> {
     let mut out = data.to_vec();
     out.get_mut(at..at + to.len())?.copy_from_slice(to);
     Some(out)
+}
+
+/// `data` with every `/Version /1.7` changed to `/Version /1.6` in place, so the xref offsets
+/// hold. The catalog's `/Version` wins over the header (TCPDF writes both), so relabelling the
+/// header alone leaves the file a PDF 1.7. A catalog inside a compressed object stream is left as
+/// it is, and the version check still names the file.
+fn relabel_catalog_version(mut data: Vec<u8>) -> Vec<u8> {
+    const KEY: &[u8] = b"/Version";
+    let mut from = 0;
+    while let Some(at) = data.get(from..).and_then(|rest| rest.windows(KEY.len()).position(|w| w == KEY)) {
+        let mut i = from + at + KEY.len();
+        while data.get(i).is_some_and(|b| b" \t\r\n\x0c\0".contains(b)) {
+            i += 1;
+        }
+        let ends = data.get(i + 4).is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'.');
+        if data.get(i..i + 4) == Some(b"/1.7".as_slice())
+            && ends
+            && let Some(b) = data.get_mut(i + 3)
+        {
+            *b = b'6';
+        }
+        from = i;
+    }
+    data
 }
 
 /// The sRGB profile (ICC v2.1) that untagged RGB images carry in PDF/X-4.
@@ -1585,6 +1634,7 @@ mod image_content_cache_tests {
             tags: Vec::new(),
             story_tags: HashMap::new(),
             tag_story: None,
+            text_area: None,
             para_tags: HashMap::new(),
         }
     }
@@ -1757,5 +1807,56 @@ mod image_content_cache_tests {
         drop(d);
         assert!(payload.upgrade().is_none(), "no converted image or encoded key outlives this exporter");
         assert!(duplicate.upgrade().is_none());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod unwind_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        static FAIL_NEXT_SURFACE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    // Fail with live backend drawing state, so a missing guard or an unpatched destructor
+    // makes the child fail. Thread-local state keeps unrelated export tests independent.
+    #[allow(clippy::panic)] // Test-only fault injection exercises recovery with a live surface.
+    pub(super) fn inject(surface: &mut krilla::surface::Surface<'_>) {
+        if FAIL_NEXT_SURFACE.replace(false) {
+            surface.push_transform(&krilla::geom::Transform::from_translate(2.0, 3.0));
+            panic!("synthetic export drawing failure");
+        }
+    }
+
+    #[test]
+    fn export_entry_points_recover_in_a_subprocess() {
+        const CHILD: &str = "DESIGNCRAFT_PDF_EXPORT_PANIC_PROBE";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "export::unwind_tests::export_entry_points_recover_in_a_subprocess", "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "export child failed: {:?}\n{}", output.status, String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("all three export entry points recovered"));
+            return;
+        }
+        let doc = Document::new(&designcraft_doc::build::NewDocument { pages: 1, ..Default::default() });
+        let cache = Cache::new();
+        let source = export_pdf(&doc, &cache, &Default::default()).unwrap();
+        let parts = [(source, vec![(612.0, 792.0)])];
+        for entry in ["document", "booklet", "merge"] {
+            let export = || match entry {
+                "document" => export_pdf(&doc, &cache, &Default::default()),
+                "booklet" => export_booklet(&doc, &cache, &Default::default()).map(|report| report.bytes),
+                _ => merge_pdfs(&parts, None),
+            };
+            FAIL_NEXT_SURFACE.set(true);
+            assert!(matches!(export(), Err(PdfError::Write(message)) if message.contains("synthetic export drawing failure")), "{entry}");
+            let fresh = export().unwrap();
+            assert!(!hayro_syntax::Pdf::new(Arc::new(fresh)).unwrap().pages().is_empty(), "fresh {entry} export must still work");
+        }
+        println!("all three export entry points recovered");
     }
 }

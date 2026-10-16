@@ -30,7 +30,10 @@ pub fn bounding_box(bytes: &[u8]) -> Option<[f64; 4]> {
     let read = |key: &str| {
         head.lines().find_map(|l| {
             let v: Vec<f64> = l.strip_prefix(key)?.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-            (v.len() == 4 && v[2] > v[0] && v[3] > v[1]).then(|| [v[0], v[1], v[2], v[3]])
+            // Finite corners and a finite size (subtracting extreme corners can overflow to infinity).
+            let [x0, y0, x1, y1] = <[f64; 4]>::try_from(v).ok()?;
+            let finite = [x0, y0, x1, y1, x1 - x0, y1 - y0].iter().all(|c| c.is_finite());
+            (finite && x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
         })
     };
     read("%%HiResBoundingBox:").or_else(|| read("%%BoundingBox:"))
@@ -240,5 +243,17 @@ mod tests {
         assert_eq!(size, (100.5, 50.25));
         assert_eq!(crate::pixel_size(&p), Some((10, 5)));
         assert!(!is_eps(b"%!PS-Adobe-3.0\nnot encapsulated"));
+    }
+
+    #[test]
+    fn eps_bounding_box_rejects_nonfinite_sizes() {
+        let bb = |line: &str| bounding_box(format!("%!PS-Adobe-3.0 EPSF-3.0\n{line}\n").as_bytes());
+        assert_eq!(bb("%%BoundingBox: 0 0 100 50"), Some([0.0, 0.0, 100.0, 50.0]));
+        assert_eq!(bb("%%BoundingBox: 0 0 inf 50"), None);
+        assert_eq!(bb("%%BoundingBox: -inf 0 100 50"), None);
+        assert_eq!(bb("%%BoundingBox: -1e308 0 1e308 50"), None);
+        assert_eq!(bb("%%BoundingBox: 100 50 0 0"), None);
+        // A bad high-resolution box falls back to the plain one.
+        assert_eq!(bb("%%HiResBoundingBox: 0 0 inf inf\n%%BoundingBox: 0 0 10 20"), Some([0.0, 0.0, 10.0, 20.0]));
     }
 }

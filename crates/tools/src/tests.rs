@@ -9,7 +9,17 @@ use designcraft_geom::{Point, Rect, Unit};
 use super::*;
 
 fn ctx<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout) -> ToolContext<'a> {
-    ToolContext { doc: d, selection: s, cache: c, layout: l, zoom: 1.0, layer: d.default_layer(), snap: SnapView::OFF, unit: Unit::Points }
+    ToolContext {
+        doc: d,
+        selection: s,
+        cache: c,
+        layout: l,
+        zoom: 1.0,
+        layer: d.default_layer(),
+        snap: SnapView::OFF,
+        unit: Unit::Points,
+        stroke_in_front: false,
+    }
 }
 
 #[test]
@@ -58,6 +68,31 @@ fn resize_rect_modifiers() {
     assert_eq!(p, Rect::new(0.0, 0.0, 200.0, 100.0));
     let c = select::resize_rect(r, 3, designcraft_geom::Point::new(150.0, 25.0), Mods { alt: true, ..Default::default() });
     assert_eq!(c, Rect::new(-50.0, 0.0, 150.0, 50.0));
+}
+
+#[test]
+fn resize_side_shift_keeps_the_other_axis_centred() {
+    let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+    let shift = Mods { shift: true, ..Default::default() };
+    assert_eq!(select::resize_rect(r, 3, Point::new(150.0, 25.0), shift), Rect::new(0.0, -12.5, 150.0, 62.5));
+    assert_eq!(select::resize_rect(r, 5, Point::new(50.0, 100.0), shift), Rect::new(-50.0, 0.0, 150.0, 100.0));
+}
+
+#[test]
+fn resize_corner_alt_shift_scales_around_the_centre() {
+    let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+    let mods = Mods { shift: true, alt: true, ..Default::default() };
+    // From the centre the pointer is at 0.2 by 0.6; the larger factor drives and the corner stays on y = 40.
+    assert_eq!(select::resize_rect(r, 4, Point::new(60.0, 40.0), mods), Rect::new(20.0, 10.0, 80.0, 40.0));
+    assert_eq!(select::resize_rect(r, 0, Point::new(-50.0, 10.0), mods), Rect::new(-50.0, -25.0, 150.0, 75.0));
+}
+
+#[test]
+fn resize_corner_alt_mirrors_the_opposite_side() {
+    let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+    let alt = Mods { alt: true, ..Default::default() };
+    assert_eq!(select::resize_rect(r, 0, Point::new(10.0, 5.0), alt), Rect::new(10.0, 5.0, 90.0, 45.0));
+    assert_eq!(select::resize_rect(r, 4, Point::new(120.0, 60.0), alt), Rect::new(-20.0, -10.0, 120.0, 60.0));
 }
 
 #[test]
@@ -1148,6 +1183,17 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
     assert_eq!(a, vec![sample(120.0, 130.0)]);
     let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 180.0 + off.x, 180.0 + off.y));
     assert_eq!(a, vec![sample(180.0, 180.0)], "through the text frame");
+    // With the toolbox's Stroke box in front, the colour goes to the stroke (a line has no fill).
+    let mut cx_stroke = ctx(&d, &s, &c, &l);
+    cx_stroke.stroke_in_front = true;
+    let a = t.pointer(&cx_stroke, &PointerEvent::new(PointerKind::Down, 120.0 + off.x, 130.0 + off.y));
+    assert_eq!(
+        a,
+        vec![Action::Exec(
+            "color.sample".into(),
+            serde_json::json!({"at": [120.0, 130.0], "spread": {"kind": "doc", "index": 0}, "target": "stroke"})
+        )]
+    );
     // A filled object is matched as before (here on a locked layer: not reachable, so nothing).
     assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 320.0 + off.x, 120.0 + off.y)).is_empty());
     let mut d2 = d.clone();
@@ -1166,4 +1212,105 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
     let cx = ctx(&d2, &s, &c, &l);
     let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 120.0 + off.x, 130.0 + off.y));
     assert_eq!(a, vec![Action::Exec("object.matchAttributes".into(), serde_json::json!({"from": photo.0}))]);
+}
+
+#[test]
+fn eyedropper_ignores_inactive_states_of_a_multi_state_object() {
+    use designcraft_doc::{Asset, AssetId, Content, Graphic};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    d.assets.insert(
+        AssetId(1),
+        std::sync::Arc::new(Asset {
+            id: AssetId(1),
+            name: "photo.png".into(),
+            mime: "image/png".into(),
+            link: None,
+            data: std::sync::Arc::new(vec![]),
+            pixels: Some((100, 100)),
+            page: 0,
+        }),
+    );
+    let area = Rect::new(100.0, 100.0, 200.0, 200.0);
+    let raster = {
+        let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(area));
+        it.content = Content::Graphic(Graphic {
+            asset: AssetId(1),
+            size: (100.0, 100.0),
+            xf: designcraft_geom::Affine::translate((0.0, 0.0)),
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+        });
+        it
+    };
+    let mut vector = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(area));
+    vector.fill.swatch = "[Black]".into();
+    let target = add_rect(&mut d, Rect::new(400.0, 100.0, 450.0, 150.0));
+    let s = Selection { items: vec![target], ..Default::default() };
+    let sample = Action::Exec("color.sample".into(), serde_json::json!({"at": [120.0, 130.0], "spread": {"kind": "doc", "index": 0}}));
+    // Children [vector, raster] with the raster on top: it samples only while it is the active state.
+    for (active, samples) in [(1, true), (0, false)] {
+        let mut group = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(area));
+        group.content = Content::Group { items: vec![std::sync::Arc::new(vector.clone()), std::sync::Arc::new(raster.clone())] };
+        group.states = vec!["a".into(), "b".into()];
+        group.active_state = active;
+        let mut d2 = d.clone();
+        d2.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        let (c, l) = (Cache::new(), CanvasLayout::new(&d2, false));
+        let off = l.xf(SpreadRef::Doc(0)).translation();
+        let cx = ctx(&d2, &s, &c, &l);
+        let a = create("eyedropper").pointer(&cx, &PointerEvent::new(PointerKind::Down, 120.0 + off.x, 130.0 + off.y));
+        assert_eq!(a.contains(&sample), samples, "active state {active}: {a:?}");
+    }
+}
+
+#[test]
+fn pen_cursor_shows_add_delete_and_close() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let selected = Selection::items(vec![fid]);
+    let none = Selection::default();
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let at = |x: f64, y: f64| Point::new(x + off.x, y + off.y);
+    let mut t = create("pen");
+    let m = Mods::default();
+
+    let cx = ctx(&d, &selected, &c, &l);
+    assert_eq!(t.cursor(&cx, at(200.0, 100.0), m), Cursor::PenDelete, "on a selected path's anchor");
+    assert_eq!(t.cursor(&cx, at(150.0, 101.0), m), Cursor::PenAdd, "on a selected path's outline");
+    assert_eq!(t.cursor(&cx, at(150.0, 150.0), m), Cursor::Pen, "inside, away from the outline");
+    let click = |t: &mut Box<dyn Tool>, cx: &ToolContext, p: Point| {
+        let down = t.pointer(cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        let up = t.pointer(cx, &PointerEvent::new(PointerKind::Up, p.x, p.y));
+        (down, up)
+    };
+    let (down, up) = click(&mut t, &cx, at(200.0, 100.0));
+    assert_eq!(down, vec![Action::Exec("path.deleteAnchor".into(), serde_json::json!({"id": fid.0, "subpath": 0, "anchor": 1}))]);
+    assert!(up.is_empty() && !t.busy(), "deleting starts no path");
+    let (down, _) = click(&mut t, &cx, at(150.0, 101.0));
+    assert!(matches!(&down[..], [Action::Exec(cmd, p)] if cmd == "path.addAnchor" && p["id"] == fid.0), "{down:?}");
+
+    // Unselected paths are drawn over; the first anchor of the path being drawn closes it.
+    let cx = ctx(&d, &none, &c, &l);
+    assert_eq!(t.cursor(&cx, at(200.0, 100.0), m), Cursor::Pen, "unselected path");
+    click(&mut t, &cx, at(300.0, 300.0));
+    assert_eq!(t.cursor(&cx, at(300.0, 300.0), m), Cursor::Pen, "one anchor cannot close yet");
+    click(&mut t, &cx, at(400.0, 300.0));
+    assert_eq!(t.cursor(&cx, at(301.0, 301.0), m), Cursor::PenClose, "on the first anchor");
+    assert_eq!(t.cursor(&cx, at(350.0, 350.0), m), Cursor::Pen, "elsewhere while drawing");
+}
+
+#[test]
+fn anchor_tools_show_pen_state_cursors() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let p = Point::new(10.0, 10.0);
+    let cursor = |id: &str| create(id).cursor(&cx, p, Mods::default());
+    assert_eq!(cursor("addAnchor"), Cursor::PenAdd);
+    assert_eq!(cursor("deleteAnchor"), Cursor::PenDelete);
+    assert_eq!(cursor("convertDirection"), Cursor::PenConvert);
 }

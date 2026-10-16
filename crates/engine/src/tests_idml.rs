@@ -107,7 +107,8 @@ fn keep_lines_idml(body_attrs: &str, lines: &[usize]) -> Vec<u8> {
         })
         .collect();
     let frame = |me: &str, x: f64, prev: &str, next: &str| {
-        let pts: String = [(x, 36.0), (x, 276.0), (x + 180.0, 276.0), (x + 180.0, 36.0)]
+        // 236 pt tall: 19 lines of 12 pt leading, whether or not the last line's descent must fit.
+        let pts: String = [(x, 36.0), (x, 272.0), (x + 180.0, 272.0), (x + 180.0, 36.0)]
             .iter()
             .map(|(x, y)| format!(r#"<PathPointType Anchor="{x} {y}" LeftDirection="{x} {y}" RightDirection="{x} {y}"/>"#))
             .collect();

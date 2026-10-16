@@ -1105,21 +1105,61 @@ impl Story {
 
     /// Keep paragraphs and tables consistent after an edit: a paragraph keeps its table only if it
     /// still contains an anchor character, every table is referenced once, and tables nobody
-    /// references are dropped.
+    /// references are dropped. An anchor that shares a table's paragraph with another anchor gets
+    /// a paragraph of its own again, so a table paragraph always holds exactly one anchor.
     pub(crate) fn fix_tables(&mut self) {
+        self.fix_tables_with(&[]);
+    }
+
+    /// [`Story::fix_tables`] for an edit that knows which table an anchor belongs to: `claims` are
+    /// `(anchor byte offset, table id)` pairs that win over the paragraphs' table ids (a paragraph
+    /// names one table, so merging two anchor paragraphs would otherwise lose one). Every other
+    /// table takes the first unclaimed anchor of its paragraph. Returns the byte offsets, before
+    /// the fix-up, where it inserted paragraph returns.
+    pub(crate) fn fix_tables_with(&mut self, claims: &[(usize, u64)]) -> Vec<usize> {
         if self.tables.is_empty() && self.paras.iter().all(|p| p.table.is_none()) {
-            return;
+            return Vec::new();
         }
-        let ranges = self.para_ranges();
+        let mut owner = std::collections::BTreeMap::new();
         let mut used = std::collections::HashSet::new();
-        for (p, r) in self.paras.iter_mut().zip(ranges) {
-            if let Some(id) = p.table
-                && (!self.text[r].contains(TABLE_ANCHOR) || !self.tables.contains_key(&id) || !used.insert(id))
+        for &(at, id) in claims {
+            if self.text.get(at..).is_some_and(|t| t.starts_with(TABLE_ANCHOR))
+                && self.tables.contains_key(&id)
+                && !owner.contains_key(&at)
+                && used.insert(id)
             {
-                p.table = None;
+                owner.insert(at, id);
             }
         }
+        let ranges = self.para_ranges();
+        for (p, r) in self.paras.iter().zip(&ranges) {
+            let Some(id) = p.table.filter(|id| self.tables.contains_key(id) && !used.contains(id)) else { continue };
+            let free = self.text[r.clone()].match_indices(TABLE_ANCHOR).map(|(k, _)| r.start + k).find(|at| !owner.contains_key(at));
+            if let Some(at) = free {
+                used.insert(id);
+                owner.insert(at, id);
+            }
+        }
+        // A paragraph holding a table's anchor and other anchors is split before each later anchor.
+        let mut splits = Vec::new();
+        for r in &ranges {
+            let anchors: Vec<usize> = self.text[r.clone()].match_indices(TABLE_ANCHOR).map(|(k, _)| r.start + k).collect();
+            if anchors.len() > 1 && anchors.iter().any(|at| owner.contains_key(at)) {
+                splits.extend(anchors.into_iter().skip(1));
+            }
+        }
+        for &at in splits.iter().rev() {
+            self.insert_raw(at, "\n");
+        }
+        // Each owned anchor, moved past the returns inserted before it, names its paragraph's table.
+        let owner: std::collections::BTreeMap<usize, u64> =
+            owner.into_iter().map(|(at, id)| (at + splits.partition_point(|&s| s <= at), id)).collect();
+        let ranges = self.para_ranges();
+        for (p, r) in self.paras.iter_mut().zip(ranges) {
+            p.table = owner.range(r).next().map(|(_, &id)| id);
+        }
         self.tables.retain(|id, _| used.contains(id));
+        splits
     }
 
     /// Check table invariants (part of [`Story::check`]).
@@ -1217,6 +1257,30 @@ mod tests {
         s.delete(1..s.len() - 1);
         s.check().unwrap();
         assert!(s.tables.is_empty());
+    }
+
+    #[test]
+    fn deleting_the_return_between_two_tables_keeps_both() {
+        // Backspace at the start of the second table's paragraph.
+        let mut s = story("x");
+        let a1 = s.insert_table(1, Table::new(1, 1, 1, 0, 0, 10.0));
+        let a2 = s.insert_table(s.len(), Table::new(2, 1, 1, 0, 0, 10.0));
+        let before = s.text.clone();
+        s.delete(a2 - 1..a2);
+        s.check().unwrap();
+        assert_eq!(s.text, before);
+        assert_eq!((s.table_anchor(1), s.table_anchor(2)), (Some(a1), Some(a2)));
+        // Deleting the table between two others keeps the outer ones on their own anchors.
+        let mut s = story("x");
+        for id in 1..=3 {
+            s.insert_table(s.len(), Table::new(id, 1, 1, 0, 0, 10.0));
+        }
+        let (a1, a3) = (s.table_anchor(1).unwrap(), s.table_anchor(3).unwrap());
+        s.delete(a1 + TABLE_ANCHOR.len_utf8()..a3);
+        s.check().unwrap();
+        assert_eq!(s.text, format!("x\n{TABLE_ANCHOR}\n{TABLE_ANCHOR}\n"));
+        assert_eq!(s.tables.keys().copied().collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(s.table_anchor(3), Some(a1 + TABLE_ANCHOR.len_utf8() + 1));
     }
 
     #[test]

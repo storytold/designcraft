@@ -11,8 +11,12 @@ pub enum AseError {
     Signature,
     #[error("the file ends early")]
     Truncated,
+    #[error("the file holds more than {MAX_COLORS} colors")]
+    TooManyColors,
 }
 
+/// The most colors [`read`] accepts in one file.
+pub const MAX_COLORS: usize = 100_000;
 const COLOR: u16 = 0x0001;
 #[cfg(test)]
 const GROUP_START: u16 = 0xC001;
@@ -56,6 +60,7 @@ impl R<'_> {
 }
 
 /// The colour swatches in an `.ase` file (groups are flattened).
+/// A file with more than [`MAX_COLORS`] colors is an error.
 pub fn read(bytes: &[u8]) -> Result<Vec<Swatch>, AseError> {
     let mut r = R { b: bytes, i: 0 };
     if r.take(4)? != b"ASEF" {
@@ -63,8 +68,8 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Swatch>, AseError> {
     }
     r.take(4)?; // version
     let blocks = r.u32()?;
-    let mut out = Vec::new();
-    for _ in 0..blocks {
+    let (mut out, mut colors) = (Vec::new(), 0usize);
+    'blocks: for _ in 0..blocks {
         let kind = r.u16()?;
         let len = r.u32()? as usize;
         let body = r.take(len)?;
@@ -72,9 +77,26 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Swatch>, AseError> {
         if kind != COLOR {
             continue;
         }
+        colors += 1;
+        if colors > MAX_COLORS {
+            return Err(AseError::TooManyColors);
+        }
         let mut b = R { b: body, i: 0 };
         let name = b.name()?;
         let model = b.take(4)?.to_vec();
+        let n = match &model[..] {
+            b"CMYK" => 4,
+            b"RGB " | b"LAB " => 3,
+            b"Gray" => 1,
+            _ => continue,
+        };
+        // A NaN or infinite component cannot be stored in a document: leave that swatch out.
+        let mut peek = R { b: body, i: b.i };
+        for _ in 0..n {
+            if !peek.f32()?.is_finite() {
+                continue 'blocks;
+            }
+        }
         let color = match &model[..] {
             b"CMYK" => Color::Cmyk { c: b.f32()?, m: b.f32()?, y: b.f32()?, k: b.f32()? },
             b"RGB " => Color::Rgb { r: b.f32()?, g: b.f32()?, b: b.f32()? },
@@ -82,6 +104,9 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Swatch>, AseError> {
             b"LAB " => {
                 let (l, a, bb) = (b.f32()?, b.f32()?, b.f32()?);
                 let [r, g, bl] = cms::lab::lab_to_srgb(cms::Lab { l: l * 100.0, a, b: bb });
+                if ![r, g, bl].iter().all(|v| v.is_finite()) {
+                    continue;
+                }
                 Color::Rgb { r: r.clamp(0.0, 1.0), g: g.clamp(0.0, 1.0), b: bl.clamp(0.0, 1.0) }
             }
             _ => continue,
@@ -190,5 +215,58 @@ mod tests {
         assert_eq!(w[0].name, "W");
         let SwatchValue::Color { color, .. } = &w[0].value else { panic!() };
         assert!(color.to_rgb().iter().all(|v| *v > 0.98), "Lab white: {color:?}");
+    }
+
+    #[test]
+    fn more_than_max_colors_is_an_error() {
+        let gray = Swatch {
+            name: "G".into(),
+            value: SwatchValue::Color { color: Color::Gray { k: 0.5 }, color_type: ColorType::Process },
+            locked: false,
+            named: true,
+            hidden: false,
+        };
+        let sw = vec![gray; MAX_COLORS + 1];
+        assert_eq!(read(&write(&sw)).err(), Some(AseError::TooManyColors));
+        assert_eq!(read(&write(&sw[1..])).map(|w| w.len()), Ok(MAX_COLORS), "up to the limit");
+    }
+
+    #[test]
+    fn non_finite_components_are_skipped() {
+        let sw = |name: &str, color: Color| Swatch {
+            name: name.into(),
+            value: SwatchValue::Color { color, color_type: ColorType::Process },
+            locked: false,
+            named: true,
+            hidden: false,
+        };
+        let mut list = vec![sw("Ok", Color::Rgb { r: 0.1, g: 0.2, b: 0.3 })];
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            list.push(sw("Rgb", Color::Rgb { r: bad, g: 0.0, b: 0.0 }));
+            list.push(sw("Cmyk", Color::Cmyk { c: 0.0, m: 0.0, y: 0.0, k: bad }));
+            list.push(sw("Gray", Color::Gray { k: bad }));
+        }
+        let mut bytes = write(&list);
+        // Append Lab blocks with a non-finite component.
+        let mut extra = 0u32;
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut c = Vec::new();
+            c.extend(2u16.to_be_bytes());
+            c.extend([0, b'L', 0, 0]);
+            c.extend(b"LAB ");
+            for v in [bad, 0.0, 0.0] {
+                c.extend(v.to_bits().to_be_bytes());
+            }
+            c.extend(2u16.to_be_bytes());
+            bytes.extend(COLOR.to_be_bytes());
+            bytes.extend((c.len() as u32).to_be_bytes());
+            bytes.extend(&c);
+            extra += 1;
+        }
+        let count = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) + extra;
+        bytes[8..12].copy_from_slice(&count.to_be_bytes());
+        let back = read(&bytes).unwrap();
+        let names: Vec<&str> = back.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Ok"], "non-finite swatches must be left out");
     }
 }

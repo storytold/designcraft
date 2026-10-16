@@ -38,6 +38,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("app.exportFixedEpub", "Export EPUB (Fixed Layout)…", None, "{path?} — pre-paginated EPUB 3"),
     ("app.exportHtml", "Export HTML…", None, "{path?} — one self-contained web page"),
+    ("app.exportPptx", "Export PowerPoint…", None, "{path?} — every page as a slide of editable shapes, pictures and text"),
     ("app.exportXml", "Export XML…", None, "{path?} — the tagged content"),
     ("app.printBooklet", "Print Booklet…", None, "{path?} — saddle-stitched printer spreads as PDF"),
     ("app.qrCode", "Generate QR Code…", None, "{} — the QR Code dialog (object.qrCode does the work)"),
@@ -50,7 +51,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "app.language",
         "Interface Language",
         None,
-        "{lang: \"\"|de|fr|es|ja|zh|ar|pt-br|it|uk} — menus and panel names (the macOS menu bar follows on the next launch)",
+        "{lang: \"\"|de|fr|es|ja|zh|ar|pt-br|it|uk|ka} — menus and panel names (the macOS menu bar follows on the next launch)",
     ),
     (
         "app.flattener",
@@ -86,6 +87,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.deletePage", "Delete Page", None, "{} — deletes the page in view"),
     ("app.duplicateSpread", "Duplicate Spread", None, "{} — duplicates the spread in view (pages and items)"),
     ("app.tablePanel", "Table Panel", Some("Shift+F9"), "{}"),
+    ("app.characterPanel", "Character", Some("Cmd+T"), "{} — the Character panel"),
+    ("app.paragraphPanel", "Paragraph", Some("Cmd+Alt+T"), "{} — the Paragraph panel"),
+    ("app.glyphsPanel", "Glyphs", Some("Alt+Shift+F11"), "{} — the Glyphs panel"),
+    ("app.characterStylesPanel", "Character Styles", Some("Cmd+Shift+F11"), "{} — the Character Styles panel"),
+    ("app.paragraphStylesPanel", "Paragraph Styles", Some("Cmd+F11"), "{} — the Paragraph Styles panel"),
+    ("app.insertCurrentPageNumber", "Current Page Number", Some("Cmd+Alt+Shift+N"), "{} — the Current Page Number marker at the insertion point"),
     ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{}"),
@@ -117,6 +124,13 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("color.toggleFillStroke", "Toggle Fill and Stroke", Some("X"), "{} → {strokeFront} — which of fill and stroke the proxy has in front"),
     ("color.applyNone", "Apply None", Some("/"), "{} — [None] for the fill or stroke in front of the proxy"),
+    ("color.applyColor", "Apply Color", Some(","), "{} — the colour applied last ([Black] at first) to the fill or stroke in front of the proxy"),
+    (
+        "color.applyGradient",
+        "Apply Gradient",
+        Some("."),
+        "{} — the gradient applied last (else the document's first, else white to black) to the fill or stroke in front of the proxy",
+    ),
     ("view.frameEdges", "Show/Hide Frame Edges", Some("Cmd+H"), "{}"),
     ("view.rulers", "Show/Hide Rulers", Some("Cmd+R"), "{}"),
     ("view.guides", "Show/Hide Guides", Some("Cmd+;"), "{}"),
@@ -131,7 +145,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("view.baselineGrid", "Show/Hide Baseline Grid", Some("Cmd+Alt+'"), "{}"),
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
-    ("view.hiddenCharacters", "Show/Hide Hidden Characters", Some("Cmd+Alt+I"), "{}"),
+    ("view.hiddenCharacters", "Show Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
     ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
     ("window.hidePanelsExceptTools", "Show/Hide Panels Except Tools", Some("Shift+Tab"), "{}"),
@@ -213,7 +227,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "window.workspace",
         "Workspace",
         None,
-        "{name: Essentials|Advanced|Book|Digital Publishing|Interactive for PDF|Printing and Proofing|Typography}",
+        "{name: Advanced|Book|Digital Publishing|Essentials|Essentials Classic|Interactive for PDF|Printing and Proofing|Typography or a saved workspace}",
     ),
     ("window.newWorkspace", "New Workspace…", None, "{name} — saves the current bars and panel arrangement"),
     ("window.deleteWorkspace", "Delete Workspace…", None, "{name}"),
@@ -248,6 +262,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.exportFixedEpub",
             "ui:app.exportInteractivePdf",
             "ui:app.exportHtml",
+            "ui:app.exportPptx",
             "ui:app.exportXml",
             "ui:app.exportText",
             ">Export",
@@ -304,6 +319,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.language|Português (Brasil)|{\"lang\": \"pt-br\"}",
             "ui:app.language|Italiano|{\"lang\": \"it\"}",
             "ui:app.language|Українська|{\"lang\": \"uk\"}",
+            "ui:app.language|ქართული|{\"lang\": \"ka\"}",
             "<",
             ">Transparency Flattener Presets",
             "ui:app.flattener|None (keep transparency)|{\"preset\": \"\"}",
@@ -349,18 +365,76 @@ pub const MENUS: &[(&str, &[&str])] = &[
     (
         "Type",
         &[
-            "ui:app.findFontDialog",
+            ">Size",
+            "cmd:type.char|6 pt|{\"attrs\": {\"size\": 6}}",
+            "cmd:type.char|7 pt|{\"attrs\": {\"size\": 7}}",
+            "cmd:type.char|8 pt|{\"attrs\": {\"size\": 8}}",
+            "cmd:type.char|9 pt|{\"attrs\": {\"size\": 9}}",
+            "cmd:type.char|10 pt|{\"attrs\": {\"size\": 10}}",
+            "cmd:type.char|11 pt|{\"attrs\": {\"size\": 11}}",
+            "cmd:type.char|12 pt|{\"attrs\": {\"size\": 12}}",
+            "cmd:type.char|14 pt|{\"attrs\": {\"size\": 14}}",
+            "cmd:type.char|18 pt|{\"attrs\": {\"size\": 18}}",
+            "cmd:type.char|24 pt|{\"attrs\": {\"size\": 24}}",
+            "cmd:type.char|30 pt|{\"attrs\": {\"size\": 30}}",
+            "cmd:type.char|36 pt|{\"attrs\": {\"size\": 36}}",
+            "cmd:type.char|48 pt|{\"attrs\": {\"size\": 48}}",
+            "cmd:type.char|60 pt|{\"attrs\": {\"size\": 60}}",
+            "cmd:type.char|72 pt|{\"attrs\": {\"size\": 72}}",
+            "<",
+            "-",
+            "ui:app.characterPanel",
+            "ui:app.paragraphPanel",
+            "ui:app.glyphsPanel",
+            "-",
+            "ui:app.characterStylesPanel",
+            "ui:app.paragraphStylesPanel",
             "-",
             "cmd:type.createOutlines",
-            ">Bulleted and Numbered Lists",
-            "cmd:list.define",
+            "ui:app.findFontDialog",
+            ">Change Case",
+            "cmd:type.changeCase|UPPERCASE|{\"case\": \"upper\"}",
+            "cmd:type.changeCase|lowercase|{\"case\": \"lower\"}",
+            "cmd:type.changeCase|Title Case|{\"case\": \"title\"}",
+            "cmd:type.changeCase|Sentence case|{\"case\": \"sentence\"}",
             "<",
+            "-",
             ">Type on a Path",
             "cmd:type.pathOptions",
             "cmd:type.pathOptions|Delete Type from Path|{\"delete\": true}",
             "<",
-            "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
-            "cmd:type.fillWithPlaceholder",
+            "-",
+            ">Notes",
+            "cmd:note.new",
+            "ui:window.panel|Notes|{\"panel\": \"notes\"}",
+            "<",
+            ">Track Changes",
+            "cmd:changes.track",
+            "cmd:changes.acceptAll",
+            "cmd:changes.rejectAll",
+            "<",
+            "-",
+            "cmd:footnote.insert",
+            "ui:app.footnoteOptionsDialog",
+            "cmd:endnote.insert",
+            "cmd:footnote.goToReference",
+            "-",
+            ">Hyperlinks & Cross-References",
+            "cmd:hyperlink.create",
+            "cmd:anchor.create",
+            "-",
+            "ui:app.insertXrefDialog",
+            "cmd:xref.defineFormat",
+            "<",
+            ">Text Variables",
+            "cmd:variables.define",
+            "cmd:variables.insert",
+            "<",
+            "-",
+            ">Bulleted & Numbered Lists",
+            "cmd:list.define",
+            "<",
+            "-",
             ">Insert Special Character",
             ">Symbols",
             "cmd:text.insert|Bullet Character|{\"text\": \"\u{2022}\", \"raw\": true}",
@@ -372,7 +446,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:text.insert|Trademark Symbol|{\"text\": \"\u{2122}\", \"raw\": true}",
             "<",
             ">Markers",
-            "cmd:text.insert|Current Page Number|{\"text\": \"\u{e000}\", \"raw\": true}",
+            "ui:app.insertCurrentPageNumber",
             "cmd:text.insert|Next Page Number|{\"text\": \"\u{e007}\", \"raw\": true}",
             "cmd:text.insert|Previous Page Number|{\"text\": \"\u{e008}\", \"raw\": true}",
             "cmd:text.insert|Section Marker|{\"text\": \"\u{e001}\", \"raw\": true}",
@@ -419,44 +493,10 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:text.insert|Paragraph Return|{\"text\": \"\\n\", \"raw\": true}",
             "cmd:text.insert|Forced Line Break|{\"text\": \"\u{2028}\", \"raw\": true}",
             "<",
-            "-",
-            ">Change Case",
-            "cmd:type.changeCase|UPPERCASE|{\"case\": \"upper\"}",
-            "cmd:type.changeCase|lowercase|{\"case\": \"lower\"}",
-            "cmd:type.changeCase|Title Case|{\"case\": \"title\"}",
-            "cmd:type.changeCase|Sentence case|{\"case\": \"sentence\"}",
-            "<",
-            "-",
-            "cmd:type.alignLeft",
-            "cmd:type.alignCenter",
-            "cmd:type.alignRight",
-            "cmd:type.justify",
-            "ui:app.paragraphRulesDialog",
-            "-",
-            "cmd:type.bold",
-            "cmd:type.italic",
-            "cmd:type.underline",
-            "cmd:type.allCaps",
-            "-",
-            "cmd:type.sizeUp",
-            "cmd:type.sizeDown",
+            "cmd:type.fillWithPlaceholder",
             "-",
             "ui:view.hiddenCharacters",
             "-",
-            ">Hyperlinks & Cross-References",
-            "cmd:hyperlink.create",
-            "cmd:anchor.create",
-            "-",
-            "ui:app.insertXrefDialog",
-            "cmd:xref.defineFormat",
-            "<",
-            ">Text Variables",
-            "cmd:variables.define",
-            "cmd:variables.insert",
-            "<",
-            "-",
-            "cmd:footnote.insert",
-            "cmd:endnote.insert",
             "cmd:math.insert",
             ">Story Direction",
             "cmd:type.storyDirection|Horizontal|{\"vertical\": false}",
@@ -466,13 +506,6 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.rubyDialog",
             "cmd:type.kenten",
             "cmd:type.warichu",
-            ">Track Changes",
-            "cmd:changes.track",
-            "cmd:changes.acceptAll",
-            "cmd:changes.rejectAll",
-            "<",
-            "ui:app.footnoteOptionsDialog",
-            "cmd:footnote.goToReference",
         ],
     ),
     (
@@ -493,6 +526,13 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:transform.again|Transform Again Individually|{\"individually\": true}",
             "cmd:transform.again|Transform Sequence Again|{\"sequence\": true}",
             "cmd:transform.again|Transform Sequence Again Individually|{\"sequence\": true, \"individually\": true}",
+            "<",
+            ">Flex Layout",
+            "cmd:flex.add",
+            "cmd:flex.convert",
+            "cmd:flex.remove",
+            "-",
+            "ui:window.panel|Show Flex Controls|{\"panel\": \"flexLayout\"}",
             "<",
             ">Paths",
             "cmd:object.makeCompoundPath",
@@ -707,49 +747,78 @@ pub const MENUS: &[(&str, &[&str])] = &[
     ),
     (
         "Window",
+        // InDesign's order: Arrange, Workspace, then the panels alphabetically with their groups.
         &[
             ">Arrange",
             "ui:window.newWindow",
             "ui:window.split",
+            "-",
+            "ui:window.nextDocument",
+            "ui:window.previousDocument",
+            "<",
+            "ui:window.workspace",
+            "-",
+            "ui:window.panel|Articles|{\"panel\": \"articles\"}",
+            ">Color",
+            "ui:window.panel|Color|{\"panel\": \"color\"}",
+            "ui:window.panel|Gradient|{\"panel\": \"gradient\"}",
+            "ui:window.panel|Swatches|{\"panel\": \"swatches\"}",
+            "<",
+            "ui:window.taskBar",
+            "ui:window.controlBar",
+            ">Editorial",
+            "ui:window.panel|Notes|{\"panel\": \"notes\"}",
+            "ui:window.panel|Track Changes|{\"panel\": \"trackChanges\"}",
+            "<",
+            "ui:window.panel|Effects|{\"panel\": \"effects\"}",
+            "ui:window.panel|Info|{\"panel\": \"info\"}",
+            ">Interactive",
+            "ui:window.panel|Bookmarks|{\"panel\": \"bookmarks\"}",
+            "ui:window.panel|Buttons and Forms|{\"panel\": \"buttons\"}",
+            "ui:window.panel|Hyperlinks|{\"panel\": \"hyperlinks\"}",
+            "ui:window.panel|Liquid Layout|{\"panel\": \"liquid\"}",
+            "ui:window.panel|Media|{\"panel\": \"media\"}",
+            "ui:window.panel|Object States|{\"panel\": \"states\"}",
+            "ui:window.panel|Page Transitions|{\"panel\": \"transitions\"}",
+            "<",
+            "ui:window.panel|Layers|{\"panel\": \"layers\"}",
+            "ui:window.panel|Links|{\"panel\": \"links\"}",
+            ">Object & Layout",
+            "ui:window.panel|Align|{\"panel\": \"align\"}",
+            "ui:window.panel|Flex Layout|{\"panel\": \"flexLayout\"}",
+            "ui:window.panel|Pathfinder|{\"panel\": \"pathfinder\"}",
+            "<",
+            ">Output",
+            "ui:window.panel|Attributes|{\"panel\": \"attributes\"}",
+            "ui:window.panel|Preflight|{\"panel\": \"preflight\"}",
+            "<",
+            "ui:window.panel|Pages|{\"panel\": \"pages\"}",
+            "ui:window.panel|Properties|{\"panel\": \"properties\"}",
+            "ui:window.panel|Stroke|{\"panel\": \"stroke\"}",
+            ">Styles",
+            "ui:window.panel|Character Styles|{\"panel\": \"characterStyles\"}",
+            "ui:window.panel|Paragraph Styles|{\"panel\": \"paragraphStyles\"}",
+            "<",
+            "ui:window.panel|Text Wrap|{\"panel\": \"textWrap\"}",
+            ">Type & Tables",
+            "ui:window.panel|Character|{\"panel\": \"character\"}",
+            "ui:window.panel|Conditional Text|{\"panel\": \"conditions\"}",
+            "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
+            "ui:window.panel|Paragraph|{\"panel\": \"paragraph\"}",
+            "ui:window.panel|Table|{\"panel\": \"table\"}",
+            "ui:window.panel|Typography|{\"panel\": \"typography\"}",
+            "<",
+            ">Utilities",
+            "ui:window.panel|Book|{\"panel\": \"book\"}",
+            "ui:window.panel|Data Merge|{\"panel\": \"dataMerge\"}",
+            "ui:window.panel|Library|{\"panel\": \"library\"}",
+            "ui:window.panel|Scripts|{\"panel\": \"scripts\"}",
+            "ui:window.panel|Tags|{\"panel\": \"tags\"}",
             "<",
             "-",
             "ui:window.hidePanels",
             "ui:window.hidePanelsExceptTools",
-            "ui:window.nextDocument",
-            "ui:window.previousDocument",
-            "-",
-            "ui:window.controlBar",
-            "ui:window.taskBar",
             "ui:window.toolsDoubleColumn",
-            "-",
-            "ui:window.panel",
-            "-",
-            ">Type & Tables",
-            "ui:window.panel|Conditional Text|{\"panel\": \"conditions\"}",
-            "ui:window.panel|Notes|{\"panel\": \"notes\"}",
-            "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
-            "<",
-            ">Interactive",
-            "ui:window.panel|Hyperlinks|{\"panel\": \"hyperlinks\"}",
-            "ui:window.panel|Bookmarks|{\"panel\": \"bookmarks\"}",
-            "ui:window.panel|Articles|{\"panel\": \"articles\"}",
-            "ui:window.panel|Object States|{\"panel\": \"states\"}",
-            "ui:window.panel|Buttons and Forms|{\"panel\": \"buttons\"}",
-            "ui:window.panel|Media|{\"panel\": \"media\"}",
-            "ui:window.panel|Page Transitions|{\"panel\": \"transitions\"}",
-            "ui:window.panel|Track Changes|{\"panel\": \"trackChanges\"}",
-            "ui:window.panel|Scripts|{\"panel\": \"scripts\"}",
-            "ui:window.panel|Liquid Layout|{\"panel\": \"liquid\"}",
-            "ui:window.panel|Tags|{\"panel\": \"tags\"}",
-            "ui:window.panel|Book|{\"panel\": \"book\"}",
-            "<",
-            ">Utilities",
-            "ui:window.panel|Data Merge|{\"panel\":\"dataMerge\"}",
-            "<",
-            ">Output",
-            "ui:window.panel|Attributes|{\"panel\": \"attributes\"}",
-            "cmd:preflight.run",
-            "<",
             "-",
             "ui:window.brightness",
         ],
@@ -769,6 +838,22 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:help.about",
         ],
     ),
+];
+
+/// The built-in workspaces, in InDesign's order.
+pub const WORKSPACES: &[&str] =
+    &["Advanced", "Book", "Digital Publishing", "Essentials", "Essentials Classic", "Interactive for PDF", "Printing and Proofing", "Typography"];
+
+/// Essentials Classic's icon column: InDesign's iconic panel groups, top to bottom.
+pub const CLASSIC_GROUPS: &[&[&str]] = &[
+    &["pages", "layers", "links"],
+    &["stroke", "color"],
+    &["swatches"],
+    &["effects"],
+    &["paragraph"],
+    &["textWrap"],
+    &["characterStyles", "paragraphStyles"],
+    &["gradient"],
 ];
 
 pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
@@ -806,7 +891,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
             let l = path.to_lowercase();
             if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
-                return Some(app.open_file("file.place", json!({"path": path})));
+                return Some(app.place_file(json!({"path": path})));
             }
             let info = match app.run("place.styles", json!({"path": path})) {
                 Ok(v) => v,
@@ -928,6 +1013,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.exportFixedEpub" => export_bytes(app, p, "epub", "file.exportFixedEpub"),
         "app.exportHtml" => export_bytes(app, p, "html", "file.exportHtml"),
+        "app.exportPptx" => export_bytes(app, p, "pptx", "file.exportPptx"),
         "app.exportXml" => export_bytes(app, p, "xml", "file.exportXml"),
         "app.printBooklet" => export_bytes(app, p, "pdf", "file.printBooklet"),
         "app.menus" => {
@@ -1249,6 +1335,8 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "color.defaultFillStroke" => crate::toolbar::default_fill_stroke(app),
         "color.swapFillStroke" => crate::toolbar::swap_fill_stroke(app),
         "color.toggleFillStroke" => crate::toolbar::toggle_fill_stroke(app),
+        "color.applyColor" => crate::toolbar::apply_color(app),
+        "color.applyGradient" => crate::toolbar::apply_gradient(app),
         "color.applyNone" => crate::toolbar::apply_none(app),
         "view.frameEdges" => flag(&mut app.ui.frame_edges),
         "view.overprintPreview" => {
@@ -1362,9 +1450,22 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             }
             Ok(Value::Null)
         }
+        "app.characterPanel" | "app.paragraphPanel" | "app.glyphsPanel" | "app.characterStylesPanel" | "app.paragraphStylesPanel" => {
+            let panel = match id {
+                "app.characterPanel" => "character",
+                "app.paragraphPanel" => "paragraph",
+                "app.glyphsPanel" => "glyphs",
+                "app.characterStylesPanel" => "characterStyles",
+                _ => "paragraphStyles",
+            };
+            run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
+        }
+        "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties").to_string();
-            if crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
+            // A panel in the workspace's icon groups opens from there (Essentials Classic's Pages).
+            let iconic = app.ui.icon_groups.as_ref().is_some_and(|g| g.iter().flatten().any(|p| *p == panel));
+            if !iconic && crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
                 app.ui.dock_tab = panel;
                 app.ui.dock_expanded = true;
                 app.ui.open_panel = None;
@@ -1555,6 +1656,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 floating: u.floating.clone(),
                 docking: u.docking.clone(),
                 docking_hidden: u.docking_hidden.clone(),
+                icon_groups: u.icon_groups.clone(),
             };
             app.ui.custom_workspaces.retain(|x| x.name != name);
             app.ui.custom_workspaces.push(w);
@@ -1593,6 +1695,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 app.ui.floating = w.floating;
                 app.ui.docking = w.docking;
                 app.ui.docking_hidden = w.docking_hidden;
+                app.ui.icon_groups = w.icon_groups;
                 app.ui.workspace = w.name;
                 return Some(Ok(Value::Null));
             }
@@ -1602,7 +1705,12 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             }
             app.ui.docking = None;
             app.ui.docking_hidden.clear();
-            app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book");
+            app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book" | "Essentials Classic");
+            // Essentials Classic: the Control panel and an icon column of grouped panels, no
+            // Properties stack.
+            let classic = name == "Essentials Classic";
+            app.ui.icon_groups = classic.then(|| CLASSIC_GROUPS.iter().map(|g| g.iter().map(|p| p.to_string()).collect()).collect());
+            app.ui.dock_expanded = !classic;
             let dock_tab = match name {
                 "Typography" => Some("properties"),
                 "Interactive for PDF" | "Digital Publishing" => Some("pages"),
@@ -1871,6 +1979,16 @@ fn parse_entries(entries: &[&str]) -> Vec<Item> {
                 .map(|(id, label, _)| Item::Cmd { label: label.to_string(), id: "window.panel".into(), params: json!({"panel": id}), shortcut: None })
                 .collect();
             out.push(Item::Sub("Panels".into(), items));
+        } else if e == "ui:window.workspace" {
+            // Shown as InDesign's "[Essentials]"; Reset names the current workspace (see `menu_items`).
+            let mut items: Vec<Item> = WORKSPACES
+                .iter()
+                .map(|w| Item::Cmd { label: w.to_string(), id: "window.workspace".into(), params: json!({"name": w}), shortcut: None })
+                .collect();
+            items.push(Item::Sep);
+            items.push(cmd_item("window.resetWorkspace", Value::Null));
+            items.push(cmd_item("window.newWorkspace", Value::Null));
+            out.push(Item::Sub("Workspace".into(), items));
         } else if e == "ui:window.brightness" {
             let items = crate::theme::Brightness::ALL
                 .iter()
@@ -1910,6 +2028,7 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
 /// Check state of a toggle command (None = not a toggle).
 pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
     Some(match id {
+        "window.workspace" => params.get("name").and_then(Value::as_str) == Some(app.ui.workspace.as_str()),
         "view.rulers" => app.ui.rulers,
         "view.frameEdges" => app.ui.frame_edges,
         "view.overprintPreview" => app.ui.overprint_preview,
@@ -1983,7 +2102,7 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
         return enabled(app, "object.fit");
     }
     if ui_label(id).is_some() {
-        return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.");
+        return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.") || id.starts_with("help.");
     }
     enabled(app, id)
 }
@@ -2030,6 +2149,14 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         crate::dialogs::open_print(app);
         return;
     }
+    if params.is_null() && id == "layout.createGuides" {
+        crate::dialogs::open_create_guides(app);
+        return;
+    }
+    if params.is_null() && id == "layout.marginsAndColumns" {
+        crate::dialogs::open_margins_and_columns(app);
+        return;
+    }
     if params.is_null() && id == "object.textFrameOptions" {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
         return;
@@ -2058,6 +2185,11 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         return;
     }
     let p = if params.is_null() { json!({}) } else { params.clone() };
+    // Update Link asks before replacing edits made to linked text in the layout.
+    if id == "links.update" {
+        crate::panels::properties::update_links(app, p);
+        return;
+    }
     let _ = app.run(id, p);
 }
 
@@ -2145,9 +2277,15 @@ fn clipped_submenu<'a, R>(
 /// ⌘A, ⌘C, ⌘X, ⌘V, ⌘Z and ⇧⌘Z before the window sees them, so while a text field has keyboard
 /// focus, Select All, Copy, Cut, Paste, Undo and Redo act on that field, as in any Mac app.
 pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, params: &Value) {
-    if !(ctx.text_edit_focused() && params.is_null() && forward_to_text_field(app, ctx, id)) {
-        activate(app, id, params);
+    if params.is_null() && ctx.text_edit_focused() && forward_to_text_edit(app, ctx, id) {
+        return;
     }
+    // The canvas text editor is not an egui TextEdit, so its clipboard events must pass through
+    // egui for the desktop integration to read/write the macOS clipboard.
+    if params.is_null() && app.session.wants_text() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") && forward_to_text_edit(app, ctx, id) {
+        return;
+    }
+    activate(app, id, params);
 }
 
 /// Whether a native menu bar item can be chosen: as in the in-window menus, but the editing
@@ -2161,7 +2299,7 @@ const TEXT_FIELD_COMMANDS: [&str; 6] = ["edit.selectAll", "edit.copy", "edit.cut
 
 /// Hand a standard editing command to the focused text field as next frame's input; false when
 /// `id` isn't one of them.
-fn forward_to_text_field(app: &mut DesignApp, ctx: &egui::Context, id: &str) -> bool {
+fn forward_to_text_edit(app: &mut DesignApp, ctx: &egui::Context, id: &str) -> bool {
     let key = |key: egui::Key, modifiers: egui::Modifiers| {
         [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers })
     };
@@ -2227,7 +2365,12 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
             }
             Item::Cmd { label, .. } if !app.ui.show_full_menus && app.ui.hidden_menu_items.contains(&menu_key(path, label)) => hidden += 1,
             Item::Cmd { label, id, params, shortcut: _ } => {
-                let label = crate::i18n::tr(&app.ui.language, label);
+                let lang = &app.ui.language;
+                let label = match id.as_str() {
+                    "window.workspace" => format!("[{}]", crate::i18n::workspace_name(lang, label)),
+                    "window.resetWorkspace" => format!("{} {}", crate::i18n::tr(lang, "Reset"), crate::i18n::workspace_name(lang, &app.ui.workspace)),
+                    _ => crate::i18n::tr(lang, label).to_owned(),
+                };
                 let text = match checked(app, id, params) {
                     Some(true) => format!("✓ {label}"),
                     Some(false) => format!("   {label}"),
@@ -2310,10 +2453,12 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
         let all = effective_shortcuts(app);
         for (id, sc) in &all {
             let id = id.as_str();
+            // On layouts with a dedicated + key (German) or Shift+= (US), Cmd+= arrives as Plus.
+            let plus_for_equals = key == egui::Key::Plus;
             if let Some((m, k)) = parse_shortcut(sc)
-                && k == key
+                && (k == key || (plus_for_equals && k == egui::Key::Equals))
                 && m.command == modifiers.command
-                && m.shift == modifiers.shift
+                && (m.shift == modifiers.shift || (plus_for_equals && !m.shift))
                 && m.alt == modifiers.alt
                 && (m.command || m.alt || !typing)
                 && !(id == "edit.clear" && typing)
@@ -2957,6 +3102,31 @@ mod tests {
                 assert_ne!(crate::i18n::tr("it", title), title, "{title}");
             }
         }
+
+        run_ui(&mut app, "app.language", &json!({"lang": "ka"})).unwrap().unwrap();
+        assert_eq!(app.ui.language, "ka");
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "ka"})), Some(true));
+        // Every menu title, item and submenu is translated into Georgian.
+        let mut untranslated = Vec::new();
+        for (title, entries) in menu_tree() {
+            let mut labels = vec![title.to_string()];
+            let mut stack: Vec<&Item> = entries.iter().collect();
+            while let Some(entry) = stack.pop() {
+                match entry {
+                    Item::Sub(label, children) => {
+                        labels.push(label.clone());
+                        stack.extend(children.iter());
+                    }
+                    Item::Cmd { label, id, .. } if id != "app.language" => labels.push(label.clone()),
+                    _ => {}
+                }
+            }
+            // Labels without letters ("180°") or point sizes ("72 pt") read the same in every language.
+            let size = |l: &str| l.strip_suffix(" pt").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            untranslated
+                .extend(labels.into_iter().filter(|l| l.chars().any(char::is_alphabetic) && !size(l) && crate::i18n::tr("ka", l) == l.as_str()));
+        }
+        assert!(untranslated.is_empty(), "untranslated Georgian menu labels: {untranslated:?}");
     }
 
     #[test]
@@ -3010,7 +3180,7 @@ mod tests {
         crate::dialogs::confirm(&mut app).unwrap();
         frame(&mut app);
         assert_eq!(app.session.documents().len(), 1);
-        for lang in ["uk", "zh", "", "ar", "pt-br", "it"] {
+        for lang in ["uk", "zh", "", "ar", "pt-br", "it", "ka"] {
             app.run("app.language", json!({"lang": lang})).unwrap();
             frame(&mut app);
         }
@@ -3261,6 +3431,49 @@ mod tests {
         assert_eq!(app.session.tool_id(), "selection", "V switches tools straight after drawing");
         frame(&mut app, key(egui::Key::F));
         assert_eq!(app.session.tool_id(), "rectangleFrame");
+    }
+
+    #[test]
+    fn cmd_plus_zooms_the_canvas_not_the_window() {
+        // A German keyboard has its own + key, so Cmd+= arrives as Plus; it must zoom the canvas like
+        // Cmd+- does, not hand the key to egui's whole-window zoom.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let key = |k: egui::Key, modifiers: egui::Modifiers| {
+            vec![
+                egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers },
+                egui::Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers },
+            ]
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        let scale = ctx.zoom_factor();
+        for (k, m, zooms_in) in [
+            (egui::Key::Plus, egui::Modifiers::COMMAND, true),
+            (egui::Key::Plus, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, true),
+            (egui::Key::Equals, egui::Modifiers::COMMAND, true),
+            (egui::Key::Minus, egui::Modifiers::COMMAND, false),
+        ] {
+            let z0 = app.view().unwrap().zoom;
+            frame(&mut app, key(k, m));
+            frame(&mut app, vec![]);
+            let z = app.view().unwrap().zoom;
+            assert!(if zooms_in { z > z0 } else { z < z0 }, "{k:?} {m:?}: {z0} -> {z}");
+            assert_eq!(ctx.zoom_factor(), scale, "{k:?} {m:?} leaves the UI scale alone");
+        }
     }
 
     #[test]
@@ -3579,6 +3792,31 @@ mod tests {
     }
 
     #[test]
+    fn native_copy_and_paste_use_the_system_clipboard_for_canvas_text() {
+        let ctx = egui::Context::default();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.session.execute("frame.create", &json!({"rect": [36, 36, 200, 200], "content": "text", "text": "hello"})).unwrap();
+        let story = *app.session.active().unwrap().doc.stories.keys().next().unwrap();
+        app.select_tool("type");
+        app.run("text.select", json!({"story": story.0, "anchor": 0, "focus": 5})).unwrap();
+        for _ in 0..3 {
+            native_frame(&mut app, &ctx, vec![], None);
+        }
+        assert!(app.session.wants_text());
+
+        native_frame(&mut app, &ctx, vec![], Some("edit.copy"));
+        let copied = native_frame(&mut app, &ctx, vec![], None);
+        assert!(copied.platform_output.commands.contains(&egui::OutputCommand::CopyText("hello".into())));
+
+        let paste = native_frame(&mut app, &ctx, vec![], Some("edit.paste"));
+        let commands = &paste.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::RequestPaste), "{commands:?}");
+        native_frame(&mut app, &ctx, vec![egui::Event::Paste("world".into())], None);
+        assert_eq!(app.session.active().unwrap().doc.story(story).unwrap().text, "world");
+    }
+
+    #[test]
     fn native_undo_and_redo_act_on_the_focused_field() {
         let ctx = egui::Context::default();
         let mut app = app_with_focused_field(&ctx, "");
@@ -3681,6 +3919,91 @@ mod tests {
     }
 
     #[test]
+    fn the_type_menu_follows_indesigns_order() {
+        // InDesign's Type menu, as Chris Nielsen opens it in "Numbering Page Sections" (2:09).
+        let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+        let labels: Vec<String> = ty
+            .iter()
+            .map(|i| match i {
+                Item::Sep => "-".to_string(),
+                Item::Sub(n, _) => format!("{n} >"),
+                Item::Cmd { label, .. } => label.clone(),
+            })
+            .collect();
+        let expected = [
+            "Size >",
+            "-",
+            "Character",
+            "Paragraph",
+            "Glyphs",
+            "-",
+            "Character Styles",
+            "Paragraph Styles",
+            "-",
+            "Create Outlines",
+            "Find/Replace Font…",
+            "Change Case >",
+            "-",
+            "Type on a Path >",
+            "-",
+            "Notes >",
+            "Track Changes >",
+            "-",
+            "Insert Footnote",
+            "Document Footnote Options…",
+            "Insert Endnote",
+        ];
+        assert_eq!(&labels[..expected.len()], expected, "{labels:?}");
+        let pos = |l: &str| labels.iter().position(|x| x == l).unwrap_or_else(|| panic!("{l} in {labels:?}"));
+        assert!(pos("Hyperlinks & Cross-References >") < pos("Text Variables >"));
+        assert!(pos("Text Variables >") < pos("Bulleted & Numbered Lists >"));
+        assert!(pos("Bulleted & Numbered Lists >") < pos("Insert Special Character >"));
+        assert!(pos("Insert Special Character >") < pos("Insert White Space >"));
+        assert!(pos("Insert Break Character >") < pos("Fill with Placeholder Text"));
+        assert!(pos("Fill with Placeholder Text") < pos("Show Hidden Characters"));
+        // Alignment, styles and point sizes keep their shortcuts, out of the menu as in InDesign.
+        for gone in ["Align Left", "Bold", "Increase Point Size", "Paragraph Rules…"] {
+            assert!(!labels.iter().any(|l| l == gone), "{gone}");
+        }
+        let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let all = effective_shortcuts(&app);
+        for (id, sc) in [
+            ("type.alignLeft", "Cmd+Shift+L"),
+            ("app.characterPanel", "Cmd+T"),
+            ("app.paragraphPanel", "Cmd+Alt+T"),
+            ("app.insertCurrentPageNumber", "Cmd+Alt+Shift+N"),
+        ] {
+            assert_eq!(all.iter().find(|(i, _)| i == id).map(|(_, s)| s.as_str()), Some(sc), "{id}");
+        }
+        // Markers › Current Page Number carries ⌥⇧⌘N.
+        let markers = ty
+            .iter()
+            .find_map(|i| match i {
+                Item::Sub(n, c) if n == "Insert Special Character" => {
+                    c.iter().find_map(|i| if let Item::Sub(n, c) = i { (n == "Markers").then(|| c.clone()) } else { None })
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(matches!(&markers[0], Item::Cmd { label, shortcut: Some("Cmd+Alt+Shift+N"), .. } if label == "Current Page Number"));
+    }
+
+    #[test]
+    fn type_panel_items_open_their_panels_and_the_marker_shortcut_inserts_a_page_number() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        activate(&mut app, "app.characterPanel", &Value::Null);
+        assert_eq!(app.ui.open_panel.as_deref(), Some("character"));
+        activate(&mut app, "app.paragraphStylesPanel", &Value::Null);
+        assert_eq!(app.ui.open_panel.as_deref(), Some("paragraphStyles"));
+        let story = app.run("frame.create", json!({"rect": [36, 36, 200, 100], "content": "text", "text": "Page "})).unwrap()["story"].clone();
+        app.run("text.select", json!({"story": story, "anchor": 5, "focus": 5})).unwrap();
+        activate(&mut app, "app.insertCurrentPageNumber", &Value::Null);
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.story(designcraft_doc::StoryId(story.as_u64().unwrap())).unwrap().text, "Page \u{e000}");
+    }
+
+    #[test]
     fn custom_workspaces_save_apply_and_delete() {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.ui.dock_tab = "swatches".into();
@@ -3696,6 +4019,74 @@ mod tests {
         run_ui(&mut app, "window.deleteWorkspace", &json!({"name": "Mine"})).unwrap().unwrap();
         assert!(app.ui.custom_workspaces.is_empty());
         assert_eq!(app.ui.workspace, "Essentials");
+    }
+
+    #[test]
+    fn essentials_classic_is_the_control_panel_and_iconic_groups() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        run_ui(&mut app, "window.workspace", &json!({"name": "Essentials Classic"})).unwrap().unwrap();
+        assert!(app.ui.control_bar && !app.ui.dock_expanded);
+        let groups = app.ui.icon_groups.clone().unwrap();
+        assert_eq!(groups[0], ["pages", "layers", "links"]);
+        assert_eq!(groups.last().unwrap(), &["gradient"]);
+        assert_eq!(checked(&app, "window.workspace", &json!({"name": "Essentials Classic"})), Some(true));
+        assert_eq!(checked(&app, "window.workspace", &json!({"name": "Essentials"})), Some(false));
+        // Window › Pages opens Pages from its icon group, not the Properties stack.
+        run_ui(&mut app, "window.panel", &json!({"panel": "pages"})).unwrap().unwrap();
+        assert_eq!((app.ui.open_panel.as_deref(), app.ui.dock_expanded), (Some("pages"), false));
+        // A workspace saved from it keeps the groups.
+        run_ui(&mut app, "window.newWorkspace", &json!({"name": "Mine"})).unwrap().unwrap();
+        run_ui(&mut app, "window.workspace", &json!({"name": "Essentials"})).unwrap().unwrap();
+        assert_eq!((app.ui.icon_groups.as_ref(), app.ui.dock_expanded, app.ui.control_bar), (None, true, false));
+        run_ui(&mut app, "window.workspace", &json!({"name": "Mine"})).unwrap().unwrap();
+        assert_eq!(app.ui.icon_groups, Some(groups));
+    }
+
+    #[test]
+    fn the_window_menu_is_in_indesigns_order_and_reaches_every_panel() {
+        let window = menu_tree().into_iter().find(|(m, _)| *m == "Window").unwrap().1;
+        let names: Vec<&str> = window
+            .iter()
+            .filter_map(|i| match i {
+                Item::Sub(n, _) => Some(n.as_str()),
+                Item::Cmd { label, .. } => Some(label.as_str()),
+                Item::Sep => None,
+            })
+            .collect();
+        assert_eq!(&names[..4], ["Arrange", "Workspace", "Articles", "Color"]);
+        let sub = |name: &str| {
+            window
+                .iter()
+                .find_map(|i| match i {
+                    Item::Sub(n, c) if n == name => Some(c.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // Window › Workspace › Essentials Classic, Window › Color › Gradient & Swatches.
+        assert!(
+            sub("Workspace")
+                .iter()
+                .any(|i| matches!(i, Item::Cmd { id, params, .. } if id == "window.workspace" && params["name"] == "Essentials Classic"))
+        );
+        let color: Vec<String> =
+            sub("Color").iter().filter_map(|i| if let Item::Cmd { label, .. } = i { Some(label.clone()) } else { None }).collect();
+        assert_eq!(color, ["Color", "Gradient", "Swatches"]);
+        // Every panel is in the menu.
+        fn panels(items: &[Item], out: &mut Vec<String>) {
+            for i in items {
+                match i {
+                    Item::Sub(_, c) => panels(c, out),
+                    Item::Cmd { id, params, .. } if id == "window.panel" => out.extend(params["panel"].as_str().map(str::to_string)),
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        panels(&window, &mut found);
+        for (id, _, _) in crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS) {
+            assert!(found.iter().any(|p| p == id), "Window menu misses the {id} panel");
+        }
     }
 
     #[test]

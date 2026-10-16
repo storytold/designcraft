@@ -6,6 +6,64 @@ use super::*;
 
 const FAMILY: &str = "Sysfont Sans3";
 
+#[cfg(not(any(target_os = "macos", windows)))]
+mod user_font_dirs {
+    use super::*;
+
+    #[test]
+    fn user_font_dirs_when_xdg_is_absolute() {
+        let home = Path::new("/home/font-user");
+        let xdg = Path::new("/custom/data");
+        let dirs = unix_font_dirs(Some(home), Some(xdg));
+        assert_eq!(dirs, ["/usr/share/fonts", "/usr/local/share/fonts", "/home/font-user/.fonts", "/custom/data/fonts"].map(PathBuf::from));
+    }
+
+    #[test]
+    fn user_font_dirs_when_xdg_is_unset() {
+        let home = Path::new("/home/font-user");
+        let dirs = unix_font_dirs(Some(home), None);
+        assert_eq!(
+            dirs,
+            ["/usr/share/fonts", "/usr/local/share/fonts", "/home/font-user/.fonts", "/home/font-user/.local/share/fonts"].map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn user_font_dirs_when_xdg_is_relative() {
+        let home = Path::new("/home/font-user");
+        let xdg = Path::new("relative/data");
+        let dirs = unix_font_dirs(Some(home), Some(xdg));
+        assert_eq!(
+            dirs,
+            ["/usr/share/fonts", "/usr/local/share/fonts", "/home/font-user/.fonts", "/home/font-user/.local/share/fonts"].map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn user_font_dirs_when_xdg_is_empty() {
+        let home = Path::new("/home/font-user");
+        let xdg = Path::new("");
+        let dirs = unix_font_dirs(Some(home), Some(xdg));
+        assert_eq!(
+            dirs,
+            ["/usr/share/fonts", "/usr/local/share/fonts", "/home/font-user/.fonts", "/home/font-user/.local/share/fonts"].map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn user_font_dirs_when_home_is_unset_and_xdg_is_absolute() {
+        let xdg = Path::new("/custom/data");
+        let dirs = unix_font_dirs(None, Some(xdg));
+        assert_eq!(dirs, ["/usr/share/fonts", "/usr/local/share/fonts", "/custom/data/fonts"].map(PathBuf::from));
+    }
+
+    #[test]
+    fn user_font_dirs_when_home_and_xdg_are_unset() {
+        let dirs = unix_font_dirs(None, None);
+        assert_eq!(dirs, ["/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from));
+    }
+}
+
 /// A bundled Source Sans 3 file renamed [`FAMILY`] (as long as the original name).
 fn renamed(file: &str) -> Vec<u8> {
     let mut data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts").join(file)).unwrap();
@@ -180,4 +238,24 @@ fn font_menus_group_installed_and_loaded_fonts_without_loading_them() {
     // Families are listed once.
     assert_eq!(infos.iter().filter(|i| i.family == "Groups Mincho").count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn installed_and_loaded_fonts_are_found_by_postscript_name() {
+    let dir = std::env::temp_dir().join(format!("dc-sysfonts-postscript-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ps.ttf"), crate::testing::font_with("DC Test PS Installed", &['a']).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![dir]);
+    let found = Some(("DC Test PS Installed".to_string(), "Regular".to_string()));
+    // From the catalog, without loading the font; case doesn't matter.
+    assert_eq!(db.postscript_face("dctestpsinstalled-regular"), found);
+    assert!(!db.is_loaded("DC Test PS Installed"));
+    // Bundled and added (loaded) faces.
+    assert_eq!(db.postscript_face("SourceSerif4-Semibold"), Some(("Source Serif 4".to_string(), "Semibold".to_string())));
+    db.add_font(crate::testing::font_with("DC Test PS Added", &['a']).unwrap());
+    assert_eq!(db.postscript_face("DCTestPSAdded-Regular"), Some(("DC Test PS Added".to_string(), "Regular".to_string())));
+    // A family name isn't a PostScript name.
+    assert_eq!(db.postscript_face("Source Serif 4"), None);
+    assert_eq!(db.postscript_face("NoSuchFont-Regular"), None);
 }

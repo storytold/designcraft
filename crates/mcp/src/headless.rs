@@ -1,5 +1,8 @@
 //! An in-process engine session that answers the engine-level control-channel methods itself.
 
+use std::sync::Arc;
+
+use designcraft_engine::file_access::{self, AutomationRoots};
 use designcraft_engine::{Session, ViewInfo};
 use designcraft_geom::Point;
 use designcraft_render::{RenderOptions, Renderer};
@@ -12,6 +15,7 @@ use crate::backend::Backend;
 pub struct Headless {
     pub session: Session,
     pub renderer: Renderer,
+    roots: Option<Arc<AutomationRoots>>,
 }
 
 impl Default for Headless {
@@ -82,7 +86,14 @@ fn mods_from(p: &Value) -> Mods {
 impl Headless {
     /// A session with no document (the first `file.new` / `file.open` creates one).
     pub fn new() -> Self {
-        Self { session: Session::new(), renderer: Renderer::new() }
+        Self { session: Session::new(), renderer: Renderer::new(), roots: None }
+    }
+
+    /// Confine every file the session's commands read and write to `roots`
+    /// (`designcraft-cli mcp --automation-read-root … --automation-write-root …`).
+    pub fn with_automation_roots(mut self, roots: Option<Arc<AutomationRoots>>) -> Self {
+        self.roots = roots;
+        self
     }
 
     /// A session with a fresh default (Letter) document, ready to lay out.
@@ -202,7 +213,7 @@ impl Headless {
         let png = img.to_png();
         match s(p, "path") {
             Some(path) => {
-                designcraft_engine::atomic::write_atomic(std::path::Path::new(path), &png).map_err(|e| format!("write {path}: {e}"))?;
+                designcraft_engine::io::write_file(path, &png)?;
                 Ok(json!({"path": path, "width": img.width, "height": img.height}))
             }
             None => Ok(json!({"width": img.width, "height": img.height, "pngBase64": designcraft_engine::cmd::base64_encode(&png)})),
@@ -222,13 +233,32 @@ impl Headless {
             .ok_or_else(|| format!("no page {page}"))?;
         let lower = path.to_ascii_lowercase();
         let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
-        designcraft_engine::atomic::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| format!("write {path}: {e}"))?;
+        designcraft_engine::io::write_file(path, &bytes)?;
         Ok(json!({"path": path, "width": img.width, "height": img.height}))
     }
 }
 
 impl Backend for Headless {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let roots = self.roots.clone();
+        file_access::confine(roots.as_ref(), || self.answer(method, params))
+    }
+
+    fn write_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        file_access::confine(self.roots.as_ref(), || designcraft_engine::io::write_file(path, bytes))
+    }
+
+    fn has_ui(&self) -> bool {
+        false
+    }
+
+    fn describe(&self) -> String {
+        "headless (in-process engine, no window)".into()
+    }
+}
+
+impl Headless {
+    fn answer(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let p = &params;
         match method {
             "engine.execute" | "ui.menu.invoke" | "command" => {
@@ -254,14 +284,6 @@ impl Backend for Headless {
             m if m.starts_with("ui.") => Err(format!("`{m}` is not available headless; {NEEDS_APP}")),
             other => Err(format!("unknown method `{other}`")),
         }
-    }
-
-    fn has_ui(&self) -> bool {
-        false
-    }
-
-    fn describe(&self) -> String {
-        "headless (in-process engine, no window)".into()
     }
 }
 

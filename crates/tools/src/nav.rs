@@ -157,6 +157,13 @@ impl Tool for PlaceGun {
             None => vec![],
         }
     }
+    fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
+        match key {
+            // Escape unloads the place cursor.
+            crate::ToolKey::Escape => vec![Action::SwitchTool("selection".into())],
+            _ => vec![],
+        }
+    }
     fn cursor(&self, _cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {
         Cursor::LoadedGraphic
     }

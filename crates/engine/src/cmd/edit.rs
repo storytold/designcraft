@@ -257,11 +257,20 @@ pub fn specs() -> Vec<CommandSpec> {
                 return super::text::delete_selection(s);
             }
             let ids = super::targets(s, p)?;
+            // With a placed graphic itself selected (Direct Selection), only the graphic goes: its
+            // frame stays, empty and selected (as in InDesign). Other items are deleted.
+            let content = s.doc()?.selection.content && p.get("ids").is_none();
             s.edit(|d, sel| {
+                let mut kept = Vec::new();
                 for id in &ids {
-                    let _ = d.remove_item(*id);
+                    if let Some(it) = d.item_mut(*id).filter(|it| content && matches!(it.content, designcraft_doc::Content::Graphic(_))) {
+                        it.content = designcraft_doc::Content::Unassigned;
+                        kept.push(*id);
+                    } else {
+                        let _ = d.remove_item(*id);
+                    }
                 }
-                *sel = Selection::default();
+                *sel = Selection::items(kept);
                 Ok(json!({"deleted": ids.len()}))
             })
         }),
@@ -341,12 +350,15 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     let st = s.doc()?;
     let mut d = (*st.doc).clone();
     let keep: Vec<ItemId> = st.selection.items.clone();
-    // Gather the selected items (keep their spread coordinates) into spread 0.
+    // Gather the selected items (in their spread coordinates, nested ones too) into spread 0.
     let mut items = Vec::new();
     for id in &keep {
-        if let Some(it) = st.doc.item(*id) {
-            items.push(Arc::new(it.clone()));
-        }
+        let (Some(it), Some(loc)) = (st.doc.item(*id), st.doc.find(*id)) else { continue };
+        let parent = st.doc.parent_xf(&loc);
+        items.push(Arc::new(match &it.content {
+            designcraft_doc::Content::Graphic(g) if st.selection.content => graphic_alone(it, g, parent),
+            _ => designcraft_doc::Item { xf: parent * it.xf, ..it.clone() },
+        }));
     }
     for sp in d.spreads.iter_mut() {
         Arc::make_mut(sp).items.clear();
@@ -380,6 +392,22 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     d.hyperlinks.clear();
     d.bookmarks.clear();
     Ok(d)
+}
+
+/// A placed graphic on its own, as InDesign copies one selected with Direct Selection: a frame of
+/// the whole graphic's bounds (uncropped), where the graphic sits on the spread (`parent` is the
+/// frame's parent transform), without the frame's fill, stroke or effects.
+fn graphic_alone(frame: &designcraft_doc::Item, g: &designcraft_doc::Graphic, parent: designcraft_geom::Affine) -> designcraft_doc::Item {
+    let r = designcraft_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1);
+    let mut it = designcraft_doc::Item::new(frame.id, frame.layer, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+    it.xf = parent * frame.xf * g.xf;
+    it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        xf: designcraft_geom::Affine::IDENTITY,
+        auto_fit: designcraft_doc::Fitting::None,
+        crop: [0.0; 4],
+        ..g.clone()
+    });
+    it
 }
 
 #[cfg(test)]
@@ -649,6 +677,22 @@ mod text_clipboard_tests {
         assert_eq!(s.doc().unwrap().selection.text.unwrap().range(), 0..st.len());
         st.check().unwrap();
     }
+
+    #[test]
+    fn change_case_leaves_georgian_without_initial_capitals() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = frame(&mut s, "ᲒᲐᲛᲐᲠᲯᲝᲑᲐ ᲛᲡᲝᲤᲚᲘᲝ. ᲐᲮᲐᲚᲘ word");
+        let len = s.doc().unwrap().doc.story(a).unwrap().len();
+        s.execute("text.select", &json!({"story": a.0, "anchor": 0, "focus": len})).unwrap();
+        // Georgian has no title or sentence capitals: Mtavruli is only for all-caps text.
+        s.execute("type.changeCase", &json!({"case": "title"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(a).unwrap().text, "გამარჯობა მსოფლიო. ახალი Word");
+        s.execute("type.changeCase", &json!({"case": "sentence"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(a).unwrap().text, "გამარჯობა მსოფლიო. ახალი word");
+        s.execute("type.changeCase", &json!({"case": "upper"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(a).unwrap().text, "ᲒᲐᲛᲐᲠᲯᲝᲑᲐ ᲛᲡᲝᲤᲚᲘᲝ. ᲐᲮᲐᲚᲘ WORD");
+    }
 }
 
 fn paste_into(s: &mut Session, p: &Value) -> Result<Value> {
@@ -727,5 +771,45 @@ mod paste_into_tests {
         assert!(img.pixel(200, 200)[0] < 90, "{:?}", img.pixel(200, 200));
         assert!(img.pixel(120, 120)[0] > 200, "{:?}", img.pixel(120, 120));
         s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn a_selected_graphic_copies_and_clears_on_its_own() {
+        let dir = std::env::temp_dir().join(format!("dc-graphic-alone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("photo.png");
+        std::fs::write(&png, designcraft_render::Rendered { width: 200, height: 100, pixels: vec![40u8; 200 * 100 * 4] }.to_png()).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // A square frame showing the middle of a wide photo (cropped left and right).
+        let frame = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"path": png.to_string_lossy(), "frame": frame})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fillProportionally", "ids": [frame]})).unwrap();
+        s.execute("object.stroke", &json!({"ids": [frame], "swatch": "[Black]", "weight": 4})).unwrap();
+        // Direct Selection on the photo, Copy: the whole photo, where it is, without the frame's stroke.
+        s.execute("selection.set", &json!({"ids": [frame], "content": true})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let clip = s.clipboard.clone().unwrap();
+        let it = &clip.spreads[0].items[0];
+        assert!(matches!(&it.content, designcraft_doc::Content::Graphic(g) if g.crop == [0.0; 4]));
+        assert_eq!(it.bounds(), designcraft_geom::Rect::new(50.0, 100.0, 250.0, 200.0));
+        assert!(it.stroke.weight == 0.0 || it.stroke.swatch == "[None]", "{:?}", it.stroke);
+        // Paste Into a shape over it: the photo lands in place, inside the shape.
+        let shape = s.execute("frame.create", &json!({"rect": [60, 90, 240, 210], "shape": "ellipse"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [shape]})).unwrap();
+        s.execute("edit.pasteInto", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let kid = d.item(ItemId(shape)).unwrap().children()[0].clone();
+        let at = d.parent_xf(&d.find(kid.id).unwrap()) * kid.xf;
+        assert!((at * designcraft_geom::Point::new(0.0, 0.0) - designcraft_geom::Point::new(50.0, 100.0)).hypot() < 1e-6);
+        assert!((at * designcraft_geom::Point::new(200.0, 100.0) - designcraft_geom::Point::new(250.0, 200.0)).hypot() < 1e-6);
+        // Delete with the photo selected: the frame stays, empty.
+        s.execute("selection.set", &json!({"ids": [frame], "content": true})).unwrap();
+        assert_eq!(s.execute("edit.clear", &json!({})).unwrap()["deleted"], 1);
+        let d = s.doc().unwrap().doc.clone();
+        assert!(matches!(d.item(ItemId(frame)).unwrap().content, designcraft_doc::Content::Unassigned));
+        assert_eq!(s.doc().unwrap().selection, Selection::items(vec![ItemId(frame)]));
+        d.check().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

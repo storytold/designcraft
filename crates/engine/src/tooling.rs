@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use designcraft_doc::{CellAddr, StoryId};
 use designcraft_geom::Unit;
 pub use designcraft_tools::SnapView;
 use designcraft_tools::{Action, CanvasLayout, Cursor, Mods, Overlay, PointerEvent, ToolContext, ToolKey};
@@ -35,11 +36,13 @@ pub struct ViewInfo {
     pub zoom: f64,
     pub snap: SnapView,
     pub unit: Unit,
+    /// The toolbox's Stroke box is in front (X): colour tools apply to strokes.
+    pub stroke_in_front: bool,
 }
 
 impl ViewInfo {
     pub const fn at_zoom(zoom: f64) -> Self {
-        Self { zoom, snap: SnapView::FACTORY, unit: Unit::Points }
+        Self { zoom, snap: SnapView::FACTORY, unit: Unit::Points, stroke_in_front: false }
     }
 }
 
@@ -58,7 +61,12 @@ impl Session {
         if self.tool.id() == id {
             return;
         }
+        self.end_composition();
         self.tool = designcraft_tools::create(id);
+        // Any other tool unloads the place cursor.
+        if id != "placeGun" {
+            self.loaded = None;
+        }
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"
             && let Some(st) = self.active_mut()
@@ -93,6 +101,7 @@ impl Session {
             layer,
             snap: view.snap,
             unit: view.unit,
+            stroke_in_front: view.stroke_in_front,
         };
         Some(f(self.tool.as_mut(), &cx))
     }
@@ -143,7 +152,29 @@ impl Session {
         Ok(())
     }
 
+    /// The text an input method is composing at the caret, as story bytes: it is in the
+    /// document as a preview until `text.compose` commits or drops it.
+    pub fn composition(&self) -> Option<(StoryId, Option<CellAddr>, std::ops::Range<usize>)> {
+        let (uid, len) = self.composition?;
+        let st = self.active().filter(|st| st.uid == uid)?;
+        let t = st.selection.text?;
+        Some((t.story, t.cell, t.focus.checked_sub(len)?..t.focus))
+    }
+
+    /// Drop the text being composed: the document goes back to how it was before it.
+    pub fn end_composition(&mut self) {
+        let Some((uid, _)) = self.composition.take() else { return };
+        if let Some(st) = self.docs.iter_mut().find(|st| st.uid == uid)
+            && let Some(it) = st.interaction.take()
+        {
+            st.doc = it.doc;
+            st.selection = it.selection;
+            st.revision += 1;
+        }
+    }
+
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
+        self.end_composition();
         let st = self.doc_mut()?;
         st.interaction = Some(Interaction { label: label.into(), doc: st.doc.clone(), selection: st.selection.clone(), preview: None });
         Ok(())

@@ -12,7 +12,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
         has_doc, export_pdf),
         cmd!(noundo "file.exportEpub", "Export EPUB (Reflowable)…", ["File"], None,
-        "{path?, title?, author?, language?: \"en\", cover?: bool (the first page as the cover image), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes} (no path: {base64, bytes})",
+        "{path?, title?, author?, language?: \"en\", identifier?: str (dc:identifier; a stable urn:uuid by default), coverImage?: path (a PNG or JPEG as the cover), tocTitle?: str (the table of contents' title; from the language by default), cover?: bool (the first page as the cover image), embedFonts?: bool (package the stylesheet's fonts whose licence allows it, whole files), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes, warnings} (no path: {base64, bytes, warnings}); warnings name images without alt text, exported as decorative, and fonts that could not be embedded",
         has_doc, export_epub),
         cmd!(noundo "file.exportFixedEpub", "Export EPUB (Fixed Layout)…", ["File"], None,
         "{path?, title?, author?, language?} — pre-paginated EPUB → {path, bytes} (no path: {base64, bytes})",
@@ -25,6 +25,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.exportHtml", "Export HTML…", ["File"], None,
         "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes} (no path: {text, bytes})",
         has_doc, export_html),
+        cmd!(noundo "file.exportPptx", "Export PowerPoint…", ["File"], None,
+        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: DesignCraft's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
+        has_doc, export_pptx),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
         "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
         has_story_target, export_text),
@@ -44,7 +47,7 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            crate::atomic::write_file(path, &r.bytes)?;
+            crate::io::write_file(path, &r.bytes).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": r.bytes.len(), "sheets": r.pages, "warnings": r.warnings}))
         }
         None => Ok(json!({"base64": super::file::base64_encode(&r.bytes), "bytes": r.bytes.len(), "sheets": r.pages, "warnings": r.warnings})),
@@ -53,16 +56,56 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
-    let opts =
-        designcraft_epub::HtmlOptions { title: str_param(p, "title").map(str::to_string), language: str_param(p, "language").map(str::to_string) };
+    let opts = designcraft_epub::HtmlOptions {
+        title: str_param(p, "title").map(str::to_string),
+        language: str_param(p, "language").map(str::to_string),
+        generic_families: generic_families(&st.doc),
+    };
     let text = designcraft_epub::export_html(&st.doc, &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            crate::atomic::write_file(path, text.as_bytes())?;
+            crate::io::write_file(path, text.as_bytes()).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": text.len()}))
         }
         None => Ok(json!({"bytes": text.len(), "text": text})),
+    }
+}
+
+fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "file.exportPptx";
+    let st = s.doc()?;
+    let line_breaks = match str_param(p, "lineBreaks") {
+        None | Some("keep") => designcraft_pptx::LineBreaks::Keep,
+        Some("reflow") => designcraft_pptx::LineBreaks::Reflow,
+        Some(x) => return Err(bad(ID, format!("unknown lineBreaks `{x}` (keep, reflow)"))),
+    };
+    let opts = designcraft_pptx::PptxOptions {
+        pages: pages_param(ID, p, st.doc.page_count())?,
+        line_breaks,
+        title: str_param(p, "title").map(str::to_string),
+        author: str_param(p, "author").map(str::to_string),
+        created: None,
+        embed_fonts: p.get("embedFonts").and_then(Value::as_bool).unwrap_or(true),
+    };
+    // Object Export Options › Rasterize, and what PowerPoint has no objects for (a threaded frame
+    // stays text: a picture of it would drop the rest of its story).
+    let auto = p.get("rasterize").and_then(Value::as_bool).unwrap_or(true);
+    let (raster, rasterized) = rasterize_where(&st.doc, &s.cache, 300.0, |it| {
+        !threaded(&st.doc, it) && (it.export_options.rasterize || (auto && designcraft_pptx::needs_raster(&st.doc, it)))
+    });
+    let doc: &designcraft_doc::Document = raster.as_ref().unwrap_or(&st.doc);
+    let mut r = designcraft_pptx::export_pptx(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    if rasterized > 0 {
+        r.warnings.push(format!("{rasterized} object(s) went in as images"));
+    }
+    match str_param(p, "path") {
+        Some(path) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::io::write_file(path, &r.bytes).map_err(EngineError::Other)?;
+            Ok(json!({"path": path, "bytes": r.bytes.len(), "slides": r.slides, "warnings": r.warnings}))
+        }
+        None => Ok(json!({"base64": super::file::base64_encode(&r.bytes), "bytes": r.bytes.len(), "slides": r.slides, "warnings": r.warnings})),
     }
 }
 
@@ -91,7 +134,7 @@ fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
     match path {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            crate::atomic::write_file(path, text.as_bytes())?;
+            crate::io::write_file(path, text.as_bytes()).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": text.len()}))
         }
         None => Ok(json!({"bytes": text.len(), "text": text})),
@@ -120,6 +163,49 @@ fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, 
     out
 }
 
+/// The CSS generic family of each font family the EPUB/HTML stylesheet names, from the fonts'
+/// classification (PANOSE, OS/2 class, name), for the `font-family` fallbacks.
+fn generic_families(d: &designcraft_doc::Document) -> std::collections::BTreeMap<String, String> {
+    use designcraft_fonts::FontClass;
+    let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
+    let mut out = std::collections::BTreeMap::new();
+    for (family, _) in designcraft_epub::stylesheet_fonts(d) {
+        if out.contains_key(&family) {
+            continue;
+        }
+        let generic = match db.family_kind(&family).map(|(k, _)| k.class) {
+            Some(FontClass::Serif | FontClass::SlabSerif) => "serif",
+            Some(FontClass::SansSerif) => "sans-serif",
+            Some(FontClass::Monospaced) => "monospace",
+            Some(FontClass::Script) => "cursive",
+            Some(FontClass::Decorative) => "fantasy",
+            Some(FontClass::Symbol | FontClass::Other) | None => continue,
+        };
+        out.insert(family, generic.to_string());
+    }
+    out
+}
+
+/// The faces the EPUB stylesheet names, to package with it; `warnings` gets the ones left out
+/// (not available, a licence that forbids embedding, or part of a font collection).
+fn embedded_fonts(d: &designcraft_doc::Document, warnings: &mut Vec<String>) -> Vec<designcraft_epub::EmbeddedFont> {
+    let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
+    let mut out = Vec::new();
+    for (family, style) in designcraft_epub::stylesheet_fonts(d) {
+        let face = db.face(&family, &style);
+        if !face.family.eq_ignore_ascii_case(&family) {
+            warnings.push(format!("font `{family} {style}` is not available; not embedded"));
+        } else if face.restricted_licence() || face.bitmap_only() {
+            warnings.push(format!("font `{family} {style}`: its licence doesn't allow embedding; not embedded"));
+        } else if face.data().starts_with(b"ttcf") {
+            warnings.push(format!("font `{family} {style}` is part of a font collection; not embedded"));
+        } else {
+            out.push(designcraft_epub::EmbeddedFont { family, style: face.style.clone(), data: face.data().to_vec() });
+        }
+    }
+    out
+}
+
 fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     // Object Export Options › Rasterize: those objects go in as images.
@@ -130,13 +216,35 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let mut rr = designcraft_render::Renderer::new();
     rr.threads = designcraft_render::default_threads();
     let ropts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
-    let cover = (want_cover && !fixed).then(|| rr.render_page(&st.doc, &s.cache, 0, 2.0, false, &ropts).map(|img| img.to_png())).flatten();
+    let mut warnings: Vec<String> = Vec::new();
+    // A cover image file (PNG or JPEG), else the first page rendered when `cover` asks for it.
+    let cover = match p.get("coverImage").and_then(Value::as_str).filter(|_| !fixed) {
+        Some(path) => Some(super::datamerge::read_path_capped(path, super::datamerge::MAX_IMAGE_FILE_BYTES).map_err(crate::EngineError::Other)?),
+        None => (want_cover && !fixed).then(|| rr.render_page(&st.doc, &s.cache, 0, 2.0, false, &ropts).map(|img| img.to_png())).flatten(),
+    };
+    if let Some(c) = &cover
+        && !(c.starts_with(b"\x89PNG") || c.starts_with(&[0xFF, 0xD8, 0xFF]))
+    {
+        return Err(crate::EngineError::Other("the cover image must be a PNG or JPEG file".into()));
+    }
     let opts = designcraft_epub::EpubOptions {
         title: p.get("title").and_then(Value::as_str).map(str::to_string),
         author: p.get("author").and_then(Value::as_str).map(str::to_string),
         language: p.get("language").and_then(Value::as_str).unwrap_or("en").to_string(),
-        identifier: None,
+        identifier: p.get("identifier").and_then(Value::as_str).map(str::to_string),
         cover,
+        toc_title: p.get("tocTitle").and_then(Value::as_str).map(str::to_string),
+        generic_families: generic_families(&st.doc),
+        fonts: if p.get("embedFonts").and_then(Value::as_bool).unwrap_or(false) && !fixed {
+            embedded_fonts(&st.doc, &mut warnings)
+        } else {
+            Vec::new()
+        },
+        // The export time; on the web the document's own save time stands in.
+        #[cfg(not(target_arch = "wasm32"))]
+        modified: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_secs()).ok()),
+        #[cfg(target_arch = "wasm32")]
+        modified: None,
     };
     if fixed {
         let d = &st.doc;
@@ -157,36 +265,54 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
         };
     }
     let bytes = designcraft_epub::export_epub(epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+    warnings.extend(
+        designcraft_epub::images_without_alt(epub_doc)
+            .into_iter()
+            .map(|name| format!("{name}: no alt text (Object Export Options); exported as decorative (alt=\"\")")),
+    );
     match p.get("path").and_then(Value::as_str) {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            crate::atomic::write_file(path, &bytes)?;
-            Ok(serde_json::json!({"path": path, "bytes": bytes.len()}))
+            crate::io::write_file(path, &bytes).map_err(crate::EngineError::Other)?;
+            Ok(serde_json::json!({"path": path, "bytes": bytes.len(), "warnings": warnings}))
         }
-        None => Ok(serde_json::json!({"base64": super::file::base64_encode(&bytes), "bytes": bytes.len()})),
+        None => Ok(serde_json::json!({"base64": super::file::base64_encode(&bytes), "bytes": bytes.len(), "warnings": warnings})),
     }
+}
+
+/// The `pages` parameter: a range string ("1-3,5"), a list or a number of 1-based positions.
+fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Option<Vec<usize>>> {
+    Ok(match p.get("pages") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(designcraft_pdf::parse_page_range(s, page_count).map_err(|e| bad(id, e.to_string()))?),
+        Some(Value::Array(a)) => {
+            let mut v = Vec::new();
+            for x in a {
+                let n = x
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|n| *n >= 1 && *n <= page_count)
+                    .ok_or_else(|| bad(id, format!("bad page {x}")))?;
+                v.push(n - 1);
+            }
+            Some(v)
+        }
+        Some(Value::Number(n)) => {
+            let n = n
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| *n >= 1 && *n <= page_count)
+                .ok_or_else(|| bad(id, format!("bad page {n}")))?;
+            Some(vec![n - 1])
+        }
+        Some(v) => return Err(bad(id, format!("bad `pages`: {v}"))),
+    })
 }
 
 pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
     const ID: &str = "file.exportPdf";
 
-    let pages = match p.get("pages") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(designcraft_pdf::parse_page_range(s, page_count).map_err(|e| bad(ID, e.to_string()))?),
-        Some(Value::Array(a)) => {
-            let mut v = Vec::new();
-            for x in a {
-                let n = x.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(ID, format!("bad page {x}")))?;
-                v.push(n as usize - 1);
-            }
-            Some(v)
-        }
-        Some(Value::Number(n)) => {
-            let n = n.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(ID, format!("bad page {n}")))?;
-            Some(vec![n as usize - 1])
-        }
-        Some(v) => return Err(bad(ID, format!("bad `pages`: {v}"))),
-    };
+    let pages = pages_param(ID, p, page_count)?;
     let spreads = p.get("spreads").and_then(Value::as_bool).unwrap_or(false);
     let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(false);
     let marks = match p.get("marks") {
@@ -598,7 +724,7 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
-    crate::atomic::write_file(path, bytes)
+    crate::io::write_file(path, bytes).map_err(EngineError::Other)
 }
 #[cfg(target_arch = "wasm32")]
 fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
@@ -659,6 +785,7 @@ mod text_tests {
         s.execute("file.new", &json!({"pages": 2})).unwrap();
         s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Page one words", "caret": false})).unwrap();
         let r = s.execute("file.exportEpub", &json!({"cover": true})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "no images, nothing to report");
         let mut z = unzip(r["base64"].as_str().unwrap());
         let opf = read(&mut z, "OEBPS/content.opf");
         assert!(opf.contains("cover-image") && opf.contains("<itemref idref=\"cover\"/>"));
@@ -670,6 +797,88 @@ mod text_tests {
         assert!(opf.contains("rendition:layout\">pre-paginated") && opf.contains("page2.xhtml"));
         let p1 = read(&mut z, "OEBPS/page1.xhtml");
         assert!(p1.contains("width=612, height=792") && p1.contains("Page one words"), "{p1}");
+    }
+
+    /// #775: the fallback follows the font's class, and embedFonts packages the stylesheet's fonts
+    /// (and reports those it can't).
+    #[test]
+    fn epub_font_fallbacks_and_embedding() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Sans", "chars": {"fontFamily": "Source Sans 3", "fontStyle": "Regular"}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Gone", "chars": {"fontFamily": "No Such Font Family", "fontStyle": "Regular"}}))
+            .unwrap();
+        s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Words", "caret": false})).unwrap();
+        let r = s.execute("file.exportEpub", &json!({})).unwrap();
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        let css = read(&mut z, "OEBPS/style.css");
+        assert!(css.contains("font-family: \"Source Sans 3\", sans-serif;"), "{css}");
+        assert!(!css.contains("@font-face") && r["warnings"] == json!([]), "nothing embedded unless asked");
+        let r = s.execute("file.exportEpub", &json!({"embedFonts": true})).unwrap();
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        let css = read(&mut z, "OEBPS/style.css");
+        assert!(css.contains("@font-face { font-family: \"Source Sans 3\"; src: url(\"fonts/"), "{css}");
+        let opf = read(&mut z, "OEBPS/content.opf");
+        let font = opf.split("href=\"fonts/").nth(1).and_then(|r| r.split('"').next()).map(|n| format!("OEBPS/fonts/{n}"));
+        assert!(font.as_ref().is_some_and(|f| z.by_name(f).is_ok_and(|e| e.size() > 1000)), "{opf}");
+        let warnings = r["warnings"].as_array().unwrap();
+        assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("No Such Font Family")), "{warnings:?}");
+        let html = s.execute("file.exportHtml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(html.contains("\"Source Sans 3\", sans-serif;"));
+    }
+
+    /// A font whose licence allows embedding bitmaps only (fsType bit 9) is not packaged whole,
+    /// and a Semibold style asks for the Semibold face's weight, not Bold's.
+    #[test]
+    fn epub_embedding_follows_bitmap_only_licences_and_weights() {
+        use designcraft_fonts::testing::{font_with, with_fs_type};
+        const BITMAP: &str = "DocFont Epub Bitmap Only";
+        for fs_type in [0x0200, 0x0208] {
+            designcraft_fonts::FontDb::global()
+                .add_font(with_fs_type(font_with(&format!("{BITMAP} {fs_type:04x}"), &['W']).unwrap(), fs_type).unwrap());
+        }
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        for fs_type in [0x0200, 0x0208] {
+            let family = format!("{BITMAP} {fs_type:04x}");
+            s.execute("style.paragraph.create", &json!({"name": family, "chars": {"fontFamily": family, "fontStyle": "Regular"}})).unwrap();
+        }
+        s.execute("style.paragraph.create", &json!({"name": "Semi", "chars": {"fontFamily": "Source Sans 3", "fontStyle": "Semibold"}})).unwrap();
+        s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Words", "caret": false})).unwrap();
+        let r = s.execute("file.exportEpub", &json!({"embedFonts": true})).unwrap();
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        let css = read(&mut z, "OEBPS/style.css");
+        assert!(!css.contains(&format!("@font-face {{ font-family: \"{BITMAP}")), "{css}");
+        let warnings = r["warnings"].to_string();
+        for fs_type in [0x0200, 0x0208] {
+            assert!(warnings.contains(&format!("{BITMAP} {fs_type:04x} Regular`: its licence doesn't allow embedding")), "{warnings}");
+        }
+        let semi = css.lines().find(|l| l.contains(".semi {")).unwrap_or_default();
+        assert!(semi.contains("font-weight: 600;"), "{css}");
+    }
+
+    /// #771, #773: a cover image file and an identifier through the command; the package's
+    /// modified time is the export's.
+    #[test]
+    fn epub_cover_image_file_and_identifier() {
+        let dir = std::env::temp_dir().join(format!("dc-epub-cover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpg = dir.join("cover.jpg");
+        std::fs::write(&jpg, [0xFF, 0xD8, 0xFF, 0xE0, 0, 16]).unwrap();
+        let bad = dir.join("cover.txt");
+        std::fs::write(&bad, b"not an image").unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Words", "caret": false})).unwrap();
+        let r = s.execute("file.exportEpub", &json!({"coverImage": jpg.to_str().unwrap(), "identifier": "urn:isbn:9780000000002"})).unwrap();
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        let opf = read(&mut z, "OEBPS/content.opf");
+        assert!(opf.contains("<dc:identifier id=\"bookid\">urn:isbn:9780000000002</dc:identifier>"), "{opf}");
+        assert!(opf.contains("href=\"images/cover.jpg\" media-type=\"image/jpeg\""), "{opf}");
+        assert!(!opf.contains("2026-01-01T00:00:00Z"), "the export time, not a fixed date: {opf}");
+        assert!(z.by_name("OEBPS/images/cover.jpg").is_ok());
+        assert!(s.execute("file.exportEpub", &json!({"coverImage": bad.to_str().unwrap()})).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -850,6 +1059,45 @@ mod placed_pdf_print_tests {
         let e = s.execute("file.exportPdf", &json!({"standard": "x4"})).unwrap_err().to_string();
         assert!(e.contains("logo.pdf is PDF 2.0") && e.contains("PDF 1.6"), "{e}");
     }
+
+    /// A one-page PDF with a black box whose catalog says `/Version /1.7`, as TCPDF writes it.
+    fn catalog_v17(header: &str) -> Vec<u8> {
+        let content = "0 0 0 1 k 0 0 200 200 re f";
+        let mut pdf = format!("{header}\n").into_bytes();
+        let mut offsets = Vec::new();
+        for body in [
+            "<</Type/Catalog/Pages 2 0 R/Version /1.7>>".to_owned(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_owned(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R/Resources<<>>>>".to_owned(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+        ] {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", offsets.len()).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 5\n0000000000 65535 f\r\n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n\r\n").as_bytes());
+        }
+        pdf.extend_from_slice(format!("trailer\n<</Size 5/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        pdf
+    }
+
+    /// A placed PDF whose catalog `/Version /1.7` overrides its header failed the PDF/X-4 export
+    /// with "logo.pdf is PDF 1.7", though a 1.7 header alone is relabelled (#907).
+    #[test]
+    fn catalog_version_17_placed_in_pdfx4() {
+        for header in ["%PDF-1.7", "%PDF-1.4"] {
+            let pdf = catalog_v17(header);
+            assert_eq!(hayro_syntax::Pdf::new(pdf.clone()).unwrap().version(), hayro_syntax::PdfVersion::Pdf17);
+            let mut s = page_with(&pdf);
+            let r = s.execute("file.exportPdf", &json!({"standard": "x4"})).unwrap_or_else(|e| panic!("{header}: {e}"));
+            assert!(r["warnings"].to_string().contains("logo.pdf: a PDF 1.7 placed in a PDF 1.6 file"), "{}", r["warnings"]);
+            let out = base64_decode(r["base64"].as_str().unwrap());
+            assert!(out.starts_with(b"%PDF-1.6"));
+            assert_eq!(hayro_syntax::Pdf::new(out).unwrap().version(), hayro_syntax::PdfVersion::Pdf16);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -897,5 +1145,59 @@ mod print_group_tests {
         s.execute("edit.transparencyBlendSpace", &json!({"space": "rgb"})).unwrap();
         let t = text(&mut s);
         assert!(t.contains("/CS/DeviceRGB") && designcraft_pdf::has_rgb_groups(t.as_bytes()));
+    }
+}
+
+#[cfg(test)]
+mod pptx_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn unzip(b64: &str) -> zip::ZipArchive<std::io::Cursor<Vec<u8>>> {
+        zip::ZipArchive::new(std::io::Cursor::new(super::super::file::base64_decode(b64))).unwrap()
+    }
+
+    fn read(z: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str) -> String {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut z.by_name(name).unwrap(), &mut s).unwrap();
+        s
+    }
+
+    #[test]
+    fn sample_exports_editable_slides() {
+        let mut s = Session::new();
+        s.execute("file.newSample", &json!({})).unwrap();
+        let r = s.execute("file.exportPptx", &json!({})).unwrap();
+        assert_eq!(r["slides"], 4);
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        // The swatch table is a PowerPoint table; the cover picture is embedded; text is text.
+        assert!(read(&mut z, "ppt/slides/slide4.xml").contains("<a:tbl>"));
+        assert!(read(&mut z, "ppt/slides/slide1.xml").contains("<p:pic>"));
+        let text: String = read(&mut z, "ppt/slides/slide2.xml").split("<a:t>").skip(1).filter_map(|t| t.split("</a:t>").next()).collect();
+        assert!(text.contains("Notes on the Grid"), "{text}");
+        assert!(read(&mut z, "ppt/presentation.xml").contains("<p:embeddedFontLst>"));
+
+        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "embedFonts": false, "lineBreaks": "reflow"})).unwrap();
+        assert_eq!(r["slides"], 2);
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("fonts are not embedded")));
+        assert!(s.execute("file.exportPptx", &json!({"lineBreaks": "wrap"})).is_err());
+        assert!(s.execute("file.exportPptx", &json!({"pages": [9]})).is_err());
+    }
+
+    #[test]
+    fn rasterize_option_places_a_picture() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200], "shape": "ellipse"})).unwrap();
+        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [r["id"]]})).unwrap();
+        let shapes = |s: &mut Session| {
+            let r = s.execute("file.exportPptx", &json!({})).unwrap();
+            read(&mut unzip(r["base64"].as_str().unwrap()), "ppt/slides/slide1.xml")
+        };
+        assert!(shapes(&mut s).contains("prst=\"ellipse\""));
+        s.execute("object.exportOptions", &json!({"ids": [r["id"]], "rasterize": true})).unwrap();
+        let x = shapes(&mut s);
+        assert!(x.contains("<p:pic>") && !x.contains("prst=\"ellipse\""), "{x}");
     }
 }

@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod features;
 mod fontdb;
 mod group;
 mod kind;
@@ -14,9 +15,10 @@ mod kind;
 pub mod testing;
 mod vertical;
 
+pub use features::{FontFeatures, font_features};
 pub use fontdb::{
     DOCUMENT_FONTS_FOLDER, DocumentFonts, FALLBACK_FAMILY, FaceRef, FontDb, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES,
-    MAX_DOCUMENT_FONTS_TOTAL, ScopedFonts, base_style, bundled, system_font_dirs,
+    MAX_DOCUMENT_FONTS_TOTAL, ScopedFonts, base_style, bundled, same_style, system_font_dirs,
 };
 pub use group::{FamilyInfo, FontGroup, sort_for_menu};
 pub use harfrust::Feature;
@@ -80,6 +82,16 @@ pub struct ShapedGlyph {
     pub safe_tatweel_before: bool,
     /// Direction used for shaping, including Unicode mirroring.
     pub rtl: bool,
+}
+
+/// Line metrics of the font at `index` of `data`, in font units: (units per em, ascent, descent
+/// (negative below the baseline), line gap) — what text layouts such as egui's build lines from.
+/// `None` if the font can't be read.
+pub fn line_metrics(data: &[u8], index: u32) -> Option<(f32, f32, f32, f32)> {
+    use skrifa::MetadataProvider;
+    let f = skrifa::FontRef::from_index(data, index).ok()?;
+    let m = f.metrics(skrifa::instance::Size::unscaled(), skrifa::instance::LocationRef::default());
+    Some((f32::from(m.units_per_em.max(1)), m.ascent, m.descent, m.leading))
 }
 
 /// An OpenType feature setting: `"liga"`, `"-kern"`, `"ss01"`.

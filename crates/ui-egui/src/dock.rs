@@ -20,12 +20,14 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("paragraphStyles", "Paragraph Styles", "panel-pstyles"),
     ("characterStyles", "Character Styles", "panel-cstyles"),
     ("character", "Character", "panel-character"),
+    ("typography", "Typography", "panel-typography"),
     ("glyphs", "Glyphs", "panel-character"),
     ("paragraph", "Paragraph", "panel-paragraph"),
     ("textWrap", "Text Wrap", "panel-wrap"),
     ("table", "Table", "panel-table"),
     ("align", "Align", "panel-align"),
     ("pathfinder", "Pathfinder", "tool-scissors"),
+    ("flexLayout", "Flex Layout", "panel-flex"),
     ("links", "Links", "panel-links"),
     ("info", "Info", "panel-info"),
     ("preflight", "Preflight", "panel-preflight"),
@@ -113,28 +115,75 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             },
         );
     }
-    // Collapsed icon strip (37 pt) to the left of the panel stack.
-    egui::Panel::right("icon_column").exact_size(37.0).resizable(false).frame(egui::Frame::NONE.fill(t.panel)).show(ui, |ui| {
+    // Collapsed icon strip (37 pt) to the left of the panel stack; a workspace's iconic groups
+    // (Essentials Classic) show their names.
+    let groups = app.ui.icon_groups.clone();
+    egui::Panel::right("icon_column").exact_size(icon_column_width(app)).resizable(false).frame(egui::Frame::NONE.fill(t.panel)).show(ui, |ui| {
         dock_header(ui, &t, "«");
         ui.add_space(4.0);
-        ui.vertical_centered(|ui| {
-            for (id, label, icon) in ICON_PANELS {
-                let open = app.ui.open_panel.as_deref() == Some(*id);
-                let floats = app.ui.floating.iter().any(|(p, _)| p == id);
-                let response =
-                    icons::button(ui, icon, 28.0, open || floats, crate::i18n::tr(&app.ui.language, label)).interact(Sense::click_and_drag());
-                if response.clicked() {
-                    if floats {
-                        ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating_panel", *id))));
-                    } else {
-                        app.ui.open_panel = if open { None } else { Some(id.to_string()) };
+        match &groups {
+            Some(groups) => {
+                for (i, group) in groups.iter().enumerate() {
+                    if i > 0 {
+                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 7.0), Sense::hover());
+                        ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(1.0, t.border));
+                    }
+                    for (id, label, icon) in group.iter().filter_map(|id| panel_entry(id)) {
+                        let on = app.ui.open_panel.as_deref() == Some(id) || app.ui.floating.iter().any(|(p, _)| p == id);
+                        let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
+                        if on {
+                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), 3.0, t.tool_active);
+                        } else if response.hovered() {
+                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), 3.0, t.hover);
+                        }
+                        icons::paint(ui.painter(), egui::Rect::from_min_size(r.min + vec2(8.0, 4.0), vec2(18.0, 18.0)), icon, t.icon);
+                        crate::rtl::paint(
+                            ui.painter(),
+                            r.left_center() + vec2(32.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            crate::i18n::tr(&app.ui.language, label),
+                            semibold(11.5),
+                            t.text,
+                        );
+                        icon_clicked(app, ui, id, &response);
                     }
                 }
-                crate::panel_docking::legacy_tab(app, ui, id, &response);
-                ui.add_space(1.0);
             }
-        });
+            None => {
+                ui.vertical_centered(|ui| {
+                    for (id, label, icon) in ICON_PANELS {
+                        let on = app.ui.open_panel.as_deref() == Some(*id) || app.ui.floating.iter().any(|(p, _)| p == id);
+                        let response = icons::button(ui, icon, 28.0, on, crate::i18n::tr(&app.ui.language, label)).interact(Sense::click_and_drag());
+                        icon_clicked(app, ui, id, &response);
+                        ui.add_space(1.0);
+                    }
+                });
+            }
+        }
     });
+}
+
+/// Width of the icon column: icons only, or icons with names for a workspace's groups.
+fn icon_column_width(app: &DesignApp) -> f32 {
+    if app.ui.icon_groups.is_some() { 150.0 } else { 37.0 }
+}
+
+/// (id, label, icon) of any dock panel.
+fn panel_entry(id: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    DOCK_TABS.iter().chain(ICON_PANELS).find(|p| p.0 == id).copied()
+}
+
+/// A click on a panel's icon: raise it when it floats, else open or close its flyout.
+fn icon_clicked(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, response: &egui::Response) {
+    if response.clicked() {
+        if app.ui.floating.iter().any(|(p, _)| p == id) {
+            ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating_panel", id))));
+        } else {
+            let open = app.ui.open_panel.as_deref() == Some(id);
+            app.ui.open_panel = if open { None } else { Some(id.to_string()) };
+        }
+    }
+    crate::panel_docking::legacy_tab(app, ui, id, response);
 }
 
 /// 11 pt dock header strip with a collapse chevron.
@@ -152,10 +201,10 @@ pub fn flyout(app: &mut DesignApp, ctx: &egui::Context) {
     }
     let Some(id) = app.ui.open_panel.clone() else { return };
     let t = Tokens::get(ctx);
-    let label = crate::i18n::tr(&app.ui.language, ICON_PANELS.iter().find(|p| p.0 == id).map(|p| p.1).unwrap_or("Panel")).to_owned();
+    let label = crate::i18n::tr(&app.ui.language, panel_entry(&id).map(|p| p.1).unwrap_or("Panel")).to_owned();
     let screen = ctx.content_rect();
     let dock_w = if app.ui.dock_expanded { ctx.memory(|m| m.area_rect(egui::Id::new("dock")).map(|r| r.width())).unwrap_or(280.0) } else { 0.0 };
-    let pos = egui::pos2(screen.max.x - 37.0 - dock_w - 262.0, 120.0);
+    let pos = egui::pos2(screen.max.x - icon_column_width(app) - dock_w - 262.0, 120.0);
     let mut open = true;
     egui::Area::new(egui::Id::new("panel_flyout")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).fill(t.panel).inner_margin(egui::Margin::same(0)).show(ui, |ui| {
@@ -205,11 +254,13 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
         "characterStyles" => panels::styles::character(app, ui),
         "stroke" => panels::properties::stroke_panel(app, ui),
         "character" => panels::properties::character_panel(app, ui),
+        "typography" => panels::typography::show(app, ui),
         "glyphs" => panels::glyphs::show(app, ui),
         "paragraph" => panels::properties::paragraph_panel(app, ui),
         "textWrap" => panels::properties::wrap_panel(app, ui),
         "align" => panels::properties::align_panel(app, ui),
         "pathfinder" => panels::properties::pathfinder_panel(app, ui),
+        "flexLayout" => panels::properties::flex_panel(app, ui),
         "color" => panels::swatches::color_panel(app, ui),
         "gradient" => panels::swatches::gradient_panel(app, ui),
         "effects" => panels::properties::effects_panel(app, ui),
@@ -262,7 +313,7 @@ pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
     }
     let t = Tokens::get(ctx);
     for (id, at) in app.ui.floating.clone() {
-        let label = crate::i18n::tr(&app.ui.language, ICON_PANELS.iter().find(|p| p.0 == id).map(|p| p.1).unwrap_or("Panel")).to_owned();
+        let label = crate::i18n::tr(&app.ui.language, panel_entry(&id).map(|p| p.1).unwrap_or("Panel")).to_owned();
         let mut open = true;
         let mut dock = false;
         let r = egui::Window::new(label.clone())

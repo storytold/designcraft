@@ -4,7 +4,7 @@
 //! vello_cpu only supports filter layers in single-threaded contexts, so on the multithreaded
 //! pipeline each effect is rendered into an offscreen single-threaded context cropped to its
 //! reach and composited back as an image ([`Renderer::with_filters`]); single-threaded contexts
-//! draw directly.
+//! draw directly. A very wide blur goes offscreen in both, at a lower resolution.
 //!
 //! - Drop shadow / outer glow: the object's silhouette (everything it paints: fill, image, text,
 //!   stroke) in a `DropShadowOnly` layer under the object. `size` sets the blur (σ = size / 2),
@@ -64,6 +64,28 @@ fn shadow(sigma: f64, color: peniko::Color) -> Filter {
     })
 }
 
+/// Keep what was drawn in the current layer as much as `it`'s gradient feather says. Cover the
+/// whole viewport: strokes, text and child effects can extend arbitrarily past the geometry,
+/// and past the gradient's ends its end opacities carry on.
+pub(crate) fn gradient_feather_mask(ctx: &mut RenderContext, f: &Frame, it: &Item, xf: Affine) {
+    let gf = &it.effects.gradient_feather;
+    let (p0, p1) = gf.points(it.feather_bounds());
+    let stop = |o: f32, a: f32| peniko::ColorStop::from((o, peniko::Color::from_rgba8(0, 0, 0, (a.clamp(0.0, 1.0) * 255.0).round() as u8)));
+    let stops = [stop(0.0, gf.start), stop(1.0, gf.end)];
+    let grad = if gf.radial {
+        peniko::Gradient::new_radial(p0, (p1 - p0).hypot().max(1e-3) as f32).with_stops(stops.as_slice())
+    } else {
+        peniko::Gradient::new_linear(p0, p1).with_stops(stops.as_slice())
+    };
+    ctx.set_transform(Affine::IDENTITY);
+    ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
+    ctx.set_paint(grad);
+    ctx.set_paint_transform(f.view * xf);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(ctx.width()), f64::from(ctx.height())));
+    ctx.reset_paint_transform();
+    ctx.pop_layer();
+}
+
 impl Renderer {
     /// Draw an item with soft effects: below-effects, the (feathered) body, inner shadow.
     pub(crate) fn draw_item_fx(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: Option<usize>) {
@@ -74,7 +96,7 @@ impl Renderer {
         let reach = xf.transform_rect_bbox(bp.bounding_box()).inflate(sw + 1.0, sw + 1.0);
         // The silhouette is the shape when the object paints its area (fill / image); text frames
         // without a fill cast the shadow of their text only, which can't be grown.
-        let solid = !it.fill.is_none() || matches!(it.content, designcraft_doc::Content::Graphic(_));
+        let solid = !it.fill.is_none() || matches!(it.content, designcraft_doc::Content::Graphic(_)) || it.has_nested_items();
         let mut below = vec![];
         if e.outer_glow.on {
             let g = &e.outer_glow;
@@ -170,22 +192,7 @@ impl Renderer {
             }
         }
         if gf.on {
-            let (p0, p1) = gf.points(it.inner_bounds());
-            let stop = |o: f32, a: f32| peniko::ColorStop::from((o, peniko::Color::from_rgba8(0, 0, 0, (a.clamp(0.0, 1.0) * 255.0).round() as u8)));
-            let stops = [stop(0.0, gf.start), stop(1.0, gf.end)];
-            let grad = if gf.radial {
-                peniko::Gradient::new_radial(p0, (p1 - p0).hypot().max(1e-3) as f32).with_stops(stops.as_slice())
-            } else {
-                peniko::Gradient::new_linear(p0, p1).with_stops(stops.as_slice())
-            };
-            ctx.set_transform(Affine::IDENTITY);
-            ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
-            ctx.set_transform(f.view * xf);
-            ctx.set_paint(grad);
-            let area = if xf.determinant().abs() > 1e-12 { xf.inverse().transform_rect_bbox(reach) } else { it.inner_bounds() };
-            ctx.fill_rect(&area.inflate(4.0, 4.0));
-            ctx.reset_paint_transform();
-            ctx.pop_layer();
+            gradient_feather_mask(ctx, f, it, xf);
         }
         if gf.on || directional {
             ctx.pop_layer();
@@ -210,11 +217,9 @@ impl Renderer {
             let (sigma, choke) = split(g.size, g.choke);
             let paint = color_of(&c, g.opacity.clamp(0.0, 1.0));
             if g.center {
-                self.with_filters(ctx, f, reach, sigma, |_, c, fr| {
+                self.with_blended_filters(ctx, f, reach, sigma, Mix::Screen, |_, c, fr| {
                     c.set_transform(fr.view * xf);
                     c.push_clip_layer(bp);
-                    c.set_transform(Affine::IDENTITY);
-                    c.push_layer(None, Some(BlendMode::new(Mix::Screen, Compose::SrcOver)), None, None, None);
                     c.set_transform(fr.view);
                     c.push_layer(None, None, None, None, Some(blur(sigma)));
                     c.set_transform(fr.view * xf);
@@ -227,7 +232,6 @@ impl Renderer {
                     c.set_paint(peniko::Color::BLACK);
                     c.set_stroke(kurbo::Stroke::new((g.size - choke).max(0.5) * 2.0).with_join(kurbo::Join::Round));
                     c.stroke_path(bp);
-                    c.pop_layer();
                     c.pop_layer();
                     c.pop_layer();
                     c.pop_layer();
@@ -245,11 +249,9 @@ impl Renderer {
             let sigma = st.size.max(0.0) / 2.0;
             let paint = color_of(&c, st.opacity.clamp(0.0, 1.0));
             let invert = st.invert;
-            self.with_filters(ctx, f, reach, sigma, |_, c, fr| {
+            self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, |_, c, fr| {
                 c.set_transform(fr.view * xf);
                 c.push_clip_layer(bp);
-                c.set_transform(Affine::IDENTITY);
-                c.push_layer(None, Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)), None, None, None);
                 c.set_transform(fr.view);
                 c.push_layer(None, None, None, None, Some(blur(sigma)));
                 if invert {
@@ -266,7 +268,6 @@ impl Renderer {
                 c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::Xor)), None, None, None);
                 c.set_transform(fr.view * Affine::translate(-off) * xf);
                 c.fill_path(bp);
-                c.pop_layer();
                 c.pop_layer();
                 c.pop_layer();
                 c.pop_layer();
@@ -304,13 +305,9 @@ impl Renderer {
         paint: peniko::Color,
         mix: Mix,
     ) {
-        self.with_filters(ctx, f, reach, sigma, |_, c, fr| {
+        self.with_blended_filters(ctx, f, reach, sigma, mix, |_, c, fr| {
             c.set_transform(fr.view * xf);
             c.push_clip_layer(bp);
-            if mix != Mix::Normal {
-                c.set_transform(Affine::IDENTITY);
-                c.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
-            }
             c.set_transform(fr.view);
             c.push_layer(None, None, None, None, Some(blur(sigma)));
             // Everything outside the offset shape, so the colour bleeds in from the edges.
@@ -329,16 +326,35 @@ impl Renderer {
                 c.stroke_path(&shape);
             }
             c.pop_layer();
-            if mix != Mix::Normal {
-                c.pop_layer();
-            }
             c.pop_layer();
         });
     }
 
+    /// The effect's blend must see the object's backdrop, outside its clipping and offscreen
+    /// filter layers. Putting it inside the clip blends with transparent pixels instead.
+    fn with_blended_filters(
+        &mut self,
+        ctx: &mut RenderContext,
+        f: &Frame,
+        reach: Rect,
+        sigma: f64,
+        mix: Mix,
+        draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
+    ) {
+        if mix != Mix::Normal {
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
+        }
+        self.with_filters(ctx, f, reach, sigma, draw);
+        if mix != Mix::Normal {
+            ctx.pop_layer();
+        }
+    }
+
     /// Run `draw`, which pushes filter layers. Single-threaded contexts draw directly. On a
-    /// multithreaded context the layer is drawn into an offscreen single-threaded context
-    /// covering `reach` (spread space) plus the blur's spread, then composited back.
+    /// multithreaded context, or for a blur wider than [`MAX_BLUR_SPREAD`], the layer is drawn into
+    /// an offscreen single-threaded context covering `reach` (spread space) plus the blur's spread,
+    /// then composited back.
     pub(crate) fn with_filters(
         &mut self,
         ctx: &mut RenderContext,
@@ -347,28 +363,67 @@ impl Renderer {
         sigma: f64,
         draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
     ) {
-        if !f.mt {
-            return draw(self, ctx, f);
-        }
         // 3σ of the Gaussian in pixels, plus a pixel of antialiasing.
         let spread = sigma.max(0.0) * 3.0 / f.px + 2.0;
-        let screen = Rect::new(0.0, 0.0, ctx.width() as f64, ctx.height() as f64).inflate(spread, spread);
-        let r = f.view.transform_rect_bbox(reach).inflate(spread, spread).intersect(screen);
-        let (x0, y0) = (r.x0.floor(), r.y0.floor());
-        let (w, h) = ((r.x1.ceil() - x0).min(crate::MAX_SIDE as f64), (r.y1.ceil() - y0).min(crate::MAX_SIDE as f64));
-        if w < 1.0 || h < 1.0 {
-            return;
+        if !f.mt && spread <= MAX_BLUR_SPREAD {
+            return draw(self, ctx, f);
         }
-        let (w, h) = (w as u16, h as u16);
-        let mut off = RenderContext::new_with(w, h, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
-        let shifted = Frame { mt: false, view: Affine::translate((-x0, -y0)) * f.view, ..*f };
+        let Some(o) = offscreen(f.view.transform_rect_bbox(reach), spread, ctx.width(), ctx.height()) else { return };
+        let mut off = RenderContext::new_with(o.width, o.height, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
+        let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -o.y0)) * f.view;
+        let shifted = Frame { mt: false, view, px: f.px * o.scale, ..*f };
         draw(self, &mut off, &shifted);
         off.flush();
-        let mut pm = vello_cpu::Pixmap::new(w, h);
+        let mut pm = vello_cpu::Pixmap::new(o.width, o.height);
         off.render(&mut pm, &mut self.resources);
-        ctx.set_transform(Affine::translate((x0, y0)));
+        ctx.set_transform(Affine::translate((o.x0, o.y0)) * Affine::scale(o.scale));
         ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(pm)), sampler: peniko::ImageSampler::default() });
-        ctx.fill_rect(&Rect::new(0.0, 0.0, w as f64, h as f64));
+        ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(o.width), f64::from(o.height)));
         ctx.set_transform(Affine::IDENTITY);
+    }
+}
+
+/// The widest blur (3σ, device pixels) drawn at full resolution. vello pads a filter layer by the
+/// blur's width on every side, so a wide blur needs gigabytes; it is drawn at a lower resolution
+/// instead, where it is this wide, and has no detail to lose there.
+const MAX_BLUR_SPREAD: f64 = 1024.0;
+
+/// An offscreen image for [`Renderer::with_filters`]: where it goes on the device, how many device
+/// pixels one of its pixels covers, and its size.
+#[derive(Debug, PartialEq)]
+struct Offscreen {
+    x0: f64,
+    y0: f64,
+    scale: f64,
+    width: u16,
+    height: u16,
+}
+
+/// The offscreen image an effect is drawn in: `reach` (device pixels) widened by the blur's
+/// `spread`, within the window widened the same way, at a resolution that keeps the blur within
+/// [`MAX_BLUR_SPREAD`], at most `MAX_SIDE` a side. `None` when none of it shows.
+fn offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscreen> {
+    let screen = Rect::new(0.0, 0.0, f64::from(width), f64::from(height)).inflate(spread, spread);
+    let r = reach.inflate(spread, spread).intersect(screen);
+    let (x0, y0) = (r.x0.floor(), r.y0.floor());
+    let scale = (spread / MAX_BLUR_SPREAD).max(1.0);
+    let side = |len: f64| (len / scale).ceil().min(crate::MAX_SIDE as f64);
+    let (w, h) = (side(r.x1.ceil() - x0), side(r.y1.ceil() - y0));
+    (w >= 1.0 && h >= 1.0).then_some(Offscreen { x0, y0, scale, width: w as u16, height: h as u16 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wide_blur_is_drawn_offscreen_at_a_lower_resolution() {
+        let object = Rect::new(150.0, 150.0, 350.0, 350.0);
+        let small = Offscreen { x0: 140.0, y0: 140.0, scale: 1.0, width: 220, height: 220 };
+        assert_eq!(offscreen(object, 10.0, 1440, 900), Some(small));
+        // A 10,000 pt drop shadow at 100%: 3σ is 15,000 px, which asked for 30,204 px a side and as
+        // much padding again inside vello's filter layer. Drawn at 1/14.65 it is 1,024 px wide.
+        let wide = Offscreen { x0: -14852.0, y0: -14852.0, scale: 15_002.0 / 1024.0, width: 2062, height: 2062 };
+        assert_eq!(offscreen(object, 15_002.0, 1440, 900), Some(wide));
     }
 }

@@ -257,8 +257,10 @@ fn image_under(cx: &ToolContext, p: Point) -> Option<(SpreadRef, Point)> {
             return None;
         }
         let xf = outer * it.xf;
-        if let Content::Group { items } = &it.content {
-            return items.iter().rev().find_map(|c| shows(d, c, xf, at, depth + 1));
+        if let Content::Group { .. } = &it.content {
+            // Only the shown children count: a multi-state object shows just its active state.
+            let shown: Vec<&Item> = it.shown_children().map(|c| &**c).collect();
+            return shown.into_iter().rev().find_map(|c| shows(d, c, xf, at, depth + 1));
         }
         let graphic = matches!(it.content, Content::Graphic(_));
         // Unfilled frames (a text frame over the photo) let the image show through.
@@ -299,7 +301,12 @@ impl Tool for EyedropperTool {
         let selected = !cx.selection.items.is_empty() || cx.selection.text.is_some() || cx.selection.cells.is_some();
         // A placed image under the pointer is sampled (its layer may be locked: sampling changes nothing).
         if selected && let Some((sr, at)) = image_under(cx, ev.pos) {
-            return vec![Action::Exec("color.sample".into(), json!({"at": [at.x, at.y], "spread": sr}))];
+            // To the fill or stroke in front in the toolbox, as in InDesign.
+            let mut p = json!({"at": [at.x, at.y], "spread": sr});
+            if cx.stroke_in_front {
+                p["target"] = json!("stroke");
+            }
+            return vec![Action::Exec("color.sample".into(), p)];
         }
         let Some((_, id)) = cx.hit(ev.pos) else { return vec![] };
         if !selected {

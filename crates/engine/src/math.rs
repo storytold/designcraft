@@ -160,9 +160,15 @@ fn big_op(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Deepest expression nesting parsed. Recursive descent must not overflow the stack on hostile
+/// input (`\frac\frac…`, `{{{{…`, `\left(\left(…`); past the cap groups stop descending.
+const MAX_NESTING: usize = 256;
+
 struct Parser<'a> {
     s: &'a [char],
     i: usize,
+    /// Enclosing group depth, at most [`MAX_NESTING`].
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -220,14 +226,19 @@ impl Parser<'_> {
         out
     }
     fn arg(&mut self) -> Node {
+        if self.depth >= MAX_NESTING {
+            return Node::Group(Vec::new());
+        }
+        self.depth += 1;
         self.skip_ws();
-        if self.peek() == Some('{') {
+        let n = if self.peek() == Some('{') {
             self.i += 1;
-            let g = self.list(Some('}'));
-            Node::Group(g)
+            Node::Group(self.list(Some('}')))
         } else {
             self.atom().unwrap_or(Node::Group(vec![]))
-        }
+        };
+        self.depth -= 1;
+        n
     }
     fn delimiter(&mut self) -> String {
         self.skip_ws();
@@ -280,7 +291,7 @@ impl Parser<'_> {
                                 }
                                 s.push(c);
                             }
-                            Box::new(parse(&s))
+                            Box::new(parse_at(&s, self.depth + 1))
                         });
                         let a = self.arg();
                         Node::Sqrt(idx, Box::new(a))
@@ -329,6 +340,10 @@ impl Parser<'_> {
         })
     }
     fn list(&mut self, end: Option<char>) -> Vec<Node> {
+        if self.depth >= MAX_NESTING {
+            return Vec::new();
+        }
+        self.depth += 1;
         let mut out: Vec<Node> = Vec::new();
         loop {
             self.skip_ws();
@@ -362,9 +377,13 @@ impl Parser<'_> {
                 }
             }
         }
+        self.depth -= 1;
         out
     }
     fn list_until_right(&mut self) -> Vec<Node> {
+        if self.depth >= MAX_NESTING {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         loop {
             self.skip_ws();
@@ -375,7 +394,7 @@ impl Parser<'_> {
                 self.i += 6;
                 break;
             }
-            let mut p = Parser { s: self.s, i: self.i };
+            let mut p = Parser { s: self.s, i: self.i, depth: self.depth + 1 };
             let one = p.list_one();
             self.i = p.i;
             out.extend(one);
@@ -410,8 +429,12 @@ impl Parser<'_> {
 }
 
 fn parse(src: &str) -> Node {
+    parse_at(src, 0)
+}
+
+fn parse_at(src: &str, depth: usize) -> Node {
     let chars: Vec<char> = src.chars().collect();
-    let mut p = Parser { s: &chars, i: 0 };
+    let mut p = Parser { s: &chars, i: 0, depth };
     Node::Group(p.list(None))
 }
 
@@ -713,5 +736,19 @@ mod tests {
         // The SVG parses and rasterises.
         let (svg, _) = to_svg(r"\sqrt{a^2+b^2} \ne \pi", 14.0);
         assert!(designcraft_images::svg_tree(&svg).is_some());
+    }
+
+    /// Hostile input must not overflow the stack: nesting past the cap stops descending instead
+    /// of recursing once per group (100k levels used to abort the process).
+    #[test]
+    fn an_over_deep_expression_is_bounded() {
+        for latex in [
+            format!("{}x{}", "{".repeat(100_000), "}".repeat(100_000)),
+            format!("{}x", r"\frac".repeat(100_000)),
+            format!("{}x", r"\left(".repeat(100_000)),
+        ] {
+            let (svg, _) = to_svg(&latex, 12.0);
+            assert!(!svg.is_empty());
+        }
     }
 }

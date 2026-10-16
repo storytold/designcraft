@@ -200,6 +200,12 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
     Ok(out)
 }
 
+impl From<craft_pdf::write::WriteError> for PdfError {
+    fn from(error: craft_pdf::write::WriteError) -> Self {
+        Self::Write(error.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

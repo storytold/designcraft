@@ -41,6 +41,74 @@ claude mcp add designcraft -- "C:\Program Files\DesignCraft\designcraft-cli.exe"
 claude mcp add designcraft -- designcraft-cli mcp
 ```
 
+## Confining file access
+
+```sh
+designcraft-cli mcp --automation-read-root /work/project --automation-write-root /work/project/out
+```
+
+```json
+{"mcpServers": {"designcraft": {"command": "designcraft-cli",
+  "args": ["mcp", "--automation-read-root", "/work/project", "--automation-write-root", "/work/project/out"]}}}
+```
+
+The two flags (VectorCraft, PhotoCraft and the other Craft apps take the same ones, so one client
+config works across the suite) keep the agent to the folders you give it:
+
+- Every file a command reads must lie inside the **read root**: `open_document`, `file.open`,
+  `file.openIdml`, `place_image` and `file.place` / `place.load` / `media.options` with a `path`,
+  `links.relink`, `links.relinkFolder`, `color.loadProfile`, `swatch.load`, `library.open`,
+  `book.open`, `data.source.select`, `data.merge` and `file.importXml` / `xml.loadDtd` with a `path`,
+  and `file.recovery.list` / `file.recovery.open` with a `dir`. A DesignCraft document names more
+  files than the agent does: linked images, data sources, book chapters, the `Document Fonts` folder
+  beside a document, an IDML package's linked images and the files an image cell of a merge names.
+  Those are read through the same checks, so a path in a document that leads outside the read root
+  reads as a file that isn't there.
+- Every file a command writes must lie inside the **write root**: `save_document`, `export_png`,
+  `render_page` with a `path`, `file.save`, `file.saveAs`, `file.saveACopy`, `file.exportPdf`,
+  `file.exportEpub`, `file.exportFixedEpub`, `file.exportHtml`, `file.exportText`, `file.exportXml`,
+  `file.exportIdml`, `file.printBooklet`, `snippet.export`, `swatch.save`, `library.new` and the
+  library's saves, `book.new`, `book.add`, `book.paginate`, `book.syncStyles`, `book.exportPdf`,
+  `file.package`, `links.copyTo` and `file.recovery.save` / `file.recovery.open` with a `dir`
+  (reopening removes the entries it read). `file.package` and `links.copyTo` check their folder
+  before they create anything.
+- Read and write access are separate. Give the same folder twice for both. A root left out grants
+  none of its access: with only `--automation-read-root` nothing can be written to disk. Without
+  either flag nothing changes.
+- A path is made absolute against the server's working directory, then its links are followed: a
+  file (or folder) link that leads out of a root is outside it. For a file that doesn't exist yet,
+  its nearest existing folder's links are followed and the rest must be plain names, so `..` below a
+  folder that doesn't exist is refused, as is a link that leads nowhere (writing through it would
+  create its target). The result is compared with the root by whole folder names: `/work2/x` is not
+  inside `/work`. On Windows case is ignored, UNC paths (`\\server\share\...`) are resolved like
+  drive-letter ones, and device names (`CON`, `NUL`, `COM1`...) are refused.
+- A refused path is an ordinary tool error the agent can read and correct, for example
+  `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` or
+  `automation filesystem access is not granted: write authority is absent: /work/project/out/x.designcraft`.
+- The roots must be existing folders; a missing one stops the server with an error. Each flag is
+  given once (`--flag <dir>` or `--flag=<dir>`).
+
+The flags confine the in-process server, so `--connect` together with them is an error: the server
+would otherwise talk to an app that isn't confined. DesignCraft's desktop app has no equivalent flags
+yet, so a running app (`designcraft --control`) is not confined. `--sample` is the operator's own
+choice and is opened before the roots apply.
+
+What the roots do not cover: commands that take no path still read and change the open document,
+and `inspect_document` returns it. The system font scan, the installed fonts that `file.package`
+copies, and the app's own recovery folder are fixed paths, not agent input, and are not checked. A
+`Document Fonts` folder and each font file in it are checked before they are opened, so a link that
+leads out of the read root is skipped with a note. `file.print` hands a PDF to the system's print
+spooler, which is not a path the agent names.
+Anything that reads or writes a path goes through one place in the engine (the `io` module). The
+crates below the engine have no file access of their own: the IDML import and the font folders take
+a reader or an access check from the engine, and ICC profiles arrive as bytes. A test scans the
+source of every crate for the file system, however it is imported or spelled, and lists the few
+files it excludes and why.
+
+The checks hold for every thread of the server process. A path is checked, then opened: another
+program that swaps a link in between can still win that race, so the roots keep an agent to the
+files it was given rather than guarding against other software on the computer.
+
 ## Modes
 
 | | Headless (`mcp`) | Connected (`mcp --connect PORT` or `HOST:PORT`) |
@@ -70,6 +138,27 @@ Positions in a story's text are **UTF-8 byte offsets**, not character counts: `a
 and `text.move` return, a story's `length` in `get_story` and `inspect_document`, and its `overset` position in
 `get_story`. A character outside ASCII takes 2 to 4 bytes (é 2, — and は 3), so the story `はただ商店` has length 15
 and its second character starts at 3. An offset inside a character snaps back to the start of that character.
+
+## Text and image fitting
+
+Hyphenation is on by default for new text (`hyphenate: true`). To turn it off, select the text or a text frame,
+then call `execute`:
+
+```text
+execute          {"command": "type.para", "params": {"attrs": {"hyphenate": false}}}
+```
+
+With a text selection, this formats the selected paragraphs; with selected text frames, it formats their whole stories.
+
+Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
+
+| `mode` | What it does |
+|---|---|
+| `fillProportionally` | Preserves aspect ratio, covers the frame and clips overflow. |
+| `fitProportionally` | Preserves aspect ratio, shows the whole image and may leave empty space. |
+| `fitContentToFrame` | Stretches the content to the frame's width and height. |
+| `centerContent` | Keeps the current size and positions content at the fitting alignment (center by default). |
+| `fitFrameToContent` | Resizes the frame to the content's bounds. |
 
 ## Tools
 

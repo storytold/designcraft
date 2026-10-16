@@ -364,12 +364,25 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     if let Some(sw) = sw.as_ref().filter(|w| !w.hidden && !w.locked) {
         let cur = if stroke { stroke_tint } else { fill_tint };
         let mut tint = cur * 100.0;
+        let mut commit = None;
         ui.horizontal(|ui| {
             ui.label("T");
-            if ui.add(egui::Slider::new(&mut tint, 0.0..=100.0).suffix("%").integer()).drag_stopped() {
-                let _ = super::apply_swatch(app, stroke, &sw.name, Some(tint / 100.0));
+            // The slider applies on release. The field keeps typed text while it has focus (the
+            // tint is read back from the document every frame) and applies it, clamped, on Enter
+            // or when it loses focus.
+            ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(60.0);
+            if ui.add(egui::Slider::new(&mut tint, 0.0..=100.0).integer().show_value(false)).drag_stopped() {
+                commit = Some(tint);
+            }
+            if let Some(v) =
+                crate::widgets::NumField::number("color_tint", Some(f64::from(cur) * 100.0), "%", 0).width(44.0).range(0.0, 100.0).show(ui)
+            {
+                commit = Some(v as f32);
             }
         });
+        if let Some(v) = commit {
+            let _ = super::apply_swatch(app, stroke, &sw.name, Some(v / 100.0));
+        }
     }
     let mut send: Option<serde_json::Value> = None;
     match mode {
@@ -507,11 +520,21 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ));
         return;
     };
-    let fill = it.fill.clone();
+    // The fill's gradient, or the stroke's when the toolbox's Stroke box is in front (as InDesign's
+    // Gradient panel follows the Fill/Stroke proxy).
+    let target = if app.ui.stroke_front { "stroke" } else { "fill" };
+    let fill = if app.ui.stroke_front { it.stroke.as_fill() } else { it.fill.clone() };
     let Some(g) = designcraft_color::swatch::resolve_gradient(&st.doc.swatches, &fill.swatch).cloned() else {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "The fill isn't a gradient.")).color(t.text_dim));
+        crate::rtl::label(
+            ui,
+            egui::RichText::new(crate::i18n::tr(
+                &app.ui.language,
+                if app.ui.stroke_front { "The stroke isn't a gradient." } else { "The fill isn't a gradient." },
+            ))
+            .color(t.text_dim),
+        );
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply Gradient"))).clicked() {
-            let _ = app.run("object.gradient", json!({}));
+            let _ = app.run("object.gradient", json!({"target": target, "target": target}));
         }
         return;
     };
@@ -524,7 +547,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             .show_ui(ui, |ui| {
                 for (k, v) in [("Linear", "linear"), ("Radial", "radial")] {
                     if ui.selectable_label(g.kind.label() == k, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, k))).clicked() {
-                        let _ = app.run("object.gradient", json!({"kind": v}));
+                        let _ = app.run("object.gradient", json!({"target": target, "kind": v}));
                     }
                 }
             });
@@ -535,7 +558,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             })
             .clicked()
         {
-            let _ = app.run("object.gradient", json!({"reverse": true}));
+            let _ = app.run("object.gradient", json!({"target": target, "reverse": true}));
         }
     });
     let sel_id = egui::Id::new("grad_sel");
@@ -547,13 +570,13 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if let Some(v) = crate::widgets::number(ui, "grad_loc", loc, " %", 54.0, 1) {
             let mut stops = stops_json(&g);
             stops[sel]["location"] = json!(v.clamp(0.0, 100.0));
-            let _ = app.run("object.gradient", json!({"stops": stops}));
+            let _ = app.run("object.gradient", json!({"target": target, "stops": stops}));
         }
         if !radial {
             crate::widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Angle:"));
             let angle = fill.gradient_vector.map(|[x0, y0, x1, y1]| (-(y1 - y0)).atan2(x1 - x0).to_degrees()).or(fill.gradient_angle).unwrap_or(0.0);
             if let Some(v) = crate::widgets::number(ui, "grad_angle", Some(angle), "°", 54.0, 1) {
-                let _ = app.run("object.gradient", json!({"angle": v}));
+                let _ = app.run("object.gradient", json!({"target": target, "angle": v}));
             }
         }
     });
@@ -603,7 +626,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         } else {
             stops[i]["location"] = json!(o as f64 * 100.0);
         }
-        let _ = app.run("object.gradient", json!({"stops": stops}));
+        let _ = app.run("object.gradient", json!({"target": target, "stops": stops}));
     }
     if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
@@ -616,7 +639,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let (c, a) = g.sample(o);
                 let mut stops = stops_json(&g);
                 stops.push(json!({"location": o as f64 * 100.0, "color": c.to_hex(), "opacity": a as f64 * 100.0, "midpoint": 50.0}));
-                let _ = app.run("object.gradient", json!({"stops": stops}));
+                let _ = app.run("object.gradient", json!({"target": target, "stops": stops}));
                 sel = g.stops.iter().filter(|s| s.offset <= o).count();
             }
             None => {}
@@ -665,7 +688,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
                 let mut stops = stops_json(&g);
                 stops[sel]["color"] = json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
-                let _ = app.run("object.gradient", json!({"stops": stops}));
+                let _ = app.run("object.gradient", json!({"target": target, "stops": stops}));
             }
         });
     }

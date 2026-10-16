@@ -167,6 +167,16 @@ fn tool_definitions_are_well_formed() {
     }
 }
 
+#[test]
+fn tools_that_write_files_are_not_read_only() {
+    // `render_page` and `screenshot` write a file when given `path`, so they must not advertise `readOnlyHint: true`.
+    for name in ["render_page", "screenshot", "export_png"] {
+        let definition = tool_definitions().into_iter().find(|v| v["name"] == name).unwrap();
+        assert!(definition["inputSchema"]["properties"].get("path").is_some(), "{name} takes a path");
+        assert_eq!(definition["annotations"]["readOnlyHint"], false, "{name} writes files");
+    }
+}
+
 // ---------- layout through the tools ----------
 
 #[test]

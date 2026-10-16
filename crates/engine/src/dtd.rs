@@ -3,6 +3,10 @@
 
 use std::collections::HashMap;
 
+/// How much text parameter entities may add during expansion (a pass count is not an output
+/// bound: each pass replaces whole strings, so references can inflate multiplicatively).
+const MAX_EXPANDED_BYTES: usize = 1024 * 1024;
+
 /// A content particle: a name, a sequence, a choice, or one of those repeated (`?`, `*`, `+`).
 #[derive(Clone, Debug, PartialEq)]
 enum Cp {
@@ -177,10 +181,17 @@ pub fn parse(src: &str) -> Result<Dtd, String> {
         }
     }
     let mut text = src.to_string();
+    // A pass count bounds the work, not the output: each pass replaces whole strings with the
+    // entities' original values, so a few hundred bytes of nested parameter entities can inflate
+    // to gigabytes. Expansion may not add more than this much text over the input.
+    let limit = src.len().saturating_add(MAX_EXPANDED_BYTES);
     for _ in 0..8 {
         let before = text.clone();
         for (n, v) in &ents {
             text = text.replace(&format!("%{n};"), v);
+            if text.len() > limit {
+                return Err(format!("parameter entities expand the DTD beyond {limit} bytes"));
+            }
         }
         if text == before {
             break;
@@ -432,6 +443,23 @@ mod tests {
         assert!(p.iter().any(|p| p.message == "`list` isn't allowed in `title`"), "{p:?}");
         assert!(parse("<!ELEMENT a (b, c | d)>").is_err());
         assert!(parse("just text").is_err());
+    }
+
+    /// A few hundred bytes of nested parameter entities used to inflate multiplicatively across
+    /// the eight wholly-string-replacing passes (#713); expansion is capped.
+    #[test]
+    fn parameter_entities_cannot_expand_without_a_budget() {
+        let mut src = String::from("<!ENTITY % e1 \"xx\">\n");
+        for i in 2..=6 {
+            src.push_str(&format!("<!ENTITY % e{i} \"{}\">\n", format!("%e{};", i - 1).repeat(16)));
+        }
+        src.push_str("<!ELEMENT r (%e6;)>");
+        assert!(src.len() < 500, "the payload is small: {} bytes", src.len());
+        let err = parse(&src).unwrap_err();
+        assert!(err.contains("expand the DTD beyond"), "{err}");
+        // Entities that expand a little still parse.
+        let dtd = parse("<!ENTITY % inline \"#PCDATA | em\">\n<!ELEMENT r (%inline;)*>").unwrap();
+        assert_eq!(dtd.element_names().collect::<Vec<_>>(), ["r"]);
     }
 
     #[test]

@@ -25,11 +25,17 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            crate::atomic::write_file(path, &bytes)?;
+            crate::io::write_file(path, &bytes).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
         }
         None => Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()})),
     }
+}
+
+/// [`designcraft_idml::import_idml`] with the linked images read through [`crate::io`], so the
+/// automation read root applies to the paths the package names.
+pub(crate) fn import_idml_confined(bytes: &[u8]) -> designcraft_idml::Result<Document> {
+    designcraft_idml::import_idml_with(bytes, &|path| crate::io::read_file(path).ok())
 }
 
 /// Import IDML bytes; `dir` is the folder the package came from (for relative link lookup).
@@ -112,10 +118,10 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, dir: Option<&std::
     let Some(dir) = dir else { return };
     for asset in document.assets.values_mut() {
         let Some(link) = asset.link.as_deref() else { continue };
-        if link.len() > MAX_LINK_PATH_BYTES || std::path::Path::new(link).is_file() {
+        if link.len() > MAX_LINK_PATH_BYTES || crate::io::is_file(link) {
             continue;
         }
-        let Some(path) = packaged_link_candidates(link, Some(dir)).into_iter().find(|p| p.is_file()) else { continue };
+        let Some(path) = packaged_link_candidates(link, Some(dir)).into_iter().find(|p| crate::io::is_file(p)) else { continue };
         // Preserve ordinary Windows paths rather than canonicalizing to a verbatim URI.
         let path = std::path::absolute(&path).unwrap_or(path);
         std::sync::Arc::make_mut(asset).link = Some(path.to_string_lossy().into_owned());
@@ -125,7 +131,7 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, dir: Option<&std::
 #[cfg(not(target_arch = "wasm32"))]
 fn read_packaged_link(link: &str, dir: Option<&std::path::Path>) -> Option<(String, Vec<u8>)> {
     for path in packaged_link_candidates(link, dir) {
-        if let Ok(bytes) = std::fs::read(&path) {
+        if let Ok(bytes) = crate::io::read_file(&path) {
             // Keep ordinary Windows drive/UNC syntax for IDML URI export; canonicalize
             // would introduce a verbatim prefix that is not an IDML file URI.
             let path = std::path::absolute(&path).unwrap_or(path);
@@ -140,7 +146,7 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
         (base64_decode(b), None, str_param(p, "name").map(|n| n.trim_end_matches(".idml").to_string()))
     } else if let Some(path) = str_param(p, "path") {
         #[cfg(not(target_arch = "wasm32"))]
-        let b = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let b = crate::io::read_file(path).map_err(EngineError::Other)?;
         #[cfg(target_arch = "wasm32")]
         let b: Vec<u8> = Vec::new();
         let pp = std::path::Path::new(path);

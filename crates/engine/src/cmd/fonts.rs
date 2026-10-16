@@ -73,7 +73,7 @@ fn list(d: &Document) -> Vec<Value> {
         .into_iter()
         .map(|((family, style), n)| {
             let missing = !db.has_family(&family);
-            let style_missing = !missing && !db.styles(&family).iter().any(|s| s.eq_ignore_ascii_case(&style));
+            let style_missing = !missing && !db.styles(&family).iter().any(|s| designcraft_fonts::same_style(s, &style));
             let source = (!missing).then(|| match db.face(&family, &style).source {
                 FontSource::Bundled => "bundled",
                 FontSource::Installed(_) => "installed",
@@ -224,5 +224,23 @@ mod tests {
         let l = s.execute("font.list", &json!({})).unwrap();
         assert_eq!((&l[0]["family"], &l[0]["missing"]), (&json!("Nope (OTF)"), &json!(true)), "{l}");
         assert!(kinds(&mut s).iter().any(|k| k == "missingFont"));
+    }
+
+    /// A style name that differs only in spacing (Montilla Design's file sets `Regular ` with a
+    /// trailing space) is the face the text is drawn in, not a missing style.
+    #[test]
+    fn a_style_with_extra_spacing_is_not_missing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text"})).unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 4})).unwrap();
+        s.execute("type.char", &json!({"fontFamily": "Source Serif 4", "fontStyle": "Regular "})).unwrap();
+        let l = s.execute("font.list", &json!({})).unwrap();
+        let entry = l.as_array().unwrap().iter().find(|f| f["style"] == "Regular ").unwrap();
+        assert_eq!((&entry["missing"], &entry["styleMissing"]), (&json!(false), &json!(false)), "{l}");
+        s.execute("type.char", &json!({"fontFamily": "Source Serif 4", "fontStyle": "Nope"})).unwrap();
+        let l = s.execute("font.list", &json!({})).unwrap();
+        assert_eq!(l[0]["styleMissing"], json!(true), "{l}");
     }
 }

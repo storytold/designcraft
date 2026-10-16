@@ -17,7 +17,46 @@ use vello_cpu::RenderContext;
 use vello_cpu::kurbo;
 use vello_cpu::peniko;
 
-use crate::{Frame, Renderer, color_of, rect_overlaps};
+use crate::{Frame, Renderer, color_of, rect_overlaps, screen_color};
+
+/// A text colour: solid, or a gradient swatch laid across the frame (InDesign spans a gradient on
+/// text across its frame's box).
+#[derive(Clone)]
+enum TextPaint {
+    Solid(peniko::Color),
+    Gradient(designcraft_doc::Fill),
+}
+
+impl TextPaint {
+    fn of(doc: &designcraft_doc::Document, swatch: &str, tint: f32) -> Option<Self> {
+        if designcraft_color::swatch::resolve_gradient(&doc.swatches, swatch).is_some() {
+            return Some(TextPaint::Gradient(designcraft_doc::Fill { swatch: swatch.into(), tint, ..designcraft_doc::Fill::none() }));
+        }
+        doc.resolve_color(swatch, tint).map(|c| TextPaint::Solid(color_of(&c, 1.0)))
+    }
+
+    /// Make this the context's paint; a gradient runs across `area` (text space).
+    fn set(&self, ctx: &mut RenderContext, doc: &designcraft_doc::Document, area: Rect) {
+        match self {
+            TextPaint::Solid(c) => ctx.set_paint(*c),
+            TextPaint::Gradient(fill) => {
+                crate::set_fill_paint(ctx, doc, fill, area);
+            }
+        }
+    }
+}
+
+/// The box a gradient on a frame's text spans: the frame's, in text space (the union of its lines
+/// when the frame is gone).
+fn text_area(doc: &designcraft_doc::Document, ft: &FrameText) -> Rect {
+    if let Some(it) = doc.item(ft.frame) {
+        let local = doc.text_local(it);
+        if local.determinant().abs() > 1e-12 {
+            return local.inverse().transform_rect_bbox(it.inner_bounds());
+        }
+    }
+    ft.lines.iter().filter_map(line_box).reduce(|a, b| a.union(b)).unwrap_or(Rect::new(0.0, 0.0, 1.0, 1.0))
+}
 
 /// Cached outlines of one composed line.
 pub(crate) struct LineGlyphs {
@@ -223,7 +262,7 @@ impl Renderer {
         // Text in fonts that aren't installed: pink behind the glyphs (screen only).
         if f.opts.highlight_missing_fonts && cs.styles.iter().any(|s| s.missing_font) {
             ctx.set_transform(m);
-            ctx.set_paint(peniko::Color::from_rgb8(255, 166, 214));
+            ctx.set_paint(screen_color([255, 166, 214], 255));
             for l in &ft.lines {
                 for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.missing_font)) {
                     ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
@@ -232,7 +271,7 @@ impl Renderer {
         }
         if f.opts.highlight_keeps && ft.lines.iter().any(|l| l.keep_violation) {
             ctx.set_transform(m);
-            ctx.set_paint(peniko::Color::from_rgb8(255, 236, 120));
+            ctx.set_paint(screen_color([255, 236, 120], 255));
             for l in ft.lines.iter().filter(|l| l.keep_violation) {
                 ctx.fill_rect(&kurbo::Rect::new(l.x0, l.baseline - l.ascent, l.x1, l.baseline + l.descent));
             }
@@ -241,13 +280,13 @@ impl Renderer {
             ctx.set_transform(m);
             for l in ft.lines.iter().filter(|l| l.hj > 0) {
                 let shade = [0u8, 0xF6, 0xEA, 0xD8][l.hj.min(3) as usize];
-                ctx.set_paint(peniko::Color::from_rgb8(255, shade, [0u8, 0xB0, 0x70, 0x30][l.hj.min(3) as usize]));
+                ctx.set_paint(screen_color([255, shade, [0u8, 0xB0, 0x70, 0x30][l.hj.min(3) as usize]], 255));
                 ctx.fill_rect(&kurbo::Rect::new(l.x0, l.baseline - l.ascent, l.end_x.max(l.x0 + 1.0), l.baseline + l.descent));
             }
         }
         if f.opts.highlight_custom_tracking && cs.styles.iter().any(|s| s.custom_tracking) {
             ctx.set_transform(m);
-            ctx.set_paint(peniko::Color::from_rgb8(176, 236, 176));
+            ctx.set_paint(screen_color([176, 236, 176], 255));
             for l in &ft.lines {
                 for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.custom_tracking)) {
                     ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
@@ -271,7 +310,7 @@ impl Renderer {
                         j += 1;
                     }
                     let c = f.doc.xml.tags.iter().find(|t| t.name == tag).map_or([100, 100, 220], |t| t.color);
-                    ctx.set_paint(peniko::Color::from_rgb8(c[0], c[1], c[2]));
+                    ctx.set_paint(screen_color([c[0], c[1], c[2]], 255));
                     let (x0, x1) = (gs[i].x, gs[j - 1].x + gs[j - 1].adv);
                     let (top, bot) = (l.baseline - l.ascent, l.baseline + l.descent);
                     let (w, t) = (2.5 * px, px.max(0.3));
@@ -291,7 +330,7 @@ impl Renderer {
             ctx.set_transform(m);
             for l in &ft.lines {
                 for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.inserted)) {
-                    ctx.set_paint(peniko::Color::from_rgba8(120, 190, 255, 110));
+                    ctx.set_paint(screen_color([120, 190, 255], 110));
                     ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
                 }
             }
@@ -301,7 +340,7 @@ impl Renderer {
         {
             // A small flag at each note anchor, in the notes' amber.
             ctx.set_transform(m);
-            ctx.set_paint(peniko::Color::from_rgb8(232, 160, 32));
+            ctx.set_paint(screen_color([232, 160, 32], 255));
             for l in &ft.lines {
                 for g in l.glyphs.iter().filter(|g| st.text.get(g.byte..).is_some_and(|t| t.starts_with(designcraft_doc::NOTE_MARK))) {
                     let h = l.ascent.max(4.0);
@@ -322,7 +361,7 @@ impl Renderer {
                 for g in l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0) {
                     let Some(name) = cs.styles.get(g.style as usize).and_then(|s| s.condition.as_deref()) else { continue };
                     let Some(c) = f.doc.conditions.iter().find(|c| c.name == name) else { continue };
-                    ctx.set_paint(peniko::Color::from_rgb8(c.color[0], c.color[1], c.color[2]));
+                    ctx.set_paint(screen_color([c.color[0], c.color[1], c.color[2]], 255));
                     let y = l.baseline + l.descent * 0.6;
                     ctx.fill_rect(&kurbo::Rect::new(g.x, y, g.x + g.adv, y + 2.0 * px));
                 }
@@ -351,13 +390,16 @@ impl Renderer {
         ctx.set_transform(m);
         if !shown.is_empty() {
             let fg = self.glyphs.get(cs, ft);
-            // Resolve each style's paints once per frame.
-            let mut fills: Vec<Option<Option<peniko::Color>>> = vec![None; cs.styles.len()];
-            let mut fill_of = |si: u32| -> Option<peniko::Color> {
-                *fills[si as usize].get_or_insert_with(|| {
-                    let st = &cs.styles[si as usize];
-                    doc.resolve_color(&st.fill, st.fill_tint).map(|c| color_of(&c, 1.0))
-                })
+            // Resolve each style's paints once per frame; gradients span the frame.
+            let area = text_area(doc, ft);
+            let mut fills: Vec<Option<Option<TextPaint>>> = vec![None; cs.styles.len()];
+            let mut fill_of = |si: u32| -> Option<TextPaint> {
+                fills[si as usize]
+                    .get_or_insert_with(|| {
+                        let st = &cs.styles[si as usize];
+                        TextPaint::of(doc, &st.fill, st.fill_tint)
+                    })
+                    .clone()
             };
             shown.retain(|&i| fg.lines[i].bounds.is_some_and(|b| rect_overlaps(b, vis)));
             // Paint all underlines before any glyphs: skewed runs and tightly spaced lines
@@ -374,32 +416,9 @@ impl Renderer {
                 let lg = &fg.lines[i];
                 self.stats.glyphs += lg.glyphs;
                 for (si, bp) in &lg.runs {
-                    if let Some(c) = fill_of(*si) {
-                        let st = &cs.styles[*si as usize];
-                        let op = crate::overprints(f, &st.fill, st.fill_tint, false);
-                        if op {
-                            ctx.push_layer(
-                                None,
-                                Some(vello_cpu::peniko::BlendMode::new(vello_cpu::peniko::Mix::Multiply, vello_cpu::peniko::Compose::SrcOver)),
-                                None,
-                                None,
-                                None,
-                            );
-                        }
-                        ctx.set_paint(c);
-                        ctx.fill_path(bp);
-                        if op {
-                            ctx.pop_layer();
-                        }
-                    }
                     let st = &cs.styles[*si as usize];
-                    if st.stroke != designcraft_color::swatch::NONE
-                        && let Some(c) = doc.resolve_color(&st.stroke, st.stroke_tint)
-                    {
-                        ctx.set_paint(color_of(&c, 1.0));
-                        ctx.set_stroke(kurbo::Stroke::new(st.stroke_weight));
-                        ctx.stroke_path(bp);
-                    }
+                    let fill = fill_of(*si).map(|c| (c, crate::overprints(f, &st.fill, st.fill_tint, false)));
+                    paint_glyphs(ctx, doc, area, bp, fill, stroke_of(doc, st), st.stroke_weight, st.stroke_behind_fill);
                 }
             }
             for &i in &shown {
@@ -472,6 +491,69 @@ impl Renderer {
 }
 
 /// Kurbo stroke for a table edge.
+/// A run's stroke colour, if it has one.
+fn stroke_of(doc: &designcraft_doc::Document, st: &designcraft_compose::RunStyle) -> Option<TextPaint> {
+    if st.stroke == designcraft_color::swatch::NONE {
+        return None;
+    }
+    TextPaint::of(doc, &st.stroke, st.stroke_tint)
+}
+
+/// Paint glyph outlines: the fill (multiplied when it overprints), then the stroke over it. With
+/// stroke behind fill a double-width stroke goes first and the fill covers its inner half; with
+/// no fill to cover it, the glyph shapes are cut out of the stroke instead.
+#[allow(clippy::too_many_arguments)]
+fn paint_glyphs(
+    ctx: &mut RenderContext,
+    doc: &designcraft_doc::Document,
+    area: Rect,
+    bp: &BezPath,
+    fill: Option<(TextPaint, bool)>,
+    stroke: Option<TextPaint>,
+    weight: f64,
+    behind: bool,
+) {
+    // A gradient paint runs across `area`; reset its transform after each use.
+    let paint_fill = |ctx: &mut RenderContext| {
+        let Some((c, overprint)) = &fill else { return };
+        if *overprint {
+            ctx.push_layer(None, Some(peniko::BlendMode::new(peniko::Mix::Multiply, peniko::Compose::SrcOver)), None, None, None);
+        }
+        c.set(ctx, doc, area);
+        ctx.fill_path(bp);
+        ctx.reset_paint_transform();
+        if *overprint {
+            ctx.pop_layer();
+        }
+    };
+    let Some(sc) = stroke else {
+        paint_fill(ctx);
+        return;
+    };
+    let paint_stroke = |ctx: &mut RenderContext, width: f64| {
+        sc.set(ctx, doc, area);
+        ctx.set_stroke(kurbo::Stroke::new(width));
+        ctx.stroke_path(bp);
+        ctx.reset_paint_transform();
+    };
+    if !behind {
+        paint_fill(ctx);
+        paint_stroke(ctx, weight);
+        return;
+    }
+    if fill.is_some() {
+        paint_stroke(ctx, weight * 2.0);
+        paint_fill(ctx);
+    } else {
+        ctx.push_layer(None, None, None, None, None);
+        paint_stroke(ctx, weight * 2.0);
+        ctx.push_layer(None, Some(peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut)), None, None, None);
+        ctx.fill_path(bp);
+        ctx.pop_layer();
+        ctx.pop_layer();
+    }
+}
+
 fn cell_stroke(s: &designcraft_doc::CellStroke) -> kurbo::Stroke {
     let st = kurbo::Stroke::new(s.weight).with_caps(kurbo::Cap::Square);
     match &s.kind {
@@ -498,19 +580,12 @@ impl Renderer {
     ) {
         let doc = f.doc;
         ctx.set_transform(f.view * xf);
+        // A gradient on type on a path spans the path's box.
+        let area = path.bounding_box();
         for (si, bp) in designcraft_compose::path_glyphs(cs, ft, path, pt) {
             let st = &cs.styles[si as usize];
-            if let Some(c) = doc.resolve_color(&st.fill, st.fill_tint) {
-                ctx.set_paint(color_of(&c, 1.0));
-                ctx.fill_path(&bp);
-            }
-            if st.stroke != designcraft_color::swatch::NONE
-                && let Some(c) = doc.resolve_color(&st.stroke, st.stroke_tint)
-            {
-                ctx.set_paint(color_of(&c, 1.0));
-                ctx.set_stroke(kurbo::Stroke::new(st.stroke_weight));
-                ctx.stroke_path(&bp);
-            }
+            let fill = TextPaint::of(doc, &st.fill, st.fill_tint).map(|c| (c, false));
+            paint_glyphs(ctx, doc, area, &bp, fill, stroke_of(doc, st), st.stroke_weight, st.stroke_behind_fill);
             self.stats.glyphs += 1;
         }
     }

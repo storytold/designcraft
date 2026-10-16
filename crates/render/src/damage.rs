@@ -156,14 +156,27 @@ fn item_area(it: &Item) -> Option<Rect> {
         return None;
     }
     let pad = it.stroke.extent().max(0.0) + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 };
-    Some(it.bounds().inflate(pad, pad))
+    Some(painted_bounds(it).inflate(pad, pad))
+}
+
+/// An item's bounds, grown to its text: text is composed in the box around the frame's path in
+/// the frame's own coordinates, which a sheared then rotated frame turns past its path's bounds.
+fn painted_bounds(it: &Item) -> Rect {
+    let mut b = it.bounds();
+    if it.is_text_frame() {
+        b = b.union(it.xf.transform_rect_bbox(it.inner_bounds()));
+    }
+    for c in it.children() {
+        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)));
+    }
+    b
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.
 fn frame_area(d: &Document, f: ItemId) -> Option<(SpreadRef, Rect)> {
     let loc = d.find(f)?;
     let it = d.item_at(&loc)?;
-    let b = d.parent_xf(&loc).transform_rect_bbox(it.bounds());
+    let b = d.parent_xf(&loc).transform_rect_bbox(painted_bounds(it));
     // Overhang of italics, swashes and big initials, and anchored objects pinned to lines.
     Some((loc.spread, b.inflate(24.0 + 0.1 * b.width().max(b.height()), 24.0)))
 }
@@ -207,32 +220,26 @@ mod tests {
         assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(350.0, 100.0))));
     }
 
-    #[test]
-    fn patched_render_equals_full_render() {
+    /// Channels where `old`'s render patched over `new`'s damage differs from `new`'s full render.
+    fn patched_diff(old: &Document, new: &Document, (w, h): (u32, u32), zoom: f64) -> usize {
         use crate::{Placed, RenderOptions, Renderer};
         use designcraft_geom::{Affine, Vec2};
-        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
-        let lid = d.default_layer();
-        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "Hello there", ParaFormat::default()).unwrap();
         let cache = designcraft_compose::Cache::new();
         let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::translate(Vec2::ZERO) }];
-        let (w, h) = (400u32, 300u32);
-        let view = Affine::scale(1.3);
+        let view = Affine::scale(zoom);
         let mut r = Renderer::new();
         r.threads = 0;
         let opts = RenderOptions::default();
-        let old = d.clone();
-        let mut img = r.render(&old, &cache, &placed, w, h, view, &opts);
-        d.story_mut(sid).unwrap().insert(5, ", typed");
-        let full = r.render(&d, &cache, &placed, w, h, view, &opts);
+        let mut img = r.render(old, &cache, &placed, w, h, view, &opts);
+        let full = r.render(new, &cache, &placed, w, h, view, &opts);
         // Patch the damaged pixels.
-        let regions = damage(&old, &d).unwrap();
+        let regions = damage(old, new).unwrap();
         let u = regions.iter().map(|(_, r)| *r).reduce(|a, b| a.union(b)).unwrap();
-        let x0 = ((u.x0 * 1.3).floor().max(0.0)) as u32;
-        let y0 = ((u.y0 * 1.3).floor().max(0.0)) as u32;
-        let x1 = ((u.x1 * 1.3).ceil() as u32).min(w);
-        let y1 = ((u.y1 * 1.3).ceil() as u32).min(h);
-        let patch = r.render(&d, &cache, &placed, x1 - x0, y1 - y0, Affine::translate((-(x0 as f64), -(y0 as f64))) * view, &opts);
+        let x0 = ((u.x0 * zoom).floor().max(0.0)) as u32;
+        let y0 = ((u.y0 * zoom).floor().max(0.0)) as u32;
+        let x1 = ((u.x1 * zoom).ceil() as u32).min(w);
+        let y1 = ((u.y1 * zoom).ceil() as u32).min(h);
+        let patch = r.render(new, &cache, &placed, x1 - x0, y1 - y0, Affine::translate((-(x0 as f64), -(y0 as f64))) * view, &opts);
         for y in y0..y1 {
             for x in x0..x1 {
                 let pi = (((y - y0) * (x1 - x0) + (x - x0)) * 4) as usize;
@@ -240,8 +247,36 @@ mod tests {
                 img.pixels[ii..ii + 4].copy_from_slice(&patch.pixels[pi..pi + 4]);
             }
         }
-        let diff = img.pixels.iter().zip(&full.pixels).filter(|(a, b)| a.abs_diff(**b) > 2).count();
+        img.pixels.iter().zip(&full.pixels).filter(|(a, b)| a.abs_diff(**b) > 2).count()
+    }
+
+    #[test]
+    fn patched_render_equals_full_render() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "Hello there", ParaFormat::default()).unwrap();
+        let old = d.clone();
+        d.story_mut(sid).unwrap().insert(5, ", typed");
+        let diff = patched_diff(&old, &d, (400, 300), 1.3);
         assert_eq!(diff, 0, "patched image differs from the full render in {diff} channels");
+    }
+
+    #[test]
+    fn moving_a_sheared_turned_text_frame_leaves_no_trail() {
+        use designcraft_geom::Affine;
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let text = "Lorem ipsum dolor sit amet. ".repeat(60);
+        let (f, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 200.0), lid, &text, ParaFormat::default()).unwrap();
+        // Sheared outline (its box's corners are outside it, the text's first and last lines in
+        // them), then turned: the text reaches past the outline's bounds.
+        let it = d.item_mut(f).unwrap();
+        it.path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 300.0, 200.0)).transformed(Affine::skew(0.5, 0.0));
+        it.xf = Affine::translate((150.0, 60.0)) * Affine::rotate(30f64.to_radians());
+        let old = d.clone();
+        d.item_mut(f).unwrap().xf = Affine::translate((210.0, 90.0)) * Affine::rotate(30f64.to_radians());
+        let diff = patched_diff(&old, &d, (700, 560), 1.0);
+        assert_eq!(diff, 0, "the moved text left {diff} stale channels behind");
     }
 
     #[test]

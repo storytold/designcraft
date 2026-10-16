@@ -36,11 +36,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_atomic_with(path, |f| f.write_all(bytes))
 }
 
-/// [`write_atomic`] for a command's `path` parameter: the error names the path.
-pub(crate) fn write_file(path: &str, bytes: &[u8]) -> crate::Result<()> {
-    write_atomic(Path::new(path), bytes).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))
-}
-
 /// Atomically replace (or create) `path` with what `fill` writes into the temporary file. When
 /// `fill`, the flush or the rename fails, the temporary file is removed, `path` is untouched and
 /// the error is returned.

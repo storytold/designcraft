@@ -12,6 +12,10 @@ use serde_json::{Value, json};
 use crate::{DesignApp, ScreenMode, View, theme::Tokens};
 
 pub const RULER: f32 = 15.0;
+/// Width of the view's scrollbars.
+pub const SCROLLBAR: f32 = 10.0;
+/// Shortest scrollbar thumb.
+const MIN_THUMB: f32 = 18.0;
 
 /// Canvas ↔ screen transform.
 #[derive(Clone, Copy, Debug)]
@@ -150,6 +154,16 @@ pub fn view_centre(app: &DesignApp) -> Option<(SpreadRef, Point)> {
     Some((slot.spread, slot.to_spread(c)))
 }
 
+/// Where a file dropped on the window lands: the spread under the pointer, or under the view
+/// centre when the pointer isn't over the canvas, and that point in spread coordinates.
+pub fn drop_point(app: &DesignApp, screen: Option<Pos2>) -> Option<(SpreadRef, Point)> {
+    let rect = app.canvas_rect?;
+    let Some(pos) = screen.filter(|p| rect.contains(*p)) else { return view_centre(app) };
+    let st = app.session.active()?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    layout.spread_at(Xf::new(rect, app.view()?).to_canvas(pos))
+}
+
 /// Absolute page index under the view centre.
 pub fn current_page(app: &DesignApp) -> Option<usize> {
     let st = app.session.active()?;
@@ -162,6 +176,38 @@ pub fn current_page(app: &DesignApp) -> Option<usize> {
     let c = slot.to_spread(Point::new(v.origin.x + r.width() as f64 / 2.0 / v.zoom, slot.bounds.center().y));
     let pi = st.doc.spreads[si].page_at_x(c.x).unwrap_or(0);
     Some(st.doc.first_page_of_spread(si) + pi)
+}
+
+/// The spread (document or parent) under the view centre and the page index within it: where
+/// commands that act "on the page I am working on" should go.
+pub fn current_spread_page(app: &DesignApp) -> Option<(SpreadRef, usize)> {
+    let st = app.session.active()?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let i = current_slot(app, &layout)?;
+    let slot = layout.slots.get(i)?;
+    let v = app.view()?;
+    let r = app.canvas_rect?;
+    let c = slot.to_spread(Point::new(v.origin.x + r.width() as f64 / 2.0 / v.zoom, slot.bounds.center().y));
+    let pg = st.doc.spread(slot.spread)?.page_at_x(c.x).unwrap_or(0);
+    Some((slot.spread, pg))
+}
+
+/// While parent spreads are being edited: (parent spread index, page index within it) under the
+/// view centre. `None` when document pages are shown.
+pub fn current_parent_page(app: &DesignApp) -> Option<(usize, usize)> {
+    let st = app.session.active()?;
+    if !st.editing_parents {
+        return None;
+    }
+    let layout = CanvasLayout::new(&st.doc, true);
+    let i = current_slot(app, &layout)?;
+    let slot = layout.slots.get(i)?;
+    let SpreadRef::Parent(pi) = slot.spread else { return None };
+    let v = app.view()?;
+    let r = app.canvas_rect?;
+    let c = slot.to_spread(Point::new(v.origin.x + r.width() as f64 / 2.0 / v.zoom, slot.bounds.center().y));
+    let qi = st.doc.parents.get(pi)?.page_at_x(c.x).unwrap_or(0);
+    Some((pi, qi))
 }
 
 /// Scroll so absolute page `abs` is centred (keeps zoom).
@@ -190,6 +236,28 @@ pub fn set_zoom(app: &mut DesignApp, z: f64) {
     let Some(rect) = app.canvas_rect else { return };
     let cur = app.view().map(|v| v.zoom).unwrap_or(1.0);
     zoom_at(app, rect.center(), z / cur);
+}
+
+/// Whether the wheel motion now arriving was made with Alt down. As egui does for Ctrl/Cmd, a
+/// motion keeps its key to its end: the wheel is smoothed over a few frames, and a trackpad swipe
+/// coasts on after the key is let go.
+fn wheel_alt(ui: &egui::Ui) -> bool {
+    let id = egui::Id::new("canvas_wheel_alt");
+    // Alt, and whether a trackpad swipe is under way.
+    let (mut alt, mut swipe): (bool, bool) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    ui.input(|i| {
+        for e in &i.events {
+            if let egui::Event::MouseWheel { phase, modifiers, .. } = e {
+                (alt, swipe) = match phase {
+                    egui::TouchPhase::Start => (modifiers.alt, true),
+                    egui::TouchPhase::Move => (modifiers.alt || (swipe && alt), swipe),
+                    egui::TouchPhase::End | egui::TouchPhase::Cancel => (false, false),
+                };
+            }
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, (alt, swipe)));
+    alt
 }
 
 pub fn apply_view_request(app: &mut DesignApp, p: &Value) {
@@ -243,10 +311,14 @@ fn mods(i: &egui::InputState, space: bool) -> Mods {
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let full = ui.available_rect_before_wrap();
+    let outer = ui.available_rect_before_wrap();
     let rot = app.view().map_or(0, |v| v.rotation % 4);
+    let presenting = app.ui.screen_mode == ScreenMode::Presentation;
+    // Scrollbars sit outside the view (right and bottom); rulers and the view share the rest.
+    let bars = !presenting && app.session.active().is_some();
+    let full = if bars { Rect::from_min_max(outer.min, outer.max - vec2(SCROLLBAR, SCROLLBAR)) } else { outer };
     // Rulers measure the unrotated layout, so they hide while the view is rotated.
-    let rulers = app.ui.rulers && app.ui.screen_mode != ScreenMode::Presentation && rot == 0;
+    let rulers = app.ui.rulers && !presenting && rot == 0;
     let screen = if rulers { Rect::from_min_max(full.min + vec2(RULER, RULER), full.max) } else { full };
     let rect = view_rect(screen, rot);
     app.canvas_rect = Some(rect);
@@ -255,6 +327,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         fit(app, rect, "spread");
     }
     handle_input(app, ui, &resp, rect);
+    if bars {
+        scrollbars(app, ui, outer, screen, rect, &t);
+    }
     let Some(st) = app.session.active() else { return };
     let Some(&v) = app.view() else { return };
     let xf = Xf::new(rect, &v);
@@ -344,16 +419,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     // Cursor.
     if let Some(p) = resp.hover_pos().filter(|p| screen.contains(*p)) {
-        let space = ui.input(|i| i.key_down(egui::Key::Space)) && !app.session.wants_text();
+        let wants_text = app.session.wants_text();
+        let space = ui.input(|i| i.key_down(egui::Key::Space)) && !wants_text;
         let middle = ui.input(|i| i.pointer.middle_down());
-        let c = if middle {
+        let alt_hand: bool = ui.data(|d| d.get_temp(egui::Id::new(("canvas_alt_hand", app.pane)))).unwrap_or(false);
+        let tool_drag: bool = ui.data(|d| d.get_temp(egui::Id::new(("canvas_pointer_down", app.pane)))).unwrap_or(false);
+        let alt_text = wants_text && !tool_drag && ui.input(|i| i.modifiers.alt);
+        let c = if middle || alt_hand {
             Cursor::HandGrab
-        } else if space {
+        } else if space || alt_text {
             Cursor::Hand
         } else {
             app.session.cursor(xf.to_canvas(p), ui.input(|i| mods(i, false)), app.view_info())
         };
-        ui.ctx().set_cursor_icon(cursor_icon(c));
+        let icon = crate::cursors::show(ui.ctx(), &mut app.cursors, c, p);
+        ui.ctx().set_cursor_icon(icon);
         draw_cursor_badge(&painter, p, c, &t);
     }
 }
@@ -384,32 +464,6 @@ fn draw_cursor_badge(painter: &egui::Painter, p: Pos2, c: Cursor, t: &Tokens) {
                 painter.line_segment([pos2(c0.x + 2.0, c0.y - 6.0), pos2(c0.x - 2.0, c0.y + 6.0)], ink);
             }
         }
-    }
-}
-
-fn cursor_icon(c: Cursor) -> egui::CursorIcon {
-    use egui::CursorIcon as C;
-    match c {
-        Cursor::Arrow | Cursor::ArrowHollow => C::Default,
-        Cursor::Move => C::Move,
-        Cursor::Crosshair => C::Crosshair,
-        Cursor::ResizeH => C::ResizeHorizontal,
-        Cursor::ResizeV => C::ResizeVertical,
-        Cursor::ResizeNwSe => C::ResizeNwSe,
-        Cursor::ResizeNeSw => C::ResizeNeSw,
-        Cursor::Rotate => C::Alias,
-        Cursor::Pen | Cursor::PenContinue => C::Crosshair,
-        Cursor::PathBracket => C::ResizeColumn,
-        Cursor::Text => C::Text,
-        Cursor::Hand => C::Grab,
-        Cursor::HandGrab => C::Grabbing,
-        Cursor::ZoomIn => C::ZoomIn,
-        Cursor::ZoomOut => C::ZoomOut,
-        Cursor::Eyedropper => C::Crosshair,
-        Cursor::LoadedText | Cursor::LoadedGraphic => C::Copy,
-        Cursor::ThreadLink => C::Alias,
-        Cursor::Unthread => C::NoDrop,
-        Cursor::NotAllowed => C::NotAllowed,
     }
 }
 
@@ -548,6 +602,11 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     let Some(regions) = designcraft_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return false };
     let t0 = crate::now_ms();
     let (tw, th) = ((sh.size.0 as f64 * ppp).round() as i64, (sh.size.1 as f64 * ppp).round() as i64);
+    // A texture `upload` sampled down to the GPU limit has other pixels than the view: a region
+    // computed in view pixels would be written outside it. Render it whole instead.
+    if app.canvas.texture.as_ref().is_none_or(|t| t.size() != [tw.max(0) as usize, th.max(0) as usize]) {
+        return false;
+    }
     let k = sh.zoom * ppp;
     let mut px: Option<(i64, i64, i64, i64)> = None;
     for (r, rect) in &regions {
@@ -628,6 +687,7 @@ fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render:
         designcraft_render::separation_view(&mut img, None, app.ui.ink_limit);
     }
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
+    let ci = crate::widgets::fit_texture(ci, ctx.input(|i| i.max_texture_side));
     match &mut app.canvas.texture {
         Some(tex) => tex.set(ci, egui::TextureOptions::LINEAR),
         None => app.canvas.texture = Some(ctx.load_texture("canvas", ci, egui::TextureOptions::LINEAR)),
@@ -669,6 +729,10 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
             painter.rect_stroke(rect(br), 0.0, Stroke::new(hair(painter), c32(s.bleed_color)), StrokeKind::Middle);
         }
         let pasteboard = m.inverse().transform_rect_bbox(layout.pasteboard);
+        let first_abs = match slot.spread {
+            SpreadRef::Doc(si) => Some(doc.first_page_of_spread(si)),
+            _ => None,
+        };
         for (pi, p) in sp.pages.iter().enumerate() {
             let pr = p.bounds();
             // Page tool › Show Parent Page Overlay: the parent page's size over the page.
@@ -684,6 +748,8 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
             if !app.ui.guides {
                 continue;
             }
+            // Guides set on the applied parent page show on this page too.
+            let inherited = first_abs.map(|f| doc.inherited_guides(f + pi)).unwrap_or_default();
             // Baseline grid.
             if app.ui.baseline_grid && xf.zoom >= s.baseline_grid.view_threshold {
                 let g = &s.baseline_grid;
@@ -708,7 +774,7 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
                     }
                 }
             }
-            for g in p.guides.iter().filter(|g| g.visible_in(doc)) {
+            for g in p.guides.iter().chain(inherited.iter()).filter(|g| g.visible_in(doc)) {
                 // Spread guides cross the pasteboard; page guides their page.
                 let span = if g.spread { pasteboard } else { pr };
                 let (a, bb) = match g.orientation {
@@ -1012,7 +1078,11 @@ fn draw_text_selection(
     cells: Option<designcraft_doc::TableSel>,
 ) {
     let cs = app.session.cache.get(doc, ts.story, None);
-    let range = ts.range();
+    // Text an input method is composing at the caret is marked like it is in every Mac text
+    // field: a yellow box behind the glyphs.
+    let composing = app.session.composition().filter(|c| c.0 == ts.story && c.1 == ts.cell && ts.is_caret()).map(|c| c.2);
+    let range = composing.clone().unwrap_or_else(|| ts.range());
+    let tint = if composing.is_some() { COMPOSING_FILL.gamma_multiply(0.7) } else { Color32::from_rgba_unmultiplied(80, 140, 255, 110) };
     // Selected table cells: tint every selected cell.
     if let Some(sel) = cells.filter(|c| c.story == ts.story) {
         let selected = doc.story(sel.story).and_then(|s| s.tables.get(&sel.table)).map(|t| t.selected_owners(sel.range)).unwrap_or_default();
@@ -1065,7 +1135,7 @@ fn draw_text_selection(
                         let (a, b) = (x0 + (x1 - x0) * k as f64 / n as f64, x0 + (x1 - x0) * (k + 1) as f64 / n as f64);
                         let poly =
                             [Point::new(a, y0), Point::new(b, y0), Point::new(b, y1), Point::new(a, y1)].map(|p| xf.to_screen(m * map.to_path(p)));
-                        painter.add(egui::Shape::convex_polygon(poly.to_vec(), Color32::from_rgba_unmultiplied(80, 140, 255, 110), Stroke::NONE));
+                        painter.add(egui::Shape::convex_polygon(poly.to_vec(), tint, Stroke::NONE));
                     }
                 }
             }
@@ -1101,7 +1171,7 @@ fn draw_text_selection(
         }
     }
     if !runs.is_empty() {
-        draw_inverse_highlight(app, painter, xf, doc, &cs, ts.story, &runs);
+        draw_inverse_highlight(app, painter, xf, doc, &cs, ts.story, &runs, composing.is_some());
     }
     if ts.is_caret()
         && let Some((fi, x, bl, asc, desc)) = compose::caret(&cs, ts.focus)
@@ -1109,22 +1179,38 @@ fn draw_text_selection(
         && let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame))
     {
         let m = a * doc.text_xf(it);
+        // Type on a path: the caret stands across the path where it is along it.
+        let on = |p: Point| compose::PathTextMap::new(it, ft).map_or(p, |map| map.to_path(p));
+        let p0 = xf.to_screen(m * on(Point::new(x, bl - asc)));
+        let p1 = xf.to_screen(m * on(Point::new(x, bl + desc)));
         let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
         if blink {
-            // Type on a path: the caret stands across the path where it is along it.
-            let on = |p: Point| compose::PathTextMap::new(it, ft).map_or(p, |map| map.to_path(p));
-            let p0 = xf.to_screen(m * on(Point::new(x, bl - asc)));
-            let p1 = xf.to_screen(m * on(Point::new(x, bl + desc)));
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
+        remember_ime_caret(painter, p0, p1);
         painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
+}
+
+/// Where the text caret stood on screen last frame: the OS puts its input-method window there.
+fn ime_caret_id() -> egui::Id {
+    egui::Id::new("canvas_ime_caret")
+}
+
+/// The input method is composing text (sent to `text.compose`) that it hasn't committed.
+fn ime_composing_id() -> egui::Id {
+    egui::Id::new("canvas_ime_composing")
+}
+
+/// Remembers the caret at `p0`–`p1` for the input method's window.
+fn remember_ime_caret(painter: &egui::Painter, p0: egui::Pos2, p1: egui::Pos2) {
+    painter.ctx().data_mut(|d| d.insert_temp(ime_caret_id(), egui::Rect::from_two_pos(p0, p1)));
 }
 
 /// Caret / text highlight inside a table cell (the cell's lines are offset by the cell origin).
 #[allow(clippy::too_many_arguments)]
 fn draw_cell_selection(
-    _app: &DesignApp,
+    app: &DesignApp,
     painter: &egui::Painter,
     xf: &Xf,
     doc: &Document,
@@ -1142,7 +1228,9 @@ fn draw_cell_selection(
     let Some(ft) = cs.frames.get(fi) else { return };
     let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { return };
     let m = a * doc.text_xf(it) * designcraft_geom::Affine::translate(origin.to_vec2());
-    let range = ts.range();
+    let composing = app.session.composition().filter(|c| c.0 == ts.story && c.1 == ts.cell && ts.is_caret()).map(|c| c.2);
+    let range = composing.clone().unwrap_or_else(|| ts.range());
+    let tint = if composing.is_some() { COMPOSING_FILL.gamma_multiply(0.6) } else { Color32::from_rgba_unmultiplied(80, 140, 255, 110) };
     if !range.is_empty()
         && let Some(cft) = text.frames.first()
     {
@@ -1155,7 +1243,7 @@ fn draw_cell_selection(
             let past = e == l.range.end && range.end > l.range.end;
             for q in compose::highlight_quads(l, s, e, past) {
                 let poly = q.map(|p| xf.to_screen(m * p));
-                painter.add(egui::Shape::convex_polygon(poly.to_vec(), Color32::from_rgba_unmultiplied(80, 140, 255, 110), Stroke::NONE));
+                painter.add(egui::Shape::convex_polygon(poly.to_vec(), tint, Stroke::NONE));
             }
         }
     }
@@ -1166,20 +1254,25 @@ fn draw_cell_selection(
         }
     {
         let m = a * doc.text_xf(it);
+        let (p0, p1) = (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)));
         let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
         if blink {
-            painter.line_segment(
-                [xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc))],
-                Stroke::new(1.0, Color32::BLACK),
-            );
+            painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
+        remember_ime_caret(painter, p0, p1);
         painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
 }
 
+/// The box behind text an input method is composing.
+const COMPOSING_FILL: Color32 = Color32::from_rgb(255, 247, 153);
+
 /// InDesign draws selected text inverted: a black highlight with the selected glyphs in the
 /// inverse of their colour (white for black text). The highlight and glyph outlines are
 /// rasterised with `vello_cpu` into a small screen-space texture over the selection.
+/// `composing`: the text is an input method's, still being composed: a yellow box with the
+/// glyphs in their own colour.
+#[allow(clippy::too_many_arguments)]
 fn draw_inverse_highlight(
     app: &DesignApp,
     painter: &egui::Painter,
@@ -1188,6 +1281,7 @@ fn draw_inverse_highlight(
     cs: &compose::ComposedStory,
     story: designcraft_doc::StoryId,
     runs: &[(usize, Affine, Vec<[Point; 4]>, Vec<(usize, usize)>)],
+    composing: bool,
 ) {
     use designcraft_render::vello_cpu::{self, kurbo, peniko};
     let ctx = painter.ctx();
@@ -1214,7 +1308,7 @@ fn draw_inverse_highlight(
     let Some(st) = app.session.active() else { return };
     let key = egui::Id::new(("inverse_sel", st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, story.0))
         .with((runs.iter().map(|r| r.2.len() + r.3.len() * 7919).sum::<usize>(), w, h))
-        .with((bbox.min.x.to_bits(), bbox.min.y.to_bits(), xf.zoom.to_bits(), st.selection.text.map(|t| (t.anchor, t.focus))));
+        .with((bbox.min.x.to_bits(), bbox.min.y.to_bits(), xf.zoom.to_bits(), st.selection.text.map(|t| (t.anchor, t.focus)), composing));
     let cache_id = egui::Id::new("inverse_sel_tex");
     let cached: Option<(egui::Id, egui::TextureHandle)> = ctx.data(|d| d.get_temp(cache_id));
     let tex = match cached {
@@ -1222,7 +1316,8 @@ fn draw_inverse_highlight(
         _ => {
             let view = xf.affine(ppp as f64, bbox.min);
             let mut rc = vello_cpu::RenderContext::new_with(w as u16, h as u16, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
-            rc.set_paint(peniko::Color::from_rgba8(0, 0, 0, 255));
+            let [br, bg, bb, _] = if composing { COMPOSING_FILL.to_array() } else { [0, 0, 0, 255] };
+            rc.set_paint(peniko::Color::from_rgba8(br, bg, bb, 255));
             for (_, m, quads, _) in runs {
                 rc.set_transform(view * *m);
                 for q in quads {
@@ -1243,8 +1338,12 @@ fn draw_inverse_highlight(
                     let Some(g) = l.glyphs.get(gi) else { continue };
                     let Some(style) = cs.styles.get(g.style as usize) else { continue };
                     let Some(c) = doc.resolve_color(&style.fill, style.fill_tint) else { continue };
-                    let [r, gg, b, _] = c.to_rgba8(1.0);
-                    rc.set_paint(peniko::Color::from_rgba8(255 - r, 255 - gg, 255 - b, 255));
+                    let [r, gg, b, a] = c.to_rgba8(1.0);
+                    if composing {
+                        rc.set_paint(peniko::Color::from_rgba8(r, gg, b, a));
+                    } else {
+                        rc.set_paint(peniko::Color::from_rgba8(255 - r, 255 - gg, 255 - b, 255));
+                    }
                     let outline = db.outline(&g.face, g.gid);
                     let skew =
                         if style.skew != 0.0 { Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
@@ -1258,7 +1357,7 @@ fn draw_inverse_highlight(
             let mut res = vello_cpu::Resources::new();
             rc.render(&mut pm, &mut res);
             let ci = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], pm.data_as_u8_slice());
-            let t = ctx.load_texture("inverse_selection", ci, egui::TextureOptions::NEAREST);
+            let t = crate::widgets::load_texture(ctx, "inverse_selection", ci, egui::TextureOptions::NEAREST);
             ctx.data_mut(|d| d.insert_temp(cache_id, (key, t.clone())));
             t
         }
@@ -1518,12 +1617,115 @@ fn fmt_tick(v: f64) -> String {
     if (v - r).abs() < 1e-6 { format!("{}", r as i64) } else { format!("{v:.1}") }
 }
 
+/// Move the view's content by a screen-space distance `d` (rotated views move in screen axes).
+fn pan(app: &mut DesignApp, xf: &Xf, d: egui::Vec2) {
+    let d = xf.unrotate_delta(d);
+    if let Some(v) = app.view_mut() {
+        v.origin = Point::new(v.origin.x - d.x as f64 / v.zoom, v.origin.y - d.y as f64 / v.zoom);
+    }
+}
+
+/// A scrollbar thumb on a track `track` pixels long, for `visible` (the view) within `content`
+/// (the pasteboard), both spans along the bar's axis in screen pixels: the thumb's start and
+/// length on the track, and the content pixels one thumb pixel moves (0 when nothing scrolls).
+fn thumb_span(track: f32, content: (f32, f32), visible: (f32, f32)) -> (f32, f32, f32) {
+    let track = track.max(0.0);
+    let (lo, hi) = (content.0.min(visible.0), content.1.max(visible.1));
+    let (total, shown) = (hi - lo, visible.1 - visible.0);
+    let scrollable = total - shown;
+    if !total.is_finite() || !shown.is_finite() || total <= 0.0 || scrollable <= 0.0 {
+        return (0.0, track, 0.0);
+    }
+    let len = (track * shown / total).max(MIN_THUMB.min(track));
+    let free = track - len;
+    if free <= 0.0 {
+        return (0.0, track, 0.0);
+    }
+    ((visible.0 - lo) / scrollable * free, len, scrollable / free)
+}
+
+/// The track and thumb of the vertical (or horizontal) scrollbar of the view `screen` inside
+/// `outer`, and the content pixels per thumb pixel.
+fn scrollbar_rects(outer: Rect, screen: Rect, content: Rect, vertical: bool) -> (Rect, Rect, f32) {
+    if vertical {
+        let track = Rect::from_min_max(pos2(outer.max.x - SCROLLBAR, screen.min.y), pos2(outer.max.x, screen.max.y));
+        let (start, len, k) = thumb_span(track.height(), (content.min.y, content.max.y), (screen.min.y, screen.max.y));
+        (track, Rect::from_min_size(pos2(track.min.x, track.min.y + start), vec2(SCROLLBAR, len)), k)
+    } else {
+        let track = Rect::from_min_max(pos2(screen.min.x, outer.max.y - SCROLLBAR), pos2(screen.max.x, outer.max.y));
+        let (start, len, k) = thumb_span(track.width(), (content.min.x, content.max.x), (screen.min.x, screen.max.x));
+        (track, Rect::from_min_size(pos2(track.min.x + start, track.min.y), vec2(len, SCROLLBAR)), k)
+    }
+}
+
+/// The view's scrollbars, on the right and bottom edges of `outer`: they span the pasteboard;
+/// dragging a thumb pans, clicking the track pages by one view.
+fn scrollbars(app: &mut DesignApp, ui: &mut egui::Ui, outer: Rect, screen: Rect, rect: Rect, t: &Tokens) {
+    let content = |app: &DesignApp| {
+        let st = app.session.active()?;
+        let v = app.view()?;
+        let xf = Xf::new(rect, v);
+        Some((xf, xf.rect(CanvasLayout::new(&st.doc, st.editing_parents).pasteboard)))
+    };
+    let Some((xf, cb)) = content(app) else { return };
+    let press = ui.input(|i| i.pointer.press_origin());
+    let mut hot = [false; 2];
+    for (n, vertical) in [true, false].into_iter().enumerate() {
+        let (track, thumb, k) = scrollbar_rects(outer, screen, cb, vertical);
+        let id = egui::Id::new(("canvas_scrollbar", app.pane, vertical));
+        let resp = ui.interact(track, id, Sense::click_and_drag());
+        let grab_id = id.with("grab");
+        if resp.drag_started() {
+            let on_thumb = press.is_some_and(|p| thumb.contains(p));
+            ui.data_mut(|d| d.insert_temp(grab_id, on_thumb));
+        }
+        let grabbed = resp.dragged() && ui.data(|d| d.get_temp::<bool>(grab_id)).unwrap_or(false);
+        if !resp.dragged() {
+            ui.data_mut(|d| d.remove::<bool>(grab_id));
+        }
+        let along = |p: egui::Vec2| if vertical { p.y } else { p.x };
+        let page = along(screen.size());
+        let mut moved = 0.0;
+        if grabbed {
+            moved = -along(resp.drag_delta()) * k;
+        } else if resp.clicked()
+            && let Some(p) = resp.interact_pointer_pos()
+        {
+            let (p, a, b) = if vertical { (p.y, thumb.min.y, thumb.max.y) } else { (p.x, thumb.min.x, thumb.max.x) };
+            if p < a {
+                moved = page;
+            } else if p > b {
+                moved = -page;
+            }
+        }
+        if moved != 0.0 && moved.is_finite() {
+            pan(app, &xf, if vertical { vec2(0.0, moved) } else { vec2(moved, 0.0) });
+        }
+        if let Some(slot) = hot.get_mut(n) {
+            *slot = grabbed || resp.hovered();
+        }
+    }
+    // Painted from the view as it is after this frame's input.
+    let Some((_, cb)) = content(app) else { return };
+    let painter = ui.painter_at(outer);
+    let right = Rect::from_min_max(pos2(outer.max.x - SCROLLBAR, outer.min.y), outer.max);
+    let bottom = Rect::from_min_max(pos2(outer.min.x, outer.max.y - SCROLLBAR), outer.max);
+    painter.rect_filled(right, 0.0, t.panel_darker);
+    painter.rect_filled(bottom, 0.0, t.panel_darker);
+    for (n, vertical) in [true, false].into_iter().enumerate() {
+        let (_, thumb, _) = scrollbar_rects(outer, screen, cb, vertical);
+        let alpha = if hot.get(n).copied().unwrap_or(false) { 0.6 } else { 0.35 };
+        painter.rect_filled(thumb.shrink(2.0), SCROLLBAR / 2.0 - 2.0, t.text.gamma_multiply(alpha));
+    }
+}
+
 fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect) {
     let Some(v) = app.view().copied() else { return };
     let xf = Xf::new(rect, &v);
     let wants_text = app.session.wants_text();
     let space = ui.input(|i| i.key_down(egui::Key::Space)) && !wants_text && !ui.ctx().text_edit_focused();
     // Scroll / zoom.
+    let alt = wheel_alt(ui);
     if resp.hovered() {
         let (scroll, zoom_delta, m, hover) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers, i.pointer.hover_pos()));
         if let Some(hp) = hover {
@@ -1531,6 +1733,10 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                 zoom_at(app, hp, zoom_delta as f64);
             } else if m.command && scroll.y != 0.0 {
                 zoom_at(app, hp, (1.0 + scroll.y as f64 * 0.003).clamp(0.5, 2.0));
+            } else if alt && scroll != egui::Vec2::ZERO {
+                // Alt + wheel zooms by as much as Ctrl/Cmd + wheel, which egui turns into `zoom_delta`.
+                let speed = ui.ctx().options(|o| o.input_options.scroll_zoom_speed);
+                zoom_at(app, hp, (speed * (scroll.x + scroll.y)).exp() as f64);
             } else if scroll != egui::Vec2::ZERO
                 && let Some(v) = app.view_mut()
             {
@@ -1548,6 +1754,21 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
         if let Some(v) = app.view_mut() {
             v.origin = Point::new(v.origin.x - d.x as f64 / v.zoom, v.origin.y - d.y as f64 / v.zoom);
         }
+        return;
+    }
+    // Editing text (Space types a space): Alt held at the press gives the Hand tool until the
+    // button is released, and the caret stays. Alt pressed later in a text drag copies the text.
+    let alt_hand_id = egui::Id::new(("canvas_alt_hand", app.pane));
+    let mut alt_hand: bool = ui.data(|d| d.get_temp(alt_hand_id)).unwrap_or(false);
+    let (press, alt, primary_down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers.alt, i.pointer.primary_down()));
+    if press && alt && wants_text && !tool_drag && resp.hovered() {
+        alt_hand = true;
+    }
+    if alt_hand {
+        if resp.dragged() {
+            pan(app, &xf, resp.drag_delta());
+        }
+        ui.data_mut(|d| d.insert_temp(alt_hand_id, primary_down));
         return;
     }
     // Ruler guides need the rulers (hidden while the view is rotated).
@@ -1627,11 +1848,40 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     if app.pane != app.focus_pane || (ui.ctx().text_edit_focused() && !resp.has_focus()) {
         return;
     }
+    // The engine drops composed text when something else edits or the caret moves; the input
+    // method must forget it too, or the next key would finish an accent that is gone.
+    let composing = ui.data(|d| d.get_temp::<bool>(ime_composing_id())).unwrap_or(false);
+    let interrupt = composing && app.session.composition().is_none();
+    if interrupt || !wants_text {
+        ui.data_mut(|d| d.remove::<bool>(ime_composing_id()));
+    }
+    if wants_text {
+        // Turn the OS input method on: macOS composes dead keys (⌥E then I types í) and
+        // Japanese/Chinese input only for a window that asks for it. Without it ⌥E typed "e".
+        let cursor_rect = ui.data(|d| d.get_temp(ime_caret_id())).unwrap_or(egui::Rect::from_min_size(rect.min, egui::Vec2::ZERO));
+        ui.ctx().output_mut(|o| {
+            o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Normal, rect, cursor_rect, should_interrupt_composition: interrupt });
+        });
+    }
     let evs = ui.input(|i| i.events.clone());
     for e in evs {
         match e {
             egui::Event::Text(t) if wants_text => {
                 let _ = app.run("text.insert", json!({"text": t}));
+            }
+            // What is composed shows in the story, in the text's own format, until it commits.
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) if wants_text => {
+                let on = !text.is_empty();
+                if app.run("text.compose", json!({"text": text})).is_ok() {
+                    ui.data_mut(|d| d.insert_temp(ime_composing_id(), on));
+                }
+            }
+            egui::Event::Ime(egui::ImeEvent::Commit(t)) if wants_text => {
+                ui.data_mut(|d| d.remove::<bool>(ime_composing_id()));
+                let _ = app.run("text.compose", json!({"text": ""}));
+                if !t.is_empty() {
+                    let _ = app.run("text.insert", json!({"text": t}));
+                }
             }
             egui::Event::Paste(t) if wants_text => {
                 // Formatted when the system clipboard still holds what was copied here;
@@ -2041,9 +2291,121 @@ mod tests {
         h.run_steps(3);
     }
 
+    fn new_document() -> Harness<'static, DesignApp> {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        harness(app)
+    }
+
+    fn held(modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::ModifiersChanged(modifiers)
+    }
+
+    fn wheel(phase: egui::TouchPhase, up: f32, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, up), phase, modifiers }
+    }
+
+    // Plays `events` with the pointer at `at`, a frame each, and lets the motion settle.
+    fn play(h: &mut Harness<'_, DesignApp>, at: Pos2, events: &[egui::Event]) -> View {
+        h.hover_at(at);
+        for event in events {
+            h.event(event.clone());
+            h.step();
+        }
+        h.run_steps(30);
+        *h.state().view().unwrap()
+    }
+
+    /// Alt + wheel scrolled the view like the plain wheel; it zooms at the pointer (#470).
+    #[test]
+    fn alt_wheel_zooms_at_the_pointer() {
+        use egui::{Modifiers, TouchPhase::Move};
+        let mut h = new_document();
+        let rect = h.state().canvas_rect.unwrap();
+        let at = rect.center() + vec2(150.0, 90.0);
+        let before = *h.state().view().unwrap();
+        let under = Xf::new(rect, &before).to_canvas(at);
+        let zoomed = play(&mut h, at, &[held(Modifiers::ALT), wheel(Move, 100.0, Modifiers::ALT)]);
+        assert!(zoomed.zoom > before.zoom * 1.2, "wheel up zooms in: {} -> {}", before.zoom, zoomed.zoom);
+        let still = Xf::new(rect, &zoomed).to_canvas(at);
+        assert!((still.x - under.x).abs() < 0.01 && (still.y - under.y).abs() < 0.01, "the point under the pointer stays: {under:?} -> {still:?}");
+        let back = play(&mut h, at, &[held(Modifiers::ALT), wheel(Move, -100.0, Modifiers::ALT)]);
+        assert!((back.zoom - before.zoom).abs() < 1e-6, "wheel down zooms out: {} -> {}", zoomed.zoom, back.zoom);
+        // The plain wheel still scrolls.
+        let scrolled = play(&mut h, at, &[held(Modifiers::NONE), wheel(Move, 100.0, Modifiers::NONE)]);
+        assert!(scrolled.zoom == back.zoom && scrolled.origin.y < back.origin.y, "{back:?} -> {scrolled:?}");
+    }
+
+    /// Alt zooms exactly as Ctrl/Cmd does, also when the key is let go while the wheel's motion is
+    /// still arriving: the rest of it zooms too and does not scroll the page.
+    #[test]
+    fn alt_wheel_zooms_like_ctrl_wheel_to_the_end_of_the_motion() {
+        use egui::{
+            Modifiers,
+            TouchPhase::{End, Move, Start},
+        };
+        const NONE: Modifiers = Modifiers::NONE;
+        // Each motion in steps; the views are compared after every step.
+        let motions: [fn(Modifiers) -> Vec<Vec<egui::Event>>; 4] = [
+            |key| vec![vec![held(key), wheel(Move, 100.0, key)]],
+            // A wheel turned fast, the key let go a frame later.
+            |key| vec![vec![held(key), wheel(Move, 400.0, key), held(NONE)]],
+            // A trackpad swipe that coasts on after the key is let go; once it has ended, the wheel scrolls.
+            |key| {
+                vec![
+                    vec![held(key), wheel(Start, 0.0, key), wheel(Move, 50.0, key), held(NONE), wheel(Move, 200.0, NONE)],
+                    vec![wheel(End, 0.0, NONE), wheel(Move, 100.0, NONE)],
+                ]
+            },
+            |key| vec![vec![held(key | Modifiers::SHIFT), wheel(Move, 100.0, key | Modifiers::SHIFT)]],
+        ];
+        for (i, motion) in motions.iter().enumerate() {
+            let (mut with_alt, mut with_command) = (new_document(), new_document());
+            let at = with_alt.state().canvas_rect.unwrap().center() + vec2(150.0, 90.0);
+            let start = *with_alt.state().view().unwrap();
+            for (alt, command) in motion(Modifiers::ALT).iter().zip(motion(Modifiers::COMMAND)) {
+                let (alt, command) = (play(&mut with_alt, at, alt), play(&mut with_command, at, &command));
+                assert!(command.zoom > start.zoom, "motion {i} zooms");
+                assert_eq!(alt, command, "motion {i}");
+            }
+        }
+    }
+
     fn units(h: &Harness<'_, DesignApp>) -> (Unit, Unit) {
         let s = &h.state().session.doc().unwrap().doc.settings;
         (s.horizontal_units, s.vertical_units)
+    }
+
+    /// A viewport wider than the GPU's largest texture: the canvas texture is sampled down, and an
+    /// edit repaints it whole. A region repainted in view pixels would land in the wrong place,
+    /// or outside the texture (a wgpu validation error). A view that fits is still patched.
+    #[test]
+    fn an_edit_repaints_a_canvas_texture_sampled_down_to_the_gpu_limit_whole() {
+        for (width, sampled_down) in [(1440.0, false), (2600.0, true)] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text"})).unwrap();
+            let mut h = Harness::builder().with_size(vec2(width, 900.0)).build_ui_state(
+                |ui, app: &mut DesignApp| {
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    app.ui(ui);
+                },
+                app,
+            );
+            h.run_steps(6);
+            let limit = h.ctx.input(|i| i.max_texture_side);
+            let size = h.state().canvas.texture.as_ref().map(|t| t.size()).unwrap();
+            assert!(size[0] <= limit && size[1] <= limit, "{size:?}");
+            let shown = h.state().canvas.shown.unwrap().size;
+            assert_eq!(shown.0 > limit as f32, sampled_down, "view {shown:?}, limit {limit}");
+            let patches = h.state().canvas.patches;
+            // A small edit: one more character in the frame.
+            h.state_mut().run("text.insert", json!({"story": frame["story"], "at": 4, "text": "s"})).unwrap();
+            h.run_steps(6);
+            assert_eq!(h.state().canvas.patches == patches, sampled_down, "width {width}");
+            assert_eq!(h.state().canvas.texture.as_ref().map(|t| t.size()), Some(size));
+        }
     }
 
     #[test]
@@ -2225,6 +2587,64 @@ mod tests {
         assert!(selected(&h).is_empty(), "three clicks half a second apart leave a caret: {:?}", selected(&h));
     }
 
+    /// ⌥E then I types "í" on a Mac: the input method composes the dead key's accent, which
+    /// it does only for a window that turned it on. The canvas never did, so ⌥E typed "e".
+    #[test]
+    fn dead_keys_compose_through_the_input_method() {
+        let (mut h, id) = typing("T");
+        h.state_mut().run("text.placeCaret", json!({"frame": id, "point": [390.0, 80.0]})).unwrap();
+        h.run_steps(2);
+        assert!(h.output().platform_output.ime.is_some(), "a text caret turns the input method on");
+        h.event(egui::Event::Ime(egui::ImeEvent::Preedit { text: "´".into(), active_range_chars: None }));
+        h.run_steps(2);
+        let text = |h: &Harness<'_, DesignApp>| h.state().session.doc().unwrap().doc.stories.values().map(|s| s.text.clone()).collect::<String>();
+        assert_eq!(text(&h), "T´", "the accent being composed shows in the story, in its format");
+        assert!(h.state().session.composition().is_some(), "and is marked as composed, not typed");
+        h.event(egui::Event::Ime(egui::ImeEvent::Preedit { text: String::new(), active_range_chars: None }));
+        h.event(egui::Event::Ime(egui::ImeEvent::Commit("í".into())));
+        h.run_steps(2);
+        assert_eq!(text(&h), "Tí");
+        assert!(h.state().session.composition().is_none());
+        // Moving the caret mid-composition drops the accent and tells the input method so.
+        h.event(egui::Event::Ime(egui::ImeEvent::Preedit { text: "˜".into(), active_range_chars: None }));
+        h.run_steps(2);
+        h.state_mut().run("text.move", json!({"dir": "left"})).unwrap();
+        h.step();
+        assert_eq!(text(&h), "Tí");
+        assert!(h.output().platform_output.ime.as_ref().is_some_and(|i| i.should_interrupt_composition));
+        // Another tool takes no text: the input method is off.
+        h.state_mut().run("tool.select", json!({"tool": "selection"})).unwrap();
+        h.run_steps(2);
+        assert!(h.output().platform_output.ime.is_none());
+    }
+
+    #[test]
+    fn tools_show_their_own_cursors_over_the_page() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut h = harness(app);
+        let p = h.state().canvas_rect.unwrap().center();
+        let mut shown = |tool: &str| {
+            h.state_mut().run("tool.select", json!({"tool": tool})).unwrap();
+            h.hover_at(p);
+            h.run_steps(2);
+            let out = &h.output().platform_output;
+            (out.cursor_icon, out.cursor_image.clone())
+        };
+        let (pen, direct, text) = (shown("pen"), shown("directSelection"), shown("type"));
+        let ppp = h.ctx.pixels_per_point();
+        let images = &mut h.state_mut().cursors;
+        match crate::cursors::MODE {
+            crate::cursors::Mode::Os => {
+                assert_eq!(pen.1, images.get(Cursor::Pen, ppp), "Pen");
+                assert_eq!(direct.1, images.get(Cursor::ArrowHollow, ppp), "Direct Selection");
+                assert_eq!(text, (egui::CursorIcon::Text, None), "the I-beam stays a system cursor");
+            }
+            crate::cursors::Mode::Painted => assert_eq!((pen.0, direct.0), (egui::CursorIcon::None, egui::CursorIcon::None)),
+            crate::cursors::Mode::System => assert_eq!(pen, (egui::CursorIcon::Crosshair, None)),
+        }
+    }
+
     #[test]
     fn rulers_open_no_units_menu_without_a_document() {
         let mut h = harness(DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()));
@@ -2245,5 +2665,144 @@ mod tests {
         assert_eq!(lines(-30.0, 12.0, 30.0), [6.0, 18.0], "a start above the page keeps its rhythm");
         assert_eq!(lines(f64::NAN, 12.0, 792.0), [0.0; 0]);
         assert_eq!(baseline_grid_lines(0.0, 12.0, f64::INFINITY).count(), MAX_BASELINES);
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_tests {
+    use egui::{Event, Modifiers, PointerButton};
+    use egui_kittest::Harness;
+
+    use super::*;
+    use crate::test_window::{Window, open, wheel};
+
+    fn window() -> Harness<'static, Window> {
+        let mut h = open(DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()), vec2(1440.0, 900.0));
+        // Zoomed in so both axes scroll.
+        set_zoom(&mut h.state_mut().app, 2.0);
+        h.run_steps(3);
+        h
+    }
+
+    fn origin(h: &Harness<'static, Window>) -> Point {
+        h.state().app.view().map(|v| v.origin).unwrap_or_default()
+    }
+
+    /// The scrollbar's track and thumb as the canvas lays them out for the current view, and
+    /// the content pixels per thumb pixel.
+    fn bar(h: &Harness<'static, Window>, vertical: bool) -> (Rect, Rect, f32) {
+        let app = &h.state().app;
+        let rect = app.canvas_rect.unwrap();
+        let st = app.session.active().unwrap();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let cb = xf.rect(CanvasLayout::new(&st.doc, st.editing_parents).pasteboard);
+        let outer = Rect::from_min_max(rect.min, rect.max + vec2(SCROLLBAR, SCROLLBAR));
+        scrollbar_rects(outer, rect, cb, vertical)
+    }
+
+    /// A primary-button drag from `a` to `b` in a few moves, with `mods` held throughout.
+    fn drag(h: &mut Harness<'static, Window>, a: Pos2, b: Pos2, mods: Modifiers) {
+        h.event(Event::ModifiersChanged(mods));
+        h.hover_at(a);
+        h.step();
+        h.event(Event::PointerButton { pos: a, button: PointerButton::Primary, pressed: true, modifiers: mods });
+        h.step();
+        for n in 1..=4 {
+            h.hover_at(a + (b - a) * n as f32 / 4.0);
+            h.step();
+        }
+        h.event(Event::PointerButton { pos: b, button: PointerButton::Primary, pressed: false, modifiers: mods });
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(3);
+    }
+
+    #[test]
+    fn document_views_have_scrollbars_beside_the_view() {
+        let h = window();
+        let rect = h.state().app.canvas_rect.unwrap();
+        for vertical in [true, false] {
+            let r = h.ctx.read_response(egui::Id::new(("canvas_scrollbar", 0u8, vertical))).expect("scrollbar").rect;
+            let (track, thumb, k) = bar(&h, vertical);
+            assert_eq!(r, track);
+            assert!(k > 0.0, "the zoomed-in view scrolls");
+            if vertical {
+                assert_eq!((r.min.x, r.width(), r.min.y, r.max.y), (rect.max.x, SCROLLBAR, rect.min.y, rect.max.y));
+                assert!(thumb.height() < track.height());
+            } else {
+                assert_eq!((r.min.y, r.height(), r.min.x, r.max.x), (rect.max.y, SCROLLBAR, rect.min.x, rect.max.x));
+                assert!(thumb.width() < track.width());
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_a_thumb_pans_and_clicking_the_track_pages() {
+        let mut h = window();
+        let zoom = h.state().app.view().unwrap().zoom;
+        // Vertical thumb: down 40 px moves the view down by 40 thumb pixels' worth of content.
+        let (_, thumb, k) = bar(&h, true);
+        let before = origin(&h);
+        drag(&mut h, thumb.center(), thumb.center() + vec2(0.0, 40.0), Modifiers::NONE);
+        let after = origin(&h);
+        let want = 40.0 * k as f64 / zoom;
+        assert!((after.y - before.y - want).abs() < want * 0.2, "{before:?} → {after:?}, want +{want}");
+        assert_eq!(after.x, before.x);
+        // Horizontal thumb: left 30 px.
+        let (_, thumb, k) = bar(&h, false);
+        drag(&mut h, thumb.center(), thumb.center() - vec2(30.0, 0.0), Modifiers::NONE);
+        let next = origin(&h);
+        let want = 30.0 * k as f64 / zoom;
+        assert!((after.x - next.x - want).abs() < want * 0.2, "{after:?} → {next:?}, want -{want}");
+        assert_eq!(next.y, after.y);
+        // A click on the vertical track above the thumb pages up by one view.
+        let (track, thumb, _) = bar(&h, true);
+        assert!(thumb.min.y - track.min.y > 4.0);
+        crate::test_window::click_at(&mut h, pos2(track.center().x, track.min.y + 2.0));
+        let paged = origin(&h);
+        let view = h.state().app.canvas_rect.unwrap().height() as f64 / zoom;
+        assert!((next.y - paged.y - view).abs() < 0.01, "{next:?} → {paged:?}, want -{view}");
+    }
+
+    #[test]
+    fn scrolling_the_view_moves_the_thumbs() {
+        let mut h = window();
+        let (_, v0, _) = bar(&h, true);
+        let (_, h0, _) = bar(&h, false);
+        let c = h.state().app.canvas_rect.unwrap().center();
+        wheel(&mut h, c, vec2(-50.0, -80.0));
+        let (_, v1, _) = bar(&h, true);
+        let (_, h1, _) = bar(&h, false);
+        assert!(v1.min.y > v0.min.y && h1.min.x > h0.min.x, "{v0:?} → {v1:?}, {h0:?} → {h1:?}");
+        let r = h.ctx.read_response(egui::Id::new(("canvas_scrollbar", 0u8, true))).expect("scrollbar");
+        assert_eq!(r.rect, bar(&h, true).0);
+    }
+
+    #[test]
+    fn alt_drag_while_editing_text_pans_and_keeps_the_caret() {
+        let mut h = window();
+        let app = &mut h.state_mut().app;
+        let rect = app.canvas_rect.unwrap();
+        let xf = Xf::new(rect, app.view().unwrap());
+        // A text frame filling the visible part of the page, with the caret in it.
+        let (a, b) = (xf.to_canvas(rect.min + vec2(20.0, 20.0)), xf.to_canvas(rect.max - vec2(20.0, 20.0)));
+        let r = app.run("frame.create", json!({"rect": [a.x, a.y, b.x, b.y], "content": "text", "text": "Hello brave world"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        app.run("tool.select", json!({"tool": "type"})).unwrap();
+        app.run("text.select", json!({"story": sid, "anchor": 3, "focus": 3})).unwrap();
+        assert!(app.session.wants_text());
+        h.run_steps(2);
+        let caret = h.state().app.session.doc().unwrap().selection.text;
+        let before = origin(&h);
+        let zoom = h.state().app.view().unwrap().zoom;
+        let from = rect.center();
+        drag(&mut h, from, from + vec2(60.0, 40.0), Modifiers::ALT);
+        let after = origin(&h);
+        assert!(after.x < before.x && after.y < before.y, "{before:?} → {after:?}");
+        assert!((before.x - after.x - 60.0 / zoom).abs() < 15.0 / zoom, "{before:?} → {after:?}");
+        assert_eq!(h.state().app.session.doc().unwrap().selection.text, caret);
+        assert!(h.state_mut().app.session.wants_text(), "still editing text");
+        // Without Alt the same drag selects text and leaves the view alone.
+        drag(&mut h, from, from + vec2(60.0, 40.0), Modifiers::NONE);
+        assert_eq!(origin(&h), after);
     }
 }

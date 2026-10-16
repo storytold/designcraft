@@ -17,6 +17,7 @@ mod export;
 mod file;
 pub(crate) mod find;
 pub use find::same_find_domain;
+pub(crate) mod flex;
 mod fonts;
 mod guides;
 mod index;
@@ -162,6 +163,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(anchors::specs());
         v.extend(articles::specs());
         v.extend(paths::specs());
+        v.extend(flex::specs());
         v.extend(book::specs());
         v.extend(buttons::specs());
         v.extend(captions::specs());

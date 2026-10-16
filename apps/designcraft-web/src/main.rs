@@ -25,6 +25,9 @@ mod cloud;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod graphics;
+
 #[cfg(target_arch = "wasm32")]
 fn main() {
     web::start();

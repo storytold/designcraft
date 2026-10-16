@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first version, from the full re-measure) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -36,10 +36,11 @@ Fidelity: **unmeasured** unless stated.
 | Single-line Composer | greedy | greedy with the same ranges | ✓ | |
 | World-Ready composers | Paragraph / Single-line World-Ready | RTL, Arabic and bidi in the main composer | ~ | Indic scripts (Devanagari etc.) shape through harfrust but are untested |
 | Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab now justifies after the tab (#284) |
-| Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list) and Spanish (Bezos); zone, limits, exceptions in the user dictionary | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
+| Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt) and Norwegian (hyph-no); zone, limits, exceptions in the user dictionary | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
 | Spelling | per-language dictionaries | English (Moby) + document/user dictionary | ~ | |
 | Kerning | Metrics, Optical, manual, none | Metrics, manual, none | ~ | **Optical treated as Metrics** (#181): imported display text sets wider and can overset |
 | Tracking, scale, skew, baseline shift | ✓ | ✓ | ✓ | |
+| Character fill and stroke | fill, stroke, tint, weight, stroke aligned to centre or outside | fill, stroke, tints, weight, stroke behind fill (screen, PNG, PDF, IDML `StrokeAlignment`) | ~ | text strokes have no join or miter limit settings (#619 for stroke behind fill) |
 | OpenType features | ligatures, discretionary, swash, fractions, ordinals, figures, small caps, stylistic sets, positional forms | through harfrust | ✓ | |
 | Variable fonts | axes in Character panel | named instances and free axis values; PDF embeds the instance | ✓ | |
 | Leading | auto (120%), absolute, leading model | ✓ | ✓ | CJK leading models in cjk-typography.md |

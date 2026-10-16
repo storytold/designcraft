@@ -67,6 +67,30 @@ pub fn font_mapping(family: &str, glyphs: &[(char, char)]) -> Option<Vec<u8>> {
     assemble(base, tables)
 }
 
+/// [`font_with`] for an optical-size face: typographic names `family` / `style` (name IDs 16 and
+/// 17) and WWS names `wws_family` / `wws_style` (IDs 21 and 22), the way InDesign names it
+/// ("Kepler Std" / "Light Display" and "Kepler Std Display" / "Light"). `None` if the bundled font
+/// can't be read.
+pub fn font_with_wws(family: &str, style: &str, wws_family: &str, wws_style: &str, chars: &[char]) -> Option<Vec<u8>> {
+    let base = font_with(family, chars)?;
+    let entries = [(1u16, family), (2, style), (16, family), (17, style), (21, wws_family), (22, wws_style)];
+    let count = u16::try_from(entries.len()).ok()?;
+    let mut name = Vec::new();
+    for v in [0u16, count, 6 + count * 12] {
+        name.extend_from_slice(&v.to_be_bytes());
+    }
+    let mut at = 0usize;
+    for (id, s) in entries {
+        let len = s.encode_utf16().count() * 2;
+        for v in [3u16, 1, 0x409, id, u16::try_from(len).ok()?, u16::try_from(at).ok()?] {
+            name.extend_from_slice(&v.to_be_bytes());
+        }
+        at += len;
+    }
+    entries.iter().for_each(|(_, s)| name.extend(s.encode_utf16().flat_map(u16::to_be_bytes)));
+    with_tables(&base, vec![(*b"name", name)])
+}
+
 /// Every table of the font file `font`: (tag, bytes).
 fn tables_of(font: &[u8]) -> Option<Vec<([u8; 4], Vec<u8>)>> {
     let be16 = |b: &[u8], at: usize| b.get(at..at + 2).and_then(|s| s.try_into().ok()).map(u16::from_be_bytes);

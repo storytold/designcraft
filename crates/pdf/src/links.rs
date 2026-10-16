@@ -1,6 +1,7 @@
 //! Interactive PDF: hyperlink annotations (frames and text ranges → URLs, e-mail, pages) and the
 //! bookmark outline.
 
+use craft_pdf::write::backend as krilla;
 use designcraft_doc::{Bookmark, Document, HyperlinkDest, HyperlinkSource, SpreadRef};
 use designcraft_geom::{Affine, Rect};
 use krilla::action::{Action, LinkAction};

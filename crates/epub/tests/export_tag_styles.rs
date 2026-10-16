@@ -55,7 +55,20 @@ fn package(doc: &Document) -> (String, String) {
     let opf = read("OEBPS/content.opf");
     assert!(xhtml.contains("<link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\"/>"));
     assert!(opf.contains("href=\"style.css\" media-type=\"text/css\""));
-    (xhtml, css)
+    (without_heading_ids(&xhtml), css)
+}
+
+/// The markup without the `id`s headings get as table-of-contents targets (` id="s0-p0"`).
+fn without_heading_ids(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(i) = rest.find(" id=\"s") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 6..];
+        rest = after.find('"').map_or("", |j| &after[j + 1..]);
+    }
+    out.push_str(rest);
+    out
 }
 
 fn rule<'a>(css: &'a str, selector: &str) -> &'a str {

@@ -32,6 +32,43 @@ impl Default for Fill {
 }
 
 impl Fill {
+    /// A radial gradient's ellipse on an object whose bounds (in its own space) are `b`: centre and
+    /// horizontal and vertical radii. As in InDesign, a radial gradient stretches with the object's
+    /// box: by default it's centred and reaches the box's sides (an ellipse in a non-square box);
+    /// with a Gradient Swatch tool vector it's centred at the vector's start, and the vector's
+    /// length, measured with the box made square, sets its size.
+    pub fn radial_ellipse(&self, b: designcraft_geom::Rect) -> (designcraft_geom::Point, f64, f64) {
+        let k = if b.width() > 1e-9 && b.height() > 1e-9 { b.height() / b.width() } else { 1.0 };
+        match self.gradient_vector {
+            Some([x0, y0, x1, y1]) => {
+                let r = designcraft_geom::Vec2::new(x1 - x0, (y1 - y0) / k).hypot();
+                (designcraft_geom::Point::new(x0, y0), r, r * k)
+            }
+            // A box with no width or height (a straight line's) has no ellipse: a circle across
+            // its length.
+            None if b.width() <= 1e-9 || b.height() <= 1e-9 => {
+                let r = b.width().max(b.height()).max(1e-3) / 2.0;
+                (b.center(), r, r)
+            }
+            None => (b.center(), b.width() / 2.0, b.height() / 2.0),
+        }
+    }
+
+    /// A linear gradient's axis on an object whose bounds (in its own space) are `b`: the
+    /// Gradient Swatch tool's vector, or the box's extent along the gradient's angle through its
+    /// centre. A box with no extent along that angle (a straight line, across it) takes its longer
+    /// side.
+    pub fn linear_axis(&self, b: Rect) -> (Point, Point) {
+        if let Some([x0, y0, x1, y1]) = self.gradient_vector {
+            return (Point::new(x0, y0), Point::new(x1, y1));
+        }
+        let a = self.gradient_angle.unwrap_or(0.0).to_radians();
+        let half = (b.width() * a.cos().abs() + b.height() * a.sin().abs()) / 2.0;
+        let half = if half > 1e-9 { half } else { b.width().max(b.height()).max(1e-3) / 2.0 };
+        let d = designcraft_geom::Vec2::new(a.cos(), -a.sin()) * half;
+        (b.center() - d, b.center() + d)
+    }
+
     pub fn none() -> Self {
         Fill { swatch: designcraft_color::swatch::NONE.into(), tint: 1.0, gradient_angle: None, gradient_vector: None, overprint: false }
     }
@@ -224,6 +261,12 @@ pub struct Stroke {
     /// Overprint Gap (Attributes panel).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gap_overprint: bool,
+    /// A gradient swatch's angle on the stroke, as [`Fill::gradient_angle`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gradient_angle: Option<f64>,
+    /// The Gradient Swatch tool's vector on the stroke, as [`Fill::gradient_vector`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gradient_vector: Option<[f64; 4]>,
 }
 
 impl Default for Stroke {
@@ -244,11 +287,25 @@ impl Default for Stroke {
             gap_tint: 1.0,
             overprint: false,
             gap_overprint: false,
+            gradient_angle: None,
+            gradient_vector: None,
         }
     }
 }
 
 impl Stroke {
+    /// The stroke's paint (swatch, tint and gradient geometry) as a fill, to paint it the same way:
+    /// a gradient swatch on a stroke runs across the object's box as on its fill.
+    pub fn as_fill(&self) -> Fill {
+        Fill {
+            swatch: self.swatch.clone(),
+            tint: self.tint,
+            gradient_angle: self.gradient_angle,
+            gradient_vector: self.gradient_vector,
+            overprint: self.overprint,
+        }
+    }
+
     /// How far the painted stroke can reach beyond the path (arrowheads reach further).
     pub fn extent(&self) -> f64 {
         if self.start == Arrowhead::None && self.end == Arrowhead::None { self.weight } else { self.weight.max(0.5) * 5.5 }
@@ -1016,6 +1073,9 @@ pub struct Item {
     pub isolate: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub knockout: bool,
+    /// Flex Layout: this frame lays out the objects nested in it (see [`crate::flex`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flex: Option<crate::flex::FlexLayout>,
 }
 
 fn identity() -> Affine {
@@ -1061,6 +1121,7 @@ impl Item {
             active_state: 0,
             isolate: false,
             knockout: false,
+            flex: None,
         }
     }
 
@@ -1107,6 +1168,29 @@ impl Item {
     /// Inner-space bounds of the path (the frame's "geometric bounds" before transform).
     pub fn inner_bounds(&self) -> Rect {
         self.path.bounds().unwrap_or(Rect::ZERO)
+    }
+
+    /// The box a gradient feather spans, in item space: the path's bounds, or a group's visible
+    /// objects' (a group has no path of its own). Only the active states contribute, including in
+    /// nested groups. Walk iteratively so deeply nested documents don't exhaust the call stack.
+    pub fn feather_bounds(&self) -> Rect {
+        if !self.is_group() {
+            return self.inner_bounds();
+        }
+        let mut stack: Vec<_> = self.shown_children().map(|c| (c.as_ref(), c.xf)).collect();
+        let mut bounds: Option<Rect> = None;
+        while let Some((it, xf)) = stack.pop() {
+            if it.hidden {
+                continue;
+            }
+            if it.is_group() {
+                stack.extend(it.shown_children().map(|c| (c.as_ref(), xf * c.xf)));
+            } else {
+                let b = xf.transform_rect_bbox(it.inner_bounds());
+                bounds = Some(bounds.map_or(b, |have| have.union(b)));
+            }
+        }
+        bounds.unwrap_or(Rect::ZERO)
     }
 
     /// Spread-space geometric bounds (axis-aligned box of the transformed path; groups: union).
@@ -1263,6 +1347,29 @@ mod tests {
         let mut n = 0;
         g.walk(&mut |_| n += 1);
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn feather_bounds_follow_visible_states_in_nested_groups() {
+        let a = Item::new(ItemId(1), LayerId(1), Shape::Rectangle, shapes::rectangle(Rect::new(10.0, 20.0, 30.0, 40.0)));
+        let mut b = a.clone();
+        b.id = ItemId(2);
+        b.xf = Affine::translate((500.0, 500.0));
+        let mut state = Item::new(ItemId(3), LayerId(1), Shape::Group, PathData::default());
+        state.content = Content::Group { items: vec![Arc::new(a), Arc::new(b)] };
+        state.states = vec!["Visible".into(), "Inactive".into()];
+        assert_eq!(state.feather_bounds(), Rect::new(10.0, 20.0, 30.0, 40.0));
+        state.active_state = 1;
+        assert_eq!(state.feather_bounds(), Rect::new(510.0, 520.0, 530.0, 540.0));
+        state.active_state = 0;
+        state.xf = Affine::translate((5.0, 10.0)) * Affine::scale(2.0);
+        let mut hidden = state.clone();
+        hidden.id = ItemId(4);
+        hidden.hidden = true;
+        hidden.xf = Affine::translate((-1000.0, -1000.0));
+        let mut outer = Item::new(ItemId(5), LayerId(1), Shape::Group, PathData::default());
+        outer.content = Content::Group { items: vec![Arc::new(state), Arc::new(hidden)] };
+        assert_eq!(outer.feather_bounds(), Rect::new(25.0, 50.0, 65.0, 90.0));
     }
 
     #[test]

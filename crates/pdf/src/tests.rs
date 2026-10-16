@@ -414,6 +414,93 @@ fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
     (rec.0, rec.1)
 }
 
+/// The page's paint operations in order: `fill`/`stroke` + ` text`/` path` and the stroke width.
+fn paint_order(bytes: &[u8]) -> Vec<(String, f32)> {
+    use hayro_interpret::font::Glyph;
+    use hayro_interpret::{
+        BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
+        interpret_page,
+    };
+    #[derive(Default)]
+    struct Rec(Vec<(String, f32)>);
+    impl Device<'_> for Rec {
+        fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
+        fn set_blend_mode(&mut self, _: BlendMode) {}
+        fn draw_path(&mut self, _: &kurbo::BezPath, _: kurbo::Affine, _: &Paint<'_>, m: &PathDrawMode) {
+            self.0.push(match m {
+                PathDrawMode::Fill(_) => ("fill path".into(), 0.0),
+                PathDrawMode::Stroke(p) => ("stroke path".into(), p.line_width),
+            });
+        }
+        fn push_clip_path(&mut self, _: &ClipPath) {}
+        fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'_>>, _: BlendMode) {}
+        fn draw_glyph(&mut self, _: &Glyph<'_>, _: kurbo::Affine, _: kurbo::Affine, _: &Paint<'_>, m: &GlyphDrawMode) {
+            self.0.push(match m {
+                GlyphDrawMode::Fill => ("fill text".into(), 0.0),
+                GlyphDrawMode::Stroke(p) => ("stroke text".into(), p.line_width),
+                GlyphDrawMode::Invisible => ("invisible text".into(), 0.0),
+            });
+        }
+        fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
+        fn pop_clip_path(&mut self) {}
+        fn pop_transparency_group(&mut self) {}
+    }
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    let cache = InterpreterCache::new();
+    let page = &pdf.pages()[0];
+    let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
+    let mut rec = Rec::default();
+    interpret_page(page, &mut ctx, &mut rec);
+    rec.0
+}
+
+#[test]
+fn stroke_behind_fill_strokes_the_run_before_filling_it() {
+    let export = |behind: bool| {
+        let mut d = doc_with_text("I");
+        let sid = *d.stories.keys().next().unwrap();
+        d.story_mut(sid).unwrap().format_chars(0..1, |f| {
+            f.over.stroke = Some(designcraft_color::swatch::BLACK.into());
+            f.over.stroke_weight = Some(4.0);
+            f.over.stroke_behind_fill = Some(behind);
+        });
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+        let ops: Vec<(String, f32)> = paint_order(&bytes).into_iter().filter(|(op, w)| op.ends_with("text") || *w > 0.0).collect();
+        (ops, extract_text(&bytes)[0].clone())
+    };
+    let (over, _) = export(false);
+    assert_eq!(over, [("fill text".to_string(), 0.0), ("stroke text".to_string(), 4.0)]);
+    let (behind, text) = export(true);
+    assert_eq!(behind, [("stroke path".to_string(), 8.0), ("fill text".to_string(), 0.0)], "the double-width stroke goes first");
+    assert_eq!(text.trim(), "I", "the text is not duplicated");
+}
+
+#[test]
+fn pdfa_leaves_out_form_fields_added_after_validation() {
+    let mut d = doc_with_text("Archive me");
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let mut b = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(36.0, 400.0, 200.0, 430.0)));
+    b.form_field = Some(designcraft_doc::FormField {
+        kind: designcraft_doc::FieldKind::TextField,
+        name: "name".into(),
+        value: String::new(),
+        options: Vec::new(),
+        multiline: false,
+        required: false,
+        font_size: 0.0,
+    });
+    d.insert_item(SpreadRef::Doc(0), b, None).unwrap();
+    let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(String::from_utf8_lossy(&plain).contains("/AcroForm"), "control: a plain export has the field");
+    let opts = PdfOptions { standard: Standard::PdfA2b, created: Some(1_700_000_000), ..Default::default() };
+    let a = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    let text = String::from_utf8_lossy(&a.bytes).to_string();
+    assert!(text.contains("pdfaid"));
+    assert!(!text.contains("/AcroForm") && !text.contains("NeedAppearances"), "PDF/A must not get the form update");
+    assert!(a.warnings.iter().any(|w| w.contains("PDF/A-2b") && w.contains("left out")), "{:?}", a.warnings);
+}
+
 #[test]
 fn missing_glyphs_print_as_boxes() {
     // Source Serif 4 lacks 語: its .notdef box is drawn as a path, not as a .notdef glyph
@@ -457,4 +544,27 @@ fn column_rules_are_drawn() {
     assert_eq!(xs.len(), 2, "{xs:?}");
     assert!((xs[0] - 214.0).abs() < 0.01 && (xs[1] - 398.0).abs() < 0.01, "{xs:?}");
     assert!(rules(false).is_empty());
+}
+
+#[test]
+fn extreme_page_selection_is_a_page_error_without_overflow() {
+    let doc = doc_with_text("Bounded page selection");
+    let opts = PdfOptions { pages: Some(vec![usize::MAX]), ..Default::default() };
+    assert_eq!(export_pdf(&doc, &Cache::new(), &opts), Err(PdfError::BadPage(usize::MAX)));
+}
+
+#[test]
+fn empty_and_populated_export_metadata_preserve_key_presence() {
+    let mut d = Document::new(&NewDocument::default());
+    d.title.clear();
+    let s = uncompressed(&d, PdfOptions::default());
+    for key in ["/Title", "/Author", "<dc:title>", "<dc:creator>"] {
+        assert!(!s.contains(key), "unexpected empty metadata {key}");
+    }
+    d.title = "Synthetic title".into();
+    let s = uncompressed(&d, PdfOptions { author: Some("Test author".into()), created: Some(1_700_000_000), ..Default::default() });
+    for key in ["/Title", "/Author", "/CreationDate", "<dc:title>", "<dc:creator>"] {
+        assert!(s.contains(key), "missing populated metadata {key}");
+    }
+    assert!(s.contains("Synthetic title") && s.contains("Test author"));
 }

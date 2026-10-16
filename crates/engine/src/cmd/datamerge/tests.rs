@@ -1086,6 +1086,15 @@ fn oversized_data_file_is_refused_before_reading() {
     assert_eq!(read_path_capped(&path, 4096).unwrap().len(), 2048);
 }
 
+/// A device reports no length; the read still stops at the cap (an EPUB `coverImage` of
+/// `/dev/zero` must not read until memory runs out).
+#[cfg(unix)]
+#[test]
+fn endless_file_is_refused_at_the_cap() {
+    let msg = read_path_capped("/dev/zero", 1024).unwrap_err();
+    assert!(msg.contains("larger than"), "{msg}");
+}
+
 /// #198: with facing pages on, one record per page must not stack the copies at identical
 /// coordinates on one spread (leaving a later page empty).
 #[test]

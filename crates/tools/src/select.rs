@@ -280,12 +280,18 @@ fn resize_edges_rect(from: Rect, handle: usize, p: Point) -> Rect {
 }
 
 fn finish_resize(from: Rect, handle: usize, rect: Rect, m: Mods) -> Rect {
-    let rect = if m.shift && from.width() > 1e-9 && from.height() > 1e-9 {
-        apply_aspect(from, handle, rect, aspect_scale(from, handle, rect))
-    } else {
-        rect
-    };
-    if m.alt { apply_alt(from, handle, rect) } else { rect }
+    // Alt first: Shift then measures the drag from the centre and keeps it there.
+    let rect = if m.alt { apply_alt(from, handle, rect) } else { rect };
+    if !(m.shift && from.width() > 1e-9 && from.height() > 1e-9) {
+        return rect;
+    }
+    let s = aspect_scale(from, handle, rect);
+    if m.alt { centered_rect(from, from.width() * s, from.height() * s) } else { apply_aspect(from, handle, rect, s) }
+}
+
+fn centered_rect(from: Rect, w: f64, h: f64) -> Rect {
+    let c = from.center();
+    Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0)
 }
 
 fn aspect_scale(from: Rect, handle: usize, rect: Rect) -> f64 {
@@ -316,31 +322,17 @@ fn drives_x(handle: usize, from: Rect, rect: Rect) -> bool {
     sx > sy
 }
 
+/// Scales `from` by `s` with the edges opposite the handle fixed. An axis the handle doesn't move stays centred.
 fn apply_aspect(from: Rect, handle: usize, rect: Rect, s: f64) -> Rect {
-    let (mut x0, mut y0, mut x1, mut y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
-    let (w, h) = (from.width() * s, from.height() * s);
-    match handle {
-        0 => {
-            x0 = x1 - w;
-            y0 = y1 - h;
-        }
-        2 => {
-            x1 = x0 + w;
-            y0 = y1 - h;
-        }
-        3..=5 => {
-            x1 = x0 + w;
-            y1 = y0 + h;
-        }
-        6 | 7 => {
-            x0 = x1 - w;
-            y1 = y0 + h;
-        }
-        _ => {
-            x0 = x1 - w;
-            y0 = y1 - h;
-        }
-    }
+    let (x_edges, y_edges) = resize_edge_flags(handle);
+    let span = |edges: [bool; 3], lo: f64, hi: f64, mid: f64, len: f64| match edges {
+        [true, _, _] => (hi - len, hi),
+        [_, _, true] => (lo, lo + len),
+        _ => (mid - len / 2.0, mid + len / 2.0),
+    };
+    let c = from.center();
+    let (x0, x1) = span(x_edges, rect.x0, rect.x1, c.x, from.width() * s);
+    let (y0, y1) = span(y_edges, rect.y0, rect.y1, c.y, from.height() * s);
     Rect::new(x0, y0, x1, y1)
 }
 
@@ -387,8 +379,7 @@ fn finish_snapped_resize(
     if !(w.is_finite() && h.is_finite()) {
         return proposed;
     }
-    let c = from.center();
-    Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0)
+    centered_rect(from, w, h)
 }
 
 /// Length match: add the difference once. Position match: the flagged edge moves and the other side mirrors.
@@ -415,16 +406,18 @@ fn axis_size_delta(edges: [bool; 3], delta: f64) -> f64 {
     }
 }
 
+/// Mirrors the dragged sides around the centre of `from`. Shrinking and crossing the centre follow the pointer.
 fn apply_alt(from: Rect, handle: usize, rect: Rect) -> Rect {
-    let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
+    let (x_edges, y_edges) = resize_edge_flags(handle);
     let c = from.center();
-    let (hw, hh) = ((x1 - x0) / 2.0, (y1 - y0) / 2.0);
-    let (hw, hh) = match handle {
-        1 | 5 => (from.width() / 2.0, (if handle == 1 { c.y - y0 } else { y1 - c.y })),
-        3 | 7 => ((if handle == 7 { c.x - x0 } else { x1 - c.x }), from.height() / 2.0),
-        _ => (hw.abs().max((c.x - x0).abs()).max((x1 - c.x).abs()), hh.abs().max((c.y - y0).abs()).max((y1 - c.y).abs())),
+    let size = |edges: [bool; 3], lo: f64, hi: f64, mid: f64, len: f64| match edges {
+        [true, _, _] => 2.0 * (mid - lo),
+        [_, _, true] => 2.0 * (hi - mid),
+        _ => len,
     };
-    Rect::new(c.x - hw, c.y - hh, c.x + hw, c.y + hh)
+    let w = size(x_edges, rect.x0, rect.x1, c.x, from.width());
+    let h = size(y_edges, rect.y0, rect.y1, c.y, from.height());
+    centered_rect(from, w, h)
 }
 
 /// Left/center/right and top/center/bottom for a handle. Centers stay off.

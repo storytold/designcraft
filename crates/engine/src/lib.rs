@@ -11,7 +11,9 @@
 pub mod atomic;
 pub mod cmd;
 pub mod dtd;
+pub mod file_access;
 pub mod guard;
+pub mod io;
 pub mod links;
 pub mod math;
 pub mod recovery;
@@ -110,6 +112,16 @@ pub struct DocState {
 #[derive(Debug)]
 pub struct FontScope(pub u32);
 
+/// A graphic loaded in the place cursor (`place.load`, File › Place with no frame to fill).
+#[derive(Clone, Copy, Debug)]
+pub struct LoadedGraphic {
+    pub asset: designcraft_doc::AssetId,
+    /// Natural size in points.
+    pub size: (f64, f64),
+    /// Image Import Options › Crop to: the box of the graphic a new frame shows (x, y, w, h).
+    pub crop: Option<(f64, f64, f64, f64)>,
+}
+
 impl Drop for FontScope {
     fn drop(&mut self) {
         designcraft_fonts::FontDb::global().close_scope(self.0);
@@ -201,6 +213,9 @@ pub struct Prefs {
     pub show_note_anchors: bool,
     /// Preferences › File Handling: minutes between document recovery saves.
     pub recovery_minutes: f64,
+    /// Preferences › File Handling › Create Links When Placing Text Files: placed text files are
+    /// linked (Links panel) unless `file.place` says otherwise.
+    pub link_text_files: bool,
 }
 
 /// A starter autocorrect list (common English typing slips).
@@ -249,6 +264,7 @@ impl Default for Prefs {
             show_added_text: true,
             show_note_anchors: true,
             recovery_minutes: 0.5,
+            link_text_files: false,
         }
     }
 }
@@ -268,8 +284,8 @@ pub struct Session {
     pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String)>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
-    /// Graphic loaded in the place cursor: (asset, natural size in points).
-    pub loaded: Option<(designcraft_doc::AssetId, (f64, f64))>,
+    /// Graphic loaded in the place cursor.
+    pub loaded: Option<LoadedGraphic>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -279,12 +295,18 @@ pub struct Session {
     pub(crate) text_drag: bool,
     /// Character formatting chosen at a bare caret, for the text typed there next.
     pub(crate) typing_format: Option<cmd::text::TypingFormat>,
+    /// Text an input method is composing (a dead key's accent), shown in the story as an
+    /// interaction preview until it commits: (document uid, byte length before the caret).
+    pub(crate) composition: Option<(u64, usize)>,
     /// The open Object Library (File › New / Open Library).
     pub library: Option<cmd::library::Library>,
     /// The open book (File › Open Book).
     pub book: Option<cmd::book::Book>,
     /// Content Collector conveyor: collected objects as snippets (name, bytes).
     pub conveyor: Vec<(String, Vec<u8>)>,
+    /// Linked text files checked by the Links panel: path → the size and modification time the
+    /// file had and the hash of its contents then, so a file touched but not changed is read once.
+    pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
 }
 
 impl Default for Session {
@@ -307,11 +329,13 @@ impl Session {
             clipboard: None,
             recovery_dir: None,
             text_clipboard: None,
+            text_link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
             transforms: Default::default(),
             text_drag: false,
             typing_format: None,
+            composition: None,
             library: None,
             conveyor: Vec::new(),
             book: None,
@@ -429,6 +453,10 @@ impl Session {
 
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
+        // Text still being composed isn't part of the story: any other edit drops it first.
+        if id != "text.compose" && (spec.undoable || spec.journal) {
+            self.end_composition();
+        }
         if let Err(e) = (spec.enabled)(self) {
             // A command that takes `ids` acts on the objects the call names, so it needs no
             // selection: with a text caret or nothing selected, `{"ids": [5]}` still runs.
@@ -568,6 +596,7 @@ impl Session {
         let mut sel = st.selection.clone();
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
+        crate::cmd::flex::sync(&mut doc);
         doc.sync_endnote_story();
         st.doc = Arc::new(doc);
         st.selection = sel;
@@ -590,6 +619,10 @@ pub(crate) use push_undo as record_undo;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_file_guard;
+#[cfg(test)]
 mod tests_idml;
+#[cfg(test)]
+mod tests_roots;
 #[cfg(test)]
 mod tests_table;

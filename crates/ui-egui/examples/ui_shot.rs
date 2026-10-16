@@ -79,6 +79,12 @@ fn main() {
             }
             step_n(&mut harness, 2);
         }
+        // Frames that aren't rendered keep their texture changes for the next render: a script
+        // that edits a long document (every edit redraws the Pages panel's thumbnails) without
+        // screenshots piled them up until the shot's render timed out on the GPU. Render each line.
+        if l.get("shot").is_none() {
+            let _ = harness.render();
+        }
     }
 }
 

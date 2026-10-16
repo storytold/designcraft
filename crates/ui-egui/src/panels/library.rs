@@ -195,8 +195,10 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load…"))).clicked()
             && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("script"))
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            match std::fs::read_to_string(&path) {
+            // Through the host's reader, like every other file the UI opens: this crate has no
+            // file system of its own.
+            let read = app.services.read.as_mut().map_or_else(|| Err("no file access".to_string()), |r| r(&path));
+            match read.and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string())) {
                 Ok(text) => {
                     let name = std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Script".into());
                     app.ui.scripts.push((name, text));

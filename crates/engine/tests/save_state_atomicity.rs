@@ -58,7 +58,7 @@ fn save_a_copy_rebases_its_data_source_without_changing_the_open_document() {
     session.execute("file.saveACopy", &json!({"path": destination})).unwrap();
 
     let copy = designcraft_format::load(&std::fs::read(destination).unwrap()).unwrap();
-    assert_eq!(copy.data_merge.sources[0].relative_path.as_deref(), Some("../../source/contacts.csv"));
+    assert_eq!(copy.data_merge.sources[0].relative_path.as_deref().map(Path::new), Some(Path::new("../../source/contacts.csv")));
     let after = session.doc().unwrap();
     assert!(Arc::ptr_eq(&before.doc, &after.doc));
     assert!(Arc::ptr_eq(&before.saved_doc, &after.saved_doc));

@@ -302,6 +302,34 @@ fn populated_canvas_keeps_a_real_stroke_edit_after_floating_and_redocking() {
 }
 
 #[test]
+fn properties_stroke_link_opens_the_stroke_panel_in_a_custom_workspace() {
+    let mut app = app();
+    app.run("file.new", json!({"width":480,"height":360})).unwrap();
+    app.run("frame.create", json!({"rect":[80,70,330,230],"content":"none"})).unwrap();
+    app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+    app.run("window.panel", json!({"panel":"properties"})).unwrap();
+    assert!(!app.ui.docking.as_ref().unwrap().contains(&"stroke".into()));
+    let mut h = Harness::builder().with_size(vec2(1280.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(5);
+    let at = h.get_by_role_and_label(egui::accesskit::Role::Link, "Stroke").rect().center();
+    h.hover_at(at);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    assert!(h.state().ui.docking.as_ref().unwrap().contains(&"stroke".into()));
+    assert_eq!(h.state().ui.docking_opened.as_deref(), Some("stroke"));
+}
+
+#[test]
 fn changing_workspace_during_a_drag_cancels_the_stale_gesture() {
     let mut app = app();
     app.run("window.panel.move", json!({"panel":"swatches","anchor":"layers","zone":"top"})).unwrap();

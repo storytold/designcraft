@@ -10,6 +10,13 @@ use crate::theme::{Tokens, semibold};
 use crate::widgets::{caption, measure, number};
 use crate::{DesignApp, icons};
 
+/// Width of the app bar's right-hand slot: what is left of the row, minus a pixel of slack so
+/// that rounding at fractional scales (115%) never makes the row a hair wider than the scroll
+/// area and shows a needless scroll bar. Never narrower than the controls themselves.
+fn tools_slot_width(available: f32, tools_w: f32) -> f32 {
+    (available - 1.0).max(tools_w)
+}
+
 pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let left = if app.integrated_titlebar { 78 } else { 8 };
@@ -40,7 +47,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                         crate::menus::menu_bar(app, ui);
                     }
                     menus_end = ui.min_rect().max.x;
-                    let size = vec2(ui.available_width().max(tools_w), ui.available_height());
+                    let size = vec2(tools_slot_width(ui.available_width(), tools_w), ui.available_height());
                     let tools = ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
                         // Who is signed in and who else is here, at the far
@@ -72,19 +79,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                             crate::rtl::widget(ui, egui::RichText::new(format!("{shown} ▾")).font(semibold(11.5)).color(t.text)),
                             |ui| {
                                 let customs: Vec<String> = app.ui.custom_workspaces.iter().map(|w| w.name.clone()).collect();
-                                for w in [
-                                    "Essentials",
-                                    "Advanced",
-                                    "Book",
-                                    "Digital Publishing",
-                                    "Interactive for PDF",
-                                    "Printing and Proofing",
-                                    "Typography",
-                                ]
-                                .into_iter()
-                                .map(str::to_string)
-                                .chain(customs.iter().cloned())
-                                {
+                                for w in crate::menus::WORKSPACES.iter().map(|w| w.to_string()).chain(customs.iter().cloned()) {
                                     if ui
                                         .selectable_label(w == current, crate::rtl::widget(ui, crate::i18n::workspace_name(&app.ui.language, &w)))
                                         .clicked()
@@ -858,12 +853,18 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
 fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     egui::Frame::NONE.fill(t.panel).corner_radius(10.0).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
-        ui.set_max_width(640.0);
+        // Wide enough for the longer translations of the line under the title, with the button
+        // at the right edge; the text wraps before the button's space rather than run under it.
+        const BUTTON: egui::Vec2 = vec2(190.0, 38.0);
+        ui.set_max_width(760.0);
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
             crate::about::paint_mark(ui, r, crate::about::BRAND);
             ui.add_space(8.0);
+            let text_width = (ui.available_width() - BUTTON.x - 16.0).max(120.0);
             ui.vertical(|ui| {
+                ui.set_max_width(text_width);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 ui.label(crate::rtl::widget(
                     ui,
                     egui::RichText::new(crate::i18n::tr(&app.ui.language, "Join the ArtCraft community")).font(semibold(14.0)).color(t.text_strong),
@@ -890,7 +891,7 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
                 });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if crate::about::discord_button(ui, crate::i18n::tr(&app.ui.language, "Join our Discord"), vec2(190.0, 38.0)) {
+                if crate::about::discord_button(ui, crate::i18n::tr(&app.ui.language, "Join our Discord"), BUTTON) {
                     let _ = app.run("help.discord", json!({}));
                 }
             });
@@ -1004,6 +1005,20 @@ mod tests {
         wheel(&mut h, before[2].center(), vec2(0.0, -3000.0));
         let after = [rect(&h, FIRST_CONTROL), rect(&h, LAST_CONTROL), rect(&h, "Help"), rect(&h, "Share")];
         assert_eq!(after, before);
+    }
+
+    /// At 115% the app bar fits a wide window exactly: it must not scroll sideways by a rounding error.
+    #[test]
+    fn the_app_bar_does_not_scroll_at_115_percent() {
+        let w = 1400.0;
+        let mut h = test_window::open_scaled(app(), vec2(w, 900.0), 1.15);
+        assert_eq!(h.ctx.pixels_per_point(), 1.15);
+        let before = [rect(&h, "Help"), rect(&h, "Share")];
+        assert!(before.iter().all(|r| r.max.x <= w), "{before:?}");
+        wheel(&mut h, before[0].center(), vec2(0.0, -3000.0));
+        wheel(&mut h, before[0].center(), vec2(-3000.0, 0.0));
+        let after = [rect(&h, "Help"), rect(&h, "Share")];
+        assert_eq!(after, before, "the app bar scrolled sideways although everything fits");
     }
 
     #[test]
