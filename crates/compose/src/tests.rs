@@ -362,7 +362,7 @@ fn jump_object_keeps_grid_aligned_lines_on_the_grid() {
 fn hostile_wrap_geometry_terminates() {
     let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &[]);
     let mut specs = frame_specs(&d, sid);
-    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion { rect: Rect::new(x0, y0, x1, y1), mode };
+    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion { rect: Rect::new(x0, y0, x1, y1), mode, after: None };
     let f = &mut specs[0];
     f.exclusions.push(ex(f64::NAN, f64::NAN, f64::NAN, f64::NAN, WrapMode::JumpObject));
     f.exclusions.push(ex(-1e308, 300.0, 1e308, f64::INFINITY, WrapMode::JumpObject));
@@ -4453,4 +4453,156 @@ fn an_empty_last_paragraph_isnt_overset() {
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset());
     let (d, sid, _) = doc_with("One\nTwo\n\n", Rect::new(0.0, 0.0, 200.0, 35.0), ParaAttrs::default());
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset(), "an empty paragraph before the last one is text");
+}
+
+/// A 100×60 rectangle anchored at `at` in `sid`, custom-positioned with its top-left at
+/// (`x`, `y`) from the top-left of the anchor's frame (`y_rel`: from the anchor's baseline).
+fn anchor_box(d: &mut Document, sid: StoryId, at: usize, x: f64, y: f64, y_rel: bool, wrap: WrapMode) {
+    use designcraft_doc::anchored::AnchorRelative as R;
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 60.0)),
+    );
+    it.wrap.mode = wrap;
+    let position = designcraft_doc::AnchorPosition::Custom {
+        x_relative: R::TextFrame,
+        y_relative: if y_rel { R::Anchor } else { R::TextFrame },
+        x_offset: x,
+        y_offset: y,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: false,
+    };
+    d.story_mut(sid).unwrap().insert_object(at, designcraft_doc::AnchoredObject::new(it, position));
+}
+
+/// Lines whose band meets `y0..y1`.
+fn lines_in_band(cs: &ComposedStory, y0: f64, y1: f64) -> Vec<&Line> {
+    all_lines(cs).into_iter().filter(|l| l.baseline - l.ascent < y1 && l.baseline + l.descent > y0).collect()
+}
+
+fn line_layout(cs: &ComposedStory) -> Vec<(Range<usize>, u64, u64, u64)> {
+    all_lines(cs).iter().map(|l| (l.range.clone(), l.baseline.to_bits(), l.x0.to_bits(), l.x1.to_bits())).collect()
+}
+
+#[test]
+fn anchored_object_wraps_another_storys_text() {
+    let long = [LOREM; 3].join(" ");
+    let (mut d, a, fa) = doc_with("Anchor here.", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    let plain = compose_story(&d, b, &ComposeOptions::default());
+    let left = all_lines(&plain)[0].x0;
+    // Over the left part of B's frame, 100–160 pt down.
+    let area = d.item(fa).unwrap().text_area();
+    anchor_box(&mut d, a, 0, left - area.x0, 100.0 - area.y0, false, WrapMode::BoundingBox);
+    let cs = compose_story(&d, b, &ComposeOptions::default());
+    let band = lines_in_band(&cs, 100.0, 160.0);
+    assert!(!band.is_empty());
+    assert!(band.iter().all(|l| l.x0 >= left + 100.0 - 1e-6), "{:?}", band.iter().map(|l| l.x0).collect::<Vec<_>>());
+    assert!(lines_in_band(&cs, 0.0, 80.0).iter().all(|l| (l.x0 - left).abs() < 1e-6));
+    // The cache composes the same, and follows the object when it moves.
+    let cache = Cache::new();
+    assert_eq!(line_layout(&cache.get(&d, b, None)), line_layout(&cs));
+    anchor_box(&mut d, a, 0, left - area.x0, 200.0 - area.y0, false, WrapMode::BoundingBox);
+    let st = d.story_mut(a).unwrap();
+    st.delete(OBJECT_LEN..2 * OBJECT_LEN);
+    let moved = cache.get(&d, b, None);
+    assert_eq!(line_layout(&moved), line_layout(&compose_story(&d, b, &ComposeOptions::default())));
+    assert!(lines_in_band(&moved, 100.0, 160.0).iter().any(|l| (l.x0 - left).abs() < 1e-6));
+    assert!(lines_in_band(&moved, 200.0, 260.0).iter().all(|l| l.x0 >= left + 100.0 - 1e-6));
+}
+
+const OBJECT_LEN: usize = designcraft_doc::OBJECT_MARK.len_utf8();
+
+#[test]
+fn anchored_object_wraps_its_own_storys_later_lines() {
+    let text = [LOREM; 4].join(" ");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 600.0), ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let left = all_lines(&plain)[0].x0;
+    // Anchored in the third line, hanging from its baseline over the lines below.
+    let at = all_lines(&plain)[2].range.start + 3;
+    anchor_box(&mut d, sid, at, 0.0, 0.0, true, WrapMode::BoundingBox);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let (li, anchor_line) = lines.iter().enumerate().find(|(_, l)| l.range.contains(&at)).unwrap();
+    let top = anchor_line.baseline;
+    // The anchor line and those above it keep the full measure; the lines under the object move right.
+    assert!(lines[..=li].iter().all(|l| (l.x0 - left).abs() < 1e-6));
+    let under: Vec<_> = lines[li + 1..].iter().filter(|l| l.baseline - l.ascent < top + 60.0).collect();
+    assert!(under.len() >= 2);
+    assert!(under.iter().all(|l| l.x0 >= left + 100.0 - 1e-6), "{:?}", under.iter().map(|l| l.x0).collect::<Vec<_>>());
+    assert!(lines.iter().filter(|l| l.baseline - l.ascent > top + 61.0).all(|l| (l.x0 - left).abs() < 1e-6));
+    // Settled: the object is where the final pass wrapped the text around.
+    let o = &cs.frames[0].objects[0];
+    assert!((o.origin.y - top).abs() < 1e-6);
+}
+
+#[test]
+fn anchored_object_without_wrap_leaves_layout_unchanged() {
+    let long = [LOREM; 3].join(" ");
+    let (mut d, a, _) = doc_with(&long, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    anchor_box(&mut d, a, 40, 330.0, 0.0, true, WrapMode::None);
+    for sid in [a, b] {
+        let direct = compose(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default());
+        assert_eq!(line_layout(&compose_story(&d, sid, &ComposeOptions::default())), line_layout(&direct));
+    }
+}
+
+#[test]
+fn anchored_wrap_that_moves_its_own_anchor_terminates() {
+    // Jump Object pushes the lines after the anchor below the object; vertical centring then moves
+    // every line, the anchor's too, and the object with it.
+    let text = [LOREM; 2].join(" ");
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 500.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Center;
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let at = all_lines(&plain)[1].range.start + 2;
+    anchor_box(&mut d, sid, at, 0.0, -20.0, true, WrapMode::JumpObject);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.line_count() > 0);
+    assert_eq!(cs.frames[0].objects.len(), 1);
+}
+
+/// An object's wrap pushes the text so that a later object's anchor goes on into the next frame
+/// (Learn Skills Daily's long-document exercise: pictures anchored in headings through a 79-page
+/// story). Each object is placed when its anchor line is set and wraps only the lines after it,
+/// in the frame its anchor lands in: the layout doesn't depend on where an earlier composition put
+/// the objects, and composing again gives the same lines.
+#[test]
+fn an_object_wraps_the_frame_its_anchor_lands_in_after_an_earlier_object_pushed_it_on() {
+    let text = [LOREM; 6].join(" ");
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), lid, &text, ParaFormat::default()).unwrap();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 300.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    // The second object's anchor sits near the end of the first frame without wrap.
+    let late = plain.frames[0].lines.iter().rev().nth(2).unwrap().range.start + 2;
+    anchor_box(&mut d, sid, late, 0.0, 0.0, true, WrapMode::BoundingBox);
+    // The first, early in the first frame: 60 pt over its whole width pushes the later anchor on.
+    let early = plain.frames[0].lines[1].range.start + 2;
+    anchor_box(&mut d, sid, early, 0.0, 0.0, true, WrapMode::JumpObject);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let late = late + OBJECT_LEN;
+    let anchor_frame = cs.frames.iter().position(|f| f.range.contains(&late) || f.range.end == late).unwrap();
+    assert_eq!(anchor_frame, 1, "the later anchor went on into the second frame");
+    // The first frame's lines under the first object's band keep the full measure (the second
+    // object is in the other frame); in the second frame, the lines under its object move right.
+    let left = cs.frames[0].lines[0].x0;
+    assert!(cs.frames[0].lines.iter().all(|l| (l.x0 - left).abs() < 1e-6));
+    let f1 = &cs.frames[1];
+    let (li, line) = f1.lines.iter().enumerate().find(|(_, l)| l.range.contains(&late)).unwrap();
+    let under: Vec<_> = f1.lines[li + 1..].iter().filter(|l| l.baseline - l.ascent < line.baseline + 60.0).collect();
+    assert!(!under.is_empty() && under.iter().all(|l| l.x0 >= f1.lines[0].x0 + 100.0 - 1e-6));
+    assert_eq!(f1.objects.len(), 1);
+    // Deterministic: the same lines again.
+    assert_eq!(line_layout(&compose_story(&d, sid, &ComposeOptions::default())), line_layout(&cs));
 }

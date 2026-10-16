@@ -57,7 +57,7 @@ Fidelity: **unmeasured** unless stated.
 | Paragraph rules, borders, shading | ✓ | ✓ | ✓ | |
 | Balance ragged lines | ✓ | ✓ | ✓ | |
 | Optical margin alignment | ✓ | ✓ (hang table of our own) | ~ | hang amounts are ours, InDesign's unknown |
-| Text wrap | bounding box, shape, jump object/column, contour options | ✓ | ✓ | |
+| Text wrap | bounding box, shape, jump object/column, contour options, on page items and anchored objects | ✓ | ✓ | |
 | Anchored objects | inline, above line, custom | ✓ | ~ | anchored objects in table cells not drawn (#163) |
 | Footnotes, endnotes | ✓ | ✓ | ~ | footnotes don't split across columns yet |
 | Type on a path | ✓ | ✓ | ✓ | |
