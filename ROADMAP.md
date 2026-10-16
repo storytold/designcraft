@@ -343,6 +343,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-10-15** · Fit Frame to Content now fits rectangular text frames through the text composer, using the existing Object › Fitting command and Command–Option–C shortcut. Paragraphs retain their wrapping width; simple standalone lines fit width too. Formatting, transforms and undo are preserved. No readiness percentage change.
+
 - **2026-10-13** · Switching between document and parent pages refreshes the canvas immediately, preventing black parent pages and stale document objects when the zoom stays the same. Ordinary edits retain partial repainting. No readiness percentage change.
 
 Newest first.

@@ -17,6 +17,7 @@ mod export;
 mod file;
 pub(crate) mod find;
 pub use find::same_find_domain;
+mod fit_frame;
 pub(crate) mod flex;
 mod fonts;
 mod guides;

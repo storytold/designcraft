@@ -150,7 +150,8 @@ execute          {"command": "type.para", "params": {"attrs": {"hyphenate": fals
 
 With a text selection, this formats the selected paragraphs; with selected text frames, it formats their whole stories.
 
-Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
+Use `execute` with `object.fit` to fit a selected frame (or pass `ids`). All modes work on graphics;
+`fitFrameToContent` also works on rectangular text frames:
 
 | `mode` | What it does |
 |---|---|
@@ -159,6 +160,17 @@ Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
 | `fitContentToFrame` | Stretches the content to the frame's width and height. |
 | `centerContent` | Keeps the current size and positions content at the fitting alignment (center by default). |
 | `fitFrameToContent` | Resizes the frame to the content's bounds. |
+
+For text, `fitFrameToContent` uses the text composer, preserves text formatting and the frame's
+transform and insets, and grows an overset frame rather than scaling its text. Multi-line text
+keeps its wrapping width; a simple, standalone single line also shrinks to its composed width.
+A linked frame fits the text already assigned to it, not the following frames' entire story.
+The command is undoable, skips locked frames/layers, and applies a multi-frame selection
+transactionally. Non-rectangular text frames and type on a path return an unsupported error;
+fitting stops with an error if the text cannot fit within the bounded search.
+
+In the app, use Object › Fitting › Fit Frame to Content, or Command–Option–C on macOS
+(Control–Alt–C on Windows/Linux). This is one-shot fitting, not automatic sizing while typing.
 
 ## Tools
 

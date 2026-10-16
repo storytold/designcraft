@@ -615,7 +615,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fitting",
             ["Object", "Fitting"],
             None,
-            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), ids?}",
+            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes graphic or rectangular text frame to content), ids?}",
             has_selection,
             fit
         ),
@@ -1976,19 +1976,16 @@ fn fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn fit(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
     let mode = str_param(p, "mode").unwrap_or("fitProportionally").to_string();
+    if mode == "fitFrameToContent" {
+        return super::fit_frame::run(s, p);
+    }
+    let ids = targets(s, p)?;
     s.edit(|d, _| {
         for id in &ids {
             let Some(it) = d.item_mut(*id) else { continue };
             let r = it.inner_bounds();
             let Content::Graphic(g) = &mut it.content else { continue };
-            let (nw, nh) = g.size;
-            let cur = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, nw, nh));
-            if mode == "fitFrameToContent" {
-                it.path = shapes::rectangle(cur);
-                continue;
-            }
             let m = fitting_mode(&mode)
                 .filter(|m| *m != designcraft_doc::Fitting::None)
                 .ok_or_else(|| bad("object.fit", format!("unknown mode `{mode}`")))?;

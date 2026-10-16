@@ -3165,6 +3165,34 @@ mod tests {
     }
 
     #[test]
+    fn fit_frame_shortcut_fits_text_and_can_be_undone() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id =
+            app.run("frame.create", json!({"rect": [72, 72, 500, 300], "content": "text", "text": "Fit this text"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let bounds = |app: &crate::DesignApp| app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().inner_bounds();
+        let before = bounds(&app);
+        assert_eq!(shortcut_of(&app, "fit.frameToContent").as_deref(), Some("Cmd+Alt+C"));
+        let modifiers =
+            egui::Modifiers { alt: true, ctrl: !cfg!(target_os = "macos"), shift: false, mac_cmd: cfg!(target_os = "macos"), command: true };
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key { key: egui::Key::C, physical_key: None, pressed: true, repeat: false, modifiers }],
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(input, |ui| shortcuts(&mut app, &ui.ctx().clone()));
+        out.textures_delta.clear();
+        let fitted = bounds(&app);
+        assert!(fitted.width() < before.width() / 2.0);
+        assert!(fitted.height() < before.height() / 2.0);
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(bounds(&app), before);
+        run_ui(&mut app, "fit.frameToContent", &json!({})).unwrap().unwrap();
+        assert_eq!(bounds(&app), fitted);
+    }
+
+    #[test]
     fn tab_hides_panels_and_documents_cycle() {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         assert_eq!(shortcut_of(&app, "window.hidePanels").as_deref(), Some("Tab"));
