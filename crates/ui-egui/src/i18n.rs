@@ -8,6 +8,7 @@ mod de;
 mod it;
 mod ja;
 mod ka;
+mod lo;
 mod pt_br;
 mod uk;
 
@@ -24,6 +25,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("it", "Italiano"),
     ("uk", "Українська"),
     ("ka", "ქართული"),
+    ("lo", "ພາສາລາວ"),
 ];
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
@@ -3140,6 +3142,7 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static PORTUGUESE_BR: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static ITALIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static LAO: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -3163,6 +3166,9 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     }
     if lang == "ka" {
         return GEORGIAN.get_or_init(|| ka::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
+    if lang == "lo" {
+        return LAO.get_or_init(|| lo::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
     if lang == "uk" {
         return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
@@ -3248,7 +3254,7 @@ mod tests {
             assert_eq!(tr("ka", key), *expected, "ka: {key}");
         }
         let unknown = String::from("A user-defined untranslated label");
-        for lang in ["uk", "ar", "pt-br", "it", "ka", "zh", "ja", "de", "fr", "es", "", "unknown"] {
+        for lang in ["uk", "ar", "pt-br", "it", "ka", "lo", "zh", "ja", "de", "fr", "es", "", "unknown"] {
             assert!(std::ptr::eq(tr(lang, &unknown), unknown.as_str()));
         }
     }
@@ -3331,6 +3337,31 @@ mod tests {
         assert_eq!(style_name("uk", "My layout style"), "My layout style");
         assert_eq!(workspace_name("uk", "Essentials"), "Основне");
         assert_eq!(workspace_name("uk", "My workspace"), "My workspace");
+    }
+
+    #[test]
+    fn lao_catalog_covers_existing_keys_and_preserves_placeholders() {
+        let catalog: std::collections::HashMap<_, _> = lo::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), lo::TABLE.len(), "duplicate Lao keys");
+        let mut keys = std::collections::HashSet::new();
+        keys.extend(TABLE.iter().map(|(key, _)| *key));
+        keys.extend(ar::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(pt_br::TABLE.iter().map(|(key, _)| *key));
+        let stale: Vec<_> = catalog.keys().filter(|k| !keys.contains(*k)).collect();
+        assert!(stale.is_empty(), "Lao entries for unknown keys: {stale:?}");
+        let placeholders =
+            |s: &str| s.split('{').skip(1).filter_map(|part| part.split_once('}')).map(|(name, _)| name.to_owned()).collect::<Vec<_>>();
+        for (key, translation) in lo::TABLE {
+            assert!(!translation.trim().is_empty(), "empty {key}");
+            let mut source = placeholders(key);
+            let mut translated = placeholders(translation);
+            source.sort();
+            translated.sort();
+            assert_eq!(source, translated, "placeholders: {key}");
+        }
+        assert_eq!(tr("lo", "File"), "ໄຟລ໌");
+        assert_eq!(tr("lo", "Edit"), "ແກ້ໄຂ");
+        assert!(!is_rtl("lo"));
     }
 
     #[test]
