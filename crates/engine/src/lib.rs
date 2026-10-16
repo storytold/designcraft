@@ -405,8 +405,15 @@ impl Session {
             self.active = Some(i);
         }
     }
-    pub fn add_document(&mut self, d: DocState) -> usize {
+    pub fn add_document(&mut self, mut d: DocState) -> usize {
         self.reset_find_scope();
+        // A built document (a data merge, say) may show an anchored story in several frames.
+        if !d.doc.anchored_frame_refs().is_empty() {
+            let mut doc = (*d.doc).clone();
+            if doc.fix_anchored_text_frames(true) > 0 {
+                d.doc = Arc::new(doc);
+            }
+        }
         self.stop_data_preview();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
@@ -590,6 +597,8 @@ impl Session {
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
         doc.sync_endnote_story();
+        // Copied text or frames show their anchored text frames' stories twice: copy those.
+        doc.fix_anchored_text_frames(true);
         st.doc = Arc::new(doc);
         st.selection = sel;
         st.revision += 1;

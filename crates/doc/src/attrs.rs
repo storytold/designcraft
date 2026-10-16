@@ -815,6 +815,10 @@ attr_set! {
         /// Stroke behind fill: the stroke is painted under the fill and lies wholly outside the
         /// letters at its full weight, so the letters keep their shape. Off, it straddles the outline.
         stroke_behind_fill: bool = false,
+        /// The corners of the text stroke and, for miter joins, how far a corner may reach (in
+        /// stroke widths) before it is bevelled.
+        stroke_join: crate::item::Join = crate::item::Join::Miter,
+        stroke_miter_limit: f64 = 4.0,
         capitalization: Capitalization = Capitalization::Normal,
         position: Position = Position::Normal,
         underline: bool = false,
@@ -865,6 +869,8 @@ attr_set! {
         diacritic_y_offset: f64 = 0.0,
         /// IDML contextual-form request, separate from general OpenType features.
         positional_form: String = String::new(),
+        /// The font's glyph name a [`crate::story::CUSTOM_GLYPH`] character draws.
+        custom_glyph: String = String::new(),
         language: String = "English: USA".into(),
         /// Additional OpenType features, e.g. `["onum", "ss01"]`.
         otf_features: Vec<String> = Vec::new(),
@@ -908,6 +914,11 @@ attr_set! {
         nested_line_styles: Vec<NestedLineStyle> = Vec::new(),
         grid_align: GridAlign = GridAlign::None,
         composer: Composer = Composer::Paragraph,
+        /// World-Ready (InDesign's World-Ready Paragraph and Single-line Composers): lines are
+        /// ordered by direction (bidi) and joining scripts such as Arabic are shaped. Off, as with
+        /// InDesign's Paragraph and Single-line Composers, a line runs left to right in text order
+        /// and Arabic letters stand unjoined (marks still sit on their letters).
+        world_ready: bool = true,
         // Hyphenation
         hyphenate: bool = true,
         hyph_min_word: u32 = 5,

@@ -219,7 +219,19 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
         if d.layer(it.layer).is_none() {
             it.layer = d.default_layer();
         }
+        // Text frames in it are their stories' only frames now.
+        let mut frames = Vec::new();
+        it.walk(&mut |i| {
+            if let Some(t) = i.text_frame() {
+                frames.push((t.story, i.id));
+            }
+        });
         let id = d.insert_item(spread, it, None)?;
+        for (story, frame) in frames {
+            if let Some(st) = d.story_mut(story) {
+                st.frames = vec![frame];
+            }
+        }
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         st.delete(pos..pos + OBJECT_MARK.len_utf8());
         *sel = designcraft_doc::Selection::items(vec![id]);
@@ -316,5 +328,103 @@ mod custom_tests {
             matches!(obj.position, designcraft_doc::AnchorPosition::Custom { x_offset, object_point: 2, .. } if x_offset == -6.0),
             "IDML Anchored position"
         );
+    }
+}
+
+#[cfg(test)]
+mod text_frame_tests {
+    use designcraft_doc::{Content, ItemId, ParaFormat, Story, StoryId, TextFrame};
+    use designcraft_geom::{Rect, shapes};
+    use serde_json::json;
+
+    use super::*;
+
+    /// A text frame whose story holds, after "Host ", an inline 200 × 40 pt text frame showing a
+    /// story of its own. Returns the host story, the anchored story and the anchored frame's id.
+    fn session() -> (Session, StoryId, StoryId, ItemId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Host  end"})).unwrap();
+        let host = StoryId(r["story"].as_u64().unwrap());
+        let (sid, id) = s
+            .edit(|d, _| {
+                let sid = StoryId(d.alloc());
+                d.stories.insert(sid, Arc::new(Story::with_text(sid, "Anchored words", ParaFormat::default())));
+                let mut it = Item::new(
+                    ItemId(d.alloc()),
+                    d.default_layer(),
+                    designcraft_doc::Shape::Rectangle,
+                    shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 40.0)),
+                );
+                it.content = Content::Text(TextFrame { story: sid, options: Default::default() });
+                let id = it.id;
+                d.story_mut(host)
+                    .ok_or(designcraft_doc::DocError::NoStory(host))?
+                    .insert_object(5, AnchoredObject::new(it, AnchorPosition::default()));
+                Ok((sid, id))
+            })
+            .unwrap();
+        s.doc().unwrap().doc.check().unwrap();
+        (s, host, sid, id)
+    }
+
+    #[test]
+    fn an_anchored_text_frame_recomposes_with_its_options() {
+        let (mut s, host, sid, id) = session();
+        let d = s.doc().unwrap().doc.clone();
+        let before = s.cache.get(&d, sid, None);
+        assert!(before.frame(id).is_some_and(|f| f.lines.len() == 1) && !before.is_overset());
+        // Text edits in the anchored story.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 8, "focus": 8})).unwrap();
+        s.execute("text.insert", &json!({"text": " and more words to wrap onto another line"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let edited = s.cache.get(&d, sid, None);
+        assert!(edited.frame(id).unwrap().lines.len() > 1);
+        // Options on the host's object: the anchored story's frame is still that object.
+        s.execute("anchored.options", &json!({"story": host.0, "index": 0, "position": "aboveLine"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let moved = s.cache.get(&d, sid, None);
+        assert!(!Arc::ptr_eq(&edited, &moved), "recomposed");
+        assert!(moved.frame(id).is_some());
+        d.check().unwrap();
+        // Preflight: no overset for the anchored story.
+        let r = s.execute("preflight.run", &json!({})).unwrap();
+        assert!(!r.to_string().contains("Overset text"), "{r}");
+    }
+
+    #[test]
+    fn releasing_an_anchored_text_frame_threads_its_story_to_it() {
+        let (mut s, host, sid, _) = session();
+        s.execute("anchored.release", &json!({"story": host.0, "index": 0})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        d.check().unwrap();
+        let id = s.doc().unwrap().selection.items[0];
+        assert_eq!(d.story(sid).unwrap().frames, vec![id]);
+        assert_eq!(d.item(id).unwrap().text_frame().unwrap().story, sid);
+        let cs = s.cache.get(&d, sid, None);
+        assert!(cs.frame(id).is_some_and(|f| !f.lines.is_empty()));
+    }
+
+    #[test]
+    fn copied_anchored_text_frames_get_their_own_stories() {
+        let (mut s, host, sid, _) = session();
+        // Text copied and pasted in the same story.
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": len, "focus": len})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        // The host frame duplicated.
+        let frame = s.doc().unwrap().doc.story(host).unwrap().frames[0];
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("edit.duplicate", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        d.check().unwrap();
+        let refs = d.anchored_frame_refs();
+        assert_eq!(refs.len(), 4, "{refs:?}");
+        assert!(refs.iter().any(|r| r.story == sid));
+        for r in &refs {
+            assert_eq!(d.story(r.story).unwrap().text, "Anchored words");
+        }
     }
 }

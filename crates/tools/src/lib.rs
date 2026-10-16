@@ -239,16 +239,18 @@ impl ToolContext<'_> {
         let spread = self.doc.spreads.get(si)?;
         let pi = spread.page_at_x(sp.x)?;
         let page = self.doc.first_page_of_spread(si) + pi;
-        let (ppi, ppg) = self.doc.parent_page_for(page)?;
-        let parent = &self.doc.parents[ppi];
-        let pg = &spread.pages[pi];
-        let at = sp - designcraft_geom::Vec2::new(pg.x - parent.pages[ppg].x, 0.0);
-        parent
-            .items
-            .iter()
+        // Topmost item first, across the whole parent chain.
+        self.doc
+            .shown_parent_items(page)
+            .into_iter()
             .rev()
-            .find(|it| !it.locked && !pg.overridden.contains(&it.id) && designcraft_doc::edit_hit(it, at, self.tol(4.0)))
-            .map(|it| (page, it.id))
+            .find(|s| {
+                let at = sp - designcraft_geom::Vec2::new(s.dx, 0.0);
+                // An item cut at the spine is hit only on this page's side of it.
+                let inside = s.clip_x.is_none_or(|(x0, x1)| sp.x >= x0 && sp.x <= x1);
+                !s.item.locked && inside && designcraft_doc::edit_hit(s.item, at, self.tol(4.0))
+            })
+            .map(|s| (page, s.item.id))
     }
 
     fn hit_parent(&self, sr: SpreadRef, sp: Point) -> Option<(SpreadRef, ItemId)> {

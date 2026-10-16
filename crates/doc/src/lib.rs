@@ -37,7 +37,7 @@ pub mod xref;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub use anchored::{AnchorPosition, AnchoredObject, OBJECT_MARK};
+pub use anchored::{AnchorPosition, AnchoredFrameRef, AnchoredObject, MAX_ANCHOR_DEPTH, OBJECT_MARK};
 pub use assets::{find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
 pub use attrs::*;
 pub use datamerge::{
@@ -771,6 +771,8 @@ impl Document {
                 }
             }
         }
+        // Anchored text frames: their story exists, has no frames, is shown once and not by itself.
+        self.check_anchored_text_frames()?;
         // Every text frame is in its story's thread.
         for sp in self.spreads.iter().chain(self.parents.iter()) {
             for it in &sp.items {

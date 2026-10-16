@@ -843,14 +843,9 @@ fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
         // Parent items on document pages: dotted edges.
         if let SpreadRef::Doc(si) = slot.spread {
             let first = doc.first_page_of_spread(si);
-            for (pi, page) in sp.pages.iter().enumerate() {
-                let Some((ppi, ppg)) = doc.parent_page_for(first + pi) else { continue };
-                let parent = &doc.parents[ppi];
-                let dx = page.x - parent.pages[ppg].x;
-                for it in &parent.items {
-                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
-                        continue;
-                    }
+            for pi in 0..sp.pages.len() {
+                for shown in doc.shown_parent_items(first + pi) {
+                    let (it, dx) = (shown.item, shown.dx);
                     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
                     for poly in path_screen(it, xf, a * Affine::translate((dx, 0.0))) {
                         for w in poly.windows(2) {

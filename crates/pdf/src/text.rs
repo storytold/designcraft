@@ -348,11 +348,12 @@ impl Exporter<'_> {
         // to the outside of the glyphs instead.
         let behind = st.stroke_behind_fill && stroke.is_some();
         let weight = if behind { st.stroke_weight * 2.0 } else { st.stroke_weight };
+        let pen = Pen { weight, join: st.stroke_join, miter_limit: st.stroke_miter_limit };
         let mut clipped = false;
         let stroke = if behind {
             let outlines = glyph_outlines(glyphs, size);
             if fill.is_some() {
-                self.paint_outlines(s, &outlines, origin, None, stroke, weight);
+                self.paint_outlines(s, &outlines, origin, None, stroke, pen);
                 None
             } else {
                 clipped = self.push_outside_clip(s, &outlines, origin, weight);
@@ -361,14 +362,15 @@ impl Exporter<'_> {
         } else {
             stroke
         };
-        // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
+        // A missing glyph is drawn as the font's .notdef outline: PDF/A and PDF/UA forbid showing
+        // .notdef as text.
         if g0.gid == 0 {
-            self.paint_outlines(s, &glyph_outlines(glyphs, size), origin, fill, stroke, weight);
+            self.paint_outlines(s, &glyph_outlines(glyphs, size), origin, fill, stroke, pen);
         } else if let Some(font) = self.font(&face) {
-            self.text_run(s, glyphs, story, font, origin, size, hs, fill, stroke, weight);
+            self.text_run(s, glyphs, story, font, origin, size, hs, fill, stroke, pen);
         } else {
             self.warn(format!("font `{} {}` could not be embedded; its text was drawn as outlines", face.family, face.style));
-            self.paint_outlines(s, &glyph_outlines(glyphs, size), origin, fill, stroke, weight);
+            self.paint_outlines(s, &glyph_outlines(glyphs, size), origin, fill, stroke, pen);
         }
         if clipped {
             s.pop();
@@ -388,7 +390,7 @@ impl Exporter<'_> {
         hs: f64,
         fill: Option<Paint>,
         stroke: Option<Paint>,
-        stroke_weight: f64,
+        pen: Pen,
     ) {
         let (text, ranges) = self.run_text(glyphs, story);
         let k = 1.0 / (hs * size);
@@ -403,7 +405,7 @@ impl Exporter<'_> {
             .collect();
         s.push_transform(&tf(origin));
         s.set_fill(fill.map(paint_fill));
-        s.set_stroke(stroke.map(|paint| Stroke { paint, width: stroke_weight as f32, ..Default::default() }));
+        s.set_stroke(stroke.map(|paint| pen.stroke(paint)));
         s.draw_glyphs(Point::from_xy(0.0, 0.0), &kg, font, &text, size as f32, false);
         s.set_fill(None);
         s.set_stroke(None);
@@ -411,19 +413,11 @@ impl Exporter<'_> {
     }
 
     /// Glyph outlines as paths (faces krilla can't embed, missing glyphs, strokes behind fill).
-    fn paint_outlines(
-        &mut self,
-        s: &mut Surface,
-        outlines: &BezPath,
-        origin: Affine,
-        fill: Option<Paint>,
-        stroke: Option<Paint>,
-        stroke_weight: f64,
-    ) {
+    fn paint_outlines(&mut self, s: &mut Surface, outlines: &BezPath, origin: Affine, fill: Option<Paint>, stroke: Option<Paint>, pen: Pen) {
         let Some(p) = to_path(outlines) else { return };
         s.push_transform(&tf(origin));
         s.set_fill(fill.map(paint_fill));
-        s.set_stroke(stroke.map(|paint| Stroke { paint, width: stroke_weight as f32, ..Default::default() }));
+        s.set_stroke(stroke.map(|paint| pen.stroke(paint)));
         s.draw_path(&p);
         s.set_fill(None);
         s.set_stroke(None);
@@ -478,10 +472,35 @@ fn glyph_outlines(glyphs: &[PlacedGlyph], size: f64) -> BezPath {
     let Some(g0) = glyphs.first() else { return bp };
     let k = size / g0.face.upem;
     for g in glyphs {
+        // A .notdef the font leaves empty prints as nothing, as InDesign exports it (the screen
+        // shows a box, and Preflight lists the character).
+        if g.gid == 0 && db.missing_box(&g.face).is_some() {
+            continue;
+        }
         let a = Affine::translate(((g.x - g0.x) / (g0.sx / g0.sy), 0.0)) * Affine::scale(k);
         let mut o = (*db.outline(&g.face, g.gid)).clone();
         o.apply_affine(a);
         bp.extend(o.iter());
     }
     bp
+}
+
+/// The pen of a text stroke: its weight (already doubled behind the fill), the run's join and
+/// miter limit.
+#[derive(Clone, Copy)]
+struct Pen {
+    weight: f64,
+    join: designcraft_doc::Join,
+    miter_limit: f64,
+}
+
+impl Pen {
+    fn stroke(self, paint: Paint) -> Stroke {
+        let line_join = match self.join {
+            designcraft_doc::Join::Miter => krilla::paint::LineJoin::Miter,
+            designcraft_doc::Join::Round => krilla::paint::LineJoin::Round,
+            designcraft_doc::Join::Bevel => krilla::paint::LineJoin::Bevel,
+        };
+        Stroke { paint, width: self.weight as f32, line_join, miter_limit: self.miter_limit.max(1.0) as f32, ..Default::default() }
+    }
 }

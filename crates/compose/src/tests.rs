@@ -63,6 +63,133 @@ fn justified_lines_fill_the_measure() {
     assert!(last.end_x < last.x1 - 1.0, "last line is ragged");
 }
 
+/// A justified line squeezes its word spaces past the 80% minimum (down to 60%) rather than leave
+/// a long word for the next line and gape: InDesign breaks the limit that costs less.
+#[test]
+fn justified_line_squeezes_past_the_minimum_rather_than_gaping() {
+    let text = "Aaaa bbbb cccc dddd Wwwwwwwwwwwwwwwwww eee";
+    // Natural word widths and the space, from one unjustified line.
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 100.0), ParaAttrs::default());
+    let line = all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].clone();
+    let space = line.glyphs.iter().find(|g| text[g.byte..].starts_with(' ')).unwrap().adv;
+    let end_of = |w: &str| {
+        let at = text.find(w).unwrap() + w.len();
+        line.glyphs.iter().filter(|g| g.byte < at).map(|g| g.x + g.adv).fold(0.0, f64::max)
+    };
+    // The first five words fit with their four spaces at 70%.
+    let words = end_of("Wwwwwwwwwwwwwwwwww") - 4.0 * space;
+    let measure = words + 4.0 * space * 0.7;
+    let para = ParaAttrs { align: Some(Align::LeftJustified), ..Default::default() };
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, measure, 100.0), para.clone());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let first = &all_lines(&cs)[0];
+    assert!(first.range.end >= text.find(" eee").unwrap(), "the long word stays on the first line: {:?}", first.range);
+    let gaps: Vec<f64> = first.glyphs.windows(2).filter(|w| text[w[0].byte..].starts_with(' ')).map(|w| w[1].x - w[0].x).collect();
+    for g in &gaps {
+        assert!(*g > space * 0.6 - 0.01 && *g < space * 0.8, "a squeezed space {g} of {space}");
+    }
+    // Room for less than 60%: the word goes to the next line after all.
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, words + 4.0 * space * 0.5, 100.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(all_lines(&cs)[0].range.end <= text.find("Wwww").unwrap());
+}
+
+/// An empty paragraph is as tall as its paragraph mark's leading (the return's formatting), as in
+/// InDesign; it used to take the paragraph style's leading.
+#[test]
+fn empty_paragraph_takes_its_marks_leading() {
+    let text = "One\n\nTwo";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.leading = Some(designcraft_doc::Leading::Points(30.0)));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let b: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+    assert_eq!(b.len(), 3, "{b:?}");
+    assert!((b[1] - b[0] - 30.0).abs() < 1e-6 && (b[2] - b[1] - 30.0).abs() < 1e-6, "{b:?}");
+}
+
+/// A combining mark in a colour of its own still sits on its base letter (the runs shape as one)
+/// and keeps its colour: colour-coded texts put single vowel marks in their own colour.
+#[test]
+fn a_mark_in_its_own_colour_stays_on_its_base() {
+    let text = "Ax\u{301}y";
+    let mark = text.find('\u{301}').unwrap();
+    let place = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        if colour {
+            d.story_mut(sid).unwrap().format_chars(mark..mark + 2, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = all_lines(&cs)[0].clone();
+        // The glyph after the x (one cluster with it when the runs are one).
+        let at = line.glyphs.iter().position(|g| g.byte == text.find('x').unwrap()).unwrap();
+        let g = line.glyphs[at + 1].clone();
+        (g.x, g.y, cs.styles[g.style as usize].fill.clone(), line.glyphs.len())
+    };
+    let (x, y, fill, n) = place(false);
+    let (cx, cy, cfill, cn) = place(true);
+    assert_eq!(n, cn);
+    assert!((x - cx).abs() < 1e-6 && (y - cy).abs() < 1e-6, "the mark moved: {x},{y} → {cx},{cy}");
+    assert_ne!(fill, cfill);
+    assert_eq!(cfill, "C=100 M=0 Y=0 K=0");
+}
+
+/// Tracking goes after a letter with its marks: a mark in its own colour (its own cluster) doesn't
+/// add tracking between itself and its base.
+#[test]
+fn tracking_skips_a_mark_in_its_own_colour() {
+    let text = "Ax\u{301}y";
+    let mark = text.find('\u{301}').unwrap();
+    let y_at = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        let s = d.story_mut(sid).unwrap();
+        s.format_chars(0..text.len(), |f| f.over.tracking = Some(300.0));
+        if colour {
+            s.format_chars(mark..mark + 2, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].glyphs.iter().find(|g| g.byte == text.find('y').unwrap()).unwrap().x
+    };
+    assert!((y_at(false) - y_at(true)).abs() < 1e-6, "{} vs {}", y_at(false), y_at(true));
+}
+
+/// A forced positional form on the base alone (InDesign writes `PositionalForm` per run) is a
+/// switch over the base's bytes; the mark after it still shapes with its base.
+#[test]
+fn a_positional_form_on_the_base_keeps_the_mark_on_it() {
+    let text = "Ax\u{301}y";
+    let x = text.find('x').unwrap();
+    let place = |forced: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        if forced {
+            d.story_mut(sid).unwrap().format_chars(x..x + 1, |f| f.over.positional_form = Some("Initial".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = all_lines(&cs)[0].clone();
+        let at = line.glyphs.iter().position(|g| g.byte == x).unwrap();
+        let g = line.glyphs[at + 1].clone();
+        (g.x, g.y)
+    };
+    let (x0, y0) = place(false);
+    let (x1, y1) = place(true);
+    assert!((x0 - x1).abs() < 1e-6 && (y0 - y1).abs() < 1e-6, "the mark moved: {x0},{y0} → {x1},{y1}");
+}
+
+/// A custom glyph (InDesign's Glyphs panel, `<?ACE 1a?>` + CustomGlyph) draws the glyph the font
+/// names, at that glyph's advance; it used to vanish.
+#[test]
+fn custom_glyph_draws_the_named_glyph() {
+    let text = format!("x{}x", designcraft_doc::story::CUSTOM_GLYPH);
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    let at = text.find(designcraft_doc::story::CUSTOM_GLYPH).unwrap();
+    d.story_mut(sid).unwrap().format_chars(at..at + 3, |f| f.over.custom_glyph = Some("a".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0].clone();
+    let g = line.glyphs.iter().find(|g| g.byte == at).unwrap();
+    let face = g.face.get();
+    assert_eq!(g.gid, face.glyph_for('a'));
+    assert!(g.visible && (g.adv - face.advance(g.gid) * g.sx).abs() < 1e-9 && g.adv > 0.0, "{g:?}");
+}
+
 #[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());
@@ -168,6 +295,97 @@ fn wrap_doc(para: ParaAttrs, objects: &[(Rect, [f64; 4], WrapMode)]) -> (Documen
     });
     add_wrap_objects(&mut d, objects);
     (d, sid)
+}
+
+/// Contour wrap follows the shape: under a triangle's slanted side, lines get back the width the
+/// shape doesn't take there; its bounding box would cut every line at the box's left edge.
+#[test]
+fn contour_wrap_follows_the_shape() {
+    use designcraft_geom::{PathData, Point, SubPath};
+    let triangle = |d: &mut Document, mode| {
+        let lid = d.default_layer();
+        let pts = [Point::new(180.0, 100.0), Point::new(324.0, 100.0), Point::new(324.0, 300.0)];
+        let mut it =
+            designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, PathData::single(SubPath::polyline(&pts, true)));
+        it.wrap.mode = mode;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    };
+    let right_end_near =
+        |cs: &ComposedStory, y: f64| cs.frames[0].lines.iter().min_by(|a, b| (a.baseline - y).abs().total_cmp(&(b.baseline - y).abs())).unwrap().x1;
+    let (mut d, sid) = wrap_doc(ParaAttrs::default(), &[]);
+    triangle(&mut d, WrapMode::Contour);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let low = right_end_near(&cs, 290.0);
+    assert!(low > 300.0, "near the tip the line almost reaches the frame edge: {low}");
+    let high = right_end_near(&cs, 112.0);
+    assert!(high < 200.0, "under the wide top the line stops at the slanted side: {high}");
+    let (mut d, sid) = wrap_doc(ParaAttrs::default(), &[]);
+    triangle(&mut d, WrapMode::BoundingBox);
+    let boxed = right_end_near(&compose_story(&d, sid, &ComposeOptions::default()), 290.0);
+    assert!(boxed <= 180.5, "a bounding box wrap cuts at the box: {boxed}");
+}
+
+/// A contour cuts a line only where the shape is level with the letters above the baseline: a
+/// shape starting just below a baseline leaves that line whole (its descenders pass into the
+/// curve, as in InDesign); a bounding box there still cuts it.
+#[test]
+fn a_contour_lets_descenders_pass() {
+    use designcraft_geom::{PathData, Point, SubPath};
+    let (d, sid) = wrap_doc(ParaAttrs::default(), &[]);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &plain.frames[0].lines[3];
+    let (b, desc) = (line.baseline, line.descent);
+    assert!(desc > 1.5);
+    let end = |mode| {
+        let (mut d, sid) = wrap_doc(ParaAttrs::default(), &[]);
+        let lid = d.default_layer();
+        let top = b + 1.0;
+        let pts = [Point::new(150.0, top), Point::new(330.0, top), Point::new(330.0, top + 60.0), Point::new(150.0, top + 60.0)];
+        let mut it =
+            designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, PathData::single(SubPath::polyline(&pts, true)));
+        it.wrap.mode = mode;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = cs.frames[0].lines.iter().find(|l| (l.baseline - b).abs() < 1e-6).unwrap();
+        l.x1
+    };
+    assert!((end(WrapMode::Contour) - line.x1).abs() < 1e-6, "the contour leaves the line whole");
+    assert!(end(WrapMode::BoundingBox) <= 150.5, "the box cuts it");
+}
+
+/// A wrap object inside a group wraps text on its own, as in InDesign; only top-level items used
+/// to count, so text ran over a grouped wrap shape.
+#[test]
+fn wrap_inside_a_group_pushes_text() {
+    use designcraft_doc::{Content, Item, Shape};
+    let (mut d, sid) = wrap_doc(ParaAttrs::default(), &[]);
+    let lid = d.default_layer();
+    let mut wrap = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(200.0, 100.0, 330.0, 200.0)));
+    wrap.wrap.mode = WrapMode::BoundingBox;
+    let other = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(400.0, 400.0, 420.0, 420.0)));
+    let mut g = Item::new(ItemId(d.alloc()), lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = Content::Group { items: vec![std::sync::Arc::new(wrap), std::sync::Arc::new(other)] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let beside = cs.frames[0].lines.iter().find(|l| l.baseline > 120.0 && l.baseline < 190.0).unwrap();
+    assert!(beside.x1 <= 200.5, "the line stops at the grouped wrap: {}", beside.x1);
+}
+
+/// An object on a hidden layer keeps wrapping text unless the layer suppresses its wrap (Layer
+/// Options › Suppress Text Wrap When Layer Is Hidden), as in InDesign.
+#[test]
+fn hidden_layer_wraps_unless_it_suppresses_wrap() {
+    let beside = |suppress: bool| {
+        let (mut d, sid) = wrap_doc(ParaAttrs::default(), &[(Rect::new(200.0, 100.0, 330.0, 200.0), [0.0; 4], WrapMode::BoundingBox)]);
+        for l in &mut d.layers {
+            l.visible = false;
+            l.suppress_wrap_when_hidden = suppress;
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines.iter().find(|l| l.baseline > 120.0 && l.baseline < 190.0).map_or(0.0, |l| l.x1)
+    };
+    assert!(beside(false) <= 200.5, "{}", beside(false));
+    assert!(beside(true) > 300.0, "{}", beside(true));
 }
 
 /// The first line whose baseline is below the top of `ex`.
@@ -358,11 +576,28 @@ fn jump_object_keeps_grid_aligned_lines_on_the_grid() {
     assert!((l.baseline - want).abs() < 1e-6, "{} vs {want}", l.baseline);
 }
 
+/// An automatic page number wider than its frame stays on one line and hangs out, as in InDesign
+/// ("136" in a frame made for two digits); breaking it put "13" over "4".
+#[test]
+fn page_number_wider_than_its_frame_stays_whole() {
+    let text = designcraft_doc::story::PAGE_NUMBER.to_string();
+    let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 10.0, 40.0), ParaAttrs::default());
+    let mut specs = frame_specs(&d, sid);
+    specs[0].page_name = Some("136".into());
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(!cs.is_overset());
+    // A word of ordinary letters that doesn't fit still breaks where it must.
+    let (d, sid, _) = doc_with("Wordwiderthanframe", Rect::new(0.0, 0.0, 30.0, 200.0), ParaAttrs::default());
+    assert!(all_lines(&compose_story(&d, sid, &ComposeOptions::default())).len() > 1);
+}
+
 #[test]
 fn hostile_wrap_geometry_terminates() {
     let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &[]);
     let mut specs = frame_specs(&d, sid);
-    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion { rect: Rect::new(x0, y0, x1, y1), mode };
+    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion::rect(Rect::new(x0, y0, x1, y1), mode);
     let f = &mut specs[0];
     f.exclusions.push(ex(f64::NAN, f64::NAN, f64::NAN, f64::NAN, WrapMode::JumpObject));
     f.exclusions.push(ex(-1e308, 300.0, 1e308, f64::INFINITY, WrapMode::JumpObject));
@@ -1109,6 +1344,20 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// A table starts Space Before below the previous line's baseline, as in InDesign (not below its
+/// descenders).
+#[test]
+fn table_starts_space_before_below_the_previous_baseline() {
+    let mut t = designcraft_doc::Table::new(77, 2, 2, 0, 0, 100.0);
+    t.options.space_before = 4.0;
+    let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 600.0), t);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let f = &cs.frames[0];
+    let above = f.lines.iter().filter(|l| l.baseline < f.tables[0].rect.y0).map(|l| l.baseline).fold(f64::NEG_INFINITY, f64::max);
+    assert!(above.is_finite(), "a line above the table");
+    assert!((f.tables[0].rect.y0 - (above + 4.0)).abs() < 1e-6, "{} vs {}", f.tables[0].rect.y0, above);
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
@@ -1613,8 +1862,15 @@ fn check_kashida_justification(db: &FontDb, require_fallback: bool) {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
     let lid = d.default_layer();
     let text = "بسم الله الرحمن الرحيم الحمد لله رب العالمين الرحمن الرحيم مالك يوم الدين اياك نعبد واياك نستعين";
+    // No shrink range: with or without kashidas the lines break alike (neither may squeeze the
+    // word spaces), so the first lines compare the stretch.
     let pf = ParaFormat {
-        para: ParaAttrs { align: Some(Align::RightJustified), direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() },
+        para: ParaAttrs {
+            align: Some(Align::RightJustified),
+            direction: Some(designcraft_doc::TextDirection::RightToLeft),
+            word_space_min: Some(1.0),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 260.0, 400.0), lid, text, pf).unwrap();
@@ -3254,6 +3510,75 @@ fn arabic_kashida_moves_marks_with_their_cluster_and_respects_nonjoiners() {
     assert!(cs.frames[0].lines[0].glyphs.iter().all(|g| g.gid != g.face.glyph_for('\u{0640}') || g.len > 0));
 }
 
+/// Initial, Medial and Final don't override the joins the text calls for (InDesign draws a
+/// word-initial letter set to Final still joined to the next one).
+#[test]
+fn a_forced_final_form_keeps_the_letters_joined() {
+    let text = "ببب";
+    let gids = |form: Option<&str>| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 180.0, 100.0), ParaAttrs::default());
+        d.settings.glyph_fallback = true;
+        if let Some(form) = form {
+            d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.positional_form = Some(form.into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().map(|g| g.gid).collect::<Vec<_>>()
+    };
+    let natural = gids(None);
+    for form in ["Final", "Medial", "Initial"] {
+        assert_eq!(gids(Some(form)), natural, "{form}");
+    }
+}
+
+/// A paragraph that isn't World-Ready (InDesign's Paragraph Composer) sets Arabic left to right
+/// in text order, each letter in its isolated form, as InDesign does.
+#[test]
+fn arabic_outside_a_world_ready_paragraph_runs_left_to_right_unjoined() {
+    let text = "\u{0628}\u{0644}";
+    let set = |world_ready: bool, text: &str| {
+        let para = ParaAttrs { world_ready: Some(world_ready), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        d.settings.glyph_fallback = true;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().map(|g| (g.byte, g.gid, g.x)).collect::<Vec<_>>()
+    };
+    let beh = set(true, "\u{0628}")[0].1;
+    let lam = set(true, "\u{0644}")[0].1;
+    let joined = set(true, text);
+    let (b, l) = (joined.iter().find(|g| g.0 == 0).unwrap(), joined.iter().find(|g| g.0 == 2).unwrap());
+    assert!(b.2 > l.2 && b.1 != beh, "World-Ready: joined, right to left");
+    let plain = set(false, text);
+    let (b, l) = (plain.iter().find(|g| g.0 == 0).unwrap(), plain.iter().find(|g| g.0 == 2).unwrap());
+    assert!(b.2 < l.2, "left to right: {plain:?}");
+    assert_eq!((b.1, l.1), (beh, lam), "isolated forms");
+}
+
+/// Letters next to a custom glyph join it as they would the letters it draws, and it reads in
+/// their direction: a lam (`uni0644`) after a beh makes the beh initial and sits to its left.
+#[test]
+fn letters_join_a_custom_glyph_as_its_letters() {
+    let glyph = designcraft_doc::story::CUSTOM_GLYPH;
+    let set = |text: &str, custom: Option<(usize, &str)>| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        d.settings.glyph_fallback = true;
+        if let Some((at, name)) = custom {
+            d.story_mut(sid).unwrap().format_chars(at..at + glyph.len_utf8(), |f| f.over.custom_glyph = Some(name.into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.clone()
+    };
+    let at = |gs: &[PlacedGlyph], byte: usize| gs.iter().find(|g| g.byte == byte).map(|g| (g.gid, g.x)).unwrap();
+    // Lam joins the beh before it; alef doesn't join the beh after it.
+    let before = format!("\u{0628}{glyph}");
+    assert_eq!(at(&set(&before, Some((2, "uni0644"))), 0).0, at(&set("\u{0628}\u{0644}", None), 0).0, "initial beh");
+    let after = format!("{glyph}\u{0628}");
+    assert_eq!(at(&set(&after, Some((0, "uni0627"))), 3).0, at(&set("\u{0627}\u{0628}", None), 2).0, "isolated beh");
+    assert_eq!(at(&set(&after, Some((0, "uni0644.medi"))), 3).0, at(&set("\u{0644}\u{0628}", None), 2).0, "final beh");
+    // Right to left in a left-to-right paragraph: the glyph comes first, on the left.
+    let gs = set(&before, Some((2, "uni0644")));
+    assert!(at(&gs, 2).1 < at(&gs, 0).1, "{:?} {:?}", at(&gs, 2), at(&gs, 0));
+}
+
 #[test]
 fn arabic_explicit_isolated_forms_disable_contextual_joining() {
     let text = "بب";
@@ -3806,6 +4131,7 @@ fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
         // Natural advances, from one unbroken line.
         let natural: HashMap<usize, f64> =
             tracked_lines(&long, 1e5, ParaAttrs::default(), tracking)[0].glyphs.iter().map(|g| (g.byte, g.adv)).collect();
+        let plain: HashMap<usize, f64> = tracked_lines(&long, 1e5, ParaAttrs::default(), 0.0)[0].glyphs.iter().map(|g| (g.byte, g.adv)).collect();
         for composer in [Composer::Paragraph, Composer::SingleLine] {
             for align in [Align::Left, Align::LeftJustified] {
                 let para = ParaAttrs { composer: Some(composer), align: Some(align), hyphenate: Some(false), ..Default::default() };
@@ -3815,12 +4141,119 @@ fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
                 for l in &lines {
                     let ink: Vec<_> = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).collect();
                     let right = ink.iter().map(|g| g.x + g.adv.min(natural[&g.byte])).fold(l.x0, f64::max);
-                    assert!(l.end_x <= l.x1 + 0.02 && right <= l.x1 + 0.02, "{what}: line {:?} ends at {} past {}", l.range, l.end_x, l.x1);
+                    // The tracking after the line's last letter may hang past the edge, as in InDesign.
+                    let trail = ink.last().map_or(0.0, |g| natural[&g.byte] - plain[&g.byte]);
+                    assert!(
+                        l.end_x - trail <= l.x1 + 0.02 && right - trail <= l.x1 + 0.02,
+                        "{what}: line {:?} ends at {} past {}",
+                        l.range,
+                        l.end_x,
+                        l.x1
+                    );
                     for w in ink.windows(2) {
                         assert!(w[1].x >= w[0].x + natural[&w[0].byte] - 1e-6, "{what}: glyphs overlap at {}", w[1].byte);
                     }
                 }
             }
+        }
+    }
+}
+
+/// With a leading model (Aki Below), an empty paragraph keeps the leading like any other line; it
+/// used to drop by the em box's depth and the line after it to rise by as much.
+#[test]
+fn an_empty_paragraph_keeps_the_leading_under_a_leading_model() {
+    let text = "Aaa\n\nBbb\nCcc";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.leading = Some(designcraft_doc::Leading::Points(16.0));
+        f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::AkiBelow);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let base: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+    assert_eq!(base.len(), 4);
+    for w in base.windows(2) {
+        assert!((w[1] - w[0] - 16.0).abs() < 1e-6, "{base:?}");
+    }
+}
+
+/// A centred line wider than its column (a word set to No Break) is centred on the column and
+/// hangs out on both sides, as in InDesign; it used to start at the left edge.
+#[test]
+fn an_overfull_centred_line_hangs_out_on_both_sides() {
+    let text = "nnnnnnnnnnnn";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 30.0, 100.0), ParaAttrs { align: Some(Align::Center), ..Default::default() });
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.no_break = Some(true));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let first = l.glyphs.first().unwrap();
+    let last = l.glyphs.last().unwrap();
+    assert!(first.x < l.x0, "starts left of the column: {} vs {}", first.x, l.x0);
+    let mid = (first.x + last.x + last.adv) / 2.0;
+    assert!((mid - (l.x0 + l.x1) / 2.0).abs() < 0.01, "centre {mid} vs {}", (l.x0 + l.x1) / 2.0);
+}
+
+/// A paragraph that starts with a tab (an indent typed as a tab) is composed by the paragraph
+/// composer like one with a first-line indent of the tab's width; it used to fall back to the
+/// line-by-line composer, which can't squeeze a line below the minimum word space.
+#[test]
+fn a_leading_tab_breaks_like_a_first_line_indent() {
+    for width in [150.0, 170.0, 190.0, 210.0, 230.0] {
+        let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(false), ..Default::default() };
+        let tabbed = tracked_lines(&format!("\t{LOREM}"), width, para.clone(), 0.0);
+        let indented = tracked_lines(LOREM, width, ParaAttrs { first_line_indent: Some(36.0), ..para }, 0.0);
+        let words = |lines: &[Line], skip: usize| lines.iter().map(|l| l.range.end.saturating_sub(skip)).collect::<Vec<_>>();
+        assert_eq!(words(&tabbed, 1), words(&indented, 0), "width {width}");
+    }
+}
+
+/// A tab whose stop lies past the measure ends its line (it stays on it); the next tab starts the
+/// next line, as in InDesign. The word before the tabs used to move down with them.
+#[test]
+fn a_tab_past_the_measure_ends_the_line() {
+    // A word between the second (72) and third (108) default tab stop, in a 100 pt column.
+    let width = |n: usize| tracked_lines(&"n".repeat(n), 1e5, ParaAttrs::default(), 0.0)[0].end_x;
+    let n = (1..60).find(|&n| width(n) > 76.0).unwrap();
+    assert!(width(n) < 96.0);
+    let text = format!("{}\t\tb", "n".repeat(n));
+    for composer in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+        let lines = tracked_lines(&text, 100.0, ParaAttrs { composer: Some(composer), ..Default::default() }, 0.0);
+        assert_eq!(lines.len(), 2, "{composer:?}");
+        assert_eq!(lines[0].range, 0..n + 1, "{composer:?}: the word and the first tab");
+        let b = lines[1].glyphs.iter().find(|g| g.byte == n + 2).unwrap();
+        assert!((b.x - lines[1].x0 - 36.0).abs() < 0.01, "{composer:?}: b at {}", b.x - lines[1].x0);
+    }
+}
+
+/// Centred text is centred on its letters: the tracking after the last one doesn't count.
+#[test]
+fn centred_text_leaves_out_the_tracking_after_its_last_letter() {
+    let text = "nnnn";
+    let plain = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    let ink = plain.end_x - plain.x0;
+    let lines = tracked_lines(text, 200.0, ParaAttrs { align: Some(Align::Center), ..Default::default() }, 500.0);
+    let l = &lines[0];
+    let first = l.glyphs.first().unwrap().x;
+    let last = l.glyphs.last().unwrap();
+    // The ink runs from the first letter to the end of the last one's own advance.
+    let right = last.x + plain.glyphs.last().unwrap().adv;
+    assert!(right - first > ink, "tracking spaces the letters");
+    assert!(((first + right) / 2.0 - (l.x0 + l.x1) / 2.0).abs() < 0.01, "centre {} vs {}", (first + right) / 2.0, (l.x0 + l.x1) / 2.0);
+}
+
+/// A line that fits once the tracking after its last letter is left out is not broken earlier;
+/// the paragraph composer saw a break at the glue after a word as overfull and dropped it.
+#[test]
+fn a_line_fits_without_the_tracking_after_its_last_letter() {
+    let text = "nnnn nnnn nnnn";
+    let tracking = 200.0;
+    let two = &tracked_lines("nnnn nnnn", 1e5, ParaAttrs::default(), tracking)[0];
+    let size = 12.0;
+    let measure = two.end_x - two.x0 - tracking / 1000.0 * size / 2.0;
+    for composer in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+        for align in [Align::Left, Align::Center] {
+            let lines = tracked_lines(text, measure, ParaAttrs { composer: Some(composer), align: Some(align), ..Default::default() }, tracking);
+            assert_eq!(lines.iter().map(|l| l.range.clone()).collect::<Vec<_>>(), vec![0..10, 10..14], "{composer:?} {align:?}");
         }
     }
 }
@@ -4405,6 +4838,8 @@ fn cache_recomposes_when_a_wrap_layer_is_hidden() {
     let cache = Cache::new();
     let a = cache.get(&d, sid, None);
     assert!(a.frames[0].lines[0].x0 >= 120.0 - 1e-6);
+    // A hidden layer's objects stop wrapping text only when the layer suppresses it.
+    d.layer_mut(lid).unwrap().suppress_wrap_when_hidden = true;
     d.layer_mut(lid).unwrap().visible = false;
     let b = cache.get(&d, sid, None);
     assert!(!Arc::ptr_eq(&a, &b));
@@ -4453,4 +4888,100 @@ fn an_empty_last_paragraph_isnt_overset() {
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset());
     let (d, sid, _) = doc_with("One\nTwo\n\n", Rect::new(0.0, 0.0, 200.0, 35.0), ParaAttrs::default());
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset(), "an empty paragraph before the last one is text");
+}
+
+/// A frame on page 1 whose story holds an anchored text frame (`w` × `h`, inset 0) showing a
+/// story of its own. Returns the document, the host story, the anchored story and the anchored
+/// frame's id.
+fn anchored_text_frame_doc(inner: &str, w: f64, h: f64) -> (Document, StoryId, StoryId, ItemId) {
+    let (mut d, host, _) = doc_with("Before after", Rect::new(36.0, 36.0, 336.0, 436.0), ParaAttrs::default());
+    let sid = StoryId(d.alloc());
+    d.stories.insert(sid, Arc::new(designcraft_doc::Story::with_text(sid, inner, ParaFormat::default())));
+    let id = ItemId(d.alloc());
+    let mut it = designcraft_doc::Item::new(
+        id,
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, w, h)),
+    );
+    it.content = designcraft_doc::Content::Text(designcraft_doc::TextFrame { story: sid, options: Default::default() });
+    d.story_mut(host).unwrap().insert_object(7, designcraft_doc::AnchoredObject::new(it, Default::default()));
+    d.check().unwrap();
+    (d, host, sid, id)
+}
+
+#[test]
+fn a_story_in_an_anchored_text_frame_composes_in_that_frame() {
+    let (d, host, sid, id) = anchored_text_frame_doc("Inner text in the frame", 200.0, 60.0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.frames.len(), 1);
+    let ft = cs.frame(id).expect("composed in the anchored frame");
+    assert!(!cs.is_overset());
+    assert_eq!(ft.lines.len(), 1);
+    // The frame's page is its host frame's.
+    assert_eq!(frame_specs(&d, sid)[0].page, Some(0));
+    assert!(ft.lines[0].x1 <= 200.0 + 1e-9);
+    // The host makes room for it on its line.
+    let hc = compose_story(&d, host, &ComposeOptions::default());
+    assert_eq!(hc.frames[0].objects.len(), 1);
+    assert!(hc.frames[0].lines[0].ascent >= 60.0 - 1e-9);
+}
+
+#[test]
+fn an_anchored_story_recomposes_when_its_text_or_frame_changes() {
+    let (mut d, host, sid, id) = anchored_text_frame_doc("Short", 200.0, 60.0);
+    let cache = Cache::new();
+    let a = cache.get(&d, sid, None);
+    assert!(Arc::ptr_eq(&a, &cache.get(&d, sid, None)), "cached");
+    // Its own text.
+    d.story_mut(sid).unwrap().insert(5, " and a much longer text that needs more than one line here");
+    let b = cache.get(&d, sid, None);
+    assert!(b.frame(id).unwrap().lines.len() > 1);
+    // The frame, which lives in the host story: narrower makes more lines.
+    let o = &mut d.story_mut(host).unwrap().objects[0];
+    Arc::make_mut(o).item.path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 60.0));
+    let c = cache.get(&d, sid, None);
+    assert!(c.frame(id).unwrap().lines.len() > b.frame(id).unwrap().lines.len());
+}
+
+#[test]
+fn anchored_text_frames_compose_two_levels_deep() {
+    let (mut d, _, mid, _) = anchored_text_frame_doc("", 250.0, 80.0);
+    let deep = StoryId(d.alloc());
+    d.stories.insert(deep, Arc::new(designcraft_doc::Story::with_text(deep, "Two levels down", ParaFormat::default())));
+    let id = ItemId(d.alloc());
+    let mut it = designcraft_doc::Item::new(
+        id,
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 150.0, 40.0)),
+    );
+    it.content = designcraft_doc::Content::Text(designcraft_doc::TextFrame { story: deep, options: Default::default() });
+    d.story_mut(mid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+    d.check().unwrap();
+    let cache = Cache::new();
+    let cs = cache.get(&d, deep, None);
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frame(id).unwrap().lines.len(), 1);
+    assert_eq!(frame_specs(&d, deep)[0].page_name.as_deref(), Some("1"), "page of the outermost frame");
+}
+
+#[test]
+fn anchored_text_frames_showing_each_other_do_not_recurse_forever() {
+    // Not a valid document (check() rejects it), but composing must still end.
+    let (mut d, host, sid, _) = anchored_text_frame_doc("Inner", 200.0, 60.0);
+    let back = d.story(host).unwrap().objects[0].clone();
+    let mut back = (*back).clone();
+    if let designcraft_doc::Content::Text(t) = &mut back.item.content {
+        t.story = sid;
+    }
+    d.story_mut(sid).unwrap().insert_object(0, back);
+    // The host loses its frames: both stories are only in each other's anchored frames.
+    d.story_mut(host).unwrap().frames.clear();
+    assert!(d.check().is_err());
+    let cache = Cache::new();
+    for s in [host, sid] {
+        let _ = cache.get(&d, s, None);
+        let _ = frame_specs(&d, s);
+    }
 }

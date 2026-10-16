@@ -2,7 +2,8 @@
 //!
 //! An entry is valid while the inputs it was composed from are the *same allocations*: the story
 //! `Arc` (and its revision), the styles `Arc`, the frame items' `Arc`s and the `Arc`s of every
-//! wrapping item on the frames' spreads. Entries hold clones of those `Arc`s, so the pointers can't
+//! wrapping item on the frames' spreads (for a story in an anchored text frame, also the stories
+//! that frame is anchored in). Entries hold clones of those `Arc`s, so the pointers can't
 //! be reused by other allocations while the entry lives.
 
 use std::collections::HashMap;
@@ -18,7 +19,8 @@ type Key = (StoryId, Option<usize>);
 
 struct Entry {
     sig: Vec<usize>,
-    _keep: (Arc<Story>, Arc<Styles>, Vec<Arc<Item>>),
+    /// The story, styles, frame and wrap items, and the stories an anchored story's frame is in.
+    _keep: (Arc<Story>, Arc<Styles>, Vec<Arc<Item>>, Vec<Arc<Story>>),
     out: Arc<ComposedStory>,
     stamp: u64,
 }
@@ -73,7 +75,7 @@ impl Cache {
     /// sections restart their numbering.
     pub fn get(&self, doc: &Document, sid: StoryId, page: Option<usize>) -> Arc<ComposedStory> {
         let Some(story) = doc.stories.get(&sid) else { return Arc::new(ComposedStory { story: sid, ..Default::default() }) };
-        let (mut sig, keep_items) = signature(doc, story);
+        let (mut sig, keep_items, keep_hosts) = signature(doc, story);
         let key = (sid, page);
         // The key holds the page's index, which a renumbering doesn't change: its name (section
         // start number, style, prefix) is part of the signature.
@@ -170,7 +172,7 @@ impl Cache {
         if g.0.len() > 4096 {
             g.0.retain(|_, e| stamp - e.stamp < 64);
         }
-        let replaced = g.0.insert(key, Entry { sig, _keep: (story.clone(), doc.styles.clone(), keep_items), out: out.clone(), stamp });
+        let replaced = g.0.insert(key, Entry { sig, _keep: (story.clone(), doc.styles.clone(), keep_items, keep_hosts), out: out.clone(), stamp });
         drop(g);
         if key.1.is_none()
             && let Some(old) = replaced
@@ -184,7 +186,7 @@ impl Cache {
     /// entry or the one it replaced), without composing anything.
     pub fn composed_for(&self, doc: &Document, sid: StoryId) -> Option<Arc<ComposedStory>> {
         let story = doc.stories.get(&sid)?;
-        let (sig, _) = signature(doc, story);
+        let (sig, ..) = signature(doc, story);
         // Only the geometry/story part of the signature (variables etc. add to it).
         let matches = |s: &[usize]| s.len() >= sig.len() && s[..sig.len()] == sig[..];
         {
@@ -270,7 +272,7 @@ impl Cache {
     }
 }
 
-fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>) {
+fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>, Vec<Arc<Story>>) {
     // The document's font scope: another document's fonts of the same name set it differently.
     // Sections name the pages under the frames (page-number and section markers).
     let g = &doc.settings.baseline_grid;
@@ -284,6 +286,26 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         g.increment.to_bits() as usize,
     ];
     let mut keep = Vec::new();
+    frames_signature(doc, story, &mut sig, &mut keep);
+    // A story in an anchored text frame: the frame (size, options) is in the host story, its
+    // page in the host's frames (or further out).
+    let mut hosts = Vec::new();
+    let mut cur = story;
+    for _ in 0..designcraft_doc::MAX_ANCHOR_DEPTH {
+        if !cur.frames.is_empty() {
+            break;
+        }
+        let Some(host) = doc.anchored_text_frame(cur.id).and_then(|(h, ..)| doc.stories.get(&h)) else { break };
+        sig.extend([usize::MAX - 1, Arc::as_ptr(host) as usize, host.rev as usize]);
+        frames_signature(doc, host, &mut sig, &mut keep);
+        hosts.push(host.clone());
+        cur = host;
+    }
+    (sig, keep, hosts)
+}
+
+/// The frame items of a story (and the wrapping items on their spreads).
+fn frames_signature(doc: &Document, story: &Story, sig: &mut Vec<usize>, keep: &mut Vec<Arc<Item>>) {
     let mut spreads = Vec::new();
     for f in &story.frames {
         let Some(loc) = doc.find(*f) else {
@@ -299,10 +321,13 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
             if !spreads.contains(&loc.spread) {
                 spreads.push(loc.spread);
                 for it in &sp.items {
-                    if it.wrap.mode != WrapMode::None {
+                    // Wrap objects, also inside groups (they wrap text on their own).
+                    let mut wraps = false;
+                    it.walk(&mut |c| wraps |= c.wrap.mode != WrapMode::None);
+                    if wraps {
                         sig.push(Arc::as_ptr(it) as usize);
-                        // Wrap objects on hidden layers don't wrap text.
-                        sig.push(usize::from(doc.layer(it.layer).is_some_and(|l| l.visible)));
+                        // Wrap objects on a hidden layer that suppresses their wrap don't wrap text.
+                        sig.push(usize::from(doc.layer(it.layer).is_some_and(|l| l.visible || !l.suppress_wrap_when_hidden)));
                         keep.push(it.clone());
                     }
                 }
@@ -310,5 +335,4 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
             }
         }
     }
-    (sig, keep)
 }

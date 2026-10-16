@@ -54,35 +54,48 @@ fn page_param(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
     Ok(page)
 }
 
-/// The parent items that show on a document page, with the offset from parent spread to
-/// document spread.
-fn parent_items(d: &Document, page: usize) -> Option<(Vec<ItemId>, Vec2)> {
+/// The parent items that belong on a document page, across the whole parent chain, each with the
+/// offset from parent spread to document spread.
+fn parent_items(d: &Document, page: usize) -> Option<Vec<(ItemId, Vec2)>> {
     let (si, pi) = d.page_loc(page)?;
-    let pg = &d.spreads[si].pages[pi];
-    let (ppi, ppage) = d.parent_page_for(page)?;
-    let parent = d.parents.get(ppi)?;
-    let dx = pg.x - parent.pages.get(ppage)?.x;
-    let ids =
-        parent.items.iter().filter(|it| parent.pages.len() <= 1 || parent.page_at_x(it.bounds().center().x) == Some(ppage)).map(|it| it.id).collect();
-    Some((ids, Vec2::new(dx, 0.0)))
+    let pg = d.spreads.get(si)?.pages.get(pi)?;
+    let chain = d.parent_chain_for(page);
+    if chain.is_empty() {
+        return None;
+    }
+    let mut items = Vec::new();
+    for (ppi, ppage) in chain {
+        let parent = d.parents.get(ppi)?;
+        let off = Vec2::new(pg.x - parent.pages.get(ppage)?.x, 0.0);
+        items.extend(
+            parent
+                .items
+                .iter()
+                .filter(|it| parent.pages.len() <= 1 || parent.page_at_x(it.bounds().center().x) == Some(ppage))
+                .map(|it| (it.id, off)),
+        );
+    }
+    Some(items)
 }
 
 fn override_items(s: &mut Session, p: &Value) -> Result<Value> {
     let page = page_param(s, p, "layout.overrideParentItems")?;
     let wanted: Option<Vec<ItemId>> = super::ids_param(p, "ids");
     s.edit(|d, sel| {
-        let (all, off) = parent_items(d, page).ok_or_else(|| bad("layout.overrideParentItems", "the page has no parent"))?;
+        let all = parent_items(d, page).ok_or_else(|| bad("layout.overrideParentItems", "the page has no parent"))?;
         let (si, pi) = d.page_loc(page).ok_or_else(|| bad("layout.overrideParentItems", "no such page"))?;
         let already = d.spreads[si].pages[pi].overridden.clone();
-        let ids: Vec<ItemId> = all.into_iter().filter(|i| wanted.as_ref().is_none_or(|w| w.contains(i)) && !already.contains(i)).collect();
+        let picked: Vec<(ItemId, Vec2)> =
+            all.into_iter().filter(|(i, _)| wanted.as_ref().is_none_or(|w| w.contains(i)) && !already.contains(i)).collect();
+        let ids: Vec<ItemId> = picked.iter().map(|(i, _)| *i).collect();
         if ids.is_empty() {
             return Ok(json!({"ids": []}));
         }
         let src = d.clone();
         // Copies on the document spread (stories and images come along).
         let mut new = Vec::new();
-        for id in &ids {
-            let copy = super::object::duplicate_from(d, &src, &[*id], SpreadRef::Doc(si), off)?;
+        for (id, off) in &picked {
+            let copy = super::object::duplicate_from(d, &src, &[*id], SpreadRef::Doc(si), *off)?;
             if let Some(nid) = copy.first() {
                 if let Some(it) = d.item_mut(*nid) {
                     it.overrides = Some(*id);

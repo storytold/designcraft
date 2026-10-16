@@ -120,6 +120,10 @@ pub struct PdfOptions {
     pub tagged: bool,
     /// Interactive PDF: placed video and sound are embedded and play in Screen annotations.
     pub media: bool,
+    /// Convert RGB to CMYK (InDesign's Output › Color Conversion › Convert to Destination (Preserve
+    /// Numbers)): RGB colours and RGB images become CMYK in the working CMYK space (Edit › Color
+    /// Settings); CMYK, grey and spot colours keep their numbers. Ignored for PDF/A, which is RGB.
+    pub convert_to_cmyk: bool,
 }
 
 impl Default for PdfOptions {
@@ -137,6 +141,7 @@ impl Default for PdfOptions {
             created: None,
             tagged: false,
             media: false,
+            convert_to_cmyk: false,
         }
     }
 }

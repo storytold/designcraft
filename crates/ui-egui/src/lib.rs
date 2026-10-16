@@ -147,6 +147,8 @@ pub struct PdfExportSettings {
     pub marks_offset: String,
     /// File › Export PDF › Advanced › Tagged PDF.
     pub tagged: bool,
+    /// File › Export PDF › Output › Convert to CMYK (RGB colours and images into the working CMYK).
+    pub convert_to_cmyk: bool,
 }
 
 impl Default for PdfExportSettings {
@@ -164,6 +166,7 @@ impl Default for PdfExportSettings {
             marks_weight: "0.25".into(),
             marks_offset: "6".into(),
             tagged: true,
+            convert_to_cmyk: false,
         }
     }
 }
@@ -2065,6 +2068,7 @@ mod tests {
         assert_eq!(settings.marks_weight, "0.25");
         assert_eq!(settings.marks_offset, "6");
         assert!(settings.tagged);
+        assert!(!settings.convert_to_cmyk);
     }
 
     #[test]

@@ -191,17 +191,10 @@ fn pipeline(doc: &Document, sr: SpreadRef, opts: &RenderOptions) -> Pipeline {
     }
     if let SpreadRef::Doc(si) = sr {
         let first = doc.first_page_of_spread(si);
-        for (pi, page) in sp.pages.iter().enumerate() {
-            if !page.show_parent_items {
-                continue;
-            }
-            let Some((ppi, ppage)) = doc.parent_page_for(first.saturating_add(pi)) else { continue };
-            let Some(parent) = doc.parents.get(ppi) else { continue };
-            for item in &parent.items {
-                if page.overridden.contains(&item.id) || parent.pages.len() > 1 && parent.page_at_x(item.bounds().center().x) != Some(ppage) {
-                    continue;
-                }
-                if !inspect(item) {
+        for pi in 0..sp.pages.len() {
+            // The whole parent chain behind the page.
+            for shown in doc.shown_parent_items(first.saturating_add(pi)) {
+                if !inspect(shown.item) {
                     return Pipeline::Proof;
                 }
             }
@@ -295,16 +288,9 @@ impl Renderer {
         };
         if let SpreadRef::Doc(si) = sr {
             let first = doc.first_page_of_spread(si);
-            for (pi, page) in sp.pages.iter().enumerate() {
-                if !page.show_parent_items {
-                    continue;
-                }
-                let Some((ppi, _)) = doc.parent_page_for(first.saturating_add(pi)) else { continue };
-                if doc
-                    .parents
-                    .get(ppi)
-                    .is_some_and(|parent| parent.items.iter().any(|it| visible(it) && !page.overridden.contains(&it.id) && transparent(it)))
-                {
+            for pi in 0..sp.pages.len() {
+                // The whole parent chain behind the page.
+                if doc.shown_parent_items(first.saturating_add(pi)).iter().any(|s| visible(s.item) && transparent(s.item)) {
                     return None;
                 }
             }

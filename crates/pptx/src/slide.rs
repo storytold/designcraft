@@ -263,24 +263,16 @@ impl<'a> Exporter<'a> {
             if !layer.visible || !layer.printable {
                 continue;
             }
-            if page.show_parent_items
-                && let Some((ppi, ppage)) = doc.parent_page_for(abs)
-                && let Some(parent) = doc.parents.get(ppi)
-                && let Some(pp) = parent.pages.get(ppage)
-            {
-                let dx = page.x - pp.x;
-                for it in &parent.items {
-                    if it.layer != layer.id || page.overridden.contains(&it.id) {
-                        continue;
-                    }
-                    if parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppage) {
-                        continue;
-                    }
-                    // Parent items compose per page (page numbers, running heads).
-                    self.page = Some(abs);
-                    self.item(it, Affine::translate((dx, 0.0)), 1.0);
-                    self.page = None;
+            // The whole parent chain, deepest parent at the bottom.
+            for shown in doc.shown_parent_items(abs) {
+                if shown.item.layer != layer.id {
+                    continue;
                 }
+                // Parent items compose per page (page numbers, running heads). One crossing the
+                // spine is cut by the slide's edge.
+                self.page = Some(abs);
+                self.item(shown.item, Affine::translate((shown.dx, 0.0)), 1.0);
+                self.page = None;
             }
             for it in &sp.items {
                 if it.layer == layer.id {

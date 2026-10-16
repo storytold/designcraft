@@ -1111,6 +1111,9 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.character_alignment {
             el.set("CharacterAlignment", crate::cjk::alignment_out(v));
         }
+        if let Some(g) = &a.custom_glyph {
+            props.push(p("CustomGlyph", "string", format!("$ID/{g}")));
+        }
         if let Some(f) = &a.font_family {
             props.push(p("AppliedFont", "string", f.clone()));
             let style = a.font_style.clone().unwrap_or_else(|| "Regular".into());
@@ -1166,6 +1169,12 @@ impl<'a> Ex<'a> {
         }
         if let Some(v) = a.stroke_behind_fill {
             el.set("StrokeAlignment", if v { "OutsideAlignment" } else { "CenterAlignment" });
+        }
+        if let Some(v) = a.stroke_join {
+            el.set("EndJoin", names::join_out(v));
+        }
+        if let Some(v) = a.stroke_miter_limit {
+            el.set("MiterLimit", num(v));
         }
         if let Some(v) = a.capitalization {
             el.set("Capitalization", names::caps_out(v));
@@ -1464,12 +1473,14 @@ impl<'a> Ex<'a> {
                 }
             }
         }
-        if let Some(c) = a.composer {
+        if a.composer.is_some() || a.world_ready.is_some() {
             el.set(
                 "Composer",
-                match c {
-                    designcraft_doc::Composer::Paragraph => "HL Composer",
-                    designcraft_doc::Composer::SingleLine => "HL Single",
+                match (a.composer.unwrap_or_default(), a.world_ready.unwrap_or(true)) {
+                    (designcraft_doc::Composer::Paragraph, true) => "HL Composer Optyca",
+                    (designcraft_doc::Composer::Paragraph, false) => "HL Composer",
+                    (designcraft_doc::Composer::SingleLine, true) => "HL Single Optyca",
+                    (designcraft_doc::Composer::SingleLine, false) => "HL Single",
                 },
             );
         }
@@ -2112,6 +2123,7 @@ impl<'a> Ex<'a> {
                         st::SECTION_MARKER => Some("19"),
                         st::INDENT_HERE => Some("7"),
                         st::RIGHT_INDENT_TAB => Some("8"),
+                        st::CUSTOM_GLYPH => Some("1a"),
                         _ => None,
                     };
                     let brk = match ch {

@@ -85,11 +85,17 @@ pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u
     let mut im = Importer::new(read_link);
     im.japanese_composer = japanese_composer;
     im.run(&root, &top)?;
-    let document = im.finish(&root).map_err(|e| match e {
+    let mut document = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
         e => e,
     })?;
+    // Anchored text frames whose story is missing, also threaded on a page, already shown by
+    // another anchored frame or (through them) showing itself are left empty.
+    let emptied = document.fix_anchored_text_frames(false);
+    if emptied > 0 {
+        warnings.push(format!("{emptied} anchored text frame(s) could not show their story and were left empty"));
+    }
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
     Ok(Imported { document, warnings })
 }
@@ -255,6 +261,9 @@ struct Importer<'r> {
     object_els: HashMap<String, El>,
     layers: Vec<Layer>,
     layer_ids: HashMap<String, LayerId>,
+    /// The layer of the group (or frame) whose children are being read: IDML gives children no
+    /// ItemLayer of their own, they sit on their parent's layer.
+    parent_layer: Option<LayerId>,
     stories: BTreeMap<StoryId, Story>,
     story_ids: HashMap<String, StoryId>,
     parents: Vec<Spread>,
@@ -408,6 +417,7 @@ impl<'r> Importer<'r> {
             object_els: HashMap::new(),
             layers: Vec::new(),
             layer_ids: HashMap::new(),
+            parent_layer: None,
             stories: BTreeMap::new(),
             story_ids: HashMap::new(),
             parents: Vec::new(),
@@ -596,12 +606,14 @@ impl<'r> Importer<'r> {
         if let Some(ix) = top.iter().find(|e| e.local() == "Index") {
             self.index_topics_of(ix, &IndexTopic::default());
         }
-        // Stories (ids first so frames can reference them).
-        for e in top.iter().filter(|e| e.local() == "Story") {
-            let id = StoryId(self.alloc());
+        // Stories: every id first (frames, anchored ones in earlier stories too, reference them).
+        let stories: Vec<(StoryId, &El)> = top.iter().filter(|e| e.local() == "Story").map(|e| (StoryId(self.alloc()), e)).collect();
+        for (id, e) in &stories {
             if let Some(s) = e.get("Self") {
-                self.story_ids.insert(s.to_string(), id);
+                self.story_ids.insert(s.to_string(), *id);
             }
+        }
+        for (id, e) in stories {
             let story = self.story(id, e);
             self.stories.insert(id, story);
         }
@@ -1017,7 +1029,11 @@ impl<'r> Importer<'r> {
             let name = names::style_name_in(PARA_BUILTINS, e.get("Name").unwrap_or(""));
             let based_on = if name == designcraft_doc::NO_PARA_STYLE { None } else { self.based_on(e, true) };
             let next_style = e.get("NextStyle").map(|n| self.para_style_ref(n)).filter(|n| *n != name);
-            let para = self.para_attrs(e);
+            let mut para = self.para_attrs(e);
+            if name == designcraft_doc::NO_PARA_STYLE {
+                // InDesign's default composer is the Paragraph Composer, which isn't World-Ready.
+                para.world_ready.get_or_insert(false);
+            }
             let mut chars = self.char_attrs(e);
             // InDesign writes its CJK leading model (Aki Below) on [No paragraph style] of every
             // document; only the Japanese composers use it, so a document set with the Paragraph or
@@ -1140,8 +1156,11 @@ impl<'r> Importer<'r> {
     }
 
     fn based_on(&self, e: &El, para: bool) -> Option<String> {
-        let b = e.prop("BasedOn")?;
-        let b = b.trim();
+        let raw = e.prop("BasedOn")?;
+        // Style names may end in a space ("arabic purple "): look the reference up as written
+        // before trimming it.
+        let known = if para { self.para_names.contains_key(&raw) } else { self.char_names.contains_key(&raw) };
+        let b = if known { raw.as_str() } else { raw.trim() };
         if para {
             if let Some(n) = self.para_names.get(b) {
                 return Some(n.clone());
@@ -1362,6 +1381,8 @@ impl<'r> Importer<'r> {
             "CenterAlignment" => Some(false),
             _ => None,
         });
+        a.stroke_join = e.prop("EndJoin").map(|v| names::join_in(v.trim()));
+        a.stroke_miter_limit = e.num("MiterLimit");
         a.capitalization = e.prop("Capitalization").and_then(|v| names::caps_in(v.trim()));
         a.position = e.prop("Position").and_then(|v| names::position_in(v.trim()));
         a.underline = e.boolean("Underline");
@@ -1437,6 +1458,7 @@ impl<'r> Importer<'r> {
         a.diacritic_x_offset = e.num("XOffsetDiacritic").filter(|v| v.is_finite());
         a.diacritic_y_offset = e.num("YOffsetDiacritic").filter(|v| v.is_finite());
         a.positional_form = e.prop("PositionalForm");
+        a.custom_glyph = e.prop("CustomGlyph").map(|v| v.trim_start_matches("$ID/").to_string()).filter(|v| !v.is_empty());
         if let Some(v) = e.get("AppliedConditions").filter(|v| !v.trim().is_empty()) {
             let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();
             if !names.is_empty() {
@@ -1553,9 +1575,13 @@ impl<'r> Importer<'r> {
                 GridAlign::AllLines
             });
         }
-        a.composer = e
-            .prop("Composer")
+        let composer = e.prop("Composer");
+        a.composer = composer
+            .as_deref()
             .map(|c| if c.contains("Single") { designcraft_doc::Composer::SingleLine } else { designcraft_doc::Composer::Paragraph });
+        // "HL Composer" and "HL Single" are the Paragraph and Single-line Composers; the
+        // World-Ready ones end in "Optyca". The Japanese composers ("… J") are left as they were.
+        a.world_ready = composer.as_deref().map(|c| c.contains("Optyca") || c.ends_with(" J") || c.contains("Japanese"));
         a.hyphenate = e.boolean("Hyphenation");
         a.hyph_min_word = u("HyphenateWordsLongerThan");
         a.hyph_after_first = u("HyphenateAfterFirst");
@@ -2038,11 +2064,12 @@ impl<'r> Importer<'r> {
                         rcf.over.position = None;
                         b.push(&designcraft_doc::FOOTNOTE_REF.to_string(), &rcf);
                     }
-                    // Not supported yet: skip their content entirely.
-                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" => {
-                        // An anchored object (text frames inside stories aren't supported yet).
-                        let has_text = c.find_all("TextFrame").next().is_some();
-                        if !has_text && let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY) {
+                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
+                        // An anchored object. A text frame in it shows a story of its own; one
+                        // threaded to other frames can't be anchored (skipped).
+                        if !has_threaded_text_frame(c)
+                            && let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY)
+                        {
                             use designcraft_doc::anchored::AnchorAlign as A;
                             let set = c.find("AnchoredObjectSetting");
                             let get = |k: &str| set.and_then(|s| s.num(k)).unwrap_or(0.0);
@@ -2084,7 +2111,7 @@ impl<'r> Importer<'r> {
                             b.push(&designcraft_doc::OBJECT_MARK.to_string(), cf);
                         }
                     }
-                    "Properties" | "Note" | "TextFrame" | "StoryPreference" | "InCopyExportOption" | "TextVariableInstance" => {}
+                    "Properties" | "Note" | "StoryPreference" | "InCopyExportOption" | "TextVariableInstance" => {}
                     _ => self.walk_story(c, b, pf, pchars, cf, brk),
                 },
                 Node::Pi(t, v) if t == "ACE" => {
@@ -2315,7 +2342,7 @@ impl<'r> Importer<'r> {
         if let Some(s) = e.get("Self") {
             self.item_ids.insert(s.to_string(), id);
         }
-        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
+        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().or(self.parent_layer).unwrap_or_else(|| self.layers[0].id);
         let path = e.prop_el("PathGeometry").map(path_of).unwrap_or_default();
         let mut it = Item::new(id, layer, shape, path);
         it.xf = parent * parse_affine(e.get("ItemTransform"));
@@ -2495,11 +2522,13 @@ impl<'r> Importer<'r> {
             }
             "Group" => {
                 let mut kids = Vec::new();
+                let outer = self.parent_layer.replace(it.layer);
                 for c in e.elements() {
                     if let Some(k) = self.item(c, Affine::IDENTITY) {
                         kids.push(Arc::new(k));
                     }
                 }
+                self.parent_layer = outer;
                 it.content = Content::Group { items: kids };
                 it.fill = Fill::none();
                 it.stroke = Stroke::none();
@@ -2519,12 +2548,14 @@ impl<'r> Importer<'r> {
                     }
                 } else {
                     // Page items pasted into this frame (Paste Into).
+                    let outer = self.parent_layer.replace(it.layer);
                     let kids: Vec<Arc<Item>> = e
                         .elements()
                         .filter(|c| matches!(c.local(), "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame"))
                         .filter_map(|c| self.item(c, Affine::IDENTITY))
                         .map(Arc::new)
                         .collect();
+                    self.parent_layer = outer;
                     if !kids.is_empty() {
                         it.content = Content::Group { items: kids };
                     }
@@ -2803,12 +2834,25 @@ impl StoryBuilder {
     }
 }
 
+/// Is `e`, or a page item in it, a text frame threaded to other frames?
+fn has_threaded_text_frame(e: &El) -> bool {
+    let mut stack = vec![e];
+    while let Some(x) = stack.pop() {
+        if x.local() == "TextFrame" && [x.get("PreviousTextFrame"), x.get("NextTextFrame")].into_iter().flatten().any(|v| v != "n") {
+            return true;
+        }
+        stack.extend(x.elements().filter(|c| matches!(c.local(), "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame")));
+    }
+    false
+}
+
 fn ace_char(v: &str) -> Option<char> {
     match v.trim() {
         "18" => Some(st::PAGE_NUMBER),
         "19" => Some(st::SECTION_MARKER),
         "7" => Some(st::INDENT_HERE),
         "8" => Some(st::RIGHT_INDENT_TAB),
+        "1a" => Some(st::CUSTOM_GLYPH),
         _ => None,
     }
 }

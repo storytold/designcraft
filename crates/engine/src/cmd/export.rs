@@ -9,7 +9,7 @@ use crate::{EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.exportPdf", "Export PDF…", ["File"], None,
-        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
+        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), convertToCmyk?: bool (RGB colours and images to the working CMYK, numbers of CMYK kept), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
         has_doc, export_pdf),
         cmd!(noundo "file.exportEpub", "Export EPUB (Reflowable)…", ["File"], None,
         "{path?, title?, author?, language?: \"en\", identifier?: str (dc:identifier; a stable urn:uuid by default), coverImage?: path (a PNG or JPEG as the cover), tocTitle?: str (the table of contents' title; from the language by default), cover?: bool (the first page as the cover image), embedFonts?: bool (package the stylesheet's fonts whose licence allows it, whole files), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes, warnings} (no path: {base64, bytes, warnings}); warnings name images without alt text, exported as decorative, and fonts that could not be embedded",
@@ -344,6 +344,7 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         author: str_param(p, "author").map(str::to_string),
         tagged: p.get("tagged").and_then(Value::as_bool).unwrap_or(false),
         media: p.get("media").and_then(Value::as_bool).unwrap_or(false),
+        convert_to_cmyk: p.get("convertToCmyk").and_then(Value::as_bool).unwrap_or(false),
         ..PdfOptions::default()
     })
 }
@@ -364,9 +365,8 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
     let mut rr = designcraft_render::Renderer::new();
     rr.threads = designcraft_render::default_threads();
     let k = ppi / 72.0;
-    let parent_transparent = |pid: Option<designcraft_doc::SpreadId>| {
-        pid.and_then(|id| d.parents.iter().find(|p| p.id == id)).is_some_and(|p| p.items.iter().any(|it| transparent(it)))
-    };
+    // Parent items involving transparency, across the page's whole parent chain.
+    let parent_transparent = |abs: usize| d.shown_parent_items(abs).iter().any(|s| transparent(s.item));
     // An opaque image item showing `img` over `r`.
     let image_item =
         |out: &mut designcraft_doc::Document, r: designcraft_geom::Rect, img: designcraft_render::Rendered, layer: designcraft_doc::LayerId| {
@@ -398,7 +398,7 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
             it
         };
     for (si, sp) in d.spreads.iter().enumerate() {
-        let whole = sp.pages.iter().any(|pg| pg.show_parent_items && parent_transparent(pg.parent));
+        let whole = (0..sp.pages.len()).any(|pi| parent_transparent(d.first_page_of_spread(si) + pi));
         if whole {
             // Parent items involve transparency: every page of the spread as one image.
             let first = d.first_page_of_spread(si);

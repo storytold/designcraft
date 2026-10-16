@@ -544,6 +544,56 @@ pub const PROCESS_PLATES: [&str; 4] = ["Cyan", "Magenta", "Yellow", "Black"];
 
 const LUT_N: usize = 17;
 
+/// RGB → CMYK for many pixels (images converted to the output CMYK): `f` sampled on a 17³ grid,
+/// interpolated trilinearly.
+#[derive(Debug)]
+pub struct CmykLut {
+    data: Vec<[f32; 4]>,
+}
+
+impl CmykLut {
+    pub fn build(f: impl Fn([f32; 3]) -> [f32; 4]) -> Self {
+        let n = LUT_N;
+        let s = (n - 1) as f32;
+        let mut data = Vec::with_capacity(n * n * n);
+        for r in 0..n {
+            for g in 0..n {
+                for b in 0..n {
+                    data.push(f([r as f32 / s, g as f32 / s, b as f32 / s]));
+                }
+            }
+        }
+        Self { data }
+    }
+    pub fn apply(&self, rgb: [f32; 3]) -> [f32; 4] {
+        let n = LUT_N;
+        let s = (n - 1) as f32;
+        let p = rgb.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) * s } else { 0.0 });
+        let i = p.map(|v| (v.floor() as usize).min(n - 2));
+        let t = [p[0] - i[0] as f32, p[1] - i[1] as f32, p[2] - i[2] as f32];
+        let at = |r: usize, g: usize, b: usize| self.data.get((r * n + g) * n + b).copied().unwrap_or([0.0; 4]);
+        let mut out = [0.0f32; 4];
+        for (dr, wr) in [(0, 1.0 - t[0]), (1, t[0])] {
+            for (dg, wg) in [(0, 1.0 - t[1]), (1, t[1])] {
+                for (db, wb) in [(0, 1.0 - t[2]), (1, t[2])] {
+                    let w = wr * wg * wb;
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let v = at(i[0] + dr, i[1] + dg, i[2] + db);
+                    for (o, x) in out.iter_mut().zip(v) {
+                        *o += w * x;
+                    }
+                }
+            }
+        }
+        out
+    }
+    pub fn apply8(&self, rgb: [u8; 3]) -> [u8; 4] {
+        self.apply(rgb.map(|v| f32::from(v) / 255.0)).map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+    }
+}
+
 /// A 17³ RGB → RGB lookup table with trilinear interpolation.
 pub struct ProofLut {
     data: Vec<[f32; 3]>,

@@ -88,6 +88,10 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
             continue;
         }
         changed_text |= edited;
+        // A story without frames shows in an anchored text frame, which is drawn with its host.
+        if edited && [a, b].into_iter().flatten().any(|s| s.frames.is_empty()) {
+            return None;
+        }
         // Footnote numbers continue across stories.
         if a.map_or(0, |s| s.notes.len()) != b.map_or(0, |s| s.notes.len()) {
             return None;
@@ -277,6 +281,30 @@ mod tests {
         d.item_mut(f).unwrap().xf = Affine::translate((210.0, 90.0)) * Affine::rotate(30f64.to_radians());
         let diff = patched_diff(&old, &d, (700, 560), 1.0);
         assert_eq!(diff, 0, "the moved text left {diff} stale channels behind");
+    }
+
+    #[test]
+    fn editing_an_anchored_story_repaints_everything() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let sid = StoryId(d.alloc());
+        d.stories.insert(sid, Arc::new(Story::with_text(sid, "Inner", ParaFormat::default())));
+        let mut it = Item::new(
+            ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 40.0)),
+        );
+        it.content = designcraft_doc::Content::Text(designcraft_doc::TextFrame { story: sid, options: Default::default() });
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        d.check().unwrap();
+        let cache = designcraft_compose::Cache::new();
+        let _ = cache.get(&d, sid, None);
+        let old = d.clone();
+        d.story_mut(sid).unwrap().insert(5, " text");
+        assert!(damage(&old, &d).is_none());
+        assert!(damage_with(&old, &d, Some(&cache)).is_none());
     }
 
     #[test]

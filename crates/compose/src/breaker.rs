@@ -50,6 +50,10 @@ pub struct Spacing {
     pub optical: bool,
     /// Korean text breaks between syllables instead of at spaces.
     pub korean_char_breaks: bool,
+    /// Justified lines may shrink word spaces past the minimum ([`overshrink_units`]). Off where
+    /// kashidas justify Arabic: the composer doesn't count their stretch yet, so it would squeeze
+    /// lines the kashidas could fill.
+    pub overshrink: bool,
 }
 
 impl Default for Spacing {
@@ -71,6 +75,7 @@ impl Default for Spacing {
             hyph_zone: 0.0,
             optical: false,
             korean_char_breaks: false,
+            overshrink: true,
         }
     }
 }
@@ -105,9 +110,35 @@ impl Spacing {
 /// Relative cost of using each tier of elastic material (word, letter, glyph).
 pub const TIER_COST: [f64; 3] = [1.0, 0.75, 1.0];
 
+/// Word spaces may shrink past the minimum down to this fraction of their desired width: an H&J
+/// violation, like stretching past the maximum. InDesign's composers do this when every choice
+/// breaks a limit (measured on InDesign output: justified lines at 61–72% of the space width with
+/// an 80% minimum, no tracking).
+pub const WORD_FLOOR: f64 = 0.6;
+
+/// How much a range of shrink past the minimum costs, against a range of stretch past the maximum:
+/// InDesign takes a loose line over a tight one when the violations are alike.
+pub const OVERSHRINK_COST: f64 = 2.0;
+
+/// How far word spaces may shrink beyond the minimum, in units of their shrink range (desired −
+/// minimum): from the minimum down to [`WORD_FLOOR`]. Zero when the paragraph doesn't allow it
+/// ([`Spacing::overshrink`]) or has no shrink range.
+pub fn overshrink_units(sp: &Spacing) -> f64 {
+    let range = sp.word_desired - sp.word_min;
+    if !sp.justify || !sp.overshrink || range <= 1e-9 { 0.0 } else { ((sp.word_min - WORD_FLOOR) / range).max(0.0) }
+}
+
 /// Effective adjustment ratio for `d` points of stretch (`d > 0`) or shrink (`d < 0`), consuming
 /// the tiers in priority order. Returns `(r, feasible)`; shrinking beyond all tiers is infeasible.
 pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3]) -> (f64, bool) {
+    tiered_ratio_over(d, y, z, 0.0)
+}
+
+/// [`tiered_ratio`], where word spaces may also shrink `over` shrink ranges past their minimum.
+/// InDesign treats the minimum like the maximum: a limit it breaks when every choice breaks one,
+/// taking the smaller violation. A line shrunk past the minimum rates like one stretched past the
+/// maximum by the same number of ranges.
+pub fn tiered_ratio_over(d: f64, y: [f64; 3], z: [f64; 3], over: f64) -> (f64, bool) {
     const EPS: f64 = 1e-9;
     if d.abs() < EPS {
         return (0.0, true);
@@ -122,6 +153,9 @@ pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3]) -> (f64, bool) {
         }
     }
     if d < 0.0 {
+        if rem > 1e-6 && z[0] > EPS && rem <= over * z[0] + 1e-6 {
+            return (-(r + OVERSHRINK_COST * rem / z[0]), true);
+        }
         return (-r, rem <= 1e-6);
     }
     if rem > 1e-6 {
@@ -263,7 +297,7 @@ fn hang_left(g: &Glyph) -> f64 {
 }
 
 fn right_hang(g: &Glyph, sp: &Spacing) -> f64 {
-    g.cjk_hang.max(if sp.optical { hang_right(g) } else { 0.0 })
+    g.cjk_hang.max(if sp.optical { hang_right(g) } else { 0.0 }) + g.trail
 }
 
 fn hang_right(g: &Glyph) -> f64 {
@@ -315,13 +349,17 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
     for i in (0..n).rev() {
         hangs[i] = glyphs[i].is_space() && glyphs.get(i + 1).is_none_or(|nx| hangs[i + 1] || is_forced(nx.ch));
     }
+    // What may hang past the line after the glyphs before `i`: the last one that takes room.
+    let hang_before = |i: usize| (0..i).rev().find(|&j| !hangs[j]).map_or(0.0, |j| right_hang(&glyphs[j], sp));
     for (i, g) in glyphs.iter().enumerate() {
-        let prev_hang = if i > 0 { right_hang(&glyphs[i - 1], sp) } else { 0.0 };
+        let prev_hang = hang_before(i);
         if hangs[i] {
             continue;
         }
         if is_forced(g.ch) {
-            it.push(Item::glue(0.0, INF, 0.0));
+            let mut gl = Item::glue(0.0, INF, 0.0);
+            gl.hang = prev_hang;
+            it.push(gl);
             ig.push(i);
             let mut p = Item::penalty(0.0, -INF, false);
             p.hang = prev_hang;
@@ -341,7 +379,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 ig.push(i);
             } else {
                 // Ragged right (Knuth): glue(0, s, 0) penalty(0) glue(w, -s, 0).
-                it.push(Item::glue(0.0, sp.ragged_stretch, 0.0));
+                let mut gl = Item::glue(0.0, sp.ragged_stretch, 0.0);
+                gl.hang = prev_hang;
+                it.push(gl);
                 ig.push(i);
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = prev_hang;
@@ -398,10 +438,12 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         }
     }
     // Paragraph end: fill glue + forced break.
-    it.push(Item::glue(0.0, INF, 0.0));
+    let mut gl = Item::glue(0.0, INF, 0.0);
+    gl.hang = hang_before(n);
+    it.push(gl);
     ig.push(n);
     let mut p = Item::penalty(0.0, -INF, false);
-    p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
+    p.hang = hang_before(n);
     it.push(p);
     ig.push(n);
     (it, ig)
@@ -462,7 +504,11 @@ fn overlong_words(items: &[Item], ig: &[usize], glyphs: &[Glyph], measure: f64) 
                     let marks = out.get_or_insert_with(|| vec![false; glyphs.len()]);
                     for i in a..b {
                         let (Some(g), Some(next)) = (glyphs.get(i), glyphs.get(i + 1)) else { continue };
+                        // Glyphs of one source character (an automatic page number's digits, a
+                        // multi-glyph cluster) stay together, as InDesign keeps them.
+                        let one_char = next.byte == g.byte && (next.len == 0 || next.len == g.len);
                         let ok = !g.no_break
+                            && !one_char
                             && g.break_after != Some(false)
                             && next.ch != SOFT_HYPHEN
                             && !is_forced(next.ch)
@@ -493,6 +539,7 @@ fn kp_pass(
     emergency: bool,
 ) -> Option<Vec<Break>> {
     let m = items.len();
+    let over = overshrink_units(sp);
     // Prefix sums (before item i).
     let mut sw = vec![0.0; m + 1];
     let mut sy = vec![[0.0; 3]; m + 1];
@@ -543,7 +590,7 @@ fn kp_pass(
             // A line that overruns its measure by a rounding error fits exactly.
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
-            let (mut r, feasible) = tiered_ratio(d, y, z);
+            let (mut r, feasible) = tiered_ratio_over(d, y, z, over);
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
                 // space it leaves, so the fullest piece wins (the break at the last glyph that fits).
@@ -751,6 +798,7 @@ pub fn greedy(
         let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
         let mut i = start;
         let mut brk: Option<(usize, bool, bool)> = None;
+        let mut tab_end = false;
         while i < n {
             let g = &glyphs[i];
             if is_forced(g.ch) {
@@ -769,6 +817,12 @@ pub fn greedy(
             }
             let hang_r = right_hang(g, sp);
             let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
+            if g.ch == '\t' && i > start && x + adv > w + FIT_EPS {
+                // Tab stop past the measure: the tab ends the line, the rest starts the next one.
+                brk = Some((i + 1, false, false));
+                tab_end = true;
+                break;
+            }
             if x + adv - hang_r > w + shrink + FIT_EPS
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
@@ -785,7 +839,10 @@ pub fn greedy(
                 break;
             }
             x += adv;
-            if sp.justify {
+            if g.ch == '\t' {
+                // Only text after the last tab justifies: what came before can't shrink.
+                shrink = 0.0;
+            } else if sp.justify {
                 shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             }
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
@@ -809,7 +866,7 @@ pub fn greedy(
             vis_end -= 1;
         }
         let mut next = end;
-        while next < n && glyphs[next].is_space() {
+        while !tab_end && next < n && glyphs[next].is_space() {
             next += 1;
         }
         let next = next.max(start + 1).min(n.max(start + 1));
@@ -882,5 +939,9 @@ mod tests {
         // Shrink beyond the tiers is infeasible.
         assert!(!tiered_ratio(-25.0, [0.0; 3], [10.0, 10.0, 0.0]).1);
         assert!(tiered_ratio(-15.0, [0.0; 3], [10.0, 10.0, 0.0]).1);
+        // Past every minimum, word spaces may shrink `over` more ranges, at OVERSHRINK_COST each.
+        let (r, ok) = tiered_ratio_over(-25.0, [0.0; 3], [10.0, 10.0, 0.0], 1.0);
+        assert!(ok && (r + (1.0 + TIER_COST[1] + OVERSHRINK_COST * 0.5)).abs() < 1e-9, "{r}");
+        assert!(!tiered_ratio_over(-35.0, [0.0; 3], [10.0, 10.0, 0.0], 1.0).1);
     }
 }

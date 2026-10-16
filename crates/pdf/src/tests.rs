@@ -111,6 +111,133 @@ fn colours_keep_their_space() {
     assert!(s.contains("/Separation") && s.contains("/PANTONE#20Test"), "spot as Separation");
 }
 
+/// Convert to Destination (Preserve Numbers): an RGB swatch prints as CMYK in the working CMYK
+/// space; CMYK keeps its numbers and a spot stays a separation. PDF/A ignores it (RGB only).
+#[test]
+fn converting_to_cmyk_turns_rgb_colours_into_cmyk() {
+    let mut d = doc_with_text("x");
+    add_box(&mut d, Rect::new(36.0, 400.0, 136.0, 500.0), "C=100 M=0 Y=0 K=0");
+    d.swatches.push(Swatch::color("Brand Red", Color::rgb(0.9, 0.1, 0.1)));
+    add_box(&mut d, Rect::new(200.0, 400.0, 300.0, 500.0), "Brand Red");
+    d.swatches.push(Swatch {
+        name: "PANTONE Test".into(),
+        value: SwatchValue::Color { color: Color::cmyk(0.0, 0.5, 1.0, 0.0), color_type: ColorType::Spot },
+        locked: false,
+        named: true,
+        hidden: false,
+    });
+    add_box(&mut d, Rect::new(320.0, 400.0, 420.0, 500.0), "PANTONE Test");
+    let s = uncompressed(&d, PdfOptions { convert_to_cmyk: true, ..Default::default() });
+    assert!(s.contains("1 0 0 0 k"), "CMYK keeps its numbers");
+    assert!(!s.contains(" rg"), "no RGB left");
+    assert!(s.contains("/Separation") && s.contains("/PANTONE#20Test"), "spot as Separation");
+    let [c, m, y, k] = designcraft_color::cms::active().to_cmyk(&Color::rgb(0.9, 0.1, 0.1), designcraft_color::cms::active().settings().intent);
+    assert!(c < 0.2 && m > 0.7 && y > 0.7 && k < 0.3, "red stays red: {c} {m} {y} {k}");
+    let archival =
+        |convert_to_cmyk| uncompressed(&d, PdfOptions { convert_to_cmyk, standard: Standard::PdfA2b, created: Some(0), ..Default::default() });
+    assert_eq!(archival(true), archival(false), "PDF/A ignores it");
+}
+
+/// Converting to CMYK, an RGB image goes in as DeviceCMYK; a CMYK TIFF keeps its inks and a grey
+/// image stays grey.
+#[test]
+fn converting_to_cmyk_turns_rgb_images_into_cmyk() {
+    let opts = PdfOptions { convert_to_cmyk: true, ..Default::default() };
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 255, 255])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let mut d = doc_with_text("x");
+    place(&mut d, png, (4, 4));
+    let r = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    let images = image_xobjects(&r.bytes);
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].0, "DeviceCMYK");
+    let px = &images[0].1[..4];
+    assert!(px[0] > 150 && px[1] > 100 && px[2] < 60, "blue: {px:?}");
+
+    let mut grey = Vec::new();
+    image::GrayImage::from_pixel(4, 4, image::Luma([90])).write_to(&mut std::io::Cursor::new(&mut grey), image::ImageFormat::Png).unwrap();
+    let mut d = doc_with_text("x");
+    place(&mut d, grey, (4, 4));
+    let r = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    assert_eq!(image_xobjects(&r.bytes)[0].0, "DeviceGray");
+
+    let (tif, px) = cmyk_tiff();
+    let mut d = doc_with_text("x");
+    place(&mut d, tif, (4, 2));
+    let r = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    assert_eq!(image_xobjects(&r.bytes), vec![("DeviceCMYK".to_string(), px)]);
+}
+
+/// A page applying parent C (based on B, based on A) exports A's items too. Only the first level
+/// used to be drawn, so backgrounds on a deeper parent went missing.
+#[test]
+fn nested_parent_items_export() {
+    use designcraft_doc::Margins;
+    let mut d = doc_with_text("x");
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let b = d.add_parent("B", "Parent", 1, 0.0, Margins::uniform(36.0));
+    let c = d.add_parent("C", "Parent", 1, 0.0, Margins::uniform(36.0));
+    std::sync::Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    std::sync::Arc::make_mut(&mut d.parents[2]).parent.as_mut().unwrap().based_on = Some(b);
+    // A cyan box on the right page of A, the deepest parent.
+    let mut it = Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(700.0, 400.0, 800.0, 500.0)),
+    );
+    it.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    d.apply_parent(&[0], Some(c)).unwrap();
+    assert!(uncompressed(&d, PdfOptions::default()).contains("1 0 0 0 k"), "the deepest parent's item is missing");
+}
+
+/// A text stroke has the run's join and miter limit, over the fill or behind it.
+#[test]
+fn text_stroke_keeps_its_join_and_miter_limit() {
+    let mut d = doc_with_text("Outlined");
+    let sid = *d.stories.keys().next().unwrap();
+    d.story_mut(sid).unwrap().format_chars(0.."Outlined".len(), |f| {
+        f.over.stroke = Some("C=100 M=0 Y=0 K=0".into());
+        f.over.stroke_weight = Some(3.0);
+        f.over.stroke_join = Some(designcraft_doc::Join::Round);
+    });
+    let s = uncompressed(&d, PdfOptions::default());
+    assert!(s.contains("2 Tr") && s.contains("3 w") && s.contains("1 j"), "fill and stroke in one pass, round join");
+    // Behind the fill: twice the weight, as outlines, with the join and miter limit.
+    d.story_mut(sid).unwrap().format_chars(0.."Outlined".len(), |f| {
+        f.over.stroke_behind_fill = Some(true);
+        f.over.stroke_join = Some(designcraft_doc::Join::Miter);
+        f.over.stroke_miter_limit = Some(2.5);
+    });
+    let s = uncompressed(&d, PdfOptions::default());
+    assert!(s.contains("6 w") && s.contains("2.5 M") && !s.contains("1 j"), "double weight, miter join with its limit");
+}
+
+/// A parent item crossing the spine, whose centre sits on the right parent page, is exported on
+/// a left page applying that parent while the right page applies another parent (a full-spread
+/// background on parent J behind page 134, with page 135 on parent I15).
+#[test]
+fn parent_item_across_the_spine_exports_on_the_left_page() {
+    use designcraft_doc::Margins;
+    let mut d = Document::new(&NewDocument { pages: 3, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let mut it = Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(10.0, 10.0, 1220.0, 780.0)),
+    );
+    it.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    let b = d.add_parent("B", "Parent", 1, 0.0, Margins::uniform(36.0));
+    d.apply_parent(&[0, 2], Some(b)).unwrap();
+    // Only page 2 (left page of spread [2 3]) applies A.
+    let s = uncompressed(&d, PdfOptions::default());
+    assert!(s.contains("1 0 0 0 k"), "the cyan background on page 2");
+}
+
 /// [Paper] went into print PDFs as `1 1 1 rg`, DeviceRGB white.
 #[test]
 fn paper_prints_as_no_ink() {
@@ -502,7 +629,7 @@ fn pdfa_leaves_out_form_fields_added_after_validation() {
 }
 
 #[test]
-fn missing_glyphs_print_as_boxes() {
+fn missing_glyphs_print_as_the_fonts_notdef() {
     // Source Serif 4 lacks 語: its .notdef box is drawn as a path, not as a .notdef glyph
     // (which PDF/A and PDF/UA forbid).
     let boxes = |paths: &[kurbo::Rect]| paths.iter().filter(|r| r.width() > 1.0 && r.width() < 12.0 && r.height() > 3.0 && r.height() < 12.0).count();
@@ -513,7 +640,7 @@ fn missing_glyphs_print_as_boxes() {
     assert_eq!(boxes(&paths), 1, "{paths:?}");
     let a = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, ..Default::default() });
     assert!(a.is_ok(), "PDF/A takes the box: {:?}", a.err());
-    // A font whose .notdef is empty: the box DesignCraft draws for it.
+    // A font whose .notdef is empty prints nothing there, as InDesign exports it.
     const FAMILY: &str = "DC Test PDF Empty Notdef";
     let font = designcraft_fonts::testing::font_mapping(FAMILY, &[('a', 'a'), ('b', 'b')]).unwrap();
     designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::with_empty_notdef(font).unwrap());
@@ -522,7 +649,7 @@ fn missing_glyphs_print_as_boxes() {
     d.story_mut(sid).unwrap().format_chars(0.."a語b".len(), |f| f.over.font_family = Some(FAMILY.into()));
     let (glyphs, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
     assert_eq!(glyphs.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), ["a", "b"], "{glyphs:?}");
-    assert_eq!(boxes(&paths), 1, "{paths:?}");
+    assert_eq!(boxes(&paths), 0, "{paths:?}");
 }
 
 #[test]
@@ -567,4 +694,56 @@ fn empty_and_populated_export_metadata_preserve_key_presence() {
         assert!(s.contains(key), "missing populated metadata {key}");
     }
     assert!(s.contains("Synthetic title") && s.contains("Test author"));
+}
+
+/// Anchor, at the end of `host`, a 300 pt wide text frame `h` high showing a new story with
+/// `text`; returns that story.
+fn anchor_text_frame(d: &mut Document, host: designcraft_doc::StoryId, text: &str, h: f64) -> designcraft_doc::StoryId {
+    let sid = designcraft_doc::StoryId(d.alloc());
+    d.stories.insert(sid, std::sync::Arc::new(designcraft_doc::Story::with_text(sid, text, ParaFormat::default())));
+    let mut it = Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 300.0, h)),
+    );
+    it.content = designcraft_doc::Content::Text(designcraft_doc::TextFrame { story: sid, options: Default::default() });
+    let st = d.story_mut(host).unwrap();
+    let n = st.len();
+    st.insert_object(
+        n,
+        designcraft_doc::AnchoredObject::new(
+            it,
+            designcraft_doc::AnchorPosition::AboveLine { align: Default::default(), space_before: 0.0, space_after: 0.0 },
+        ),
+    );
+    sid
+}
+
+#[test]
+fn anchored_text_frames_export_their_text_tagged_as_their_own_stories() {
+    let mut d = doc_with_text("Host words");
+    let host = d.spreads[0].items[0].text_frame().unwrap().story;
+    let inner = anchor_text_frame(&mut d, host, "Inner words", 120.0);
+    anchor_text_frame(&mut d, inner, "Deeper words", 40.0);
+    d.check().unwrap();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { tagged: true, ..Default::default() }).unwrap();
+    let text = extract_text(&bytes);
+    assert!(text[0].contains("Host") && text[0].contains("Inner") && text[0].contains("Deeper"), "{text:?}");
+    // One paragraph element per story (not the anchored text inside the host's paragraph).
+    let s = uncompressed(&d, PdfOptions { tagged: true, ..Default::default() });
+    assert_eq!(s.matches("/S/P/").count() + s.matches("/S/P>>").count() + s.matches("/S/P\n").count(), 3, "{}", s.matches("/S/P").count());
+}
+
+#[test]
+fn anchored_text_frames_showing_themselves_export_and_end() {
+    // Not a valid document: the anchored story holds the frame that shows it (same id).
+    let mut d = doc_with_text("Host words");
+    let host = d.spreads[0].items[0].text_frame().unwrap().story;
+    let inner = anchor_text_frame(&mut d, host, "Again", 40.0);
+    let mut obj = (*d.story(host).unwrap().objects[0]).clone();
+    obj.position = designcraft_doc::AnchorPosition::default();
+    d.story_mut(inner).unwrap().insert_object(0, obj);
+    assert!(d.check().is_err());
+    assert!(export_pdf(&d, &Cache::new(), &PdfOptions { tagged: true, ..Default::default() }).is_ok());
 }

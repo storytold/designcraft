@@ -66,8 +66,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Missing:** an oracle harness: the same synthetic stories set by InDesign 2026 (observed
   black-box, results kept under `plan/`) and by DesignCraft, comparing line breaks, overset and
   frame fit. Known differences: optical kerning falls back to metrics, so imported text sets
-  wider (#181); a frame goes overset when descenders don't fit, InDesign needs only the baseline
-  (#180); setting the text language was missing (#130; Language is now in Properties, #145, the issue is still open); "hyphenation doesn't work"
+  wider (#181); setting the text language was missing (#130; Language is now in Properties, #145, the issue is still open); "hyphenation doesn't work"
   (#87).
 - **Impact:** an opened IDML reflows: different line breaks, different page count, overset text.
   Professionals notice on the first page.
@@ -108,7 +107,8 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Missing:** PDF/X-1a and PDF/X-3 (no flattener to PDF 1.3/1.4), Adobe PDF Presets and
   `.joboptions` load/save, output-intent choice beyond the built-in profile, PDF/UA validation;
   #159, #32.
-- **Have:** PDF/X-4 with output intent and a validator (`#200`), PDF/A-2b, tagged PDF, CMYK and
+- **Have:** PDF/X-4 with output intent and a validator (`#200`), PDF/A-2b, tagged PDF, Convert to
+  CMYK (RGB colours and images into the working CMYK, CMYK numbers kept), CMYK and
   spot, marks and bleed, the options dialog with remembered settings (#196).
 - **Estimate:** 40–70 h. **Doc:** [file-format-parity.md](file-format-parity.md)
 
@@ -131,7 +131,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 25–40 h.
 
 ### 13. Hyphenation and spelling languages (T, L)
-- **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese and Norwegian; spelling for
+- **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian and Dutch; spelling for
   every language but English. InDesign ships dictionaries for ~40 languages.
 - **Estimate:** 30–60 h (permissively licensed patterns exist for most; spelling word lists need
   licence review). **Doc:** [typography-parity.md](typography-parity.md)

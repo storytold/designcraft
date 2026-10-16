@@ -145,12 +145,15 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: archival.is_some(),
+        to_cmyk: (opts.convert_to_cmyk && archival.is_none()).then(designcraft_color::cms::active),
+        cmyk_luts: HashMap::new(),
         interpolate: archival.is_none(),
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,
         text_area: None,
         para_tags: HashMap::new(),
+        anchor_depth: 0,
     };
     if ex.rgb_only {
         ex.warn("PDF/A: CMYK colours were converted to RGB (no CMYK output intent profile is available yet)");
@@ -333,12 +336,15 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         fonts: HashMap::new(),
         reverse_cmaps: HashMap::new(),
         rgb_only: false,
+        to_cmyk: None,
+        cmyk_luts: HashMap::new(),
         interpolate: true,
         tags: Vec::new(),
         story_tags: HashMap::new(),
         tag_story: None,
         text_area: None,
         para_tags: HashMap::new(),
+        anchor_depth: 0,
     };
     let pairs = booklet_pairs(n, opts.kind);
     // Sheet size from the largest page.
@@ -474,6 +480,10 @@ pub(crate) struct Exporter<'a> {
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
     pub rgb_only: bool,
+    /// Convert RGB to CMYK through these colour settings ([`PdfOptions::convert_to_cmyk`]).
+    pub to_cmyk: Option<Arc<designcraft_color::cms::Cms>>,
+    /// RGB → CMYK tables for images, by the image's own RGB profile (None: the working RGB).
+    cmyk_luts: HashMap<Option<Vec<u8>>, Arc<designcraft_color::cms::CmykLut>>,
     /// Ask viewers to smooth upscaled images (`/Interpolate`). Off for PDF/A, which forbids it.
     interpolate: bool,
     /// Tagged PDF: the structure in reading order (stories gather their frames' content).
@@ -487,6 +497,8 @@ pub(crate) struct Exporter<'a> {
     pub(crate) text_area: Option<Rect>,
     /// Marked content of each (story, paragraph index).
     pub(crate) para_tags: HashMap<(designcraft_doc::StoryId, usize), Vec<Identifier>>,
+    /// How many anchored objects deep the current item is.
+    anchor_depth: usize,
 }
 
 enum TagEntry {
@@ -583,6 +595,17 @@ pub(crate) fn solid_fill(c: krilla::color::Color, opacity: f32) -> Fill {
 }
 
 impl Exporter<'_> {
+    /// `c` as it goes into the PDF: an RGB colour in the working CMYK when converting to CMYK.
+    pub(crate) fn press(&self, c: &Color) -> Color {
+        match (&self.to_cmyk, c) {
+            (Some(cms), Color::Rgb { .. }) => {
+                let [c, m, y, k] = cms.to_cmyk(c, cms.settings().intent);
+                Color::cmyk(c, m, y, k)
+            }
+            _ => *c,
+        }
+    }
+
     /// A print document, or a PDF/X file (whose output intent is CMYK).
     pub(crate) fn for_print(&self) -> bool {
         self.doc.settings.intent == designcraft_doc::Intent::Print || self.opts.standard == Standard::PdfX4
@@ -621,15 +644,15 @@ impl Exporter<'_> {
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { break };
                     if process {
-                        return Some(device(&designcraft_color::swatch::apply_tint(*color, t), self.rgb_only));
+                        return Some(device(&self.press(&designcraft_color::swatch::apply_tint(*color, t)), self.rgb_only));
                     }
-                    let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(color, self.rgb_only));
+                    let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(&self.press(color), self.rgb_only));
                     return Some(SepColor::new(q(t), space).into());
                 }
                 _ => break,
             }
         }
-        self.doc.resolve_color(name, tint).map(|c| device(&c, self.rgb_only))
+        self.doc.resolve_color(name, tint).map(|c| device(&self.press(&c), self.rgb_only))
     }
 
     fn spread(&mut self, s: &mut Surface, si: usize) {
@@ -640,22 +663,26 @@ impl Exporter<'_> {
             if !layer.visible || !layer.printable {
                 continue;
             }
-            for (pi, page) in sp.pages.iter().enumerate() {
-                if !page.show_parent_items {
-                    continue;
-                }
-                let Some((ppi, ppage)) = doc.parent_page_for(first + pi) else { continue };
-                let parent = &doc.parents[ppi];
-                let dx = page.x - parent.pages[ppage].x;
-                for it in &parent.items {
-                    if it.layer != layer.id || page.overridden.contains(&it.id) {
+            for pi in 0..sp.pages.len() {
+                // The whole parent chain, deepest parent at the bottom.
+                for shown in doc.shown_parent_items(first + pi) {
+                    if shown.item.layer != layer.id {
                         continue;
                     }
-                    // Parent items belong to the parent page they sit on.
-                    if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
-                        continue;
+                    let xf = Affine::translate((shown.dx, 0.0));
+                    // Crossing the spine: cut to this page's side.
+                    let clip = shown.clip_x.and_then(|(x0, x1)| {
+                        let b = sp.bounds();
+                        to_path(&designcraft_geom::Rect::new(x0, b.y0 - 1.0e4, x1, b.y1 + 1.0e4).to_path(0.1))
+                    });
+                    match clip {
+                        Some(c) => {
+                            s.push_clip_path(&c, &FillRule::NonZero);
+                            self.top_item(s, shown.item, xf, Some(first + pi), true);
+                            s.pop();
+                        }
+                        None => self.top_item(s, shown.item, xf, Some(first + pi), true),
                     }
-                    self.top_item(s, it, Affine::translate((dx, 0.0)), Some(first + pi), true);
                 }
             }
             for it in &sp.items {
@@ -955,9 +982,21 @@ impl Exporter<'_> {
                     if local != Affine::IDENTITY {
                         s.push_transform(&tf(local));
                     }
+                    // An anchored text frame's story is tagged as a story of its own.
+                    let outer = self.tag_story;
+                    if outer.is_some_and(|o| o != tfr.story) {
+                        if let std::collections::hash_map::Entry::Vacant(e) = self.story_tags.entry(tfr.story) {
+                            e.insert(Vec::new());
+                            self.tags.push(TagEntry::Story(tfr.story));
+                        }
+                        self.tag_story = Some(tfr.story);
+                    }
+                    // An anchored text frame's text spans its own box; its host's text then spans the host's again.
+                    let outer_area = self.text_area;
                     self.text_area = (local.determinant().abs() > 1e-12).then(|| local.inverse().transform_rect_bbox(it.inner_bounds()));
                     self.frame_text(s, &cs, ft, text);
-                    self.text_area = None;
+                    self.text_area = outer_area;
+                    self.tag_story = outer;
                     if local != Affine::IDENTITY {
                         s.pop();
                     }
@@ -981,17 +1020,20 @@ impl Exporter<'_> {
         for _ in 0..pushes {
             s.pop();
         }
-        // Anchored objects in the frame's text.
+        // Anchored objects in the frame's text (anchored text frames nest only so deep).
         if let Content::Text(tfr) = &it.content
+            && self.anchor_depth < designcraft_doc::MAX_ANCHOR_DEPTH
             && let Some(st) = doc.story(tfr.story).filter(|st| !st.objects.is_empty())
         {
             let cs = self.cache.get(doc, tfr.story, page);
             if let Some(ft) = cs.frame(it.id) {
+                self.anchor_depth += 1;
                 for o in &ft.objects {
                     if let Some(obj) = st.objects.get(o.index) {
                         self.item(s, &obj.item, xf * Affine::translate(o.origin.to_vec2()), page);
                     }
                 }
+                self.anchor_depth -= 1;
             }
         }
     }
@@ -1007,7 +1049,7 @@ impl Exporter<'_> {
         let (swatch, tint) = (fill.swatch.as_str(), fill.tint);
         if let Some(g) = designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
             let kind = g.kind;
-            let mut expanded = g.expanded_stops();
+            let mut expanded: Vec<_> = g.expanded_stops().into_iter().map(|(o, c, a)| (o, self.press(&c), a)).collect();
             // Grey and CMYK stops blend as inks, so a grey stop beside a CMYK one is the K ink.
             if !self.rgb_only && expanded.iter().any(|(_, c, _)| matches!(c, Color::Cmyk { .. })) {
                 for (_, c, _) in &mut expanded {
@@ -1254,6 +1296,55 @@ impl Exporter<'_> {
         )))
     }
 
+    /// An RGB raster as a DeviceCMYK image in the working CMYK space ([`PdfOptions::convert_to_cmyk`]),
+    /// through its own RGB profile when it has one. `None` for a CMYK or grey image, which keeps
+    /// its numbers, or one that can't be decoded.
+    fn cmyk_image(&mut self, data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>, mode: RasterMode) -> Option<Image> {
+        use image::ImageDecoder;
+        if fmt == Some(image::ImageFormat::Jpeg) && jpeg_components(data) != Some(3) {
+            return None;
+        }
+        if fmt == Some(image::ImageFormat::Tiff) && designcraft_images::is_cmyk_tiff(data) {
+            return None;
+        }
+        let colour = image::ImageReader::new(std::io::Cursor::new(data.as_slice())).with_guessed_format().ok()?.into_decoder().ok()?.color_type();
+        if matches!(colour, image::ColorType::L8 | image::ColorType::La8 | image::ColorType::L16 | image::ColorType::La16) {
+            return None;
+        }
+        let lut = self.cmyk_lut(embedded_icc(data).filter(|p| is_rgb_icc(p)))?;
+        let rgba = designcraft_images::decode_rgba(data)?;
+        let (width, height) = rgba.dimensions();
+        let pixels = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?;
+        let mut cmyk = Vec::with_capacity(pixels.checked_mul(4)?);
+        let mut alpha = Vec::with_capacity(pixels);
+        for p in rgba.pixels() {
+            cmyk.extend_from_slice(&lut.apply8([p.0[0], p.0[1], p.0[2]]));
+            alpha.push(p.0[3]);
+        }
+        let alpha = alpha.iter().any(|a| *a < 255).then_some(alpha);
+        let raster = designcraft_images::CmykRaster { width, height, cmyk, alpha };
+        Image::from_custom(CmykImage(Arc::new(raster)), mode.interpolate).ok()
+    }
+
+    /// The RGB → CMYK table for images in RGB profile `icc` (None: the working RGB), built once.
+    fn cmyk_lut(&mut self, icc: Option<Vec<u8>>) -> Option<Arc<designcraft_color::cms::CmykLut>> {
+        let cms = self.to_cmyk.clone()?;
+        if let Some(l) = self.cmyk_luts.get(&icc) {
+            return Some(l.clone());
+        }
+        let intent = cms.settings().intent;
+        let profile = icc.as_deref().and_then(|b| designcraft_color::cms::IccProfile::from_bytes(None, b).ok());
+        let lut = Arc::new(designcraft_color::cms::CmykLut::build(|rgb| {
+            let srgb = match &profile {
+                Some(p) => p.to_srgb(&rgb, intent).unwrap_or(rgb),
+                None => cms.rgb_to_srgb(rgb),
+            };
+            cms.srgb_to_cmyk(srgb, intent)
+        }));
+        self.cmyk_luts.insert(icc, lut.clone());
+        Some(lut)
+    }
+
     fn load_image(&mut self, id: AssetId) -> Option<Image> {
         if let Some(i) = self.images.get(&id) {
             return i.clone();
@@ -1275,20 +1366,26 @@ impl Exporter<'_> {
         let mut warning = None;
         let mut mode = RasterMode::for_standard(self.opts.standard);
         mode.interpolate &= self.interpolate;
-        let img = match fmt {
-            Some(image::ImageFormat::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
-            // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
-            // as four-colour black). PDF/A exports are RGB only.
-            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
-                Some(img) => Some(img),
-                None => {
-                    warning = Some(CMYK_FALLBACK_WARNING);
-                    self.warn(format!("{}: {CMYK_FALLBACK_WARNING}", asset.name));
-                    lossless(&data, fmt, mode)
-                }
-            },
-            _ if self.opts.compress_images => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
-            _ => lossless(&data, fmt, mode),
+        // Converting to CMYK: an RGB image goes into the working CMYK; CMYK and grey keep theirs.
+        let converted = if self.to_cmyk.is_some() { self.cmyk_image(&data, fmt, mode) } else { None };
+        let img = if converted.is_some() {
+            converted
+        } else {
+            match fmt {
+                Some(image::ImageFormat::Jpeg) => jpeg(data.clone().into(), || embedded_icc(&data), mode),
+                // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
+                // as four-colour black). PDF/A exports are RGB only.
+                Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data, mode) {
+                    Some(img) => Some(img),
+                    None => {
+                        warning = Some(CMYK_FALLBACK_WARNING);
+                        self.warn(format!("{}: {CMYK_FALLBACK_WARNING}", asset.name));
+                        lossless(&data, fmt, mode)
+                    }
+                },
+                _ if self.opts.compress_images => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
+                _ => lossless(&data, fmt, mode),
+            }
         };
         if img.is_none() {
             if data.is_empty() {
@@ -1594,6 +1691,24 @@ fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
     jpeg(buf.into(), || embedded_icc(data).filter(|p| is_rgb_icc(p)), mode)
 }
 
+/// The number of colour components in a JPEG's frame header (1 grey, 3 YCbCr/RGB, 4 CMYK/YCCK).
+fn jpeg_components(data: &[u8]) -> Option<u8> {
+    let mut i = 2usize;
+    while i + 4 <= data.len() {
+        if data.get(i) != Some(&0xFF) {
+            return None;
+        }
+        let marker = *data.get(i + 1)?;
+        let len = usize::from(u16::from_be_bytes([*data.get(i + 2)?, *data.get(i + 3)?]));
+        // SOF0–SOF15 except DHT (C4), JPG (C8) and DAC (CC).
+        if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            return data.get(i + 9).copied();
+        }
+        i = i.checked_add(2)?.checked_add(len)?;
+    }
+    None
+}
+
 #[cfg(test)]
 mod image_content_cache_tests {
     use super::*;
@@ -1630,12 +1745,15 @@ mod image_content_cache_tests {
             fonts: HashMap::new(),
             reverse_cmaps: HashMap::new(),
             rgb_only: false,
+            to_cmyk: None,
+            cmyk_luts: HashMap::new(),
             interpolate: true,
             tags: Vec::new(),
             story_tags: HashMap::new(),
             tag_story: None,
             text_area: None,
             para_tags: HashMap::new(),
+            anchor_depth: 0,
         }
     }
     #[test]

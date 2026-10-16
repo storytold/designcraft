@@ -1608,6 +1608,11 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.selectable_label(single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Single-line"))).clicked() {
             let _ = app.run("type.para", json!({"attrs": {"composer": "singleLine"}}));
         }
+        // World-Ready: right-to-left text and Arabic shaping (InDesign's World-Ready composers).
+        let mut world_ready = p["worldReady"].as_bool().unwrap_or(true);
+        if ui.checkbox(&mut world_ready, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "World-Ready"))).changed() {
+            let _ = app.run("type.para", json!({"attrs": {"worldReady": world_ready}}));
+        }
     });
     // Paragraph Border and Shading.
     let swatches: Vec<String> =

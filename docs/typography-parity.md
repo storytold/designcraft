@@ -36,7 +36,7 @@ Fidelity: **unmeasured** unless stated.
 | Single-line Composer | greedy | greedy with the same ranges | ✓ | |
 | World-Ready composers | Paragraph / Single-line World-Ready | RTL, Arabic and bidi in the main composer | ~ | Indic scripts (Devanagari etc.) shape through harfrust but are untested |
 | Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab now justifies after the tab (#284) |
-| Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt) and Norwegian (hyph-no); zone, limits, exceptions in the user dictionary | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
+| Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Norwegian (hyph-no) and Dutch (Tutelaers); zone, limits, exceptions in the user dictionary | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
 | Spelling | per-language dictionaries | English (Moby) + document/user dictionary | ~ | |
 | Kerning | Metrics, Optical, manual, none | Metrics, manual, none | ~ | **Optical treated as Metrics** (#181): imported display text sets wider and can overset |
 | Tracking, scale, skew, baseline shift | ✓ | ✓ | ✓ | |
@@ -45,7 +45,7 @@ Fidelity: **unmeasured** unless stated.
 | Variable fonts | axes in Character panel | named instances and free axis values; PDF embeds the instance | ✓ | |
 | Leading | auto (120%), absolute, leading model | ✓ | ✓ | CJK leading models in cjk-typography.md |
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
-| Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
+| Frame fit / overset | baseline of the last line must fit | baseline of the last line must fit | ✓ | same (#180) |
 | Baseline grid | document and frame grids | ✓ | ✓ | |
 | Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
 | Columns, span / split columns | ✓ | ✓ | ✓ | split columns within a column (#295); text after a span flows below it (#276) |

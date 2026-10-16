@@ -347,6 +347,15 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-15** · Measured against a real InDesign book with Arabic and Dutch text (IDML in, PDF
+  out, compared page by page): letters coloured one by one shape as one word (marks, joins,
+  lam-alif), custom glyphs from the Glyphs panel join their neighbours, positional forms and
+  contextual alternates behave as in InDesign, a World-Ready paragraph attribute (InDesign's
+  Paragraph Composer sets Arabic left to right, unjoined), anchored text frames, contours that let
+  descenders pass, nested and spine-crossing parent items, text stroke joins and miter limits,
+  table cells sized by their ink, empty paragraphs as tall as their paragraph mark, paragraphs
+  indented with a tab on the paragraph composer, tracking after a line's last letter left out, and
+  Convert to CMYK in PDF export. No readiness percentage change.
 - **2026-10-14** · The Type tool draws a new text frame over a locked empty frame, as InDesign does, instead of turning the locked frame into a text frame. No readiness percentage change.
 - **2026-10-14** · 100% black shows as pure black on screen by default, as InDesign's Appearance of Black does out of the box (Display All Blacks as Rich Black); Preferences › Appearance of Black › Display All Blacks Accurately still shows it as the dark grey it prints, and a saved choice is kept. No readiness percentage change.
 - **2026-10-14** · Pathfinder keeps the frontmost object, as InDesign does: a photo placed over shapes and intersected with them shows through the shapes (it was dropped, and the shapes kept their black fill); Add, Exclude Overlap and Minus Back take the front object's fill too, Subtract still keeps the back one. No readiness percentage change.

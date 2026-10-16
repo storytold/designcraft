@@ -418,7 +418,7 @@ impl Renderer {
                 for (si, bp) in &lg.runs {
                     let st = &cs.styles[*si as usize];
                     let fill = fill_of(*si).map(|c| (c, crate::overprints(f, &st.fill, st.fill_tint, false)));
-                    paint_glyphs(ctx, doc, area, bp, fill, stroke_of(doc, st), st.stroke_weight, st.stroke_behind_fill);
+                    paint_glyphs(ctx, doc, area, bp, fill, stroke_of(doc, st), text_pen(st), st.stroke_behind_fill);
                 }
             }
             for &i in &shown {
@@ -439,15 +439,18 @@ impl Renderer {
                 self.draw_text(ctx, f, &n.text, nft, xf * Affine::translate(n.origin.to_vec2()));
             }
         }
-        // Anchored objects ride on their lines.
+        // Anchored objects ride on their lines (anchored text frames nest only so deep).
         if !ft.objects.is_empty()
+            && self.anchor_depth < designcraft_doc::MAX_ANCHOR_DEPTH
             && let Some(st) = doc.story(cs.story)
         {
+            self.anchor_depth += 1;
             for o in &ft.objects {
                 if let Some(obj) = st.objects.get(o.index) {
                     self.draw_item(ctx, f, &obj.item, xf * Affine::translate(o.origin.to_vec2()), None);
                 }
             }
+            self.anchor_depth -= 1;
         }
     }
 }
@@ -510,7 +513,7 @@ fn paint_glyphs(
     bp: &BezPath,
     fill: Option<(TextPaint, bool)>,
     stroke: Option<TextPaint>,
-    weight: f64,
+    pen: kurbo::Stroke,
     behind: bool,
 ) {
     // A gradient paint runs across `area`; reset its transform after each use.
@@ -530,9 +533,10 @@ fn paint_glyphs(
         paint_fill(ctx);
         return;
     };
+    let weight = pen.width;
     let paint_stroke = |ctx: &mut RenderContext, width: f64| {
         sc.set(ctx, doc, area);
-        ctx.set_stroke(kurbo::Stroke::new(width));
+        ctx.set_stroke(kurbo::Stroke { width, ..pen.clone() });
         ctx.stroke_path(bp);
         ctx.reset_paint_transform();
     };
@@ -552,6 +556,16 @@ fn paint_glyphs(
         ctx.pop_layer();
         ctx.pop_layer();
     }
+}
+
+/// A text run's stroke at its weight, with the run's join and miter limit.
+fn text_pen(st: &designcraft_compose::RunStyle) -> kurbo::Stroke {
+    let join = match st.stroke_join {
+        designcraft_doc::Join::Miter => kurbo::Join::Miter,
+        designcraft_doc::Join::Round => kurbo::Join::Round,
+        designcraft_doc::Join::Bevel => kurbo::Join::Bevel,
+    };
+    kurbo::Stroke::new(st.stroke_weight).with_join(join).with_miter_limit(st.stroke_miter_limit.max(1.0))
 }
 
 fn cell_stroke(s: &designcraft_doc::CellStroke) -> kurbo::Stroke {
@@ -585,7 +599,7 @@ impl Renderer {
         for (si, bp) in designcraft_compose::path_glyphs(cs, ft, path, pt) {
             let st = &cs.styles[si as usize];
             let fill = TextPaint::of(doc, &st.fill, st.fill_tint).map(|c| (c, false));
-            paint_glyphs(ctx, doc, area, &bp, fill, stroke_of(doc, st), st.stroke_weight, st.stroke_behind_fill);
+            paint_glyphs(ctx, doc, area, &bp, fill, stroke_of(doc, st), text_pen(st), st.stroke_behind_fill);
             self.stats.glyphs += 1;
         }
     }
