@@ -47,3 +47,7 @@ display_name = "Jason Brashear"
 real_name = "Nick Marello"
 display_name = "Nick Marello"
 sync_github_name = false
+
+[people.sanyamsingh001]
+display_name = "sanyamsingh001"
+sync_github_name = false
