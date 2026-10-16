@@ -11,6 +11,82 @@ fn reserve_command_text(st: &mut designcraft_doc::Story, additional: usize) -> R
     st.text.try_reserve_exact(additional).map_err(|e| crate::EngineError::Other(format!("could not reserve text insertion: {e}")))
 }
 
+/// An entry of Type › Insert Special Character, Insert White Space or Insert Break Character:
+/// the name `text.insertSpecial` takes, the menu label and the character inserted.
+pub struct SpecialCharacter {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub character: char,
+}
+
+macro_rules! special_characters {
+    ($($name:literal, $label:literal, $character:expr;)*) => {
+        pub const SPECIAL_CHARACTERS: &[SpecialCharacter] = &[
+            $(SpecialCharacter { name: $name, label: $label, character: $character },)*
+        ];
+    };
+}
+
+special_characters! {
+    "currentPageNumber", "Current Page Number", designcraft_doc::PAGE_NUMBER;
+    "nextPageNumber", "Next Page Number", designcraft_doc::NEXT_PAGE_NUMBER;
+    "previousPageNumber", "Previous Page Number", designcraft_doc::PREV_PAGE_NUMBER;
+    "sectionMarker", "Section Marker", designcraft_doc::SECTION_MARKER;
+    "bulletCharacter", "Bullet Character", '\u{2022}';
+    "copyrightSymbol", "Copyright Symbol", '\u{a9}';
+    "ellipsis", "Ellipsis", '\u{2026}';
+    "paragraphSymbol", "Paragraph Symbol", '\u{b6}';
+    "registeredTrademarkSymbol", "Registered Trademark Symbol", '\u{ae}';
+    "sectionSymbol", "Section Symbol", '\u{a7}';
+    "trademarkSymbol", "Trademark Symbol", '\u{2122}';
+    "emDash", "Em Dash", '\u{2014}';
+    "enDash", "En Dash", '\u{2013}';
+    "discretionaryHyphen", "Discretionary Hyphen", '\u{ad}';
+    "nonbreakingHyphen", "Nonbreaking Hyphen", '\u{2011}';
+    "doubleLeftQuotationMarks", "Double Left Quotation Marks", '\u{201c}';
+    "doubleRightQuotationMarks", "Double Right Quotation Marks", '\u{201d}';
+    "singleLeftQuotationMark", "Single Left Quotation Mark", '\u{2018}';
+    "singleRightQuotationMark", "Single Right Quotation Mark", '\u{2019}';
+    "straightDoubleQuotationMarks", "Straight Double Quotation Marks", '"';
+    "straightSingleQuotationMark", "Straight Single Quotation Mark (Apostrophe)", '\'';
+    "tab", "Tab", '\t';
+    "rightIndentTab", "Right Indent Tab", designcraft_doc::RIGHT_INDENT_TAB;
+    "indentToHere", "Indent to Here", designcraft_doc::INDENT_HERE;
+    "emSpace", "Em Space", '\u{2003}';
+    "enSpace", "En Space", '\u{2002}';
+    "nonbreakingSpace", "Nonbreaking Space", '\u{a0}';
+    "hairSpace", "Hair Space", '\u{200a}';
+    "sixthSpace", "Sixth Space", '\u{2006}';
+    "thinSpace", "Thin Space", '\u{2009}';
+    "quarterSpace", "Quarter Space", '\u{2005}';
+    "thirdSpace", "Third Space", '\u{2004}';
+    "punctuationSpace", "Punctuation Space", '\u{2008}';
+    "figureSpace", "Figure Space", '\u{2007}';
+    "flushSpace", "Flush Space", '\u{2001}';
+    "columnBreak", "Column Break", designcraft_doc::COLUMN_BREAK;
+    "frameBreak", "Frame Break", designcraft_doc::FRAME_BREAK;
+    "pageBreak", "Page Break", designcraft_doc::PAGE_BREAK;
+    "oddPageBreak", "Odd Page Break", designcraft_doc::ODD_PAGE_BREAK;
+    "evenPageBreak", "Even Page Break", designcraft_doc::EVEN_PAGE_BREAK;
+    "paragraphReturn", "Paragraph Return", '\n';
+    "forcedLineBreak", "Forced Line Break", designcraft_doc::FORCED_LINE_BREAK;
+}
+
+pub(super) fn insert_special(s: &mut Session, p: &Value) -> Result<Value> {
+    let Some(name) = str_param(p, "character") else {
+        return Err(bad("text.insertSpecial", format!("missing character; one of: {}", special_names())));
+    };
+    let Some(special) = SPECIAL_CHARACTERS.iter().find(|c| c.name == name) else {
+        let shown: String = name.chars().take(60).collect();
+        return Err(bad("text.insertSpecial", format!("unknown special character {shown:?}; one of: {}", special_names())));
+    };
+    insert(s, &json!({"text": special.character.to_string(), "raw": true}))
+}
+
+fn special_names() -> String {
+    SPECIAL_CHARACTERS.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
+}
+
 pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = crate::cmd::text_param(p, "text");
     // Tab in a table cell moves to the next cell (Shift-Tab: `table.prevCell`). Footnote text is
@@ -729,5 +805,124 @@ mod placeholder_tests {
         assert!(!text.contains(".O") && !text.contains(".L"), "sentences are spaced: {text}");
         assert!(st["overset"].is_null(), "nothing overset: {}", st["overset"]);
         assert!(text.len() > 1500, "the frame is filled: {}", text.len());
+    }
+}
+
+#[cfg(test)]
+mod insert_special_tests {
+    use serde_json::json;
+
+    use super::SPECIAL_CHARACTERS;
+    use crate::Session;
+
+    fn session_with_text(text: &str) -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 336, 236], "content": "text", "text": text})).unwrap();
+        (s, r["story"].as_u64().unwrap())
+    }
+
+    fn story_text(s: &mut Session, story: u64) -> String {
+        s.execute("story.get", &json!({"story": story})).unwrap()["text"].as_str().unwrap().to_string()
+    }
+
+    fn place_caret(s: &mut Session, story: u64, anchor: usize, focus: usize) {
+        s.execute("text.select", &json!({"story": story, "anchor": anchor, "focus": focus})).unwrap();
+    }
+
+    #[test]
+    fn every_name_inserts_its_character_at_the_caret() {
+        for special in SPECIAL_CHARACTERS {
+            let (mut s, story) = session_with_text("ab");
+            place_caret(&mut s, story, 1, 1);
+            s.execute("text.insertSpecial", &json!({"character": special.name})).unwrap();
+            let c = special.character;
+            let expected = if designcraft_doc::is_break_char(c) { format!("a{c}\nb") } else { format!("a{c}b") };
+            assert_eq!(story_text(&mut s, story), expected, "{}", special.name);
+        }
+    }
+
+    #[test]
+    fn a_special_character_replaces_the_selected_text() {
+        let (mut s, story) = session_with_text("Page X");
+        place_caret(&mut s, story, 5, 6);
+        s.execute("text.insertSpecial", &json!({"character": "currentPageNumber"})).unwrap();
+        assert_eq!(story_text(&mut s, story), "Page \u{e000}");
+    }
+
+    #[test]
+    fn straight_quotation_marks_stay_straight() {
+        let (mut s, story) = session_with_text("");
+        place_caret(&mut s, story, 0, 0);
+        s.execute("text.insertSpecial", &json!({"character": "straightDoubleQuotationMarks"})).unwrap();
+        s.execute("text.insertSpecial", &json!({"character": "straightSingleQuotationMark"})).unwrap();
+        assert_eq!(story_text(&mut s, story), "\"'");
+    }
+
+    #[test]
+    fn an_unknown_name_is_an_error_listing_the_valid_names_and_inserts_nothing() {
+        let (mut s, story) = session_with_text("ab");
+        place_caret(&mut s, story, 1, 1);
+        let err = s.execute("text.insertSpecial", &json!({"character": "pageNumber"})).unwrap_err().to_string();
+        assert!(err.contains("unknown special character \"pageNumber\""), "{err}");
+        for special in SPECIAL_CHARACTERS {
+            assert!(err.contains(special.name), "{} missing from: {err}", special.name);
+        }
+        assert_eq!(story_text(&mut s, story), "ab");
+    }
+
+    #[test]
+    fn a_long_unknown_name_is_cut_in_the_error() {
+        let (mut s, story) = session_with_text("ab");
+        place_caret(&mut s, story, 1, 1);
+        let err = s.execute("text.insertSpecial", &json!({"character": "x".repeat(500)})).unwrap_err().to_string();
+        assert!(err.len() < 1000, "{} bytes", err.len());
+    }
+
+    #[test]
+    fn a_missing_or_non_text_name_is_an_error() {
+        let (mut s, story) = session_with_text("ab");
+        place_caret(&mut s, story, 1, 1);
+        for params in [json!({}), json!({"character": 7}), json!({"character": null})] {
+            let err = s.execute("text.insertSpecial", &params).unwrap_err().to_string();
+            assert!(err.contains("missing character"), "{err}");
+        }
+        assert_eq!(story_text(&mut s, story), "ab");
+    }
+
+    #[test]
+    fn tab_in_a_table_cell_moves_to_the_next_cell() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [36, 36, 336, 236], "content": "text"})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+        s.execute("text.insert", &json!({"text": "Name"})).unwrap();
+        s.execute("text.insertSpecial", &json!({"character": "tab"})).unwrap();
+        s.execute("text.insert", &json!({"text": "Value"})).unwrap();
+        let table = s.execute("table.get", &json!({})).unwrap();
+        assert_eq!(table["cells"][0]["text"], "Name");
+        assert_eq!(table["cells"][1]["text"], "Value");
+    }
+
+    #[test]
+    fn the_command_documents_every_name_and_code_point() {
+        let s = Session::new();
+        let params = s.commands().into_iter().find(|c| c.id == "text.insertSpecial").map(|c| c.params).unwrap();
+        for special in SPECIAL_CHARACTERS {
+            let documented = format!("{} (U+{:04X})", special.name, special.character as u32);
+            assert!(params.contains(&documented), "{documented}");
+        }
+    }
+
+    #[test]
+    fn names_and_labels_are_unique() {
+        let mut names: Vec<_> = SPECIAL_CHARACTERS.iter().map(|c| c.name).collect();
+        let mut labels: Vec<_> = SPECIAL_CHARACTERS.iter().map(|c| c.label).collect();
+        names.sort_unstable();
+        names.dedup();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(names.len(), SPECIAL_CHARACTERS.len());
+        assert_eq!(labels.len(), SPECIAL_CHARACTERS.len());
     }
 }

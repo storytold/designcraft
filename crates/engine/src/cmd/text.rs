@@ -21,8 +21,8 @@ pub(crate) use caret::story_of;
 use caret::{move_caret, para_bounds, place, release, select_around, select_at, sentence_bounds};
 pub use caret::{next_char, next_word, prev_char, prev_word};
 pub(crate) use edit::delete_selection;
-pub use edit::{PLACEHOLDER, quote_marks};
-use edit::{change_case, delete, delete_surrounding, fill_placeholder, insert};
+pub use edit::{PLACEHOLDER, SPECIAL_CHARACTERS, SpecialCharacter, quote_marks};
+use edit::{change_case, delete, delete_surrounding, fill_placeholder, insert, insert_special};
 pub(crate) use format::{
     Target, TypingFormat, apply_char_attrs, effective_char_format, format_chars, format_paras, format_targets, format_targets_pub,
     rename_typing_swatch, validate_char_fill,
@@ -106,6 +106,15 @@ pub fn specs() -> Vec<CommandSpec> {
             delete_surrounding
         ),
         cmd!("text.delete", "Delete Text", [], None, "{forward?: bool, word?: bool}", has_text, delete),
+        cmd!(
+            "text.insertSpecial",
+            "Insert Special Character",
+            [],
+            None,
+            "{character: name} — inserts a special character at the insertion point, replacing the selected text; in a table cell, tab moves to the next cell, as text.insert does. Markers: currentPageNumber (U+E000), nextPageNumber (U+E007), previousPageNumber (U+E008), sectionMarker (U+E001). Symbols: bulletCharacter (U+2022), copyrightSymbol (U+00A9), ellipsis (U+2026), paragraphSymbol (U+00B6), registeredTrademarkSymbol (U+00AE), sectionSymbol (U+00A7), trademarkSymbol (U+2122). Hyphens and dashes: emDash (U+2014), enDash (U+2013), discretionaryHyphen (U+00AD), nonbreakingHyphen (U+2011). Quotation marks: doubleLeftQuotationMarks (U+201C), doubleRightQuotationMarks (U+201D), singleLeftQuotationMark (U+2018), singleRightQuotationMark (U+2019), straightDoubleQuotationMarks (U+0022), straightSingleQuotationMark (U+0027). Other: tab (U+0009), rightIndentTab (U+E006), indentToHere (U+E005). White space: emSpace (U+2003), enSpace (U+2002), nonbreakingSpace (U+00A0), hairSpace (U+200A), sixthSpace (U+2006), thinSpace (U+2009), quarterSpace (U+2005), thirdSpace (U+2004), punctuationSpace (U+2008), figureSpace (U+2007), flushSpace (U+2001). Breaks: columnBreak (U+E002), frameBreak (U+E003), pageBreak (U+E004), oddPageBreak (U+E011), evenPageBreak (U+E012), paragraphReturn (U+000A), forcedLineBreak (U+2028)",
+            has_text,
+            insert_special
+        ),
         cmd!(noundo "text.move", "Move Caret", [], None, "{dir: left|right|up|down|lineStart|lineEnd|storyStart|storyEnd, extend?, word?}", has_text, move_caret),
         cmd!(noundo "text.exitToFrame", "Select Frame", [], None, "{}", has_doc, |s, _| {
             let st = s.doc_mut()?;
