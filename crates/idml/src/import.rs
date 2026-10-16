@@ -2324,6 +2324,7 @@ impl<'r> Importer<'r> {
         it.hidden = e.get("Visible") == Some("false");
         it.overrides = e.get("OverriddenPageItem").and_then(|s| self.item_ids.get(s)).copied().filter(|i| self.is_parent_item(*i));
         it.nonprinting = e.get("Nonprinting") == Some("true");
+        it.labels = script_labels(e);
         it.object_style = e
             .get("AppliedObjectStyle")
             .map(|r| {
@@ -2990,6 +2991,23 @@ fn path_of(pg: &El) -> PathData {
 }
 
 /// IDML link URI → file system path (`file:/a%20b` → `/a b`, `file:///C:/x` → `C:/x`).
+/// The most keyed script labels read from one object, and the longest key or value kept.
+const MAX_LABELS: usize = 1000;
+const MAX_LABEL_BYTES: usize = 1 << 20;
+
+/// An object's keyed script labels: `<Properties><Label><KeyValuePair Key Value/>…`.
+fn script_labels(e: &El) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(label) = e.prop_el("Label") else { return out };
+    for kv in label.find_all("KeyValuePair").take(MAX_LABELS) {
+        let (Some(k), Some(v)) = (kv.get("Key"), kv.get("Value")) else { continue };
+        if k.len() <= MAX_LABEL_BYTES && v.len() <= MAX_LABEL_BYTES {
+            out.insert(k.to_string(), v.to_string());
+        }
+    }
+    out
+}
+
 pub(crate) fn uri_to_path(uri: &str) -> String {
     let rest = uri.strip_prefix("file://").or_else(|| uri.strip_prefix("file:")).unwrap_or(uri);
     // `file:///C:/…` → `/C:/…` → `C:/…`

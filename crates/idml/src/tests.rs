@@ -2598,3 +2598,31 @@ mod liquid_page_rules {
         }
     }
 }
+
+#[test]
+fn keyed_script_labels_come_in_and_go_out_before_the_path() {
+    let mut doc = import_idml(&fixture()).unwrap();
+    let id = doc.spreads.iter().flat_map(|sp| sp.items.iter()).map(|it| it.id).next().unwrap();
+    let it = doc.item_mut(id).unwrap();
+    it.labels.insert("fit".into(), "Proportionally".into());
+    it.labels.insert("imagepath".into(), "file:/images/x & <y>.png".into());
+    let out = export_idml(&doc);
+    // Label precedes PathGeometry inside the item's Properties.
+    let xml: String = {
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
+        let mut all = String::new();
+        for i in 0..z.len() {
+            let mut f = z.by_index(i).unwrap();
+            if f.name().starts_with("Spreads/") {
+                std::io::Read::read_to_string(&mut f, &mut all).unwrap();
+            }
+        }
+        all
+    };
+    let label = xml.find("<Label>").expect("a Label element");
+    assert!(xml[label..].find("<PathGeometry>").is_some(), "{}", &xml[label..label + 300]);
+    let back = import_idml(&out).unwrap();
+    let it = back.spreads.iter().flat_map(|sp| sp.items.iter()).find(|a| !a.labels.is_empty()).expect("the labelled item");
+    assert_eq!(it.labels.get("imagepath").map(String::as_str), Some("file:/images/x & <y>.png"));
+    assert_eq!(it.labels.len(), 2);
+}
