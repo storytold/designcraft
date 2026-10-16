@@ -4968,6 +4968,44 @@ fn inline_object_only_line_does_not_reserve_phantom_font_descent() {
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset());
 }
 
+/// Anchor, at the end of story `host`, a 150 × 40 pt text frame showing a new story with `text`.
+fn anchor_text_frame(d: &mut Document, host: StoryId, text: &str) -> StoryId {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 150.0, 40.0), d.default_layer(), text, ParaFormat::default()).unwrap();
+    let item = d.item(fid).unwrap().clone();
+    d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+    let st = d.story_mut(host).unwrap();
+    let n = st.len();
+    st.insert_object(n, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+    sid
+}
+
+#[test]
+fn anchored_text_frames_are_on_their_host_frames_page() {
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, ..Default::default() });
+    // On the left page (page 2) of the second spread.
+    let page = d.spreads[1].pages[0].bounds();
+    let (host_frame, host) = d
+        .add_text_frame(SpreadRef::Doc(1), Rect::new(page.x0 + 36.0, 36.0, page.x0 + 336.0, 436.0), d.default_layer(), "Host ", ParaFormat::default())
+        .unwrap();
+    let mid = anchor_text_frame(&mut d, host, "Mid ");
+    let deep = anchor_text_frame(&mut d, mid, &format!("Page {}", designcraft_doc::story::PAGE_NUMBER));
+    d.check().unwrap();
+    for sid in [mid, deep] {
+        let spec = &frame_specs(&d, sid)[0];
+        assert_eq!((spec.page_name.as_deref(), spec.page, spec.left_page), (Some("2"), Some(1), true), "{sid:?}");
+    }
+    // Its page number follows the host frame to page 3.
+    let cache = Cache::new();
+    let digit = |cs: &ComposedStory| cs.frames[0].lines[0].glyphs.last().map(|g| g.gid);
+    let before = digit(&cache.get(&d, deep, None));
+    assert!(before.is_some());
+    let it = d.item_mut(host_frame).unwrap();
+    it.xf = designcraft_geom::Affine::translate((page.width(), 0.0)) * it.xf;
+    assert_eq!(frame_specs(&d, deep)[0].page_name.as_deref(), Some("3"));
+    assert_ne!(digit(&cache.get(&d, deep, None)), before, "recomposed for page 3");
+}
+
 #[test]
 fn composite_metrics_and_character_mappings_apply_inside_footnotes() {
     use designcraft_doc::cjk::{CompositeFont, CompositeFontEntry};

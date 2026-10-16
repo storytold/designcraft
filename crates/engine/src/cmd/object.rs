@@ -1078,6 +1078,8 @@ fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut Has
                     }
                     designcraft_doc::remap_story_assets(&mut st, &assets);
                     st.frames.clear();
+                    // Its anchored items are copies too: anchored text frames get copies of their stories.
+                    dst.adopt_anchored(&mut st, &|id| src.stories.get(&id).cloned());
                     dst.stories.insert(n, Arc::new(st));
                     stories.insert(tf.story, n);
                     n

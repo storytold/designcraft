@@ -363,6 +363,13 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
                 format!("{item:?}").hash(&mut hash);
             }
             sig.push(hash.finish() as usize);
+            // Its page is that of its host's frame (page-number markers).
+            if let Some(loc) = doc.anchored_page_frame(*f).and_then(|pf| doc.find(pf))
+                && let Some(top) = doc.spread(loc.spread).and_then(|sp| sp.items.get(loc.top()))
+            {
+                sig.extend([Arc::as_ptr(top) as usize, loc.top()]);
+                keep.push(top.clone());
+            }
             continue;
         };
         if let Some(sp) = doc.spread(loc.spread) {
