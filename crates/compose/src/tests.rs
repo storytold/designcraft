@@ -4454,3 +4454,42 @@ fn an_empty_last_paragraph_isnt_overset() {
     let (d, sid, _) = doc_with("One\nTwo\n\n", Rect::new(0.0, 0.0, 200.0, 35.0), ParaAttrs::default());
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset(), "an empty paragraph before the last one is text");
 }
+
+/// An introduction, a heading kept with the paragraph after it, that paragraph starting under a
+/// picture that wraps the left column, and a paragraph spanning the columns after them, as on
+/// page 11 of Learn Skills Daily's long-document exercise (Hansel & Petal). Balancing the columns
+/// above the spanning paragraph tries bottoms above the picture's. The body's first line can't
+/// start there: that is the trial's failure, not a reason to move the heading on to the next
+/// column. Moving it on left that trial behind, which then rewound forward past paragraphs not
+/// laid out yet and indexed out of bounds.
+#[test]
+fn balancing_above_a_spanning_paragraph_keeps_a_heading_with_text_under_a_wrap() {
+    let body = [LOREM; 2].join(" ");
+    let intro = "The readiest way to increase these plants is to take the young and dwarf growths from the woody crown of the roots.";
+    let text = [intro, "Campanula Speciosa", &body, "A sidebar across the columns", &body].join(
+        "
+",
+    );
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(36.0, 36.0, 576.0, 756.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    {
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..text.len(), |f| {
+            f.over.size = Some(10.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(12.0));
+        });
+        st.paras[0].para.span_columns = Some(SpanColumns::Span(0));
+        st.paras[1].para.keep_with_next = Some(1);
+        st.paras[3].para.span_columns = Some(SpanColumns::Span(0));
+    }
+    // A picture over the left column, under the heading, with a 15 pt wrap.
+    add_wrap_objects(&mut d, &[(Rect::new(36.0, 80.0, 348.0, 330.0), [15.0; 4], WrapMode::BoundingBox)]);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let first = |p: usize| ft.lines.iter().find(|l| l.para == p).expect("the paragraph is in the frame");
+    assert_eq!((first(1).column, first(2).column), (0, 0), "the heading and its text start in the left column");
+    assert!(first(1).baseline < 80.0, "the heading stays under the introduction: {}", first(1).baseline);
+    assert!(first(2).baseline > 330.0 + 15.0, "the text starts under the picture's wrap: {}", first(2).baseline);
+    assert!(ft.lines.iter().any(|l| l.para == 3), "the spanning paragraph follows in the frame");
+    assert!(!cs.is_overset());
+}
