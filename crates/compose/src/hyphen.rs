@@ -14,6 +14,8 @@
 //! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
 //! names and German locale codes without a reform year or with 2006 use this set. Traditional,
 //! 1901 and unknown German variants have no automatic hyphenation; no old-spelling set is bundled.
+//! Esperanto breaks between morphemes rather than syllables ([`eo`]: our own segmenter, roots
+//! from Wiktionary).
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -26,6 +28,7 @@
 //! Then the paragraph's limits ([`Limits`]) are applied.
 
 pub mod dict;
+pub mod eo;
 pub mod patgen;
 pub mod patterns;
 
@@ -80,6 +83,7 @@ impl Default for Limits {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     English,
+    Esperanto,
     Patterns(hypher::Lang),
 }
 
@@ -99,6 +103,9 @@ impl Lang {
         }
         if sub == "en" {
             return Some(Lang::English);
+        }
+        if sub == "eo" {
+            return Some(Lang::Esperanto);
         }
         let b = sub.as_bytes();
         if b.len() != 2 {
@@ -139,6 +146,14 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let n = core.len();
     if n < 2 {
         return (vec![], Source::None);
+    }
+    if lang == Lang::Esperanto {
+        if core.contains(&'\'') {
+            return (vec![], Source::None);
+        }
+        let pts = eo::breaks(core);
+        let src = if pts.is_empty() { Source::None } else { Source::Dictionary };
+        return (pts, src);
     }
     if let Lang::Patterns(l) = lang {
         if let Some(ap) = core.iter().rposition(|&c| c == '\'') {
@@ -521,6 +536,20 @@ mod tests {
         assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
         assert_eq!(h("calle"), "ca-lle", "ll stays whole");
         assert!(Lang::for_language("Swedish").is_none(), "only languages built in");
+    }
+
+    #[test]
+    fn esperanto_breaks_between_morphemes() {
+        let eo = Lang::for_language("Esperanto").unwrap();
+        assert_eq!(eo, Lang::for_language("eo").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), eo);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("Malsanulejo"), "Mal-san-ul-ejo", "case kept, break points from the lowercase word");
+        assert_eq!(h("tranĉilojn,"), "tranĉ-ilojn,");
+        assert_eq!(h("lernejo-direktoro"), format!("lern-ejo-{}", h("direktoro")), "each part of a compound");
+        assert_eq!(h("parolas"), "parolas", "never before the ending alone");
     }
 
     #[test]
