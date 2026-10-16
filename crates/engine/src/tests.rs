@@ -1029,6 +1029,48 @@ fn type_tool_frames_snap_to_the_margins() {
 }
 
 #[test]
+fn direct_selection_pulls_one_corner_of_an_unselected_frame() {
+    // Chris Nielsen's "The Adobe InDesign Toolbox" (10:10): with the White Arrow, click outside,
+    // then press on a frame's corner and pull it: only that corner moves (a triangle, nearly).
+    use designcraft_tools::{PointerEvent, PointerKind, SnapView};
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"width": 612, "height": 792, "facingPages": false})).unwrap();
+    let id = s.execute("frame.create", &json!({"rect": [156, 219, 455, 569], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    let corners = |s: &Session| {
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(designcraft_doc::ItemId(id)).unwrap();
+        it.path.subpaths[0].anchors.iter().map(|a| it.xf * a.p).collect::<Vec<_>>()
+    };
+    let before = corners(&s);
+    s.set_tool("directSelection");
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let layout = s.layout();
+    let at = |x: f64, y: f64| layout.to_canvas(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Point::new(x, y));
+    let (a, b) = (at(455.0, 219.0), at(455.0, 150.0));
+    s.pointer(&PointerEvent::new(PointerKind::Down, a.x, a.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, a.x, a.y - 30.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, b.x, b.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, b.x, b.y), v).unwrap();
+    let after = corners(&s);
+    let moved: Vec<_> = before.iter().zip(&after).filter(|(p, q)| (**p - **q).hypot() > 1e-6).collect();
+    assert_eq!(moved.len(), 1, "one corner moved: {before:?} → {after:?}");
+    assert!((*moved[0].1 - designcraft_geom::Point::new(455.0, 150.0)).hypot() < 1e-6, "{after:?}");
+    assert_eq!(s.doc().unwrap().selection.items, [designcraft_doc::ItemId(id)], "the frame is selected");
+    // One undo step puts the corner back.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(corners(&s), before);
+    // Away from its corners, the White Arrow still drags the whole unselected frame.
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    let (c, d) = (at(300.0, 219.0), at(300.0, 269.0));
+    s.pointer(&PointerEvent::new(PointerKind::Down, c.x, c.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, c.x, c.y + 20.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, d.x, d.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, d.x, d.y), v).unwrap();
+    assert!(corners(&s).iter().zip(&before).all(|(p, q)| (p.y - q.y - 50.0).abs() < 1e-6), "{:?}", corners(&s));
+}
+
+#[test]
 fn duplicating_a_page_to_an_index_is_one_undo_step() {
     let mut s = Session::new();
     s.execute("file.new", &json!({"facingPages": false})).unwrap();
