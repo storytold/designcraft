@@ -343,6 +343,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-10-16** · `anchored.frame`: the text frame and column an anchored object is set in after composition, with the column's width and the frame's bounds (null while overset), as InDesign scripts read parentTextFrames to size inline graphics to the column. No readiness percentage change.
+- **2026-10-16** · Keyed script labels: IDML `KeyValuePair` labels are read and written (they were dropped), and `object.insertLabel`, `object.extractLabel` and `object.labels` set and read them, as InDesign scripts do with insertLabel/extractLabel; `object.findByLabel` finds objects by key and value and now sees anchored objects. No readiness percentage change.
 - **2026-10-13** · Switching between document and parent pages refreshes the canvas immediately, preventing black parent pages and stale document objects when the zoom stays the same. Ordinary edits retain partial repainting. No readiness percentage change.
 
 Newest first.

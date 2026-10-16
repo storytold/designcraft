@@ -1795,6 +1795,14 @@ impl<'a> Ex<'a> {
             }
         }
         let mut props = Vec::new();
+        // Keyed script labels come first, as InDesign writes them.
+        if !it.labels.is_empty() {
+            let mut label = El::new("Label");
+            for (k, v) in &it.labels {
+                label.push(El::new("KeyValuePair").attr("Key", k).attr("Value", v));
+            }
+            props.push(label);
+        }
         if tag != "Group" && !it.path.is_empty() {
             props.push(path_geometry(&it.path));
         }
