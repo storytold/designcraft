@@ -96,6 +96,38 @@ fn ordinary_panel_tab_drag_enters_shared_docking_and_can_redock_into_another_tab
     assert!(valid(layout));
 }
 
+/// A panel floated out of the dock gets a panel-sized window, not one as tall as the dock column
+/// it came from (#941): by dragging its tab out, and by its tab's Float Panel.
+#[test]
+fn a_panel_floated_out_of_the_dock_is_panel_sized() {
+    let float_height = |h: &Harness<'static, DesignApp>, panel: &str| {
+        let layout = h.state().ui.docking.as_ref().expect("a custom workspace");
+        layout.floating.iter().find(|g| g.panels.contains(&panel.to_string())).map(|g| g.rect[3]).expect("the panel floats")
+    };
+    let mut h = harness(app(), vec2(1280.0, 800.0));
+    let source = h.query_all_by_label("Layers").find(|node| node.rect().height() <= 45.0).unwrap().rect().center();
+    drag(&mut h, source, egui::pos2(160.0, 140.0));
+    let height = float_height(&h, "layers");
+    assert!(height <= FLOAT_HEIGHT + 0.5, "dragged out: {height} tall");
+    // Float Panel from a docked tab's menu.
+    let tab = h.ctx.read_response(egui::Id::new("designcraft-panel-docking").with(("tab", &"properties".to_string()))).unwrap().rect.center();
+    h.event(Event::PointerMoved(tab));
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos: tab, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    h.get_by_label("Float Panel").click();
+    h.run_steps(3);
+    let height = float_height(&h, "properties");
+    assert!(height <= FLOAT_HEIGHT + 0.5, "Float Panel: {height} tall");
+    // An explicit size from a command is kept.
+    let mut app = app();
+    app.run("window.panel.float", json!({"panel": "swatches", "x": 50, "y": 70, "width": 330, "height": 610})).unwrap();
+    let g = app.ui.docking.as_ref().unwrap().floating.iter().find(|g| g.panels == ["swatches"]).unwrap().rect;
+    assert_eq!(g[3], 610.0);
+}
+
 #[test]
 fn saved_workspace_restores_the_custom_tree_and_hidden_panel_placement() {
     let mut app = app();
