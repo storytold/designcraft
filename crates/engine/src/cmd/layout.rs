@@ -97,11 +97,15 @@ fn set_margins_columns(pg: &mut designcraft_doc::Page, p: &Value) {
         }
         _ => {}
     }
+    // Setting a count or a gutter re-divides the columns evenly, as InDesign's Margins and
+    // Columns does: dragged column positions are what the new value replaces.
     if let Some(c) = p.get("columns").and_then(Value::as_u64) {
         pg.columns.count = (c as u32).clamp(1, 216);
+        pg.columns.positions = None;
     }
     if let Some(g) = p.get("gutter").and_then(Value::as_f64) {
         pg.columns.gutter = g.max(0.0);
+        pg.columns.positions = None;
     }
 }
 
@@ -1628,6 +1632,46 @@ mod adjust_tests {
         assert_eq!(d.page(2).unwrap().margins, Margins::uniform(100.0));
         // An unknown parent is an error, not a silent no-op.
         assert!(s.execute("layout.marginsAndColumns", &json!({"parent": 9, "margins": 10})).is_err());
+    }
+
+    /// Margins and Columns re-divides the columns: a new count or gutter replaces column guides
+    /// that were dragged (an imported Custom columns page), rather than being ignored by them.
+    #[test]
+    fn a_new_column_count_replaces_dragged_column_positions() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+        // There is no command for dragging a column guide yet, so set what an import would leave.
+        let drag = |s: &mut Session| {
+            s.edit(|d, _| {
+                let pg = &mut std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0];
+                pg.columns = designcraft_doc::Columns { count: 2, gutter: 12.0, positions: Some(vec![0.0, 100.0, 130.0, 540.0]) };
+                Ok(())
+            })
+            .unwrap();
+        };
+
+        drag(&mut s);
+        let dragged = s.doc().unwrap().doc.page(0).unwrap().column_rects();
+        assert_eq!(dragged.len(), 2);
+        assert!((dragged[0].x1 - dragged[0].x0 - 100.0).abs() < 1e-6, "the dragged gutter is in use: {dragged:?}");
+
+        // A new count: evenly divided again, and the stale positions are gone.
+        s.execute("layout.marginsAndColumns", &json!({"columns": 3})).unwrap();
+        let pg = s.doc().unwrap().doc.page(0).unwrap().clone();
+        assert_eq!((pg.columns.count, pg.columns.positions.clone()), (3, None));
+        assert_eq!(pg.column_rects().len(), 3);
+
+        // So does a new gutter on its own.
+        drag(&mut s);
+        s.execute("layout.marginsAndColumns", &json!({"gutter": 24})).unwrap();
+        let pg = s.doc().unwrap().doc.page(0).unwrap().clone();
+        assert_eq!(pg.columns.positions, None);
+        assert!((pg.column_rects()[1].x0 - pg.column_rects()[0].x1 - 24.0).abs() < 1e-6);
+
+        // Margins alone leave them alone: the offsets are relative to the margin box.
+        drag(&mut s);
+        s.execute("layout.marginsAndColumns", &json!({"margins": 72})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page(0).unwrap().columns.positions, Some(vec![0.0, 100.0, 130.0, 540.0]));
     }
 }
 

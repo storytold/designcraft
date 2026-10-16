@@ -3441,10 +3441,27 @@ fn composer_in(name: &str) -> designcraft_doc::Composer {
 
 fn margins_of(m: &El) -> (Margins, Columns) {
     let g = |k: &str, d: f64| m.num(k).filter(|v| v.is_finite()).unwrap_or(d);
-    (
-        Margins { top: g("Top", 36.0), bottom: g("Bottom", 36.0), inside: g("Left", 36.0), outside: g("Right", 36.0) },
-        Columns { count: g("ColumnCount", 1.0).clamp(1.0, 216.0) as u32, gutter: g("ColumnGutter", 12.0), positions: None },
-    )
+    let margins = Margins { top: g("Top", 36.0), bottom: g("Bottom", 36.0), inside: g("Left", 36.0), outside: g("Right", 36.0) };
+    let count = g("ColumnCount", 1.0).clamp(1.0, 216.0) as u32;
+    let gutter = g("ColumnGutter", 12.0);
+    (margins, Columns { count, gutter, positions: custom_columns(m, count, gutter) })
+}
+
+/// `ColumnsPositions` when the column guides have been dragged off the even split, as pairs of
+/// offsets from the margin box's left edge. InDesign writes the attribute whether or not they have
+/// been moved, so an even set is dropped: `positions` means "custom", and keeping an even copy
+/// would freeze the columns against a later change of count or gutter.
+fn custom_columns(m: &El, count: u32, gutter: f64) -> Option<Vec<f64>> {
+    let pos = nums(m.get("ColumnsPositions")?);
+    if pos.len() < 2 || !pos.len().is_multiple_of(2) || !pos.iter().all(|v| v.is_finite()) || pos.windows(2).any(|w| w[1] < w[0]) {
+        return None;
+    }
+    // The even split over the same box, which is `0 … width` wide: compare against what we would
+    // have drawn anyway. The tolerance only absorbs float noise — a dragged guide moves far more.
+    let width = pos.last().copied().unwrap_or(0.0) - pos[0];
+    let even = designcraft_doc::page::column_rects(Rect::new(pos[0], 0.0, pos[0] + width, 1.0), count, gutter);
+    let flat: Vec<f64> = even.iter().flat_map(|r| [r.x0, r.x1]).collect();
+    (flat.len() != pos.len() || flat.iter().zip(&pos).any(|(a, b)| (a - b).abs() > 1e-4)).then_some(pos)
 }
 
 /// Text Frame Options from `TextFramePreference` elements: each attribute from the first that sets it.

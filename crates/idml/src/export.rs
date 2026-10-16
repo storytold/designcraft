@@ -2885,8 +2885,15 @@ impl Group {
 
 fn margin_el(pg: &designcraft_doc::Page) -> El {
     let m = pg.margin_rect();
-    let cols = designcraft_doc::column_rects(Rect::new(0.0, 0.0, m.width(), m.height()), pg.columns.count.max(1), pg.columns.gutter);
-    let pos: Vec<String> = cols.iter().flat_map(|c| [num(c.x0), num(c.x1)]).collect();
+    // Dragged column guides are written as they stand, so they survive the round trip; otherwise
+    // the even split, which is what InDesign writes for columns nobody has moved.
+    let pos: Vec<String> = match pg.columns.positions.as_deref() {
+        Some(p) if p.len() >= 2 && p.len().is_multiple_of(2) => p.iter().map(|v| num(v.clamp(0.0, m.width()))).collect(),
+        _ => designcraft_doc::column_rects(Rect::new(0.0, 0.0, m.width(), m.height()), pg.columns.count.max(1), pg.columns.gutter)
+            .iter()
+            .flat_map(|c| [num(c.x0), num(c.x1)])
+            .collect(),
+    };
     El::new("MarginPreference")
         .attr("ColumnCount", pg.columns.count.max(1))
         .attr("ColumnGutter", num(pg.columns.gutter))
