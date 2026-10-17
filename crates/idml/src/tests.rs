@@ -4189,3 +4189,56 @@ mod liquid_page_rules {
         }
     }
 }
+
+/// #1096: a ruler guide inside the gutter of a two-column page, written the way InDesign writes
+/// it (a `<Page>` child after its `MarginPreference`, with `Properties`/`GuideColor`, `PageIndex`
+/// and `GuideZone`), in a document without facing pages. A spread guide sits beside it.
+#[test]
+fn ruler_guide_in_a_column_gutter_imports_without_facing_pages() {
+    use designcraft_doc::Orientation::{Horizontal, Vertical};
+    let package = |view: &str| {
+        let prefs =
+            PREFS.replace(r#"FacingPages="true""#, r#"FacingPages="false""#).replace("</idPkg:Preferences>", &format!("{view}</idPkg:Preferences>"));
+        let spread = SPREAD.replace(
+            r#"<Page Self="p1" AppliedMaster="m1" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 -500 -350">
+      <MarginPreference ColumnCount="3" ColumnGutter="12" Top="10" Bottom="10" Left="20" Right="30"/>
+    </Page>"#,
+            r#"<Page Self="p1" AppliedMaster="m1" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 -500 -350" Name="1" OverrideList="">
+      <Properties><PageColor type="enumeration">UseMasterColor</PageColor></Properties>
+      <MarginPreference ColumnCount="2" ColumnGutter="20" Top="10" Bottom="10" Left="20" Right="30" ColumnDirection="Horizontal" ColumnsPositions="0 150 170 450"/>
+      <GridDataInformation FontStyle="Regular" PointSize="12"/>
+      <Guide Self="g1" OverriddenPageItemProps="" Orientation="Vertical" Location="180" FitToPage="true" ViewThreshold="0" Locked="false" ItemLayer="L1" PageIndex="0" GuideType="Ruler" GuideZone="0">
+        <Properties><GuideColor type="enumeration">Cyan</GuideColor></Properties>
+      </Guide>
+      <Guide Self="g2" OverriddenPageItemProps="" Orientation="Horizontal" Location="300" FitToPage="false" ViewThreshold="5" Locked="false" ItemLayer="L1" PageIndex="0" GuideType="Ruler" GuideZone="1">
+        <Properties><GuideColor type="enumeration">Cyan</GuideColor></Properties>
+      </Guide>
+    </Page>"#,
+        );
+        assert_ne!(spread, SPREAD, "the fixture's first page was replaced");
+        import_idml(&zip_files(&[
+            ("designmap.xml", DESIGNMAP),
+            ("Resources/Graphic.xml", GRAPHIC),
+            ("Resources/Styles.xml", STYLES),
+            ("Resources/Preferences.xml", &prefs),
+            ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+            ("Spreads/Spread_sp1.xml", &spread),
+            ("Stories/Story_s1.xml", STORY),
+        ]))
+        .unwrap()
+    };
+    let guides =
+        |d: &Document| d.spreads[0].pages[0].guides.iter().map(|g| (g.orientation, g.position, g.spread, g.layer.is_some())).collect::<Vec<_>>();
+    // The first page starts at x 0 in our spread coordinates, so the spread's and the page's ruler
+    // origins agree; no ViewPreference means InDesign's default, the spread.
+    for view in ["", r#"<ViewPreference RulerOrigin="SpreadOrigin"/>"#, r#"<ViewPreference RulerOrigin="PageOrigin"/>"#] {
+        let first = package(view);
+        assert!(!first.settings.facing_pages);
+        assert_eq!(guides(&first), [(Vertical, 180.0, false, true), (Horizontal, 300.0, true, true)], "{view:?}");
+        // The guide sits between the page's left margin (20) and right margin (470).
+        let m = first.spreads[0].pages[0].margin_rect();
+        assert!(m.x0 < 180.0 && 180.0 < m.x1);
+        let back = import_idml(&export_idml(&first)).unwrap();
+        assert_eq!(guides(&back), guides(&first), "round trip, {view:?}");
+    }
+}
