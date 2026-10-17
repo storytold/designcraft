@@ -275,7 +275,7 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &s
         if added >= max_pages {
             return Err(bad(cmd, format!("autoflow stopped after {max_pages} pages")));
         }
-        let per_page = if vertical { 1 } else { d.page(page).map_or(1, |p| p.columns.count.max(1) as usize) };
+        let per_page = if vertical { 1 } else { d.page(page).map_or(1, |p| p.column_rects().len().max(1)) };
         let pages = want.div_ceil(per_page).clamp(1, max_pages - added);
         let parent = d.page_loc(page).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
         d.insert_pages(Some(page), pages, parent)?;
@@ -484,6 +484,43 @@ mod tests {
         assert_eq!(frames.len(), d.page_count());
         for f in frames {
             assert_eq!(d.item(*f).unwrap().bounds(), d.page(d.page_of_item(*f).unwrap()).unwrap().margin_rect());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Autoflow follows dragged column guides: one frame per dragged column, on the first page and
+    /// on every page it adds.
+    #[test]
+    fn autoflow_sets_frames_on_dragged_columns() {
+        let dir = std::env::temp_dir().join(format!("dc-place-dragged-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long.txt");
+        std::fs::write(&path, vec!["Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(12); 40].join("\n")).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "Letter", "pages": 1, "columns": 2, "gutter": 18, "margins": 54})).unwrap();
+        // The margin box is 504 pt wide; the gutter is dragged left. There is no command for
+        // dragging a column guide yet, so set what an import would leave, on the parent.
+        let dragged = designcraft_doc::Columns { count: 2, gutter: 18.0, positions: Some(vec![0.0, 150.0, 170.0, 504.0]) };
+        s.edit(|d, _| {
+            for pg in &mut std::sync::Arc::make_mut(&mut d.parents[0]).pages {
+                pg.columns = dragged.clone();
+            }
+            d.sync_parent_margins();
+            Ok(())
+        })
+        .unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "page": 1, "autoflow": true})).unwrap();
+        assert_eq!(r["overset"], false, "{r}");
+        let d = &s.doc().unwrap().doc;
+        assert!(d.page_count() >= 3, "{r}");
+        let frames = &d.story(StoryId(r["story"].as_u64().unwrap())).unwrap().frames;
+        assert!(frames.len() > 2 * (d.page_count() - 1), "{} frames", frames.len());
+        for (i, f) in frames.iter().enumerate() {
+            let page = d.page_of_item(*f).unwrap();
+            assert_eq!(page, i / 2, "frame {i}");
+            let m = d.page(page).unwrap().margin_rect();
+            let (x0, x1) = [(0.0, 150.0), (170.0, 504.0)][i % 2];
+            assert_eq!(d.item(*f).unwrap().bounds(), Rect::new(m.x0 + x0, m.y0, m.x0 + x1, m.y1), "frame {i}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

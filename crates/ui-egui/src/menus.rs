@@ -180,6 +180,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.frameEdges", "Show/Hide Frame Edges", Some("Cmd+H"), "{}"),
     ("view.rulers", "Show/Hide Rulers", Some("Cmd+R"), "{}"),
     ("view.guides", "Show/Hide Guides", Some("Cmd+;"), "{}"),
+    ("view.lockGuides", "Lock Guides", Some("Cmd+Alt+;"), "{on?: bool} — ruler guides can't be dragged; toggles without `on`"),
     ("view.snapToGuides", "Snap to Guides", Some("Cmd+Shift+;"), "{}"),
     ("view.snapToDocumentGrid", "Snap to Document Grid", None, "{}"),
     ("view.smartGuides", "Smart Guides", None, "{}"),
@@ -810,6 +811,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             ">Grids & Guides",
             "ui:view.guides",
+            "ui:view.lockGuides",
+            "cmd:view.lockColumnGuides",
             "ui:view.snapToGuides",
             "ui:view.snapToDocumentGrid",
             "ui:view.smartGuides",
@@ -1512,6 +1515,10 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "view.rulers" => flag(&mut app.ui.rulers),
         "view.guides" => flag(&mut app.ui.guides),
+        "view.lockGuides" => {
+            app.ui.guides_locked = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.guides_locked);
+            Ok(json!(app.ui.guides_locked))
+        }
         "view.snapToGuides" => flag(&mut app.ui.snap_to_guides),
         "view.snapToDocumentGrid" => flag(&mut app.ui.snap_to_document_grid),
         "view.smartGuides" => flag(&mut app.ui.smart_guides),
@@ -2367,6 +2374,8 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.typicalDisplay" => app.ui.display_quality == designcraft_render::DisplayQuality::Typical,
         "view.highQualityDisplay" => app.ui.display_quality == designcraft_render::DisplayQuality::High,
         "view.guides" => app.ui.guides,
+        "view.lockGuides" => app.ui.guides_locked,
+        "view.lockColumnGuides" => app.session.active().is_some_and(|d| d.doc.settings.column_guides_locked),
         "view.snapToGuides" => app.ui.snap_to_guides,
         "view.snapToDocumentGrid" => app.ui.snap_to_document_grid,
         "view.smartGuides" => app.ui.smart_guides,
@@ -3942,6 +3951,26 @@ mod tests {
         run_ui(&mut app, "view.proofColors", &json!({})).unwrap().unwrap();
         assert!(!app.ui.proof_colors);
         assert!(run_ui(&mut app, "view.proofSetup", &json!({"target": "nope"})).unwrap().is_err());
+    }
+
+    #[test]
+    fn lock_guides_and_lock_column_guides_are_checked_in_grids_and_guides() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let view = menu_ids("View");
+        assert!(view.contains(&"view.lockGuides") && view.contains(&"view.lockColumnGuides"));
+        assert_eq!(ui_label("view.lockGuides").and_then(|c| c.1), Some("Cmd+Alt+;"));
+        // Lock Guides: off at first, toggles, and `on` sets it.
+        assert_eq!(checked(&app, "view.lockGuides", &Value::Null), Some(false));
+        assert_eq!(app.run("view.lockGuides", json!({})).unwrap(), json!(true));
+        assert!(app.ui.guides_locked);
+        assert_eq!(app.run("view.lockGuides", json!({"on": true})).unwrap(), json!(true));
+        assert_eq!(checked(&app, "view.lockGuides", &Value::Null), Some(true));
+        assert_eq!(app.run("view.lockGuides", json!({"on": false})).unwrap(), json!(false));
+        // Lock Column Guides: the document's setting, on in new documents.
+        assert_eq!(checked(&app, "view.lockColumnGuides", &Value::Null), Some(true));
+        app.run("view.lockColumnGuides", json!({})).unwrap();
+        assert_eq!(checked(&app, "view.lockColumnGuides", &Value::Null), Some(false));
     }
 
     #[test]
