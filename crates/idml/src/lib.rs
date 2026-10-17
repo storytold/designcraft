@@ -168,77 +168,145 @@ pub(crate) fn eps_preview_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The bitmap inside an EMF (what InDesign keeps for a `<WMF>` placement): the first
-/// `EMR_STRETCHDIBITS` record's DIB, re-wrapped as a BMP file. `None` for anything that is not
-/// an EMF with an uncompressed bitmap in it (the vector drawing is not interpreted).
-pub(crate) fn emf_raster_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
+/// One `EMR_STRETCHDIBITS` bitmap of an EMF.
+struct Dib<'a> {
+    w: i32,
+    h: i32,
+    depth: u16,
+    compression: u32,
+    /// The BITMAPINFO (header and colour table).
+    head: &'a [u8],
+    px: &'a [u8],
+}
+
+impl Dib<'_> {
+    fn stride(&self) -> usize {
+        (self.w as usize * self.depth as usize).div_ceil(32) * 4
+    }
+
+    /// Blue, green, red of the pixel in stored row `y` (16-bit as 5-5-5).
+    fn bgr(&self, x: usize, y: usize) -> Option<[u8; 3]> {
+        let row = self.px.get(y * self.stride()..)?;
+        Some(match self.depth {
+            16 => {
+                let v = u16::from_le_bytes([*row.get(x * 2)?, *row.get(x * 2 + 1)?]);
+                let c = |shift: u32| {
+                    let c = ((v >> shift) & 31) as u8;
+                    (c << 3) | (c >> 2)
+                };
+                [c(0), c(5), c(10)]
+            }
+            24 | 32 => {
+                let n = self.depth as usize / 8;
+                [*row.get(x * n)?, *row.get(x * n + 1)?, *row.get(x * n + 2)?]
+            }
+            _ => return None,
+        })
+    }
+
+    /// Whether a 1-bit mask pixel is white (its colour-table entry): InDesign draws the picture
+    /// where the mask is white.
+    fn mask_white(&self, x: usize, y: usize) -> Option<bool> {
+        let byte = *self.px.get(y * self.stride() + x / 8)?;
+        let index = usize::from(byte >> (7 - x % 8) & 1);
+        let c = self.head.get(40 + index * 4..40 + index * 4 + 3)?;
+        Some(c.iter().map(|&v| v as u32).sum::<u32>() > 3 * 127)
+    }
+}
+
+/// Every `EMR_STRETCHDIBITS` bitmap of an EMF, in drawing order.
+fn emf_dibs(b: &[u8]) -> Option<Vec<Dib<'_>>> {
     let word = |at: usize| b.get(at..at + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize);
     if word(0)? != 1 || b.get(40..44)? != b" EMF" {
         return None;
     }
+    let mut out = Vec::new();
     let mut at = 0;
     while at + 8 <= b.len() {
         let (kind, size) = (word(at)?, word(at + 4)?);
         if size < 8 || at + size > b.len() {
+            break;
+        }
+        // EMR_STRETCHDIBITS: offBmi, cbBmi, offBits, cbBits at 48..64 of the record.
+        if kind == 81 && size >= 80 {
+            let (bmi, bmi_len, bits, bits_len) = (word(at + 48)?, word(at + 52)?, word(at + 56)?, word(at + 60)?);
+            let head = b.get(at.checked_add(bmi)?..at.checked_add(bmi)?.checked_add(bmi_len)?)?;
+            let px = b.get(at.checked_add(bits)?..at.checked_add(bits)?.checked_add(bits_len)?)?;
+            if head.len() >= 40 {
+                let int = |i: usize| i32::from_le_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]);
+                let (w, h) = (int(4), int(8));
+                if w > 0 && h != 0 && w < 1 << 15 && h.unsigned_abs() < 1 << 15 {
+                    out.push(Dib { w, h, depth: u16::from_le_bytes([head[14], head[15]]), compression: int(16) as u32, head, px });
+                }
+            }
+        }
+        if kind == 14 {
+            break;
+        }
+        at += size;
+    }
+    Some(out)
+}
+
+/// The bitmap inside an EMF (what InDesign keeps for a `<WMF>` placement), as a BMP file. A
+/// transparent picture is written as a 1-bit mask record then the colour record: the colour
+/// bitmap shows, with the mask as its alpha. `None` for anything that is not an EMF with a
+/// bitmap in it (the vector drawing is not interpreted).
+pub(crate) fn emf_raster_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
+    let dibs = emf_dibs(b)?;
+    let colour = dibs.iter().reduce(|best, d| if d.depth > best.depth { d } else { best })?;
+    let mask = dibs.iter().find(|d| d.depth == 1 && colour.depth > 1 && (d.w, d.h) == (colour.w, colour.h));
+    let (w, rows) = (colour.w as usize, colour.h.unsigned_abs() as usize);
+    if mask.is_none() && (colour.depth != 16 || colour.compression != 0) {
+        // BITMAPINFOHEADER, BI_RGB or BI_BITFIELDS: what a BMP file holds as it is.
+        if !matches!(colour.compression, 0 | 3) {
             return None;
         }
-        match kind {
-            // EMR_STRETCHDIBITS: offBmi, cbBmi, offBits, cbBits at 48..64 of the record.
-            81 if size >= 80 => {
-                let (bmi, bmi_len, bits, bits_len) = (word(at + 48)?, word(at + 52)?, word(at + 56)?, word(at + 60)?);
-                let head = b.get(at + bmi..at.checked_add(bmi)?.checked_add(bmi_len)?)?;
-                let px = b.get(at + bits..at.checked_add(bits)?.checked_add(bits_len)?)?;
-                // BITMAPINFOHEADER, BI_RGB or BI_BITFIELDS: what a BMP file holds as it is.
-                if head.len() < 40 || !matches!(u32::from_le_bytes(head[16..20].try_into().ok()?), 0 | 3) {
-                    return None;
-                }
-                let (w, h) = (i32::from_le_bytes(head[4..8].try_into().ok()?), i32::from_le_bytes(head[8..12].try_into().ok()?));
-                let bits_per_pixel = u16::from_le_bytes(head[14..16].try_into().ok()?);
-                // The decoders have no 16-bit BMP: widen 5-5-5 to 24-bit.
-                if bits_per_pixel == 16 && head[16..20] == [0; 4] && w > 0 && h != 0 && w < 1 << 15 && h.unsigned_abs() < 1 << 15 {
-                    let (w, rows) = (w as usize, h.unsigned_abs() as usize);
-                    let (src_stride, stride) = ((w * 2).div_ceil(4) * 4, (w * 3).div_ceil(4) * 4);
-                    if px.len() < src_stride * rows {
-                        return None;
-                    }
-                    let mut out = Vec::with_capacity(54 + stride * rows);
-                    out.extend_from_slice(b"BM");
-                    out.extend_from_slice(&u32::try_from(54 + stride * rows).ok()?.to_le_bytes());
-                    out.extend_from_slice(&[0; 4]);
-                    out.extend_from_slice(&54u32.to_le_bytes());
-                    out.extend_from_slice(&40u32.to_le_bytes());
-                    out.extend_from_slice(&(w as i32).to_le_bytes());
-                    out.extend_from_slice(&h.to_le_bytes());
-                    out.extend_from_slice(&1u16.to_le_bytes());
-                    out.extend_from_slice(&24u16.to_le_bytes());
-                    out.extend_from_slice(&[0; 24]);
-                    for row in px.chunks_exact(src_stride).take(rows) {
-                        for p in row.as_chunks::<2>().0.iter().take(w) {
-                            let v = u16::from_le_bytes([p[0], p[1]]);
-                            let c = |shift: u32| {
-                                let c = ((v >> shift) & 31) as u8;
-                                (c << 3) | (c >> 2)
-                            };
-                            out.extend_from_slice(&[c(0), c(5), c(10)]);
-                        }
-                        out.resize(out.len() + stride - w * 3, 0);
-                    }
-                    return Some(out);
-                }
-                let mut out = Vec::with_capacity(14 + head.len() + px.len());
-                out.extend_from_slice(b"BM");
-                out.extend_from_slice(&u32::try_from(14 + head.len() + px.len()).ok()?.to_le_bytes());
-                out.extend_from_slice(&[0; 4]);
-                out.extend_from_slice(&u32::try_from(14 + head.len()).ok()?.to_le_bytes());
-                out.extend_from_slice(head);
-                out.extend_from_slice(px);
-                return Some(out);
-            }
-            14 => return None,
-            _ => at += size,
-        }
+        let mut out = Vec::with_capacity(14 + colour.head.len() + colour.px.len());
+        out.extend_from_slice(b"BM");
+        out.extend_from_slice(&u32::try_from(14 + colour.head.len() + colour.px.len()).ok()?.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&u32::try_from(14 + colour.head.len()).ok()?.to_le_bytes());
+        out.extend_from_slice(colour.head);
+        out.extend_from_slice(colour.px);
+        return Some(out);
     }
-    None
+    // The decoders have no 16-bit BMP, and a mask needs an alpha channel: write 24-bit, or
+    // 32-bit with the alpha mask (a V4 header) when there is a mask.
+    let (bytes, head) = if mask.is_some() { (4, 108) } else { (3, 40) };
+    let stride = w * bytes;
+    let size = 14 + head + stride.next_multiple_of(4) * rows;
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&u32::try_from(size).ok()?.to_le_bytes());
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(&u32::try_from(14 + head).ok()?.to_le_bytes());
+    out.extend_from_slice(&(head as u32).to_le_bytes());
+    out.extend_from_slice(&colour.w.to_le_bytes());
+    out.extend_from_slice(&colour.h.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&(bytes as u16 * 8).to_le_bytes());
+    out.extend_from_slice(&(if mask.is_some() { 3u32 } else { 0 }).to_le_bytes());
+    out.extend_from_slice(&[0; 20]);
+    if mask.is_some() {
+        // Masks (red, green, blue, alpha), colour space type and the rest of the V4 header.
+        for m in [0x00ff_0000u32, 0xff00, 0xff, 0xff00_0000] {
+            out.extend_from_slice(&m.to_le_bytes());
+        }
+        out.resize(14 + head, 0);
+    }
+    for y in 0..rows {
+        for x in 0..w {
+            let [bl, g, r] = colour.bgr(x, y)?;
+            out.extend_from_slice(&[bl, g, r]);
+            if let Some(m) = mask {
+                // Both records store their rows the same way up.
+                out.push(if m.mask_white(x, y)? { 255 } else { 0 });
+            }
+        }
+        out.resize(out.len() + stride.next_multiple_of(4) - stride, 0);
+    }
+    Some(out)
 }
 
 /// One line of text InDesign keeps for an `<EPSText>` (the live text of a placed EPS), in the

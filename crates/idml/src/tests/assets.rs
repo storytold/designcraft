@@ -374,29 +374,41 @@ fn a_placed_eps_text_imports_as_a_text_frame() {
     assert_eq!(story.frames, vec![items[0].id]);
 }
 
-/// An EMF the way InDesign embeds a pasted photo: header, one `EMR_STRETCHDIBITS`, `EMR_EOF`.
-fn emf_with_bitmap(w: u32, h: u32, bgr: &[u8]) -> Vec<u8> {
+/// One `EMR_STRETCHDIBITS` record: a `depth`-bit bitmap with an optional colour `table`.
+fn emf_dib_record(w: u32, h: u32, depth: u16, table: &[u8], bits: &[u8]) -> Vec<u8> {
     let le = |v: u32| v.to_le_bytes();
-    let mut b = Vec::new();
-    b.extend([le(1), le(88)].concat());
+    let mut bmi = [le(40), le(w), le(h)].concat();
+    bmi.extend(1u16.to_le_bytes());
+    bmi.extend(depth.to_le_bytes());
+    bmi.extend([le(0), le(bits.len() as u32)].concat());
+    bmi.resize(40, 0);
+    bmi.extend(table);
+    let mut rec = [le(81), le((80 + bmi.len() + bits.len()) as u32)].concat();
+    rec.resize(48, 0);
+    rec.extend([le(80), le(bmi.len() as u32), le(80 + bmi.len() as u32), le(bits.len() as u32)].concat());
+    rec.resize(80, 0);
+    rec.extend(&bmi);
+    rec.extend(bits);
+    rec
+}
+
+/// An EMF the way InDesign embeds a pasted picture: header, the given records, `EMR_EOF`.
+fn emf_of(records: &[Vec<u8>]) -> Vec<u8> {
+    let le = |v: u32| v.to_le_bytes();
+    let mut b = [le(1), le(88)].concat();
     b.resize(40, 0);
     b.extend(b" EMF");
     b.resize(88, 0);
-    let mut bmi = [le(40), le(w), le(h)].concat();
-    bmi.extend(1u16.to_le_bytes());
-    bmi.extend(24u16.to_le_bytes());
-    bmi.extend([le(0), le(bgr.len() as u32)].concat());
-    bmi.resize(40, 0);
-    let size = 80 + bmi.len() + bgr.len();
-    let mut rec = [le(81), le(size as u32)].concat();
-    rec.resize(48, 0);
-    rec.extend([le(80), le(40), le(80 + 40), le(bgr.len() as u32)].concat());
-    rec.resize(80, 0);
-    rec.extend(&bmi);
-    rec.extend(bgr);
-    b.extend(rec);
+    for r in records {
+        b.extend(r);
+    }
     b.extend([le(14), le(20), le(0), le(16), le(20)].concat());
     b
+}
+
+/// An EMF holding one 24-bit bitmap.
+fn emf_with_bitmap(w: u32, h: u32, bgr: &[u8]) -> Vec<u8> {
+    emf_of(&[emf_dib_record(w, h, 24, &[], bgr)])
 }
 
 #[test]
@@ -423,10 +435,21 @@ fn a_placed_emf_photo_imports_as_a_raster() {
 #[test]
 fn a_16_bit_emf_bitmap_is_widened_to_24_bit() {
     // 2x1 at 5-5-5: pure red (0x7c00) and pure blue (0x001f), rows padded to four bytes.
-    let mut emf = emf_with_bitmap(2, 1, &[0x00, 0x7c, 0x1f, 0x00]);
-    let bmi = 88 + 80;
-    emf[bmi + 14..bmi + 16].copy_from_slice(&16u16.to_le_bytes());
+    let emf = emf_of(&[emf_dib_record(2, 1, 16, &[], &[0x00, 0x7c, 0x1f, 0x00])]);
     let bmp = crate::emf_raster_to_bmp(&emf).unwrap();
     assert_eq!(bmp[28..30], 24u16.to_le_bytes());
     assert_eq!(bmp[54..60], [0, 0, 255, 255, 0, 0], "BGR: red, blue");
+}
+
+#[test]
+fn a_masked_emf_shows_its_colour_bitmap_with_the_mask_as_alpha() {
+    // InDesign writes a transparent picture as a 1-bit mask record (black, white), then the
+    // colour record; the picture shows where the mask is white.
+    let table = [0, 0, 0, 0, 255, 255, 255, 0];
+    let mask = emf_dib_record(2, 1, 1, &table, &[0b0100_0000, 0, 0, 0]);
+    let colour = emf_dib_record(2, 1, 24, &[], &[10, 20, 30, 40, 50, 60, 0, 0]);
+    let bmp = crate::emf_raster_to_bmp(&emf_of(&[mask, colour])).unwrap();
+    assert_eq!(bmp[28..30], 32u16.to_le_bytes());
+    assert_eq!(bmp[10..14], 122u32.to_le_bytes());
+    assert_eq!(bmp[122..], [10, 20, 30, 0, 40, 50, 60, 255], "the first pixel is outside the mask");
 }
