@@ -270,3 +270,82 @@ fn the_swatch_applied_to_an_image_is_kept() {
     assert!(!images.iter().any(|e| e.contains("Swatch/None")), "{images:?}");
     assert_eq!(fills(&import_idml_with(&out, &reader).unwrap()), want);
 }
+
+/// InDesign embeds an EPS placement's preview as `EPSImage` + five words + raw top-down RGB.
+fn eps_preview(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
+    let mut b = b"EPSImage".to_vec();
+    for v in [w * 3, w, h, 8, 3] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(rgb);
+    b
+}
+
+#[test]
+fn an_embedded_eps_preview_imports_as_a_raster() {
+    // 2x2: red, green / blue, white.
+    let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/code.eps", Some(&eps_preview(2, 2, &rgb))))];
+    let d = import_idml_with(&package(&frames), &|_: &str| None).unwrap();
+    let (id, _, _) = placements(&d)[0];
+    let a = d.assets.get(&id).unwrap();
+    assert_eq!(a.mime, "image/bmp");
+    assert_eq!(a.pixels, Some((2, 2)));
+    assert!(a.is_raster());
+    // A 24-bit BMP stores rows bottom-up as BGR, padded to four bytes: blue/white first.
+    let px = &a.data[54..];
+    assert_eq!(px[..6], [255, 0, 0, 255, 255, 255], "bottom row: blue, white");
+    assert_eq!(px[8..14], [0, 0, 255, 0, 255, 0], "top row: red, green");
+
+    // A truncated raster is not decoded as one.
+    let cut = eps_preview(2, 2, &rgb[..9]);
+    assert!(crate::eps_preview_to_bmp(&cut).is_none());
+}
+
+/// `EPSTextData` as InDesign writes it: header, font record, five doubles, text record.
+fn eps_text_data(font: &str, size: f64, x: f64, y: f64, text: &str) -> Vec<u8> {
+    let mut b = vec![0, 1, 0, 2, 2, 1, 1, 0, font.len() as u8, 0x40, font.len() as u8];
+    b.extend_from_slice(font.as_bytes());
+    for v in [size, 0.0, 0.0, size, x, y, 0.0, 0.0] {
+        b.extend_from_slice(&v.to_be_bytes());
+    }
+    b.extend_from_slice(&[2, 1, 1, 0, text.chars().count() as u8, 0x80, text.chars().count() as u8]);
+    for u in text.encode_utf16() {
+        b.extend_from_slice(&u.to_be_bytes());
+    }
+    b.extend_from_slice(&[0; 40]);
+    b
+}
+
+#[test]
+fn eps_text_reads_font_size_position_and_text() {
+    let t = crate::parse_eps_text(&eps_text_data("YuMincho-Regular", 21.0, 377.5, -793.25, "ご予約ページ")).unwrap();
+    assert_eq!((t.font.as_str(), t.size, t.x, t.y, t.text.as_str()), ("YuMincho-Regular", 21.0, 377.5, -793.25, "ご予約ページ"));
+    assert!(crate::parse_eps_text(b"EPSImage").is_none(), "not an EPSText record");
+}
+
+#[test]
+fn a_placed_eps_text_imports_as_a_text_frame() {
+    let data = base64_encode(&eps_text_data("YuMincho-Regular", 20.0, 100.0, -50.0, "0120-672-334"));
+    // The art spans 100..220 in its own coordinates and was scaled by one half in the layout.
+    let eps = format!(
+        r#"<EPSText Self="e1" FillColor="Color/Black" ItemTransform="1 0 0 1 0 0"><Properties>
+        <PathBoundingBox Left="300" Top="-70" Right="360" Bottom="-60"/>
+        <EPSTextData><![CDATA[{data}]]></EPSTextData>
+        <EPSTextAttributeBounds Top="-65" Left="100" Bottom="-45" Right="220"/></Properties></EPSText>"#
+    );
+    let group = format!(r#"<Group Self="g1" ItemLayer="L1" ItemTransform="1 0 0 1 0 0">{eps}</Group>"#);
+    let d = import_idml_with(&package(&[group]), &|_: &str| None).unwrap();
+    let Content::Group { items } = &d.spreads[0].items[0].content else { panic!("a group") };
+    let Content::Text(tf) = &items[0].content else { panic!("the EPS text is a text frame") };
+    let story = d.story(tf.story).unwrap();
+    assert_eq!(story.text, "0120-672-334");
+    let run = &story.chars[0].format.over;
+    assert_eq!((run.font_family.as_deref(), run.font_style.as_deref()), (Some("Yu Mincho"), Some("Regular")));
+    assert_eq!(run.size, Some(10.0), "20 pt at the layout's scale of one half");
+    // The baseline stays where the EPS put it: 5 pt above the art's bottom (-45), which the layout
+    // scaled by one half, so 2.5 pt above the bottom of the bounds (-60).
+    let top = items[0].path.bounds().unwrap().y0;
+    assert!((top + tf.options.first_baseline_min - -62.5).abs() < 1e-6, "baseline {}", top + tf.options.first_baseline_min);
+    assert_eq!(story.frames, vec![items[0].id]);
+}
