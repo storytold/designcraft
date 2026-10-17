@@ -65,3 +65,6 @@ sync_github_name = false
 real_name = "Marco Arnulfo"
 display_name = "Marco Arnulfo"
 sync_github_name = false
+
+[people.macrobi]
+sync_github_name = true

@@ -65,7 +65,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "app.language",
         "Interface Language",
         None,
-        "{lang?: \"\"|de|fr|es|ja|zh|ar|pt-br|it|uk|ru|cs|pl|ka} — menus and panel names (the macOS menu bar follows at once); without lang, opens Preferences, where it is the first setting",
+        "{lang?: \"\"|de|fr|es|ja|zh|ar|pt-br|it|uk|ru|cs|pl|ka|hu} — menus and panel names (the macOS menu bar follows at once); without lang, opens Preferences, where it is the first setting",
     ),
     (
         "app.flattener",
@@ -3805,6 +3805,26 @@ mod tests {
                 .extend(labels.into_iter().filter(|l| l.chars().any(char::is_alphabetic) && !size(l) && crate::i18n::tr("ka", l) == l.as_str()));
         }
         assert!(untranslated.is_empty(), "untranslated Georgian menu labels: {untranslated:?}");
+    }
+
+    #[test]
+    fn hungarian_language_is_selectable_persisted_and_keeps_document_data() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "My words · Árvíztűrő tükörfúrógép"})).unwrap();
+        let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+        run_ui(&mut app, "app.language", &json!({"lang": "hu"})).unwrap().unwrap();
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "hu"})), Some(true));
+        assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+        for (title, _) in menu_tree() {
+            assert_ne!(crate::i18n::tr("hu", title), title, "{title}");
+        }
+        let bytes = serde_json::to_vec(&app.ui).unwrap();
+        let restored: crate::UiState = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.language, "hu");
+        assert_eq!(crate::i18n::tr(&restored.language, "File"), "Fájl");
+        assert_eq!(crate::i18n::tr(&restored.language, "A custom name"), "A custom name");
+        assert!(crate::i18n::LANGUAGES.contains(&("hu", "Magyar")), "Preferences lists Hungarian by its own name");
     }
 
     #[test]
