@@ -965,7 +965,8 @@ impl Exporter<'_> {
         if frame_art {
             s.end_tagged();
         }
-        // Content.
+        // Content. A text frame's anchored objects are drawn under its text when it can be.
+        let mut drawn = false;
         match &it.content {
             Content::Graphic(g) => {
                 let g = &if it.media.is_some() { it.drawn_graphic(&self.doc.assets).unwrap_or_else(|| g.clone()) } else { g.clone() };
@@ -996,7 +997,7 @@ impl Exporter<'_> {
                         s.push_transform(&tf(local));
                     }
                     self.text_area = (local.determinant().abs() > 1e-12).then(|| local.inverse().transform_rect_bbox(it.inner_bounds()));
-                    self.frame_text(s, &cs, ft, text);
+                    drawn = self.frame_text(s, &cs, ft, text, Some((xf * local, page)));
                     self.text_area = None;
                     if local != Affine::IDENTITY {
                         s.pop();
@@ -1021,7 +1022,9 @@ impl Exporter<'_> {
         for _ in 0..pushes {
             s.pop();
         }
-        if let Content::Text(tfr) = &it.content {
+        if let Content::Text(tfr) = &it.content
+            && !drawn
+        {
             let cs = self.cache.get(doc, tfr.story, page);
             if let Some(ft) = cs.frame(it.id) {
                 self.frame_objects(s, ft, xf * doc.text_local(it), page);
@@ -1031,7 +1034,7 @@ impl Exporter<'_> {
 
     /// Draw embedded page items after restoring the surface, retaining spread-space
     /// transforms for page culling (also for anonymous note and cell stories).
-    fn frame_objects(&mut self, s: &mut Surface, ft: &designcraft_compose::FrameText, xf: Affine, page: Option<usize>) {
+    pub(crate) fn frame_objects(&mut self, s: &mut Surface, ft: &designcraft_compose::FrameText, xf: Affine, page: Option<usize>) {
         let mut pending = vec![(ft, xf)];
         while let Some((frame, transform)) = pending.pop() {
             for object in &frame.objects {

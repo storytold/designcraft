@@ -819,3 +819,24 @@ fn a_swatch_colours_a_greyscale_image() {
     let (s, _) = export(&rgb, Some("PANTONE Test"));
     assert!(!s.contains("PANTONE#20Test"), "a colour image keeps its colours");
 }
+
+/// An inline object is painted under its frame's text, as InDesign draws it: a picture whose
+/// frame reaches down into the next line (a negative Y offset) doesn't hide that line.
+#[test]
+fn inline_objects_are_painted_under_the_text() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    let mut d = doc_with_text("A\nWWWW");
+    let sid = *d.stories.keys().next().unwrap();
+    let mut item = Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 30.0)),
+    );
+    item.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: -20.0 }));
+    let order = paint_order(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+    let first_text = order.iter().position(|(op, _)| op.ends_with("text")).unwrap();
+    let the_box = order.iter().position(|(op, _)| op == "fill path").unwrap();
+    assert!(the_box < first_text, "{order:?}");
+}
