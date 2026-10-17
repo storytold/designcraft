@@ -130,6 +130,12 @@ impl<'a> Rules<'a> {
         if punctuation > 0.0 {
             return Aki { min: 0.0, desired: punctuation, max: punctuation, priority: 1, discrete: false };
         }
+        // Prefix and postfix abbreviation signs (￥ ＄ before a figure, ％ ℃ after one) are set solid
+        // against half-width digits, unlike ideographs, which keep a quarter em from them (checked
+        // against InDesign: "￥96,000" has no space after the yen sign, "漢96" has).
+        if (left == 8 && right == 25) || (left == 25 && right == 9) {
+            return Aki::default();
+        }
         let roman = |c| matches!(c, 18 | 25);
         let ideograph = |c| matches!(c, 3 | 7..=9 | 11 | 12 | 24 | 33);
         if (roman(left) && ideograph(right)) || (ideograph(left) && roman(right)) {
@@ -185,6 +191,11 @@ pub fn class(c: char) -> i16 {
         | 'ー' | '々' | 'ゝ' | 'ゞ' | 'ヽ' | 'ヾ' => 3,
         '\u{3040}'..='\u{309f}' => 11,
         '\u{30a0}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}' => 33,
+        // Symbols that Japanese text sets full width as ideographs do (※ → ○ ★ ① Ⅱ § †): no space against
+        // kana, a quarter em against digits and Roman letters (checked against InDesign).
+        '§' | '¶' | '‖' | '†' | '‡' | '※' | '\u{2150}'..='\u{218f}' | '\u{2190}'..='\u{22ff}' | '\u{2460}'..='\u{24ff}' | '\u{25a0}'..='\u{27bf}' => {
+            12
+        }
         '０'..='９' => 24,
         '0'..='9' => 25,
         '\u{2e80}'..='\u{a4cf}' | '\u{ac00}'..='\u{d7af}' | '\u{f900}'..='\u{faff}' | '\u{ff01}'..='\u{ff60}' | '\u{20000}'..='\u{323af}' => 12,
@@ -196,6 +207,24 @@ pub fn class(c: char) -> i16 {
 mod tests {
     use super::*;
     use crate::cjk::MojikumiTable;
+
+    #[test]
+    fn abbreviation_signs_are_set_solid_against_half_width_digits() {
+        let styles = Styles::default();
+        let rules = Rules::resolve(&styles, "LineEndAllOneHalfEmEnum").unwrap().unwrap();
+        let (digit, yen, percent, kanji) = (class('6'), class('￥'), class('％'), class('漢'));
+        assert_eq!((digit, yen, percent), (25, 8, 9));
+        assert_eq!(rules.pair(yen, digit).desired, 0.0, "￥96");
+        assert_eq!(rules.pair(digit, percent).desired, 0.0, "96％");
+        assert_eq!(rules.pair(kanji, digit).desired, 0.25, "漢96 keeps its quarter em");
+        // ※ and the other symbols set full width are ideographs, not Roman letters.
+        for c in ['※', '→', '○', '★', '①', 'Ⅱ', '§', '†'] {
+            assert_eq!(class(c), 12, "{c}");
+            assert_eq!(rules.pair(class(c), class('こ')).desired, 0.0, "{c}こ");
+            assert_eq!(rules.pair(class(c), digit).desired, 0.25, "{c}6");
+        }
+        assert_eq!(rules.pair(digit, kanji).desired, 0.25);
+    }
 
     #[test]
     fn overrides_are_directional_and_unknown_tables_are_not_silently_applied() {
