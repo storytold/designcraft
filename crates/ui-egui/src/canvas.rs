@@ -432,6 +432,61 @@ fn spring_zoom_input(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, 
     true
 }
 
+/// Transient editing view, kept independently for each document and split pane.
+#[derive(Clone, Copy)]
+struct PresentationReturnView {
+    view: View,
+    rect: Rect,
+    spread: Option<SpreadRef>,
+}
+
+/// Presentation fits its spread into a different viewport. Keep that camera change out of
+/// the editing view, while retaining a spread reached with the presentation controls.
+fn presentation_view(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, presenting: bool) {
+    let Some(st) = app.session.active() else { return };
+    let key = egui::Id::new(("presentation-return-view", st.uid, app.pane, st.editing_parents));
+    let (saved, old_rect) = ctx.data_mut(|data| {
+        let old_rect = data.get_temp::<Rect>(key.with("viewport")).unwrap_or(rect);
+        data.insert_temp(key.with("viewport"), rect);
+        (data.get_temp::<PresentationReturnView>(key), old_rect)
+    });
+    if !presenting && saved.is_none() {
+        return;
+    }
+    let Some(view) = app.view().copied().filter(|v| v.zoom.is_finite() && v.zoom > 0.0) else { return };
+    let centre = |view: View, rect: Rect| {
+        Point::new(view.origin.x + f64::from(rect.width()) / (2.0 * view.zoom), view.origin.y + f64::from(rect.height()) / (2.0 * view.zoom))
+    };
+    // The screen-mode command restores its entry view before the next canvas frame. Keep the
+    // last presented centre separately so that restoration does not lose navigation here.
+    let current = if presenting {
+        let at = centre(view, old_rect);
+        ctx.data_mut(|data| data.insert_temp(key.with("last-centre"), at));
+        at
+    } else {
+        ctx.data_mut(|data| data.remove_temp::<Point>(key.with("last-centre"))).unwrap_or_else(|| centre(view, old_rect))
+    };
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let spread = layout.spread_at(current).map(|(spread, _)| spread);
+    let (mut restored, centre) = if presenting {
+        if saved.is_none() {
+            ctx.data_mut(|data| data.insert_temp(key, PresentationReturnView { view, rect: old_rect, spread }));
+        }
+        // Changing the available area must not select a neighbouring spread at low zoom.
+        (view, current)
+    } else {
+        let Some(saved) = saved else { return };
+        ctx.data_mut(|data| data.remove::<PresentationReturnView>(key));
+        let at = if spread == saved.spread { centre(saved.view, saved.rect) } else { current };
+        (saved.view, at)
+    };
+    restored.origin =
+        Point::new(centre.x - f64::from(rect.width()) / (2.0 * restored.zoom), centre.y - f64::from(rect.height()) / (2.0 * restored.zoom));
+    if let Some(view) = app.view_mut() {
+        *view = restored;
+    }
+}
+
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let outer = ui.available_rect_before_wrap();
@@ -444,6 +499,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let rulers = app.ui.rulers && !presenting && rot == 0;
     let screen = if rulers { Rect::from_min_max(full.min + vec2(RULER, RULER), full.max) } else { full };
     let rect = view_rect(screen, rot);
+    presentation_view(app, ui.ctx(), rect, presenting);
     app.canvas_rect = Some(rect);
     let resp = ui.allocate_rect(full, Sense::click_and_drag());
     if presenting {
@@ -2977,6 +3033,87 @@ mod tests {
     use egui_kittest::{Harness, kittest::Queryable};
 
     use super::*;
+
+    #[test]
+    fn presentation_restores_editing_zoom_and_keeps_the_last_presented_spread() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"pages":7,"facingPages":true})).unwrap();
+        app.run("frame.create", json!({"rect":[36,36,140,140],"content":"unassigned"})).unwrap();
+        let doc = app.session.active().unwrap().doc.clone();
+        let selection = app.session.active().unwrap().selection.clone();
+        let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+        let press = |h: &mut egui_kittest::Harness<'_, crate::test_window::Window>, key, modifiers| {
+            for pressed in [true, false] {
+                h.event(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
+            }
+            h.run_steps(3);
+        };
+        h.state_mut().app.run("view.zoom", json!({"zoom":0.5})).unwrap();
+        h.state_mut().app.run("view.goToPage", json!({"page":3})).unwrap();
+        h.state_mut().app.run("view.screenMode", json!({"mode":"preview"})).unwrap();
+        h.run_steps(3);
+        let original = *h.state().app.view().unwrap();
+        press(&mut h, egui::Key::W, egui::Modifiers::SHIFT);
+        assert_eq!(h.state().app.ui.screen_mode, ScreenMode::Presentation);
+        assert_ne!(h.state().app.view().unwrap().zoom, original.zoom);
+        press(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        let restored = *h.state().app.view().unwrap();
+        assert_eq!(restored.zoom, original.zoom);
+        assert!((restored.origin - original.origin).length() < 1e-8, "without navigation, return to the same view");
+        assert_eq!(h.state().app.ui.screen_mode, ScreenMode::Preview);
+
+        press(&mut h, egui::Key::W, egui::Modifiers::SHIFT);
+        press(&mut h, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        press(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+        let app = &h.state().app;
+        let layout = CanvasLayout::new(&app.session.active().unwrap().doc, false);
+        assert_eq!(current_slot(app, &layout), Some(2));
+        assert_eq!(app.view().unwrap().zoom, original.zoom);
+        let centre = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap()).to_canvas(app.canvas_rect.unwrap().center());
+        assert!((centre - layout.slots[2].bounds.center()).length() < 1e-8, "centre the last presented spread in the editing viewport");
+        assert_eq!(app.session.active().unwrap().selection, selection);
+        assert_eq!(serde_json::to_value(&*app.session.active().unwrap().doc).unwrap(), serde_json::to_value(&*doc).unwrap());
+
+        // Explicit menu exit and Shift+W share the same restoration path.
+        for keyboard in [false, true] {
+            h.state_mut().app.run("view.screenMode", json!({"mode":"presentation"})).unwrap();
+            h.run_steps(3);
+            if keyboard {
+                press(&mut h, egui::Key::W, egui::Modifiers::SHIFT);
+            } else {
+                h.state_mut().app.run("view.screenMode", json!({"mode":"normal"})).unwrap();
+                h.run_steps(3);
+            }
+            assert_eq!(h.state().app.view().unwrap().zoom, original.zoom);
+        }
+    }
+
+    #[test]
+    fn presentation_return_views_do_not_cross_documents() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"pages":3})).unwrap();
+        let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+        h.state_mut().app.run("view.zoom", json!({"zoom":0.4})).unwrap();
+        let first = *h.state().app.view().unwrap();
+        h.state_mut().app.run("file.new", json!({"pages":5})).unwrap();
+        h.run_steps(3);
+        h.state_mut().app.run("view.zoom", json!({"zoom":0.75})).unwrap();
+        let second = *h.state().app.view().unwrap();
+        h.state_mut().app.run("file.activate", json!({"index":0})).unwrap();
+        h.run_steps(3);
+        h.state_mut().app.run("view.screenMode", json!({"mode":"presentation"})).unwrap();
+        h.run_steps(3);
+        h.state_mut().app.run("file.activate", json!({"index":1})).unwrap();
+        h.run_steps(3);
+        h.state_mut().app.run("view.screenMode", json!({"mode":"normal"})).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.state().app.view().unwrap().zoom, 0.75);
+        assert!((h.state().app.view().unwrap().origin - second.origin).length() < 1e-8);
+        h.state_mut().app.run("file.activate", json!({"index":0})).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.state().app.view().unwrap().zoom, 0.4);
+        assert!((h.state().app.view().unwrap().origin - first.origin).length() < 1e-8);
+    }
 
     #[test]
     fn a_press_after_a_drag_is_not_a_double_click() {
