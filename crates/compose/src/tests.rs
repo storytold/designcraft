@@ -3891,6 +3891,25 @@ fn norwegian_text_gets_norwegian_hyphenation() {
 }
 
 #[test]
+fn esperanto_text_breaks_between_morphemes() {
+    let text = "malsanulejoj lernejanoj tranĉiloj vaporŝipoj esperantistoj malfacilaĵoj";
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 76.0, 700.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    let n = st.len();
+    st.format_chars(0..n, |f| f.over.language = Some("Esperanto".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let breaks: Vec<&str> = all_lines(&cs).into_iter().filter(|l| l.hyphenated).map(|l| text[l.range.clone()].trim_end()).collect();
+    assert!(!breaks.is_empty(), "Esperanto text is hyphenated");
+    let eo = hyphen::Lang::for_language("Esperanto").unwrap();
+    for b in breaks {
+        let tail = b.rsplit(' ').next().unwrap_or(b);
+        let whole = text[text.find(b).unwrap() + b.len() - tail.len()..].split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+        let pts = hyphen::hyphen_points_in(whole, &hyphen::Limits::default(), eo);
+        assert!(pts.contains(&tail.chars().count()), "break {tail}- in {whole} is a morpheme boundary");
+    }
+}
+
+#[test]
 fn cjk_aki_adds_space_without_scaling_outlines() {
     let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
     let old = compose_story(&d, sid, &ComposeOptions::default());

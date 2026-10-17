@@ -26,3 +26,4 @@ hypher = { version = "0.1.8", default-features = false, features = ["alloc", "gr
 [dev-dependencies]
 designcraft-fonts = { workspace = true, features = ["testing"] }
 proptest = { workspace = true }
+serde_json = { workspace = true }

@@ -986,6 +986,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "proptest",
  "regex",
+ "serde_json",
  "unicode-bidi",
  "unicode-bidi-mirroring",
  "unicode-script",

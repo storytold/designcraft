@@ -1505,6 +1505,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("German: Swiss 2006 Reform", "ドイツ語: スイス 2006年正書法改訂"),
     ("Greek", "ギリシャ語"),
     ("Hebrew", "ヘブライ語"),
+    ("Esperanto", "エスペラント語"),
     ("Hindi", "ヒンディー数字"),
     ("Hungarian", "ハンガリー語"),
     ("Inverse Rounded Rectangle", "内向き角丸長方形"),
