@@ -728,7 +728,62 @@ impl Document {
         st.editorial.clear();
         st.fix_marks();
         st.rev = st.rev.wrapping_add(1);
+        self.hyperlinks.retain(|h| match &h.source {
+            crate::HyperlinkSource::Text { story, .. } => *story != sid,
+            _ => true,
+        });
+        self.data_merge.placeholders.retain(|ph| match &ph.anchor {
+            crate::PlaceholderAnchor::Text { story, .. } => *story != sid,
+            _ => true,
+        });
         Ok(())
+    }
+
+    /// Adjust story-external text references (hyperlinks and data-merge placeholders) after text
+    /// in `story` has `del_range` replaced by `ins_len` bytes.
+    pub fn adjust_text_ranges(&mut self, story: StoryId, del_range: std::ops::Range<usize>, ins_len: usize) {
+        let (da, db) = (del_range.start, del_range.end);
+        let remap = |s: usize, e: usize| -> Option<(usize, usize)> {
+            let del_before = db.min(s).saturating_sub(da);
+            let del_inside = db.min(e).saturating_sub(da.max(s));
+            let mut s_new = s - del_before;
+            let mut e_new = e - del_before - del_inside;
+            if da < s || (da == s && db == s) {
+                s_new = s_new.saturating_add(ins_len);
+                e_new = e_new.saturating_add(ins_len);
+            } else if da < e {
+                e_new = e_new.saturating_add(ins_len);
+            }
+            if s_new < e_new { Some((s_new, e_new)) } else { None }
+        };
+
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
     }
 }
 
