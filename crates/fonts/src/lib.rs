@@ -197,6 +197,20 @@ pub fn shape_with_context(
     out
 }
 
+/// `features` as a run in `script` takes them. Contextual alternates are part of how Arabic joins
+/// (connecting strokes, tatweel and letter variants): InDesign keeps them in Arabic text with
+/// Contextual Alternates off, so `calt` off is dropped there.
+fn script_features(features: &[Feature], script: unicode_script::Script) -> std::borrow::Cow<'_, [Feature]> {
+    use unicode_script::Script;
+    let calt = Tag::new(b"calt");
+    let off = |f: &Feature| f.tag == calt && f.value == 0;
+    if script == Script::Arabic && features.iter().any(off) {
+        features.iter().filter(|f| !off(f)).copied().collect::<Vec<_>>().into()
+    } else {
+        features.into()
+    }
+}
+
 fn shape_dir(
     face: &FontFace,
     text: &str,
@@ -207,6 +221,8 @@ fn shape_dir(
     context: ShapeContext<'_>,
 ) -> Vec<ShapedGlyph> {
     let mut out = Vec::with_capacity(text.len());
+    let features = script_features(features, script);
+    let features = &features[..];
     let shaped = face.hb().map(|hb| {
         let shaper = face.shaper.shaper(&hb).instance(face.instance.as_ref()).build();
         let mut buf = UnicodeBuffer::new();
@@ -333,6 +349,16 @@ pub fn first_glyph(face: &FontFace, chars: &[char]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arabic_keeps_contextual_alternates() {
+        use unicode_script::Script;
+        let off = feature("-calt").unwrap();
+        let liga = feature("-liga").unwrap();
+        let tags = |s: Script| script_features(&[off, liga], s).iter().map(|f| (f.tag, f.value)).collect::<Vec<_>>();
+        assert_eq!(tags(Script::Arabic), vec![(liga.tag, 0)]);
+        assert_eq!(tags(Script::Latin), vec![(off.tag, 0), (liga.tag, 0)]);
+    }
 
     #[test]
     fn arabic_script_runs_do_not_inherit_the_hebrew_shaper() {
