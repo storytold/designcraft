@@ -180,7 +180,7 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
     if let Some(s) = r.on("strike") {
         a.strikethrough = Some(s);
     }
-    if let Some(sz) = r.val("sz").and_then(|v| v.parse::<f64>().ok()) {
+    if let Some(sz) = r.val("sz").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
         a.size = Some(sz / 2.0);
     }
     if let Some(f) = r.child("rFonts").and_then(|f| f.attr("ascii").or(f.attr("hAnsi"))) {
@@ -203,7 +203,7 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
 fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
     let mut a = ParaAttrs::default();
     let Some(p) = ppr else { return a };
-    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).map(|v| v / 20.0);
+    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v / 20.0);
     if let Some(sp) = p.child("spacing") {
         a.space_before = tw(sp.attr("before"));
         a.space_after = tw(sp.attr("after"));
@@ -678,6 +678,28 @@ mod tests {
         let st = import(&docx(&document, "", "")).unwrap().story;
         st.check().unwrap();
         assert_eq!(st.text, "Date: 1 May 2026.\nLink");
+    }
+
+    /// `str::parse::<f64>` accepts "NaN"/"inf"; sizes, spacing and indents must ignore them.
+    #[test]
+    fn non_finite_sizes_spacing_and_indents_are_ignored() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:pPr><w:spacing w:before="NaN" w:after="inf"/><w:ind w:left="-inf" w:right="NaN" w:firstLine="-inf"/></w:pPr>
+                <w:r><w:rPr><w:sz w:val="NaN"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:sz w:val="inf"/></w:rPr><w:t>b</w:t></w:r></w:p>
+              <w:p><w:pPr><w:ind w:hanging="inf"/></w:pPr><w:r><w:t>c</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        let fin = |v: Option<f64>| v.is_none_or(f64::is_finite);
+        for p in &st.paras {
+            let p = &p.para;
+            assert!(fin(p.space_before) && fin(p.space_after), "{p:?}");
+            assert!(fin(p.left_indent) && fin(p.right_indent) && fin(p.first_line_indent), "{p:?}");
+        }
+        for at in [0, 1] {
+            assert!(fin(st.format_after(at).over.size), "{:?}", st.format_after(at).over.size);
+        }
     }
 
     #[test]
