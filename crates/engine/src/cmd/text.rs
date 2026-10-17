@@ -129,13 +129,17 @@ pub fn specs() -> Vec<CommandSpec> {
                 let b = p.get("end").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(a);
                 let text = super::text_param(p, "text");
                 s.edit(|d, sel| {
-                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                    let (a, b) = (a.min(st.len()), b.min(st.len()).max(a.min(st.len())));
-                    st.replace(a..b, &text);
-                    let len = st.len();
+                    let (len, (a, b)) = {
+                        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                        let (a, b) = (a.min(st.len()), b.min(st.len()).max(a.min(st.len())));
+                        st.replace(a..b, &text);
+                        (st.len(), (a, b))
+                    };
+                    d.adjust_text_ranges(sid, a..b, text.len());
                     if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
-                        t.anchor = floor_char_boundary(&st.text, t.anchor);
-                        t.focus = floor_char_boundary(&st.text, t.focus);
+                        let st_text = d.story(sid).map(|st| st.text.as_str()).unwrap_or("");
+                        t.anchor = floor_char_boundary(st_text, t.anchor);
+                        t.focus = floor_char_boundary(st_text, t.focus);
                     }
                     Ok(json!({"length": len}))
                 })
@@ -673,6 +677,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         {
             r = r.start + 1..r.start + 1;
         }
+        let mut auto_edit = None;
         // Autocorrect: a word ended by a space or punctuation is looked up.
         if let Some(list) = &autocorrect
             && r.is_empty()
@@ -691,6 +696,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                         to.clone()
                     };
                     st.replace(ws..r.start, &to);
+                    auto_edit = Some((ws..r.start, to.len()));
                     r = ws + to.len()..ws + to.len();
                 }
             }
@@ -728,6 +734,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             st.insert_with(at, &text, fmt);
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+            d.adjust_text_ranges(t.story, at..at, text.len());
             return Ok(json!({"pos": pos}));
         }
         let a = floor_char_boundary(&st.text, r.start.min(st.len()));
@@ -741,6 +748,12 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+        if t.cell.is_none() {
+            if let Some((range, len)) = auto_edit {
+                d.adjust_text_ranges(t.story, range, len);
+            }
+            d.adjust_text_ranges(t.story, a..b, text.len());
+        }
         Ok(json!({"pos": pos}))
     });
     // A preview (IME marked text) leaves the typing format to the text typed in the end.
@@ -841,6 +854,9 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
                 st.delete(r.clone());
             }
         }
+        if !tracking && t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), 0);
+        }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
@@ -872,6 +888,9 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
             return ok();
         }
         st.delete(r.clone());
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), 0);
+        }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
