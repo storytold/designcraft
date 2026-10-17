@@ -330,7 +330,10 @@ fn run(args: &[String]) -> Result<(), String> {
                 }
             }
             "--page" => page = val()?.parse().map_err(|_| "bad --page")?,
-            "--scale" => scale = val()?.parse().map_err(|_| "bad --scale")?,
+            "--scale" => {
+                // 0, a negative value and NaN made a 1×1 image; infinity, "no such page".
+                scale = val()?.parse().ok().filter(|s: &f64| s.is_finite() && *s > 0.0).ok_or("bad --scale: expected a positive number")?;
+            }
             "--pdf-options" => {
                 // The export adds its path to them.
                 pdf_opts = match serde_json::from_str(&val()?).map_err(|e| format!("--pdf-options: {e}"))? {
