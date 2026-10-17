@@ -126,6 +126,15 @@ impl<'a> Rules<'a> {
         if right == 22 {
             return Aki::fixed(if self.base == Base::LineEndHalfEm { 0.0 } else { trailing(left) });
         }
+        // Consecutive punctuation in the Japanese sets (JLREQ 3.1.4): opening brackets together,
+        // and closing brackets, commas and full stops together, touch. Other neighbours keep the
+        // larger blank, so a closing bracket and an opening one are half an em apart. The Chinese
+        // sets keep the larger blank throughout.
+        let opening = |c| matches!(c, 1 | 26 | 27);
+        let closing = |c| matches!(c, 2 | 6 | 21 | 28..=31);
+        if self.base != Base::Chinese && ((opening(left) && opening(right)) || (closing(left) && closing(right))) {
+            return Aki::default();
+        }
         let punctuation = trailing(left).max(leading(right));
         if punctuation > 0.0 {
             return Aki { min: 0.0, desired: punctuation, max: punctuation, priority: 1, discrete: false };
@@ -235,6 +244,31 @@ mod tests {
         assert_ne!(class('１'), class('1'));
         assert_ne!(class('，'), class('、'));
         assert_ne!(class('「'), class('（'));
+    }
+
+    #[test]
+    fn consecutive_punctuation_touches_except_closing_before_opening() {
+        let styles = Styles::default();
+        for set in ["LineEndAllOneHalfEmEnum", "LineEndAllOneEmEnum"] {
+            let rules = Rules::resolve(&styles, set).unwrap().unwrap();
+            let aki = |a: char, b: char| rules.pair(class(a), class(b)).desired;
+            for (a, b) in
+                [('」', '。'), ('」', '、'), ('。', '」'), ('、', '」'), ('」', '』'), ('）', '」'), ('，', '）'), ('「', '『'), ('（', '「')]
+            {
+                assert_eq!(aki(a, b), 0.0, "{set}: {a}{b}");
+            }
+            for (a, b) in [('」', '「'), ('。', '「'), ('、', '（'), ('」', '漢'), ('漢', '「')] {
+                assert_eq!(aki(a, b), 0.5, "{set}: {a}{b}");
+            }
+            assert_eq!(aki('」', '・'), 0.5, "{set}: the larger blank stays");
+        }
+        // The Chinese sets are unchanged: the larger blank stays between any two marks.
+        for set in ["SimpChineseDefault", "TradChineseDefault"] {
+            let rules = Rules::resolve(&styles, set).unwrap().unwrap();
+            for (a, b) in [('」', '。'), ('，', '）'), ('「', '『'), ('」', '「')] {
+                assert_eq!(rules.pair(class(a), class(b)).desired, 0.5, "{set}: {a}{b}");
+            }
+        }
     }
 
     #[test]
