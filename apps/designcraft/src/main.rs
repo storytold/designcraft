@@ -313,7 +313,8 @@ fn services() -> Services {
         })),
         pick_save: Some(Box::new(pick_save)),
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
-        write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::atomic::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string()))),
+        write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
+        background_write: Some(std::sync::Arc::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
         ..Default::default()
     }

@@ -346,6 +346,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- 2026-10-15: Run desktop PDF generation and atomic writing on a worker, show elapsed progress, retain automation roots and return raw bytes without a base64 round trip. See docs/background-pdf-export.md.
+
 Newest first.
 
 - **2026-10-16** · Threading: the loaded text cursor threads into a text frame inside a group (it hit the group and showed it could not thread); a plain click still selects the group (#1075). Gap 27 closed. No readiness percentage change.

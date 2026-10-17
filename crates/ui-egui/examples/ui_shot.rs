@@ -18,6 +18,7 @@ fn main() {
     let script = std::fs::read_to_string(&path).expect("read script");
     let services = Services {
         write: Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string()))),
+        background_write: Some(std::sync::Arc::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         ..Default::default()
     };
@@ -66,6 +67,12 @@ fn main() {
             }
         } else if let Some(n) = l.get("steps").and_then(|v| v.as_u64()) {
             step_n(&mut harness, n as usize);
+        } else if let Some(ms) = l.get("waitMs").and_then(|v| v.as_u64()) {
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(ms.min(60_000));
+            while std::time::Instant::now() < until {
+                step(&mut harness);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         } else if let Some(m) = l.get("method").and_then(|v| v.as_str()) {
             let (req, reply) = ControlRequest::new(m, l.get("params").cloned().unwrap_or_default());
             tx.send(req).expect("send");

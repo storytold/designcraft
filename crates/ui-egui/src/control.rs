@@ -73,6 +73,7 @@ pub fn all_commands(app: &DesignApp) -> Value {
 pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
     let r = ctx.content_rect();
     json!({
+        "pdfExport": {"busy":app.pdf_export.busy(),"last":app.pdf_export.last},
         "tool": app.session.tool_id(),
         "ui": serde_json::to_value(&app.ui).unwrap_or_default(),
         "view": app.view().map(|v| serde_json::to_value(v).unwrap_or_default()),
