@@ -10,6 +10,8 @@ use hayro_syntax::page::Resources;
 
 use crate::transitions::{find, int_after, object, rfind};
 
+mod fonts;
+
 /// Escape a PDF literal string.
 fn lit(s: &str) -> String {
     let mut o = String::from("(");
@@ -231,6 +233,7 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
         issues.push("Type 3 fonts aren't allowed".into());
     }
     issues.extend(device_rgb(pdf));
+    issues.extend(fonts::unembedded_fonts(pdf));
     issues
 }
 
@@ -630,13 +633,18 @@ mod tests {
     /// A minimal PDF with a CMYK (N 4) PDF/X output intent and one page with `entries` (its
     /// resources, a group…) and `content`.
     fn tiny_pdf(entries: &str, content: &str) -> Vec<u8> {
+        tiny_pdf_with(entries, content, "<</N 3/Length 0>>\nstream\n\nendstream")
+    }
+
+    /// [`tiny_pdf`] with `extra` as object 6 (an RGB profile in [`tiny_pdf`]).
+    fn tiny_pdf_with(entries: &str, content: &str, extra: &str) -> Vec<u8> {
         let objects = [
             "<</Type/Catalog/Pages 2 0 R/OutputIntents[<</Type/OutputIntent/S/GTS_PDFX/DestOutputProfile 4 0 R>>]>>".to_string(),
             "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
             format!("<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]{entries}/Contents 5 0 R>>"),
             "<</N 4/Length 0>>\nstream\n\nendstream".to_string(),
             format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
-            "<</N 3/Length 0>>\nstream\n\nendstream".to_string(),
+            extra.to_string(),
         ];
         let mut out = b"%PDF-1.6\n".to_vec();
         let mut offsets = Vec::new();
@@ -665,6 +673,108 @@ mod tests {
         // CMYK and grey need no default space.
         let cmyk = check_pdfx4(&tiny_pdf("/Resources<<>>", "0 0 0 1 k 0 0 10 10 re f 0.5 G 0 0 m 10 10 l S"));
         assert!(!cmyk.iter().any(rgb), "{cmyk:?}");
+    }
+
+    /// Every font that draws visible text must be embedded (#909): a base-14 font with no font
+    /// file, a CID font whose descendant has none, and one drawn from inside a form are reported;
+    /// an embedded font, an unused one and invisible text (render mode 3, as in OCR layers) are not.
+    #[test]
+    fn unembedded_fonts_are_flagged() {
+        let fonts = |entries: &str, content: &str| -> Vec<String> {
+            check_pdfx4(&tiny_pdf(entries, content)).into_iter().filter(|i| i.contains("font")).collect()
+        };
+        let helvetica = "/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>";
+        assert_eq!(
+            fonts(helvetica, "BT /F1 24 Tf 20 50 Td (Base14 text) Tj ET"),
+            ["the font Helvetica isn't embedded (page 1): PDF/X-4 needs every font used for visible text embedded"]
+        );
+        assert!(fonts(helvetica, "BT /F1 24 Tf 3 Tr 20 50 Td (OCR) Tj ET").is_empty(), "invisible text needs no embedded font");
+        assert!(fonts(helvetica, "0 0 0 1 k 0 0 10 10 re f").is_empty(), "an unused font is not reported");
+        let restored = fonts(helvetica, "BT /F1 24 Tf q 3 Tr Q 20 50 Td (shown) Tj ET");
+        assert_eq!(restored.len(), 1, "Q restores the visible render mode: {restored:?}");
+
+        let embedded = "/Resources<</Font<</F1<</Type/Font/Subtype/TrueType/BaseFont/ABCDEF+Arial/FontDescriptor<</Type/FontDescriptor/FontName/ABCDEF+Arial/FontFile2 6 0 R>>>>>>>>";
+        assert!(fonts(embedded, "BT /F1 12 Tf (x) Tj ET").is_empty());
+        let cid = "/Resources<</Font<</F1<</Type/Font/Subtype/Type0/BaseFont/KozMin/Encoding/Identity-H/DescendantFonts[<</Type/Font/Subtype/CIDFontType0/BaseFont/KozMin/FontDescriptor<</Type/FontDescriptor/FontName/KozMin>>>>]>>>>>>";
+        assert_eq!(fonts(cid, "BT /F1 12 Tf <0001> Tj ET").len(), 1);
+        let cid_embedded = cid.replace("/FontName/KozMin>>", "/FontName/KozMin/FontFile3 6 0 R>>");
+        assert!(fonts(&cid_embedded, "BT /F1 12 Tf <0001> Tj ET").is_empty());
+
+        let draw = "BT /T 9 Tf (in a form) Tj ET";
+        let form = format!(
+            "<</Type/XObject/Subtype/Form/BBox[0 0 100 100]/Resources<</Font<</T<</Type/Font/Subtype/Type1/BaseFont/Times-Roman>>>>>>/Length {}>>\nstream\n{draw}\nendstream",
+            draw.len()
+        );
+        let pdf = tiny_pdf_with("/Resources<</XObject<</X1 6 0 R>>>>", "/X1 Do", &form);
+        let issues: Vec<String> = check_pdfx4(&pdf).into_iter().filter(|i| i.contains("font")).collect();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].starts_with("the font Times-Roman isn't embedded"), "{issues:?}");
+    }
+
+    /// A placed PDF that draws with an unembedded font: the PDF/X-4 export warns about it (#909).
+    #[test]
+    fn placed_pdf_with_an_unembedded_font_is_reported() {
+        let mut d = Document::new(&NewDocument::default());
+        let placed = tiny_pdf(
+            "/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>>>>>",
+            "BT /F1 24 Tf 0 0 0 1 k 20 50 Td (Base14 text) Tj ET",
+        );
+        place(&mut d, "helvetica.pdf", placed, (100.0, 100.0), (72.0, 72.0));
+        let r = x4(&d);
+        assert!(r.warnings.iter().any(|w| w.starts_with("PDF/X-4: the font Helvetica isn't embedded (page 1)")), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn unembedded_fonts_are_reported_by_every_text_show_operator() {
+        let entries = "/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>";
+        for show in ["(x) Tj", "[(x) 20 (y)] TJ", "(x) '", "0 0 (x) \""] {
+            let pdf = tiny_pdf(entries, &format!("BT /F1 12 Tf {show} ET"));
+            let issues = check_pdfx4(&pdf);
+            assert_eq!(issues.iter().filter(|i| i.contains("isn't embedded")).count(), 1, "{show}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn unembedded_fonts_in_forms_inherit_and_restore_text_state() {
+        let entries = "/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>/XObject<</X1 6 0 R>>>>";
+        let draw = "BT (inherited font) Tj /F1 10 Tf 3 Tr ET";
+        let form = format!("<</Type/XObject/Subtype/Form/BBox[0 0 100 100]/Length {}>>\nstream\n{draw}\nendstream", draw.len());
+        for (content, count) in [
+            ("/F1 12 Tf /X1 Do", 1),
+            ("/F1 12 Tf 3 Tr /X1 Do", 0),
+            ("/F1 12 Tf 3 Tr /X1 Do 0 Tr /X1 Do", 1),
+            ("/F1 12 Tf /X1 Do BT (still visible) Tj ET", 1),
+        ] {
+            let pdf = tiny_pdf_with(entries, content, &form);
+            let issues = check_pdfx4(&pdf);
+            assert_eq!(issues.iter().filter(|i| i.contains("isn't embedded")).count(), count, "{content}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn unembedded_fonts_in_recursive_forms_are_bounded() {
+        let draw = "BT /F1 12 Tf (x) Tj ET /X1 Do";
+        let form = format!(
+            "<</Type/XObject/Subtype/Form/BBox[0 0 100 100]/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>/XObject<</X1 6 0 R>>>>/Length {}>>\nstream\n{draw}\nendstream",
+            draw.len()
+        );
+        let pdf = tiny_pdf_with("/Resources<</XObject<</X1 6 0 R>>>>", "/X1 Do", &form);
+        let issues = check_pdfx4(&pdf);
+        assert_eq!(issues.iter().filter(|i| i.contains("isn't embedded")).count(), 1, "{issues:?}");
+    }
+
+    #[test]
+    fn unembedded_fonts_are_reported_after_form_text_state_is_restored() {
+        let entries = "/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>/XObject<</X1 6 0 R>>>>";
+        let draw = "BT /F2 10 Tf 3 Tr (hidden) Tj ET";
+        let form = format!(
+            "<</Type/XObject/Subtype/Form/BBox[0 0 100 100]/Resources<</Font<</F2<</Type/Font/Subtype/Type1/BaseFont/Times-Roman>>>>>>/Length {}>>\nstream\n{draw}\nendstream",
+            draw.len()
+        );
+        let pdf = tiny_pdf_with(entries, "/F1 12 Tf /X1 Do BT (visible) Tj ET", &form);
+        let issues: Vec<String> = check_pdfx4(&pdf).into_iter().filter(|i| i.contains("isn't embedded")).collect();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].starts_with("the font Helvetica isn't embedded"), "{issues:?}");
     }
 
     /// An RGB blending space on the page group and an RGB inline image are device RGB too.

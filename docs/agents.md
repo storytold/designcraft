@@ -63,6 +63,16 @@ The image must contain at most 16 million pixels. PDF/SVG graphics are unsupport
 not Adobe's palette algorithm. In the UI, click an image with the Color Theme Tool (Shift+I), or choose Color Theme…
 in the Swatches panel menu with one image selected. Cancel keeps the document unchanged.
 
+## PDF/X-4 validation
+
+`designcraft-cli validate-pdf FILE.pdf` prints JSON with `valid` and `issues`, and exits non-zero
+when a built-in check fails. Checks cover PDF version, output intent and profile, Info and XMP
+identification, image interpolation, encryption, trim boxes, Type 3 fonts, device RGB under a CMYK
+output intent, and unembedded fonts drawing visible text (including placed PDF forms). Render
+mode 3 (invisible OCR text) is exempt from the font-embedding check. PDF/X-4 export reports these
+issues as warnings; it does not embed or outline placed fonts. These checks are not a complete
+external PDF/X certification.
+
 ## Data merge
 
 `data.source.select {path, sheet?}` links a CSV/TSV/`.xlsx` file to the document (`data.source.update` re-reads it,
