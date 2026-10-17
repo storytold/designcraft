@@ -20,6 +20,7 @@ pub(crate) mod find;
 pub use find::same_find_domain;
 pub(crate) mod flex;
 mod fonts;
+mod grids;
 mod guides;
 mod index;
 mod inspect;
@@ -222,6 +223,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(anchored::specs());
         v.extend(guides::specs());
         v.extend(rulers::specs());
+        v.extend(grids::specs());
         v.extend(links::specs());
         v.extend(fonts::specs());
         v.extend(spelling::specs());

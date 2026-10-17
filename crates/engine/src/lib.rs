@@ -243,6 +243,10 @@ pub struct Prefs {
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
     pub recent_files_max: u32,
+    /// The interface language the UI shows (`en`, `ja`, `zh`, `zh-hant`, `ko`…), for defaults that
+    /// follow it: new frame grids take the serif face of a Chinese or Korean interface language
+    /// (Japanese otherwise). Empty without a UI.
+    pub interface_language: String,
 }
 
 /// The most recent files Preferences lets File › Open Recent keep.
@@ -317,6 +321,7 @@ impl Default for Prefs {
             link_text_files: false,
             recent_files: Vec::new(),
             recent_files_max: 20,
+            interface_language: String::new(),
         }
     }
 }

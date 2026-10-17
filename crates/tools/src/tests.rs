@@ -1936,3 +1936,24 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
     assert_eq!(cx2.hit_text_frame(q).map(|(_, i)| i), None, "no text frame in that group");
     assert_eq!(t2.cursor(&cx2, q, Mods::default()), Cursor::NotAllowed);
 }
+
+#[test]
+fn grid_tools_draw_frame_grids() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    for (id, vertical) in [("horizontalGrid", false), ("verticalGrid", true)] {
+        let mut t = create(id);
+        assert_eq!(t.id(), id);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 100.0, 100.0));
+        let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 200.0, 300.0));
+        assert!(a.contains(&Action::Begin("Create Frame Grid".into())));
+        let p = a.iter().find_map(|x| match x {
+            Action::Preview(id, p) if id == "frame.create" => Some(p.clone()),
+            _ => None,
+        });
+        let p = p.unwrap();
+        assert_eq!((p["grid"].clone(), p["vertical"].clone()), (serde_json::json!(true), serde_json::json!(vertical)));
+    }
+    assert_eq!(crate::tool_for_shortcut("Y"), Some("horizontalGrid"));
+}
