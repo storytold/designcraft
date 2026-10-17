@@ -182,19 +182,35 @@ pub(crate) struct EpsText {
 }
 
 /// Read `EPSTextData`: a few header bytes, the font name, five big-endian doubles (size, two
-/// reserved, size again, x, y), then the text as length / 0x40 (8-bit) or 0x80 (UTF-16BE) / length.
+/// reserved, size again, x, y), then the text: its length in characters, then runs of
+/// `0x40, n` + n bytes (8-bit characters) or `0x80, n` + n big-endian UTF-16 units, until the
+/// length is reached (`野地合板＠12` is a wide run of five characters and a narrow one of two).
 pub(crate) fn parse_eps_text(b: &[u8]) -> Option<EpsText> {
     let string = |at: usize| -> Option<(String, usize)> {
-        let (&len, &kind) = (b.get(at)?, b.get(at + 1)?);
-        let (len, at) = (len as usize, at + 3);
-        match kind {
-            0x40 => Some((b.get(at..at + len)?.iter().map(|&c| c as char).collect(), at + len)),
-            0x80 => {
-                let units: Vec<u16> = b.get(at..at + len * 2)?.as_chunks::<2>().0.iter().map(|p| u16::from_be_bytes(*p)).collect();
-                Some((String::from_utf16(&units).ok()?, at + len * 2))
+        let (total, mut at) = (*b.get(at)? as usize, at + 1);
+        let mut out = String::new();
+        let mut count = 0;
+        while count < total {
+            let (&kind, &len) = (b.get(at)?, b.get(at + 1)?);
+            let (len, start) = (len as usize, at + 2);
+            match kind {
+                0x40 => {
+                    out.extend(b.get(start..start + len)?.iter().map(|&c| c as char));
+                    at = start + len;
+                }
+                0x80 => {
+                    let units: Vec<u16> = b.get(start..start + len * 2)?.as_chunks::<2>().0.iter().map(|p| u16::from_be_bytes(*p)).collect();
+                    out.push_str(&String::from_utf16(&units).ok()?);
+                    at = start + len * 2;
+                }
+                _ => return None,
             }
-            _ => None,
+            if len == 0 {
+                return None;
+            }
+            count += len;
         }
+        Some((out, at))
     };
     let (font, o) = string(8)?;
     let double = |i: usize| b.get(o + i..o + i + 8).map(|s| f64::from_be_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]));

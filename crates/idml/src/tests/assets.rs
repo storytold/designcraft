@@ -304,17 +304,41 @@ fn an_embedded_eps_preview_imports_as_a_raster() {
 
 /// `EPSTextData` as InDesign writes it: header, font record, five doubles, text record.
 fn eps_text_data(font: &str, size: f64, x: f64, y: f64, text: &str) -> Vec<u8> {
+    let n = text.chars().count() as u8;
+    let mut tail = vec![n, 0x80, n];
+    for u in text.encode_utf16() {
+        tail.extend_from_slice(&u.to_be_bytes());
+    }
+    eps_text_record(font, size, x, y, &tail)
+}
+
+/// The same with the text record (its length, then its runs) given as bytes.
+fn eps_text_record(font: &str, size: f64, x: f64, y: f64, text: &[u8]) -> Vec<u8> {
     let mut b = vec![0, 1, 0, 2, 2, 1, 1, 0, font.len() as u8, 0x40, font.len() as u8];
     b.extend_from_slice(font.as_bytes());
     for v in [size, 0.0, 0.0, size, x, y, 0.0, 0.0] {
         b.extend_from_slice(&v.to_be_bytes());
     }
-    b.extend_from_slice(&[2, 1, 1, 0, text.chars().count() as u8, 0x80, text.chars().count() as u8]);
-    for u in text.encode_utf16() {
-        b.extend_from_slice(&u.to_be_bytes());
-    }
+    b.extend_from_slice(&[2, 1, 1, 0]);
+    b.extend_from_slice(text);
     b.extend_from_slice(&[0; 40]);
     b
+}
+
+#[test]
+fn eps_text_runs_of_8_bit_and_utf16_characters_join() {
+    let parse = |text: &[u8]| crate::parse_eps_text(&eps_text_record("YuMincho-Regular", 21.0, 1.0, 2.0, text));
+    // 7 characters: a wide run of five, then a narrow one of two.
+    let text = [7, 0x80, 5, 0x91, 0xce, 0x57, 0x30, 0x54, 0x08, 0x67, 0x7f, 0xff, 0x20, 0x40, 2, b'1', b'2'];
+    assert_eq!(parse(&text).unwrap().text, "野地合板＠12");
+    // 6 characters: a narrow run of two, then a wide one of four.
+    let mut text = vec![6, 0x40, 2, b'G', b'L', 0x80, 4];
+    for u in "鋼板です".encode_utf16() {
+        text.extend_from_slice(&u.to_be_bytes());
+    }
+    assert_eq!(parse(&text).unwrap().text, "GL鋼板です");
+    // A run list that stops short of its length is not text.
+    assert!(parse(&[5, 0x40, 2, b'a', b'b']).is_none());
 }
 
 #[test]
