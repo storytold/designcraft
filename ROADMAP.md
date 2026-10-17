@@ -348,6 +348,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-17** · Running headers: *first/last on page* read a page in text order (story order, then column by column), not by height — a multi-column page's right header showed the lowest entry of column 1 instead of the page's last entry. No readiness percentage change.
 - **2026-10-16** · Threading: the loaded text cursor threads into a text frame inside a group (it hit the group and showed it could not thread); a plain click still selects the group (#1075). Gap 27 closed. No readiness percentage change.
 - **2026-10-16** · Greek text hyphenates. The patterns were never compiled in, so Greek set unhyphenated however narrow the column; `"Greek"`, `"Greek: Greece"`, `el` and `el-GR` all resolve now and ανθρωπος breaks αν-θρω-πος. They are the monotonic patterns (hyph-el-monoton, Dimitrios Filippou, under MIT), which is what polytonic text hyphenates by too. Five of InDesign's ~40 hyphenation languages. No readiness percentage change.
 - **2026-10-16** · A swatch applied to a placed greyscale or bitmap image colours it, as in InDesign: IDML's `<Image FillColor>` is read and written, greyscale pixels become a tint of the swatch on opaque white and a bitmap's white lets the frame show through, on screen and in PDF (spot swatches print on their plate). Colour images keep their colours. Applying the swatch from the Swatches panel comes next. No readiness percentage change.

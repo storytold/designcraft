@@ -356,4 +356,34 @@ mod tests {
         s.execute("variables.delete", &json!({"name": "Last Page Number"})).unwrap();
         assert!(s.doc().unwrap().doc.story(sid).unwrap().text.ends_with(" · 3"));
     }
+
+    /// A running header reads a page in text order: in a two-column frame the right column's
+    /// headings come after the left column's, even when they sit higher on the page. (The first
+    /// and last were picked by height, so a dictionary page's header named its left column's last
+    /// entry, which sits lowest, instead of the right column's.)
+    #[test]
+    fn running_header_reads_columns_in_text_order() {
+        use designcraft_doc::story::COLUMN_BREAK;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Heading"})).ok();
+        // Left column: a line, Alpha, a line, Beta (low). Right column: Gamma (at the top), a line.
+        let text = format!("x\nAlpha\nx\nBeta{COLUMN_BREAK}\nGamma\ny");
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 472, 400], "content": "text", "text": text})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columns": 2, "gutter": 20})).unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        for word in ["Alpha", "Beta", "Gamma"] {
+            let at = text.find(word).unwrap();
+            s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at + word.len()})).unwrap();
+            s.execute("style.paragraph.apply", &json!({"name": "Heading"})).unwrap();
+        }
+        s.execute("variables.define", &json!({"name": "Entry", "type": "runningHeader", "style": "Heading"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let cs = s.cache.get(&d, sid, None);
+        let y = |word: &str| crate::compose::caret(&cs, text.find(word).unwrap()).unwrap().2;
+        assert!(y("Gamma") < y("Beta") && y("Gamma") < y("Alpha"), "Gamma heads the right column, above the left column's headings");
+        let idx = s.cache.running_index(&d);
+        assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::FirstOnPage, 0), "Alpha");
+        assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::LastOnPage, 0), "Gamma");
+    }
 }
