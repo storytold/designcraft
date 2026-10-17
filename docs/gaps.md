@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -93,7 +93,8 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 6. Installed fonts not always found (F)
 - **Missing:** fonts in user font folders used for text (#161, #110, #107), fonts that font
-  services and managers activate on Windows, reload when fonts change on disk (#328).
+  services and managers activate on Windows, noticing by itself when fonts change on disk (#328:
+  Type › Reload Fonts, `font.reload`, reads them again on request since 2026-10-16).
 - **Evidence:** on macOS the scan reads the font files CoreText has available, so fonts that
   Adobe Fonts and font managers activate are listed (#261, #327, 2026-10-11); not yet confirmed
   by the reporters.

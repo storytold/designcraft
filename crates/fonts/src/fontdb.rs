@@ -370,6 +370,24 @@ impl FontFace {
     }
 }
 
+/// A font file's length and modification time.
+#[cfg(not(target_arch = "wasm32"))]
+type FileStamp = (u64, Option<std::time::SystemTime>);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn file_stamp(path: &std::path::Path) -> Option<FileStamp> {
+    std::fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))
+}
+
+/// What [`FontDb::reload_fonts`] did: the faces cataloged by the rescan, and the installed font
+/// files that changed or were removed since they were read (their faces are read again, from the
+/// new file, the next time they are looked up).
+#[derive(Debug, Default, PartialEq)]
+pub struct ReloadedFonts {
+    pub cataloged: usize,
+    pub changed: Vec<std::path::PathBuf>,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
 struct CatalogEntry {
@@ -412,6 +430,10 @@ pub struct FontDb {
     outlines: Mutex<HashMap<(u32, u32), Arc<BezPath>>>,
     #[cfg(not(target_arch = "wasm32"))]
     catalog: RwLock<Vec<CatalogEntry>>,
+    /// Each installed font file read into the shared fonts, with its (length, modification time)
+    /// when it was read: [`FontDb::reload_fonts`] reads again the files that changed since.
+    #[cfg(not(target_arch = "wasm32"))]
+    installed_files: Mutex<HashMap<std::path::PathBuf, FileStamp>>,
     /// The folders the system font scan reads (the platform's font folders for [`FontDb::global`]).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     font_dirs: Vec<std::path::PathBuf>,
@@ -1067,6 +1089,8 @@ impl FontDb {
             outlines: Mutex::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             catalog: RwLock::new(Vec::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            installed_files: Mutex::new(HashMap::new()),
             font_dirs,
             font_files: Vec::new,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1221,6 +1245,56 @@ impl FontDb {
         count
     }
 
+    /// Fonts installed, changed or removed since they were read (#328): scan the font folders
+    /// again (see [`FontDb::load_system_fonts`]), then let go of the shared faces whose installed
+    /// file changed (length or modification time) or is gone, so the next lookup reads the file as
+    /// it is now, or finds the font missing. What was composed with the old faces must be composed
+    /// again. Faces are never freed (see [`FaceRef`]): each reload of a changed file keeps the old
+    /// copy. Bundled, added and document fonts are left alone. Nothing to do on wasm.
+    pub fn reload_fonts(&self) -> ReloadedFonts {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Rescan first: a lookup after the faces are dropped finds the new files.
+            let cataloged = self.load_system_fonts();
+            let changed: Vec<std::path::PathBuf> = {
+                let mut files = self.installed_files.lock().unwrap_or_else(|e| e.into_inner());
+                let mut changed: Vec<_> = files.iter().filter(|(p, stamp)| file_stamp(p).as_ref() != Some(*stamp)).map(|(p, _)| p.clone()).collect();
+                changed.sort();
+                for p in &changed {
+                    files.remove(p);
+                }
+                changed
+            };
+            if !changed.is_empty() {
+                let stale = |f: &FontFace| matches!(&f.source, FontSource::Installed(p) if changed.contains(p));
+                let mut dropped = std::collections::HashSet::new();
+                self.faces.write().unwrap_or_else(|e| e.into_inner()).retain(|f| {
+                    let keep = !stale(f);
+                    if !keep {
+                        dropped.insert(f.id);
+                    }
+                    keep
+                });
+                self.instances.write().unwrap_or_else(|e| e.into_inner()).retain(|(base, _), f| !dropped.contains(base) && !stale(f));
+                self.outlines.lock().unwrap_or_else(|e| e.into_inner()).retain(|(face, _), _| !dropped.contains(face));
+                log::debug!("reloading {} changed font files ({} faces)", changed.len(), dropped.len());
+            }
+            ReloadedFonts { cataloged, changed }
+        }
+        #[cfg(target_arch = "wasm32")]
+        ReloadedFonts::default()
+    }
+
+    /// Read an installed font file, noting its length and modification time as they were before
+    /// the read (a change during it is then found by the next reload).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_installed(&self, path: &std::path::Path) -> Option<Vec<u8>> {
+        let stamp = file_stamp(path)?;
+        let data = std::fs::read(path).ok()?;
+        self.installed_files.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), stamp);
+        Some(data)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn scan_font_dirs(&self) -> usize {
         let mut found = Vec::new();
@@ -1294,7 +1368,7 @@ impl FontDb {
         // The whole family arrives at once (see `insert_faces`).
         let mut faces = Vec::new();
         for p in paths {
-            if let Ok(data) = std::fs::read(&p) {
+            if let Some(data) = self.read_installed(&p) {
                 faces.extend(self.new_faces(data, FontSource::Installed(p)));
             }
         }
@@ -1499,7 +1573,7 @@ impl FontDb {
             if std::fs::metadata(&p).map(|m| m.len() > 40 << 20).unwrap_or(true) {
                 continue;
             }
-            let Ok(data) = std::fs::read(&p) else { continue };
+            let Some(data) = self.read_installed(&p) else { continue };
             let hit =
                 enumerate_faces(&data).iter().any(|(i, _, _, _)| skrifa::FontRef::from_index(&data, *i).is_ok_and(|f| f.charmap().map(c).is_some()));
             if hit && self.add_faces(data, FontSource::Installed(p)) > 0 && covered(self) {

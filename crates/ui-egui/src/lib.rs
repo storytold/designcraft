@@ -834,7 +834,7 @@ impl DesignApp {
             }
         }
         if r.is_ok()
-            && matches!(id, "font.replace" | "edit.undo" | "edit.redo")
+            && matches!(id, "font.replace" | "font.reload" | "edit.undo" | "edit.redo")
             && let Some(dialog) = self.ui.dialog.as_mut().filter(|d| d.id == "findFont")
         {
             dialog.fields.remove("_fonts");

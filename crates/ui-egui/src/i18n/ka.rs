@@ -580,6 +580,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Flattener Preview", "გაბრტყელების წინასწარი ნახვა"),
     ("Float Panel", "მცურავი პანელი"),
     ("Fonts in Document", "დოკუმენტის შრიფტები"),
+    ("Reload Fonts", "შრიფტების ხელახლა ჩატვირთვა"),
     ("Footnotes", "სქოლიოები"),
     ("Form Fields", "ფორმის ველები"),
     ("Frame Fitting Options…", "ჩარჩოს ზომაზე მორგების პარამეტრები…"),
