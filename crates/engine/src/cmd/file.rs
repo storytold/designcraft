@@ -676,7 +676,11 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         let st = s.active()?;
         st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
     });
-    let spread = super::spread_param(p, "file.place")?;
+    // `"spread": null` counts as omitted, like the other placement parameters.
+    let spread = match p.get("spread") {
+        Some(Value::Null) => designcraft_doc::SpreadRef::Doc(0),
+        _ => super::spread_param(p, "file.place")?,
+    };
     let lid = s.doc()?.active_layer;
     let px = p.get("x").and_then(Value::as_f64);
     let py = p.get("y").and_then(Value::as_f64);

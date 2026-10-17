@@ -114,7 +114,7 @@ fn select_font() -> usvg::FontSelectionFn<'static> {
                         return Some(id);
                     }
                 }
-                // A family (or generic family) that matches: usvg's own selection.
+                // A family (or generic family) that matches: the query below.
                 _ => break,
             }
         }
