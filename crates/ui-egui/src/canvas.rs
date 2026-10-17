@@ -1014,7 +1014,10 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
 /// Spread-space → canvas transform for an item at `loc`.
 fn item_canvas_xf(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId) -> Option<(Affine, &'static str)> {
     let loc = doc.find(id)?;
-    Some((layout.xf(loc.spread) * doc.parent_xf(&loc), ""))
+    // Items on spreads that aren't laid out (document pages while parents are being edited, or
+    // the reverse) have no place on the canvas.
+    let slot = layout.slot(loc.spread)?;
+    Some((slot.xf * doc.parent_xf(&loc), ""))
 }
 
 fn path_screen(it: &Item, xf: &Xf, a: Affine) -> Vec<Vec<Pos2>> {
@@ -3678,6 +3681,30 @@ mod tests {
     /// The always-on overset mark sits at the frame's out port, a step along its own right edge
     /// (so a rotated frame gets it inside its edge, not straight up from the corner), and a
     /// selected overset frame gets only the mark its ports draw.
+    #[test]
+    fn document_pages_have_no_place_on_the_parent_canvas() {
+        // Regression: while parents were edited, document frames fell back to the identity
+        // transform and their ¶ marks (and other overlays) piled onto the right parent page.
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2})).unwrap();
+        let s = &mut app.session;
+        let body =
+            s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "one\ntwo"})).unwrap()["id"].as_u64().unwrap();
+        let head = s
+            .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [36, 10, 300, 30], "content": "text", "text": "head"}))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let doc = app.session.doc().unwrap().doc.clone();
+        let (body, head) = (designcraft_doc::ItemId(body), designcraft_doc::ItemId(head));
+        let pages = CanvasLayout::new(&doc, false);
+        assert!(item_canvas_xf(&doc, &pages, body).is_some());
+        assert!(item_canvas_xf(&doc, &pages, head).is_none());
+        let parents = CanvasLayout::new(&doc, true);
+        assert!(item_canvas_xf(&doc, &parents, body).is_none(), "a page frame is not drawn over the parent");
+        assert!(item_canvas_xf(&doc, &parents, head).is_some());
+    }
+
     #[test]
     fn overset_mark_sits_on_the_out_port_once() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
