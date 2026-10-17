@@ -27,6 +27,11 @@ winresource = "0.1"
 rfd = { workspace = true }
 arboard = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# GNOME/Wayland needs client decorations. Vector controls require no bundled
+# title font; document names remain in the application's tab strip.
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita-notitle"] }
+
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 # The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
 winit = { version = "0.30", default-features = false, features = ["x11"] }

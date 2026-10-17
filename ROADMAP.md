@@ -344,6 +344,10 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 [control-protocol.md](docs/control-protocol.md) · CJK: [cjk.md](docs/cjk.md),
 [cjk-typography.md](docs/cjk-typography.md) · Arabic: [arabic-typography.md](docs/arabic-typography.md)
 
+2026-10-16: Linux desktop builds enable Adwaita vector window controls without
+bundling a title font. See README → Linux window controls for platform selection;
+full GTK theme parity is not claimed.
+
 ## Progress log
 
 Newest first.
