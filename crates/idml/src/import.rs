@@ -1189,6 +1189,8 @@ impl<'r> Importer<'r> {
                 cs.inset_overrides = [None; 4];
             }
             cs.vj = e.get("VerticalJustification").map(names::vj_in);
+            cs.first_baseline = e.get("FirstBaselineOffset").map(names::first_baseline_in);
+            cs.first_baseline_min = e.num("MinimumFirstBaselineOffset").map(|v| v.max(0.0));
             cs.strokes = ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].map(|side| self.cell_stroke_attrs(e, side));
             if let Some(stroke) = uniform_cell_stroke(&cs.strokes) {
                 cs.stroke = Some(stroke);
@@ -2212,6 +2214,12 @@ impl<'r> Importer<'r> {
             }
             if let Some(vj) = ce.get("VerticalJustification") {
                 cell.vj = names::vj_in(vj);
+            }
+            if let Some(fb) = ce.get("FirstBaselineOffset") {
+                cell.first_baseline = names::first_baseline_in(fb);
+            }
+            if let Some(min) = ce.num("MinimumFirstBaselineOffset") {
+                cell.first_baseline_min = min.max(0.0);
             }
             cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
             for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {

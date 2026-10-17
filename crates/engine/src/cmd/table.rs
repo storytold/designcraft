@@ -30,7 +30,7 @@ fn style_specs() -> Vec<CommandSpec> {
             "New Cell Style…",
             [],
             None,
-            "{name, fromSelection?: bool (the target cell's look), fill?, tint?, insets?: n|[t,l,b,r], vj?: top|center|bottom|justify, stroke?: {weight?, color?, tint?, type?, gapColor?, gapTint?} (all four edges; values as table.setCell's stroke), paragraphStyle?, basedOn?: cell style name, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} → {name}",
+            "{name, fromSelection?: bool (the target cell's look), fill?, tint?, insets?: n|[t,l,b,r], vj?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, stroke?: {weight?, color?, tint?, type?, gapColor?, gapTint?} (all four edges; values as table.setCell's stroke), paragraphStyle?, basedOn?: cell style name, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} → {name}",
             has_doc,
             |s, p| cell_style_create(s, p)
         ),
@@ -297,7 +297,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Cell Options",
             [],
             None,
-            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
+            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
             in_table,
             set_cell
         ),
@@ -932,6 +932,22 @@ fn drawn_side(t: &Table, owners: &[(usize, usize)], (r, c): (usize, usize), side
     drawn.or_else(|| t.cell(r, c).and_then(|cell| cell.strokes.get(side).cloned()))
 }
 
+/// Cell Options › Text › First Baseline: `firstBaseline` (offset method) and `firstBaselineMin` (pt).
+fn first_baseline_params(p: &Value, id: &str) -> Result<(Option<designcraft_doc::FirstBaseline>, Option<f64>)> {
+    let fb = match p.get("firstBaseline").filter(|v| !v.is_null()) {
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| bad(id, format!("firstBaseline: {e}")))?),
+        None => None,
+    };
+    let min = match p.get("firstBaselineMin").filter(|v| !v.is_null()) {
+        Some(v) => match v.as_f64().filter(|m| m.is_finite() && (0.0..=8640.0).contains(m)) {
+            Some(m) => Some(m),
+            None => return Err(bad(id, "firstBaselineMin: a number of points from 0 to 8640")),
+        },
+        None => None,
+    };
+    Ok((fb, min))
+}
+
 fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "table.setCell";
     let g = target(s, p, ID)?;
@@ -954,6 +970,7 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         Some(o) => return Err(bad(ID, format!("unknown vj `{o}`"))),
         None => None,
     };
+    let (first_baseline, first_baseline_min) = first_baseline_params(p, ID)?;
     let text = str_param(p, "text").map(|_| super::text_param(p, "text"));
     let stroke = match p.get("stroke").filter(|v| !v.is_null()) {
         Some(sv) => Some((StrokeEdit::parse(doc, sv, ID)?, EdgeSel::parse(sv.get("edges"), ID)?)),
@@ -997,6 +1014,12 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(v) = vj {
                 cell.vj = v;
+            }
+            if let Some(v) = first_baseline {
+                cell.first_baseline = v;
+            }
+            if let Some(v) = first_baseline_min {
+                cell.first_baseline_min = v;
             }
             if let Some(tx) = &text {
                 let len = cell.text.len();
@@ -1525,7 +1548,7 @@ fn get(s: &mut Session, p: &Value) -> Result<Value> {
         .filter_map(|(r, c)| {
             let cell = t.cell(r, c)?;
             Some(json!({"row": r, "col": c, "rowSpan": cell.row_span, "colSpan": cell.col_span, "text": cell.text.text, "fill": cell.fill,
-                "insets": cell.insets, "vj": cell.vj, "style": cell.style}))
+                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "style": cell.style}))
         })
         .collect();
     Ok(json!({
@@ -1572,6 +1595,13 @@ fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, stroke: Opt
     if let Some(v) = p.get("vj") {
         cs.vj = Some(serde_json::from_value(v.clone()).map_err(|e| bad(cmd, format!("vj: {e}")))?);
     }
+    let (first_baseline, first_baseline_min) = first_baseline_params(p, cmd)?;
+    if first_baseline.is_some() {
+        cs.first_baseline = first_baseline;
+    }
+    if first_baseline_min.is_some() {
+        cs.first_baseline_min = first_baseline_min;
+    }
     if let Some(st) = stroke {
         cs.stroke = Some(st);
         cs.strokes = Default::default();
@@ -1600,6 +1630,8 @@ fn cell_style_create(s: &mut Session, p: &Value) -> Result<Value> {
         cs.fill_tint = Some(cell.fill_tint);
         cs.insets = Some(cell.insets);
         cs.vj = Some(cell.vj);
+        cs.first_baseline = Some(cell.first_baseline);
+        cs.first_baseline_min = Some(cell.first_baseline_min);
         cs.stroke = Some(cell.strokes[0].clone());
         cs.paragraph_style = cell.text.paras.first().map(|p| p.style.clone());
     }
@@ -1786,6 +1818,28 @@ mod style_tests {
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn cell_first_baseline_is_a_cell_option_and_a_cell_style_attribute() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaseline": "capHeight", "firstBaselineMin": 3})).unwrap();
+        let got = s.execute("table.get", &json!({})).unwrap();
+        let cell = got["cells"].as_array().unwrap().iter().find(|c| c["row"] == 0 && c["col"] == 0).unwrap().clone();
+        assert_eq!((cell["firstBaseline"].as_str(), cell["firstBaselineMin"].as_f64()), (Some("capHeight"), Some(3.0)));
+        assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaseline": "middle"})).is_err());
+        assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaselineMin": -1})).is_err());
+        s.execute("style.cell.create", &json!({"name": "Leading", "firstBaseline": "leading"})).unwrap();
+        s.execute("style.cell.apply", &json!({"name": "Leading", "row": 1, "col": 1})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let t = d.story(designcraft_doc::StoryId(sid)).unwrap().tables.values().next().unwrap();
+        assert_eq!(t.cell(1, 1).unwrap().first_baseline, designcraft_doc::FirstBaseline::Leading);
+        assert_eq!(t.cell(1, 0).unwrap().first_baseline, designcraft_doc::FirstBaseline::Ascent);
+    }
 
     #[test]
     fn cell_and_table_styles_apply_and_follow_edits() {

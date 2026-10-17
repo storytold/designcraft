@@ -454,6 +454,11 @@ pub struct CellStyle {
     pub inset_overrides: [Option<f64>; 4],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vj: Option<crate::item::VerticalJustification>,
+    /// Cell Options › Text › First Baseline, and its minimum.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_baseline: Option<crate::item::FirstBaseline>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_baseline_min: Option<f64>,
     /// All four edges.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stroke: Option<crate::table::CellStroke>,
@@ -528,6 +533,12 @@ impl CellStyle {
         }
         if let Some(v) = self.vj {
             cell.vj = v;
+        }
+        if let Some(v) = self.first_baseline {
+            cell.first_baseline = v;
+        }
+        if let Some(v) = self.first_baseline_min {
+            cell.first_baseline_min = v;
         }
         if let Some(v) = &self.stroke {
             cell.strokes = [v.clone(), v.clone(), v.clone(), v.clone()];
@@ -697,6 +708,12 @@ pub fn resolve_cell_style(cells: &[CellStyle], name: &str) -> CellStyle {
         }
         if style.vj.is_some() {
             out.vj = style.vj;
+        }
+        if style.first_baseline.is_some() {
+            out.first_baseline = style.first_baseline;
+        }
+        if style.first_baseline_min.is_some() {
+            out.first_baseline_min = style.first_baseline_min;
         }
         if let Some(stroke) = &style.stroke {
             out.strokes = std::array::from_fn(|_| CellStrokeAttrs::from_stroke(stroke));

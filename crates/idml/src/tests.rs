@@ -4189,3 +4189,44 @@ mod liquid_page_rules {
         }
     }
 }
+
+/// Cell Options › Text › First Baseline, set by a cell style that a table style applies to its body
+/// region (cells with `[None]` take it from there) and overridden on one cell.
+const FIRST_BASELINE_STYLES: &str = r#"<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<RootCellStyleGroup>
+  <CellStyle Self="CellStyle/$ID/[None]" Name="$ID/[None]"/>
+  <CellStyle Self="cs-cap" Name="Cap" FirstBaselineOffset="CapHeight" MinimumFirstBaselineOffset="2" VerticalJustification="CenterAlign"/>
+  <CellStyle Self="cs-cap-child" Name="CapChild" FillTint="50"><Properties><BasedOn type="object">cs-cap</BasedOn></Properties></CellStyle>
+</RootCellStyleGroup>
+<RootParagraphStyleGroup/>
+<RootTableStyleGroup>
+  <TableStyle Self="ts" Name="Tbl" BodyRegionCellStyle="cs-cap-child"/>
+</RootTableStyleGroup></idPkg:Styles>"#;
+
+const FIRST_BASELINE_STORY: &str = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<Story Self="s1"><ParagraphStyleRange><CharacterStyleRange><Table AppliedTableStyle="ts" HeaderRowCount="0">
+<Row Name="0" MinimumHeight="20"/>
+<Column Name="0" SingleColumnWidth="60"/><Column Name="1" SingleColumnWidth="60"/>
+<Cell Name="0:0" AppliedCellStyle="CellStyle/$ID/[None]"><ParagraphStyleRange><CharacterStyleRange><Content>Region</Content></CharacterStyleRange></ParagraphStyleRange></Cell>
+<Cell Name="1:0" AppliedCellStyle="CellStyle/$ID/[None]" FirstBaselineOffset="LeadingOffset"><ParagraphStyleRange><CharacterStyleRange><Content>Local</Content></CharacterStyleRange></ParagraphStyleRange></Cell>
+</Table></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"#;
+
+#[test]
+fn cell_first_baseline_comes_from_cell_styles_table_regions_and_cells_and_round_trips() {
+    use designcraft_doc::FirstBaseline;
+    let d = import_idml(&fixture_with_table_styles(FIRST_BASELINE_STYLES, FIRST_BASELINE_STORY)).unwrap();
+    d.check().unwrap();
+    let style = d.styles.cell.iter().find(|c| c.name == "Cap").unwrap();
+    assert_eq!((style.first_baseline, style.first_baseline_min), (Some(FirstBaseline::CapHeight), Some(2.0)));
+    let table = d.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    let region = table.cell(0, 0).unwrap();
+    assert_eq!((region.first_baseline, region.first_baseline_min), (FirstBaseline::CapHeight, 2.0), "inherited through BasedOn and the body region");
+    assert_eq!(table.cell(0, 1).unwrap().first_baseline, FirstBaseline::Leading, "a cell's own attribute wins");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let t2 = back.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    assert_eq!(t2.cell(0, 0).unwrap().first_baseline, FirstBaseline::CapHeight);
+    assert_eq!(t2.cell(0, 0).unwrap().first_baseline_min, 2.0);
+    assert_eq!(t2.cell(0, 1).unwrap().first_baseline, FirstBaseline::Leading);
+    let s2 = back.styles.cell.iter().find(|c| c.name == "Cap").unwrap();
+    assert_eq!(s2.first_baseline, Some(FirstBaseline::CapHeight));
+}

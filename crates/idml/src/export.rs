@@ -923,6 +923,12 @@ impl<'a> Ex<'a> {
             if let Some(vj) = cs.vj {
                 el.set("VerticalJustification", names::vj_out(vj));
             }
+            if let Some(fb) = cs.first_baseline {
+                el.set("FirstBaselineOffset", names::first_baseline_out(fb));
+            }
+            if let Some(min) = cs.first_baseline_min {
+                el.set("MinimumFirstBaselineOffset", num(min));
+            }
             if let Some(st) = &cs.stroke {
                 for side in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"] {
                     self.cell_stroke_attrs(&mut el, side, st);
@@ -2770,6 +2776,8 @@ impl<'a> Ex<'a> {
                     .attr("BottomInset", num(cell.insets[2]))
                     .attr("RightInset", num(cell.insets[3]))
                     .attr("VerticalJustification", vj)
+                    .attr("FirstBaselineOffset", names::first_baseline_out(cell.first_baseline))
+                    .attr("MinimumFirstBaselineOffset", num(cell.first_baseline_min))
                     .attr("RotationAngle", num(cell.rotation));
                 for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
                     // Do not turn absent native defaults into explicit shared-edge candidates.

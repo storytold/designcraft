@@ -125,7 +125,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, left
     let spec = FrameSpec {
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
-        opts: TextFrameOptions::default(),
+        opts: TextFrameOptions { first_baseline: cell.first_baseline, first_baseline_min: cell.first_baseline_min, ..TextFrameOptions::default() },
         vertical: false,
         exclusions: vec![],
         outline: None,
@@ -833,6 +833,23 @@ mod height_tests {
     fn object(position: AnchorPosition) -> AnchoredObject {
         let path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 12.0, 30.0));
         AnchoredObject::new(designcraft_doc::Item::new(ItemId(0), LayerId(0), designcraft_doc::Shape::Rectangle, path), position)
+    }
+
+    #[test]
+    fn cell_first_baseline_option_sets_the_first_line_and_the_row_height() {
+        // Cell Options › Text › First Baseline: Cap Height sets the first line by the cap height,
+        // not the typographic ascent, so a row sized for one line of caps keeps its height.
+        let ascent = text_cell("Hd", 4.0);
+        let mut cap = ascent.clone();
+        cap.first_baseline = designcraft_doc::FirstBaseline::CapHeight;
+        let (a, c) = (measure(&ascent, 92.0), measure(&cap, 92.0));
+        let (la, lc) = (&a.text.frames[0].lines[0], &c.text.frames[0].lines[0]);
+        assert!(lc.baseline < la.baseline, "cap height {} should sit above ascent {}", lc.baseline, la.baseline);
+        assert!(c.content_h < a.content_h);
+        let mut fixed = ascent.clone();
+        fixed.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+        fixed.first_baseline_min = 6.0;
+        assert!((measure(&fixed, 92.0).text.frames[0].lines[0].baseline - 6.0).abs() < 1e-6);
     }
 
     #[test]
