@@ -247,8 +247,8 @@ const INF: f64 = 10000.0;
 
 /// A line whose natural width exceeds its measure by no more than this (points) still fits: frame
 /// widths and glyph advances are rounded, so a line that exactly fills the measure can come out a
-/// hair too wide.
-const FIT_EPS: f64 = 0.01;
+/// hair too wide, and InDesign lets a trailing tab run to a stop up to about 0.07 pt past the edge.
+const FIT_EPS: f64 = 0.1;
 
 /// Penalty for an emergency break inside a word wider than the measure: high, so a paragraph
 /// takes no more of them than it must, but below [`INF`] so they are legal.
@@ -381,13 +381,21 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             continue;
         }
         if is_forced(g.ch) {
-            it.push(Item::glue(0.0, INF, 0.0));
-            ig.push(i);
+            // The fill glue is a break opportunity of its own: it carries the hang of the break after
+            // it, or a line that only fits by hanging its last glyph would be given up here.
+            // A justified line ended by a forced line break is justified too (as in InDesign): the
+            // fill glue that would let it stay short only ends a paragraph or a column.
+            let stretch = if sp.justify && g.ch == designcraft_doc::story::FORCED_LINE_BREAK { 0.0 } else { INF };
+            let mut fill = Item::glue(0.0, stretch, 0.0);
+            fill.hang = prev_hang;
             let mut p = Item::penalty(0.0, -INF, false);
             p.hang = prev_hang;
             if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
                 p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                fill.edge_elastic = p.edge_elastic;
             }
+            it.push(fill);
+            ig.push(i);
             it.push(p);
             ig.push(i + 1);
             last_space = NONE;
@@ -468,14 +476,18 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             }
         }
     }
-    // Paragraph end: fill glue + forced break.
-    it.push(Item::glue(0.0, INF, 0.0));
-    ig.push(n);
+    // Paragraph end: fill glue + forced break (the glue carries the hang, as at a forced break above).
+    let end_hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
+    let mut fill = Item::glue(0.0, INF, 0.0);
+    fill.hang = end_hang;
     let mut p = Item::penalty(0.0, -INF, false);
-    p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
+    p.hang = end_hang;
     if let Some(g) = glyphs.last() {
         p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+        fill.edge_elastic = p.edge_elastic;
     }
+    it.push(fill);
+    ig.push(n);
     it.push(p);
     ig.push(n);
     (it, ig)
@@ -611,6 +623,11 @@ fn kp_pass(
             sz[i + 1][t] = sz[i][t] + z[t];
         }
     }
+    // Mojikumi shrink up to each glyph.
+    let mut sqp = vec![0.0; glyphs.len() + 1];
+    for (i, g) in glyphs.iter().enumerate() {
+        sqp[i + 1] = sqp[i] + if g.locked_advance || sp.kinsoku_priority == 3 { 0.0 } else { g.moji.shrink };
+    }
     let first_box = items.iter().find(|i| i.kind == Kind::Box);
     let first_hang = first_box.map_or(0.0, |b| b.hang);
     let first_elastic = first_box.map_or([0.0; 2], |b| b.start_elastic);
@@ -661,7 +678,33 @@ fn kp_pass(
             // A line that overruns its measure by a rounding error fits exactly.
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
+            // Spacing the mojikumi table allows to be closed up (between punctuation marks and at a
+            // line end) is taken first, at no cost: as in InDesign, a line that fits by squeezing
+            // punctuation within the table isn't a loose or tight line.
+            let (mut d, mut z) = (d, z);
+            if d < 0.0 {
+                let (from, to) = (ig[n.pos].min(glyphs.len()), ig[b].min(glyphs.len()));
+                let cap = (sqp[to] - sqp[from] + it.edge_elastic[1]).clamp(0.0, z[0]);
+                let free = cap.min(-d);
+                d += free;
+                z[0] -= free;
+                // The line still overruns by a rounding error: it fits exactly.
+                if d < 0.0 && d > -FIT_EPS {
+                    d = 0.0;
+                }
+            }
             let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
+            if sp.justify
+                && d > 0.0
+                && glyphs.get(ig[n.pos].min(glyphs.len())..ig[b].min(glyphs.len())).is_some_and(|line| line.iter().any(|g| is_cjk(g.ch)))
+            {
+                // A line with CJK characters is filled by spreading the characters, as InDesign
+                // does, whatever its spaces and letter spacing can take up. Rate it by the space
+                // it leaves, so the composer prefers fuller lines: without this a line with a
+                // single word space (its stretch tiny) is hopeless unless it fits to the point,
+                // and the composer breaks at the space instead of filling the line.
+                r = r.min(d / target);
+            }
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
                 // space it leaves, so the fullest piece wins (the break at the last glyph that fits).

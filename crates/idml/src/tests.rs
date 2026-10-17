@@ -1529,6 +1529,7 @@ fn automatic_kerning_does_not_import_inactive_numeric_values() {
     for (attributes, expected) in [
         (r#"KerningMethod="$ID/Optical" KerningValue="1e+11""#, Some(designcraft_doc::Kerning::Optical)),
         (r#"KerningMethod="$ID/Metrics" KerningValue="0""#, Some(designcraft_doc::Kerning::Metrics)),
+        (r#"KerningMethod="$ID/Metrics - Roman Only" KerningValue="0""#, Some(designcraft_doc::Kerning::MetricsRomanOnly)),
         (r#"KerningValue="-40""#, Some(designcraft_doc::Kerning::Manual(-40.0))),
         (r#"KerningValue="1e+11""#, None),
     ] {

@@ -5867,7 +5867,15 @@ fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
                 for l in &lines {
                     let ink: Vec<_> = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).collect();
                     let right = ink.iter().map(|g| g.x + g.adv.min(natural[&g.byte])).fold(l.x0, f64::max);
-                    assert!(l.end_x <= l.x1 + 0.02 && right <= l.x1 + 0.02, "{what}: line {:?} ends at {} past {}", l.range, l.end_x, l.x1);
+                    // As in InDesign, the tracking after the last glyph of a line hangs: it doesn't have to fit.
+                    let trailing = tracking / 1000.0 * 12.0;
+                    assert!(
+                        l.end_x - trailing <= l.x1 + 0.02 && right - trailing <= l.x1 + 0.02,
+                        "{what}: line {:?} ends at {} past {}",
+                        l.range,
+                        l.end_x,
+                        l.x1
+                    );
                     for w in ink.windows(2) {
                         assert!(w[1].x >= w[0].x + natural[&w[0].byte] - 1e-6, "{what}: glyphs overlap at {}", w[1].byte);
                     }
@@ -7241,4 +7249,89 @@ fn greek_text_gets_greek_hyphenation() {
     // αν-θρω-πος, the syllables hyph-el gives.
     let el = hyphen::Lang::for_language("Greek").unwrap();
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
+}
+
+#[test]
+fn tracking_after_the_last_glyph_of_a_line_does_not_have_to_fit() {
+    // InDesign sets a line of tracked text in a measure that holds every glyph but the tracking after the last.
+    let (mut d, sid, fid) = doc_with("nnnn", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs { hyphenate: Some(false), ..Default::default() });
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.tracking = Some(500.0));
+    let wide = compose_story(&d, sid, &ComposeOptions::default());
+    let end_x = wide.frames[0].lines[0].end_x;
+    let tracking = 500.0 / 1000.0 * 12.0;
+    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, end_x - tracking + 0.5, 100.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1, "the line fits without its trailing tracking");
+    assert!(!cs.is_overset());
+}
+
+#[test]
+fn justified_cjk_lines_with_nothing_to_stretch_are_balanced_not_left_hopeless() {
+    // Two lines of Japanese justified without letter spacing, the first ended by a forced line
+    // break: the composer used to rate every such line as hopeless and broke it as "「壁」" / the
+    // rest; InDesign spreads the characters, so it breaks the line in two similar halves.
+    let text = "「壁」から続く断熱の系譜を、\u{2028}家";
+    let justified = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(false), ..Default::default() };
+    // The natural width of the first line (ragged, so nothing is spread).
+    let ragged = ParaAttrs { align: Some(Align::Left), hyphenate: Some(false), ..Default::default() };
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 100.0), ragged);
+    let natural: f64 = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.iter().map(|g| g.adv).sum();
+    assert!(natural > 10.0);
+    // A measure of about 11 of the 14 characters.
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, natural * 0.8, 100.0), justified);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() >= 3, "{} lines", lines.len());
+    let first = lines[0].glyphs.iter().filter(|g| g.visible).count();
+    assert!((6..=8).contains(&first), "the first line holds {first} characters, not 3 or 10");
+}
+
+#[test]
+fn spacing_the_mojikumi_table_closes_up_costs_nothing_when_a_line_fits_by_squeezing() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    // Every gap between two ideographs is half an em that may close up. A measure that holds the
+    // text only with the gaps most of the way closed is still one line: squeezing within the table
+    // is free, so the composer doesn't give the line up for two looser ones.
+    let text = "漢漢漢漢漢";
+    let (mut d, sid, fid) =
+        doc_with(text, Rect::new(0.0, 0.0, 600.0, 100.0), ParaAttrs { mojikumi: Some("MojikumiTable/Gaps".into()), ..Default::default() });
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Gaps".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 12,
+            side_class: 12,
+            after: true,
+            minimum: 0.0,
+            desired: 0.5,
+            maximum: 0.5,
+            priority: 1,
+            does_not_float: false,
+        }],
+    });
+    let width = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.iter().map(|g| g.adv).sum::<f64>();
+    let natural = width(&d);
+    d.story_mut(sid).unwrap().paras[0].para.mojikumi = None;
+    let gaps = natural - width(&d);
+    assert!(gaps > 1.0, "the four gaps are in the advances: {gaps}");
+    d.story_mut(sid).unwrap().paras[0].para.mojikumi = Some("MojikumiTable/Gaps".into());
+    // The measure leaves room for a hundredth of the gaps.
+    let measure = natural - 0.99 * gaps;
+    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, measure, 100.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1, "{:?}", all_lines(&cs).iter().map(|l| l.end_x).collect::<Vec<_>>());
+    // Squeezed to the last drop and a hair beyond (a rounding error): still one line.
+    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, natural - gaps - 0.01, 100.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1, "a line that overruns by a rounding error once squeezed fits");
+}
+
+#[test]
+fn a_trailing_tab_stop_a_hair_beyond_the_frame_edge_still_fits() {
+    // InDesign lets a tab run to a stop that lies 0.07 pt beyond the frame (a label frame made to
+    // end at its tab stop, its width stored with rounding): the tab doesn't wrap the line.
+    let (d, sid, _) = doc_with("AB	", Rect::new(0.0, 0.0, 36.0 - 0.07, 100.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&cs).len(), 1);
+    assert!(!cs.is_overset());
 }
