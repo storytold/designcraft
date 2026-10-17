@@ -61,7 +61,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(id) = super::id_param(p, "id") {
         return s.edit(|d, _| {
             let old = d.item(id).ok_or_else(|| bad("math.insert", "no such object"))?;
-            let at = old.bounds();
+            // The path and graphic live in the item's inner space, which `xf` maps to the spread:
+            // build the new ones at the old inner corner and keep `xf`.
+            let at = old.path.bounds().ok_or_else(|| bad("math.insert", "equation has no geometry"))?;
             let it = math_item(d, &latex, size, lid, (at.x0, at.y0));
             let target = d.item_mut(id).ok_or_else(|| bad("math.insert", "no such object"))?;
             target.path = it.path;
@@ -128,5 +130,47 @@ mod tests {
         assert_eq!(s.execute("math.insert", &json!({"latex": r"\pi r^2"})).unwrap()["inline"], true);
         let st = &s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(f["story"].as_u64().unwrap())];
         assert_eq!(st.objects.len(), 1);
+    }
+
+    /// The item's top-left corner in spread space (inner path corner through its transform).
+    fn origin(s: &Session, id: designcraft_doc::ItemId) -> designcraft_geom::Point {
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(id).unwrap();
+        let r = it.path.bounds().unwrap();
+        it.xf * designcraft_geom::Point::new(r.x0, r.y0)
+    }
+
+    #[test]
+    fn editing_a_transformed_equation_keeps_its_place() {
+        for step in ["move", "rotate", "scale"] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let r = s.execute("math.insert", &json!({"latex": r"\frac{a}{b}", "x": 100, "y": 100})).unwrap();
+            let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+            match step {
+                "move" => s.execute("transform.move", &json!({"ids": [id.0], "dx": 50, "dy": 40})),
+                "rotate" => s.execute("transform.rotate", &json!({"ids": [id.0], "angle": 30})),
+                _ => s.execute("transform.scale", &json!({"ids": [id.0], "sx": 2.0, "sy": 1.5})),
+            }
+            .unwrap();
+            let before = origin(&s, id);
+            s.execute("math.insert", &json!({"id": id.0, "latex": r"\frac{a}{b}"})).unwrap();
+            let after = origin(&s, id);
+            assert!((before.x - after.x).abs() < 1e-6 && (before.y - after.y).abs() < 1e-6, "{step}: {before:?} -> {after:?}");
+        }
+    }
+
+    #[test]
+    fn editing_a_moved_equation_keeps_its_bounds() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("math.insert", &json!({"latex": "x", "x": 100, "y": 100})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        s.execute("transform.move", &json!({"ids": [id.0], "dx": 50, "dy": 40})).unwrap();
+        let before = s.doc().unwrap().doc.item(id).unwrap().bounds();
+        s.execute("math.insert", &json!({"id": id.0, "latex": "x"})).unwrap();
+        let after = s.doc().unwrap().doc.item(id).unwrap().bounds();
+        assert_eq!((before.x0, before.y0), (after.x0, after.y0));
+        assert_eq!((after.x0, after.y0), (150.0, 140.0));
     }
 }
