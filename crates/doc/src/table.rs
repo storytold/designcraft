@@ -897,7 +897,8 @@ impl Table {
     }
 
     /// Move row `from` to position `to` (indices before the move). Refused when merged cells span
-    /// rows (the move would cut them).
+    /// rows (the move would cut them) or when the move would take a row across a header/footer
+    /// boundary (`from` and `to` must be the same kind of row).
     pub fn move_row(&mut self, from: usize, to: usize) -> Result<(), String> {
         let (nr, nc) = (self.nrows(), self.ncols());
         if from >= nr || to >= nr {
@@ -905,6 +906,9 @@ impl Table {
         }
         if self.regions().iter().any(|r| r.2 > 1) {
             return Err("unmerge cells that span rows first".into());
+        }
+        if self.rows[from].kind != self.rows[to].kind {
+            return Err("header and footer rows must stay first and last".into());
         }
         let row = self.rows.remove(from);
         self.rows.insert(to, row);
@@ -1253,6 +1257,17 @@ mod tests {
 
     fn story(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
+    }
+
+    #[test]
+    fn move_row_keeps_header_and_footer_rows_in_place() {
+        let mut t = Table::new(1, 3, 2, 1, 1, 120.0);
+        for (from, to) in [(0, 2), (0, 4), (2, 0), (2, 4), (4, 2), (4, 0)] {
+            assert!(t.move_row(from, to).is_err(), "move_row({from}, {to}) should be refused");
+            t.check().unwrap();
+        }
+        t.move_row(1, 3).unwrap();
+        t.check().unwrap();
     }
 
     #[test]
