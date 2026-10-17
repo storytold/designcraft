@@ -390,7 +390,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let links_dir = root.child("Links")?;
     let (packed, mut files) = write_links(&d, &root, &links_dir, None)?;
     let doc_path = package_output_path(&dir, &title, "designcraft")?;
-    root.write(&doc_path, &super::to_bytes(&packed)?)?;
+    root.write(&doc_path, &super::native_links::save(&packed, &doc_path)?)?;
     files.insert(0, doc_path);
     // The font files, and what the report says about each font.
     let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);

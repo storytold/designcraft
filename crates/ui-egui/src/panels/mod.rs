@@ -544,6 +544,12 @@ mod font_menu_ui_tests {
         h.state_mut().app.run("type.selectionAttrs", json!({})).unwrap()["chars"]["fontFamily"].as_str().unwrap().to_string()
     }
 
+    /// The first matching family in this machine's font catalog. Installed variable fonts
+    /// can add more matches beside the bundled families.
+    fn first_match(h: &Harness<'static, Window>, query: &str) -> String {
+        super::font_menu(&h.state().app).into_iter().find(|f| f.matches(query)).expect("a matching family").family
+    }
+
     /// Run the menu until the filters' font kinds are read (it says Loading fonts… meanwhile).
     fn settle(h: &mut Harness<'static, Window>) {
         for _ in 0..3000 {
@@ -663,16 +669,19 @@ mod font_menu_ui_tests {
         assert_eq!(story_text(&mut h, story), before, "the typing went to the search, not the story");
         assert!(h.query_by_label("Source Sans 3").is_some(), "a match is listed");
         assert!(h.query_by_label(designcraft_fonts::DEFAULT_FAMILY).is_none(), "families that don't match aren't");
-        // ↓ and Return pick the first match and close the menu.
+        // Typing highlights the first match. ↓ then ↑ exercise navigation and return to it.
+        let expected = first_match(&h, "source sans");
         h.key_press(egui::Key::ArrowDown);
+        h.run_steps(2);
+        h.key_press(egui::Key::ArrowUp);
         h.run_steps(2);
         h.key_press(egui::Key::Enter);
         h.run_steps(4);
-        assert_eq!(family(&mut h), "Source Sans 3");
+        assert_eq!(family(&mut h), expected);
         assert_eq!(story_text(&mut h, story), before);
         assert!(!h.ctx.text_edit_focused(), "the menu closed");
         // Reopened, the search starts empty.
-        let at = field(&h, "Source Sans 3");
+        let at = field(&h, &expected);
         click_at(&mut h, at.center());
         assert_eq!(search(&h), "", "the search starts empty");
         // A click on a family picks it.
@@ -699,8 +708,8 @@ mod font_menu_ui_tests {
     }
 
     /// Opens the font menu of the field at `at`, clicks its search field, types, checks the menu
-    /// stays open and lists only the matches, then picks the first with ↓ and Return.
-    fn search_in_menu(h: &mut Harness<'static, Window>, at: egui::Rect, what: &str) {
+    /// stays open and lists only the matches, then picks the first with ↓, ↑ and Return.
+    fn search_in_menu(h: &mut Harness<'static, Window>, at: egui::Rect, what: &str) -> String {
         click_at(h, at.center());
         let field = h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_focused()).map(|n| n.rect());
         let field = field.unwrap_or_else(|| panic!("{what}: the menu opens with the search field focused"));
@@ -711,11 +720,15 @@ mod font_menu_ui_tests {
         assert_eq!(search(h), "SOURCE SA", "{what}: the typing went to the search");
         assert!(h.query_by_label("Source Sans 3").is_some(), "{what}: a match is listed");
         assert!(h.query_by_label(designcraft_fonts::DEFAULT_FAMILY).is_none(), "{what}: families that don't match aren't");
+        let expected = first_match(h, "source sa");
         h.key_press(egui::Key::ArrowDown);
+        h.run_steps(2);
+        h.key_press(egui::Key::ArrowUp);
         h.run_steps(2);
         h.key_press(egui::Key::Enter);
         h.run_steps(4);
         assert!(!h.ctx.text_edit_focused(), "{what}: the menu closed");
+        expected
     }
 
     /// Every font field over selected text (Control bar, Contextual Task Bar, Properties ›
@@ -742,8 +755,8 @@ mod font_menu_ui_tests {
                 h.state_mut().app.run("type.char", json!({"attrs": {"fontFamily": designcraft_fonts::DEFAULT_FAMILY}})).unwrap();
                 h.run_steps(4);
                 let at = fields(&h, designcraft_fonts::DEFAULT_FAMILY)[k];
-                search_in_menu(&mut h, at, &format!("{name}, field {k}"));
-                assert_eq!(family(&mut h), "Source Sans 3", "{name}, field {k}");
+                let expected = search_in_menu(&mut h, at, &format!("{name}, field {k}"));
+                assert_eq!(family(&mut h), expected, "{name}, field {k}");
                 assert_eq!(story_text(&mut h, story), before, "{name}, field {k}");
             }
         }
@@ -771,11 +784,11 @@ mod font_menu_ui_tests {
             h.state_mut().app.ui.dialog = dialog.map(|(id, fields)| crate::dialogs::Dialog::new(id, fields));
             h.run_steps(4);
             let at = *fields(&h, shown).first().unwrap_or_else(|| panic!("{what}: the font field is shown"));
-            search_in_menu(&mut h, at, what);
+            let expected = search_in_menu(&mut h, at, what);
             assert_eq!(h.state().app.ui.dialog.as_ref().map(|d| d.id.clone()), dialog_id, "{what}: Return in the menu leaves the dialog open");
-            assert!(!fields(&h, "Source Sans 3").is_empty(), "{what}: the field shows the family picked");
+            assert!(!fields(&h, &expected).is_empty(), "{what}: the field shows the family picked");
             // Escape closes the menu only.
-            let at = fields(&h, "Source Sans 3")[0];
+            let at = fields(&h, &expected)[0];
             click_at(&mut h, at.center());
             assert!(h.ctx.text_edit_focused(), "{what}: the menu opened");
             h.key_press(egui::Key::Escape);

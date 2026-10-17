@@ -34,6 +34,7 @@ mod lists;
 mod load_styles;
 mod mathexpr;
 mod media;
+mod native_links;
 mod notes;
 mod object;
 mod overrides;

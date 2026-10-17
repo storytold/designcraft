@@ -346,6 +346,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- 2026-10-15: Add opt-in linked-only native working saves, relative source hydration within automation roots, and legacy first-baseline compatibility; portable recovery retains originals. See docs/linked-artwork.md.
+
 Newest first.
 
 - **2026-10-16** · Threading: the loaded text cursor threads into a text frame inside a group (it hit the group and showed it could not thread); a plain click still selects the group (#1075). Gap 27 closed. No readiness percentage change.

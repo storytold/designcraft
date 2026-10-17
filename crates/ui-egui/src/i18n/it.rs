@@ -1,6 +1,7 @@
 //! Original Italian interface translations, written from the English source
 //! using ordinary Italian desktop-publishing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Keep linked artwork external on save", "Mantieni esterna la grafica collegata al salvataggio"),
     ("File", "File"),
     ("Edit", "Modifica"),
     ("Layout", "Layout"),
