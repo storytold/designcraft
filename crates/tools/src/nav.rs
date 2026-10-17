@@ -434,8 +434,8 @@ impl Tool for PageTool {
                 p: d.cur,
                 text: format!(
                     "W: {}\nH: {}",
-                    designcraft_geom::format_measure(pg.width, cx.unit),
-                    designcraft_geom::format_measure(pg.height, cx.unit)
+                    designcraft_geom::format_measure(pg.width, cx.doc.settings.horizontal_units),
+                    designcraft_geom::format_measure(pg.height, cx.doc.settings.vertical_units)
                 ),
             });
         }

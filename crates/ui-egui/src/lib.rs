@@ -737,7 +737,9 @@ impl DesignApp {
         ViewInfo {
             zoom: self.view().map(|v| v.zoom).unwrap_or(1.0),
             snap: self.ui.snap_view(),
-            unit: self.ui.units,
+            // Tool readouts (sizes, smart-guide distances) measure in the document's ruler units,
+            // as its Control and Properties fields do.
+            unit: self.session.active().map_or(self.ui.units, |st| st.doc.settings.horizontal_units),
             stroke_in_front: self.ui.stroke_front,
         }
     }
@@ -1841,6 +1843,17 @@ mod tests {
         assert!(saved.rich_black);
         let accurate: UiState = serde_json::from_str(r#"{"richBlack": false}"#).unwrap();
         assert!(!accurate.rich_black, "a saved choice is kept");
+    }
+
+    /// Tool readouts measured in picas whatever the document's units (the UI's unit is never set):
+    /// they follow the active document's ruler units.
+    #[test]
+    fn tool_readouts_measure_in_the_documents_units() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
+        assert_eq!(app.view_info().unit, Unit::Picas, "no document: the UI's default");
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits": "inches", "verticalUnits": "millimeters"})).unwrap();
+        assert_eq!(app.view_info().unit, Unit::Inches);
     }
 
     /// An app with one document that has an unsaved edit.
