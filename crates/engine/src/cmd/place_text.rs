@@ -366,7 +366,14 @@ pub(super) fn place_text(
             let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             story.delete(r.clone());
+            // An insertion point in an empty paragraph takes the first imported paragraph's style
+            // (insert_story would keep the empty paragraph's own, losing the styleMap result).
+            let p0 = story.para_at(r.start);
+            let blank = story.para_ranges().get(p0).is_some_and(|x| x.is_empty());
             let end = story.insert_story(r.start, &imp.story);
+            if blank && let (Some(first), Some(p)) = (imp.story.paras.first(), story.paras.get_mut(p0)) {
+                *p = ParaFormat { table: p.table, ..first.clone() };
+            }
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
             if link.is_some() {
                 warnings.push("not linked: a linked text file fills a whole story, not an insertion point".into());
@@ -765,6 +772,20 @@ mod pdf_page_tests {
         // Redefine: the imported definition replaces the document's.
         s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "styleConflicts": "redefine", "rect": [72, 400, 300, 500]})).unwrap();
         assert_eq!(s.doc().unwrap().doc.styles.para("Body").unwrap().chars.size, Some(10.0));
+    }
+
+    #[test]
+    fn word_first_paragraph_into_empty_caret_keeps_mapped_style() {
+        // Regression (#1208): placing into a new text frame (which leaves its caret selected) left the first paragraph unstyled.
+        let b64 = crate::cmd::base64_encode(&word_file());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Headline"})).unwrap();
+        let fr = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text"})).unwrap();
+        let sid = fr["story"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "frame": fr["id"], "styleMap": {"Title": "Headline"}})).unwrap();
+        let st = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
+        assert_eq!(st.paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Headline", "Body"]);
     }
 
     #[test]
