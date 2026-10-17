@@ -68,7 +68,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         egui::Panel::right("dock").default_size(253.0).size_range(220.0..=420.0).resizable(true).frame(egui::Frame::NONE.fill(t.panel)).show(
             ui,
             |ui| {
-                dock_header(ui, &t, "»");
+                if dock_header(ui, &t, "»").clicked() {
+                    app.ui.dock_expanded = false;
+                }
                 // Tab strip (27 pt).
                 let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), 27.0), Sense::hover());
                 ui.painter().rect_filled(strip, 0.0, t.tab_strip);
@@ -127,7 +129,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // (Essentials Classic) show their names.
     let groups = app.ui.icon_groups.clone();
     egui::Panel::right("icon_column").exact_size(icon_column_width(app)).resizable(false).frame(egui::Frame::NONE.fill(t.panel)).show(ui, |ui| {
-        dock_header(ui, &t, "«");
+        if dock_header(ui, &t, "«").clicked() {
+            app.ui.dock_expanded = true;
+        }
         ui.add_space(4.0);
         match &groups {
             Some(groups) => {
@@ -194,12 +198,13 @@ fn icon_clicked(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, response: &egu
     crate::panel_docking::legacy_tab(app, ui, id, response);
 }
 
-/// 11 pt dock header strip with a collapse chevron.
-fn dock_header(ui: &mut egui::Ui, t: &Tokens, chevron: &str) {
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 11.0), Sense::hover());
+/// 11 pt dock header strip with a collapse chevron; clicking it reports a click on the response.
+fn dock_header(ui: &mut egui::Ui, t: &Tokens, chevron: &str) -> egui::Response {
+    let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 11.0), Sense::click());
     ui.painter().rect_filled(r, 0.0, t.tab_strip);
     ui.painter().text(egui::pos2(r.max.x - 8.0, r.center().y), egui::Align2::RIGHT_CENTER, chevron, egui::FontId::proportional(9.0), t.text_dim);
     ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.border));
+    response
 }
 
 /// A panel opened from the icon column, shown as a floating flyout next to the dock.
@@ -516,5 +521,52 @@ mod visual_regressions {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod chevron_tests {
+    use super::*;
+    use egui_kittest::Harness;
+
+    fn click(harness: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
+        harness.hover_at(at);
+        harness.run_steps(1);
+        harness.drag_at(at);
+        harness.run_steps(1);
+        harness.drop_at(at);
+        harness.run_steps(3);
+    }
+
+    /// The » / « chevron painted at the right end of a panel's 11 pt header.
+    fn chevron(harness: &Harness<'_, DesignApp>, panel: &str) -> egui::Pos2 {
+        let r = egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new(panel)).expect("the panel is laid out").outer_rect;
+        egui::pos2(r.max.x - 10.0, r.min.y + 5.0)
+    }
+
+    /// Issue #1203: the header chevrons were painted text; clicking them did nothing.
+    #[test]
+    fn the_dock_chevron_collapses_and_expands_the_dock() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.ui.dock_expanded = true;
+        let mut ready = false;
+        let mut harness = Harness::builder().with_size(vec2(1280.0, 640.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), "en");
+                    ready = true;
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        harness.run_steps(4);
+        let at = chevron(&harness, "dock");
+        click(&mut harness, at);
+        assert!(!harness.state().ui.dock_expanded, "» collapses the dock to icons");
+        let at = chevron(&harness, "icon_column");
+        click(&mut harness, at);
+        assert!(harness.state().ui.dock_expanded, "« expands the dock again");
     }
 }
