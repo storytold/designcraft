@@ -35,11 +35,23 @@ fn first_sheet_target(wb: &str, rels: &str) -> Option<String> {
     Some(if target.starts_with("xl/") { target } else { format!("xl/{target}") })
 }
 
+/// The text of a shared string (`<si>`) or inline string (`<is>`): its own `<t>` and the `<t>` of its
+/// `<r>` runs. Phonetic guides (`<rPh>`, `<phoneticPr>`) are the reading, not the cell text.
+fn string_item(si: &El) -> String {
+    si.els()
+        .map(|e| match e.name.as_str() {
+            "t" => e.text(),
+            "r" => e.els().filter(|t| t.name == "t").map(El::text).collect(),
+            _ => String::new(),
+        })
+        .collect()
+}
+
 fn value(c: &El, shared: &[String]) -> String {
     let v = || c.child("v").map(El::text).unwrap_or_default();
     match c.attr("t") {
         Some("s") => v().trim().parse::<usize>().ok().and_then(|i| shared.get(i).cloned()).unwrap_or_default(),
-        Some("inlineStr") => c.child("is").map(El::text).unwrap_or_default(),
+        Some("inlineStr") => c.child("is").map(string_item).unwrap_or_default(),
         // A cached formula string is text even when it looks like a number.
         Some("str") => v(),
         Some("b") => {
@@ -90,7 +102,7 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
     let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
         .map(|x| parse(&x))
         .transpose()?
-        .map(|sst| sst.els().filter(|e| e.name == "si").map(El::text).collect())
+        .map(|sst| sst.els().filter(|e| e.name == "si").map(string_item).collect())
         .unwrap_or_default();
     let mut cells: Vec<(usize, usize, String)> = Vec::new();
     if let Some(data) = sheet_xml.child("sheetData") {
@@ -198,7 +210,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
         .map(|x| parse(&x))
         .transpose()?
-        .map(|sst| sst.els().filter(|e| e.name == "si").map(El::text).collect())
+        .map(|sst| sst.els().filter(|e| e.name == "si").map(string_item).collect())
         .unwrap_or_default();
     let mut cells: Vec<((usize, usize), String)> = Vec::new();
     if let Some(data) = sheet.child("sheetData") {
@@ -353,6 +365,31 @@ mod tests {
         assert_eq!(rows[3][0], "");
         assert_eq!(rows[3][1], "1");
         assert!(records(&book, Some("Missing")).is_err());
+    }
+
+    #[test]
+    fn phonetic_guide_text_is_not_cell_text() {
+        let book = sheets(&[
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            ("xl/_rels/workbook.xml.rels", r#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>"#),
+            (
+                "xl/sharedStrings.xml",
+                r#"<sst><si><t>日本</t><rPh sb="0" eb="2"><t>ニホン</t></rPh><phoneticPr fontId="1"/></si><si><r><t>東</t></r><r><t>京</t></r><rPh sb="0" eb="2"><t>トウキョウ</t></rPh></si></sst>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="inlineStr"><is><t>大阪</t><rPh sb="0" eb="2"><t>オオサカ</t></rPh><phoneticPr/></is></c></row></sheetData></worksheet>"#,
+            ),
+        ]);
+        let want = ["日本", "東京", "大阪"].map(String::from).to_vec();
+        assert_eq!(records(&book, None).unwrap(), vec![want.clone()]);
+        let imp = import(&book).unwrap();
+        let t = imp.story.tables.values().next().expect("a table");
+        let got: Vec<String> = (0..3).map(|c| t.cell(0, c).unwrap().text.text.clone()).collect();
+        assert_eq!(got, want);
     }
 
     fn one_value(cell: &str) -> Vec<u8> {
