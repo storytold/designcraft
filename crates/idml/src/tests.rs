@@ -2770,6 +2770,18 @@ fn round_trips_the_zero_point_and_ruler_origin() {
 }
 
 #[test]
+fn round_trips_lock_column_guides() {
+    let mut d = Document::new(&NewDocument::default());
+    assert!(zip_text(&export_idml(&d), "Resources/Preferences.xml").contains(r#"ColumnGuideLocked="true""#));
+    assert!(import_idml(&export_idml(&d)).unwrap().settings.column_guides_locked);
+    d.settings.column_guides_locked = false;
+    let bytes = export_idml(&d);
+    let prefs = zip_text(&bytes, "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"ColumnGuideLocked="false""#), "{prefs}");
+    assert!(!import_idml(&bytes).unwrap().settings.column_guides_locked);
+}
+
+#[test]
 fn kenten_shatai_and_grid_settings_import_and_round_trip() {
     use designcraft_doc::cjk::CharacterAlignment;
     use designcraft_doc::cjk_settings::{AdornmentOverprint, KentenAlignment, KentenKind, KentenPosition};

@@ -513,7 +513,9 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if smart != app.ui.smart_guides {
         let _ = app.run("view.smartGuides", json!({}));
     }
-    app.ui.guides_locked = locked;
+    if locked != app.ui.guides_locked {
+        let _ = app.run("view.lockGuides", json!({"on": locked}));
+    }
     rule(ui);
     section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
     let (a, b) = button_pair(ui, crate::i18n::tr(&app.ui.language, "Import File"), crate::i18n::tr(&app.ui.language, "Insert Page"));

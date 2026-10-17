@@ -401,6 +401,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Adjust Layout", "Ajustar layout"),
     ("Smart Guides", "Guias inteligentes"),
     ("Lock Guides", "Bloquear guias"),
+    ("Lock Column Guides", "Bloquear guias de colunas"),
     ("Show Document Grid", "Mostrar grade do documento"),
     ("Show Baseline Grid", "Mostrar grade de linha de base"),
     ("Options", "Opções"),

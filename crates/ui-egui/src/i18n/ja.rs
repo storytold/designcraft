@@ -1349,6 +1349,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Load DTD…", "DTD を読み込み…"),
     ("Location:", "位置:"),
     ("Lock Guides", "ガイドをロック"),
+    ("Lock Column Guides", "列ガイドをロック"),
     ("Miter Limit:", "マイターの上限:"),
     ("New Article from Selection", "選択範囲から新規アーティクルを作成"),
     ("New Note at Cursor", "カーソル位置に新規注釈"),

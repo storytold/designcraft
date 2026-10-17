@@ -844,6 +844,9 @@ impl<'r> Importer<'r> {
         if let Some(v) = e.boolean("CreatePrimaryTextFrame") {
             s.primary_text_frame = v;
         }
+        if let Some(v) = e.boolean("ColumnGuideLocked") {
+            s.column_guides_locked = v;
+        }
     }
 
     fn grid_prefs(&mut self, e: &El) {

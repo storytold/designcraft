@@ -393,6 +393,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Adjust Layout", "ضبط التخطيط"),
     ("Smart Guides", "أدلة ذكية"),
     ("Lock Guides", "قفل الأدلة"),
+    ("Lock Column Guides", "قفل أدلة الأعمدة"),
     ("Show Document Grid", "إظهار شبكة المستند"),
     ("Show Baseline Grid", "إظهار شبكة خطوط الأساس"),
     ("Options", "خيارات"),

@@ -296,6 +296,7 @@ pub struct UiState {
     pub align_to: String,
     /// Properties > Text Style tab: 0 = Paragraph Styles, 1 = Character Styles.
     pub text_style_tab: u8,
+    /// View › Grids & Guides › Lock Guides: ruler guides can't be dragged.
     pub guides_locked: bool,
     pub smart_guides: bool,
     #[serde(default = "default_true")]

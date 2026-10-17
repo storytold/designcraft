@@ -1080,6 +1080,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Load DTD…", "Загрузить DTD…"),
     ("Location:", "Расположение:"),
     ("Lock Guides", "Заблокировать направляющие"),
+    ("Lock Column Guides", "Заблокировать направляющие колонок"),
     ("Miter Limit:", "Ограничение острого угла:"),
     ("New Article from Selection", "Новая статья из выделенного"),
     ("New Note at Cursor", "Новая заметка в позиции курсора"),

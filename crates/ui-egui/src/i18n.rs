@@ -3159,6 +3159,10 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Last Spread", ["Last Spread", "Dernière planche", "Last Spread", "Last Spread", "最后一个跨页"]),
     ("Load DTD…", ["Load DTD…", "Charger la DTD…", "Load DTD…", "Load DTD…", "载入 DTD…"]),
     ("Location:", ["Location:", "Emplacement :", "Location:", "Location:", "位置："]),
+    (
+        "Lock Column Guides",
+        ["Spaltenhilfslinien sperren", "Verrouiller les repères de colonne", "Bloquear guías de columna", "列ガイドをロック", "锁定栏参考线"],
+    ),
     ("Lock Guides", ["Lock Guides", "Verrouiller les repères", "Lock Guides", "Lock Guides", "锁定参考线"]),
     ("Miter Limit:", ["Miter Limit:", "Limite de pointe :", "Miter Limit:", "Miter Limit:", "斜接限制："]),
     (

@@ -1093,6 +1093,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Load DTD…", "Načíst DTD…"),
     ("Location:", "Umístění:"),
     ("Lock Guides", "Zamknout vodítka"),
+    ("Lock Column Guides", "Zamknout vodítka sloupců"),
     ("Miter Limit:", "Limit ostrého spoje:"),
     ("New Article from Selection", "Nový článek z výběru"),
     ("New Note at Cursor", "Nová poznámka u kurzoru"),
