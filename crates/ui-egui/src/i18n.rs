@@ -11,10 +11,13 @@ mod fr;
 mod it;
 mod ja;
 mod ka;
+mod ko;
 mod pl;
 mod pt_br;
 mod ru;
 mod uk;
+mod zh_hans;
+mod zh_hant;
 
 /// Supported interface languages: (code, name in that language).
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -24,6 +27,8 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("es", "Español"),
     ("ja", "日本語"),
     ("zh", "简体中文"),
+    ("zh-hant", "繁體中文"),
+    ("ko", "한국어"),
     ("ar", "العربية"),
     ("pt-br", "Português (Brasil)"),
     ("it", "Italiano"),
@@ -4432,6 +4437,19 @@ fn column(lang: &str) -> Option<usize> {
     }
 }
 
+/// The Chinese and Korean tables, which cover the whole interface.
+fn cjk_table(lang: &str) -> Option<&'static HashMap<&'static str, &'static str>> {
+    type Map = OnceLock<HashMap<&'static str, &'static str>>;
+    static MAPS: [Map; 3] = [Map::new(), Map::new(), Map::new()];
+    let (i, table) = match lang {
+        "zh" => (0, zh_hans::TABLE),
+        "zh-hant" => (1, zh_hant::TABLE),
+        "ko" => (2, ko::TABLE),
+        _ => return None,
+    };
+    Some(MAPS.get(i)?.get_or_init(|| table.iter().copied().collect()))
+}
+
 /// `s` in `lang` (English, or the string itself, when there's no translation).
 pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static GERMAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -4466,6 +4484,17 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
         && let Some(text) = FRENCH.get_or_init(|| fr::TABLE.iter().copied().collect()).get(s).copied()
     {
         return text;
+    }
+    // Traditional Chinese and Korean have a table each; Simplified Chinese one for the strings the
+    // shared table has no row for (its Chinese column comes first).
+    if lang == "zh"
+        && let Some(c) = column(lang)
+        && let Some(text) = TRANSLATIONS.get_or_init(|| TABLE.iter().copied().collect()).get(s).and_then(|row| row.get(c)).copied()
+    {
+        return text;
+    }
+    if let Some(map) = cjk_table(lang) {
+        return map.get(s).copied().unwrap_or(s);
     }
     if lang == "pt-br" {
         return PORTUGUESE_BR.get_or_init(|| pt_br::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
@@ -4583,6 +4612,42 @@ pub fn workspace_name<'a>(lang: &str, name: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Chinese and Korean tables have rows only for keys another catalog knows, and keep the
+    /// placeholders and ellipses. A new English string falls back to English until it is
+    /// translated, so it doesn't fail here.
+    #[test]
+    fn chinese_and_korean_tables_have_no_stale_rows_and_keep_placeholders() {
+        let mut keys = std::collections::HashSet::new();
+        keys.extend(TABLE.iter().map(|(key, _)| *key));
+        for table in [ar::TABLE, pt_br::TABLE, ja::TABLE, de::TABLE, fr::TABLE, it::TABLE, pl::TABLE, ka::TABLE, uk::TABLE, ru::TABLE, cs::TABLE] {
+            keys.extend(table.iter().map(|(key, _)| *key));
+        }
+        let placeholders = |s: &str| {
+            let mut found: Vec<String> = s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect();
+            found.sort();
+            found
+        };
+        let ellipsis = |s: &str| s.trim_end().ends_with('…') || s.trim_end().ends_with("...");
+        for (lang, table) in [("zh", zh_hans::TABLE), ("zh-hant", zh_hant::TABLE), ("ko", ko::TABLE)] {
+            let stale: Vec<_> = table.iter().map(|(key, _)| *key).filter(|k| !keys.contains(k)).collect();
+            assert!(stale.is_empty(), "{lang}: rows for unknown keys: {stale:?}");
+            let mut seen = std::collections::HashSet::new();
+            for (key, text) in table {
+                assert!(seen.insert(*key), "{lang}: duplicate {key}");
+                assert!(!text.is_empty(), "{lang}: {key}");
+                assert_eq!(tr(lang, key), *text, "{lang}: {key}");
+                assert_eq!(placeholders(key), placeholders(text), "{lang}: placeholders of {key}");
+                assert_eq!(ellipsis(key), ellipsis(text), "{lang}: ellipsis of {key}");
+            }
+        }
+        for (key, _) in zh_hans::TABLE {
+            assert!(!TABLE.iter().any(|(k, _)| k == key), "zh: {key} is in the shared table");
+        }
+        assert_eq!(tr("zh-hant", "File"), "檔案");
+        assert_eq!(tr("ko", "File"), "파일");
+        assert!(LANGUAGES.contains(&("zh-hant", "繁體中文")) && LANGUAGES.contains(&("ko", "한국어")));
+    }
 
     #[test]
     fn cached_lookup_preserves_every_translation_across_language_switches() {
