@@ -28,7 +28,8 @@ rfd = { workspace = true }
 arboard = { workspace = true }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-# The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
+# The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs, and the
+# monitors the saved window is put back on (src/window.rs).
 winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -36,9 +37,11 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 # that shows it; drawing on a GPU without a monitor reset the display driver. Safe wrappers over
 # Win32 (MIT); the `user` feature is User32.dll only.
 winsafe = { version = "0.0.29", default-features = false, features = ["user"] }
+# The same winit eframe uses: the monitors the saved window is put back on (src/window.rs).
+winit = { version = "0.30", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The same winit as eframe; only the native termination opt-in is used.
+# The same winit as eframe: the native termination opt-in, and the monitors in src/window.rs.
 winit = { version = "0.30", default-features = false }
 muda = { version = "0.21", default-features = false }
 # The input context, to drop the IME's marked text when the Type tool ends a composition; the
