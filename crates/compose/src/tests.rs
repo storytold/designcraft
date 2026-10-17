@@ -7242,3 +7242,65 @@ fn greek_text_gets_greek_hyphenation() {
     let el = hyphen::Lang::for_language("Greek").unwrap();
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
 }
+
+/// Flexible word spacing (Preferences › Composition, on for documents from IDML): a justified line
+/// squeezes its word spaces below the Minimum rather than set a much looser line, as InDesign
+/// does; strict, the Minimum is a limit. Both composers.
+mod flexible_word_spacing {
+    use super::*;
+
+    const HEAD: &str = "Agoranecroailurophobia is a fear of";
+
+    /// Natural width of `text` set left-aligned on one line, and of a word space.
+    fn natural(text: &str) -> (f64, f64) {
+        let (d, sid, _) =
+            doc_with(text, Rect::new(0.0, 0.0, 2000.0, 100.0), ParaAttrs { align: Some(Align::Left), hyphenate: Some(false), ..Default::default() });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0].clone();
+        let space = l.glyphs.iter().find(|g| g.rendered_char == ' ').map(|g| g.adv).unwrap();
+        (l.end_x - l.x0, space)
+    }
+
+    /// The text of the first line of `text` justified in a frame where `head` plus `next` needs its
+    /// word spaces at `squeeze` of their width (`flexible`: the document setting).
+    fn first_line(text: &str, next: &str, squeeze: f64, composer: Composer, flexible: bool) -> String {
+        let fits = format!("{HEAD} {next}");
+        let (w, space) = natural(&fits);
+        let spaces = fits.matches(' ').count() as f64;
+        let width = w - spaces * space * (1.0 - squeeze);
+        let para = ParaAttrs { align: Some(Align::LeftJustified), composer: Some(composer), hyphenate: Some(false), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+        d.settings.flexible_word_spacing = flexible;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0];
+        text[l.range.clone()].trim_end().to_string()
+    }
+
+    #[test]
+    fn a_line_squeezes_below_the_minimum_rather_than_set_very_loose() {
+        let text = format!("{HEAD} crowds and open spaces.");
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            // Spaces at 60% (below the 80% minimum) against a line of five words at about 350%.
+            assert_eq!(first_line(&text, "crowds", 0.6, composer, false), HEAD, "{composer:?}, strict: the minimum is a limit");
+            assert_eq!(first_line(&text, "crowds", 0.6, composer, true), format!("{HEAD} crowds"), "{composer:?}, flexible");
+        }
+    }
+
+    #[test]
+    fn a_line_stays_loose_when_it_is_only_a_little_loose() {
+        // "of it" squeezed to 60% is worse than "of" set a little loose.
+        let text = format!("{HEAD} it and open spaces.");
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            assert_eq!(first_line(&text, "it", 0.6, composer, true), HEAD, "{composer:?}");
+        }
+    }
+
+    #[test]
+    fn spaces_never_squeeze_past_the_floor() {
+        // At 10% of their width the spaces would all but vanish: the line breaks before "crowds".
+        let text = format!("{HEAD} crowds and open spaces.");
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            assert_eq!(first_line(&text, "crowds", 0.1, composer, true), HEAD, "{composer:?}");
+        }
+    }
+}

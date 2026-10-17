@@ -1067,7 +1067,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let cols_here = &cols[cur.fi];
             let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
             let col = SplitCfg::of(&pp).map_or(col, |c| c.sub_rect(col, 0));
-            let spacing = spacing_for(&pp, base_chars.size);
+            let spacing = spacing_for(&pp, base_chars.size, doc.settings.flexible_word_spacing);
             let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
             for _ in 0..3 {
                 // The same drop cap, spacing, hyphenation and breaker as the layout below.
@@ -1220,7 +1220,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
         let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
         let base_size = base_chars.size;
-        let spacing = spacing_for(&pp, base_size);
+        let spacing = spacing_for(&pp, base_size, doc.settings.flexible_word_spacing);
         // An empty paragraph takes its height from its paragraph mark's character format.
         let mark_chars = if glyphs.is_empty() {
             std::borrow::Cow::Owned(doc.styles.resolve_char(&base_chars, story.char_format_of(prange.start)))
@@ -2146,10 +2146,12 @@ pub fn column_rule_rects(columns: &[Rect], lines: &[Line], opts: &TextFrameOptio
     out
 }
 
-/// Breaker parameters from the paragraph's settings.
-fn spacing_for(pp: &ParaProps, base_size: f64) -> Spacing {
+/// Breaker parameters from the paragraph's settings. `flexible`: the document lets justified lines
+/// squeeze word spaces below the Minimum (Preferences › Composition).
+fn spacing_for(pp: &ParaProps, base_size: f64, flexible: bool) -> Spacing {
     Spacing {
         justify: pp.align.is_justified(),
+        flexible: flexible && pp.align.is_justified(),
         word_min: pp.word_space_min,
         word_desired: pp.word_space_desired,
         word_max: pp.word_space_max,

@@ -705,6 +705,18 @@ mod tests {
     }
 
     #[test]
+    fn documents_saved_before_flexible_word_spacing_keep_strict_spacing() {
+        let d = Document::new(&NewDocument::default());
+        let mut on = d.clone();
+        on.settings.flexible_word_spacing = true;
+        assert!(load(&save(&on).unwrap()).unwrap().settings.flexible_word_spacing);
+        // Written before the setting existed: laid out as they were.
+        let mut v = serde_json::to_value(&on).unwrap();
+        v["settings"].as_object_mut().unwrap().remove("flexibleWordSpacing").unwrap();
+        assert!(!load(&serde_json::to_vec(&v).unwrap()).unwrap().settings.flexible_word_spacing);
+    }
+
+    #[test]
     fn documents_saved_before_glyph_fallback_keep_their_fallback_fonts() {
         let d = Document::new(&NewDocument::default());
         assert!(!d.settings.glyph_fallback);

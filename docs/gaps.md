@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (gap 13: English hyphenation points measured against InDesign; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -144,7 +144,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 13. Hyphenation and spelling languages (T, L)
 - **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian and Greek; spelling for
-  every language but English. InDesign ships dictionaries for ~40 languages.
+  every language but English. InDesign ships dictionaries for ~40 languages. English hyphenates at
+  different points than InDesign in about 4 hyphenated words in 10 (*myste-rious* against
+  *mysteri-ous*), which moves line breaks in hyphenated IDML documents.
 - **Estimate:** 30–60 h (permissively licensed patterns exist for most; spelling word lists need
   licence review). **Doc:** [typography-parity.md](typography-parity.md)
 
@@ -249,6 +251,7 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | trivial | Gap 13: English hyphenation points differ from InDesign's in about 4 hyphenated words in 10 (measured) |
 | 2026-10-16 | minor | Gap 27 closed: the loaded text cursor threads into a text frame inside a group (#1075) |
 | 2026-10-16 | trivial | Gap 13 shrunk: Greek hyphenates, so five languages do (#1077) |
 | 2026-10-13 | minor | Gap 16: Parent Options dialog and overrides of base items on a parent spread |

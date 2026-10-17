@@ -501,7 +501,9 @@ impl<'r> Importer<'r> {
             read_link,
             previews,
             next_id: 0,
-            settings: DocSettings::default(),
+            // InDesign lets justified lines squeeze word spaces below the Minimum: lay its
+            // documents out the way it does.
+            settings: DocSettings { flexible_word_spacing: true, ..DocSettings::default() },
             default_margins: None,
             swatches: specials,
             swatch_names,

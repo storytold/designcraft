@@ -1370,6 +1370,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 f["rulerOrigin"] = doc["rulerOrigin"].clone();
                 f["overprintBlack"] = doc["overprintBlack"].clone();
                 f["glyphFallback"] = doc["glyphFallback"].clone();
+                f["flexibleWordSpacing"] = json!(if doc["flexibleWordSpacing"].as_bool().unwrap_or(false) { "true" } else { "false" });
                 for k in ["superscriptSize", "superscriptPosition", "subscriptSize", "subscriptPosition"] {
                     f[format!("adv.{k}")] = json!(format!("{}", doc["advancedType"][k].as_f64().unwrap_or(0.0)));
                 }
