@@ -47,6 +47,8 @@ mod place_text;
 pub mod preflight;
 mod prefs;
 mod print;
+#[cfg(not(target_arch = "wasm32"))]
+pub use print::{PrintDocument, print_document};
 mod qr;
 mod rulers;
 mod scripts;

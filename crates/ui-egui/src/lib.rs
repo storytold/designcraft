@@ -19,6 +19,8 @@ pub mod i18n;
 pub mod icons;
 pub mod menus;
 mod modal_drag;
+#[cfg(not(target_arch = "wasm32"))]
+mod network_glue;
 mod new_document;
 mod object_control;
 mod panel_docking;
@@ -634,6 +636,9 @@ pub struct DesignApp {
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.
     live_preview: LivePreview,
+    /// Print ▸ Network printer: the address, what the printer said, the job in flight.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) net_print: network_glue::NetTasks,
 }
 
 /// The preview a panel opened with `edit.preview`: it stays open while a panel holds it each frame.
@@ -703,6 +708,8 @@ impl DesignApp {
             quitting: None,
             cursors: cursors::Images::default(),
             live_preview: LivePreview::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            net_print: network_glue::NetTasks::default(),
         }
     }
 
@@ -1622,6 +1629,8 @@ impl DesignApp {
             dock::floating(self, &ctx);
         }
         story_editor::show(self, &ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_network();
         dialogs::show(self, &ctx);
         about::show(self, &ctx);
         menus::palette(self, &ctx);

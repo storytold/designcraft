@@ -127,7 +127,10 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Missing:** PostScript, a printer-driver options UI, separations to device, print presets, or trapping.
 - **Have:** `file.print` exports selected pages/spreads with marks and bleed, then submits through
   craft-print: CUPS on macOS/Linux and the Windows PDF raster spooler. Physical printer fidelity
-  remains a hardware check.
+  remains a hardware check. File ▸ Print ▸ Destination ▸ Network printer sends the same pages to a
+  WS-Print or IPP printer the person adds by IP address (`designcraft-print`, craft-print's registry;
+  every option three-state, each job confirmed, the status bar names the printer). Not yet: a
+  control-channel/MCP command for it, discovery, TLS (`ipps`), a scanner.
 - **Estimate:** 25–45 h. **Doc:** [hardware-parity.md](hardware-parity.md)
 
 ### 11. Paragraph and character style editing reliability (F)

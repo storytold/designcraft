@@ -22,6 +22,7 @@ designcraft-compose = { path = "crates/compose" }
 designcraft-images = { path = "crates/images" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
+designcraft-print = { path = "crates/print" }
 designcraft-idml = { path = "crates/idml" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-pptx = { path = "crates/pptx" }
@@ -76,14 +77,15 @@ indd = { git = "https://github.com/storytold/indd-utils", branch = "main" }
 # Atomic file replacement for saves and exports (craft-libs).
 craft-atomic = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "e9546e191dd62f2bc1d61eca45dbdc2f1b3c1d8e" }
 # File › Print through the system print spooler (craft-libs).
-craft-print = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "d991bf6792f8ade99c51358bf3c1d902c8cd96b5" }
+# craft-print: storytold/craft-libs#116 (backends, registry, WS-Print, IPP) until it merges; then pin an immutable revision.
+craft-print = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "refs/pull/116/head" }
 
 # ICC colour management: working spaces, transforms, black point compensation (craft-libs).
 craft-cms = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "e9546e191dd62f2bc1d61eca45dbdc2f1b3c1d8e" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675", features = ["serde"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "refs/pull/112/head", features = ["serde"] }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 eframe = { version = "0.36", default-features = false }

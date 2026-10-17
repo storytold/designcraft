@@ -1,0 +1,210 @@
+use super::*;
+use craft_ui::capability::Capability;
+use designcraft_print::network::wsd::testing::{Ending, FakeConfig as Config, FakePrinter, MemTransport};
+use net::{JobView, Query};
+
+const ADDRESS: &str = "127.0.0.1:5357/printer";
+
+fn app(config: Config) -> (DesignApp, Arc<FakePrinter>) {
+    let printer = FakePrinter::new(config);
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 3})).unwrap();
+    app.set_net_transport(Arc::new(MemTransport(printer.clone())));
+    app.net_print.state.draft = net::Draft::for_address(ADDRESS);
+    (app, printer)
+}
+
+fn wait(app: &mut DesignApp, mut done: impl FnMut(&DesignApp) -> bool) {
+    for _ in 0..400 {
+        app.poll_network();
+        if done(app) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("timed out waiting");
+}
+
+fn draft(app: &DesignApp) -> &net::Draft {
+    &app.net_print.state.draft
+}
+
+/// Ask the printer, as the Query button does, and wait for the answer.
+fn query(app: &mut DesignApp) {
+    let address_ok = validate(&app.net_print.state.draft.normalized_url()).is_ok();
+    let worker = query_printer(app.net_print.transport(), None, Arc::clone(&app.net_print.queried));
+    assert_eq!(app.net_print.state.start_query(&worker, address_ok), address_ok);
+    wait(app, |a| !draft(a).querying());
+}
+
+#[test]
+fn the_policy_refuses_what_it_should_before_anything_is_sent() {
+    for bad in ["printer.local", "http://8.8.8.8/", "https://10.0.0.1/", "http://0.0.0.0/", "ipp://printer.local/ipp", "ipps://10.0.0.1/ipp/print"] {
+        assert_eq!(validate(&net::normalize_url(bad)).map_err(|f| f.kind), Err(FailureKind::Policy), "{bad}");
+    }
+    assert!(validate(&net::normalize_url("192.168.1.50:5357/service")).is_ok());
+    assert!(validate("http://[::1]:5357/x").is_ok());
+    assert!(validate("ipp://192.168.1.50/ipp/print").is_ok());
+}
+
+#[test]
+fn errors_map_onto_the_failures_the_dialog_words() {
+    for (kind, want) in [
+        (ErrorKind::InvalidRequest, FailureKind::Invalid),
+        (ErrorKind::UnsupportedFormat, FailureKind::NoCommonFormat),
+        (ErrorKind::Unavailable, FailureKind::Transport),
+        (ErrorKind::Timeout, FailureKind::Transport),
+        (ErrorKind::Failed, FailureKind::Protocol),
+        (ErrorKind::Rejected, FailureKind::Fault),
+        (ErrorKind::Cancelled, FailureKind::Stopped),
+    ] {
+        assert_eq!(failure(&PrintError::new(kind, "x"), false).kind, want, "{kind:?}");
+    }
+    assert_eq!(failure(&PrintError::new(ErrorKind::InvalidRequest, "x"), true).kind, FailureKind::Policy);
+    assert_eq!(failure(&PrintError::new(ErrorKind::Failed, "x").with_phase(Phase::Prepare), false).kind, FailureKind::Encode);
+}
+
+#[test]
+fn what_the_printer_leaves_out_is_unknown_and_what_it_lists_is_offered() {
+    let info = PrinterInfo {
+        colour: Some(false),
+        sides: Some(vec!["OneSided".into()]),
+        qualities: None,
+        orientations: Some(Vec::new()),
+        copies: Some((1, 5)),
+        ..PrinterInfo::default()
+    };
+    let caps = caps_of(&info);
+    assert!(matches!(caps.qualities, Capability::Unknown), "left out: unknown, enabled with a note");
+    assert!(matches!(caps.orientations, Capability::Unsupported), "published empty: unsupported");
+    assert!(matches!(caps.sides, Capability::Supported(_)));
+    assert!(matches!(caps.color_modes, Capability::Supported(_)));
+    assert!(matches!(caps.copies, Capability::Supported(_)));
+    assert!(matches!(caps.resolutions, Capability::Unknown));
+}
+
+#[test]
+fn sheet_sizes_name_the_paper_the_printers_list() {
+    assert_eq!(media_for_size(595.28, 841.89), Some("iso_a4_210x297mm"));
+    assert_eq!(media_for_size(842.0, 595.0), Some("iso_a4_210x297mm"), "landscape is the same paper");
+    assert_eq!(media_for_size(612.0, 792.0), Some("na_letter_8.5x11in"));
+    assert_eq!(media_for_size(700.0, 900.0), None, "a sheet with marks or bleed has no standard name");
+}
+
+#[test]
+fn settings_become_job_options() {
+    let request = Request {
+        copies: Some(3),
+        sides: Some(net::Sides::LongEdge),
+        orientation: Some(net::Orientation::Landscape),
+        quality: Some(net::Quality::High),
+        color: Some(net::ColorMode::Monochrome),
+        resolution: Some(net::Resolution::new(600, 600)),
+        media_size: Some("iso_a4_210x297mm".into()),
+        expected_pages: Some(4),
+    };
+    let (job, options) = options(&request, "Magazine\n");
+    assert_eq!((job.copies, job.duplex, job.scaling), (3, Some(Duplex::LongEdge), Scaling::ShrinkToFit));
+    assert_eq!(job.title, "Magazine");
+    assert_eq!(options.media.as_deref(), Some("iso_a4_210x297mm"));
+    assert_eq!(options.orientation, Some(Orientation::Landscape));
+    assert_eq!(options.quality, Some(Quality::High));
+    assert_eq!(options.colour, ColourMode::Mono);
+    assert_eq!(options.expected_pages, Some(4));
+    let (job, _) = super::options(&Request::default(), "");
+    assert_eq!((job.copies, job.duplex), (1, None), "no setting means the printer's own");
+}
+
+#[test]
+fn a_print_needs_the_ticked_confirmation_and_sends_nothing_without_it() {
+    let (mut app, printer) = app(Config::default());
+    assert_eq!(app.network_send(&json!({})).unwrap_err(), labels("").query_first, "query first");
+    query(&mut app);
+    assert!(matches!(draft(&app).query, Query::Done(_)));
+    assert_eq!(app.network_send(&json!({})).unwrap_err(), labels("").confirm);
+    assert_eq!(printer.jobs(), 0);
+}
+
+#[test]
+fn a_confirmed_print_sends_the_exported_pages_follows_the_job_and_names_the_printer() {
+    let (mut app, printer) = app(Config::default());
+    query(&mut app);
+    let name = draft(&app).printer().map(|p| p.name.clone()).unwrap();
+    app.net_print.state.draft.confirmed = true;
+    app.net_print.state.draft.copies = 2;
+    app.network_send(&json!({"pages": "2-3"})).unwrap();
+    assert!(!draft(&app).confirmed, "the confirmation is spent by the job");
+    assert!(draft(&app).running());
+    let mut lines = Vec::new();
+    wait(&mut app, |a| {
+        lines.push(a.ui.status.clone());
+        matches!(draft(a).job, JobView::Finished(_))
+    });
+    let JobView::Finished(report) = &draft(&app).job else { panic!("finished") };
+    assert_eq!(report.outcome, Outcome::Completed);
+    assert!(lines.iter().any(|l| l.contains(&name)), "a status line names the printer {name:?}: {lines:?}");
+    assert_eq!(printer.jobs(), 1);
+    let pdf = printer.job(1).unwrap().document.unwrap();
+    assert!(pdf.starts_with(b"%PDF-"));
+    assert_eq!(designcraft_render::pdf_page_count(&pdf), Some(2), "the chosen range, not the whole document");
+}
+
+#[test]
+fn a_printer_that_lists_only_raster_gets_the_pages_rendered() {
+    let (mut app, printer) = app(Config { formats: vec!["image/pwg-raster"], resolutions: vec![(100, 100)], ..Config::default() });
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    app.network_send(&json!({"pages": "1"})).unwrap();
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    let doc = printer.job(1).unwrap().document.unwrap();
+    assert!(doc.starts_with(b"RaS2"), "PWG raster");
+}
+
+#[test]
+fn an_aborted_job_is_reported_and_with_the_dialog_gone_the_person_is_alerted() {
+    let (mut app, _) = app(Config { ending: Ending::Aborts("PrinterStopped"), ..Config::default() });
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    app.network_send(&json!({})).unwrap();
+    app.ui.dialog = None;
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    let JobView::Finished(report) = &draft(&app).job else { panic!("finished") };
+    assert_eq!(report.outcome, Outcome::Aborted);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("alert"));
+}
+
+#[test]
+fn the_colour_choice_says_grayscale_and_a_grayscale_job_sends_gray_pages() {
+    let l = labels("en");
+    assert_eq!(l.color_monochrome, "Grayscale");
+    assert_eq!(l.unsupported_color, "This printer only prints in grayscale.");
+    assert_eq!(labels("de").color_monochrome, "Graustufen");
+    let (mut app, printer) = app(Config::default());
+    let id = app.run("frame.create", json!({"rect": [50, 50, 350, 350]})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    app.run("object.color", json!({"color": "#ff0000"})).unwrap();
+    query(&mut app);
+    app.net_print.state.draft.confirmed = true;
+    app.net_print.state.draft.color = Some(net::ColorMode::Monochrome);
+    app.network_send(&json!({"pages": "1"})).unwrap();
+    wait(&mut app, |a| matches!(draft(a).job, JobView::Finished(_)));
+    let pdf = printer.job(1).unwrap().document.unwrap();
+    let colour = designcraft_engine::print_document(&mut app.session, &json!({"pages": "1"})).unwrap().pdf;
+    let pc = designcraft_render::render_pdf_page(&colour, 0, 300).unwrap();
+    assert!(pc.data().iter().any(|p| p.r != p.g || p.g != p.b), "the document has colour");
+    let pm = designcraft_render::render_pdf_page(&pdf, 0, 300).unwrap();
+    assert!(pm.data().iter().all(|p| p.r == p.g && p.g == p.b), "the sent pages are gray");
+}
+
+#[test]
+fn queried_printers_are_remembered_by_their_reported_name_for_the_session() {
+    let (mut app, _) = app(Config::default());
+    assert!(app.net_print.known().is_empty());
+    query(&mut app);
+    app.net_print.remember_queried();
+    app.net_print.remember_queried();
+    let name = draft(&app).printer().map(|p| p.name.clone()).unwrap();
+    assert_eq!(app.net_print.known(), [(name, ADDRESS.to_owned())]);
+    app.net_print.use_address("127.0.0.1:5358/other");
+    assert!(draft(&app).printer().is_none(), "another address is another printer");
+}

@@ -37,7 +37,10 @@ mod text;
 mod forms;
 mod pdfx;
 mod transitions;
-pub use export::{BookletKind, BookletOptions, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, merge_pdfs, sheet_spreads};
+pub use export::{
+    BookletKind, BookletOptions, GrayPage, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, gray_pdf, merge_pdfs, rec709_luma,
+    sheet_spreads,
+};
 pub use pdfx::{check_pdfx4, cmyk_group_spaces, has_rgb_groups, make_pdfx4};
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
 
@@ -120,6 +123,11 @@ pub struct PdfOptions {
     pub tagged: bool,
     /// Interactive PDF: placed video and sound are embedded and play in Screen annotations.
     pub media: bool,
+    /// A print-only export: the pages carry no annotations at all (no hyperlinks, buttons, form
+    /// fields or media), only what is drawn. Annotations do not print, and a spooler path that
+    /// re-frames pages (shrink-to-fit) refuses a page that has any. Everything drawn keeps its
+    /// look; only the interactive layer is left out. Not for a PDF a person keeps.
+    pub print: bool,
 }
 
 impl Default for PdfOptions {
@@ -137,6 +145,7 @@ impl Default for PdfOptions {
             created: None,
             tagged: false,
             media: false,
+            print: false,
         }
     }
 }
