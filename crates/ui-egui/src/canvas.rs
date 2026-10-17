@@ -1203,6 +1203,19 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
             }
         }
     }
+    // A selected anchored object: its bounding box and handles where it sits in the text.
+    if let Some(pl) = designcraft_tools::anchored::selected(doc, &app.session.cache, layout, sel.anchored) {
+        let r = xf.rect(pl.canvas_rect);
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, color), StrokeKind::Middle);
+        painter.rect_filled(Rect::from_center_size(r.center(), vec2(3.5, 3.5)), 0.0, color);
+        if !pl.turned {
+            for h in designcraft_tools::select::handles(DRect::new(r.min.x as f64, r.min.y as f64, r.max.x as f64, r.max.y as f64)) {
+                let hr = Rect::from_center_size(pos2(h.x as f32, h.y as f32), vec2(6.5, 6.5));
+                painter.rect_filled(hr, 0.0, Color32::WHITE);
+                painter.rect_stroke(hr, 0.0, Stroke::new(hair(painter), color), StrokeKind::Inside);
+            }
+        }
+    }
     let direct = matches!(app.session.tool_id(), "directSelection" | "pen" | "addAnchor" | "deleteAnchor" | "convertDirection");
     if direct {
         for id in &sel.items {
