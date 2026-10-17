@@ -575,3 +575,100 @@ fn table_of_contents_character_styles_and_sort_round_trip_through_idml() {
     let e = &after.entries[1];
     assert_eq!((e.page_number_style.as_deref(), e.separator_style.as_deref(), e.sort), (None, None, false));
 }
+
+/// `text` with the value after every `open` (up to the next `close`) set to `value`, and how
+/// many values were replaced.
+fn replace_values(text: &str, open: &str, close: char, value: &str) -> (String, usize) {
+    let mut rest = text;
+    let mut new = String::new();
+    let mut count = 0;
+    while let Some(at) = rest.find(open) {
+        let start = at + open.len();
+        new.push_str(&rest[..start]);
+        new.push_str(value);
+        let end = rest[start..].find(close).map_or(rest.len(), |e| start + e);
+        rest = &rest[end..];
+        count += 1;
+    }
+    new.push_str(rest);
+    (new, count)
+}
+
+/// `package` with every `{name}="…"` attribute and `<{name}>…</{name}>` / `<{name} type="…">…`
+/// property element in its XML parts set to `value`, and how many values were replaced.
+fn with_attr_set(package: &[u8], name: &str, value: &str) -> (Vec<u8>, usize) {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(package)).unwrap();
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut count = 0;
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut body).unwrap();
+        if f.name().ends_with(".xml")
+            && let Ok(text) = String::from_utf8(body.clone())
+        {
+            let (text, a) = replace_values(&text, &format!(" {name}=\""), '"', value);
+            let (text, b) = replace_values(&text, &format!("<{name}>"), '<', value);
+            let (text, c) = replace_values(&text, &format!("<{name} type=\"unit\">"), '<', value);
+            let (text, d) = replace_values(&text, &format!("<{name} type=\"double\">"), '<', value);
+            count += a + b + c + d;
+            body = text.into_bytes();
+        }
+        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut out, &body).unwrap();
+    }
+    (out.finish().unwrap().into_inner(), count)
+}
+
+/// Non-finite numbers in an IDML package never reach the model: the imported document saves
+/// and reopens. Every listed name occurs in the exported sample, so each case really rewrites
+/// values; names the sample lacks (feather `Width`, gradient start/length) go through `El::num`,
+/// covered in `xml.rs`.
+#[test]
+fn idml_non_finite_numbers_import_to_a_document_that_reopens() {
+    let package = designcraft_idml::export_idml(&crate::sample::magazine());
+    let attrs = [
+        "StrokeWeight",
+        "MiterLimit",
+        "Angle",
+        "FirstBaselineOffset",
+        "MinimumFirstBaselineOffset",
+        "SpaceBefore",
+        "SpaceAfter",
+        "LeftIndent",
+        "RightIndent",
+        "FirstLineIndent",
+        "PointSize",
+        "Tracking",
+        "Leading",
+        "FillTint",
+        "StrokeTint",
+        "GapTint",
+        "Position",
+        "BaselineShift",
+        "Skew",
+    ];
+    let mut failures = Vec::new();
+    for attr in attrs {
+        for value in ["NaN", "inf", "-inf"] {
+            let (bytes, replaced) = with_attr_set(&package, attr, value);
+            if replaced == 0 {
+                failures.push(format!("{attr}: not present in the exported package"));
+                continue;
+            }
+            let doc = match designcraft_idml::import_idml(&bytes) {
+                Ok(doc) => doc,
+                Err(e) => {
+                    failures.push(format!("{attr}={value}: import failed: {e}"));
+                    continue;
+                }
+            };
+            match designcraft_format::save(&doc).map(|saved| designcraft_format::load(&saved)) {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => failures.push(format!("{attr}={value}: saved but load failed: {e}")),
+                Err(e) => failures.push(format!("{attr}={value}: save failed: {e}")),
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

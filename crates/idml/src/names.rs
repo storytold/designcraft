@@ -263,7 +263,7 @@ pub fn leading_out(l: Leading) -> (String, &'static str) {
     }
 }
 pub fn leading_in(s: &str) -> Option<Leading> {
-    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse().ok().map(Leading::Points) }
+    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse::<f64>().ok().filter(|v| v.is_finite()).map(Leading::Points) }
 }
 
 pub fn stroke_align_out(a: StrokeAlign) -> &'static str {

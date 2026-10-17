@@ -391,6 +391,12 @@ fn nums(s: &str) -> Vec<f64> {
     s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
 }
 
+/// Like [`nums`], but empty when any number is NaN or infinite.
+fn finite_nums(s: &str) -> Vec<f64> {
+    let v = nums(s);
+    if v.iter().all(|x| x.is_finite()) { v } else { Vec::new() }
+}
+
 /// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
 /// none): InDesign places such a file at one viewBox unit to the point.
 fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
@@ -936,12 +942,16 @@ impl<'r> Importer<'r> {
         // Custom stroke styles.
         for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
             let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
-            let nums = |k: &str| e.get(k).unwrap_or("").split_whitespace().filter_map(|x| x.parse::<f64>().ok()).collect::<Vec<_>>();
             let kind = match e.local() {
                 "StripedStrokeStyle" => designcraft_doc::StrokeType::Stripes {
-                    bands: nums("StripeArray").as_chunks::<2>().0.iter().map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0)).collect(),
+                    bands: finite_nums(e.get("StripeArray").unwrap_or(""))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
+                        .collect(),
                 },
-                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: nums("DashArray") },
+                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: finite_nums(e.get("DashArray").unwrap_or("")) },
                 _ => designcraft_doc::StrokeType::Dotted,
             };
             let _ = id;
@@ -1830,7 +1840,7 @@ impl<'r> Importer<'r> {
             for li in tl.find_all("ListItem") {
                 let get = |k: &str| li.find(k).map(|x| x.text_content());
                 tabs.push(TabStop {
-                    position: get("Position").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
+                    position: get("Position").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0),
                     align: names::tab_align_in(get("Alignment").unwrap_or_default().trim()),
                     leader: get("Leader").unwrap_or_default(),
                     align_on: get("AlignmentCharacter").filter(|c| c != ".").unwrap_or_default(),
@@ -2189,8 +2199,8 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            let rs = (ce.num("RowSpan").unwrap_or(1.0).max(1.0) as usize).min(nr - r);
-            let cs = (ce.num("ColumnSpan").unwrap_or(1.0).max(1.0) as usize).min(nc - c);
+            let rs = (span(ce, "RowSpan").max(1.0) as usize).min(nr - r);
+            let cs = (span(ce, "ColumnSpan").max(1.0) as usize).min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();
             let cell_style = ce.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| designcraft_doc::NO_CELL_STYLE.into());
             if cell_style != designcraft_doc::NO_CELL_STYLE {
@@ -2745,7 +2755,7 @@ impl<'r> Importer<'r> {
         if let Some(c) = color {
             s.swatch = self.swatch_ref(&c);
         }
-        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse().ok()) {
+        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
             s.weight = w;
         }
         if let Some(t) = g(self, "StrokeTint").and_then(|v| v.parse().ok()) {
@@ -2763,7 +2773,7 @@ impl<'r> Importer<'r> {
         if let Some(v) = g(self, "EndJoin") {
             s.join = names::join_in(&v);
         }
-        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse().ok()) {
+        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
             s.miter_limit = v;
         }
         if let Some(v) = g(self, "LeftLineEnd") {
@@ -2829,7 +2839,7 @@ impl<'r> Importer<'r> {
             {
                 it.fill.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect());
+            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| finite_nums(&s));
             if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientFillLength"))
                 && len > 0.0
             {
@@ -2847,7 +2857,7 @@ impl<'r> Importer<'r> {
             {
                 it.stroke.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientStrokeStart").map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect());
+            let start: Option<Vec<f64>> = e.prop("GradientStrokeStart").map(|s| finite_nums(&s));
             if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientStrokeLength"))
                 && len > 0.0
             {
@@ -3299,6 +3309,11 @@ fn overlay(base: &mut El, top: &El, depth: usize) {
             _ => {}
         }
     }
+}
+
+/// A cell span count; an infinite span is kept so it clamps to the table edge.
+fn span(e: &El, k: &str) -> f64 {
+    e.prop(k).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0)
 }
 
 fn finite(v: Option<f64>) -> Option<f64> {
