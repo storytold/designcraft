@@ -794,6 +794,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("German: Swiss 2006 Reform", "Alemão: reforma suíça de 2006"),
     ("Greek", "Grego"),
     ("Hebrew", "Hebraico"),
+    ("Esperanto", "Esperanto"),
     ("Hindi", "Hindi"),
     ("Hungarian", "Húngaro"),
     ("Inverse Rounded Rectangle", "Retângulo arredondado invertido"),
