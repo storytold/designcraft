@@ -254,7 +254,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     }
     if opts.standard == Standard::PdfX4 {
         // Output intent and PDF/X identification, then check the result.
-        match crate::pdfx::make_pdfx4(&bytes, &title) {
+        match crate::pdfx::make_pdfx4(&bytes, &title, created) {
             Some(b) => bytes = b,
             None => warnings.push("PDF/X-4: the output intent couldn't be added".into()),
         }

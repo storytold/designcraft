@@ -23,9 +23,11 @@ fn lit(s: &str) -> String {
     o
 }
 
-/// Turn krilla's output into PDF/X-4. `None` when the file isn't the simple kind this
-/// understands (a classic cross-reference table and plain dictionaries).
-pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
+/// Turn krilla's output into PDF/X-4. `date` (Unix seconds, UTC) is the XMP metadata date; `None`
+/// (no clock, as on wasm) writes the epoch, because PDF/X-4 requires the entry. `None` back when
+/// the file isn't the simple kind this understands (a classic cross-reference table and plain
+/// dictionaries).
+pub fn make_pdfx4(pdf: &[u8], title: &str, date: Option<i64>) -> Option<Vec<u8>> {
     let t_at = rfind(pdf, b"trailer")?;
     let trailer = String::from_utf8_lossy(&pdf[t_at..]).to_string();
     let size = int_after(&trailer, "/Size")?;
@@ -84,7 +86,8 @@ pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
             i
         }
     };
-    // XMP: the PDF/X identification schema, and the trapping state that Info also states.
+    // XMP: the PDF/X identification schema, the trapping state that Info also states, and the
+    // metadata date and version ID that PDF/X-4 requires.
     if let Some(meta) = int_after(&cat, "/Metadata") {
         let r = object(pdf, meta)?;
         let body = &pdf[r];
@@ -96,11 +99,17 @@ pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
         if dict.contains("/Filter") {
             return None;
         }
+        let (y, mo, d, h, mi, se) = crate::export::civil(date.unwrap_or(0));
+        let stamp = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{se:02}Z");
         let add = concat!(
             "<rdf:Description rdf:about=\"\" xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\"><pdfxid:GTS_PDFXVersion>PDF/X-4</pdfxid:GTS_PDFXVersion></rdf:Description>",
             "<rdf:Description rdf:about=\"\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"><pdf:Trapped>False</pdf:Trapped></rdf:Description>"
         );
-        let xml = xml.replacen("</rdf:RDF>", &format!("{add}</rdf:RDF>"), 1);
+        let dates = format!(
+            "<rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:xmpMM=\"http://ns.adobe.com/xap/1.0/mm/\">\
+             <xmp:MetadataDate>{stamp}</xmp:MetadataDate><xmpMM:VersionID>1</xmpMM:VersionID></rdf:Description>"
+        );
+        let xml = xml.replacen("</rdf:RDF>", &format!("{add}{dates}</rdf:RDF>"), 1);
         let dict = {
             let i = dict.find("/Length")?;
             let rest = &dict[i + 7..];
@@ -215,6 +224,12 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     }
     if !text.contains("pdfxid:GTS_PDFXVersion>PDF/X-4<") {
         issues.push("the XMP metadata doesn't name PDF/X-4".into());
+    }
+    if !text.contains("<xmp:MetadataDate>") {
+        issues.push("the XMP metadata has no xmp:MetadataDate".into());
+    }
+    if !text.contains("<xmpMM:VersionID>") {
+        issues.push("the XMP metadata has no xmpMM:VersionID".into());
     }
     if text.contains("/Interpolate true") {
         issues.push("an image asks for interpolation".into());

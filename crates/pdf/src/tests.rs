@@ -164,6 +164,20 @@ fn spreads_and_ranges() {
 }
 
 #[test]
+fn pdfx4_xmp_has_metadata_date_and_version_id() {
+    let d = doc_with_text("Print me");
+    let opts = PdfOptions { standard: Standard::PdfX4, created: Some(1_700_000_000), ..Default::default() };
+    let r = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    let text = String::from_utf8_lossy(&r.bytes).to_string();
+    assert!(text.contains("<xmp:MetadataDate>2023-11-14T22:13:20Z</xmp:MetadataDate>"), "metadata date");
+    assert!(text.contains("<xmpMM:VersionID>1</xmpMM:VersionID>"), "version id");
+    assert!(crate::check_pdfx4(&r.bytes).is_empty());
+    // Without the two entries the check says so.
+    let stripped = text.replace("xmp:MetadataDate", "xmp:Other").replace("xmpMM:VersionID", "xmpMM:Other");
+    assert_eq!(crate::check_pdfx4(stripped.as_bytes()).iter().filter(|i| i.contains("xmp")).count(), 2);
+}
+
+#[test]
 fn standards() {
     let d = doc_with_text("Archive me");
     let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, created: Some(1_700_000_000), ..Default::default() });
