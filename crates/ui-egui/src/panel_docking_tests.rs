@@ -49,6 +49,61 @@ fn invalid_panel_requests_are_atomic_and_do_not_enter_a_custom_workspace() {
     }
 }
 
+#[test]
+fn iconic_panels_keep_the_customized_dock_and_floating_group_unchanged() {
+    let mut app = app();
+    app.run("window.panel.float", json!({"panel":"paragraphStyles"})).unwrap();
+    app.run("window.panel.move", json!({"panel":"characterStyles","anchor":"paragraphStyles"})).unwrap();
+    let before = app.ui.docking.clone();
+    for panel in ["color", "links"] {
+        app.run("window.panel", json!({"panel":panel})).unwrap();
+        assert_eq!(app.ui.open_panel.as_deref(), Some(panel));
+        assert_eq!(app.ui.docking, before);
+    }
+    let saved = serde_json::to_value(&app.ui).unwrap();
+    let restored: crate::UiState = serde_json::from_value(saved).unwrap();
+    assert_eq!(restored.open_panel.as_deref(), Some("links"));
+    assert_eq!(restored.docking, before);
+    app.run("window.newWorkspace", json!({"name":"Chapter 4"})).unwrap();
+    app.run("window.panel", json!({"panel":"color"})).unwrap();
+    app.run("window.resetWorkspace", json!({})).unwrap();
+    assert_eq!(app.ui.open_panel.as_deref(), Some("links"));
+    assert_eq!(app.ui.docking, before);
+    app.run("window.panel.close", json!({"panel":"links"})).unwrap();
+    assert!(app.ui.open_panel.is_none());
+    assert_eq!(app.ui.docking, before);
+    // Explicitly docked panels keep their saved home after closing and reopening.
+    app.run("window.panel.dock", json!({"panel":"color","anchor":"properties"})).unwrap();
+    let docked = app.ui.docking.clone();
+    app.run("window.panel.close", json!({"panel":"color"})).unwrap();
+    app.run("window.panel", json!({"panel":"color"})).unwrap();
+    assert_eq!(app.ui.docking, docked);
+    assert!(app.ui.open_panel.is_none());
+}
+
+#[test]
+fn customized_icon_rail_toggles_a_flyout_next_to_the_actual_dock() {
+    let mut app = app();
+    app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+    let before = app.ui.docking.clone();
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    let icon = h.get_by_label("Color").rect().center();
+    crate::test_window::click_at(&mut h, icon);
+    assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("color"));
+    let flyout = h.ctx.memory(|m| m.area_rect(egui::Id::new("panel_flyout"))).expect("flyout rendered");
+    let rail = crate::test_window::panel_rect(&h, "shared-panel-icons");
+    assert!(flyout.right() <= rail.left() + 2.0, "flyout {flyout:?}, rail {rail:?}");
+    assert_eq!(h.state().app.ui.docking, before);
+    crate::test_window::click_at(&mut h, icon);
+    assert!(h.state().app.ui.open_panel.is_none());
+    assert_eq!(h.state().app.ui.docking, before);
+    crate::test_window::click_at(&mut h, icon);
+    h.get_by_label("Collapse to Icons").click();
+    h.run_steps(3);
+    assert!(h.state().app.ui.open_panel.is_none());
+    assert_eq!(h.state().app.ui.docking, before);
+}
+
 fn harness(app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
     let mut ready = false;
     let mut harness = Harness::builder().with_size(size).with_step_dt(1.0 / 60.0).build_ui_state(
@@ -326,8 +381,9 @@ fn properties_stroke_link_opens_the_stroke_panel_in_a_custom_workspace() {
         h.run_steps(1);
     }
     h.run_steps(2);
-    assert!(h.state().ui.docking.as_ref().unwrap().contains(&"stroke".into()));
-    assert_eq!(h.state().ui.docking_opened.as_deref(), Some("stroke"));
+    assert_eq!(h.state().ui.open_panel.as_deref(), Some("stroke"));
+    assert!(!h.state().ui.docking.as_ref().unwrap().contains(&"stroke".into()));
+    assert_eq!(h.state().ui.docking_opened.as_deref(), Some("properties"));
 }
 
 #[test]

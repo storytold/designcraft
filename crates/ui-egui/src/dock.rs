@@ -204,15 +204,24 @@ fn dock_header(ui: &mut egui::Ui, t: &Tokens, chevron: &str) {
 
 /// A panel opened from the icon column, shown as a floating flyout next to the dock.
 pub fn flyout(app: &mut DesignApp, ctx: &egui::Context) {
-    if app.ui.docking.is_some() {
+    if app.ui.docking.is_some() && (app.ui.hidden_panels != 0 || app.ui.screen_mode == crate::ScreenMode::Presentation) {
         return;
     }
     let Some(id) = app.ui.open_panel.clone() else { return };
+    if app.ui.docking.as_ref().is_some_and(|layout| layout.contains(&id)) {
+        return;
+    }
     let t = Tokens::get(ctx);
     let label = crate::i18n::tr(&app.ui.language, panel_label(&id)).to_owned();
     let screen = ctx.content_rect();
     let dock_w = if app.ui.dock_expanded { ctx.memory(|m| m.area_rect(egui::Id::new("dock")).map(|r| r.width())).unwrap_or(280.0) } else { 0.0 };
-    let pos = egui::pos2(screen.max.x - icon_column_width(app) - dock_w - 262.0, 120.0);
+    let rail_left = if app.ui.docking.is_some() {
+        egui::containers::panel::PanelState::load(ctx, egui::Id::new("shared-panel-icons")).map(|state| state.outer_rect.left())
+    } else {
+        None
+    };
+    let right = rail_left.unwrap_or(screen.max.x - icon_column_width(app) - dock_w);
+    let pos = egui::pos2((right - 262.0).max(screen.left()), 120.0);
     let mut open = true;
     egui::Area::new(egui::Id::new("panel_flyout")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).fill(t.panel).inner_margin(egui::Margin::same(0)).show(ui, |ui| {
@@ -223,10 +232,20 @@ pub fn flyout(app: &mut DesignApp, ctx: &egui::Context) {
             ui.painter().rect_filled(strip, 0.0, t.panel_darker);
             crate::rtl::paint(ui.painter(), strip.min + vec2(10.0, 13.0), egui::Align2::LEFT_CENTER, &label, semibold(12.0), t.text_strong);
             let close = egui::Rect::from_min_size(egui::pos2(strip.max.x - 22.0, strip.min.y + 4.0), vec2(18.0, 18.0));
-            if ui.interact(close, ui.id().with("flyclose"), Sense::click()).clicked() {
+            let collapse = app.ui.docking.is_some();
+            let close_label = crate::i18n::tr(&app.ui.language, if collapse { "Collapse to Icons" } else { "Close" });
+            let close_response = ui.interact(close, ui.id().with("flyclose"), Sense::click());
+            close_response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, close_label));
+            if close_response.on_hover_text(close_label).clicked() {
                 open = false;
             }
-            ui.painter().text(close.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(15.0), t.text_dim);
+            ui.painter().text(
+                close.center(),
+                egui::Align2::CENTER_CENTER,
+                if collapse { "»" } else { "×" },
+                egui::FontId::proportional(15.0),
+                t.text_dim,
+            );
             // Float: the button beside the close box, or drag the header away from the dock.
             let float_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 44.0, strip.min.y + 4.0), vec2(18.0, 18.0));
             let fr = ui.interact(float_r, ui.id().with("flyfloat"), Sense::click()).on_hover_ui(|ui| {
