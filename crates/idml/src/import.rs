@@ -3113,7 +3113,7 @@ impl<'r> Importer<'r> {
         // A linked file that can't be read shows the document's preview of it, if it has one. The
         // preview only stands in for the file: format and pixel size still describe the link.
         let preview = data.is_empty().then(|| g.get("Self").and_then(|s| self.previews.get(s))).flatten();
-        if let Some(bmp) = crate::eps_preview_to_bmp(&data) {
+        if let Some(bmp) = crate::eps_preview_to_bmp(&data).or_else(|| crate::emf_raster_to_bmp(&data)) {
             data = bmp;
         }
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the

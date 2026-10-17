@@ -168,6 +168,79 @@ pub(crate) fn eps_preview_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// The bitmap inside an EMF (what InDesign keeps for a `<WMF>` placement): the first
+/// `EMR_STRETCHDIBITS` record's DIB, re-wrapped as a BMP file. `None` for anything that is not
+/// an EMF with an uncompressed bitmap in it (the vector drawing is not interpreted).
+pub(crate) fn emf_raster_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
+    let word = |at: usize| b.get(at..at + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize);
+    if word(0)? != 1 || b.get(40..44)? != b" EMF" {
+        return None;
+    }
+    let mut at = 0;
+    while at + 8 <= b.len() {
+        let (kind, size) = (word(at)?, word(at + 4)?);
+        if size < 8 || at + size > b.len() {
+            return None;
+        }
+        match kind {
+            // EMR_STRETCHDIBITS: offBmi, cbBmi, offBits, cbBits at 48..64 of the record.
+            81 if size >= 80 => {
+                let (bmi, bmi_len, bits, bits_len) = (word(at + 48)?, word(at + 52)?, word(at + 56)?, word(at + 60)?);
+                let head = b.get(at + bmi..at.checked_add(bmi)?.checked_add(bmi_len)?)?;
+                let px = b.get(at + bits..at.checked_add(bits)?.checked_add(bits_len)?)?;
+                // BITMAPINFOHEADER, BI_RGB or BI_BITFIELDS: what a BMP file holds as it is.
+                if head.len() < 40 || !matches!(u32::from_le_bytes(head[16..20].try_into().ok()?), 0 | 3) {
+                    return None;
+                }
+                let (w, h) = (i32::from_le_bytes(head[4..8].try_into().ok()?), i32::from_le_bytes(head[8..12].try_into().ok()?));
+                let bits_per_pixel = u16::from_le_bytes(head[14..16].try_into().ok()?);
+                // The decoders have no 16-bit BMP: widen 5-5-5 to 24-bit.
+                if bits_per_pixel == 16 && head[16..20] == [0; 4] && w > 0 && h != 0 && w < 1 << 15 && h.unsigned_abs() < 1 << 15 {
+                    let (w, rows) = (w as usize, h.unsigned_abs() as usize);
+                    let (src_stride, stride) = ((w * 2).div_ceil(4) * 4, (w * 3).div_ceil(4) * 4);
+                    if px.len() < src_stride * rows {
+                        return None;
+                    }
+                    let mut out = Vec::with_capacity(54 + stride * rows);
+                    out.extend_from_slice(b"BM");
+                    out.extend_from_slice(&u32::try_from(54 + stride * rows).ok()?.to_le_bytes());
+                    out.extend_from_slice(&[0; 4]);
+                    out.extend_from_slice(&54u32.to_le_bytes());
+                    out.extend_from_slice(&40u32.to_le_bytes());
+                    out.extend_from_slice(&(w as i32).to_le_bytes());
+                    out.extend_from_slice(&h.to_le_bytes());
+                    out.extend_from_slice(&1u16.to_le_bytes());
+                    out.extend_from_slice(&24u16.to_le_bytes());
+                    out.extend_from_slice(&[0; 24]);
+                    for row in px.chunks_exact(src_stride).take(rows) {
+                        for p in row.as_chunks::<2>().0.iter().take(w) {
+                            let v = u16::from_le_bytes([p[0], p[1]]);
+                            let c = |shift: u32| {
+                                let c = ((v >> shift) & 31) as u8;
+                                (c << 3) | (c >> 2)
+                            };
+                            out.extend_from_slice(&[c(0), c(5), c(10)]);
+                        }
+                        out.resize(out.len() + stride - w * 3, 0);
+                    }
+                    return Some(out);
+                }
+                let mut out = Vec::with_capacity(14 + head.len() + px.len());
+                out.extend_from_slice(b"BM");
+                out.extend_from_slice(&u32::try_from(14 + head.len() + px.len()).ok()?.to_le_bytes());
+                out.extend_from_slice(&[0; 4]);
+                out.extend_from_slice(&u32::try_from(14 + head.len()).ok()?.to_le_bytes());
+                out.extend_from_slice(head);
+                out.extend_from_slice(px);
+                return Some(out);
+            }
+            14 => return None,
+            _ => at += size,
+        }
+    }
+    None
+}
+
 /// One line of text InDesign keeps for an `<EPSText>` (the live text of a placed EPS), in the
 /// EPS's own coordinates.
 #[derive(Debug, PartialEq)]

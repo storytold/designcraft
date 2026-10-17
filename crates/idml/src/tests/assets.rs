@@ -373,3 +373,60 @@ fn a_placed_eps_text_imports_as_a_text_frame() {
     assert!((top + tf.options.first_baseline_min - -62.5).abs() < 1e-6, "baseline {}", top + tf.options.first_baseline_min);
     assert_eq!(story.frames, vec![items[0].id]);
 }
+
+/// An EMF the way InDesign embeds a pasted photo: header, one `EMR_STRETCHDIBITS`, `EMR_EOF`.
+fn emf_with_bitmap(w: u32, h: u32, bgr: &[u8]) -> Vec<u8> {
+    let le = |v: u32| v.to_le_bytes();
+    let mut b = Vec::new();
+    b.extend([le(1), le(88)].concat());
+    b.resize(40, 0);
+    b.extend(b" EMF");
+    b.resize(88, 0);
+    let mut bmi = [le(40), le(w), le(h)].concat();
+    bmi.extend(1u16.to_le_bytes());
+    bmi.extend(24u16.to_le_bytes());
+    bmi.extend([le(0), le(bgr.len() as u32)].concat());
+    bmi.resize(40, 0);
+    let size = 80 + bmi.len() + bgr.len();
+    let mut rec = [le(81), le(size as u32)].concat();
+    rec.resize(48, 0);
+    rec.extend([le(80), le(40), le(80 + 40), le(bgr.len() as u32)].concat());
+    rec.resize(80, 0);
+    rec.extend(&bmi);
+    rec.extend(bgr);
+    b.extend(rec);
+    b.extend([le(14), le(20), le(0), le(16), le(20)].concat());
+    b
+}
+
+#[test]
+fn a_placed_emf_photo_imports_as_a_raster() {
+    // 2x1, 24-bit rows padded to four bytes: blue, green.
+    let bgr = [255, 0, 0, 0, 255, 0, 0, 0];
+    let emf = emf_with_bitmap(2, 1, &bgr);
+    let bmp = crate::emf_raster_to_bmp(&emf).unwrap();
+    assert_eq!(&bmp[..2], b"BM");
+    assert_eq!(bmp[10..14], 54u32.to_le_bytes());
+    assert_eq!(bmp[54..], bgr);
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/photo.emf", Some(&emf)))];
+    let d = import_idml_with(&package(&frames), &|_: &str| None).unwrap();
+    let (id, _, _) = placements(&d)[0];
+    let a = d.assets.get(&id).unwrap();
+    assert_eq!(a.mime, "image/bmp");
+    assert_eq!(a.pixels, Some((2, 1)));
+
+    // Not an EMF, or an EMF with no bitmap in it: nothing to show.
+    assert!(crate::emf_raster_to_bmp(b"not an emf").is_none());
+    assert!(crate::emf_raster_to_bmp(&emf[..88]).is_none());
+}
+
+#[test]
+fn a_16_bit_emf_bitmap_is_widened_to_24_bit() {
+    // 2x1 at 5-5-5: pure red (0x7c00) and pure blue (0x001f), rows padded to four bytes.
+    let mut emf = emf_with_bitmap(2, 1, &[0x00, 0x7c, 0x1f, 0x00]);
+    let bmi = 88 + 80;
+    emf[bmi + 14..bmi + 16].copy_from_slice(&16u16.to_le_bytes());
+    let bmp = crate::emf_raster_to_bmp(&emf).unwrap();
+    assert_eq!(bmp[28..30], 24u16.to_le_bytes());
+    assert_eq!(bmp[54..60], [0, 0, 255, 255, 0, 0], "BGR: red, blue");
+}
