@@ -97,11 +97,15 @@ fn set_margins_columns(pg: &mut designcraft_doc::Page, p: &Value) {
         }
         _ => {}
     }
+    // Setting a count or a gutter re-divides the columns evenly, as InDesign's Margins and
+    // Columns does: dragged column positions are what the new value replaces.
     if let Some(c) = p.get("columns").and_then(Value::as_u64) {
         pg.columns.count = (c as u32).clamp(1, 216);
+        pg.columns.positions = None;
     }
     if let Some(g) = p.get("gutter").and_then(Value::as_f64) {
         pg.columns.gutter = g.max(0.0);
+        pg.columns.positions = None;
     }
 }
 
@@ -197,8 +201,9 @@ pub fn specs() -> Vec<CommandSpec> {
                         let nsp = std::sync::Arc::make_mut(&mut d.spreads[nsi]);
                         let pg = &mut nsp.pages[npi];
                         let dx = pg.x - src.x;
-                        (pg.width, pg.height, pg.margins, pg.columns, pg.liquid) =
-                            (src.width, src.height, src.margins, src.columns.clone(), src.liquid);
+                        // A copy on the other side of the spine has its dragged columns mirrored.
+                        let columns = pg.columns_from(src);
+                        (pg.width, pg.height, pg.margins, pg.columns, pg.liquid) = (src.width, src.height, src.margins, columns, src.liquid);
                         pg.guides = src.guides.clone();
                         for g in pg.guides.iter_mut().filter(|g| g.orientation == designcraft_doc::Orientation::Vertical) {
                             g.position += dx;
@@ -252,8 +257,20 @@ pub fn specs() -> Vec<CommandSpec> {
             let name = str_param(p, "name").unwrap_or("Parent").to_string();
             s.edit(|d, _| {
                 let prefix = str_param(p, "prefix").map(str::to_string).unwrap_or_else(|| d.next_parent_prefix());
-                let m = d.page(0).map(|p| (p.columns.count, p.columns.gutter, p.margins)).unwrap_or((1, 12.0, Margins::uniform(36.0)));
-                let id = d.add_parent(&prefix, &name, m.0, m.1, m.2);
+                let src = d.page(0).cloned();
+                let (columns, margins) =
+                    src.as_ref().map_or_else(|| (designcraft_doc::Columns::default(), Margins::uniform(36.0)), |p| (p.columns.clone(), p.margins));
+                let id = d.add_parent(&prefix, &name, columns.count, columns.gutter, margins);
+                // Dragged column guides carry over to the parent pages they still fit, mirrored
+                // on the parent page across the spine from the first page.
+                if let (Some(src), Some(sp)) = (&src, d.parents.iter_mut().find(|x| x.id == id)) {
+                    for pg in &mut std::sync::Arc::make_mut(sp).pages {
+                        let columns = pg.columns_from(src);
+                        if columns.valid_positions(pg.margin_rect().width()).is_some() {
+                            pg.columns.positions = columns.positions;
+                        }
+                    }
+                }
                 Ok(json!({"id": id.0, "prefix": prefix}))
             })
         }),
@@ -1629,6 +1646,46 @@ mod adjust_tests {
         // An unknown parent is an error, not a silent no-op.
         assert!(s.execute("layout.marginsAndColumns", &json!({"parent": 9, "margins": 10})).is_err());
     }
+
+    /// Margins and Columns re-divides the columns: a new count or gutter replaces column guides
+    /// that were dragged (an imported Custom columns page), rather than being ignored by them.
+    #[test]
+    fn a_new_column_count_replaces_dragged_column_positions() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+        // There is no command for dragging a column guide yet, so set what an import would leave.
+        let drag = |s: &mut Session| {
+            s.edit(|d, _| {
+                let pg = &mut std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0];
+                pg.columns = designcraft_doc::Columns { count: 2, gutter: 12.0, positions: Some(vec![0.0, 100.0, 130.0, 540.0]) };
+                Ok(())
+            })
+            .unwrap();
+        };
+
+        drag(&mut s);
+        let dragged = s.doc().unwrap().doc.page(0).unwrap().column_rects();
+        assert_eq!(dragged.len(), 2);
+        assert!((dragged[0].x1 - dragged[0].x0 - 100.0).abs() < 1e-6, "the dragged gutter is in use: {dragged:?}");
+
+        // A new count: evenly divided again, and the stale positions are gone.
+        s.execute("layout.marginsAndColumns", &json!({"columns": 3})).unwrap();
+        let pg = s.doc().unwrap().doc.page(0).unwrap().clone();
+        assert_eq!((pg.columns.count, pg.columns.positions.clone()), (3, None));
+        assert_eq!(pg.column_rects().len(), 3);
+
+        // So does a new gutter on its own.
+        drag(&mut s);
+        s.execute("layout.marginsAndColumns", &json!({"gutter": 24})).unwrap();
+        let pg = s.doc().unwrap().doc.page(0).unwrap().clone();
+        assert_eq!(pg.columns.positions, None);
+        assert!((pg.column_rects()[1].x0 - pg.column_rects()[0].x1 - 24.0).abs() < 1e-6);
+
+        // Margins alone leave them alone: the offsets are relative to the margin box.
+        drag(&mut s);
+        s.execute("layout.marginsAndColumns", &json!({"margins": 72})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page(0).unwrap().columns.positions, Some(vec![0.0, 100.0, 130.0, 540.0]));
+    }
 }
 
 #[cfg(test)]
@@ -1926,6 +1983,38 @@ mod parent_tests {
         let r = s.execute("layout.parents.edit", &json!({"on": false})).unwrap();
         assert_eq!(r, json!({"on": false, "parent": null}));
         assert!(!s.doc().unwrap().editing_parents);
+    }
+
+    /// A new parent takes the first page's columns, dragged column guides included: the right
+    /// parent page as the first (right) page has them, the left one mirrored across the spine.
+    /// `document.inspect` reports where those columns are.
+    #[test]
+    fn a_new_parent_keeps_dragged_columns() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let dragged = designcraft_doc::Columns { count: 2, gutter: 12.0, positions: Some(vec![0.0, 100.0, 130.0, 540.0]) };
+        // There is no command for dragging a column guide yet, so set what an import would leave.
+        s.edit(|d, _| {
+            let pg = &mut std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0];
+            (pg.columns, pg.local_margins) = (dragged.clone(), true);
+            Ok(())
+        })
+        .unwrap();
+        let id = s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap()["id"].as_u64().unwrap();
+        let d = &s.doc().unwrap().doc;
+        let parent = d.parents.iter().find(|p| p.id.0 == id).unwrap();
+        assert_eq!(parent.pages.len(), 2);
+        let side = |s: designcraft_doc::PageSide| parent.pages.iter().find(|p| p.side == s).unwrap();
+        let (left, right) = (side(designcraft_doc::PageSide::Left), side(designcraft_doc::PageSide::Right));
+        assert_eq!(right.columns, dragged);
+        assert_eq!(right.column_rects().iter().map(|r| r.width()).collect::<Vec<_>>(), vec![100.0, 410.0]);
+        assert_eq!(left.columns.positions, Some(vec![0.0, 410.0, 440.0, 540.0]));
+        assert_eq!(left.column_rects().iter().map(|r| r.width()).collect::<Vec<_>>(), vec![410.0, 100.0]);
+
+        let inspect = s.execute("document.inspect", &json!({})).unwrap();
+        let page = &inspect["spreads"][0]["pages"][0];
+        assert_eq!((page["columns"].clone(), page["customColumns"].clone()), (json!(2), json!(true)), "{page}");
+        assert_eq!(page["columnRects"][0], json!([36.0, 36.0, 136.0, 756.0]), "{page}");
     }
 }
 
