@@ -42,6 +42,77 @@ impl Default for Columns {
     }
 }
 
+/// The most columns a page can have, as in InDesign.
+pub const MAX_COLUMNS: u32 = 216;
+
+/// How far, in points, the first and last custom column positions may sit from the margin box's
+/// edges: room for float noise in files and page arithmetic, far less than any dragged guide.
+pub const COLUMN_POSITION_TOLERANCE: f64 = 0.01;
+
+/// Whether `positions` are usable custom column positions for `count` columns across a margin box
+/// `margin_width` wide, in IDML's `ColumnsPositions` form: each column's left and right edge as an
+/// offset from the margin box's left edge, so `2 × count` finite numbers, ascending across the
+/// whole list, the first at 0 and the last at `margin_width` (within
+/// [`COLUMN_POSITION_TOLERANCE`]).
+pub fn valid_column_positions(positions: &[f64], count: u32, margin_width: f64) -> bool {
+    (1..=MAX_COLUMNS).contains(&count)
+        && positions.len() == 2 * count as usize
+        && margin_width.is_finite()
+        && positions.iter().all(|v| v.is_finite())
+        && positions.windows(2).all(|w| matches!(w, [a, b] if a <= b))
+        && positions.first().is_some_and(|v| v.abs() <= COLUMN_POSITION_TOLERANCE)
+        && positions.last().is_some_and(|v| (v - margin_width).abs() <= COLUMN_POSITION_TOLERANCE)
+}
+
+impl Columns {
+    /// The custom positions when they are valid for a margin box `margin_width` wide (see
+    /// [`valid_column_positions`]). Anything else means the columns are evenly spaced: a stored set
+    /// that no longer fits (a page resized after the drag, a hostile file) is not drawn.
+    pub fn valid_positions(&self, margin_width: f64) -> Option<&[f64]> {
+        let positions = self.positions.as_deref()?;
+        valid_column_positions(positions, self.count, margin_width).then_some(positions)
+    }
+
+    /// Every column's left and right edge as offsets from the margin box's left edge: the valid
+    /// custom positions, else the even split. This is what IDML writes as `ColumnsPositions`.
+    pub fn edges(&self, margin_width: f64) -> Vec<f64> {
+        let w = if margin_width.is_finite() { margin_width.max(0.0) } else { 0.0 };
+        match self.valid_positions(w) {
+            Some(p) => p.iter().map(|&v| inside(v, w)).collect(),
+            None => column_rects(Rect::new(0.0, 0.0, w, 0.0), self.count.max(1), self.gutter).iter().flat_map(|r| [r.x0, r.x1]).collect(),
+        }
+    }
+
+    /// The column edges (as [`Columns::edges`]) with gutter `gutter` (0 is the one between the first
+    /// two columns) moved so its left edge sits at `new_left`, an offset from the margin box's left
+    /// edge. Both of the gutter's guides move, so it keeps its width, and it stops at its
+    /// neighbouring gutters or the margins: no column gets a negative width. `None` when there is
+    /// no such gutter, `new_left` is not finite, or the result would not be valid.
+    pub fn with_gutter_moved(&self, margin_width: f64, gutter: usize, new_left: f64) -> Option<Vec<f64>> {
+        if !new_left.is_finite() {
+            return None;
+        }
+        let mut pos = self.edges(margin_width);
+        let i = gutter.checked_mul(2)?.checked_add(1)?;
+        let &[lo, left, right, hi] = pos.get(i - 1..i.checked_add(3)?)? else {
+            return None;
+        };
+        let width = right - left;
+        let at = new_left.min(hi - width).max(lo);
+        let [l, r] = pos.get_mut(i..i + 2)? else {
+            return None;
+        };
+        *l = at;
+        *r = (at + width).min(hi);
+        valid_column_positions(&pos, self.count, margin_width).then_some(pos)
+    }
+}
+
+/// `v` limited to `0..=w` without `clamp`, which panics when `w` is NaN.
+fn inside(v: f64, w: f64) -> f64 {
+    v.max(0.0).min(w)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Orientation {
@@ -250,17 +321,23 @@ impl Page {
         let b = self.bounds();
         Rect::new(b.x0 + l, b.y0 + self.margins.top, (b.x1 - r).max(b.x0 + l), (b.y1 - self.margins.bottom).max(b.y0 + self.margins.top))
     }
-    /// Column rects within the margins.
+    /// Column rects within the margins: the custom positions when the column guides have been
+    /// dragged and still fit the margin box (see [`valid_column_positions`]), otherwise an even
+    /// split.
     pub fn column_rects(&self) -> Vec<Rect> {
         let m = self.margin_rect();
-        column_rects(m, self.columns.count.max(1), self.columns.gutter)
+        let w = m.width();
+        match self.columns.valid_positions(w) {
+            Some(p) => p.as_chunks::<2>().0.iter().map(|&[a, b]| Rect::new(m.x0 + inside(a, w), m.y0, m.x0 + inside(b, w), m.y1)).collect(),
+            None => column_rects(m, self.columns.count.max(1), self.columns.gutter),
+        }
     }
 }
 
 /// Split `area` into `n` equal columns separated by `gutter`.
 pub fn column_rects(area: Rect, n: u32, gutter: f64) -> Vec<Rect> {
     // The public allocator also receives native/imported options, outside command validation.
-    let n = n.clamp(1, 216) as usize;
+    let n = n.clamp(1, MAX_COLUMNS) as usize;
     let w = ((area.width() - gutter * (n as f64 - 1.0)) / n as f64).max(0.0);
     (0..n).map(|i| Rect::new(area.x0 + i as f64 * (w + gutter), area.y0, area.x0 + i as f64 * (w + gutter) + w, area.y1)).collect()
 }
@@ -438,6 +515,81 @@ mod tests {
         let total: f64 = cols.iter().map(|c| c.width()).sum::<f64>() + 12.0;
         assert!((total - p.margin_rect().width()).abs() < 1e-9);
         assert!((cols[1].x0 - cols[0].x1 - 12.0).abs() < 1e-9);
+    }
+
+    /// Dragged column guides place the columns; a set that cannot mean anything falls back to the
+    /// even split rather than producing nothing or a column outside the margins (#1096).
+    #[test]
+    fn custom_column_positions_place_the_columns() {
+        let mut p = page(PageSide::Single, 0.0);
+        let m = p.margin_rect();
+        let w = m.width();
+        let even = p.column_rects();
+
+        p.columns.positions = Some(vec![0.0, 100.0, 130.0, w]);
+        assert_eq!(p.column_rects(), vec![Rect::new(m.x0, m.y0, m.x0 + 100.0, m.y1), Rect::new(m.x0 + 130.0, m.y0, m.x1, m.y1)]);
+        // Float noise at the edges is absorbed and kept inside the box.
+        p.columns.positions = Some(vec![-0.001, 100.0, 130.0, w + 0.001]);
+        assert_eq!((p.column_rects()[0].x0, p.column_rects()[1].x1), (m.x0, m.x1));
+
+        let huge: Vec<f64> = (0..10_000).map(f64::from).collect();
+        let unusable = [
+            vec![],
+            vec![10.0],
+            vec![0.0, w],                             // one column's worth for two columns
+            vec![0.0, 100.0, 130.0, 200.0, 230.0, w], // three columns' worth
+            vec![0.0, 100.0, 90.0, w],                // descending across pairs
+            vec![0.0, 130.0, 100.0, w],               // an inverted gutter
+            vec![0.0, f64::NAN, 130.0, w],
+            vec![0.0, 100.0, f64::INFINITY, w],
+            vec![5.0, 100.0, 130.0, w],         // not from the left margin
+            vec![0.0, 100.0, 130.0, w + 500.0], // a page narrowed after the drag
+            vec![0.0, 100.0, 130.0, w - 50.0],  // a page widened after the drag
+            huge,
+        ];
+        for bad in unusable {
+            p.columns.positions = Some(bad.clone());
+            assert_eq!(p.column_rects(), even, "{:?}", bad.iter().take(6).collect::<Vec<_>>());
+            assert_eq!(p.columns.edges(w), even.iter().flat_map(|r| [r.x0 - m.x0, r.x1 - m.x0]).collect::<Vec<_>>());
+        }
+        p.columns.positions = None;
+        assert_eq!(p.column_rects(), even);
+
+        // A count outside 1..=216 has no valid positions, however many are given.
+        for count in [0, 217, u32::MAX] {
+            let c = Columns { count, gutter: 0.0, positions: Some(vec![0.0, w]) };
+            assert!(c.valid_positions(w).is_none(), "{count}");
+        }
+    }
+
+    /// Moving a gutter moves both its guides, keeps its width and stops at the neighbouring gutters
+    /// and the margins; the result is valid custom positions.
+    #[test]
+    fn with_gutter_moved_moves_a_gutter_pair_and_clamps() {
+        // Three columns across 450 with gutter 15: 0 140 155 295 310 450.
+        let c = Columns { count: 3, gutter: 15.0, positions: None };
+        let even = c.edges(450.0);
+        assert_eq!(even, vec![0.0, 140.0, 155.0, 295.0, 310.0, 450.0]);
+
+        assert_eq!(c.with_gutter_moved(450.0, 0, 100.0), Some(vec![0.0, 100.0, 115.0, 295.0, 310.0, 450.0]));
+        // Past the left margin: the first column closes to nothing.
+        assert_eq!(c.with_gutter_moved(450.0, 0, -50.0), Some(vec![0.0, 0.0, 15.0, 295.0, 310.0, 450.0]));
+        // Past the next gutter: the middle column closes to nothing, the next gutter stays put.
+        assert_eq!(c.with_gutter_moved(450.0, 0, 400.0), Some(vec![0.0, 280.0, 295.0, 295.0, 310.0, 450.0]));
+        // The last gutter stops at the right margin.
+        assert_eq!(c.with_gutter_moved(450.0, 1, 1000.0), Some(vec![0.0, 140.0, 155.0, 435.0, 450.0, 450.0]));
+
+        // It starts from custom positions already there, and its result is accepted as custom.
+        let moved = Columns { positions: c.with_gutter_moved(450.0, 0, 100.0), ..c.clone() };
+        assert!(moved.valid_positions(450.0).is_some());
+        assert_eq!(moved.with_gutter_moved(450.0, 1, 200.0), Some(vec![0.0, 100.0, 115.0, 200.0, 215.0, 450.0]));
+
+        // No such gutter, or no position to move it to.
+        assert_eq!(c.with_gutter_moved(450.0, 2, 100.0), None);
+        assert_eq!(c.with_gutter_moved(450.0, usize::MAX, 100.0), None);
+        assert_eq!(c.with_gutter_moved(450.0, 0, f64::NAN), None);
+        assert_eq!(Columns { count: 1, gutter: 12.0, positions: None }.with_gutter_moved(450.0, 0, 100.0), None);
+        assert_eq!(c.with_gutter_moved(f64::NAN, 0, 100.0), None);
     }
 
     #[test]
