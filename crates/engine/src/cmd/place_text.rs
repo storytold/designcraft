@@ -236,7 +236,8 @@ fn same_rect(a: Rect, b: Rect) -> bool {
 /// on its page (when it sits in one), then one frame per column on each page it adds. With
 /// `primary` (Smart Text Reflow of the primary text frame), each added page gets one frame on the
 /// live area with the page's columns instead. Empty frames it made at the end of the thread are
-/// removed again, except the first on a page. Returns pages added.
+/// removed again, except the first on a page it didn't add; a page it added that holds only such
+/// a frame goes with it. Returns pages added.
 /// A story on a parent spread doesn't autoflow: its frames thread only on that parent. Errors
 /// name `cmd`, the command that autoflows.
 pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &str, primary: bool) -> Result<usize> {
@@ -249,6 +250,7 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &s
     let vertical = story_vertical || primary;
     let mut added = 0;
     let mut made = Vec::new();
+    let mut new_pages = Vec::new();
     let mut first = true;
     loop {
         let (overset, held, full) = fit(d, sid);
@@ -278,7 +280,7 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &s
         let per_page = if vertical { 1 } else { d.page(page).map_or(1, |p| p.columns.count.max(1) as usize) };
         let pages = want.div_ceil(per_page).clamp(1, max_pages - added);
         let parent = d.page_loc(page).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
-        d.insert_pages(Some(page), pages, parent)?;
+        new_pages.extend(d.insert_pages(Some(page), pages, parent)?);
         for pg in page + 1..=page + pages {
             let (si, pi) = d.page_loc(pg).ok_or_else(|| bad(cmd, "page insert failed"))?;
             let columns = d.spreads[si].pages[pi].columns.clone();
@@ -297,10 +299,24 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &s
     while let Some(&f) = made.last() {
         let frames = d.story(sid).map_or(&[][..], |s| s.frames.as_slice());
         let [.., before, tail] = frames else { break };
-        if *tail != f || cs.frame(f).is_some_and(|ft| !ft.range.is_empty()) || d.page_of_item(*before) != d.page_of_item(f) {
+        if *tail != f || cs.frame(f).is_some_and(|ft| !ft.range.is_empty()) {
             break;
         }
-        d.remove_item(f)?;
+        let page = d.page_of_item(f);
+        if d.page_of_item(*before) != page {
+            // The first frame on its page: the estimate added more pages than the text needs.
+            // Drop the page too when autoflow added it and the frame is all it holds.
+            let Some(pg) = page.filter(|pg| d.page(*pg).is_some_and(|p| new_pages.contains(&p.id))) else { break };
+            let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).all(|it| it.id == f || d.page_of_item(it.id) != Some(pg));
+            if !alone {
+                break;
+            }
+            d.remove_item(f)?;
+            d.delete_pages(&[pg])?;
+            added = added.saturating_sub(1);
+        } else {
+            d.remove_item(f)?;
+        }
         made.pop();
     }
     Ok(added)
@@ -685,6 +701,38 @@ mod reflow_tests {
         s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": n})).unwrap();
         s.execute("text.delete", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.page_count(), 1);
+    }
+
+    /// Placing text into the primary frame adds only the pages the text needs, also when a wrap
+    /// leaves page 1 little room or the text ends at a page boundary (#1165).
+    #[test]
+    fn smart_text_reflow_place_adds_no_empty_pages() {
+        let dir = std::env::temp_dir().join(format!("dc-reflow-place-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, wrap, want) in [(280, true, 5), (250, false, 3)] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"preset": "Letter", "pages": 1, "primaryTextFrame": true})).unwrap();
+            if wrap {
+                let id = s.execute("frame.create", &json!({"rect": [36, 36, 576, 600]})).unwrap()["id"].as_u64().unwrap();
+                s.execute("object.textWrap", &json!({"ids": [id], "mode": "boundingBox"})).unwrap();
+            }
+            let sid = s.doc().unwrap().doc.settings.primary_story.expect("primary story");
+            s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+            let path = dir.join(format!("words-{n}.txt"));
+            std::fs::write(&path, "Words keep coming and the page fills up quickly with them. ".repeat(n)).unwrap();
+            s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap();
+            let d = s.doc().unwrap().doc.clone();
+            assert_eq!(d.page_count(), want, "{n} lines");
+            let frames = &d.story(sid).unwrap().frames;
+            assert_eq!(frames.len(), d.page_count(), "{n} lines");
+            let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+            assert!(cs.overset_at.is_none(), "{n} lines");
+            for f in frames {
+                assert!(cs.frame(*f).is_some_and(|ft| !ft.range.is_empty()), "{n} lines: empty frame {f:?}");
+            }
+            d.check().unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
