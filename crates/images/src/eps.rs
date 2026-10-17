@@ -424,6 +424,29 @@ mod tests {
     }
 
     #[test]
+    fn dos_eps_wmf_only_is_not_read_as_tiff() {
+        let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 50\nnewpath\n%%EOF\n";
+        let wmf = b"WMFDATA!";
+        let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
+        let ps_off = 30usize;
+        let wmf_off = ps_off + eps.len();
+        for v in [ps_off, eps.len(), wmf_off, wmf.len(), 0, 0] {
+            dos.extend((v as u32).to_le_bytes());
+        }
+        dos.extend([0xFF, 0xFF]);
+        dos.extend_from_slice(eps);
+        dos.extend_from_slice(wmf);
+        assert!(is_eps(&dos));
+        // The WMF bytes are not a TIFF preview.
+        assert!(sections(&dos).1.is_none());
+        // The PostScript section still parses, and the proxy is the no-preview placeholder.
+        assert_eq!(bounding_box(&dos), Some([0.0, 0.0, 100.0, 50.0]));
+        let (png, size) = eps_proxy(&dos).unwrap();
+        assert_eq!(size, (100.0, 50.0));
+        assert_eq!(crate::pixel_size(&png), Some((200, 100)));
+    }
+
+    #[test]
     fn eps_bounding_box_rejects_nonfinite_sizes() {
         let bb = |line: &str| bounding_box(format!("%!PS-Adobe-3.0 EPSF-3.0\n{line}\n").as_bytes());
         assert_eq!(bb("%%BoundingBox: 0 0 100 50"), Some([0.0, 0.0, 100.0, 50.0]));
