@@ -93,7 +93,8 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
         "currentPage": crate::canvas::current_page(app),
         "dialog": app.ui.dialog.as_ref().map(|d| serde_json::to_value(d).unwrap_or_default()),
         "activeDocument": app.session.active_index(),
-        "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches},
+        "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches, "images": designcraft_render::images::stats(), "thumbnailsRendered": app.thumbnails.rendered, "thumbnailsReused": app.thumbnails.reused,
+            "dragPreviewsPrepared": app.canvas.drag.prepared, "dragFramesReused": app.canvas.drag.moved_frames, "dragPreparingFrames": app.canvas.drag.preparing_frames, "draftCanvas": app.canvas.low_quality, "scrollPreviewsRendered": app.canvas.previews.rendered, "scrollPreviewsReused": app.canvas.previews.reused},
     })
 }
 
