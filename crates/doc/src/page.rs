@@ -250,9 +250,19 @@ impl Page {
         let b = self.bounds();
         Rect::new(b.x0 + l, b.y0 + self.margins.top, (b.x1 - r).max(b.x0 + l), (b.y1 - self.margins.bottom).max(b.y0 + self.margins.top))
     }
-    /// Column rects within the margins.
+    /// Column rects within the margins: the custom positions when the column guides have been
+    /// dragged, otherwise an even split. Positions are offsets from the margin box's left edge,
+    /// in pairs, as InDesign's `ColumnsPositions` gives them; they are clamped to the box, so a
+    /// later margin change can narrow a page without pushing a column outside it.
     pub fn column_rects(&self) -> Vec<Rect> {
         let m = self.margin_rect();
+        if let Some(pos) = self.columns.positions.as_deref() {
+            let at = |v: f64| m.x0 + v.clamp(0.0, m.width());
+            let rects: Vec<Rect> = pos.as_chunks::<2>().0.iter().map(|c| Rect::new(at(c[0]), m.y0, at(c[1]).max(at(c[0])), m.y1)).collect();
+            if !rects.is_empty() {
+                return rects;
+            }
+        }
         column_rects(m, self.columns.count.max(1), self.columns.gutter)
     }
 }
@@ -438,6 +448,33 @@ mod tests {
         let total: f64 = cols.iter().map(|c| c.width()).sum::<f64>() + 12.0;
         assert!((total - p.margin_rect().width()).abs() < 1e-9);
         assert!((cols[1].x0 - cols[0].x1 - 12.0).abs() < 1e-9);
+    }
+
+    /// Dragged column guides place the columns; a set that cannot mean anything falls back to the
+    /// even split rather than producing nothing.
+    #[test]
+    fn custom_column_positions_place_the_columns() {
+        let mut p = page(PageSide::Single, 0.0);
+        let m = p.margin_rect();
+        let even = p.column_rects();
+
+        p.columns.positions = Some(vec![0.0, 100.0, 130.0, m.width()]);
+        assert_eq!(p.column_rects(), vec![Rect::new(m.x0, m.y0, m.x0 + 100.0, m.y1), Rect::new(m.x0 + 130.0, m.y0, m.x1, m.y1)]);
+
+        // Past the margin box (a page narrowed after the drag): clamped inside it, never outside.
+        p.columns.positions = Some(vec![0.0, 100.0, 130.0, m.width() + 500.0]);
+        assert_eq!(p.column_rects().last().unwrap().x1, m.x1);
+        // A descending pair cannot invert a column.
+        p.columns.positions = Some(vec![200.0, 100.0]);
+        assert_eq!(p.column_rects(), vec![Rect::new(m.x0 + 200.0, m.y0, m.x0 + 200.0, m.y1)]);
+
+        // An unusable set is the even split, which is also what `None` gives.
+        for unusable in [vec![], vec![10.0]] {
+            p.columns.positions = Some(unusable.clone());
+            assert_eq!(p.column_rects(), even, "{unusable:?}");
+        }
+        p.columns.positions = None;
+        assert_eq!(p.column_rects(), even);
     }
 
     #[test]

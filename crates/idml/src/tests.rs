@@ -4189,3 +4189,60 @@ mod liquid_page_rules {
         }
     }
 }
+
+/// A dragged column gutter (InDesign's Custom columns) survives an IDML import, and an even set —
+/// which InDesign writes for every page, moved or not — does not pretend to be custom (#1096).
+#[test]
+fn custom_column_positions_import_and_round_trip() {
+    // Page 1 of SPREAD is 500 wide with Left=20 Right=30, so its margin box is 450 wide and
+    // starts at x=30. Two columns with gutter 20 split evenly as "0 215 235 450".
+    let with = |cols: &str| {
+        let spread = SPREAD.replace(
+            r#"<MarginPreference ColumnCount="3" ColumnGutter="12" Top="10" Bottom="10" Left="20" Right="30"/>"#,
+            &format!(
+                r#"<MarginPreference ColumnCount="2" ColumnGutter="20" Top="10" Bottom="10" Left="20" Right="30" ColumnDirection="Horizontal" {cols}/>"#
+            ),
+        );
+        import_idml_with(
+            &zip_files(&[
+                ("designmap.xml", DESIGNMAP),
+                ("Resources/Graphic.xml", GRAPHIC),
+                ("Resources/Styles.xml", STYLES),
+                ("Resources/Preferences.xml", PREFS),
+                ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+                ("Spreads/Spread_sp1.xml", &spread),
+                ("Stories/Story_s1.xml", STORY),
+            ]),
+            &|_| None,
+        )
+        .unwrap()
+    };
+    let rects = |d: &designcraft_doc::Document| d.spreads[0].pages[0].column_rects().iter().map(|r| (r.x0, r.x1)).collect::<Vec<_>>();
+
+    // Dragged: the gutter sits at 150..170 instead of 215..235, and the columns follow it.
+    let d = with(r#"ColumnsPositions="0 150 170 450""#);
+    assert_eq!(d.spreads[0].pages[0].columns.positions, Some(vec![0.0, 150.0, 170.0, 450.0]));
+    assert_eq!(rects(&d), vec![(30.0, 180.0), (200.0, 480.0)]);
+
+    // The even set is dropped, so a later change of count or gutter is not frozen out. The
+    // geometry is the same either way, which is what makes keeping it pointless.
+    let even = with(r#"ColumnsPositions="0 215 235 450""#);
+    assert_eq!(even.spreads[0].pages[0].columns.positions, None);
+    assert_eq!(rects(&even), vec![(30.0, 245.0), (265.0, 480.0)]);
+    // Including when InDesign's own arithmetic leaves the last bits different.
+    assert_eq!(with(r#"ColumnsPositions="0 215.00000000000003 234.99999999999997 450""#).spreads[0].pages[0].columns.positions, None);
+
+    // Malformed sets are ignored rather than half-read: an odd count, a descending pair, a NaN.
+    for bad in
+        [r#"ColumnsPositions="0 150 170""#, r#"ColumnsPositions="0 150 90 450""#, r#"ColumnsPositions="0 x 170 450""#, r#"ColumnsPositions="""#]
+    {
+        assert_eq!(with(bad).spreads[0].pages[0].columns.positions, None, "{bad}");
+    }
+
+    // And they come back from an export, so the round trip keeps the dragged gutter.
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(back.spreads[0].pages[0].columns.positions, Some(vec![0.0, 150.0, 170.0, 450.0]));
+    assert_eq!(rects(&back), rects(&d));
+    // A page nobody dragged still exports the even split, not a frozen copy of it.
+    assert_eq!(import_idml(&export_idml(&even)).unwrap().spreads[0].pages[0].columns.positions, None);
+}
