@@ -340,7 +340,15 @@ pub enum ColorMode {
 /// swatch), the spectrum ramp, Add to Swatches. Edits apply unnamed colours (`object.color`).
 pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let Some((fill, fill_tint, stroke_sw, stroke_tint)) = super::color_target(app) else {
+    let target = super::color_target(app).or_else(|| {
+        let state = app.session.active()?;
+        if !state.selection.items.is_empty() || state.selection.text.is_some() || state.selection.cells.is_some() {
+            return None;
+        }
+        let colors = &state.doc.settings.new_object;
+        Some((colors.fill.clone(), colors.fill_tint, colors.stroke.clone(), colors.stroke_tint))
+    });
+    let Some((fill, fill_tint, stroke_sw, stroke_tint)) = target else {
         ui.label(crate::rtl::widget(
             ui,
             egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select an object or text to color its fill or stroke.")).color(t.text_dim),
@@ -546,6 +554,7 @@ fn cmyk_ramp(k: usize, x: f32) -> egui::Color32 {
 /// The spectrum ramp: hue across, light to dark down; click to apply.
 fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr(&app.ui.language, "Color spectrum")));
     let at = |u: f32, v: f32| -> [f32; 3] {
         let c = egui::ecolor::Hsva::new(u, (v * 2.0).min(1.0), (2.0 - v * 2.0).min(1.0), 1.0).to_rgb();
         [c[0], c[1], c[2]]
@@ -583,6 +592,42 @@ fn color_json(c: &designcraft_color::Color) -> serde_json::Value {
         Color::Cmyk { c, m, y, k } => json!({"model": "cmyk", "c": c, "m": m, "y": y, "k": k}),
         Color::Gray { k } => json!({"model": "gray", "k": k}),
         Color::Rgb { .. } => json!(c.to_hex()),
+    }
+}
+
+#[cfg(test)]
+mod color_panel_defaults_tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn color_panel_with_no_selection_edits_future_shapes_without_recoloring_existing_ones() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let old =
+            designcraft_doc::ItemId(app.run("frame.create", json!({"rect":[72,72,200,200],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let original = app.session.active().unwrap().doc.item(old).unwrap().stroke.clone();
+        app.run("selection.set", json!({"ids":[]})).unwrap();
+        app.ui.stroke_front = true;
+        app.run("window.panel", json!({"panel":"color"})).unwrap();
+        let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+        assert!(h.query_by_label("Select an object or text to color its fill or stroke.").is_none());
+        let ramp = h.get_by_label("Color spectrum").rect();
+        crate::test_window::click_at(&mut h, egui::pos2(ramp.left() + ramp.width() / 3.0, ramp.center().y));
+        let defaults = h.state().app.session.active().unwrap().doc.settings.new_object.clone();
+        assert_ne!(defaults.stroke, original.swatch);
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(old).unwrap().stroke, original);
+        h.state_mut().app.run("selection.set", json!({"ids":[old.0]})).unwrap();
+        assert_eq!(crate::panels::color_target(&mut h.state_mut().app).unwrap().2, original.swatch);
+        h.state_mut().app.run("selection.set", json!({"ids":[]})).unwrap();
+        let new = designcraft_doc::ItemId(
+            h.state_mut().app.run("frame.create", json!({"rect":[240,72,368,200],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap(),
+        );
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(new).unwrap().stroke.swatch, defaults.stroke);
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().app.session.active().unwrap().doc.settings.new_object.stroke, original.swatch);
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(old).unwrap().stroke, original);
     }
 }
 
