@@ -474,6 +474,23 @@ fn jump_object_keeps_grid_aligned_lines_on_the_grid() {
     assert!((l.baseline - want).abs() < 1e-6, "{} vs {want}", l.baseline);
 }
 
+/// An automatic page number wider than its frame stays on one line and hangs out, as in InDesign
+/// ("136" in a frame made for two digits); breaking it put "13" over "4".
+#[test]
+fn page_number_wider_than_its_frame_stays_whole() {
+    let text = designcraft_doc::story::PAGE_NUMBER.to_string();
+    let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 10.0, 40.0), ParaAttrs::default());
+    let mut specs = frame_specs(&d, sid);
+    specs[0].page_name = Some("136".into());
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(!cs.is_overset());
+    // A word of ordinary letters that doesn't fit still breaks where it must.
+    let (d, sid, _) = doc_with("Wordwiderthanframe", Rect::new(0.0, 0.0, 30.0, 200.0), ParaAttrs::default());
+    assert!(all_lines(&compose_story(&d, sid, &ComposeOptions::default())).len() > 1);
+}
+
 #[test]
 fn hostile_wrap_geometry_terminates() {
     let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &[]);

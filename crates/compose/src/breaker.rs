@@ -563,7 +563,11 @@ fn overlong_words(items: &[Item], ig: &[usize], glyphs: &[Glyph], measure: f64) 
                     let marks = out.get_or_insert_with(|| vec![false; glyphs.len()]);
                     for i in a..b {
                         let (Some(g), Some(next)) = (glyphs.get(i), glyphs.get(i + 1)) else { continue };
+                        // Glyphs of one source character (an automatic page number's digits, a
+                        // multi-glyph cluster) stay together, as InDesign keeps them.
+                        let one_char = next.byte == g.byte && (next.len == 0 || next.len == g.len);
                         let ok = !g.no_break
+                            && !one_char
                             && g.break_after != Some(false)
                             && next.ch != SOFT_HYPHEN
                             && !is_forced(next.ch)
