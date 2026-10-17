@@ -2079,10 +2079,19 @@ impl<'r> Importer<'r> {
             anchor_list.push(Arc::new(designcraft_doc::TextAnchor { id: aid, name }));
         }
         let mut xref_list = Vec::new();
-        for (k, (me, fmt)) in xrefs.into_iter().enumerate() {
-            self.xref_srcs.insert(me, (id, k));
-            let format = self.xref_format_names.get(&fmt).cloned().unwrap_or_else(|| "Full Paragraph & Page Number".into());
-            xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format }));
+        for (k, x) in xrefs.into_iter().enumerate() {
+            self.xref_srcs.insert(x.me, (id, k));
+            let format = self.xref_format_names.get(&x.format).cloned().unwrap_or_else(|| "Full Paragraph & Page Number".into());
+            // Text typed over the generated text is kept (InDesign shows it until the
+            // cross-reference is updated); text the format still produces is generated again.
+            let definition = self.xref_formats.iter().find(|f| f.name == format).map_or("<fullPara />", |f| f.definition.as_str());
+            let edited = !x.text.is_empty() && !designcraft_doc::xref::matches_format(&x.text, definition);
+            xref_list.push(Arc::new(designcraft_doc::CrossRef {
+                target: 0,
+                format,
+                text: edited.then_some(x.text),
+                page: x.page.filter(|_| edited),
+            }));
         }
         let mut st = Story {
             id,
@@ -2331,7 +2340,14 @@ impl<'r> Importer<'r> {
                     }
                     "CrossReferenceSource" => {
                         // The generated text is regenerated from the format.
-                        b.xrefs.push((c.get("Self").unwrap_or("").to_string(), c.get("AppliedFormat").unwrap_or("").to_string()));
+                        let (mut text, mut page) = (String::new(), None);
+                        xref_saved_text(c, &mut text, &mut page, 0);
+                        b.xrefs.push(XrefSource {
+                            me: c.get("Self").unwrap_or("").to_string(),
+                            format: c.get("AppliedFormat").unwrap_or("").to_string(),
+                            text,
+                            page,
+                        });
                         // A source at paragraph level wraps a range; inside a range it holds the
                         // text directly and takes that range's format.
                         let f = c.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars, cf));
@@ -3377,8 +3393,39 @@ struct StoryBuilder {
     /// Text destinations (Self, name) and cross-reference sources (Self, format Self) in order.
     anchors: Vec<(String, String)>,
     index_refs: Vec<designcraft_doc::IndexRef>,
-    xrefs: Vec<(String, String)>,
+    xrefs: Vec<XrefSource>,
     objects: Vec<designcraft_doc::AnchoredObject>,
+}
+
+/// A cross-reference source as saved: its id, its format's id, and its text with each page number
+/// as `<pageNum />` (and the page it last showed).
+struct XrefSource {
+    me: String,
+    format: String,
+    text: String,
+    page: Option<String>,
+}
+
+/// The text a `CrossReferenceSource` holds, with its live page numbers (InDesign's
+/// `XRefPageNumber` text variable) as `<pageNum />`. Returns the text and the page shown.
+fn xref_saved_text(e: &El, text: &mut String, page: &mut Option<String>, depth: usize) {
+    if depth > 16 {
+        return;
+    }
+    for c in e.elements() {
+        match c.local() {
+            "Content" => text.push_str(&c.text_content()),
+            "TextVariableInstance" if c.get("Name").is_some_and(|n| n.contains("XRefPageNumber")) => {
+                text.push_str(designcraft_doc::xref::PAGE_NUM_BLOCK);
+                if page.is_none() {
+                    *page = c.get("ResultText").map(str::to_string);
+                }
+            }
+            "TextVariableInstance" => text.push_str(c.get("ResultText").unwrap_or("")),
+            "CharacterStyleRange" => xref_saved_text(c, text, page, depth + 1),
+            _ => {}
+        }
+    }
 }
 
 impl StoryBuilder {

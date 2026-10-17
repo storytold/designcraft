@@ -1158,7 +1158,7 @@ fn round_trips_cross_references() {
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Results: found\nSee .", ParaFormat::default()).unwrap();
     let target = d.paragraph_anchor(sid, 0).unwrap();
     let at = d.story(sid).unwrap().text.find(" .").unwrap() + 1;
-    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into() });
+    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into(), ..Default::default() });
     d.xref_formats.push(designcraft_doc::XrefFormat {
         name: "Mine".into(),
         definition: "(<partialPara delim=\":\" includeDelim=\"true\" />, p. <pageNum />)".into(),
@@ -4192,4 +4192,32 @@ mod liquid_page_rules {
             }
         }
     }
+}
+
+/// Text typed over a cross-reference's generated text is kept, its page number live (InDesign's
+/// XRefPageNumber variable); text the format still produces is generated again. The edits
+/// survive export and import.
+#[test]
+fn keeps_edited_cross_reference_text() {
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+<Story Self="s1"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+<CrossReferenceSource Self="x1" AppliedFormat="n"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Page </Content></CharacterStyleRange><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><TextVariableInstance Self="v1" Name="&lt;?AID 001b?&gt;TV XRefPageNumber" ResultText="7" AssociatedTextVariable="dTextVariablen&lt;?AID 001b?&gt;TV XRefPageNumber"/></CharacterStyleRange><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>: Bove, Vinny. "Advent Horizon." 1996.</Content></CharacterStyleRange></CrossReferenceSource>
+<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content> and </Content></CharacterStyleRange>
+<CrossReferenceSource Self="x2" AppliedFormat="n"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>"Intro" on page </Content><TextVariableInstance Self="v2" Name="&lt;?AID 001b?&gt;TV XRefPageNumber" ResultText="3" AssociatedTextVariable="dTextVariablen&lt;?AID 001b?&gt;TV XRefPageNumber"/></CharacterStyleRange></CrossReferenceSource>
+</ParagraphStyleRange></Story></idPkg:Story>"#;
+    let d = import_idml(&fixture_with_story(story)).unwrap();
+    d.check().unwrap();
+    let s = d.stories.values().find(|s| !s.xrefs.is_empty()).expect("story with cross-references");
+    assert_eq!(s.xrefs.len(), 2);
+    assert_eq!(s.xrefs[0].text.as_deref(), Some("Page <pageNum />: Bove, Vinny. \"Advent Horizon.\" 1996."));
+    assert_eq!(s.xrefs[0].page.as_deref(), Some("7"));
+    assert_eq!(s.xrefs[1].text, None, "unedited text follows its format");
+    // Its destination is gone: the page it last showed.
+    assert_eq!(designcraft_compose::xref::xref_text(&d, &s.xrefs[0], None), "Page 7: Bove, Vinny. \"Advent Horizon.\" 1996.");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    back.check().unwrap();
+    let b = back.stories.values().find(|s| !s.xrefs.is_empty()).unwrap();
+    assert_eq!(b.xrefs[0].text, s.xrefs[0].text);
+    assert_eq!(b.xrefs[0].page, s.xrefs[0].page);
 }
