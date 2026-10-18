@@ -967,6 +967,9 @@ fn named_list_labels<'s>(
     deleted: &[bool],
     starts: &impl Fn() -> &'s designcraft_doc::numbering::NumberStarts,
 ) -> Vec<Option<String>> {
+    // Only lists that continue across stories need the document-wide starts.
+    let continuing: std::collections::HashSet<&str> =
+        doc.settings.lists.iter().filter(|l| l.continue_across_stories).map(|l| l.name.as_str()).collect();
     let mut counters: std::collections::HashMap<String, ListCounter> = std::collections::HashMap::new();
     story
         .paras
@@ -978,7 +981,9 @@ fn named_list_labels<'s>(
             if props.list_type != designcraft_doc::ListType::Numbers || props.list_name.is_empty() || range.is_empty() || *is_deleted {
                 return None;
             }
-            let counter = counters.entry(props.list_name.clone()).or_insert_with(|| starts().list(story.id, &props.list_name));
+            let counter = counters.entry(props.list_name.clone()).or_insert_with(|| {
+                if continuing.contains(props.list_name.as_str()) { starts().list(story.id, &props.list_name) } else { ListCounter::default() }
+            });
             counter.advance(&props);
             Some(props.number_label_in(counter))
         })
