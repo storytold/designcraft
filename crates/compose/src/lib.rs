@@ -899,6 +899,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let starts = || -> &designcraft_doc::numbering::NumberStarts {
         starts_cell.get_or_init(|| opts.starts.clone().unwrap_or_else(|| Arc::new(doc.number_starts())))
     };
+    // Only lists that continue across stories need the document-wide starts.
+    let continuing: std::collections::HashSet<&str> =
+        doc.settings.lists.iter().filter(|l| l.continue_across_stories).map(|l| l.name.as_str()).collect();
     // Named lists number independently of layout: one pass up front, for the labels.
     let named_labels: Vec<Option<String>> = {
         let mut counters: std::collections::HashMap<String, ListCounter> = std::collections::HashMap::new();
@@ -912,7 +915,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 if pp.list_type != designcraft_doc::ListType::Numbers || pp.list_name.is_empty() || r.is_empty() || *del {
                     return None;
                 }
-                let c = counters.entry(pp.list_name.clone()).or_insert_with(|| starts().list(story.id, &pp.list_name));
+                let c = counters.entry(pp.list_name.clone()).or_insert_with(|| {
+                    if continuing.contains(pp.list_name.as_str()) { starts().list(story.id, &pp.list_name) } else { ListCounter::default() }
+                });
                 c.advance(&pp);
                 Some(pp.number_label_in(c))
             })

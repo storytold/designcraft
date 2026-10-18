@@ -5,7 +5,7 @@
 //! every story's numbering starts, built in one pass over the items and stories, so composing a
 //! long document doesn't search the item tree once per story and per list.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::attrs::ListCounter;
@@ -17,8 +17,12 @@ use crate::story::Story;
 /// Where document-wide numbering starts in each story ([`crate::Document::number_starts`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NumberStarts {
-    /// Per list that continues across stories: its numbering after the stories before each story.
-    lists: HashMap<String, HashMap<StoryId, ListCounter>>,
+    /// Position of each story in numbering order (only when some list continues across stories).
+    order: HashMap<StoryId, usize>,
+    /// Per list that continues across stories: its numbering after each story that numbers a
+    /// paragraph of it, by position. Stories that don't use a list add nothing, so the index
+    /// grows with the numbered paragraphs, not with lists times stories.
+    lists: HashMap<String, Vec<(usize, ListCounter)>>,
     /// First footnote number per story (only when footnote numbering never restarts).
     footnotes: HashMap<StoryId, u32>,
     footnote_default: u32,
@@ -32,7 +36,10 @@ impl NumberStarts {
     /// The numbering of list `name` after the stories before `sid`; a fresh count for lists that
     /// don't continue across stories.
     pub fn list(&self, sid: StoryId, name: &str) -> ListCounter {
-        self.lists.get(name).and_then(|m| m.get(&sid)).cloned().unwrap_or_default()
+        let (Some(pos), Some(marks)) = (self.order.get(&sid), self.lists.get(name)) else { return ListCounter::default() };
+        // The last story before `sid` that numbered a paragraph of the list.
+        let i = marks.partition_point(|(p, _)| p < pos);
+        i.checked_sub(1).and_then(|i| marks.get(i)).map(|(_, n)| n.clone()).unwrap_or_default()
     }
 
     /// Number of the first footnote of story `sid`.
@@ -85,16 +92,18 @@ impl crate::Document {
         let mut names: Vec<&str> = self.settings.lists.iter().filter(|l| l.continue_across_stories).map(|l| l.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        let footnotes_run = self.footnote_options.restart == NoteRestart::Never;
+        // Footnotes need the page order only when they never restart and some story has one.
+        let footnotes_run = self.footnote_options.restart == NoteRestart::Never && self.stories.values().any(|st| !st.notes.is_empty());
         let any_endnotes = self.stories.values().any(|st| !st.endnotes.is_empty());
         let mut out =
             NumberStarts { footnote_default: self.footnote_options.start_at, endnote_end: self.endnote_options.start_at, ..Default::default() };
         if names.is_empty() && !footnotes_run && !any_endnotes {
             return out;
         }
-        let mut counters: HashMap<&str, ListCounter> = names.iter().map(|n| (*n, ListCounter::default())).collect();
+        // One counter per name, at the name's index in the sorted `names`.
+        let mut counters: Vec<ListCounter> = vec![ListCounter::default(); names.len()];
         let mut footnote = self.footnote_options.start_at;
-        for st in self.stories_in_page_order() {
+        for (pos, st) in self.stories_in_page_order().into_iter().enumerate() {
             if footnotes_run {
                 out.footnotes.insert(st.id, footnote);
                 footnote = footnote.saturating_add(u32::try_from(st.notes.len()).unwrap_or(u32::MAX));
@@ -106,9 +115,8 @@ impl crate::Document {
             if counters.is_empty() {
                 continue;
             }
-            for (name, n) in &counters {
-                out.lists.entry((*name).to_string()).or_default().insert(st.id, n.clone());
-            }
+            out.order.insert(st.id, pos);
+            let mut touched: BTreeSet<usize> = BTreeSet::new();
             for (p, r) in st.paras.iter().zip(st.para_ranges()) {
                 if r.is_empty() {
                     continue;
@@ -117,8 +125,15 @@ impl crate::Document {
                 if pp.list_type != crate::ListType::Numbers {
                     continue;
                 }
-                if let Some(n) = counters.get_mut(pp.list_name.as_str()) {
+                let Ok(i) = names.binary_search(&pp.list_name.as_str()) else { continue };
+                if let Some(n) = counters.get_mut(i) {
                     n.advance(&pp);
+                    touched.insert(i);
+                }
+            }
+            for i in touched {
+                if let (Some(name), Some(n)) = (names.get(i), counters.get(i)) {
+                    out.lists.entry((*name).to_string()).or_default().push((pos, n.clone()));
                 }
             }
         }
@@ -128,6 +143,7 @@ impl crate::Document {
 
 #[cfg(test)]
 mod tests {
+    use super::NumberStarts;
     use crate::build::NewDocument;
     use crate::geom::Rect;
     use crate::{Document, ListCounter, ListType, NumberedList, ParaAttrs, ParaFormat, ParaProps, SpreadRef, StoryId};
@@ -180,5 +196,41 @@ mod tests {
             assert_eq!(d.endnote_start(s), n.endnote(s));
         }
         assert_eq!(n.list(StoryId(999), "Steps"), ListCounter::default(), "unknown stories start fresh");
+    }
+
+    #[test]
+    fn nothing_running_skips_the_page_order() {
+        let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        // Named lists that don't continue, footnotes that never restart, but no notes anywhere.
+        d.settings.lists.push(NumberedList { name: "Solo".into(), continue_across_stories: false });
+        let a = story(&mut d, 0, "x\ny", "Solo");
+        story(&mut d, 1, "p", "Solo");
+        let n = d.number_starts();
+        let empty = NumberStarts { footnote_default: d.footnote_options.start_at, endnote_end: d.endnote_options.start_at, ..Default::default() };
+        assert_eq!(n, empty, "no story walk when nothing numbers across stories");
+        assert_eq!(n.footnote(a), d.footnote_options.start_at);
+        assert_eq!(d.list_start(a, "Solo"), ListCounter::default());
+    }
+
+    #[test]
+    fn list_index_grows_with_numbered_stories_only() {
+        let mut d = Document::new(&NewDocument { pages: 4, facing_pages: false, ..Default::default() });
+        for k in 0..50 {
+            d.settings.lists.push(NumberedList { name: format!("Unused{k}"), continue_across_stories: true });
+        }
+        d.settings.lists.push(NumberedList { name: "Steps".into(), continue_across_stories: true });
+        let a = story(&mut d, 0, "a\nb", "Steps");
+        let b = story(&mut d, 1, "x", "Other");
+        let c = story(&mut d, 2, "y", "Other");
+        let e = story(&mut d, 3, "z", "Steps");
+        let n = d.number_starts();
+        // One mark per story that numbered a paragraph of a continuing list; none for unused lists.
+        assert_eq!(n.lists.values().map(Vec::len).sum::<usize>(), 2);
+        let next = |s: StoryId| {
+            let pp = ParaProps { list_type: ListType::Numbers, list_name: "Steps".into(), ..ParaProps::default() };
+            n.list(s, "Steps").advance(&pp)
+        };
+        assert_eq!([a, b, c, e].map(next), [1, 3, 3, 3]);
+        assert_eq!(n.list(e, "Unused7"), ListCounter::default());
     }
 }
