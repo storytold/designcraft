@@ -5,7 +5,8 @@
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
 //! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
-//! polytonic text hyphenates by them as well.
+//! polytonic text hyphenates by them as well. Esperanto breaks between morphemes rather than
+//! syllables ([`eo`]: our own segmenter, roots from Wiktionary).
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -18,6 +19,7 @@
 //! Then the paragraph's limits ([`Limits`]) are applied.
 
 pub mod dict;
+pub mod eo;
 pub mod patgen;
 pub mod patterns;
 
@@ -72,6 +74,7 @@ impl Default for Limits {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     English,
+    Esperanto,
     Patterns(hypher::Lang),
 }
 
@@ -86,6 +89,9 @@ impl Lang {
         let sub = designcraft_doc::language_subtag(tag);
         if sub == "en" {
             return Some(Lang::English);
+        }
+        if sub == "eo" {
+            return Some(Lang::Esperanto);
         }
         let b = sub.as_bytes();
         if b.len() != 2 {
@@ -117,6 +123,14 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let n = core.len();
     if n < 2 {
         return (vec![], Source::None);
+    }
+    if lang == Lang::Esperanto {
+        if core.contains(&'\'') {
+            return (vec![], Source::None);
+        }
+        let pts = eo::breaks(core);
+        let src = if pts.is_empty() { Source::None } else { Source::Dictionary };
+        return (pts, src);
     }
     if let Lang::Patterns(l) = lang {
         if core.contains(&'\'') {
@@ -394,6 +408,20 @@ mod tests {
         assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
         assert_eq!(h("calle"), "ca-lle", "ll stays whole");
         assert!(Lang::for_language("French").is_none(), "only languages built in");
+    }
+
+    #[test]
+    fn esperanto_breaks_between_morphemes() {
+        let eo = Lang::for_language("Esperanto").unwrap();
+        assert_eq!(eo, Lang::for_language("eo").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), eo);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("Malsanulejo"), "Mal-san-ul-ejo", "case kept, break points from the lowercase word");
+        assert_eq!(h("tranĉilojn,"), "tranĉ-ilojn,");
+        assert_eq!(h("lernejo-direktoro"), format!("lern-ejo-{}", h("direktoro")), "each part of a compound");
+        assert_eq!(h("parolas"), "parolas", "never before the ending alone");
     }
 
     #[test]
