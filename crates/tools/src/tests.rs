@@ -478,6 +478,28 @@ fn turned_spread_maps_points_both_ways() {
     assert!(dv.x.abs() < 1e-9 && (dv.y + 10.0).abs() < 1e-9 || (dv.y - 10.0).abs() < 1e-9, "{dv:?}");
 }
 
+#[test]
+fn place_gun_click_places_into_frames_but_not_onto_lines() {
+    let mut d = Document::new(&NewDocument::default());
+    let frame = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    let lid = d.default_layer();
+    let line = ItemId(d.alloc());
+    let mut it = Item::new(line, lid, Shape::GraphicLine, shapes::line(Point::new(100.0, 300.0), Point::new(300.0, 300.0)));
+    it.stroke = Stroke::default();
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let click = |t: &mut Box<dyn Tool>, x: f64, y: f64| {
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x + off.x, y + off.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x + off.x, y + off.y))
+    };
+    let mut t = create("placeGun");
+    assert_eq!(click(&mut t, 150.0, 150.0), vec![Action::Exec("place.drop".into(), serde_json::json!({"frame": frame.0}))]);
+    let a = click(&mut t, 200.0, 300.0);
+    assert!(matches!(&a[..], [Action::Exec(cmd, p)] if cmd == "place.drop" && p.get("frame").is_none()), "{a:?}");
+}
+
 fn add_rect(doc: &mut Document, rect: Rect) -> ItemId {
     let layer = doc.default_layer();
     let id = ItemId(doc.alloc());

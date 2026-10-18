@@ -411,6 +411,11 @@ impl PathData {
     pub fn length(&self) -> f64 {
         self.to_bezpath().segments().map(|s| kurbo::ParamCurveArclen::arclen(&s, 1e-6)).sum()
     }
+    /// True if some subpath encloses an area once closed: a frame, or an open path such as a V.
+    /// A line, or a path whose points all lie on one line, encloses none.
+    pub fn encloses_area(&self) -> bool {
+        self.subpaths.iter().any(|sp| SubPath::new(sp.anchors.clone(), true).area().abs() > 1e-6)
+    }
 }
 
 fn push_curve(cur: &mut Option<SubPath>, last: Point, c1: Point, c2: Point, p: Point) {
@@ -438,6 +443,20 @@ mod tests {
         let mut two = PathData::single(SubPath::polyline(&[Point::new(5.0, 7.0)], false));
         two.subpaths.push(SubPath::polyline(&[Point::new(50.0, 50.0)], false));
         assert_eq!(two.bounds(), Some(Rect::new(5.0, 7.0, 50.0, 50.0)));
+    }
+
+    #[test]
+    fn lines_enclose_no_area_and_open_vs_do() {
+        let pts = |p: &[(f64, f64)]| p.iter().map(|&(x, y)| Point::new(x, y)).collect::<Vec<_>>();
+        let open = |p: &[(f64, f64)]| PathData::single(SubPath::polyline(&pts(p), false));
+        assert!(!open(&[(0.0, 0.0), (100.0, 0.0)]).encloses_area());
+        assert!(!open(&[(0.0, 0.0), (50.0, 50.0), (100.0, 100.0)]).encloses_area());
+        assert!(open(&[(20.0, 30.0), (80.0, 90.0), (140.0, 30.0)]).encloses_area());
+        let square = SubPath::polyline(&pts(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]), true);
+        let line = SubPath::polyline(&pts(&[(20.0, 0.0), (40.0, 0.0)]), false);
+        assert!(PathData::new(vec![line.clone(), square]).encloses_area());
+        assert!(!PathData::new(vec![line]).encloses_area());
+        assert!(!PathData::default().encloses_area());
     }
 
     #[test]
