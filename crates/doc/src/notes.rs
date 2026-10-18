@@ -227,6 +227,9 @@ impl crate::Document {
     /// Composing many stories? Build [`Document::number_starts`](crate::Document::number_starts)
     /// once instead.
     pub fn list_start(&self, sid: StoryId, name: &str) -> crate::ListCounter {
+        if !self.settings.lists.iter().any(|l| l.name == name && l.continue_across_stories) {
+            return crate::ListCounter::default();
+        }
         self.number_starts().list(sid, name)
     }
 
@@ -240,6 +243,7 @@ impl crate::Document {
         self.number_starts().footnote(sid)
     }
 
+    /// Absolute page an item sits on (its center), None on parent pages / pasteboard-only spreads.
     pub fn page_of_item(&self, id: crate::ItemId) -> Option<usize> {
         let loc = self.find(id)?;
         let crate::SpreadRef::Doc(si) = loc.spread else { return None };
