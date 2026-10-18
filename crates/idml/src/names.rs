@@ -843,6 +843,8 @@ pub fn toc_separator_out(s: &str) -> String {
 }
 /// IDML TOC separator → text (`^t` and `^y`, the right indent tab, are tabs; other codes stay).
 pub fn toc_separator_in(s: &str) -> String {
+    // InDesign writes its built-in values with the `$ID/` prefix (`$ID/^y`, the right indent tab).
+    let s = s.strip_prefix("$ID/").unwrap_or(s);
     let mut out = String::new();
     let mut it = s.chars();
     while let Some(c) = it.next() {

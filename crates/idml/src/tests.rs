@@ -4193,3 +4193,35 @@ mod liquid_page_rules {
         }
     }
 }
+
+/// A TOC style as InDesign writes it: `$ID/`-prefixed separator (`^y`, the right indent tab) and entry style.
+const TOC_STYLES: &str = r#"<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<RootParagraphStyleGroup>
+  <ParagraphStyle Self="ParagraphStyle/Heading 1" Name="Heading 1"/>
+  <ParagraphStyleGroup Self="psg-toc" Name="TOC">
+    <ParagraphStyle Self="ParagraphStyle/TOC%3aTOC body text" Name="TOC:TOC body text" Capitalization="AllCaps"/>
+    <ParagraphStyle Self="ParagraphStyle/TOC%3aTOC Header" Name="TOC:TOC Header"/>
+  </ParagraphStyleGroup>
+</RootParagraphStyleGroup>
+<RootCharacterStyleGroup><CharacterStyle Self="CharacterStyle/TOC Page Number" Name="TOC Page Number"/></RootCharacterStyleGroup>
+<TOCStyle Self="TOCStyle/$ID/DefaultTOCStyleName" TitleStyle="ParagraphStyle/TOC%3aTOC Header" Title="Table of Contents" Name="$ID/DefaultTOCStyleName">
+  <TOCStyleEntry Self="e1" Name="Heading 1" Level="1" PageNumberPosition="AfterEntry" Separator="$ID/^y">
+    <Properties><FormatStyle type="object">ParagraphStyle/$ID/TOC%3aTOC body text</FormatStyle>
+    <PageNumberStyle type="object">CharacterStyle/TOC Page Number</PageNumberStyle>
+    <SeparatorStyle type="string">$ID/[Same Style]</SeparatorStyle></Properties>
+  </TOCStyleEntry>
+</TOCStyle></idPkg:Styles>"#;
+
+const TOC_STORY: &str = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<Story Self="s1" AppliedTOCStyle="TOCStyle/$ID/DefaultTOCStyleName"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/TOC%3aTOC body text"><CharacterStyleRange><Content>Welcome</Content></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"#;
+
+#[test]
+fn toc_style_entries_read_id_prefixed_separators_and_styles() {
+    let d = import_idml(&fixture_with_table_styles(TOC_STYLES, TOC_STORY)).unwrap();
+    let toc = d.toc.as_ref().expect("the story's TOC style is imported");
+    let entry = toc.entries.iter().find(|e| e.style == "Heading 1").unwrap();
+    assert_eq!(entry.separator, None, "`$ID/^y` is the right indent tab, the default separator, not text: {:?}", entry.separator);
+    assert_eq!(entry.entry_style.as_deref(), Some("TOC/TOC body text"));
+    assert_eq!(entry.page_number_style.as_deref(), Some("TOC Page Number"));
+    assert_eq!(toc.title_style.as_deref(), Some("TOC/TOC Header"));
+}
