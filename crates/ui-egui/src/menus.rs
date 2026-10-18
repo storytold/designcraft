@@ -502,6 +502,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             ">Bulleted & Numbered Lists",
             "cmd:list.define",
+            "cmd:list.convertToText",
             "<",
             "-",
             ">Insert Special Character",
@@ -3299,6 +3300,7 @@ mod tests {
         assert_eq!(spec.menu[0], "Type");
         assert!(submenu_paths("Type").contains(&spec.menu.join("/")), "{:?} is not a Type submenu", spec.menu);
         assert!(menu_ids("Type").contains(&"list.define"));
+        assert!(menu_ids("Type").contains(&"list.convertToText"));
     }
 
     #[test]

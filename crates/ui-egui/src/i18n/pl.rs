@@ -139,6 +139,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Bottom", "Dół"),
     ("Break Link to Style", "Odłącz od stylu"),
     ("Redefine Style", "Przedefiniuj styl"),
+    ("Convert Bullets and Numbering to Text", "Zamień wypunktowanie i numerację na tekst"),
     ("Bullets and Numbering", "Wypunktowanie i numeracja"),
     ("Business Card", "Wizytówka"),
     ("CMYK", "CMYK"),

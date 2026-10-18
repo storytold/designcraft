@@ -645,7 +645,7 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
 // Each command edits a copy-on-write Story snapshot. Reserving its known final text growth
 // avoids retaining geometric String spare capacity in every independent undo snapshot.
 // General Story insertion keeps its existing amortized-growth policy for mutable builders.
-fn reserve_command_text(st: &mut designcraft_doc::Story, additional: usize) -> Result<()> {
+pub(crate) fn reserve_command_text(st: &mut designcraft_doc::Story, additional: usize) -> Result<()> {
     st.text.try_reserve_exact(additional).map_err(|e| crate::EngineError::Other(format!("could not reserve text insertion: {e}")))
 }
 

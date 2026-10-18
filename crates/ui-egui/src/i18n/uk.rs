@@ -255,6 +255,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Bottom", "Знизу"),
     ("Break Link to Style", "Розірвати зв’язок зі стилем"),
     ("Redefine Style", "Перевизначити стиль"),
+    ("Convert Bullets and Numbering to Text", "Перетворити маркери та нумерацію на текст"),
     ("Bullets and Numbering", "Маркери та нумерація"),
     ("Business Card", "Візитівка"),
     ("CMYK", "CMYK"),

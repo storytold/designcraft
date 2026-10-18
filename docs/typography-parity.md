@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (Convert Bullets and Numbering to Text; Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -54,7 +54,7 @@ Fidelity: **unmeasured** unless stated.
 | Balance columns | ✓ | ✓ (IDML `VerticalBalanceColumns`) | ✓ | evens out the columns of the frame the story ends in, after its last column break (#609) |
 | Keep options and breaks | keep with next, lines together, start in next column/frame/page/odd/even | ✓ | ✓ | break characters end paragraphs (#285); the line before a break is a last line (#283) |
 | Drop caps, nested, line and GREP styles | ✓ | ✓ | ✓ | |
-| Bullets and numbering | lists, levels, formats, restart, across stories | ✓ | ~ | numbering expressions from IDML (#298); Convert Bullets/Numbering to Text missing |
+| Bullets and numbering | lists, levels, formats, restart, across stories | ✓ | ~ | numbering expressions from IDML (#298); Convert Bullets and Numbering to Text types the labels into the selected paragraphs |
 | Tabs | left/center/right/decimal/align-on, leaders, right-indent tab | ✓ | ~ | Tabs panel with a ruler over the text column, and a Tabs section in Paragraph Style Options (#343); wrapping of lines with tabs fixed (#282) |
 | Paragraph rules, borders, shading | ✓ | ✓ | ✓ | |
 | Balance ragged lines | ✓ | ✓ | ✓ | |

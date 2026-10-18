@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (gap 16: Convert Bullets and Numbering to Text; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -167,7 +167,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 ### 16. Menu items still missing (U)
 - **Missing:** 151 of 482 in-scope items of InDesign 21.6's menu dump have no match (measured 2026-10-10; some exist under other labels): Type ▸ Notes
   and Track Changes submenus (the panels and commands exist), hyperlink and cross-reference
-  update commands, Convert Bullets/Numbering to Text, Convert Variable to Text, Object ▸ Clear
+  update commands, Convert Variable to Text, Object ▸ Clear
   Effects / Clear All Transparency / Rotate 180° / Reverse Path, Layout ▸ Go Back/Forward,
   Window ▸ Arrange (2-up … 6-up), Trap Presets, Overlays, Edit ▸ Assign Profiles / Convert to
   Profile / Edit Original, File ▸ File Info / Open PDF / Document and Print Presets / User

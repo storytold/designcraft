@@ -988,6 +988,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Body Rows", "صفوف المتن"),
     ("Break Link to Style", "فك الارتباط بالنمط"),
     ("Redefine Style", "إعادة تعريف النمط"),
+    ("Convert Bullets and Numbering to Text", "تحويل التعداد النقطي والترقيم إلى نص"),
     ("Bullets and Numbering", "التعداد النقطي والرقمي"),
     ("Business Card", "بطاقة عمل"),
     ("Buttons act in interactive PDF export.", "تعمل الأزرار عند التصدير إلى PDF تفاعلي."),

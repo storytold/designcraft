@@ -370,6 +370,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Bottom", "下"),
     ("Break Link to Style", "スタイルへのリンクを解除"),
     ("Redefine Style", "スタイルを再定義"),
+    ("Convert Bullets and Numbering to Text", "箇条書き記号と番号付けをテキストに変換"),
     ("Bullets and Numbering", "箇条書き記号と番号付け"),
     ("Business Card", "名刺"),
     ("CMYK", "CMYK"),

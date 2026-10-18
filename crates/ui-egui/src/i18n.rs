@@ -793,6 +793,16 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ["Break Link to Style", "Rompre le lien avec le style", "Break Link to Style", "Break Link to Style", "断开与样式的链接"],
     ),
     ("Redefine Style", ["Format neu definieren", "Redéfinir le style", "Redefinir estilo", "スタイルを再定義", "重新定义样式"]),
+    (
+        "Convert Bullets and Numbering to Text",
+        [
+            "Aufzählungszeichen und Nummerierung in Text konvertieren",
+            "Convertir les puces et la numérotation en texte",
+            "Convertir viñetas y numeración en texto",
+            "箇条書き記号と番号付けをテキストに変換",
+            "将项目符号和编号转换为文本",
+        ],
+    ),
     ("Bullets and Numbering", ["Bullets and Numbering", "Puces et numérotation", "Bullets and Numbering", "Bullets and Numbering", "项目符号和编号"]),
     ("Business Card", ["Business Card", "Carte de visite", "Business Card", "Business Card", "名片"]),
     ("CMYK", ["CMYK", "CMJN", "CMYK", "CMYK", "CMYK"]),
@@ -5127,7 +5137,8 @@ mod tests {
     #[test]
     fn style_row_menu_strings_are_translated_in_every_language() {
         for (code, _) in LANGUAGES.iter().filter(|(c, _)| !c.is_empty()) {
-            for key in ["Redefine Style", "Alt-click clears overrides", "Apply \"{name}\", Clear Overrides"] {
+            for key in ["Redefine Style", "Alt-click clears overrides", "Apply \"{name}\", Clear Overrides", "Convert Bullets and Numbering to Text"]
+            {
                 assert_ne!(tr(code, key), key, "{code}: {key}");
             }
         }

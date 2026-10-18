@@ -817,26 +817,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let np = para_ranges.len();
     let deleted = deleted_paras(story, &para_ranges);
     let hyph_exceptions = doc.hyphenation_exception_map();
-    let mut list_counter = ListCounter::default();
-    // Named lists number independently of layout: one pass up front, for the labels.
-    let named_labels: Vec<Option<String>> = {
-        let mut counters: std::collections::HashMap<String, ListCounter> = std::collections::HashMap::new();
-        story
-            .paras
-            .iter()
-            .zip(&para_ranges)
-            .zip(&deleted)
-            .map(|((p, r), del)| {
-                let (pp, _) = doc.styles.resolve_para(p);
-                if pp.list_type != designcraft_doc::ListType::Numbers || pp.list_name.is_empty() || r.is_empty() || *del {
-                    return None;
-                }
-                let c = counters.entry(pp.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &pp.list_name));
-                c.advance(&pp);
-                Some(pp.number_label_in(c))
-            })
-            .collect()
-    };
+    let labels = list_labels(doc, story);
     // Border and shading of each paragraph set, drawn once the lines are in place.
     let mut boxes: Vec<Option<ParaBox>> = vec![None; np];
     // Keep options: paragraphs are re-laid from a snapshot when a keep is violated, either forced
@@ -873,7 +854,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         cur.pi = pi;
         cur.limits = Rc::clone(&limits);
         cur.split_limits = Rc::clone(&split_limits);
-        let snap = Snapshot::take(&out, &cur, &list_counter);
+        let snap = Snapshot::take(&out, &cur);
         snaps.truncate(pi);
         snaps.push(snap);
         note_snaps.truncate(pi);
@@ -884,7 +865,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             && let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget)
         {
             balance_runs += 1;
-            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
             pi = j;
             continue 'paras;
         }
@@ -894,7 +875,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 && let Some(j) = balance_end(&mut trial, &mut limits, &cur, &cols, frames, &out, np, balance_runs < balance_budget)
             {
                 balance_runs += 1;
-                rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
                 pi = j;
                 continue 'paras;
             }
@@ -948,7 +929,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             if !table::place_table(doc, t, anchor, pi, &pp, frames, &cols, &mut cur, &mut out, opts) {
                 if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
                     balance_runs += 1;
-                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
                     pi = j;
                     continue 'paras;
                 }
@@ -967,7 +948,6 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 keep_first: 1,
                 keep_last: 1,
             });
-            list_counter = ListCounter::default();
             boxes[pi] = None;
             cur.pending += pp.space_after;
             pi += 1;
@@ -1144,23 +1124,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let drop_cap = split_drop_cap(db, &mut sp.glyphs, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
         // List labels take the default super/subscript settings.
         let label_env = shape::TypeEnv { adv: Default::default(), ..env };
-        let list_label = match pp.list_type {
-            // An empty paragraph has no bullet or number, and the numbering carries on past it.
-            designcraft_doc::ListType::Numbers | designcraft_doc::ListType::Bullets if prange.is_empty() => None,
-            // A named list: carries on past other paragraphs (and from earlier stories).
-            designcraft_doc::ListType::Numbers if !pp.list_name.is_empty() => {
-                Some(named_labels.get(pi).cloned().flatten().unwrap_or_else(|| pp.number_label(1)))
-            }
-            designcraft_doc::ListType::Numbers => {
-                list_counter.advance(&pp);
-                Some(pp.number_label_in(&list_counter))
-            }
-            designcraft_doc::ListType::Bullets => Some(pp.bullet_label()),
-            designcraft_doc::ListType::None => {
-                list_counter = ListCounter::default();
-                None
-            }
-        };
+        let list_label = labels.get(pi).cloned().flatten();
         // The label's glyphs at the paragraph start, and how many of them (up to its first tab)
         // the list alignment places.
         let mut label_aligned = 0usize;
@@ -1325,7 +1289,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     if !t.done {
                         trial = Some(t);
                         balance_runs += 1;
-                        rewind(key.1, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                        rewind(key.1, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
                         pi = key.1;
                         continue 'paras;
                     }
@@ -1378,7 +1342,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             if cur.fi >= frames.len() {
                 if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
                     balance_runs += 1;
-                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
                     pi = j;
                     continue 'paras;
                 }
@@ -1626,7 +1590,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         };
                         if let Some(j) = j {
                             split_runs += 1;
-                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
                             pi = j;
                             continue 'paras;
                         }
@@ -1659,7 +1623,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                                     j
                                 }
                             };
-                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
                             pi = j;
                             continue 'paras;
                         }
@@ -1764,7 +1728,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     if notes.earlier_columns_collide(&out.frames[cur.fi].lines, cur.fi, cur.col, &cols[cur.fi], r)
                         && let Some(j) = out.frames[cur.fi].lines.first().map(|l| l.para)
                     {
-                        rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                        rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
                         pi = j;
                         continue 'paras;
                     }
@@ -1922,7 +1886,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         if !t.done {
                             split_trial = Some(t);
                             split_runs += 1;
-                            rewind(key.2, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            rewind(key.2, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut force_col, &mut line_cap);
                             pi = key.2;
                             continue 'paras;
                         }
@@ -2241,18 +2205,17 @@ fn roman_letter(c: char) -> bool {
 /// paragraphs from here). Only the cursor's frame and later ones can change afterwards.
 struct Snapshot {
     cur: Cursor,
-    list_counter: ListCounter,
     lines: usize,
     decos: usize,
     tables: usize,
 }
 
 impl Snapshot {
-    fn take(out: &ComposedStory, cur: &Cursor, list_counter: &ListCounter) -> Snapshot {
+    fn take(out: &ComposedStory, cur: &Cursor) -> Snapshot {
         let (lines, decos, tables) = out.frames.get(cur.fi).map_or((0, 0, 0), |f| (f.lines.len(), f.decos.len(), f.tables.len()));
-        Snapshot { cur: cur.clone(), list_counter: list_counter.clone(), lines, decos, tables }
+        Snapshot { cur: cur.clone(), lines, decos, tables }
     }
-    fn restore(&self, out: &mut ComposedStory, cur: &mut Cursor, list_counter: &mut ListCounter) {
+    fn restore(&self, out: &mut ComposedStory, cur: &mut Cursor) {
         let fi = self.cur.fi;
         for (i, f) in out.frames.iter_mut().enumerate().skip(fi) {
             let (l, d, t) = if i == fi { (self.lines, self.decos, self.tables) } else { (0, 0, 0) };
@@ -2262,7 +2225,6 @@ impl Snapshot {
             f.objects.retain(|o| o.line < l);
         }
         *cur = self.cur.clone();
-        *list_counter = self.list_counter.clone();
         out.overset_at = None;
     }
 }
@@ -2277,19 +2239,63 @@ fn rewind(
     notes: &mut Notes,
     out: &mut ComposedStory,
     cur: &mut Cursor,
-    list_counter: &mut ListCounter,
     force_col: &mut [bool],
     line_cap: &mut [Option<usize>],
 ) {
     force_col.iter_mut().skip(j + 1).for_each(|f| *f = false);
     line_cap.iter_mut().skip(j + 1).for_each(|c| *c = None);
     if let Some(s) = snaps.get(j) {
-        s.restore(out, cur, list_counter);
+        s.restore(out, cur);
     }
     if let Some(&(num, key, placed)) = note_snaps.get(j) {
         (notes.num, notes.key) = (num, key);
         notes.placed.truncate(placed);
     }
+}
+
+/// Each paragraph's list label, its bullet or number with the expression expanded (`None` where
+/// none is drawn). Composition prefixes these; Convert Bullets and Numbering to Text types them.
+pub fn list_labels(doc: &Document, story: &Story) -> Vec<Option<String>> {
+    use designcraft_doc::ListType;
+    let para_ranges = story.para_ranges();
+    let deleted = deleted_paras(story, &para_ranges);
+    let mut counter = ListCounter::default();
+    // Named lists carry on past other paragraphs (and from earlier stories).
+    let mut named: HashMap<String, ListCounter> = HashMap::new();
+    let mut out = Vec::with_capacity(para_ranges.len());
+    for (pi, ((p, r), del)) in story.paras.iter().zip(&para_ranges).zip(&deleted).enumerate() {
+        if *del {
+            out.push(None);
+            continue;
+        }
+        let (pp, _) = doc.styles.resolve_para(p);
+        let named_label = (pp.list_type == ListType::Numbers && !pp.list_name.is_empty() && !r.is_empty()).then(|| {
+            let c = named.entry(pp.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &pp.list_name));
+            c.advance(&pp);
+            pp.number_label_in(c)
+        });
+        let label = if story.para_table(pi).is_some() {
+            counter = ListCounter::default();
+            None
+        } else {
+            match pp.list_type {
+                // An empty paragraph has no bullet or number, and the numbering carries on past it.
+                ListType::Numbers | ListType::Bullets if r.is_empty() => None,
+                ListType::Numbers if !pp.list_name.is_empty() => named_label,
+                ListType::Numbers => {
+                    counter.advance(&pp);
+                    Some(pp.number_label_in(&counter))
+                }
+                ListType::Bullets => Some(pp.bullet_label()),
+                ListType::None => {
+                    counter = ListCounter::default();
+                    None
+                }
+            }
+        };
+        out.push(label);
+    }
+    out
 }
 
 /// Paragraphs that tracked changes delete: all their text is deleted, and so is their return or

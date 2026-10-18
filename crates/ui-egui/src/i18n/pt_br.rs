@@ -989,6 +989,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Body Rows", "Linhas do corpo"),
     ("Break Link to Style", "Romper vínculo com o estilo"),
     ("Redefine Style", "Redefinir estilo"),
+    ("Convert Bullets and Numbering to Text", "Converter marcadores e numeração em texto"),
     ("Bullets and Numbering", "Marcadores e numeração"),
     ("Business Card", "Cartão de visita"),
     ("Buttons act in interactive PDF export.", "Os botões agem na exportação de PDF interativo."),
