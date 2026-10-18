@@ -24,6 +24,7 @@ mod mac_window;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod profile;
+mod window;
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Services};
@@ -46,6 +47,8 @@ struct App {
     /// (`gpu_limits::log_uncaptured_errors`). Until then wgpu's default handler panics, so a
     /// failing adapter still makes `gpu` start again on the next one.
     log_errors_after_startup: Option<eframe::wgpu::Device>,
+    /// The window's size and position, saved for the next launch.
+    window: window::Tracker,
 }
 
 impl eframe::App for App {
@@ -92,6 +95,7 @@ impl eframe::App for App {
         }
         #[cfg(target_os = "macos")]
         mac_window::sync_movable(ui.ctx(), &mut self.movable);
+        self.window.frame(ui.ctx());
     }
     fn on_exit(&mut self) {
         // A normal exit before the third frame is not a crash.
@@ -101,6 +105,7 @@ impl eframe::App for App {
             eprintln!("designcraft: couldn't preserve documents on exit: {e}");
         }
         save_prefs(&self.app);
+        self.window.save();
     }
 }
 
@@ -384,8 +389,8 @@ fn main() -> std::process::ExitCode {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DesignCraft")
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([900.0, 560.0])
+            .with_inner_size(window::DEFAULT_SIZE)
+            .with_min_inner_size(window::MIN_SIZE)
             .with_decorations(!cfg!(target_os = "windows"))
             .with_drag_and_drop(true)
             .with_fullsize_content_view(true)
@@ -458,6 +463,7 @@ fn main() -> std::process::ExitCode {
     #[cfg(target_os = "macos")]
     let events = &apple_events;
     let created = startup.clone();
+    let window_dir = if no_prefs() { None } else { profile::config_dir() };
     // A panic that ends the window (egui-wgpu's own) is caught here: never a crash.
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eframe::run_native(
@@ -491,6 +497,9 @@ fn main() -> std::process::ExitCode {
                         ));
                     }
                 }
+                // Put the window back where it was (still hidden); the first launch keeps the default.
+                let saved_window = window_dir.as_deref().and_then(window::load);
+                let opened = cc.winit_window().and_then(|w| window::restore(w, saved_window));
                 let mut session = Session::new();
                 // Crash recovery: reopen what a previous run left unsaved, then keep it current.
                 session.recovery_dir = profile::recovery_dir();
@@ -535,6 +544,7 @@ fn main() -> std::process::ExitCode {
                     movable: None,
                     frames: 0,
                     log_errors_after_startup: device,
+                    window: window::Tracker::new(opened, saved_window, window_dir),
                 }))
             }),
         )
