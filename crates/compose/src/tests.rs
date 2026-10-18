@@ -7920,3 +7920,32 @@ fn many_stories_in_continuing_lists_compose_quickly() {
     assert_eq!(list_labels(&later, LABEL_CHARS), ["79.", "80."]);
     assert_eq!(list_labels(&cache.get(&d, sids[0], None), LABEL_CHARS), ["1.", "2."]);
 }
+
+#[test]
+fn moving_a_frame_within_its_spread_renumbers_continuing_lists() {
+    // Regression: the numbering starts were cached by spread address, which an in-place edit of an
+    // unshared spread keeps, so moving a frame to the other page of its spread kept stale numbers.
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, ..Default::default() });
+    let lid = d.default_layer();
+    d.settings.lists.push(designcraft_doc::NumberedList { name: "Steps".into(), continue_across_stories: true });
+    let para = ParaAttrs { list_name: Some("Steps".into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.") };
+    let fmt = ParaFormat { para, ..Default::default() };
+    let (left, right) = {
+        let sp = &d.spreads[1];
+        (sp.pages[0].x, sp.pages[1].x)
+    };
+    // `b` is made first (lower id) on the right page, `a` on the left page: a numbers first.
+    let r = |x: f64| Rect::new(x + 36.0, 36.0, x + 200.0, 200.0);
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(1), r(right), lid, "b1\nb2", fmt.clone()).unwrap();
+    let (fa, a) = d.add_text_frame(SpreadRef::Doc(1), r(left), lid, "a1\na2", fmt).unwrap();
+    let cache = Cache::new();
+    assert_eq!(list_labels(&cache.get(&d, a, None), LABEL_CHARS), ["1.", "2."]);
+    assert_eq!(list_labels(&cache.get(&d, b, None), LABEL_CHARS), ["3.", "4."]);
+    // Move `a` onto the right page in place: same page as `b`, so `b` (lower id) now numbers first.
+    let loc = d.find(fa).unwrap();
+    let it = d.item_mut_at(&loc).unwrap();
+    it.xf = designcraft_geom::Affine::translate((right - left, 0.0)) * it.xf;
+    assert_eq!(d.stories_in_page_order().iter().map(|s| s.id).collect::<Vec<_>>()[..2], [b, a]);
+    assert_eq!(list_labels(&cache.get(&d, b, None), LABEL_CHARS), ["1.", "2."]);
+    assert_eq!(list_labels(&cache.get(&d, a, None), LABEL_CHARS), ["3.", "4."]);
+}
