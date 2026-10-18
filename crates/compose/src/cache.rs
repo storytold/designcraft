@@ -54,8 +54,8 @@ pub struct Cache {
     running: Mutex<Option<(u64, Arc<RunningIndex>)>>,
     /// Cross-reference anchor pages with the document signature they were built for.
     xrefs: Mutex<Option<(u64, Arc<crate::xref::XrefIndex>)>>,
-    /// List, footnote and endnote starts with the signature they were built for.
-    starts: Mutex<Option<(u64, Arc<NumberStarts>)>>,
+    /// List, footnote and endnote starts with the signature and spreads they were built for.
+    starts: Mutex<Option<StartsEntry>>,
     /// The composition each story (page-independent key) had before its latest recomposition,
     /// with the story revision it was composed from (repaint only the frames an edit changed).
     previous: Mutex<HashMap<StoryId, (Vec<usize>, Arc<ComposedStory>)>>,
@@ -75,6 +75,15 @@ fn doc_signature(doc: &Document) -> u64 {
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
     h.finish()
+}
+
+/// [`Cache::number_starts`]'s entry. Numbering follows the pages frames sit on, so it holds the
+/// spreads it was built from: while held, a spread can't be edited in place (`Arc::make_mut`
+/// copies it) or freed and its address reused (a drag's previews), so `ptr_eq` means unchanged.
+struct StartsEntry {
+    sig: u64,
+    spreads: Vec<Arc<designcraft_doc::Spread>>,
+    starts: Arc<NumberStarts>,
 }
 
 /// Everything page names and section markers are made from.
@@ -371,13 +380,15 @@ impl Cache {
             format!("{:?}{:?}{:?}", doc.settings.lists, doc.footnote_options, doc.endnote_options).hash(&mut h);
             h.finish()
         };
-        if let Some((s, r)) = &*self.starts.lock().unwrap_or_else(PoisonError::into_inner)
-            && *s == sig
+        if let Some(e) = &*self.starts.lock().unwrap_or_else(PoisonError::into_inner)
+            && e.sig == sig
+            && e.spreads.len() == doc.spreads.len()
+            && e.spreads.iter().zip(&doc.spreads).all(|(a, b)| Arc::ptr_eq(a, b))
         {
-            return r.clone();
+            return e.starts.clone();
         }
         let r = Arc::new(doc.number_starts());
-        *self.starts.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
+        *self.starts.lock().unwrap_or_else(PoisonError::into_inner) = Some(StartsEntry { sig, spreads: doc.spreads.clone(), starts: r.clone() });
         r
     }
 
