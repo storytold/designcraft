@@ -154,10 +154,16 @@ const MAX_PREVIEW_BYTES: u64 = 4 << 20;
 
 /// Read `.designcraft` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
+    load_with_warnings(bytes).map(|(doc, _)| doc)
+}
+
+/// [`load`], plus a warning for each damaged embedded asset. A damaged asset doesn't stop the
+/// document from opening: it loads without its data (shown as missing) and is reported here.
+pub fn load_with_warnings(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
     if bytes.starts_with(b"PK") {
         return load_zip(bytes);
     }
-    load_legacy_json(bytes)
+    load_legacy_json(bytes).map(|doc| (doc, Vec::new()))
 }
 
 /// Most entries a `.designcraft` archive may hold.
@@ -169,20 +175,23 @@ const MAX_ASSET_BYTES: u64 = 1 << 30;
 /// Most bytes all the entries read from one archive may expand to together.
 const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
-/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses an entry that
+/// Read entry `name` of `z`: `None` when it is missing, an error when it is present but corrupt. Refuses an entry that
 /// expands past `limit` bytes or past what is `left` of the archive's budget, without
 /// decompressing more than that: the sizes the archive claims are not trusted.
 fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, left: &mut u64) -> Result<Option<Vec<u8>>, FormatError> {
     let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive is larger than {MAX_TOTAL_BYTES} bytes)"));
-    let Ok(f) = z.by_name(name) else { return Ok(None) };
+    let corrupt = |e: &dyn std::fmt::Display| FormatError::NotOurs(format!("corrupt {name}: {e}"));
+    let f = match z.by_name(name) {
+        Ok(f) => f,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(corrupt(&e)),
+    };
     let limit = limit.min(*left);
     if f.size() > limit {
         return Err(too_big());
     }
     let mut v = Vec::new();
-    if f.take(limit.saturating_add(1)).read_to_end(&mut v).is_err() {
-        return Ok(None);
-    }
+    f.take(limit.saturating_add(1)).read_to_end(&mut v).map_err(|e| corrupt(&e))?;
     let n = v.len() as u64;
     if n > limit {
         return Err(too_big());
@@ -191,7 +200,7 @@ fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, le
     Ok(Some(v))
 }
 
-fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
+fn load_zip(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     if z.len() > MAX_ENTRIES {
         return Err(FormatError::NotOurs(format!("{} entries (at most {MAX_ENTRIES})", z.len())));
@@ -213,14 +222,23 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     // read, so memory holds each distinct file once.
     let fingerprint = std::collections::hash_map::RandomState::new();
     let mut loaded: HashMap<u64, Vec<Arc<Vec<u8>>>> = HashMap::new();
+    let mut warnings = Vec::new();
     for name in names {
         let Some(stem) = name.strip_prefix("assets/") else { continue };
         let Some(id) = stem.split('.').next().and_then(|s| s.parse::<u64>().ok()) else { continue };
         // Entries for assets the document doesn't have are never decompressed.
-        if !doc.assets.contains_key(&AssetId(id)) {
-            continue;
-        }
-        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, MAX_ASSET_BYTES, &mut left)?, doc.assets.get_mut(&AssetId(id))) {
+        let Some(a) = doc.assets.get_mut(&AssetId(id)) else { continue };
+        // A damaged asset keeps its empty data (shown as missing) and is reported; a size-limit
+        // error still fails the load.
+        let data = match read_entry(&mut z, &name, MAX_ASSET_BYTES, &mut left) {
+            Ok(data) => data,
+            Err(e @ FormatError::NotOurs(_)) => {
+                warnings.push(format!("{name}: damaged embedded file, placed as missing ({e})"));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(data) = data {
             let same = loaded.entry(fingerprint.hash_one(data.as_slice())).or_default();
             let data = match same.iter().find(|d| ***d == data) {
                 Some(d) => d.clone(),
@@ -237,7 +255,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
-    Ok(doc)
+    Ok((doc, warnings))
 }
 
 /// Bring a document saved in format `from` up to [`VERSION`].
@@ -700,6 +718,30 @@ mod tests {
         let back = load(&save_uncompacted(&d)).unwrap();
         assert_eq!(back.assets.len(), 1);
         assert_eq!(asset_entries(&save(&back).unwrap()), 1);
+    }
+
+    #[test]
+    fn corrupt_embedded_asset_opens_with_a_warning() {
+        let mut d = Document::new(&NewDocument::default());
+        let payload = b"PAYLOADPAYLOADPAYLOAD";
+        let id = png_asset(&mut d, payload);
+        place(&mut d, id, 0.0);
+        let mut bytes = save(&d).unwrap();
+        // PNG assets are stored uncompressed: flip one payload byte so the CRC check fails.
+        let at = bytes.windows(payload.len()).position(|w| w == payload).unwrap();
+        bytes[at + 3] ^= 0xFF;
+        let (back, warnings) = load_with_warnings(&bytes).unwrap();
+        assert!(back.assets[&id].data.is_empty(), "the damaged asset is marked missing");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with(&format!("assets/{}.png", id.0)), "{warnings:?}");
+        assert!(load(&bytes).is_ok());
+        // A link-only asset (no embedded copy) still opens with empty data.
+        let mut d = Document::new(&NewDocument::default());
+        let id = png_asset(&mut d, b"");
+        Arc::make_mut(d.assets.get_mut(&id).unwrap()).link = Some("/p/a.png".into());
+        place(&mut d, id, 0.0);
+        let back = load(&save(&d).unwrap()).unwrap();
+        assert!(back.assets[&id].data.is_empty());
     }
 
     /// The object of the item `id` in a document's JSON.

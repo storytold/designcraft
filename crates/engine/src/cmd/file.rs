@@ -39,9 +39,9 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — a DesignCraft or IDML file (recognised by its content, so the extension may be missing), or an InDesign .indd/.indt (recognised by its signature or extension, converted to IDML; its conversion warnings join `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, GREP styles whose pattern can't compile, Based on Parent links cleared and, for IDML and InDesign files, package parts missing}",
+            "{path} — a DesignCraft or IDML file (recognised by its content, so the extension may be missing), or an InDesign .indd/.indt (recognised by its signature or extension, converted to IDML; its conversion warnings join `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, GREP styles whose pattern can't compile, Based on Parent links cleared, damaged embedded files (opened as missing) and, for IDML and InDesign files, package parts missing}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package or an InDesign .indd/.indt → {index, warnings}", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package or an InDesign .indd/.indt → {index, warnings: as file.open, without the fonts}", always, file_open_bytes),
         cmd!(noundo "file.openRecent", "Open Recent File", [], None,
             "{index} — reopen entry `index` of File › Open Recent (as file.open); a file that is gone is an error and stays listed",
             has_recent, file_open_recent),
@@ -204,10 +204,10 @@ pub fn from_bytes(b: &[u8]) -> Result<Document> {
 }
 
 /// Read `.designcraft` bytes and repair what a hand-edited file can get wrong without failing the
-/// open, with a warning for each repair.
+/// open, with a warning for each repair and for each damaged embedded file (opened as missing).
 fn load_bytes(b: &[u8]) -> Result<(Document, Vec<String>)> {
-    let mut d = designcraft_format::load(b).map_err(|e| EngineError::Other(e.to_string()))?;
-    let warnings = d.fix_parent_bases();
+    let (mut d, mut warnings) = designcraft_format::load_with_warnings(b).map_err(|e| EngineError::Other(e.to_string()))?;
+    warnings.extend(d.fix_parent_bases());
     Ok((d, warnings))
 }
 
@@ -1764,6 +1764,29 @@ mod document_fonts_tests {
         assert!(r["warnings"].to_string().contains("broken.otf"), "a damaged font is reported, not fatal: {r}");
         let f = font_entry(&mut s, FAMILY);
         assert_eq!((f["missing"].clone(), f["source"].clone()), (json!(false), json!("document")), "{f}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_a_document_with_a_damaged_asset_reports_it() {
+        let dir = temp_dir("damaged-asset");
+        let path = dir.join("Damaged.designcraft");
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![200u8; 64] }.to_png();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("file.place", &json!({"base64": super::base64_encode(&png), "name": "a.png", "x": 72, "y": 72})).unwrap();
+        s.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
+        // PNG assets are stored uncompressed: flip one payload byte so the CRC check fails.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes.windows(png.len()).position(|w| w == png.as_slice()).unwrap();
+        bytes[at + png.len() / 2] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        let r = open(&mut Session::new(), &path);
+        assert!(r["warnings"].to_string().contains("assets/"), "a damaged asset is reported, not fatal: {r}");
+        // Opened from bytes, it is reported the same way.
+        let r = Session::new().execute("file.openBytes", &json!({"name": "Damaged", "base64": super::base64_encode(&bytes)})).unwrap();
+        assert!(r["warnings"].to_string().contains("assets/"), "a damaged asset is reported, not fatal: {r}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
