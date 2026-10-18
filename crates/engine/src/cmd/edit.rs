@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bool_or, cmd, has_doc, has_selection, ids_param, ok};
 use crate::{HistoryEntry, Result, Session};
 
+/// The stories copied text's anchored text frames show (see [`crate::Session::text_clipboard`]).
+type AnchoredStories = std::collections::BTreeMap<designcraft_doc::StoryId, Arc<designcraft_doc::Story>>;
+
 fn can_undo(s: &Session) -> std::result::Result<(), String> {
     s.active().filter(|d| !d.history.undo.is_empty()).map(|_| ()).ok_or_else(|| "nothing to undo".into())
 }
@@ -39,7 +42,9 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
     let slice = story.extract(t.range());
     let text = plain(&slice);
-    s.text_clipboard = Some((Arc::new(slice), text.clone()));
+    // Anchored text frames take their stories along.
+    let stories = st.doc.anchored_stories(&slice);
+    s.text_clipboard = Some((Arc::new(slice), text.clone(), Arc::new(stories)));
     Ok(Some(text))
 }
 
@@ -54,9 +59,14 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
         && t.cell.is_none()
         && let Some(items) = s.clipboard.clone()
     {
-        let list: Vec<designcraft_doc::Item> = items.spreads.first().map(|sp| sp.items.iter().map(|i| (**i).clone()).collect()).unwrap_or_default();
+        let mut list: Vec<designcraft_doc::Item> =
+            items.spreads.first().map(|sp| sp.items.iter().map(|i| (**i).clone()).collect()).unwrap_or_default();
         if !list.is_empty() && list.iter().all(|i| !i.is_text_frame()) {
             return s.edit(|d, sel| {
+                // Copies: ids of their own, and text frames in groups copies of their stories.
+                for it in &mut list {
+                    d.adopt_item(it, &|id| items.stories.get(&id).cloned());
+                }
                 let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
                 let r = t.range();
                 st.delete(r.start.min(st.len())..r.end.min(st.len()));
@@ -66,11 +76,13 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             });
         }
     }
-    let use_clip = formatted && clip.as_ref().is_some_and(|(_, p)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
+    let use_clip = formatted && clip.as_ref().is_some_and(|(_, p, _)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
     // Footnotes, endnotes, editorial notes, cross-references and tables cannot be pasted into cells or footnotes.
-    if use_clip && let Some((slice, _)) = clip {
-        let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+    if use_clip && let Some((slice, _, stories)) = clip {
+        let mut slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
         return s.edit(|d, sel| {
+            // Anchored items get ids of their own, anchored text frames copies of their stories.
+            d.adopt_anchored(&mut slice, &|id| stories.get(&id).cloned());
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
@@ -80,7 +92,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             Ok(json!({"pos": end, "formatted": true}))
         });
     }
-    let text = text.or_else(|| clip.map(|(_, p)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
+    let text = text.or_else(|| clip.map(|(_, p, _)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
     let text = outside_text(&text)?;
     s.execute("text.insert", &json!({"text": text, "raw": true}))
 }
@@ -96,8 +108,9 @@ fn outside_text(text: &str) -> Result<String> {
 /// Pasted text with no insertion point: a new text frame holding it, as wide as the first column
 /// of the page's margin area and as tall as the text (at most the margin area's height), centred
 /// on `at` (spread coordinates) or else on the margin area. The frame ends up selected. With
-/// `slice` (the text copied here), the frame's story is that formatted copy.
-fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&designcraft_doc::Story>) -> Result<Value> {
+/// `slice` (the text copied here, with the stories its anchored text frames show), the frame's
+/// story is that formatted copy.
+fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<(&designcraft_doc::Story, &AnchoredStories)>) -> Result<Value> {
     use designcraft_geom::{Point, Rect, shapes};
     const LIMIT: f64 = 1.0e5;
     let sr = super::spread_param(p, "edit.paste")?;
@@ -117,13 +130,16 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         let max_h = margins.height().max(12.0);
         let c = at.unwrap_or(Point::new(column.center().x, margins.center().y));
         let rect = |h: f64| Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0);
-        let para = match slice.and_then(|sl| sl.paras.first()) {
+        let para = match slice.and_then(|(sl, _)| sl.paras.first()) {
             Some(pf) => designcraft_doc::ParaFormat { table: None, ..pf.clone() },
             None => designcraft_doc::ParaFormat { style: d.styles.default_paragraph.clone(), ..Default::default() },
         };
         let (id, sid) = d.add_text_frame(sr, rect(max_h), lid, &text, para)?;
-        if let Some(sl) = slice {
-            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, sl);
+        if let Some((sl, stories)) = slice {
+            // Anchored items get ids of their own, anchored text frames copies of their stories.
+            let mut sl = sl.clone();
+            d.adopt_anchored(&mut sl, &|id| stories.get(&id).cloned());
+            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, &sl);
         }
         // Shrink to the composed text unless it already fills the frame.
         let composed = cache.get(d, sid, None);
@@ -318,8 +334,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 if let Some(text) = text {
                     // What our own text copy put on the clipboard keeps its formatting.
-                    let slice = s.text_clipboard.clone().filter(|(_, plain)| text.replace("\r\n", "\n") == *plain).map(|(slice, _)| slice);
-                    return paste_text_frame(s, p, text, slice.as_deref());
+                    let clip = s.text_clipboard.clone().filter(|(_, plain, _)| text.replace("\r\n", "\n") == *plain);
+                    return paste_text_frame(s, p, text, clip.as_ref().map(|(slice, _, stories)| (&**slice, &**stories)));
                 }
                 let Some(clip) = s.clipboard.clone() else {
                     return Err(super::bad("edit.paste", "clipboard is empty"));
@@ -450,7 +466,11 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     for p in d.parents.iter_mut() {
         Arc::make_mut(p).items.clear();
     }
-    d.stories.retain(|_, st| st.frames.iter().any(|f| frames.contains(f)));
+    // Stories shown by text frames anchored in the kept stories go along (and theirs).
+    let anchored: std::collections::HashSet<designcraft_doc::StoryId> =
+        d.stories.values().filter(|st| st.frames.iter().any(|f| frames.contains(f))).flat_map(|st| d.anchored_stories(st).into_keys()).collect();
+    d.stories.retain(|id, st| st.frames.iter().any(|f| frames.contains(f)) || anchored.contains(id));
+    frames.extend(d.anchored_items().into_iter().map(|(_, i)| i.id));
     for st in d.stories.values_mut() {
         Arc::make_mut(st).frames.retain(|f| frames.contains(f));
     }
