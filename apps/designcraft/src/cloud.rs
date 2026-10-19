@@ -18,6 +18,8 @@
 //! would otherwise sit still until the mouse moved.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -34,10 +36,14 @@ const SIGN_IN_WAIT: Duration = Duration::from_secs(300);
 /// jobs behind it. That is why the share dialog has a client of its own.
 pub struct Service {
     jobs: Sender<(Job, Post)>,
+    sign_in_cancel: Arc<AtomicBool>,
 }
 
 impl CloudBackend for Service {
     fn submit(&self, job: Job, post: Post) {
+        if matches!(job, Job::SignOut) {
+            self.sign_in_cancel.store(true, Ordering::Relaxed);
+        }
         if self.jobs.send((job, post)).is_err() {
             log::warn!("the cloud worker is gone; the job was dropped");
         }
@@ -50,17 +56,19 @@ impl CloudBackend for Service {
 /// the service is deployment-specific and a desktop binary must not carry one.
 /// Without it there is no worker, and the interface offers nothing
 /// cloud-shaped.
-pub fn service(ctx: egui::Context) -> Option<Service> {
+pub fn service(ctx: egui::Context) -> Option<(Service, Arc<AtomicBool>)> {
     let base = designcraft_ui_egui::cloud::service_url()?;
     log::info!("cloud storage through {base}");
     let (jobs, receiver) = std::sync::mpsc::channel::<(Job, Post)>();
+    let sign_in_cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&sign_in_cancel);
     let started = std::thread::Builder::new().name("collabcraft".to_owned()).spawn(move || {
         let token = load_token();
         let mut client = Client::new(&base);
         if let Some(token) = token {
             client = client.with_token(token);
         }
-        let mut worker = Worker { client, base, ctx, answering: None };
+        let mut worker = Worker { client, base, ctx, answering: None, sign_in_cancel: worker_cancel };
         while let Ok((job, post)) = receiver.recv() {
             worker.answering = Some(post);
             worker.run(job);
@@ -70,7 +78,8 @@ pub fn service(ctx: egui::Context) -> Option<Service> {
         log::error!("the cloud worker did not start: {e}");
         return None;
     }
-    Some(Service { jobs })
+    let cancel = Arc::clone(&sign_in_cancel);
+    Some((Service { jobs, sign_in_cancel }, cancel))
 }
 
 struct Worker {
@@ -83,6 +92,9 @@ struct Worker {
     /// because a sign-in reports the URL it wants a browser pointed at before
     /// the job that triggered it finishes.
     answering: Option<Post>,
+    /// Set when the user cancels a browser sign-in or signs out. Checked
+    /// between device-flow polls so other jobs are not blocked for minutes.
+    sign_in_cancel: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -181,6 +193,7 @@ impl Worker {
         if self.client.is_signed_in() {
             return Ok(());
         }
+        self.sign_in_cancel.store(false, Ordering::Relaxed);
         let start = self.client.sign_in_start().map_err(fault)?;
         if let Err(e) = open_browser(&start.verify_url) {
             // Not fatal. The interface shows the URL as a link, so the user
@@ -191,12 +204,19 @@ impl Worker {
         let interval = Duration::from_secs(start.interval.clamp(1, 10));
         let deadline = Instant::now() + SIGN_IN_WAIT.min(Duration::from_secs(start.expires_in));
         while Instant::now() < deadline {
+            if self.sign_in_cancel.load(Ordering::Relaxed) {
+                return Err(Fault::Refused("the sign-in was cancelled".to_owned()));
+            }
             std::thread::sleep(interval);
+            if self.sign_in_cancel.load(Ordering::Relaxed) {
+                return Err(Fault::Refused("the sign-in was cancelled".to_owned()));
+            }
             match self.client.sign_in_poll(&start.device_code) {
                 Ok(Some(token)) => {
                     save_token(&token);
                     self.client = Client::new(&self.base).with_token(token);
                     self.post(Event::Linked(Ok(true)));
+                    self.sign_in_cancel.store(false, Ordering::Relaxed);
                     return Ok(());
                 }
                 // The ordinary answer while the user is still in the browser.

@@ -1064,7 +1064,6 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             ));
             Ok(Value::Null)
         }
-        "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.save" => {
             if app.session.active().is_some_and(|d| d.path.is_some()) {
                 return Some(app.run("file.save", json!({})));
@@ -1084,6 +1083,8 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.cloud.save_name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
             Ok(crate::cloud::status(app))
         }
+        "app.saveDialogLocal" if app.services.download.is_some() => download_document(app),
+        "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.saveDialog" | "app.saveDialogLocal" => {
             let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
@@ -1104,11 +1105,11 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "cloud.browse" => {
             let path = p.get("path").and_then(Value::as_str).unwrap_or("");
             crate::cloud::browse(app, path);
-            Ok(json!({"folder": path}))
+            Ok(crate::cloud::status(app))
         }
         "cloud.shared" => {
             crate::cloud::load_shared(app);
-            Ok(Value::Null)
+            Ok(crate::cloud::status(app))
         }
         "cloud.link" => {
             crate::cloud::link(app);

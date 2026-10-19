@@ -575,6 +575,11 @@ pub struct DesignApp {
     /// The layout snapshot each cloud save in flight encoded. Only DesignCraft
     /// knows what a version of a layout is, so the pages do not hold these.
     pub(crate) cloud_sent: cloud::Sent,
+    /// Desktop device-flow sign-in: set when the cloud worker starts; the UI
+    /// raises it when the user cancels the browser wait.
+    pub cloud_sign_in_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Previous frame had a device-flow browser wait (link poll with no handle).
+    pub(crate) cloud_sign_in_was_waiting: bool,
     /// Giving other people access to this layout. The dialog is `craft-ui`'s,
     /// so every Craft app offers the same one. Inert until the host connects a
     /// backend, and unavailable until that service says sharing exists.
@@ -688,6 +693,8 @@ impl DesignApp {
             cloud_page: None,
             save_to_cloud: None,
             cloud_sent: cloud::Sent::new(),
+            cloud_sign_in_cancel: None,
+            cloud_sign_in_was_waiting: false,
             share: craft_ui::share::ShareDialog::new(),
             presence: craft_ui::presence::PresenceBar::new().badges_only(),
             views: HashMap::new(),
@@ -1679,6 +1686,7 @@ impl DesignApp {
         // Above the message box: a refused save has to be answered, and the
         // answer decides what happens to the user's edits.
         cloud::conflict_modal(self, &ctx);
+        cloud::track_sign_in_cancel(self);
         about::show(self, &ctx);
         menus::palette(self, &ctx);
         if self.custom_titlebar {

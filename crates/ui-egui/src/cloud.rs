@@ -100,6 +100,17 @@ pub fn status(app: &DesignApp) -> Json {
     craft_ui::cloud::report(app)
 }
 
+/// After the cloud pages draw, notice when the user left a device-flow wait.
+pub fn track_sign_in_cancel(app: &mut DesignApp) {
+    let waiting = matches!(app.cloud.link.as_ref(), Some(Link::Waiting { handle: None, .. }));
+    if app.cloud_sign_in_was_waiting && !waiting {
+        if let Some(flag) = &app.cloud_sign_in_cancel {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    app.cloud_sign_in_was_waiting = waiting;
+}
+
 /// The Share menu's export half, as the control it is drawn in wants it.
 pub fn copies() -> Vec<CopyFormat> {
     COPIES.iter().map(|(id, label)| CopyFormat::new(*id, *label)).collect()

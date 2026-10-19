@@ -16,7 +16,8 @@ DESIGNCRAFT_CLOUD_URL=https://collabcraft.example designcraft
 
 `CRAFT_CLOUD_URL` and `COLLABCRAFT_URL` are read as well, in that order. One setting therefore
 serves the whole suite. Without any of them there is no worker. Nothing cloud-shaped is drawn
-anywhere. Every `cloud.*` command answers "no cloud service is configured".
+anywhere. Every `cloud.*` command except `cloud.status` refuses with "no cloud
+service is configured".
 
 ## What a user gets
 
