@@ -164,7 +164,11 @@ impl CloudApp for DesignApp {
         // A failure is handed back. The pages name the file that could not be
         // opened and say why. The warnings of one that did open are this
         // side's to report, the same way a layout opened from disk does.
-        let result = self.run("file.openBytes", json!({"name": name, "base64": encoded}))?;
+        // The command stores `name` as the layout title. A cloud entry is
+        // `Quarterly.designcraft`, and Save appends that extension again.
+        // The stem is the title. Warnings still name the file that was opened.
+        let title = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+        let result = self.run("file.openBytes", json!({"name": title, "base64": encoded}))?;
         self.cloud_page = None;
         self.show_open_warnings(name, &result);
         Ok(self.session.active().map(|d| d.uid))
