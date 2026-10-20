@@ -700,3 +700,15 @@ fn renders_for_review() {
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Share").click();
     save(&mut h, "share-dialog");
 }
+
+#[test]
+fn cloud_commands_refuse_without_a_service() {
+    use designcraft_engine::Session;
+    use designcraft_ui_egui::{DesignApp, Services};
+
+    let mut app = DesignApp::new(Session::new(), Services::default());
+    for id in ["cloud.open", "cloud.browse", "cloud.shared", "cloud.link", "cloud.openFile"] {
+        assert_eq!(app.run(id, json!({})).unwrap_err(), designcraft_ui_egui::cloud::UNAVAILABLE, "{id}");
+    }
+    assert_eq!(app.run("cloud.saveAs", json!({})).unwrap_err(), designcraft_ui_egui::cloud::UNAVAILABLE);
+}

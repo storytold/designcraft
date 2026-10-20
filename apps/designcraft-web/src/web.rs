@@ -3,7 +3,6 @@
 use super::browser_policy::{has_query_flag, mime_for};
 use crate::graphics::{GraphicsState, RecoveryDocument, recovery_documents};
 use designcraft_engine::Session;
-use designcraft_ui_egui::cloud;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
@@ -89,7 +88,6 @@ pub fn start() {
                     if let Some(share) = collabcraft_share::CollabCraft::from_env() {
                         app.share.connect(share.for_app("designcraft"));
                     }
-                    cloud::start(&mut app);
                     if let Some(invitation) = invite.take() {
                         open_invite(&mut app, invitation);
                     }
