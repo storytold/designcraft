@@ -154,6 +154,14 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, left
                     extent.bottom = extent.bottom.max(object.origin.y + object.size.1);
                 }
             }
+            // Paragraph shading, borders and rules are drawn too (shading and borders reach the
+            // font's descent): each counts with the deepest line above its bottom edge.
+            for deco in &f.decos {
+                let y = deco.rect.y1;
+                if let Some(extent) = extents.iter_mut().rev().find(|e| y.is_finite() && e.baseline <= y) {
+                    extent.bottom = extent.bottom.max(y);
+                }
+            }
             extents.iter().map(|e| e.fit_height(cell.insets[2])).collect()
         })
         .unwrap_or_default();
@@ -798,6 +806,26 @@ mod height_tests {
             placed.origin.y + bar <= placed.rect.y1 + 1e-6,
             "the underline at {} hangs out of the cell ending at {}",
             placed.origin.y + bar,
+            placed.rect.y1
+        );
+    }
+
+    /// Paragraph shading reaches the font's descent, below the letters: it stays inside the cell
+    /// too.
+    #[test]
+    fn paragraph_shading_stays_inside_the_cell() {
+        let mut cell = text_cell("xxx", 0.0);
+        cell.text.format_paras(0..cell.text.len(), |p| p.para.shading_on = Some(true));
+        let composed = compose_table(single_table(cell), 200.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        let ft = &placed.text.frames[0];
+        let line = &ft.lines[0];
+        let shading = ft.decos.iter().map(|d| d.rect.y1).fold(f64::NEG_INFINITY, f64::max);
+        assert!(shading > line.baseline + ink_depth(line, &[]), "the shading reaches below the letters");
+        assert!(
+            placed.origin.y + shading <= placed.rect.y1 + 1e-6,
+            "the shading at {} hangs out of the cell ending at {}",
+            placed.origin.y + shading,
             placed.rect.y1
         );
     }
