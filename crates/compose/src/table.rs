@@ -105,13 +105,20 @@ impl CellLineExtent {
     }
 }
 
-/// How far line `l`'s drawn glyphs reach below its baseline (0 when none does).
-fn ink_depth(l: &crate::Line) -> f64 {
+/// How far line `l`'s drawn glyphs reach below its baseline (0 when none does): their outlines
+/// and the underline and strikethrough bars of their runs (`styles`, the composed story's).
+fn ink_depth(l: &crate::Line, styles: &[crate::RunStyle]) -> f64 {
     let fonts = designcraft_fonts::FontDb::global();
     l.glyphs
         .iter()
         .filter(|g| g.visible)
-        .map(|g| g.y + designcraft_geom::Shape::bounding_box(&*fonts.outline(g.face.get(), g.gid)).y1 * g.sy)
+        .map(|g| {
+            let letter = g.y + designcraft_geom::Shape::bounding_box(&*fonts.outline(g.face.get(), g.gid)).y1 * g.sy;
+            let bars = styles.get(g.style as usize).map_or(f64::NEG_INFINITY, |st| {
+                st.rules(g.x, g.x + g.adv, crate::rule_baseline(st, l, g)).map(|(_, r)| r.y1 - l.baseline).fold(f64::NEG_INFINITY, f64::max)
+            });
+            letter.max(bars)
+        })
         .filter(|d| d.is_finite())
         .fold(0.0, f64::max)
 }
@@ -136,7 +143,8 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, left
         .frames
         .first()
         .map(|f| {
-            let mut extents: Vec<_> = f.lines.iter().map(|l| CellLineExtent { baseline: l.baseline, bottom: l.baseline + ink_depth(l) }).collect();
+            let mut extents: Vec<_> =
+                f.lines.iter().map(|l| CellLineExtent { baseline: l.baseline, bottom: l.baseline + ink_depth(l, &cs.styles) }).collect();
             // Line metrics include baseline shifts and super/subscript. Include the final
             // geometry of in-flow objects too, but leave custom anchors out of text flow.
             for object in &f.objects {
@@ -768,10 +776,30 @@ mod height_tests {
         let cell = text_cell("xxx", 0.0);
         let layout = measure(&cell, 92.0);
         let line = &layout.text.frames[0].lines[0];
-        assert!(line.descent > 1.0 && ink_depth(line) < 0.5, "{} {}", line.descent, ink_depth(line));
+        assert!(line.descent > 1.0 && ink_depth(line, &[]) < 0.5, "{} {}", line.descent, ink_depth(line, &[]));
         let composed = compose_table(single_table(cell.clone()), 200.0);
         let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
-        assert!((placed.rect.height() - (cell.insets[0] + line.baseline + ink_depth(line))).abs() < 1e-6);
+        assert!((placed.rect.height() - (cell.insets[0] + line.baseline + ink_depth(line, &[]))).abs() < 1e-6);
+    }
+
+    /// An underline below the letters stays inside the cell, like the ink: it is drawn, so it
+    /// counts with the glyphs (a cell measured by its letters alone let the bar hang out).
+    #[test]
+    fn an_underline_stays_inside_the_cell() {
+        let mut cell = text_cell("xxx", 0.0);
+        cell.text.format_chars(0..cell.text.len(), |f| f.over.underline = Some(true));
+        let composed = compose_table(single_table(cell), 200.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        let line = &placed.text.frames[0].lines[0];
+        let rule = &placed.text.styles[line.glyphs[0].style as usize].underline_rule;
+        let bar = line.baseline + rule.offset + rule.weight / 2.0;
+        assert!(bar > line.baseline + ink_depth(line, &[]), "the bar is below the letters");
+        assert!(
+            placed.origin.y + bar <= placed.rect.y1 + 1e-6,
+            "the underline at {} hangs out of the cell ending at {}",
+            placed.origin.y + bar,
+            placed.rect.y1
+        );
     }
 
     #[test]
@@ -785,7 +813,7 @@ mod height_tests {
                 });
                 let layout = measure(&cell, 92.0);
                 let line = &layout.text.frames[0].lines[0];
-                let ink = ink_depth(line);
+                let ink = ink_depth(line, &[]);
                 let expected = cell.insets[0] + line.baseline + bottom.max(ink);
                 let composed = compose_table(single_table(cell), 200.0);
                 let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
@@ -824,7 +852,7 @@ mod height_tests {
         let line = &layout.text.frames[0].lines[0];
         let mut table = single_table(cell);
         table.rows[0].mode = RowHeightMode::Exactly;
-        table.rows[0].height = 8.5 + line.baseline + ink_depth(line) / 2.0;
+        table.rows[0].height = 8.5 + line.baseline + ink_depth(line, &[]) / 2.0;
         let composed = compose_table(table, 200.0);
         let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
         assert!(placed.overset);
@@ -839,8 +867,8 @@ mod height_tests {
         let layout = measure(&cell, 92.0);
         let lines = &layout.text.frames[0].lines;
         assert_eq!(lines.len(), 2);
-        let deep_bottom = lines[0].baseline + ink_depth(&lines[0]);
-        assert!(deep_bottom > lines[1].baseline + ink_depth(&lines[1]) + 8.5);
+        let deep_bottom = lines[0].baseline + ink_depth(&lines[0], &[]);
+        assert!(deep_bottom > lines[1].baseline + ink_depth(&lines[1], &[]) + 8.5);
         let composed = compose_table(single_table(cell.clone()), 200.0);
         let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
         assert!((placed.rect.height() - 8.5 - deep_bottom).abs() < 1e-6);
@@ -889,7 +917,7 @@ mod height_tests {
                 let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
                 let line = &placed.text.frames[0].lines[0];
                 assert!((placed.origin.y - placed.clip.y0 - expected_shift).abs() < 1e-6);
-                assert!(placed.origin.y + line.baseline + ink_depth(line) <= placed.rect.y1 + 1e-6);
+                assert!(placed.origin.y + line.baseline + ink_depth(line, &[]) <= placed.rect.y1 + 1e-6);
                 assert!(!placed.overset);
             }
         }
