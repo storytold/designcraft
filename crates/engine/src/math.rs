@@ -1,7 +1,8 @@
 //! Math expressions: a LaTeX subset typeset into boxes and written as SVG (text in the bundled
 //! serif, rules and radicals as paths). Covers fractions, super/subscripts, square and n-th roots,
 //! big operators with limits, Greek letters, common symbols, `\text{}`, `\mathrm{}`, spacing
-//! commands and `\left( … \right)`.
+//! commands, `\left( … \right)` and accents (`\hat`, `\vec`, `\bar`, … and the wide `\widehat`,
+//! `\widetilde`, `\overline`, `\underline`, `\overrightarrow`).
 
 use std::fmt::Write as _;
 
@@ -77,6 +78,8 @@ enum Node {
     Big(String),
     /// `\left( … \right)`: delimiters sized to the content.
     Fenced(String, Box<Node>, String),
+    /// An accent command (`hat`, `vec`, `widetilde`, `overline`, …) over or under its argument.
+    Accent(String, Box<Node>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -311,6 +314,7 @@ impl Parser<'_> {
                         let close = self.delimiter();
                         Node::Fenced(open, Box::new(Node::Group(body)), close)
                     }
+                    n if accent_glyph(n).is_some() => Node::Accent(name.clone(), Box::new(self.arg())),
                     "{" => Node::Sym("{".into(), Class::Punct),
                     "}" => Node::Sym("}".into(), Class::Punct),
                     "%" | "$" | "#" | "&" | "_" => Node::Sym(name, Class::Plain),
@@ -426,6 +430,24 @@ impl Parser<'_> {
         }
         out
     }
+}
+
+/// The accent commands: the spacing-accent glyph each sets over its base, or `""` for the ones
+/// drawn as strokes (`vec`, the wide accents, over- and underlines).
+fn accent_glyph(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "hat" => "ˆ",
+        "check" => "ˇ",
+        "tilde" => "˜",
+        "acute" => "´",
+        "grave" => "`",
+        "breve" => "˘",
+        "dot" => "˙",
+        "ddot" => "¨",
+        "bar" => "¯",
+        "vec" | "widehat" | "widetilde" | "overline" | "underline" | "overrightarrow" | "overleftarrow" => "",
+        _ => return None,
+    })
 }
 
 fn parse(src: &str) -> Node {
@@ -564,6 +586,7 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
             }
             out
         }
+        Node::Accent(name, base) => accented(f, name, base, size),
         Node::Big(op) => {
             let mut b = text_box(f, op, size * 1.5, false);
             b.asc = size * 1.05;
@@ -652,6 +675,118 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
             hbox(vec![(l, 0.0), (inner, size * 0.05), (r, size * 0.05)])
         }
     }
+}
+
+/// The inked extent of laid-out elements, from the glyph outlines: (left, top, right, bottom),
+/// y down; `None` when nothing is drawn.
+fn ink(f: &Fonts, els: &[Elem]) -> Option<(f64, f64, f64, f64)> {
+    use designcraft_geom::Shape as _;
+    let db = FontDb::global();
+    let mut r: Option<(f64, f64, f64, f64)> = None;
+    let mut add = |x0: f64, y0: f64, x1: f64, y1: f64| {
+        r = Some(r.map_or((x0, y0, x1, y1), |(a, b, c, d)| (a.min(x0), b.min(y0), c.max(x1), d.max(y1))));
+    };
+    for e in els {
+        match e {
+            Elem::Text { x, y, s, size, italic } => {
+                let mut cx = *x;
+                for c in s.chars() {
+                    let face = f.face(c, *italic);
+                    let k = size / face.units_per_em().max(1.0);
+                    let bb = db.outline(face, face.glyph_for(c)).bounding_box();
+                    if bb.width() > 0.0 || bb.height() > 0.0 {
+                        add(cx + bb.x0 * k, y + bb.y0 * k, cx + bb.x1 * k, y + bb.y1 * k);
+                    }
+                    cx += f.width(&c.to_string(), *size, *italic);
+                }
+            }
+            Elem::Rule { x, y, w, h } => add(*x, *y, x + w, y + h),
+            Elem::Line { pts, w } => {
+                for &(px, py) in pts {
+                    add(px - w / 2.0, py - w / 2.0, px + w / 2.0, py + w / 2.0);
+                }
+            }
+        }
+    }
+    r
+}
+
+/// Whether a base is set in italic letters only (an accent over it leans with it).
+fn is_italic(n: &Node) -> bool {
+    match n {
+        Node::Sym(_, Class::Ident) => true,
+        Node::Group(v) => !v.is_empty() && v.iter().all(is_italic),
+        _ => false,
+    }
+}
+
+/// `\hat{x}` and the other accents: the accent centred over the base's ink, a small gap above
+/// its top (below its bottom for `\underline`); the wide ones stretch over its whole width.
+fn accented(f: &Fonts, name: &str, base: &Node, size: f64) -> MBox {
+    // An `i` or `j` loses its dot under an accent, as `\imath`/`\jmath` in TeX.
+    let single = match base {
+        Node::Group(v) if v.len() == 1 => v.first().unwrap_or(base),
+        n => n,
+    };
+    let dotless = match single {
+        Node::Sym(s, Class::Ident) if name != "underline" => match s.as_str() {
+            "i" if f.italic.glyph_for('ı') != 0 => Some(Node::Sym("ı".into(), Class::Ident)),
+            "j" if f.italic.glyph_for('ȷ') != 0 => Some(Node::Sym("ȷ".into(), Class::Ident)),
+            _ => None,
+        },
+        _ => None,
+    };
+    let base = dotless.as_ref().unwrap_or(base);
+    let b = layout(f, base, size);
+    let (x0, top, x1, bottom) = ink(f, &b.els).unwrap_or((0.0, -size * 0.45, b.w, 0.0));
+    // An italic base leans right: its top, where the accent sits, is right of its ink's middle.
+    let skew = if is_italic(base) { (bottom - top) * 0.09 } else { 0.0 };
+    let (cx, gap, lw) = ((x0 + x1) / 2.0 + skew, size * 0.08, (size * 0.05).max(0.4));
+    let line = |pts: Vec<(f64, f64)>| Elem::Line { pts, w: lw };
+    // An arrow from `a` to `z` at height `y`, its head at `z`.
+    let arrow = |a: f64, z: f64, y: f64| {
+        let (hx, hy) = ((z - a).signum() * size * 0.1, size * 0.07);
+        vec![line(vec![(a, y), (z, y)]), line(vec![(z - hx, y - hy), (z, y), (z - hx, y + hy)])]
+    };
+    let above = top - gap;
+    let acc: Vec<Elem> = match (name, accent_glyph(name).unwrap_or("")) {
+        ("vec", _) => arrow(cx - size * 0.2, cx + size * 0.2, above - size * 0.08),
+        ("overrightarrow" | "overleftarrow", _) => {
+            let half = ((x1 - x0) / 2.0).max(size * 0.25);
+            let (l, r) = (cx - half, cx + half);
+            let y = above - size * 0.08;
+            if name == "overrightarrow" { arrow(l, r, y) } else { arrow(r, l, y) }
+        }
+        ("overline", _) => vec![Elem::Rule { x: 0.0, y: above - lw, w: b.w, h: lw }],
+        ("underline", _) => vec![Elem::Rule { x: 0.0, y: bottom.max(0.0) + gap, w: b.w, h: lw }],
+        ("widehat", _) => {
+            let h = (size * 0.1 + (x1 - x0) * 0.05).min(size * 0.3);
+            vec![line(vec![(x0 + skew, above), (cx, above - h), (x1 + skew, above)])]
+        }
+        ("widetilde", _) => {
+            let a = (size * 0.05 + (x1 - x0) * 0.015).min(size * 0.12);
+            let y = above - a - lw / 2.0;
+            vec![line(
+                (0..=24).map(|i| f64::from(i) / 24.0).map(|u| (x0 + skew + u * (x1 - x0), y - a * (2.0 * std::f64::consts::PI * u).sin())).collect(),
+            )]
+        }
+        (_, g) => {
+            // A spacing-accent glyph, moved so its ink sits centred above the base.
+            let glyph = Elem::Text { x: 0.0, y: 0.0, s: g.to_string(), size, italic: false };
+            match ink(f, std::slice::from_ref(&glyph)) {
+                Some((gx0, _, gx1, gb)) => vec![Elem::Text { x: cx - (gx0 + gx1) / 2.0, y: above - gb, s: g.to_string(), size, italic: false }],
+                None => Vec::new(),
+            }
+        }
+    };
+    let mut out = MBox { w: b.w, asc: b.asc, desc: b.desc, els: b.els };
+    if let Some((_, at, ar, ab)) = ink(f, &acc) {
+        out.asc = out.asc.max(-at);
+        out.desc = out.desc.max(ab);
+        out.w = out.w.max(ar);
+    }
+    out.els.extend(acc);
+    out
 }
 
 /// Typeset `latex` at `size` points: SVG bytes and the size in points.
@@ -761,12 +896,131 @@ mod tests {
 
     /// Hostile input must not overflow the stack: nesting past the cap stops descending instead
     /// of recursing once per group (100k levels used to abort the process).
+    fn fonts() -> Fonts {
+        let db = FontDb::global();
+        Fonts { upright: db.face(FAMILY, "Regular"), italic: db.face(FAMILY, "Italic"), fallback: db.face(FALLBACK, "Regular") }
+    }
+
+    /// The accent's elements (those `accented` appends after the base's) and the base's ink.
+    fn split_accent(f: &Fonts, latex: &str) -> (MBox, (f64, f64, f64, f64), (f64, f64, f64, f64)) {
+        let n = parse(latex);
+        let Node::Group(v) = &n else { panic!("{latex}") };
+        let Node::Accent(_, base) = &v[0] else { panic!("{latex}: {:?}", v[0]) };
+        let b = layout(f, &n, 12.0);
+        let mut nb = layout(f, base, 12.0).els.len();
+        // A dotted i/j is swapped for its dotless form, still one element.
+        nb = nb.min(b.els.len());
+        let base_ink = ink(f, &b.els[..nb]).expect("base ink");
+        let acc_ink = ink(f, &b.els[nb..]).expect("accent ink");
+        (b, base_ink, acc_ink)
+    }
+
+    fn atop_of(f: &Fonts, b: &MBox) -> f64 {
+        ink(f, &b.els).map_or(0.0, |r| r.1)
+    }
+
+    fn abot_of(f: &Fonts, b: &MBox) -> f64 {
+        ink(f, &b.els).map_or(0.0, |r| r.3)
+    }
+
+    #[test]
+    fn accents_sit_centred_over_their_base() {
+        let f = fonts();
+        let names = [
+            "vec",
+            "hat",
+            "bar",
+            "dot",
+            "ddot",
+            "tilde",
+            "check",
+            "breve",
+            "acute",
+            "grave",
+            "widehat",
+            "widetilde",
+            "overline",
+            "underline",
+            "overrightarrow",
+            "overleftarrow",
+        ];
+        for name in names {
+            let latex = format!(r"\{name}{{x}}");
+            let Node::Group(v) = parse(&latex) else { panic!() };
+            assert!(matches!(&v[0], Node::Accent(n, _) if n == name), "{latex}: {:?}", v[0]);
+            let (svg, (_, h)) = to_svg(&latex, 12.0);
+            let svg = String::from_utf8(svg).unwrap();
+            assert!(!svg.contains(name), "{latex} leaked its source: {svg}");
+            let (_, (_, plain_h)) = to_svg("x", 12.0);
+            assert!(h >= plain_h, "{latex} should be no shorter than a bare x");
+            let (_, (bx0, btop, bx1, bbot), (ax0, atop, ax1, abot)) = split_accent(&f, &latex);
+            // The box grows to hold the accent's ink.
+            let (b, _, _) = split_accent(&f, &latex);
+            assert!(-atop_of(&f, &b) <= b.asc + 1e-6 && abot_of(&f, &b) <= b.desc + 1e-6, "{latex}: accent outside its box");
+            if name == "underline" {
+                assert!(atop > bbot, "{latex}: the rule sits below the letter");
+            } else {
+                assert!(abot < btop, "{latex}: the accent clears the letter ({abot} vs {btop})");
+                assert!(btop - abot < 2.5, "{latex}: but not far above it");
+            }
+            // Over an italic x every accent leans right with it, never left of the ink's middle.
+            let (ac, bc) = ((ax0 + ax1) / 2.0, (bx0 + bx1) / 2.0);
+            assert!(ac >= bc - 0.05 && ac - bc < 1.0, "{latex}: accent centre {ac} vs base {bc}");
+        }
+        // Upright bases get no skew: the accent's ink centre is the base's.
+        for latex in [r"\hat{\mathrm{A}}", r"\acute{\mathrm{e}}", r"\ddot{\mathrm{o}}", r"\bar{\mathrm{m}}"] {
+            let (_, (bx0, _, bx1, _), (ax0, _, ax1, _)) = split_accent(&f, latex);
+            assert!(((ax0 + ax1) - (bx0 + bx1)).abs() / 2.0 < 0.05, "{latex} is off centre");
+        }
+        // A capital lifts the accent higher than a lower-case letter does.
+        let (_, _, (_, cap, _, _)) = split_accent(&f, r"\hat{A}");
+        let (_, _, (_, low, _, _)) = split_accent(&f, r"\hat{a}");
+        assert!(cap < low - 1.0, "{cap} vs {low}");
+        // The wide forms span their argument; the plain ones do not.
+        for (latex, wide) in [
+            (r"\widehat{xyz}", true),
+            (r"\widetilde{abc}", true),
+            (r"\overline{z+w}", true),
+            (r"\underline{abc}", true),
+            (r"\overrightarrow{AB}", true),
+            (r"\hat{xyz}", false),
+        ] {
+            let (_, (bx0, _, bx1, _), (ax0, _, ax1, _)) = split_accent(&f, latex);
+            let ratio = (ax1 - ax0) / (bx1 - bx0);
+            assert_eq!(ratio > 0.8, wide, "{latex}: accent {ratio:.2} of the base width");
+        }
+        // An i or j drops its dot under an accent, but keeps it when underlined.
+        let (b, _, _) = split_accent(&f, r"\hat{i}");
+        assert!(b.els.iter().any(|e| matches!(e, Elem::Text { s, .. } if s == "ı")));
+        let (b, _, _) = split_accent(&f, r"\underline{j}");
+        assert!(b.els.iter().any(|e| matches!(e, Elem::Text { s, .. } if s == "j")));
+        // Every accent glyph is in the bundled serif, so none comes from the fallback face.
+        for name in names {
+            for c in accent_glyph(name).unwrap_or("").chars() {
+                assert_ne!(f.upright.glyph_for(c), 0, "\\{name}: U+{:04X} is missing", c as u32);
+            }
+        }
+        // Accents nest and stack, and broken input leaks no raw source.
+        for latex in
+            [r"\dot{\vec{r}}", r"\hat{\hat{x}}", r"\overline{\overline{AB}}", r"\hat", r"\hat{", r"\widehat{}", r"\vec{\frac{a}{b}}", r"\bar x^2"]
+        {
+            let svg = String::from_utf8(to_svg(latex, 12.0).0).unwrap();
+            for raw in ["\\", "hat", "vec", "bar", "overline", "widehat"] {
+                assert!(!svg.contains(raw), "{latex} leaked {raw:?}: {svg}");
+            }
+        }
+    }
+
     #[test]
     fn an_over_deep_expression_is_bounded() {
         for latex in [
             format!("{}x{}", "{".repeat(100_000), "}".repeat(100_000)),
             format!("{}x", r"\frac".repeat(100_000)),
             format!("{}x", r"\left(".repeat(100_000)),
+            format!("{}x", r"\hat{".repeat(100_000)),
+            format!("{}x", r"\vec".repeat(100_000)),
+            format!("{}x{}", r"\widetilde{\overline{".repeat(50_000), "}".repeat(100_000)),
+            format!("{}x", r"\underline\overrightarrow".repeat(50_000)),
         ] {
             let (svg, _) = to_svg(&latex, 12.0);
             assert!(!svg.is_empty());
