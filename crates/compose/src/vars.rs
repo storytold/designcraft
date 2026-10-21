@@ -53,6 +53,32 @@ pub(crate) fn place(doc: &Document, cs: &ComposedStory, pos: usize) -> Option<(u
     Some((doc.first_page_of_spread(si) + pi, ((b.y0 + baseline) * 10.0) as i64, ((b.x0 + x) * 10.0) as i64))
 }
 
+/// A paragraph or run a running header may show: where it starts ([`place`]), its story and byte
+/// there, and its text.
+struct Hit {
+    at: (usize, i64, i64),
+    story: StoryId,
+    pos: usize,
+    text: String,
+}
+
+/// (page, text) in the order running headers read a page: text order within a story (a story's
+/// second column comes after its first, however high its entries sit), and stories by where their
+/// first entry on the page is (top to bottom, then left to right).
+fn in_page_order(hits: Vec<Hit>) -> Vec<(usize, String)> {
+    // Each story on a page is placed by its first hit there in text order (not its highest hit,
+    // which in a later column could put the whole story ahead of another).
+    let mut first: HashMap<(usize, StoryId), (usize, (i64, i64))> = HashMap::new();
+    for h in &hits {
+        let (page, y, x) = h.at;
+        first.entry((page, h.story)).and_modify(|f| *f = (*f).min((h.pos, (y, x)))).or_insert((h.pos, (y, x)));
+    }
+    let mut hits: Vec<_> =
+        hits.into_iter().map(|h| (h.at.0, first.get(&(h.at.0, h.story)).map_or((h.at.1, h.at.2), |f| f.1), h.story, h.pos, h.text)).collect();
+    hits.sort_by_key(|a| (a.0, a.1, a.2.0, a.3));
+    hits.into_iter().map(|(page, _, _, _, text)| (page, text)).collect()
+}
+
 impl RunningIndex {
     /// Index the paragraphs / runs that running-header variables refer to. `get` composes a story
     /// (normally through the cache); stories that themselves contain running headers are skipped.
@@ -65,7 +91,8 @@ impl RunningIndex {
                 _ => None,
             })
             .collect();
-        let mut hits: HashMap<(String, bool), Vec<((usize, i64, i64), String)>> = HashMap::new();
+        // (place, story, byte) of each paragraph or run, with its text.
+        let mut hits: HashMap<(String, bool), Vec<Hit>> = HashMap::new();
         if wanted.is_empty() {
             return RunningIndex::default();
         }
@@ -90,7 +117,7 @@ impl RunningIndex {
                         continue;
                     }
                     if let Some(at) = place(doc, &cs, r.start) {
-                        hits.entry(key).or_default().push((at, text));
+                        hits.entry(key).or_default().push(Hit { at, story: *sid, pos: r.start, text });
                     }
                 }
             }
@@ -105,16 +132,15 @@ impl RunningIndex {
                         continue;
                     }
                     if let Some(at) = place(doc, &cs, r.start) {
-                        hits.entry(key).or_default().push((at, text));
+                        hits.entry(key).or_default().push(Hit { at, story: *sid, pos: r.start, text });
                     }
                 }
             }
         }
         let mut map = HashMap::new();
-        for (key, mut v) in hits {
-            v.sort_by_key(|(at, _)| *at);
+        for (key, v) in hits {
             let mut pages: BTreeMap<usize, (String, String)> = BTreeMap::new();
-            for ((page, ..), text) in v {
+            for (page, text) in in_page_order(v) {
                 pages.entry(page).and_modify(|e| e.1 = text.clone()).or_insert((text.clone(), text));
             }
             map.insert(key, pages);
