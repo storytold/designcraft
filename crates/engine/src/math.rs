@@ -1,7 +1,10 @@
 //! Math expressions: a LaTeX subset typeset into boxes and written as SVG (text in the bundled
 //! serif, rules and radicals as paths). Covers fractions, super/subscripts, square and n-th roots,
 //! big operators with limits, Greek letters, common symbols, `\text{}`, `\mathrm{}`, spacing
-//! commands and `\left( … \right)`.
+//! commands and `\left( … \right)`. `cases`, `aligned` (`align`, `align*`, `gathered`, `split`)
+//! and `array` environments set as grids: rows split at `\\`, cells at `&`; matrix environments
+//! (`matrix`, `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`, `Vmatrix`, `smallmatrix`) centre their
+//! columns between drawn delimiters.
 
 use std::fmt::Write as _;
 
@@ -73,6 +76,11 @@ enum Node {
     },
     Text(String),
     Space(f64),
+    /// A `\begin{env} … \end{env}` grid: rows of cells.
+    Grid {
+        env: String,
+        rows: Vec<Vec<Node>>,
+    },
     /// A big operator (∑ ∏ ∫): drawn larger, limits as scripts.
     Big(String),
     /// `\left( … \right)`: delimiters sized to the content.
@@ -240,6 +248,28 @@ impl Parser<'_> {
         self.depth -= 1;
         n
     }
+    /// Raw source up to the matching `\end{env}`, nested environments kept whole; the rest of
+    /// the input when it never closes.
+    fn env_body(&mut self, env: &str) -> String {
+        let open: Vec<char> = "\\begin{".chars().collect();
+        let close: Vec<char> = format!("\\end{{{env}}}").chars().collect();
+        let close_any: Vec<char> = "\\end{".chars().collect();
+        let mut depth = 0usize;
+        let start = self.i;
+        while let Some(rest) = self.s.get(self.i..).filter(|r| !r.is_empty()) {
+            if rest.starts_with(&open) {
+                depth += 1;
+            } else if depth == 0 && rest.starts_with(&close) {
+                let body: String = self.s.get(start..self.i).unwrap_or_default().iter().collect();
+                self.i += close.len();
+                return body;
+            } else if depth > 0 && rest.starts_with(&close_any) {
+                depth -= 1;
+            }
+            self.i += 1;
+        }
+        self.s.get(start..).unwrap_or_default().iter().collect()
+    }
     fn delimiter(&mut self) -> String {
         self.skip_ws();
         match self.peek() {
@@ -297,6 +327,38 @@ impl Parser<'_> {
                         Node::Sqrt(idx, Box::new(a))
                     }
                     "text" | "mathrm" | "textrm" | "operatorname" => Node::Text(self.raw_group()),
+                    "begin" => {
+                        let env = self.raw_group();
+                        // `array`'s column spec (`{lcr}`) sets nothing here.
+                        if env == "array" {
+                            let _ = self.raw_group();
+                        }
+                        let body = self.env_body(&env);
+                        if self.depth >= MAX_NESTING {
+                            return Some(Node::Group(Vec::new()));
+                        }
+                        // Each open environment keeps its own copy of the rest of the input while
+                        // its cells are parsed, so a grid uses up a 16th of the nesting budget.
+                        let depth = self.depth + MAX_NESTING / 16;
+                        let align = matches!(env.as_str(), "aligned" | "align" | "align*" | "split");
+                        let rows = split_grid(&body)
+                            .into_iter()
+                            .map(|r| {
+                                r.into_iter()
+                                    .enumerate()
+                                    // As in amsmath, the right cell of an aligned pair starts with an
+                                    // empty `{}`, so a leading relation keeps its space on the left.
+                                    .map(|(k, c)| if align && k % 2 == 1 { parse_at(&format!("{{}}{c}"), depth) } else { parse_at(&c, depth) })
+                                    .collect()
+                            })
+                            .collect();
+                        Node::Grid { env, rows }
+                    }
+                    // A stray `\end{…}` (its `\begin` is missing) sets nothing.
+                    "end" => {
+                        let _ = self.raw_group();
+                        Node::Space(0.0)
+                    }
                     "sin" | "cos" | "tan" | "log" | "ln" | "exp" | "lim" | "max" | "min" => Node::Text(name),
                     "," => Node::Space(3.0 / 18.0),
                     ":" | ">" => Node::Space(4.0 / 18.0),
@@ -438,6 +500,64 @@ fn parse_at(src: &str, depth: usize) -> Node {
     Node::Group(p.list(None))
 }
 
+/// The delimiters of a matrix environment (none for `matrix` and `smallmatrix`); `None` for
+/// any other environment.
+fn matrix_delimiters(env: &str) -> Option<(&'static str, &'static str)> {
+    Some(match env {
+        "matrix" | "smallmatrix" => ("", ""),
+        "pmatrix" => ("(", ")"),
+        "bmatrix" => ("[", "]"),
+        "Bmatrix" => ("{", "}"),
+        "vmatrix" => ("|", "|"),
+        "Vmatrix" => ("‖", "‖"),
+        _ => return None,
+    })
+}
+
+/// Split an environment body into rows (`\\`) and cells (`&`) outside braces and nested
+/// environments. A trailing `\\` adds no empty row.
+fn split_grid(body: &str) -> Vec<Vec<String>> {
+    let chars: Vec<char> = body.chars().collect();
+    let (mut rows, mut row, mut cell) = (Vec::new(), Vec::new(), String::new());
+    let (mut depth, mut env, mut i) = (0i32, 0i32, 0usize);
+    let [row_end, begin, end]: [Vec<char>; 3] = ["\\\\", "\\begin{", "\\end{"].map(|w| w.chars().collect());
+    let starts = |i: usize, w: &[char]| chars.get(i..).is_some_and(|r| r.starts_with(w));
+    let mut prev = None;
+    while let Some(&c) = chars.get(i) {
+        let top = depth == 0 && env == 0;
+        if top && c == '&' && prev != Some('\\') {
+            row.push(std::mem::take(&mut cell));
+            (i, prev) = (i + 1, None);
+            continue;
+        }
+        if top && starts(i, &row_end) {
+            row.push(std::mem::take(&mut cell));
+            rows.push(std::mem::take(&mut row));
+            (i, prev) = (i + 2, None);
+            continue;
+        }
+        if c == '{' && prev != Some('\\') {
+            depth += 1;
+        } else if c == '}' && prev != Some('\\') {
+            // A stray closer is ignored, as `env_body` ignores it, so later cells still split.
+            depth = (depth - 1).max(0);
+        } else if starts(i, &begin) {
+            env += 1;
+        } else if starts(i, &end) {
+            env = (env - 1).max(0);
+        }
+        cell.push(c);
+        // `\\` is spent: a backslash after it does not escape the next character.
+        prev = if prev == Some('\\') && c == '\\' { None } else { Some(c) };
+        i += 1;
+    }
+    if !cell.trim().is_empty() || !row.is_empty() {
+        row.push(cell);
+        rows.push(row);
+    }
+    rows
+}
+
 /// Typesetting fonts and metrics.
 struct Fonts {
     upright: std::sync::Arc<FontFace>,
@@ -490,6 +610,15 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
         Node::Sym(s, cl) => text_box(f, s, size, *cl == Class::Ident),
         Node::Text(s) => text_box(f, s, size, false),
         Node::Space(em) => MBox { w: em * size, ..Default::default() },
+        // `smallmatrix` sets its cells at script size, still centred on the text's math axis.
+        Node::Grid { env, rows } if env == "smallmatrix" => {
+            let s2 = size * 0.7;
+            let b = grid(f, env, rows, s2);
+            let dy = -(size - s2) * 0.25;
+            let (w, asc, desc) = (b.w, b.asc - dy, b.desc + dy);
+            MBox { w, asc, desc, els: b.shifted(0.0, dy) }
+        }
+        Node::Grid { env, rows } => grid(f, env, rows, size),
         Node::Group(list) => {
             let mut parts = Vec::new();
             let mut prev: Option<Class> = None;
@@ -654,6 +783,115 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
     }
 }
 
+/// An environment grid: columns as wide as their widest cell, rows on the text pitch, centred
+/// on the math axis. `aligned`-like environments alternate right- and left-aligned columns with
+/// no gap between a pair (`a &= b`); `cases` gets a drawn left brace spanning the rows; matrix
+/// environments centre their columns.
+fn grid(f: &Fonts, env: &str, rows: &[Vec<Node>], size: f64) -> MBox {
+    let cells: Vec<Vec<MBox>> = rows.iter().map(|r| r.iter().map(|c| layout(f, c, size)).collect()).collect();
+    let ncol = cells.iter().map(Vec::len).max().unwrap_or(0);
+    let mut colw = vec![0.0f64; ncol];
+    for r in &cells {
+        for (w, c) in colw.iter_mut().zip(r) {
+            *w = w.max(c.w);
+        }
+    }
+    let align = matches!(env, "aligned" | "align" | "align*" | "split");
+    let centred = env == "gathered" || matrix_delimiters(env).is_some();
+    let gaps: Vec<f64> = (0..ncol)
+        .map(|k| match k {
+            0 => 0.0,
+            _ if align && k % 2 == 1 => 0.0,
+            _ if align => size * 2.0,
+            _ => size,
+        })
+        .collect();
+    let row_gap = size * 0.35;
+    let (mut y, mut first_asc, mut prev_desc) = (0.0f64, 0.0f64, 0.0f64);
+    let mut placed: Vec<(MBox, f64, f64)> = Vec::new();
+    for (ri, r) in cells.into_iter().enumerate() {
+        let asc = r.iter().map(|c| c.asc).fold(size * 0.72, f64::max);
+        let desc = r.iter().map(|c| c.desc).fold(size * 0.22, f64::max);
+        if ri == 0 {
+            first_asc = asc;
+        } else {
+            y += prev_desc + row_gap + asc;
+        }
+        let mut x = 0.0;
+        for (k, (c, (cw, g))) in r.into_iter().zip(colw.iter().zip(&gaps)).enumerate() {
+            x += g;
+            let dx = match env {
+                _ if align && k % 2 == 0 => cw - c.w,
+                _ if centred => (cw - c.w) / 2.0,
+                _ => 0.0,
+            };
+            placed.push((c, x + dx, y));
+            x += cw;
+        }
+        prev_desc = desc;
+    }
+    let total_w: f64 = colw.iter().sum::<f64>() + gaps.iter().sum::<f64>();
+    let height = first_asc + y + prev_desc;
+    let top = -(height / 2.0 + size * 0.25);
+    let shift = top + first_asc;
+    let brace = env == "cases";
+    // A matrix's delimiters are drawn to the grid's height, like the `cases` brace.
+    let (open, close) = matrix_delimiters(env).unwrap_or(("", ""));
+    let (margin, dw, pad) = (size * 0.06, size * 0.32, size * 0.18);
+    let side = |d: &str| if d.is_empty() { 0.0 } else { margin + dw + pad };
+    let bw = if brace { size * 0.8 } else { side(open) };
+    let mut out = MBox::default();
+    for (c, x, y) in placed {
+        out.els.extend(c.shifted(bw + x, shift + y));
+    }
+    let ext = if open.is_empty() && close.is_empty() { 0.0 } else { size * 0.08 };
+    let (t, b) = (top - ext, top + height + ext);
+    let lw = (size * 0.055).max(0.5);
+    out.els.extend(delimiter(open, margin, dw, t, b, lw, size));
+    out.els.extend(delimiter(close, bw + total_w + pad, -dw, t, b, lw, size));
+    if brace {
+        let (t, b) = (top, top + height);
+        let m = (t + b) / 2.0;
+        let w = size * 0.4;
+        let lw = (size * 0.06).max(0.5);
+        out.els.push(Elem::Line { pts: vec![(w, t), (w * 0.55, t + size * 0.12), (w * 0.5, m - size * 0.15), (0.0, m)], w: lw });
+        out.els.push(Elem::Line { pts: vec![(0.0, m), (w * 0.5, m + size * 0.15), (w * 0.55, b - size * 0.12), (w, b)], w: lw });
+    }
+    out.w = bw + total_w + side(close);
+    out.asc = -t;
+    out.desc = b;
+    out
+}
+
+/// A drawn delimiter from `t` to `b`, `w` wide from `x` (a negative `w` mirrors it, for the
+/// closing side): `(` `[` `{` `|` `‖` and their closing pairs; nothing for an empty one.
+fn delimiter(d: &str, x: f64, w: f64, t: f64, b: f64, lw: f64, size: f64) -> Vec<Elem> {
+    // `at(u, v)`: `u` across from the outer edge (0) to the inner (1), `v` down from `t` (0) to `b` (1).
+    let at = |u: f64, v: f64| (x + if w < 0.0 { -w * (1.0 - u) } else { w * u }, t + (b - t) * v);
+    let line = |pts: Vec<(f64, f64)>| Elem::Line { pts, w: lw };
+    let m = (t + b) / 2.0;
+    let mv = |y: f64| (y - t) / (b - t).max(f64::EPSILON);
+    match d {
+        "(" | ")" => vec![line((0..=16).map(|i| f64::from(i) / 16.0).map(|v| at(1.0 - 0.85 * (std::f64::consts::PI * v).sin(), v)).collect())],
+        "[" | "]" => vec![line(vec![at(1.0, 0.0), at(0.25, 0.0), at(0.25, 1.0), at(1.0, 1.0)])],
+        "{" | "}" => {
+            let k = size * 0.12;
+            vec![line(vec![
+                at(1.0, 0.0),
+                at(0.55, mv(t + k)),
+                at(0.5, mv(m - size * 0.15)),
+                at(0.0, 0.5),
+                at(0.5, mv(m + size * 0.15)),
+                at(0.55, mv(b - k)),
+                at(1.0, 1.0),
+            ])]
+        }
+        "|" => vec![line(vec![at(0.5, 0.0), at(0.5, 1.0)])],
+        "‖" => vec![line(vec![at(0.25, 0.0), at(0.25, 1.0)]), line(vec![at(0.75, 0.0), at(0.75, 1.0)])],
+        _ => Vec::new(),
+    }
+}
+
 /// Typeset `latex` at `size` points: SVG bytes and the size in points.
 pub fn to_svg(latex: &str, size: f64) -> (Vec<u8>, (f64, f64)) {
     let db = FontDb::global();
@@ -707,6 +945,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn split_grid_ignores_stray_closers() {
+        let cells = |body: &str| split_grid(body).iter().map(Vec::len).collect::<Vec<_>>();
+        assert_eq!(cells(r"a \end{foo} & b"), vec![2]);
+        assert_eq!(cells(r"a } & b \\ c & d"), vec![2, 2]);
+    }
+
+    #[test]
     fn parses_the_common_constructs() {
         let n = parse(r"\frac{a^2+b}{\sqrt[3]{x}}");
         let Node::Group(v) = n else { panic!() };
@@ -744,6 +989,97 @@ mod tests {
     }
 
     #[test]
+    fn environments_set_as_grids() {
+        let grid = |src: &str| match parse(src) {
+            Node::Group(v) => match v.into_iter().find(|n| matches!(n, Node::Grid { .. })) {
+                Some(Node::Grid { env, rows }) => Some((env, rows.iter().map(Vec::len).collect::<Vec<_>>())),
+                _ => None,
+            },
+            _ => None,
+        };
+        assert_eq!(grid(r"f(x)=\begin{cases} 1 & x<0 \\ x^2 & x\ge 0 \end{cases}"), Some(("cases".into(), vec![2, 2])));
+        assert_eq!(grid(r"\begin{aligned} a &= b+c \\ &= d \\ \end{aligned}"), Some(("aligned".into(), vec![2, 2])));
+        assert_eq!(grid(r"\begin{array}{lcr} a & b & c \end{array}"), Some(("array".into(), vec![3])));
+        // `&` and `\\` inside braces or a nested environment belong to the cell.
+        assert_eq!(
+            grid(r"\begin{cases} \text{a \& b} & {x \\ y} \\ \begin{aligned} p &= q \end{aligned} & z \end{cases}"),
+            Some(("cases".into(), vec![2, 2]))
+        );
+        // Unclosed, empty or stray: no panic, nothing leaks as raw source.
+        for src in [r"\begin{cases} 1 & 2", r"\begin{cases}\end{cases}", r"\end{cases} x", r"\begin{", r"\begin{array}"] {
+            let s = String::from_utf8(to_svg(src, 12.0).0).unwrap();
+            assert!(!s.contains(">\\<") && !s.contains(">&amp;<"), "{src}: {s}");
+        }
+        // The rows stack and `cases` draws its brace.
+        let (svg, (_, h)) = to_svg(r"f(x)=\begin{cases} 1 & x<0 \\ x^2 & x\ge 0 \end{cases}", 12.0);
+        let s = String::from_utf8(svg).unwrap();
+        assert!(h > 2.0 * to_svg("x", 12.0).1.1 && s.contains("<polyline"), "{h}");
+        // `aligned` lines up the relations: both `=` start at the same x.
+        let s = String::from_utf8(to_svg(r"\begin{aligned} a &= b \\ xyz &= c \end{aligned}", 12.0).0).unwrap();
+        let xs: Vec<&str> = s.split("<text x=\"").skip(1).filter(|t| t.contains(">=<")).filter_map(|t| t.split('"').next()).collect();
+        assert!(xs.len() == 2 && xs[0] == xs[1], "{xs:?}");
+        // ... and keeps the thick space before them, as `a = b` has inline.
+        let eq_x = |latex: &str| {
+            let s = String::from_utf8(to_svg(latex, 12.0).0).unwrap();
+            s.split("<text x=\"").skip(1).find(|t| t.contains(">=<")).and_then(|t| t.split('"').next()).and_then(|x| x.parse::<f64>().ok()).unwrap()
+        };
+        let (grid_x, inline_x) = (eq_x(r"\begin{aligned} a &= b \end{aligned}"), eq_x(r"a = b"));
+        assert!((grid_x - inline_x).abs() < 0.01, "{grid_x} {inline_x}");
+    }
+
+    #[test]
+    fn matrix_environments_set_with_delimiters() {
+        let shape = |src: &str| match parse(src) {
+            Node::Group(v) => match v.into_iter().next() {
+                Some(Node::Grid { env, rows }) => Some((env, rows.iter().map(Vec::len).collect::<Vec<_>>())),
+                _ => None,
+            },
+            _ => None,
+        };
+        let svg = |src: &str| to_svg(src, 12.0);
+        let lines = |src: &str| String::from_utf8(svg(src).0).unwrap().matches("<polyline").count();
+        // Each environment: a 2 × 2 grid, with its delimiters drawn (`‖` is two strokes a side).
+        for (env, strokes) in [("matrix", 0), ("pmatrix", 2), ("bmatrix", 2), ("Bmatrix", 2), ("vmatrix", 2), ("Vmatrix", 4), ("smallmatrix", 0)] {
+            let src = format!(r"\begin{{{env}}} a & b \\ c & d \end{{{env}}}");
+            assert_eq!(shape(&src), Some((env.to_string(), vec![2, 2])), "{env}");
+            assert_eq!(lines(&src), strokes, "{env}");
+            let s = String::from_utf8(svg(&src).0).unwrap();
+            assert!(!s.contains("begin") && !s.contains(">\\<") && !s.contains(">&amp;<"), "{env}: {s}");
+        }
+        // Delimiters add width and span the grid: three rows are taller than two.
+        let (_, (plain_w, _)) = svg(r"\begin{matrix} a & b \\ c & d \end{matrix}");
+        let (_, (paren_w, two)) = svg(r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}");
+        let (_, (_, three)) = svg(r"\begin{pmatrix} a \\ b \\ c \end{pmatrix}");
+        assert!(paren_w > plain_w + 6.0 && three > two + 8.0, "{plain_w} {paren_w} {two} {three}");
+        // `smallmatrix` sets its cells smaller.
+        let (_, (small_w, small_h)) = svg(r"\begin{smallmatrix} a & b \\ c & d \end{smallmatrix}");
+        let (_, (_, plain_h)) = svg(r"\begin{matrix} a & b \\ c & d \end{matrix}");
+        assert!(small_w < plain_w * 0.8 && small_h < plain_h, "{small_w} {plain_w} {small_h} {plain_h}");
+        // Columns are centred: a narrow entry starts right of a wide one above it (an `array`
+        // column, left-aligned, starts both at the same x).
+        let xs = |src: &str| -> Vec<f64> {
+            let s = String::from_utf8(svg(src).0).unwrap();
+            s.split("<text x=\"").skip(1).filter_map(|t| t.split('"').next()).filter_map(|x| x.parse().ok()).collect()
+        };
+        let m = xs(r"\begin{pmatrix} 100 \\ 1 \end{pmatrix}");
+        let a = xs(r"\begin{array}{l} 100 \\ 1 \end{array}");
+        // (Each glyph is its own `<text>`: the last one is the second row's `1`.)
+        let ends = |v: &[f64]| (v.first().copied().unwrap_or(0.0), v.last().copied().unwrap_or(0.0));
+        assert!(m.len() > 2 && ends(&m).1 > ends(&m).0 + 2.0, "{m:?}");
+        assert!(a.len() > 2 && (ends(&a).1 - ends(&a).0).abs() < 1e-6, "{a:?}");
+        // Unclosed, empty and nested matrices: no panic, nothing leaks as raw source.
+        for src in [
+            r"\begin{pmatrix} 1 & 2",
+            r"\begin{bmatrix}\end{bmatrix}",
+            r"\begin{vmatrix} \begin{pmatrix} a \end{pmatrix} & b \end{vmatrix}",
+            r"\end{pmatrix}",
+        ] {
+            let s = String::from_utf8(svg(src).0).unwrap();
+            assert!(!s.contains("begin") && !s.contains("end") && !s.contains(">&amp;<"), "{src}: {s}");
+        }
+    }
+
+    #[test]
     fn layout_sizes_and_svg() {
         let (svg, (w, h)) = to_svg(r"E = mc^2", 12.0);
         let s = String::from_utf8(svg).unwrap();
@@ -767,9 +1103,24 @@ mod tests {
             format!("{}x{}", "{".repeat(100_000), "}".repeat(100_000)),
             format!("{}x", r"\frac".repeat(100_000)),
             format!("{}x", r"\left(".repeat(100_000)),
+            format!("{}x", r"\begin{cases}".repeat(20_000)),
+            format!("{}x", r"\begin{cases}{".repeat(20_000)),
+            format!("{}x", r"\begin{pmatrix}".repeat(20_000)),
+            format!("{}x", r"\begin{Vmatrix} & \\ \begin{smallmatrix}".repeat(10_000)),
+            format!("{}x{}", r"\begin{bmatrix}{".repeat(10_000), r"}\end{bmatrix}".repeat(10_000)),
         ] {
             let (svg, _) = to_svg(&latex, 12.0);
             assert!(!svg.is_empty());
         }
+        // Grids nest at most 16 deep, which bounds the copies of the input they hold.
+        fn grid_depth(n: &Node) -> usize {
+            match n {
+                Node::Grid { rows, .. } => 1 + rows.iter().flatten().map(grid_depth).max().unwrap_or(0),
+                Node::Group(v) => v.iter().map(grid_depth).max().unwrap_or(0),
+                _ => 0,
+            }
+        }
+        let d = grid_depth(&parse(&format!("{}x", r"\begin{cases}".repeat(100))));
+        assert!((2..=16).contains(&d), "{d}");
     }
 }
