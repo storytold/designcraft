@@ -3272,7 +3272,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 return app.confirm_pdf_import(d.n("page").unwrap_or(1.0).max(1.0) as u64, if crop.is_empty() { "crop".into() } else { crop });
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
-                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
+                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target), wanted: Vec::new() })?;
             }
             app.place_file(json!({"path": d.s("path"), "pdfPage": d.n("page").unwrap_or(1.0).max(1.0) as u64, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
         }

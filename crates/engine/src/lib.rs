@@ -615,7 +615,7 @@ impl Session {
         }
         self.record_undo_step(spec, before, nested);
         if spec.journal {
-            self.journal.push((id.to_string(), params.clone()));
+            self.journal.push((id.to_string(), journal_params(id, params)));
         }
         self.discard_stale_find_scope();
         Ok(r)
@@ -751,3 +751,19 @@ mod tests_params;
 mod tests_roots;
 #[cfg(test)]
 mod tests_table;
+
+/// A command's parameters as the journal keeps them: `links.relinkFiles` keeps its files' names
+/// and paths but not their contents (whole image files, which would stay in memory for the
+/// session).
+fn journal_params(id: &str, params: &Value) -> Value {
+    if id != "links.relinkFiles" {
+        return params.clone();
+    }
+    let mut p = params.clone();
+    if let Some(files) = p.get_mut("files").and_then(Value::as_array_mut) {
+        for f in files.iter_mut().filter_map(Value::as_object_mut) {
+            f.remove("base64");
+        }
+    }
+    p
+}
