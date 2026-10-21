@@ -61,6 +61,16 @@ impl TextSel {
     }
 }
 
+/// An anchored object (inline, above line or custom) selected as an object: the `index`-th of
+/// `story`'s [`crate::Story::objects`]. It lives in the text, not on a spread, so it isn't one of
+/// [`Selection::items`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnchoredSel {
+    pub story: StoryId,
+    pub index: usize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Selection {
@@ -83,11 +93,14 @@ pub struct Selection {
     /// The page selected with the Page tool (absolute index).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<usize>,
+    /// An anchored object selected with the Selection tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchored: Option<AnchoredSel>,
 }
 
 impl Selection {
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty() && self.text.is_none() && self.cells.is_none()
+        self.items.is_empty() && self.text.is_none() && self.cells.is_none() && self.anchored.is_none()
     }
     pub fn len(&self) -> usize {
         self.items.len()

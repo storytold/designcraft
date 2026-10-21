@@ -210,6 +210,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             st.selection.text = None;
             st.selection.cells = None;
+            st.selection.anchored = None;
             st.bump_revision();
             ok()
         }),
@@ -218,6 +219,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let st = s.doc_mut()?;
             st.selection.text = None;
             st.selection.cells = None;
+            st.selection.anchored = None;
             if let Some(i) = st.selection.items.iter().position(|x| *x == id) {
                 st.selection.items.remove(i);
             } else {
@@ -259,6 +261,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{ids?} — delete selected items (or the selected text)", has_doc, |s, p| {
             if s.doc()?.selection.text.is_some() && p.get("ids").is_none() {
                 return super::text::delete_selection(s);
+            }
+            // A selected anchored object leaves the text.
+            if p.get("ids").is_none()
+                && let Some(a) = s.doc()?.selection.anchored
+            {
+                return super::anchored::delete(s, a);
             }
             let ids = super::targets(s, p)?;
             // With a placed graphic itself selected (Direct Selection), only the graphic goes: its
