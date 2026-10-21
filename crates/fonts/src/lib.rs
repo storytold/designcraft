@@ -670,6 +670,26 @@ mod resolution_tests {
     }
 
     #[test]
+    fn adobe_faces_fall_back_to_their_open_source_counterparts() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        for family in ["Noto Serif JP", "Noto Sans JP", "Source Serif 4", "Source Sans 3"] {
+            db.add_font(testing::font_with(family, &['A']).unwrap());
+        }
+        let scope = db.scoped(0);
+        for (missing, expected) in [
+            ("小塚明朝 Pr6N", "Noto Serif JP"),
+            ("KozMinPr6N-Regular", "Noto Serif JP"),
+            ("小塚ゴシック Pr6N", "Noto Sans JP"),
+            ("Koz Go Pr6N", "Noto Sans JP"),
+            ("Minion Pro", "Source Serif 4"),
+            ("Myriad Pro", "Source Sans 3"),
+        ] {
+            assert_eq!(scope.substitute_family(missing), expected, "{missing}");
+            assert!(scope.canonical_family(missing).is_none(), "{missing} stays a missing original");
+        }
+    }
+
+    #[test]
     fn known_substitution_preserves_missing_original_status() {
         let db = FontDb::with_font_dirs(Vec::new());
         db.add_font(testing::font_with("Carlito", &['A']).unwrap());

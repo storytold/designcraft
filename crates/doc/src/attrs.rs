@@ -404,6 +404,9 @@ pub enum ChangeMark {
 pub enum Kerning {
     #[default]
     Metrics,
+    /// Metrics kerning for Roman text only: CJK characters are not kerned (InDesign's
+    /// "Metrics - Roman Only", the default of Japanese documents).
+    MetricsRomanOnly,
     Optical,
     /// Zero ("0" in the kerning menu).
     None,

@@ -40,6 +40,22 @@ fn em(g: &Glyph) -> f64 {
     g.face.units_per_em() * if g.upright { g.sy } else { g.sx }
 }
 
+/// Adobe-Japan1 CID fonts (Kozuka, Ryumin, ...): InDesign classes characters by CID, not by Unicode.
+fn adobe_japan1(g: &Glyph) -> bool {
+    const PREFIXES: [&str; 6] = ["Koz", "Ryumin", "GothicBBB", "FutoGo", "FutoMin", "MidashiGo"];
+    g.face.postscript_name().is_some_and(|n| PREFIXES.iter().any(|p| n.starts_with(p)))
+}
+
+/// Class of a cluster's first glyph. Square unit symbols (㎡ ㎏ ㎝) are ideographs by Unicode, but in an
+/// Adobe-Japan1 font (Kozuka) InDesign sets them like Roman letters: no quarter em against "/" or digits
+/// ("¥12,000/㎡"). Other fonts (Yu Mincho) keep the ideograph spacing.
+fn class_of(g: &Glyph) -> i16 {
+    if matches!(g.rendered_char, '\u{3300}'..='\u{33ff}') && adobe_japan1(g) {
+        return 18;
+    }
+    rules::class(g.rendered_char)
+}
+
 pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
     let Ok(Some(table)) = Rules::resolve(styles, name) else { return };
     // Boundaries belong to shaped clusters, not individual glyphs. In particular
@@ -60,7 +76,7 @@ pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
         if !cluster.iter().any(eligible) {
             continue;
         }
-        let class = rules::class(cluster[0].rendered_char);
+        let class = class_of(&cluster[0]);
         let unit = em(&cluster[0]);
         let body: f64 = cluster.iter().map(|g| g.moji.body).sum();
         for g in cluster.iter_mut() {
@@ -89,7 +105,7 @@ pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
         if !glyphs[start].moji.active {
             continue;
         }
-        let class = rules::class(glyphs[start].rendered_char);
+        let class = class_of(&glyphs[start]);
         let unit = em(&glyphs[start]);
         let mut gap = Aki::default();
         if let Some(&(next, _)) = clusters.get(index + 1)
@@ -99,7 +115,7 @@ pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
         {
             gap = table.pair_with_bodies(
                 class,
-                rules::class(glyphs[next].rendered_char),
+                class_of(&glyphs[next]),
                 glyphs[end - 1].moji.blank_after,
                 glyphs[next].moji.blank_before,
             );

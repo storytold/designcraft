@@ -1707,6 +1707,17 @@ impl ScopedFonts<'_> {
             "times new roman" | "times" => &["Liberation Serif", "Times New Roman", "Times"],
             "courier new" | "courier" => &["Liberation Mono", "Courier New", "Courier"],
             _ if lower.contains("arabic") || lower.contains("naskh") => &["Amiri", "Noto Naskh Arabic", "Geeza Pro"],
+            // Adobe's Japanese and Latin faces (not installed without a Creative Cloud licence) → their
+            // open-source counterparts: Source Han / Noto CJK are Adobe-Google's, Source Serif / Sans
+            // are Adobe's own answers to Minion and Myriad.
+            _ if family.contains("明朝") || (lower.starts_with("koz") && lower.contains("min")) || lower.starts_with("ryumin") => {
+                &["Source Han Serif JP", "Noto Serif JP", "Noto Serif CJK JP", "Yu Mincho", "BIZ UDMincho", "MS Mincho"]
+            }
+            _ if family.contains("ゴシック") || lower.starts_with("koz") || lower.starts_with("gothicbbb") => {
+                &["Source Han Sans JP", "Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", "BIZ UDPGothic", "MS Gothic"]
+            }
+            _ if lower.starts_with("minion") => &["Source Serif 4", "Source Serif Pro", "Liberation Serif"],
+            _ if lower.starts_with("myriad") => &["Source Sans 3", "Source Sans Pro", "Liberation Sans"],
             _ if family.contains('楷') => &["Kaiti SC", "STKaiti", "KaiTi", "Songti SC"],
             _ if family.contains("仿宋") => &["STFangsong", "FangSong", "Songti SC"],
             _ if family.contains('宋') || family.contains("明朝") => &["Songti SC", "Noto Serif CJK SC", "SimSun"],

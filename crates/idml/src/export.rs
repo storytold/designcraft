@@ -1183,6 +1183,7 @@ impl<'a> Ex<'a> {
         if let Some(k) = a.kerning {
             match k {
                 designcraft_doc::Kerning::Metrics => el.set("KerningMethod", "$ID/Metrics"),
+                designcraft_doc::Kerning::MetricsRomanOnly => el.set("KerningMethod", "$ID/Metrics - Roman Only"),
                 designcraft_doc::Kerning::Optical => el.set("KerningMethod", "$ID/Optical"),
                 designcraft_doc::Kerning::None => el.set("KerningMethod", "None"),
                 designcraft_doc::Kerning::Manual(v) => el.set("KerningValue", num(v)),

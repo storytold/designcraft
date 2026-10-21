@@ -198,6 +198,109 @@ fn a_pdf_placement_reads_its_page_number() {
     }
 }
 
+/// InDesign embeds an EPS placement's preview as `EPSImage` + five words + raw top-down RGB.
+fn eps_preview(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
+    let mut b = b"EPSImage".to_vec();
+    for v in [w * 3, w, h, 8, 3] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(rgb);
+    b
+}
+
+#[test]
+fn an_embedded_eps_preview_imports_as_a_raster() {
+    // 2x2: red, green / blue, white.
+    let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/code.eps", Some(&eps_preview(2, 2, &rgb))))];
+    let d = import_idml_with(&package(&frames), &|_: &str| None).unwrap();
+    let (id, _, _) = placements(&d)[0];
+    let a = d.assets.get(&id).unwrap();
+    assert_eq!(a.mime, "image/bmp");
+    assert_eq!(a.pixels, Some((2, 2)));
+    assert!(a.is_raster());
+    // A 24-bit BMP stores rows bottom-up as BGR, padded to four bytes: blue/white first.
+    let px = &a.data[54..];
+    assert_eq!(px[..6], [255, 0, 0, 255, 255, 255], "bottom row: blue, white");
+    assert_eq!(px[8..14], [0, 0, 255, 0, 255, 0], "top row: red, green");
+
+    // A truncated raster is not decoded as one.
+    let cut = eps_preview(2, 2, &rgb[..9]);
+    assert!(crate::eps_preview_to_bmp(&cut).is_none());
+}
+
+/// `EPSTextData` as InDesign writes it: header, font record, five doubles, text record.
+fn eps_text_data(font: &str, size: f64, x: f64, y: f64, text: &str) -> Vec<u8> {
+    let n = text.chars().count() as u8;
+    let mut tail = vec![n, 0x80, n];
+    for u in text.encode_utf16() {
+        tail.extend_from_slice(&u.to_be_bytes());
+    }
+    eps_text_record(font, size, x, y, &tail)
+}
+
+/// The same with the text record (its length, then its runs) given as bytes.
+fn eps_text_record(font: &str, size: f64, x: f64, y: f64, text: &[u8]) -> Vec<u8> {
+    let mut b = vec![0, 1, 0, 2, 2, 1, 1, 0, font.len() as u8, 0x40, font.len() as u8];
+    b.extend_from_slice(font.as_bytes());
+    for v in [size, 0.0, 0.0, size, x, y, 0.0, 0.0] {
+        b.extend_from_slice(&v.to_be_bytes());
+    }
+    b.extend_from_slice(&[2, 1, 1, 0]);
+    b.extend_from_slice(text);
+    b.extend_from_slice(&[0; 40]);
+    b
+}
+
+#[test]
+fn eps_text_runs_of_8_bit_and_utf16_characters_join() {
+    let parse = |text: &[u8]| crate::parse_eps_text(&eps_text_record("YuMincho-Regular", 21.0, 1.0, 2.0, text));
+    // 7 characters: a wide run of five, then a narrow one of two.
+    let text = [7, 0x80, 5, 0x91, 0xce, 0x57, 0x30, 0x54, 0x08, 0x67, 0x7f, 0xff, 0x20, 0x40, 2, b'1', b'2'];
+    assert_eq!(parse(&text).unwrap().text, "野地合板＠12");
+    // 6 characters: a narrow run of two, then a wide one of four.
+    let mut text = vec![6, 0x40, 2, b'G', b'L', 0x80, 4];
+    for u in "鋼板です".encode_utf16() {
+        text.extend_from_slice(&u.to_be_bytes());
+    }
+    assert_eq!(parse(&text).unwrap().text, "GL鋼板です");
+    // A run list that stops short of its length is not text.
+    assert!(parse(&[5, 0x40, 2, b'a', b'b']).is_none());
+}
+
+#[test]
+fn eps_text_reads_font_size_position_and_text() {
+    let t = crate::parse_eps_text(&eps_text_data("YuMincho-Regular", 21.0, 377.5, -793.25, "ご予約ページ")).unwrap();
+    assert_eq!((t.font.as_str(), t.size, t.x, t.y, t.text.as_str()), ("YuMincho-Regular", 21.0, 377.5, -793.25, "ご予約ページ"));
+    assert!(crate::parse_eps_text(b"EPSImage").is_none(), "not an EPSText record");
+}
+
+#[test]
+fn a_placed_eps_text_imports_as_a_text_frame() {
+    let data = base64_encode(&eps_text_data("YuMincho-Regular", 20.0, 100.0, -50.0, "0120-672-334"));
+    // The art spans 100..220 in its own coordinates and was scaled by one half in the layout.
+    let eps = format!(
+        r#"<EPSText Self="e1" FillColor="Color/Black" ItemTransform="1 0 0 1 0 0"><Properties>
+        <PathBoundingBox Left="300" Top="-70" Right="360" Bottom="-60"/>
+        <EPSTextData><![CDATA[{data}]]></EPSTextData>
+        <EPSTextAttributeBounds Top="-65" Left="100" Bottom="-45" Right="220"/></Properties></EPSText>"#
+    );
+    let group = format!(r#"<Group Self="g1" ItemLayer="L1" ItemTransform="1 0 0 1 0 0">{eps}</Group>"#);
+    let d = import_idml_with(&package(&[group]), &|_: &str| None).unwrap();
+    let Content::Group { items } = &d.spreads[0].items[0].content else { panic!("a group") };
+    let Content::Text(tf) = &items[0].content else { panic!("the EPS text is a text frame") };
+    let story = d.story(tf.story).unwrap();
+    assert_eq!(story.text, "0120-672-334");
+    let run = &story.chars[0].format.over;
+    assert_eq!((run.font_family.as_deref(), run.font_style.as_deref()), (Some("Yu Mincho"), Some("Regular")));
+    assert_eq!(run.size, Some(10.0), "20 pt at the layout's scale of one half");
+    // The baseline stays where the EPS put it: 5 pt above the art's bottom (-45), which the layout
+    // scaled by one half, so 2.5 pt above the bottom of the bounds (-60).
+    let top = items[0].path.bounds().unwrap().y0;
+    assert!((top + tf.options.first_baseline_min - -62.5).abs() < 1e-6, "baseline {}", top + tf.options.first_baseline_min);
+    assert_eq!(story.frames, vec![items[0].id]);
+}
+
 /// Two crops of one linked PDF page are two assets, so each frame keeps its own crop; the same
 /// page and crop placed again shares an asset, and the file is read once per page and crop.
 #[test]
@@ -269,4 +372,84 @@ fn the_swatch_applied_to_an_image_is_kept() {
     assert!(images.iter().any(|e| e.contains(r#"FillColor="Color/Brand""#) && e.contains(r#"FillTint="50""#)), "{images:?}");
     assert!(!images.iter().any(|e| e.contains("Swatch/None")), "{images:?}");
     assert_eq!(fills(&import_idml_with(&out, &reader).unwrap()), want);
+}
+
+/// One `EMR_STRETCHDIBITS` record: a `depth`-bit bitmap with an optional colour `table`.
+fn emf_dib_record(w: u32, h: u32, depth: u16, table: &[u8], bits: &[u8]) -> Vec<u8> {
+    let le = |v: u32| v.to_le_bytes();
+    let mut bmi = [le(40), le(w), le(h)].concat();
+    bmi.extend(1u16.to_le_bytes());
+    bmi.extend(depth.to_le_bytes());
+    bmi.extend([le(0), le(bits.len() as u32)].concat());
+    bmi.resize(40, 0);
+    bmi.extend(table);
+    let mut rec = [le(81), le((80 + bmi.len() + bits.len()) as u32)].concat();
+    rec.resize(48, 0);
+    rec.extend([le(80), le(bmi.len() as u32), le(80 + bmi.len() as u32), le(bits.len() as u32)].concat());
+    rec.resize(80, 0);
+    rec.extend(&bmi);
+    rec.extend(bits);
+    rec
+}
+
+/// An EMF the way InDesign embeds a pasted picture: header, the given records, `EMR_EOF`.
+fn emf_of(records: &[Vec<u8>]) -> Vec<u8> {
+    let le = |v: u32| v.to_le_bytes();
+    let mut b = [le(1), le(88)].concat();
+    b.resize(40, 0);
+    b.extend(b" EMF");
+    b.resize(88, 0);
+    for r in records {
+        b.extend(r);
+    }
+    b.extend([le(14), le(20), le(0), le(16), le(20)].concat());
+    b
+}
+
+/// An EMF holding one 24-bit bitmap.
+fn emf_with_bitmap(w: u32, h: u32, bgr: &[u8]) -> Vec<u8> {
+    emf_of(&[emf_dib_record(w, h, 24, &[], bgr)])
+}
+
+#[test]
+fn a_placed_emf_photo_imports_as_a_raster() {
+    // 2x1, 24-bit rows padded to four bytes: blue, green.
+    let bgr = [255, 0, 0, 0, 255, 0, 0, 0];
+    let emf = emf_with_bitmap(2, 1, &bgr);
+    let bmp = crate::emf_raster_to_bmp(&emf).unwrap();
+    assert_eq!(&bmp[..2], b"BM");
+    assert_eq!(bmp[10..14], 54u32.to_le_bytes());
+    assert_eq!(bmp[54..], bgr);
+    let frames = vec![frame(1, 0.0, 0.0, &image(1, "file:/art/photo.emf", Some(&emf)))];
+    let d = import_idml_with(&package(&frames), &|_: &str| None).unwrap();
+    let (id, _, _) = placements(&d)[0];
+    let a = d.assets.get(&id).unwrap();
+    assert_eq!(a.mime, "image/bmp");
+    assert_eq!(a.pixels, Some((2, 1)));
+
+    // Not an EMF, or an EMF with no bitmap in it: nothing to show.
+    assert!(crate::emf_raster_to_bmp(b"not an emf").is_none());
+    assert!(crate::emf_raster_to_bmp(&emf[..88]).is_none());
+}
+
+#[test]
+fn a_16_bit_emf_bitmap_is_widened_to_24_bit() {
+    // 2x1 at 5-5-5: pure red (0x7c00) and pure blue (0x001f), rows padded to four bytes.
+    let emf = emf_of(&[emf_dib_record(2, 1, 16, &[], &[0x00, 0x7c, 0x1f, 0x00])]);
+    let bmp = crate::emf_raster_to_bmp(&emf).unwrap();
+    assert_eq!(bmp[28..30], 24u16.to_le_bytes());
+    assert_eq!(bmp[54..60], [0, 0, 255, 255, 0, 0], "BGR: red, blue");
+}
+
+#[test]
+fn a_masked_emf_shows_its_colour_bitmap_with_the_mask_as_alpha() {
+    // InDesign writes a transparent picture as a 1-bit mask record (black, white), then the
+    // colour record; the picture shows where the mask is white.
+    let table = [0, 0, 0, 0, 255, 255, 255, 0];
+    let mask = emf_dib_record(2, 1, 1, &table, &[0b0100_0000, 0, 0, 0]);
+    let colour = emf_dib_record(2, 1, 24, &[], &[10, 20, 30, 40, 50, 60, 0, 0]);
+    let bmp = crate::emf_raster_to_bmp(&emf_of(&[mask, colour])).unwrap();
+    assert_eq!(bmp[28..30], 32u16.to_le_bytes());
+    assert_eq!(bmp[10..14], 122u32.to_le_bytes());
+    assert_eq!(bmp[122..], [10, 20, 30, 0, 40, 50, 60, 255], "the first pixel is outside the mask");
 }

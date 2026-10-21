@@ -1564,7 +1564,8 @@ impl<'r> Importer<'r> {
         // 1e11 IDML sentinel). It must not become a multi-million-em advance.
         a.kerning = e.prop("KerningMethod").and_then(|k| match k.trim().trim_start_matches("$ID/") {
             "Optical" => Some(Kerning::Optical),
-            "Metrics" | "Metrics - Roman Only" => Some(Kerning::Metrics),
+            "Metrics" => Some(Kerning::Metrics),
+            "Metrics - Roman Only" => Some(Kerning::MetricsRomanOnly),
             "None" => Some(Kerning::None),
             _ => None,
         });
@@ -2801,8 +2802,60 @@ impl<'r> Importer<'r> {
         s
     }
 
+    /// The live text of a placed EPS (`<EPSText>`, e.g. a phone number set in a logo): one line in a
+    /// text frame that has no inset and puts its baseline where the EPS did.
+    fn eps_text(&mut self, e: &El, parent: Affine) -> Option<Item> {
+        let data = base64_decode(&e.prop_el("EPSTextData")?.text_content());
+        let t = crate::parse_eps_text(&data)?;
+        let (p, a) = (e.prop_el("PathBoundingBox")?, e.prop_el("EPSTextAttributeBounds")?);
+        let (pl, pb, pw) = (p.num("Left")?, p.num("Bottom")?, p.num("Right")? - p.num("Left")?);
+        let (al, ab, aw) = (a.num("Left")?, a.num("Bottom")?, a.num("Right")? - a.num("Left")?);
+        // The layout scales the EPS: map its coordinates onto the bounds InDesign reports for the art.
+        let s = if aw > 0.0 && pw > 0.0 { pw / aw } else { 1.0 };
+        let (x, base, size) = (pl + (t.x - al) * s, pb + (t.y - ab) * s, t.size * s);
+        let id = ItemId(self.alloc());
+        if let Some(sf) = e.get("Self") {
+            self.item_ids.insert(sf.to_string(), id);
+        }
+        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
+        let frame = Rect::new(x, base - size, x + pw.max(size * t.text.chars().count() as f64), base + size * 0.5);
+        let mut it = Item::new(id, layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(frame));
+        it.xf = parent * parse_affine(e.get("ItemTransform"));
+        it.fill = Fill::none();
+        it.stroke = Stroke::none();
+        // PostScript name → family and style: `YuMincho-Regular` is Yu Mincho, Regular.
+        let (family, style) = t.font.split_once('-').unwrap_or((&t.font, "Regular"));
+        let mut spaced = String::new();
+        for (i, c) in family.chars().enumerate() {
+            if i > 0 && c.is_ascii_uppercase() && family.as_bytes().get(i - 1).is_some_and(u8::is_ascii_lowercase) {
+                spaced.push(' ');
+            }
+            spaced.push(c);
+        }
+        let fill = e.get("FillColor").map(|r| self.swatch_ref(r)).unwrap_or_else(|| swatch::BLACK.into());
+        let over =
+            CharAttrs { font_family: Some(spaced), font_style: Some(style.to_string()), size: Some(size), fill: Some(fill), ..Default::default() };
+        let sid = StoryId(self.alloc());
+        let mut story = Story::new(sid);
+        story.chars = vec![CharRun { len: t.text.len(), format: CharFormat { over, ..Default::default() } }];
+        story.text = t.text;
+        story.frames = vec![id];
+        self.stories.insert(sid, story);
+        let options = TextFrameOptions {
+            inset: [0.0; 4],
+            first_baseline: designcraft_doc::FirstBaseline::Fixed,
+            first_baseline_min: size,
+            ..Default::default()
+        };
+        it.content = Content::Text(TextFrame { story: sid, options });
+        Some(it)
+    }
+
     fn item(&mut self, e: &El, parent: Affine) -> Option<Item> {
         let tag = e.local();
+        if tag == "EPSText" {
+            return self.eps_text(e, parent);
+        }
         let shape = match tag {
             "Rectangle" | "TextFrame" => Shape::Rectangle,
             "Oval" => Shape::Oval,
@@ -3075,6 +3128,9 @@ impl<'r> Importer<'r> {
                 data = d;
                 read_from = Some(key);
             }
+        }
+        if let Some(bmp) = crate::eps_preview_to_bmp(&data).or_else(|| crate::emf_raster_to_bmp(&data)) {
+            data = bmp;
         }
         // A linked file that can't be read shows the document's preview of it, if it has one. The
         // preview only stands in for the file: format and pixel size still describe the link.

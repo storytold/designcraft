@@ -3287,7 +3287,7 @@ fn layout_line(
     let has_tab = line.iter().any(|g| g.ch == '\t' || g.ch == story::RIGHT_INDENT_TAB);
     // Optical margin alignment: the measure grows by the hang of the edge glyphs.
     let (mut x0, mut measure) = (x0, measure);
-    if (sp.optical || pp.kinsoku_hang != designcraft_doc::cjk::KinsokuHang::None) && !has_tab {
+    if (sp.optical || pp.kinsoku_hang != designcraft_doc::cjk::KinsokuHang::None || line.iter().any(|g| g.cjk_hang > 0.0)) && !has_tab {
         let first = line.iter().find(|g| g.adv > 0.0 && !g.is_space());
         let lastg = line.iter().rev().find(|g| g.adv > 0.0 && !g.is_space());
         let hl = if sp.optical { first.map_or(0.0, |g| breaker::hang(g.ch).0 * g.adv) } else { 0.0 };
