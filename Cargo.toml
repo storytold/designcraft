@@ -26,6 +26,7 @@ designcraft-idml = { path = "crates/idml" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-pptx = { path = "crates/pptx" }
 designcraft-textimport = { path = "crates/textimport" }
+designcraft-pagemaker = { path = "crates/pagemaker" }
 designcraft-format = { path = "crates/format" }
 designcraft-tools = { path = "crates/tools" }
 designcraft-engine = { path = "crates/engine" }

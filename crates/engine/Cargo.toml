@@ -26,6 +26,7 @@ designcraft-pdf = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }
 indd = { workspace = true }
+designcraft-pagemaker = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -42,6 +43,7 @@ tempfile = { workspace = true }
 same-file = { workspace = true }
 
 [dev-dependencies]
+designcraft-pagemaker = { workspace = true, features = ["testing"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }
 zip = { workspace = true }
 hayro-syntax = "0.7.2"

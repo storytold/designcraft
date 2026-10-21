@@ -937,6 +937,7 @@ version = "0.11.0"
 dependencies = [
  "arboard",
  "designcraft-engine",
+ "designcraft-pagemaker",
  "designcraft-ui-egui",
  "eframe",
  "egui",
@@ -1030,6 +1031,7 @@ dependencies = [
  "designcraft-geom",
  "designcraft-idml",
  "designcraft-images",
+ "designcraft-pagemaker",
  "designcraft-pdf",
  "designcraft-pptx",
  "designcraft-render",
@@ -1143,6 +1145,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "designcraft-pagemaker"
+version = "0.10.0"
+dependencies = [
+ "designcraft-color",
+ "designcraft-doc",
+ "designcraft-geom",
+]
+
+[[package]]
 name = "designcraft-pdf"
 version = "0.11.0"
 dependencies = [
@@ -1233,6 +1244,7 @@ dependencies = [
  "designcraft-fonts",
  "designcraft-geom",
  "designcraft-idml",
+ "designcraft-pagemaker",
  "designcraft-render",
  "designcraft-tools",
  "egui",

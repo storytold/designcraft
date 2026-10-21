@@ -39,9 +39,9 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — a DesignCraft or IDML file (recognised by its content, so the extension may be missing), or an InDesign .indd/.indt (recognised by its signature or extension, converted to IDML; its conversion warnings join `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, GREP styles whose pattern can't compile, Based on Parent links cleared and, for IDML and InDesign files, package parts missing}",
+            "{path} — a DesignCraft or IDML file (recognised by its content, so the extension may be missing), an InDesign .indd/.indt (recognised by its signature or extension, converted to IDML; its conversion warnings join `warnings`), or a PageMaker 4–7 document (.pmd, .p65, .pm6, .pm5, .pm4 and templates, PC or Mac; by content or extension; what can't be imported yet is listed in `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, GREP styles whose pattern can't compile, Based on Parent links cleared and, for IDML and InDesign files, package parts missing}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package or an InDesign .indd/.indt → {index, warnings}", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package, an InDesign .indd/.indt, or a PageMaker 4–7 document (.pmd, .p65, .pm6, .pm5, .pm4 and templates, PC or Mac; known by content, or by `name`) → {index, warnings} (IDML, InDesign and PageMaker also {documentFonts}; PageMaker also {format: the PageMaker version}; what a PageMaker file holds that can't be imported yet is listed in `warnings`)", always, file_open_bytes),
         cmd!(noundo "file.openRecent", "Open Recent File", [], None,
             "{index} — reopen entry `index` of File › Open Recent (as file.open); a file that is gone is an error and stays listed",
             has_recent, file_open_recent),
@@ -173,11 +173,15 @@ pub fn with_document_extension(path: &str) -> String {
     format!("{path}.{}", designcraft_format::EXTENSION)
 }
 
-/// Whether `bytes` are a document `file.open` reads: a DesignCraft package or an IDML package.
-/// The first [`DOCUMENT_SNIFF_BYTES`] of a file are enough for packages that start with their
-/// `mimetype` entry, as both formats write them.
+/// Whether `bytes` are a document `file.open` reads: a DesignCraft package, an IDML package or a
+/// PageMaker document. The first [`DOCUMENT_SNIFF_BYTES`] of a file are enough for packages that
+/// start with their `mimetype` entry, as both formats write them, and for PageMaker 4–5 files
+/// (their header says so); PageMaker 6–7 files need the whole file (or their extension).
 pub fn is_document(bytes: &[u8]) -> bool {
-    designcraft_idml::is_idml(bytes) || designcraft_format::starts_designcraft(bytes) || designcraft_format::is_designcraft(bytes)
+    designcraft_idml::is_idml(bytes)
+        || designcraft_format::starts_designcraft(bytes)
+        || designcraft_format::is_designcraft(bytes)
+        || designcraft_pagemaker::is_pagemaker(bytes)
 }
 
 /// How much of a file [`is_document`] needs to recognise a package by its `mimetype` entry.
@@ -474,8 +478,11 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         if designcraft_idml::is_idml(&bytes) || (!native && (super::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return super::interchange::open_idml(s, p);
         }
+        if !native && super::interchange::is_pagemaker(path, &bytes) {
+            return super::interchange::open_pagemaker(s, p);
+        }
         if !native && ext != designcraft_format::EXTENSION {
-            return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
+            return Err(bad("file.open", format!("{path}: not a DesignCraft, IDML, InDesign or PageMaker file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
         super::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
@@ -541,6 +548,9 @@ fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     // signature (or their name).
     if designcraft_idml::is_idml(&b) || super::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return super::interchange::open_idml(s, p);
+    }
+    if super::interchange::is_pagemaker(str_param(p, "name").unwrap_or_default(), &b) {
+        return super::interchange::open_pagemaker(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;
     super::datamerge::resolve_sources_on_open(&mut d, None);
@@ -2002,7 +2012,7 @@ mod extension_tests {
         std::fs::write(&notes, b"plain text").unwrap();
         assert!(!is_document(b"plain text"));
         let e = t.execute("file.open", &json!({"path": notes.to_string_lossy()})).unwrap_err();
-        assert!(e.to_string().contains("not a DesignCraft or IDML file"), "{e}");
+        assert!(e.to_string().contains("not a DesignCraft, IDML, InDesign or PageMaker file"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

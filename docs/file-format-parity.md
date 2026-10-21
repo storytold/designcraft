@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (PageMaker 4–7 import, #1427; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -28,7 +28,7 @@ score below).
 | Snippet | `.idms` | read/write | ✗ (own snippets) | ✗ | | 1% |
 | InCopy story / assignment | `.icml`, `.icma`, `.incx`, `.inca` | read/write | ✗ | ✗ | InCopy workflow out of scope; ICML story import would still help | 1% |
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
-| PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
+| PageMaker | `.pmd`, `.pmt`, `.p65`, `.t65`, `.pm6`, `.pt6`, `.pm5`, `.pt5`, `.pm4`, `.pt4` (PC and Mac) | read | ✓ read: PageMaker 4–7 (`designcraft-pagemaker`) | — | Pages, masters, threaded stories (fonts, sizes, styles, colours, alignment, indents), rotation, lines, boxes, ovals, embedded TIFF/BMP images. Not yet: tabs and paragraph styles, shape fills, polygons, metafiles/EPS, PageMaker 3 (`.pm3`, refused with a message). 20 of 24 public samples open; tests run them when `DESIGNCRAFT_PAGEMAKER_CORPUS` names them | 60% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
@@ -114,6 +114,7 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | PageMaker 4–7 documents open (PC and Mac, `.pmd` … `.pm4`, by content or extension), clean-room from sample files (`crates/pagemaker/FORMAT.md`); PageMaker 3 is recognised and refused (#1427) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |
 | 2026-10-13 | minor | `.indd` and `.indt` read through storytold/indd-utils; INDD remaining work is a real-file corpus (10–30 h); score unchanged until it is measured |

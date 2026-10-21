@@ -1,0 +1,18 @@
+[package]
+name = "designcraft-pagemaker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft PageMaker import: Aldus/Adobe PageMaker 4–7 documents (PC and Mac) into a Document"
+
+[lints]
+workspace = true
+
+[features]
+# Synthetic PageMaker files for other crates' tests.
+testing = []
+
+[dependencies]
+designcraft-doc = { workspace = true }
+designcraft-geom = { workspace = true }
+designcraft-color = { workspace = true }

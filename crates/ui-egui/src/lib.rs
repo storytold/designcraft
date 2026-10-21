@@ -1721,7 +1721,7 @@ pub fn cjk_features(app: &DesignApp) -> bool {
 /// IDML, and InDesign documents and templates (converted to IDML on open).
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext))
+    [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext)) || designcraft_pagemaker::has_pagemaker_extension(&n)
 }
 
 pub fn now_ms() -> f64 {

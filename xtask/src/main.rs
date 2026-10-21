@@ -218,6 +218,9 @@ Tests that use a corpus skip cleanly when it is absent.
   corpus/tiff/       libtiff pics (optional)
   corpus/exr/        OpenEXR sample images (optional)
   corpus/raw/        raw.pixls.us samples, CC0 (optional)
+  PageMaker files    any folder of .pmd/.p65/.pm6/.pm5/.pm4 files (e.g. the dexvert samples,
+                     sembiance.com/fileFormatSamples/document/pageMaker): run
+                     DESIGNCRAFT_PAGEMAKER_CORPUS=<folder> cargo test -p designcraft-pagemaker
 ",
         corpus.display()
     );

@@ -346,6 +346,46 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
 }
 
+/// File › Open of an Aldus/Adobe PageMaker document (`.pmd`, `.p65`, `.pm6`… back to PageMaker 4,
+/// PC and Mac): `path`, or `base64` and `name`. Like an IDML file, it opens as a new unsaved
+/// document, so a save never writes over the PageMaker file.
+pub(crate) fn open_pagemaker(s: &mut Session, p: &Value) -> Result<Value> {
+    let (bytes, title) = if let Some(b) = str_param(p, "base64") {
+        let name = str_param(p, "name").unwrap_or_default();
+        (base64_decode(b), without_document_extension(name).to_string())
+    } else if let Some(path) = str_param(p, "path") {
+        #[cfg(not(target_arch = "wasm32"))]
+        let b = crate::io::read_file(path).map_err(EngineError::Other)?;
+        #[cfg(target_arch = "wasm32")]
+        let b: Vec<u8> = Vec::new();
+        let pp = std::path::Path::new(path);
+        (b, pp.file_name().map(|n| without_document_extension(&n.to_string_lossy()).to_string()).unwrap_or_default())
+    } else {
+        return Err(bad("file.open", "missing `path` or `base64`"));
+    };
+    let imported = designcraft_pagemaker::import_pagemaker(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut d = imported.document;
+    let mut warnings = imported.warnings;
+    if !title.is_empty() {
+        d.title = title;
+    }
+    let (fonts, faces, font_warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+        Some(path) => super::file::load_document_fonts(&mut d, path),
+        None => (None, 0, Vec::new()),
+    };
+    warnings.extend(font_warnings);
+    let mut st = DocState::new(d, None);
+    st.fonts = fonts;
+    let i = s.add_document(st);
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "format": imported.kind.version.label()}))
+}
+
+/// A PageMaker document: known by its content, or by its name when the content isn't (the
+/// importer then says why it can't read it).
+pub(crate) fn is_pagemaker(name: &str, bytes: &[u8]) -> bool {
+    designcraft_pagemaker::is_pagemaker(bytes) || designcraft_pagemaker::has_pagemaker_extension(name)
+}
+
 /// An InDesign document or template (.indd, .indt): known by its signature, or by its name when
 /// the bytes are something else (the converter then says why it can't read them).
 pub(crate) fn is_indd(name: &str, bytes: &[u8]) -> bool {
@@ -357,10 +397,10 @@ pub(crate) fn has_indd_extension(name: &str) -> bool {
     n.ends_with(".indd") || n.ends_with(".indt")
 }
 
-/// `name` without a trailing .idml, .indd or .indt (any case).
+/// `name` without a trailing .idml, .indd or .indt, or a PageMaker extension (any case).
 fn without_document_extension(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ["idml", "indd", "indt"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
+        Some((stem, ext)) if ["idml", "indd", "indt"].iter().chain(designcraft_pagemaker::EXTENSIONS).any(|e| ext.eq_ignore_ascii_case(e)) => stem,
         _ => name,
     }
 }
@@ -534,6 +574,39 @@ mod tests {
 
     /// INDD routing without an InDesign file: bytes with the INDD signature (or an .indd/.indt
     /// name) go to the converter, and what it can't read is an open error that adds no document.
+    #[test]
+    fn pagemaker_files_open_by_content_or_name_and_never_save_over_themselves() {
+        use designcraft_pagemaker::testfile::{PM4, PM65, sample};
+        let mut s = Session::new();
+        // By bytes, with or without an extension.
+        for (name, bytes) in [("Flyer.pmd", sample(PM65, true)), ("Old Mac file", sample(PM4, false))] {
+            let r = s.execute("file.openBytes", &json!({"base64": base64_encode(&bytes), "name": name})).unwrap();
+            assert!(r["format"].as_str().unwrap().starts_with("PageMaker"), "{r}");
+            let d = &s.doc().unwrap().doc;
+            assert_eq!(d.page_count(), 2);
+            assert!(d.stories.values().any(|st| st.text == "Hello\nworld"));
+            assert_eq!(d.title, name.trim_end_matches(".pmd"));
+            // A save asks for a new file: the PageMaker file is never written over.
+            assert!(s.doc().unwrap().path.is_none());
+        }
+        // By path; the content decides, whatever the extension.
+        let dir = std::env::temp_dir().join(format!("dc-pagemaker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Brochure.P65");
+        std::fs::write(&path, sample(PM65, true)).unwrap();
+        let r = s.execute("file.open", &json!({"path": path.to_str().unwrap()})).unwrap();
+        assert_eq!(r["format"], "PageMaker 6.5/7");
+        assert_eq!(s.doc().unwrap().doc.title, "Brochure");
+        // A damaged file with a PageMaker name says what is wrong, and opens nothing.
+        let before = s.documents().len();
+        let broken = dir.join("broken.pmd");
+        std::fs::write(&broken, b"not really a pagemaker file").unwrap();
+        let err = s.execute("file.open", &json!({"path": broken.to_str().unwrap()})).unwrap_err().to_string();
+        assert!(err.contains("PageMaker"), "{err}");
+        assert_eq!(s.documents().len(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn indd_files_go_through_the_converter_and_its_errors_are_open_errors() {
         let mut signed = indd::header::SIGNATURE.to_vec();

@@ -6,7 +6,8 @@ use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
+const DOC_EXTS: &[&str] =
+    &["designcraft", "idml", "indd", "indt", "pmd", "pmt", "p65", "t65", "pm6", "pt6", "pm5", "pt5", "pm4", "pt4", "pm3", "pt3", "pagemaker"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
     "jpg",
@@ -398,7 +399,7 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             } else if request.purpose == "place" {
                 rfd::AsyncFileDialog::new().add_filter("Graphics", IMAGE_EXTS)
             } else {
-                rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML or InDesign", DOC_EXTS)
+                rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML, InDesign or PageMaker", DOC_EXTS)
             };
             wasm_bindgen_futures::spawn_local(async move {
                 let Some(file) = dialog.pick_file().await else {
