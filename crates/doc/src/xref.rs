@@ -29,13 +29,58 @@ pub struct TextAnchor {
     pub name: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CrossRef {
     /// The destination anchor (0 = unresolved, e.g. pasted without its destination).
     pub target: u64,
     /// Name of the format in [`Document::xref_formats`].
     pub format: String,
+    /// Text typed over the generated text (InDesign keeps a cross-reference's edited text until
+    /// it is updated): shown as is, except that each `<pageNum />` shows the destination's page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The page last shown (for edited text whose destination is gone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+}
+
+/// The `<pageNum />` building block, as it appears in [`CrossRef::text`].
+pub const PAGE_NUM_BLOCK: &str = "<pageNum />";
+
+/// Edited cross-reference text with its page numbers filled in (quotes kept as typed).
+pub fn expand_edited(text: &str, page: &str) -> String {
+    text.replace(PAGE_NUM_BLOCK, page)
+}
+
+/// The literal text between a format's building blocks, in order.
+pub fn literal_parts(definition: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = definition;
+    while let Some(i) = rest.find('<') {
+        let Some(j) = rest[i..].find('>') else { break };
+        if i > 0 {
+            out.push(&rest[..i]);
+        }
+        rest = &rest[i + j + 1..];
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+/// Does `text` (a cross-reference's text as saved) still read as its format would generate it:
+/// every literal part of the definition, in order? Text that doesn't was edited by hand.
+pub fn matches_format(text: &str, definition: &str) -> bool {
+    let mut rest = text;
+    for part in literal_parts(definition) {
+        match rest.find(part) {
+            Some(i) => rest = &rest[i + part.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 /// A cross-reference format: building blocks between literal text.
@@ -198,7 +243,7 @@ impl Story {
         if n > 0 {
             let k = self.marks_before(XREF_MARK, pos);
             for i in 0..n {
-                self.xrefs.insert(k + i, Arc::new(CrossRef { target: 0, format: String::new() }));
+                self.xrefs.insert(k + i, Arc::new(CrossRef::default()));
             }
         }
         let n = text.matches(crate::index::INDEX_MARK).count();
@@ -268,7 +313,7 @@ impl Story {
         let n = self.text.matches(XREF_MARK).count();
         self.xrefs.truncate(n);
         while self.xrefs.len() < n {
-            self.xrefs.push(Arc::new(CrossRef { target: 0, format: String::new() }));
+            self.xrefs.push(Arc::new(CrossRef::default()));
         }
         let n = self.text.matches(crate::index::INDEX_MARK).count();
         self.index_refs.truncate(n);
@@ -388,6 +433,18 @@ pub fn clean(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Saved text that still reads as its format produced it is generated again; text typed
+    /// over it is kept.
+    #[test]
+    fn edited_text_is_recognised() {
+        let def = "Page <pageNum />: Last, First. \"<txtAnchrName />.\" YYYY. Volume X, issue Y.";
+        assert_eq!(literal_parts(def), ["Page ", ": Last, First. \"", ".\" YYYY. Volume X, issue Y."]);
+        assert!(matches_format("Page <pageNum />: Last, First. \"Advent Horizon.\" YYYY. Volume X, issue Y.", def));
+        assert!(!matches_format("Page <pageNum />: Bove, Vinny. \"Advent Horizon.\" 1996. Volume 6, issue 5.", def));
+        assert!(matches_format("anything", "<paraText />"));
+        assert_eq!(expand_edited("p. <pageNum /> and <pageNum />", "4"), "p. 4 and 4");
+    }
+
     #[test]
     fn formats_expand() {
         let v =
@@ -407,7 +464,7 @@ mod tests {
         let mut s = Story::with_text(StoryId(3), "Heading\nBody text.", Default::default());
         let a = s.insert_anchor(0, "Heading");
         assert_eq!(a >> 24, 3);
-        s.insert_xref(13, CrossRef { target: a, format: "Page Number".into() });
+        s.insert_xref(13, CrossRef { target: a, format: "Page Number".into(), ..Default::default() });
         s.check().unwrap();
         assert_eq!(s.anchor_pos(a), Some(0));
         s.insert(0, "New ");

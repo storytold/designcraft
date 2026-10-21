@@ -348,6 +348,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-17** · Cross-references keep text typed over their generated text (IDML import and export), with the page number still live, as InDesign shows them until updated; a cross-reference whose destination is gone shows its saved text and page instead of "??"; and a cross-reference's text breaks at its spaces instead of inside words. No readiness percentage change.
 - **2026-10-16** · Type › Reload Fonts (`font.reload`): fonts installed, edited or removed while DesignCraft runs are read again without a restart, and the open documents recompose with them (#328, #547). An edited font file is noticed by its length and modification time; bundled, added and document fonts stay as they are. InDesign does this by itself, so noticing changes automatically is still open (gap 6). No readiness percentage change.
 - **2026-10-16** · Parents can be deleted from their Pages-panel context menu or `layout.parents.delete {id}`. Applied-page and based-on references are cleared, local override copies survive, and Undo restores the parent. Addresses the deletion portion of #956; no readiness percentage change.
 - **2026-10-17** · File › Package writes the document's and the IDML's links relative to the package (`Links/logo.png`, `file:Links/logo.png`), so a package holds no path from the machine that made it; opening a document resolves them to the files beside it. Links › Copy Link(s) To still links by full path. (#340). No readiness percentage change.
