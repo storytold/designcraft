@@ -1,7 +1,8 @@
 //! Math expressions: a LaTeX subset typeset into boxes and written as SVG (text in the bundled
-//! serif, rules and radicals as paths). Covers fractions, super/subscripts, square and n-th roots,
+//! serif or a chosen installed family, rules and radicals as paths). Covers fractions, super/subscripts, square and n-th roots,
 //! big operators with limits, Greek letters, common symbols, `\text{}`, `\mathrm{}`, spacing
-//! commands and `\left( … \right)`.
+//! commands and `\left( … \right)`. Named operators (`\lim`, `\max`, …) stack their limits under
+//! them with `\limits` or in display style; `\nolimits` sets any operator's limits as scripts.
 
 use std::fmt::Write as _;
 
@@ -73,10 +74,14 @@ enum Node {
     },
     Text(String),
     Space(f64),
-    /// A big operator (∑ ∏ ∫): drawn larger, limits as scripts.
-    Big(String),
+    /// A big operator; `true` stacks its limits over and under it (`\nolimits` clears it).
+    Big(String, bool),
+    /// A named operator (`lim`, `max`, …), upright; `true` stacks its limits under/over it.
+    Op(String, bool),
     /// `\left( … \right)`: delimiters sized to the content.
     Fenced(String, Box<Node>, String),
+    /// Any other `\underset` base (`\frac{a}{b}`, `x`): laid out as itself, limits stacked.
+    Stacked(Box<Node>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,6 +174,8 @@ struct Parser<'a> {
     i: usize,
     /// Enclosing group depth, at most [`MAX_NESTING`].
     depth: usize,
+    /// Display style: named operators stack their limits unless `\nolimits` follows.
+    display: bool,
 }
 
 impl Parser<'_> {
@@ -225,6 +232,7 @@ impl Parser<'_> {
         }
         out
     }
+    /// One argument: a `{…}` group or a single atom (an empty group past the nesting limit).
     fn arg(&mut self) -> Node {
         if self.depth >= MAX_NESTING {
             return Node::Group(Vec::new());
@@ -240,6 +248,8 @@ impl Parser<'_> {
         self.depth -= 1;
         n
     }
+    /// The delimiter after `\left` or `\right`: a character, the one a command names
+    /// (`\{`, `\langle`, …), or none for `.` and unknown commands.
     fn delimiter(&mut self) -> String {
         self.skip_ws();
         match self.peek() {
@@ -265,6 +275,23 @@ impl Parser<'_> {
             None => String::new(),
         }
     }
+    /// Consume a `\limits` (`Some(true)`) or `\nolimits` (`Some(false)`) right after an operator.
+    fn limits_flag(&mut self) -> Option<bool> {
+        let save = self.i;
+        self.skip_ws();
+        for (word, v) in [("\\limits", true), ("\\nolimits", false)] {
+            let w: Vec<char> = word.chars().collect();
+            let rest = self.s.get(self.i..).unwrap_or_default();
+            if rest.starts_with(&w) && !rest.get(w.len()).is_some_and(char::is_ascii_alphabetic) {
+                self.i += w.len();
+                return Some(v);
+            }
+        }
+        self.i = save;
+        None
+    }
+    /// The next atom: a group, a command, an environment or a character; `None` at the end of
+    /// the input. Scripts after it are left to the caller.
     fn atom(&mut self) -> Option<Node> {
         self.skip_ws();
         let c = self.peek()?;
@@ -291,13 +318,24 @@ impl Parser<'_> {
                                 }
                                 s.push(c);
                             }
-                            Box::new(parse_at(&s, self.depth + 1))
+                            Box::new(parse_at(&s, self.depth + 1, self.display))
                         });
                         let a = self.arg();
                         Node::Sqrt(idx, Box::new(a))
                     }
                     "text" | "mathrm" | "textrm" | "operatorname" => Node::Text(self.raw_group()),
-                    "sin" | "cos" | "tan" | "log" | "ln" | "exp" | "lim" | "max" | "min" => Node::Text(name),
+                    "sin" | "cos" | "tan" | "log" | "ln" | "exp" => Node::Text(name),
+                    "lim" | "max" | "min" | "sup" | "inf" | "limsup" | "liminf" => {
+                        let stacked = self.limits_flag().unwrap_or(self.display);
+                        Node::Op(name, stacked)
+                    }
+                    // A stray `\limits`/`\nolimits` (not after an operator) sets nothing.
+                    "limits" | "nolimits" => Node::Space(0.0),
+                    "underset" => {
+                        let under = self.arg();
+                        let base = self.arg();
+                        Node::Scripts { base: Box::new(stack_base(base)), sup: None, sub: Some(Box::new(under)) }
+                    }
                     "," => Node::Space(3.0 / 18.0),
                     ":" | ">" => Node::Space(4.0 / 18.0),
                     ";" => Node::Space(5.0 / 18.0),
@@ -315,7 +353,7 @@ impl Parser<'_> {
                     "}" => Node::Sym("}".into(), Class::Punct),
                     "%" | "$" | "#" | "&" | "_" => Node::Sym(name, Class::Plain),
                     n => match (big_op(n), symbol(n)) {
-                        (Some(op), _) => Node::Big(op.into()),
+                        (Some(op), _) => Node::Big(op.into(), self.limits_flag().unwrap_or(true)),
                         (None, Some((s, cl))) => Node::Sym(s.into(), cl),
                         _ => Node::Text(format!("\\{n}")),
                     },
@@ -339,6 +377,7 @@ impl Parser<'_> {
             c => Node::Sym(c.to_string(), Class::Plain),
         })
     }
+    /// Atoms with their scripts up to `end` (or the end of the input): a group's contents.
     fn list(&mut self, end: Option<char>) -> Vec<Node> {
         if self.depth >= MAX_NESTING {
             return Vec::new();
@@ -380,6 +419,7 @@ impl Parser<'_> {
         self.depth -= 1;
         out
     }
+    /// The contents of a `\left … \right` pair, up to its matching `\right`.
     fn list_until_right(&mut self) -> Vec<Node> {
         if self.depth >= MAX_NESTING {
             return Vec::new();
@@ -394,7 +434,7 @@ impl Parser<'_> {
                 self.i += 6;
                 break;
             }
-            let mut p = Parser { s: self.s, i: self.i, depth: self.depth + 1 };
+            let mut p = Parser { s: self.s, i: self.i, depth: self.depth + 1, display: self.display };
             let one = p.list_one();
             self.i = p.i;
             out.extend(one);
@@ -428,14 +468,32 @@ impl Parser<'_> {
     }
 }
 
+/// Parse `src` into a node tree, from the top level.
 fn parse(src: &str) -> Node {
-    parse_at(src, 0)
+    parse_at(src, 0, false)
 }
 
-fn parse_at(src: &str, depth: usize) -> Node {
+/// Parse `src` with `depth` levels of nesting already used (nested parses share
+/// [`MAX_NESTING`]), `display` saying whether operator limits stack.
+fn parse_at(src: &str, depth: usize, display: bool) -> Node {
     let chars: Vec<char> = src.chars().collect();
-    let mut p = Parser { s: &chars, i: 0, depth };
+    let mut p = Parser { s: &chars, i: 0, depth, display };
     Node::Group(p.list(None))
+}
+
+/// The base of `\underset{under}{base}`: a named operator (`\underset{x\to 0}{\lim}`), upright
+/// text (`\mathrm{arg}`), or anything else laid out as itself, with `under` stacked below it.
+fn stack_base(base: Node) -> Node {
+    match base {
+        Node::Op(name, _) => Node::Op(name, true),
+        Node::Big(op, _) => Node::Big(op, true),
+        Node::Group(mut v) if v.len() == 1 => match v.pop() {
+            Some(n) => stack_base(n),
+            None => Node::Group(v),
+        },
+        Node::Text(s) => Node::Op(s, true),
+        other => Node::Stacked(Box::new(other)),
+    }
 }
 
 /// Typesetting fonts and metrics.
@@ -463,11 +521,13 @@ impl Fonts {
 const FAMILY: &str = designcraft_fonts::DEFAULT_FAMILY;
 const FALLBACK: &str = "Source Sans 3";
 
+/// A box holding `s` at `size` (italic or upright), with the nominal ascent and descent.
 fn text_box(f: &Fonts, s: &str, size: f64, italic: bool) -> MBox {
     let w = f.width(s, size, italic);
     MBox { w, asc: size * 0.72, desc: size * 0.22, els: vec![Elem::Text { x: 0.0, y: 0.0, s: s.to_string(), size, italic }] }
 }
 
+/// `parts` (each with the space before it) side by side on a common baseline.
 fn hbox(parts: Vec<(MBox, f64)>) -> MBox {
     // (box, space before) laid out along the baseline.
     let mut out = MBox::default();
@@ -484,12 +544,14 @@ fn hbox(parts: Vec<(MBox, f64)>) -> MBox {
     out
 }
 
+/// Lay out `n` at `size`: its box, elements placed from its left end on its baseline.
 fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
     let axis = size * 0.25;
     match n {
         Node::Sym(s, cl) => text_box(f, s, size, *cl == Class::Ident),
-        Node::Text(s) => text_box(f, s, size, false),
+        Node::Text(s) | Node::Op(s, _) => text_box(f, s, size, false),
         Node::Space(em) => MBox { w: em * size, ..Default::default() },
+        Node::Stacked(b) => layout(f, b, size),
         Node::Group(list) => {
             let mut parts = Vec::new();
             let mut prev: Option<Class> = None;
@@ -498,6 +560,7 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
                     Node::Sym(_, c) => Some(*c),
                     Node::Scripts { base, .. } => match &**base {
                         Node::Sym(_, c) => Some(*c),
+                        Node::Op(..) => Some(Class::Plain),
                         _ => None,
                     },
                     _ => None,
@@ -564,7 +627,7 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
             }
             out
         }
-        Node::Big(op) => {
+        Node::Big(op, _) => {
             let mut b = text_box(f, op, size * 1.5, false);
             b.asc = size * 1.05;
             b.desc = size * 0.35;
@@ -577,7 +640,7 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
             b
         }
         Node::Scripts { base, sup, sub } => {
-            let big = matches!(&**base, Node::Big(_));
+            let big = matches!(&**base, Node::Big(_, true) | Node::Op(_, true) | Node::Stacked(_));
             let b = layout(f, base, size);
             let s2 = size * 0.7;
             let (bw, basc, bdesc) = (b.w, b.asc, b.desc);
@@ -654,17 +717,91 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
     }
 }
 
-/// Typeset `latex` at `size` points: SVG bytes and the size in points.
+/// How an expression is set.
+#[derive(Clone, Debug, Default)]
+pub struct Options {
+    /// Display style (`\[ … \]`): named operators like `\lim` stack their limits.
+    pub display: bool,
+    /// The font family its letters, digits and operators are set in (any case); `None`, or a
+    /// family that isn't installed, sets it in the bundled serif. Characters the family lacks
+    /// come from the fallback sans, as with the bundled serif. The name is kept in the SVG even
+    /// when the family isn't installed ([`family_of`]), so an edit on a machine without it doesn't
+    /// lose it.
+    pub family: Option<String>,
+}
+
+/// `name` trimmed, as the SVG's `font-family` can carry it: `None` when empty or with a quote or
+/// backslash.
+fn family_name(name: &str) -> Option<&str> {
+    let name = name.trim();
+    (!name.is_empty() && !name.contains(['\'', '"', '\\'])).then_some(name)
+}
+
+/// The installed family `name` names, as the font list spells it: `None` for an unknown family,
+/// and for a name with a quote or backslash, which the SVG's `font-family` couldn't carry.
+fn installed_family(db: &FontDb, name: &str) -> Option<String> {
+    let name = family_name(name)?;
+    db.scoped(0).canonical_family(name).filter(|f| family_name(f).is_some())
+}
+
+/// The family an expression typeset by [`to_svg_with`] was set in, read back from its SVG (as
+/// asked for, if it isn't installed here): `None` for the bundled serif (or an SVG this module
+/// didn't write).
+pub fn family_of(svg: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(svg).ok()?;
+    let root = s.get(..s.find('>')?)?;
+    let rest = root.split_once(" font-family=\"'")?.1;
+    let name = rest.get(..rest.find("'\"")?)?;
+    Some(name.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")).filter(|n| !n.is_empty())
+}
+
+/// Whether an expression typeset by [`to_svg_with`] was set in display style, read back from its
+/// SVG (false for text style, or an SVG this module didn't write).
+pub fn display_of(svg: &[u8]) -> bool {
+    let Ok(s) = std::str::from_utf8(svg) else { return false };
+    s.find('>').and_then(|end| s.get(..end)).is_some_and(|root| root.contains(DISPLAY_MARK))
+}
+
+/// The root attribute that records display style, so an edit can keep it.
+const DISPLAY_MARK: &str = " data-display=\"true\"";
+
+/// Typeset `latex` at `size` points in text style: SVG bytes and the size in points.
 pub fn to_svg(latex: &str, size: f64) -> (Vec<u8>, (f64, f64)) {
+    render(&parse(latex), size, None, false)
+}
+
+/// [`to_svg`] with [`Options`].
+pub fn to_svg_with(latex: &str, size: f64, opts: &Options) -> (Vec<u8>, (f64, f64)) {
+    render(&parse_at(latex, 0, opts.display), size, opts.family.as_deref(), opts.display)
+}
+
+/// Lay out `tree` at `size` in `family` (the bundled serif if `None` or not installed) and write
+/// the SVG, recording the family asked for and display style on its root.
+fn render(tree: &Node, size: f64, family: Option<&str>, display: bool) -> (Vec<u8>, (f64, f64)) {
     let db = FontDb::global();
-    let f = Fonts { upright: db.face(FAMILY, "Regular"), italic: db.face(FAMILY, "Italic"), fallback: db.face(FALLBACK, "Regular") };
-    let b = layout(&f, &parse(latex), size);
+    let chosen = family.and_then(|name| installed_family(db, name));
+    // The name kept on the root: as installed, else as asked for.
+    let named = chosen.clone().or_else(|| family.and_then(family_name).map(str::to_string));
+    let fam = chosen.as_deref().unwrap_or(FAMILY);
+    let upright = db.face(fam, "Regular");
+    // A family without an italic sets italic letters in its upright face, measured as drawn.
+    let italic = if db.styles(fam).iter().any(|st| st.eq_ignore_ascii_case("Italic")) { db.face(fam, "Italic") } else { upright.clone() };
+    let f = Fonts { upright, italic, fallback: db.face(FALLBACK, "Regular") };
+    let b = layout(&f, tree, size);
     let pad = size * 0.1;
     let (w, h) = (b.w + 2.0 * pad, b.asc + b.desc + 2.0 * pad);
     let base = pad + b.asc;
     let mut svg = String::new();
-    let _ = write!(svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w:.2}pt\" height=\"{h:.2}pt\" viewBox=\"0 0 {w:.3} {h:.3}\">");
     let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    // A chosen family is named on the root too (even one not installed here), and display style
+    // marked, so an edit can set the expression the same way again.
+    let root_family = named.as_deref().map(|c| format!(" font-family=\"'{}'\"", esc(c))).unwrap_or_default();
+    let root_display = if display { DISPLAY_MARK } else { "" };
+    let _ = write!(
+        svg,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w:.2}pt\" height=\"{h:.2}pt\" viewBox=\"0 0 {w:.3} {h:.3}\"{root_family}{root_display}>"
+    );
+    let fam_attr = esc(fam);
     for e in &b.els {
         match e {
             Elem::Text { x, y, s, size, italic } => {
@@ -672,8 +809,9 @@ pub fn to_svg(latex: &str, size: f64) -> (Vec<u8>, (f64, f64)) {
                 let mut cx = *x;
                 for c in s.chars() {
                     let face = f.face(c, *italic);
-                    let fam = if std::ptr::eq(face, &*f.fallback) { FALLBACK } else { FAMILY };
-                    let it = *italic && !std::ptr::eq(face, &*f.fallback);
+                    let fam = if std::ptr::eq(face, &*f.fallback) { FALLBACK } else { fam_attr.as_str() };
+                    // Italic only where an italic face draws it (not a family's upright stand-in).
+                    let it = *italic && !std::ptr::eq(face, &*f.fallback) && !std::ptr::eq(&*f.italic, &*f.upright);
                     let _ = write!(
                         svg,
                         "<text x=\"{:.3}\" y=\"{:.3}\" font-family=\"'{fam}'\" font-size=\"{size:.3}\"{}>{}</text>",
@@ -706,6 +844,8 @@ pub fn to_svg(latex: &str, size: f64) -> (Vec<u8>, (f64, f64)) {
 mod tests {
     use super::*;
 
+    /// Fractions, roots, scripts, big operators, Greek letters, relations, text and
+    /// `\left … \right` parse to the expected nodes.
     #[test]
     fn parses_the_common_constructs() {
         let n = parse(r"\frac{a^2+b}{\sqrt[3]{x}}");
@@ -713,7 +853,7 @@ mod tests {
         assert!(matches!(&v[0], Node::Frac(_, _)));
         let n = parse(r"\sum_{i=1}^{n} i^2 \le \alpha");
         let Node::Group(v) = n else { panic!() };
-        assert!(matches!(&v[0], Node::Scripts { base, sup: Some(_), sub: Some(_) } if matches!(**base, Node::Big(_))));
+        assert!(matches!(&v[0], Node::Scripts { base, sup: Some(_), sub: Some(_) } if matches!(**base, Node::Big(_, true))));
         assert!(v.iter().any(|x| *x == Node::Sym("≤".into(), Class::Rel)));
         assert!(v.iter().any(|x| *x == Node::Sym("α".into(), Class::Ident)));
         let n = parse(r"\left( \frac{1}{2} \right) + \text{if } x");
@@ -743,6 +883,97 @@ mod tests {
         }
     }
 
+    /// `\lim` sets its limit as a subscript in text style and stacks it under the operator with
+    /// `\limits`, in display style, or via `\underset`; `\nolimits` turns stacking off.
+    #[test]
+    fn operator_limits_stack_on_request() {
+        let op = |n: &Node| match n {
+            Node::Group(v) => match v.first() {
+                Some(Node::Scripts { base, .. }) => match &**base {
+                    Node::Op(s, st) => Some((s.clone(), *st)),
+                    Node::Big(s, st) => Some((s.clone(), *st)),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        assert_eq!(op(&parse(r"\lim_{x\to 0} f(x)")), Some(("lim".into(), false)));
+        assert_eq!(op(&parse(r"\lim\limits_{x\to 0} f(x)")), Some(("lim".into(), true)));
+        assert_eq!(op(&parse_at(r"\max_{k} a_k", 0, true)), Some(("max".into(), true)));
+        assert_eq!(op(&parse_at(r"\max\nolimits_{k} a_k", 0, true)), Some(("max".into(), false)));
+        assert_eq!(op(&parse(r"\sum\nolimits_{i} a_i")), Some(("∑".into(), false)));
+        assert_eq!(op(&parse(r"\underset{x\to 0}{\lim} f(x)")), Some(("lim".into(), true)));
+        assert_eq!(op(&parse(r"\underset{n}{\mathrm{arg}} f")), Some(("arg".into(), true)));
+        // Not a prefix match: `\limitsfoo` is an unknown command, not `\limits` + "foo".
+        assert_eq!(op(&parse(r"\lim\limitsfoo_{x}")), None);
+        // Stacked limits make the expression taller than a subscript does.
+        let h = |src: &str, display: bool| to_svg_with(src, 12.0, &Options { display, ..Default::default() }).1.1;
+        let (inline, stacked, display) = (h(r"\lim_{x\to 0} f(x)", false), h(r"\lim\limits_{x\to 0} f(x)", false), h(r"\lim_{x\to 0} f(x)", true));
+        assert!(stacked > inline + 2.0, "{inline} {stacked}");
+        assert!((display - stacked).abs() < 0.01, "{display} {stacked}");
+        assert_eq!(to_svg(r"\lim_{x} x", 12.0).1, to_svg_with(r"\lim_{x} x", 12.0, &Options::default()).1);
+        // Any other `\underset` base keeps its own layout: the fraction is set, with `x` under it.
+        let (svg, (_, uh)) = to_svg(r"\underset{x}{\frac{a}{b}}", 12.0);
+        let svg = String::from_utf8(svg).unwrap();
+        assert!(svg.contains(">a<") && svg.contains(">b<") && svg.contains(">x<"), "{svg}");
+        assert!(uh > to_svg(r"\frac{a}{b}", 12.0).1.1 + 2.0, "{uh}");
+    }
+
+    /// `family` sets the expression in an installed family (named in any case), measured with
+    /// its metrics; a family that isn't installed, or that the SVG couldn't name, falls back to
+    /// the bundled serif, and [`family_of`] reads the choice back from the SVG.
+    #[test]
+    fn a_chosen_family_sets_the_expression() {
+        let set = |family: Option<&str>| {
+            let (svg, size) = to_svg_with(r"f(x) = \frac{a+1}{2}", 12.0, &Options { family: family.map(str::to_string), ..Default::default() });
+            (String::from_utf8(svg).unwrap(), size)
+        };
+        let (serif, serif_size) = set(None);
+        assert!(serif.contains("font-family=\"'Source Serif 4'\"") && family_of(serif.as_bytes()).is_none(), "{serif}");
+        let (mono, mono_size) = set(Some("jetbrains mono"));
+        assert!(mono.contains(">f<") && !mono.contains("'Source Serif 4'"), "{mono}");
+        assert_eq!(mono.matches("font-family=\"'JetBrains Mono'\"").count(), 1 + 9, "the root and each character: {mono}");
+        assert_eq!(family_of(mono.as_bytes()).as_deref(), Some("JetBrains Mono"));
+        // Measured in that family: a monospace `f(x) = ` is wider than the serif's.
+        assert!(mono_size.0 > serif_size.0 + 2.0, "{serif_size:?} {mono_size:?}");
+        let db = FontDb::global();
+        let face = db.face("JetBrains Mono", "Regular");
+        let adv = face.advance(face.glyph_for('7')) / face.units_per_em() * 12.0;
+        let (_, (w7, _)) = to_svg_with("7", 12.0, &Options { family: Some("JetBrains Mono".into()), ..Default::default() });
+        assert!((w7 - (adv + 2.4)).abs() < 1e-6, "{w7} {adv}");
+        // It has no italic: italic letters are its upright, not a slanted other font.
+        assert!(!mono.contains("font-style"), "{mono}");
+        // Names the SVG couldn't carry set it as if none were given.
+        for bad in ["", "  ", "Source Serif 4' x='", "a\"b", "back\\slash"] {
+            let (svg, size) = set(Some(bad));
+            assert_eq!((svg.as_str(), size), (serif.as_str(), serif_size), "{bad}");
+        }
+        // A family that isn't installed sets it in the bundled serif, but keeps its name on the
+        // root for the next edit.
+        let (missing, size) = set(Some(" No Such Family 7 "));
+        assert_eq!(size, serif_size);
+        assert_eq!(family_of(missing.as_bytes()).as_deref(), Some("No Such Family 7"));
+        let strip = |s: &str| s.replacen(" font-family=\"'No Such Family 7'\"", "", 1);
+        assert_eq!(strip(&missing), serif);
+        // Display style is recorded on the root too.
+        let shown = String::from_utf8(to_svg_with("x", 12.0, &Options { display: true, ..Default::default() }).0).unwrap();
+        assert!(display_of(shown.as_bytes()) && !display_of(serif.as_bytes()), "{shown}");
+        assert!(!display_of(b"<svg><text data-display=\"true\"/></svg>") && !display_of(b"\xff"));
+        // A family with an italic keeps it.
+        let (sans, _) = set(Some("Source Sans 3"));
+        assert!(sans.contains("font-style=\"italic\">f<") && family_of(sans.as_bytes()).as_deref() == Some("Source Sans 3"), "{sans}");
+        // The SVG parses and its text rasterises.
+        assert!(designcraft_images::render_svg(mono.as_bytes(), 200).is_some());
+        // Reading back: escaped names, foreign SVGs and garbage are no family.
+        assert_eq!(family_of(br#"<svg font-family="'A &amp; B'"><text/></svg>"#).as_deref(), Some("A & B"));
+        for junk in [&b""[..], b"<svg>", b"<svg font-family=\"'", b"\xff\xfe", b"<svg><text font-family=\"'X'\">x</text></svg>"] {
+            assert_eq!(family_of(junk), None);
+        }
+    }
+
+    /// Laid-out sizes are plausible (a fraction taller than a letter, limits taller still) and
+    /// the SVG parses and rasterises.
     #[test]
     fn layout_sizes_and_svg() {
         let (svg, (w, h)) = to_svg(r"E = mc^2", 12.0);
