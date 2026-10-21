@@ -84,14 +84,15 @@ pub fn start() {
                     if invite.is_none() && has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    app.cloud.connect(crate::cloud::Service::new(cc.egui_ctx.clone()));
+                    let session_dirty = std::rc::Rc::new(std::cell::Cell::new(false));
+                    app.cloud.connect(crate::cloud::Service::new(cc.egui_ctx.clone(), std::rc::Rc::clone(&session_dirty)));
                     if let Some(share) = collabcraft_share::CollabCraft::from_env() {
                         app.share.connect(share.for_app("designcraft"));
                     }
                     if let Some(invitation) = invite.take() {
                         open_invite(&mut app, invitation);
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics, session_dirty }))
                 }),
             )
             .await;
@@ -379,6 +380,11 @@ struct WebShell {
     app: DesignApp,
     inbox: Inbox,
     graphics: GraphicsState,
+    session_dirty: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+fn refresh_session_dirty(app: &DesignApp, session_dirty: &std::cell::Cell<bool>) {
+    session_dirty.set(app.session.documents().iter().any(|d| d.is_dirty()));
 }
 
 impl eframe::App for WebShell {
@@ -402,18 +408,22 @@ impl eframe::App for WebShell {
                 });
             }
             self.app.logic(ctx);
+            refresh_session_dirty(&self.app, &self.session_dirty);
         });
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         let _ = self.graphics.run_if_healthy(|| {
-            designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused());
+            designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused() || self.app.canvas_ime());
             self.app.raw_input_hook(raw);
         });
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let _ = self.graphics.run_if_healthy(|| self.app.ui(ui));
+        let _ = self.graphics.run_if_healthy(|| {
+            self.app.ui(ui);
+            refresh_session_dirty(&self.app, &self.session_dirty);
+        });
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -446,9 +456,11 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
         // Exports ask for a name; the browser decides where the download goes.
         pick_save: Some(Box::new(|name: &str| Some(name.to_string()))),
         write: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
-        download: Some(Box::new(|name: &str, bytes: &[u8]| {
-            if let Err(e) = download(name, bytes) {
+        download: Some(Box::new(|name: &str, bytes: &[u8]| match download(name, bytes) {
+            ok @ Ok(()) => ok,
+            Err(e) => {
                 log::error!("download of {name} failed: {e}");
+                Err(e)
             }
         })),
         inbox: Some(inbox),

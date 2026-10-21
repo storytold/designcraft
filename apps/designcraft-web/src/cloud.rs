@@ -4,6 +4,9 @@
 //! client is async and the session rides the cookie the service set at
 //! sign-in. There is no device flow and no token file.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use craft_cloud_client::{Client, Error};
 use designcraft_ui_egui::cloud::{Account, CloudBackend, Event, Fault, Job, Post};
 use wasm_bindgen::JsCast as _;
@@ -14,14 +17,16 @@ use wasm_bindgen_futures::spawn_local;
 pub struct Service {
     client: Client,
     ctx: egui::Context,
+    /// Updated on the UI thread each frame; read when an expired session is detected.
+    session_dirty: Rc<Cell<bool>>,
 }
 
 impl Service {
     /// Always available when the app is served by CollabCraft on the same
     /// origin. The page names the service; nothing is compiled in.
-    pub fn new(ctx: egui::Context) -> Service {
+    pub fn new(ctx: egui::Context, session_dirty: Rc<Cell<bool>>) -> Service {
         log::info!("cloud storage through {}", Client::from_page().base());
-        Service { client: Client::from_page(), ctx }
+        Service { client: Client::from_page(), ctx, session_dirty }
     }
 }
 
@@ -44,7 +49,7 @@ impl Service {
             Job::Account => {
                 let answer =
                     self.me().await.map(|me| Account { display: me.display, capabilities: me.capabilities, provider_linked: me.provider_linked });
-                if matches!(&answer, Err(Fault::Unauthenticated)) {
+                if matches!(&answer, Err(Fault::Unauthenticated)) && !self.session_dirty.get() {
                     offer_login();
                 }
                 post(Event::Account(answer));
@@ -58,7 +63,7 @@ impl Service {
                 post(Event::Linked(answer));
             }
             Job::SignOut => {
-                if fetch_logout().await.is_ok() {
+                if fetch_logout().await.is_ok() && !self.session_dirty.get() {
                     let _ = web_sys::window().and_then(|w| w.location().reload().ok());
                 }
             }

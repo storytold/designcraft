@@ -86,19 +86,20 @@ Interface strings translated, of 1,724 measured. Detail: [docs/localization-pari
 | Language | Code | Status | Translated |
 |---|---|---|---|
 | English | en | full | 100% |
-| Simplified Chinese | zh | partial (no canvas IME) | 83% |
+| Simplified Chinese | zh | partial | 83% |
 | Spanish | es | partial | 83% |
 | Hindi | hi | none | 0% |
 | Arabic | ar | partial (RTL UI and composition) | 85% |
 | French | fr | partial | 83% |
 | Portuguese (Brazil) | pt-br | partial | 61% |
 | Indonesian | id | none | 0% |
-| Japanese | ja | partial (no canvas IME) | 95% |
+| Japanese | ja | partial | 95% |
 | German | de | partial | 83% |
 | Korean | ko | none | 0% |
 | Vietnamese | vi | none | 0% |
 
-Also shipped: Italian (85%), Ukrainian (83%).
+Also shipped: Czech (99%), Italian (85%), Ukrainian (83%), Polish (99%).
+Also shipped: Italian (85%), Ukrainian (83%), Georgian (100%).
 
 ## Upcoming
 
