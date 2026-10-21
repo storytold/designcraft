@@ -72,6 +72,7 @@ impl Session {
         // Any other tool unloads the place cursor.
         if id != "placeGun" {
             self.loaded = None;
+            self.loaded_queue.clear();
         }
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"

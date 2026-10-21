@@ -1650,3 +1650,120 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(!overset(&mut s, 78.5), "the line is set; its descenders hang below the frame");
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
+
+fn load_test_images(s: &mut Session, count: usize) {
+    let sources: Vec<_> = (0..count)
+        .map(|i| {
+            let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![(i % 255) as u8; 40 * 20 * 4] }.to_png();
+            json!({"base64": cmd::base64_encode(&png), "name": format!("{i}.png")})
+        })
+        .collect();
+    s.execute("place.load", &json!({"files": sources})).unwrap();
+}
+
+#[test]
+fn image_queue_places_in_order_and_retains_remainder() {
+    let mut s = session();
+    load_test_images(&mut s, 5);
+    let first = s.loaded.unwrap().asset;
+    s.execute("place.drop", &json!({"x": 10, "y": 20})).unwrap();
+    assert_eq!(s.tool_id(), "placeGun");
+    let item = s.doc().unwrap().doc.spreads[0].items.last().unwrap();
+    assert!(matches!(&item.content, designcraft_doc::Content::Graphic(g) if g.asset == first));
+    let r = s.execute("place.grid", &json!({"rect": [0, 0, 206, 50], "columns": 2, "rows": 1})).unwrap();
+    assert_eq!(r["remaining"], 2);
+    let id = designcraft_doc::ItemId(r["ids"][1].as_u64().unwrap());
+    let item = s.doc().unwrap().doc.item(id).unwrap();
+    assert_eq!(item.bounds(), designcraft_geom::Rect::new(106.0, 0.0, 206.0, 50.0));
+    if let designcraft_doc::Content::Graphic(g) = &item.content {
+        assert_eq!(s.doc().unwrap().doc.assets[&g.asset].name, "2.png");
+    } else {
+        panic!("expected graphic");
+    }
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.doc().unwrap().doc.item(id).is_none(), "the whole grid is one undo step");
+    s.execute("place.cancel", &json!({})).unwrap();
+    assert!(s.loaded.is_none() && s.loaded_queue.is_empty());
+    assert_eq!(s.tool_id(), "selection");
+}
+
+#[test]
+fn image_grid_and_load_fail_atomically() {
+    let mut s = session();
+    load_test_images(&mut s, 3);
+    let before = s.doc().unwrap().doc.clone();
+    let first = s.loaded.unwrap().asset;
+    assert!(s.execute("place.load", &json!({"files": [{"base64": "bad"}]})).is_err());
+    assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+    assert_eq!(s.loaded.unwrap().asset, first);
+    for params in [json!({"columns": 0}), json!({"columns": 101}), json!({"rows": 1.5}), json!({"gutter": -1}), json!({"columns": 3, "gutter": 1000})]
+    {
+        let mut p = params;
+        p["rect"] = json!([0, 0, 100, 100]);
+        assert!(s.execute("place.grid", &p).is_err());
+        assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+        assert_eq!(s.loaded_queue.len(), 2);
+    }
+    assert!(s.execute("place.contactSheet", &json!({"margin": 10000})).is_err());
+    assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+}
+
+#[test]
+fn contact_sheet_adds_pages_and_undoes_as_one_edit() {
+    let mut s = session();
+    load_test_images(&mut s, 25);
+    let pages = s.doc().unwrap().doc.page_count();
+    let r = s.execute("place.contactSheet", &json!({"columns": 3, "rows": 4})).unwrap();
+    assert_eq!(r["pages"], 3);
+    assert_eq!(r["images"], 25);
+    let doc = &s.doc().unwrap().doc;
+    assert_eq!(doc.page_count(), pages + 3);
+    for page_index in pages..pages + 3 {
+        let (si, pi) = doc.page_loc(page_index).unwrap();
+        let bounds = doc.spreads[si].pages[pi].bounds();
+        let items: Vec<_> = doc.spreads[si].items.iter().filter(|i| bounds.contains(i.bounds().center())).collect();
+        assert_eq!(items.len(), if page_index == pages + 2 { 1 } else { 12 });
+        for item in items {
+            assert!(bounds.contains(item.bounds().origin()));
+        }
+    }
+    assert!(s.loaded.is_none() && s.loaded_queue.is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.page_count(), pages);
+}
+
+#[test]
+fn place_drag_arrows_make_three_by_four_grid_and_escape_cancels() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
+    let mut s = session();
+    load_test_images(&mut s, 13);
+    let v = ViewInfo::at_zoom(1.0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 100.0), v).unwrap();
+    for key in [ToolKey::Right, ToolKey::Right, ToolKey::Up, ToolKey::Up, ToolKey::Up] {
+        s.tool_key(key, Mods::default(), v).unwrap();
+    }
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 500.0, 600.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 500.0, 600.0), v).unwrap();
+    assert_eq!(s.doc().unwrap().doc.spreads[0].items.len(), 12);
+    assert!(s.loaded.is_some() && s.loaded_queue.is_empty());
+    s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert!(s.loaded.is_none());
+}
+
+#[test]
+fn undoing_loaded_assets_cancels_every_placement_cursor() {
+    for command in ["place.drop", "place.grid", "place.contactSheet"] {
+        let mut s = session();
+        load_test_images(&mut s, 3);
+        s.execute("edit.undo", &json!({})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let params = if command == "place.contactSheet" { json!({}) } else { json!({"rect": [0, 0, 200, 200]}) };
+        assert!(s.execute(command, &params).is_err(), "{command}");
+        assert!(s.loaded.is_none(), "{command}");
+        assert!(s.loaded_queue.is_empty(), "{command}");
+        assert_eq!(s.tool_id(), "selection");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+        load_test_images(&mut s, 2);
+        assert!(s.execute("place.drop", &json!({"x": 0, "y": 0})).is_ok());
+    }
+}

@@ -1,5 +1,9 @@
 # DesignCraft roadmap
 
+- MP2: PR review fixes: atomic browser drop reads, localized placement hints and cancellation status, recoverable Contact Sheet validation, and stale cursor cleanup after Undo.
+
+- MP1: Multi-image placement queues, arrow-adjusted drag grids, and configurable contact sheets across new pages; atomic batch validation and one-step grid/contact-sheet undo. See [usage and automation](docs/multi-image-placement.md).
+
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 

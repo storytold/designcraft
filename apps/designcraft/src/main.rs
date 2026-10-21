@@ -304,6 +304,13 @@ fn pick_save(name: &str) -> Option<String> {
 
 fn services() -> Services {
     Services {
+        pick_many: Some(Box::new(|purpose: &str| {
+            let mut dialog = rfd::FileDialog::new();
+            for filter in open_filters(purpose) {
+                dialog = dialog.add_filter(filter.name, filter.extensions);
+            }
+            dialog.pick_files().map(|paths| paths.iter().map(|p| p.to_string_lossy().to_string()).collect())
+        })),
         pick_open: Some(Box::new(|purpose: &str| {
             let mut dialog = rfd::FileDialog::new();
             for filter in open_filters(purpose) {

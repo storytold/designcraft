@@ -4,6 +4,13 @@
 //! Portuguese, Japanese, Italian and Ukrainian tables has a row here, plus a few labels that only
 //! the code or the command table use.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("1 image · drag + arrows for grid", "1 გამოსახულება · ბადის შესაქმნელად გადაათრიეთ და გამოიყენეთ ისრები"),
+    ("{count} images · drag + arrows for grid", "გამოსახულებები: {count} · ბადის შესაქმნელად გადაათრიეთ და გამოიყენეთ ისრები"),
+    (
+        "Images waiting to load: {count}. Place or cancel the current images first",
+        "ჩასატვირთად მომლოდინე გამოსახულებები: {count}. ჯერ განათავსეთ ან გააუქმეთ მიმდინარე გამოსახულებები",
+    ),
+    ("Image import cancelled while a dialog is open", "გამოსახულებების იმპორტი გაუქმდა, რადგან დიალოგი გახსნილია"),
     ("File", "ფაილი"),
     ("Edit", "რედაქტირება"),
     ("Layout", "განლაგება"),
@@ -21,6 +28,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Save As…", "შენახვა როგორც…"),
     ("Save a Copy…", "ასლის შენახვა…"),
     ("Revert", "წინა ვერსიაზე დაბრუნება"),
+    ("Place Contact Sheet…", "საკონტაქტო ფურცლის განთავსება…"),
+    ("Place Contact Sheet", "საკონტაქტო ფურცლის განთავსება"),
     ("Place…", "განთავსება…"),
     ("Export PDF…", "PDF ექსპორტი…"),
     ("Print…", "დაბეჭდვა…"),
