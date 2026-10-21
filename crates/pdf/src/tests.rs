@@ -434,13 +434,19 @@ fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
 
 /// The page's paint operations in order: `fill`/`stroke` + ` text`/` path` and the stroke width.
 fn paint_order(bytes: &[u8]) -> Vec<(String, f32)> {
+    paint_events(bytes, false)
+}
+
+/// [`paint_order`], with transparency groups when `groups`: `group` (and its opacity) and
+/// `end group`.
+fn paint_events(bytes: &[u8], groups: bool) -> Vec<(String, f32)> {
     use hayro_interpret::font::Glyph;
     use hayro_interpret::{
         BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
         interpret_page,
     };
     #[derive(Default)]
-    struct Rec(Vec<(String, f32)>);
+    struct Rec(Vec<(String, f32)>, bool);
     impl Device<'_> for Rec {
         fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
         fn set_blend_mode(&mut self, _: BlendMode) {}
@@ -451,7 +457,11 @@ fn paint_order(bytes: &[u8]) -> Vec<(String, f32)> {
             });
         }
         fn push_clip_path(&mut self, _: &ClipPath) {}
-        fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'_>>, _: BlendMode) {}
+        fn push_transparency_group(&mut self, opacity: f32, _: Option<SoftMask<'_>>, _: BlendMode) {
+            if self.1 {
+                self.0.push(("group".into(), opacity));
+            }
+        }
         fn draw_glyph(&mut self, _: &Glyph<'_>, _: kurbo::Affine, _: kurbo::Affine, _: &Paint<'_>, m: &GlyphDrawMode) {
             self.0.push(match m {
                 GlyphDrawMode::Fill => ("fill text".into(), 0.0),
@@ -461,13 +471,17 @@ fn paint_order(bytes: &[u8]) -> Vec<(String, f32)> {
         }
         fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
         fn pop_clip_path(&mut self) {}
-        fn pop_transparency_group(&mut self) {}
+        fn pop_transparency_group(&mut self) {
+            if self.1 {
+                self.0.push(("end group".into(), 0.0));
+            }
+        }
     }
     let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let cache = InterpreterCache::new();
     let page = &pdf.pages()[0];
     let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
-    let mut rec = Rec::default();
+    let mut rec = Rec(Vec::new(), groups);
     interpret_page(page, &mut ctx, &mut rec);
     rec.0
 }
@@ -832,4 +846,61 @@ fn a_swatch_colours_a_greyscale_image() {
     assert!(!gone.contains("/SMask"), "nothing painted through it");
     let (s, _) = export(&rgb, Some("PANTONE Test"));
     assert!(!s.contains("PANTONE#20Test"), "a colour image keeps its colours");
+}
+
+/// An inline object is painted under its frame's text, as InDesign draws it: a picture whose
+/// frame reaches down into the next line (a negative Y offset) doesn't hide that line.
+#[test]
+fn inline_objects_are_painted_under_the_text() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    let mut d = doc_with_text("A\nWWWW");
+    let sid = *d.stories.keys().next().unwrap();
+    let mut item = Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 30.0)),
+    );
+    item.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: -20.0 }));
+    let order = paint_order(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+    let first_text = order.iter().position(|(op, _)| op.ends_with("text")).unwrap();
+    let the_box = order.iter().position(|(op, _)| op == "fill path").unwrap();
+    assert!(the_box < first_text, "{order:?}");
+}
+
+/// An anchored object is painted as part of its host frame, as the screen renderer paints it:
+/// inside the frame's transparency group (so a half-transparent frame shows its inline picture
+/// half-transparent too), after the frame's fill and before its text and stroke.
+#[test]
+fn inline_objects_share_their_frames_transparency() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    let mut d = doc_with_text("A\nWWWW");
+    let sid = *d.stories.keys().next().unwrap();
+    let fid = d.stories[&sid].frames[0];
+    {
+        let host = d.item_mut(fid).unwrap();
+        host.opacity = 0.5;
+        host.fill = Fill::swatch(designcraft_color::swatch::PAPER);
+        host.stroke.weight = 3.0;
+        host.stroke.swatch = designcraft_color::swatch::BLACK.into();
+    }
+    let mut item = Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 30.0)),
+    );
+    item.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: -20.0 }));
+    let ev = paint_events(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap(), true);
+    let at = |op: &str| ev.iter().position(|(o, _)| o == op).unwrap_or_else(|| panic!("no {op}: {ev:?}"));
+    let group = ev.iter().position(|(o, a)| o == "group" && (*a - 0.5).abs() < 1e-3).unwrap_or_else(|| panic!("no half-opacity group: {ev:?}"));
+    let end = group + ev[group..].iter().position(|(o, _)| o == "end group").unwrap();
+    // Fills in order: the frame's, then the anchored box's.
+    let fills: Vec<usize> = ev.iter().enumerate().filter(|(_, (o, _))| o == "fill path").map(|(i, _)| i).collect();
+    assert!(fills.len() >= 2, "{ev:?}");
+    let the_box = fills[1];
+    assert!(group < the_box && the_box < end, "the box is inside the frame's group: {ev:?}");
+    assert!(the_box < at("fill text") && at("fill text") < at("stroke path") && at("stroke path") < end, "{ev:?}");
 }
