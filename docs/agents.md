@@ -18,6 +18,39 @@ designcraft-cli describe xref.insert     # label, menu path, shortcut and parame
 
 Parameters are documented on each command (`params`), e.g. `{anchor? | paragraph?: text to find | story? + para?, format?}`.
 
+## Special characters
+
+`text.insertSpecial {character}` inserts a special character by name at the insertion point (replacing the selected
+text), as the Type › Insert Special Character, Insert White Space and Insert Break Character menus do. An unknown
+name is an error that lists the valid ones. In a table cell `tab` moves to the next cell, as `text.insert` does.
+Markers, breaks and indents are private-use code points in the story text, so `story.get` and `find.find` report
+them as such:
+
+| Name | Code point | | Name | Code point |
+|---|---|---|---|---|
+| `currentPageNumber` | U+E000 | | `columnBreak` | U+E002 |
+| `sectionMarker` | U+E001 | | `frameBreak` | U+E003 |
+| `nextPageNumber` | U+E007 | | `pageBreak` | U+E004 |
+| `previousPageNumber` | U+E008 | | `oddPageBreak` | U+E011 |
+| `indentToHere` | U+E005 | | `evenPageBreak` | U+E012 |
+| `rightIndentTab` | U+E006 | | `forcedLineBreak` | U+2028 |
+
+The rest insert the Unicode character of the same name: `bulletCharacter`, `copyrightSymbol`, `ellipsis`,
+`paragraphSymbol`, `registeredTrademarkSymbol`, `sectionSymbol`, `trademarkSymbol`, `emDash`, `enDash`,
+`discretionaryHyphen`, `nonbreakingHyphen`, the six quotation marks (`doubleLeftQuotationMarks`,
+`doubleRightQuotationMarks`, `singleLeftQuotationMark`, `singleRightQuotationMark`, `straightDoubleQuotationMarks`,
+`straightSingleQuotationMark`), `tab`, `paragraphReturn`, and the white space `emSpace`, `enSpace`,
+`nonbreakingSpace`, `hairSpace`, `sixthSpace`, `thinSpace`, `quarterSpace`, `thirdSpace`, `punctuationSpace`,
+`figureSpace`, `flushSpace`. `designcraft-cli describe text.insertSpecial` prints every name with its code point.
+
+```sh
+designcraft-cli script - --export page.png <<'DCS'
+frame.create {"rect": [72, 72, 272, 112], "content": "text", "text": "Page "}
+text.select {"story": "$0.story", "anchor": 5, "focus": 5}
+text.insertSpecial {"character": "currentPageNumber"}
+DCS
+```
+
 ## Scripts: several commands, later ones using earlier results
 
 A script is one command per line (`command.id {json params}`; `#` comments), JSON lines, or a JSON array of

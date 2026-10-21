@@ -507,61 +507,61 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             ">Insert Special Character",
             ">Symbols",
-            "cmd:text.insert|Bullet Character|{\"text\": \"\u{2022}\", \"raw\": true}",
-            "cmd:text.insert|Copyright Symbol|{\"text\": \"\u{a9}\", \"raw\": true}",
-            "cmd:text.insert|Ellipsis|{\"text\": \"\u{2026}\", \"raw\": true}",
-            "cmd:text.insert|Paragraph Symbol|{\"text\": \"\u{b6}\", \"raw\": true}",
-            "cmd:text.insert|Registered Trademark Symbol|{\"text\": \"\u{ae}\", \"raw\": true}",
-            "cmd:text.insert|Section Symbol|{\"text\": \"\u{a7}\", \"raw\": true}",
-            "cmd:text.insert|Trademark Symbol|{\"text\": \"\u{2122}\", \"raw\": true}",
+            "cmd:text.insertSpecial|Bullet Character|{\"character\": \"bulletCharacter\"}",
+            "cmd:text.insertSpecial|Copyright Symbol|{\"character\": \"copyrightSymbol\"}",
+            "cmd:text.insertSpecial|Ellipsis|{\"character\": \"ellipsis\"}",
+            "cmd:text.insertSpecial|Paragraph Symbol|{\"character\": \"paragraphSymbol\"}",
+            "cmd:text.insertSpecial|Registered Trademark Symbol|{\"character\": \"registeredTrademarkSymbol\"}",
+            "cmd:text.insertSpecial|Section Symbol|{\"character\": \"sectionSymbol\"}",
+            "cmd:text.insertSpecial|Trademark Symbol|{\"character\": \"trademarkSymbol\"}",
             "<",
             ">Markers",
             "ui:app.insertCurrentPageNumber",
-            "cmd:text.insert|Next Page Number|{\"text\": \"\u{e007}\", \"raw\": true}",
-            "cmd:text.insert|Previous Page Number|{\"text\": \"\u{e008}\", \"raw\": true}",
-            "cmd:text.insert|Section Marker|{\"text\": \"\u{e001}\", \"raw\": true}",
+            "cmd:text.insertSpecial|Next Page Number|{\"character\": \"nextPageNumber\"}",
+            "cmd:text.insertSpecial|Previous Page Number|{\"character\": \"previousPageNumber\"}",
+            "cmd:text.insertSpecial|Section Marker|{\"character\": \"sectionMarker\"}",
             "<",
             ">Hyphens and Dashes",
-            "cmd:text.insert|Em Dash|{\"text\": \"\u{2014}\", \"raw\": true}",
-            "cmd:text.insert|En Dash|{\"text\": \"\u{2013}\", \"raw\": true}",
-            "cmd:text.insert|Discretionary Hyphen|{\"text\": \"\u{ad}\", \"raw\": true}",
-            "cmd:text.insert|Nonbreaking Hyphen|{\"text\": \"\u{2011}\", \"raw\": true}",
+            "cmd:text.insertSpecial|Em Dash|{\"character\": \"emDash\"}",
+            "cmd:text.insertSpecial|En Dash|{\"character\": \"enDash\"}",
+            "cmd:text.insertSpecial|Discretionary Hyphen|{\"character\": \"discretionaryHyphen\"}",
+            "cmd:text.insertSpecial|Nonbreaking Hyphen|{\"character\": \"nonbreakingHyphen\"}",
             "<",
             ">Quotation Marks",
-            "cmd:text.insert|Double Left Quotation Marks|{\"text\": \"\u{201c}\", \"raw\": true}",
-            "cmd:text.insert|Double Right Quotation Marks|{\"text\": \"\u{201d}\", \"raw\": true}",
-            "cmd:text.insert|Single Left Quotation Mark|{\"text\": \"\u{2018}\", \"raw\": true}",
-            "cmd:text.insert|Single Right Quotation Mark|{\"text\": \"\u{2019}\", \"raw\": true}",
-            "cmd:text.insert|Straight Double Quotation Marks|{\"text\": \"\\\"\", \"raw\": true}",
-            "cmd:text.insert|Straight Single Quotation Mark (Apostrophe)|{\"text\": \"'\", \"raw\": true}",
+            "cmd:text.insertSpecial|Double Left Quotation Marks|{\"character\": \"doubleLeftQuotationMarks\"}",
+            "cmd:text.insertSpecial|Double Right Quotation Marks|{\"character\": \"doubleRightQuotationMarks\"}",
+            "cmd:text.insertSpecial|Single Left Quotation Mark|{\"character\": \"singleLeftQuotationMark\"}",
+            "cmd:text.insertSpecial|Single Right Quotation Mark|{\"character\": \"singleRightQuotationMark\"}",
+            "cmd:text.insertSpecial|Straight Double Quotation Marks|{\"character\": \"straightDoubleQuotationMarks\"}",
+            "cmd:text.insertSpecial|Straight Single Quotation Mark (Apostrophe)|{\"character\": \"straightSingleQuotationMark\"}",
             "<",
             ">Other",
-            "cmd:text.insert|Tab|{\"text\": \"\\t\", \"raw\": true}",
-            "cmd:text.insert|Right Indent Tab|{\"text\": \"\u{e006}\", \"raw\": true}",
-            "cmd:text.insert|Indent to Here|{\"text\": \"\u{e005}\", \"raw\": true}",
+            "cmd:text.insertSpecial|Tab|{\"character\": \"tab\"}",
+            "cmd:text.insertSpecial|Right Indent Tab|{\"character\": \"rightIndentTab\"}",
+            "cmd:text.insertSpecial|Indent to Here|{\"character\": \"indentToHere\"}",
             "<",
             "<",
             ">Insert White Space",
-            "cmd:text.insert|Em Space|{\"text\": \"\u{2003}\", \"raw\": true}",
-            "cmd:text.insert|En Space|{\"text\": \"\u{2002}\", \"raw\": true}",
-            "cmd:text.insert|Nonbreaking Space|{\"text\": \"\u{a0}\", \"raw\": true}",
-            "cmd:text.insert|Hair Space|{\"text\": \"\u{200a}\", \"raw\": true}",
-            "cmd:text.insert|Sixth Space|{\"text\": \"\u{2006}\", \"raw\": true}",
-            "cmd:text.insert|Thin Space|{\"text\": \"\u{2009}\", \"raw\": true}",
-            "cmd:text.insert|Quarter Space|{\"text\": \"\u{2005}\", \"raw\": true}",
-            "cmd:text.insert|Third Space|{\"text\": \"\u{2004}\", \"raw\": true}",
-            "cmd:text.insert|Punctuation Space|{\"text\": \"\u{2008}\", \"raw\": true}",
-            "cmd:text.insert|Figure Space|{\"text\": \"\u{2007}\", \"raw\": true}",
-            "cmd:text.insert|Flush Space|{\"text\": \"\u{2001}\", \"raw\": true}",
+            "cmd:text.insertSpecial|Em Space|{\"character\": \"emSpace\"}",
+            "cmd:text.insertSpecial|En Space|{\"character\": \"enSpace\"}",
+            "cmd:text.insertSpecial|Nonbreaking Space|{\"character\": \"nonbreakingSpace\"}",
+            "cmd:text.insertSpecial|Hair Space|{\"character\": \"hairSpace\"}",
+            "cmd:text.insertSpecial|Sixth Space|{\"character\": \"sixthSpace\"}",
+            "cmd:text.insertSpecial|Thin Space|{\"character\": \"thinSpace\"}",
+            "cmd:text.insertSpecial|Quarter Space|{\"character\": \"quarterSpace\"}",
+            "cmd:text.insertSpecial|Third Space|{\"character\": \"thirdSpace\"}",
+            "cmd:text.insertSpecial|Punctuation Space|{\"character\": \"punctuationSpace\"}",
+            "cmd:text.insertSpecial|Figure Space|{\"character\": \"figureSpace\"}",
+            "cmd:text.insertSpecial|Flush Space|{\"character\": \"flushSpace\"}",
             "<",
             ">Insert Break Character",
-            "cmd:text.insert|Column Break|{\"text\": \"\u{e002}\", \"raw\": true}",
-            "cmd:text.insert|Frame Break|{\"text\": \"\u{e003}\", \"raw\": true}",
-            "cmd:text.insert|Page Break|{\"text\": \"\u{e004}\", \"raw\": true}",
-            "cmd:text.insert|Odd Page Break|{\"text\": \"\u{e011}\", \"raw\": true}",
-            "cmd:text.insert|Even Page Break|{\"text\": \"\u{e012}\", \"raw\": true}",
-            "cmd:text.insert|Paragraph Return|{\"text\": \"\\n\", \"raw\": true}",
-            "cmd:text.insert|Forced Line Break|{\"text\": \"\u{2028}\", \"raw\": true}",
+            "cmd:text.insertSpecial|Column Break|{\"character\": \"columnBreak\"}",
+            "cmd:text.insertSpecial|Frame Break|{\"character\": \"frameBreak\"}",
+            "cmd:text.insertSpecial|Page Break|{\"character\": \"pageBreak\"}",
+            "cmd:text.insertSpecial|Odd Page Break|{\"character\": \"oddPageBreak\"}",
+            "cmd:text.insertSpecial|Even Page Break|{\"character\": \"evenPageBreak\"}",
+            "cmd:text.insertSpecial|Paragraph Return|{\"character\": \"paragraphReturn\"}",
+            "cmd:text.insertSpecial|Forced Line Break|{\"character\": \"forcedLineBreak\"}",
             "<",
             "cmd:type.fillWithPlaceholder",
             "-",
@@ -1647,7 +1647,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             };
             run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
         }
-        "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
+        "app.insertCurrentPageNumber" => app.run("text.insertSpecial", json!({"character": "currentPageNumber"})),
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties").to_string();
             // A panel in the workspace's icon groups opens from there (Essentials Classic's Pages).
@@ -5067,6 +5067,64 @@ mod tests {
         activate(&mut app, "app.insertCurrentPageNumber", &Value::Null);
         let d = &app.session.doc().unwrap().doc;
         assert_eq!(d.story(designcraft_doc::StoryId(story.as_u64().unwrap())).unwrap().text, "Page \u{e000}");
+    }
+
+    #[test]
+    fn insert_special_character_menus_list_every_special_character_once_under_its_label() {
+        fn collect(items: &[Item], out: &mut Vec<(String, String, Value)>) {
+            for i in items {
+                match i {
+                    Item::Sub(_, c) => collect(c, out),
+                    Item::Cmd { label, id, params, .. } => out.push((label.clone(), id.clone(), params.clone())),
+                    Item::Sep => {}
+                }
+            }
+        }
+        let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+        let mut entries = Vec::new();
+        collect(&ty, &mut entries);
+        assert!(!entries.iter().any(|(_, id, p)| id == "text.insert" && p.get("raw").is_some()));
+        let mut listed: Vec<(String, String)> = entries
+            .iter()
+            .filter(|(_, id, _)| id == "text.insertSpecial")
+            .map(|(label, _, params)| (params["character"].as_str().unwrap().to_string(), label.clone()))
+            .collect();
+        listed.push(("currentPageNumber".into(), entries.iter().find(|(_, id, _)| id == "app.insertCurrentPageNumber").unwrap().0.clone()));
+        let mut expected: Vec<(String, String)> =
+            designcraft_engine::cmd::text::SPECIAL_CHARACTERS.iter().map(|c| (c.name.to_string(), c.label.to_string())).collect();
+        listed.sort();
+        expected.sort();
+        assert_eq!(listed, expected);
+    }
+
+    #[test]
+    fn insert_special_character_presets_insert_their_character() {
+        let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+        fn presets(items: &[Item], out: &mut Vec<(String, Value)>) {
+            for i in items {
+                match i {
+                    Item::Sub(_, c) => presets(c, out),
+                    Item::Cmd { label, id, params, .. } if id == "text.insertSpecial" => out.push((label.clone(), params.clone())),
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        presets(&ty, &mut found);
+        assert_eq!(found.len() + 1, designcraft_engine::cmd::text::SPECIAL_CHARACTERS.len());
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let story = app.run("frame.create", json!({"rect": [36, 36, 236, 136], "content": "text", "text": ""})).unwrap()["story"].clone();
+        let story_id = designcraft_doc::StoryId(story.as_u64().unwrap());
+        for (label, params) in found {
+            let name = params["character"].as_str().unwrap();
+            let c = designcraft_engine::cmd::text::SPECIAL_CHARACTERS.iter().find(|c| c.name == name).unwrap().character;
+            app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+            app.run("text.insertSpecial", params).unwrap();
+            let text = app.session.doc().unwrap().doc.story(story_id).unwrap().text.clone();
+            assert!(text == c.to_string() || text == format!("{c}\n"), "{label}: {text:?}");
+            app.run("story.setText", json!({"story": story, "text": ""})).unwrap();
+        }
     }
 
     #[test]
