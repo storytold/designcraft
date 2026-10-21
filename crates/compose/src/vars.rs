@@ -139,11 +139,12 @@ pub fn values(doc: &Document, page: Option<usize>, running: Option<&RunningIndex
         .enumerate()
         .map(|(i, v)| match &v.kind {
             VarKind::RunningHeader { style, use_, character } => {
-                let body = match (running, page) {
-                    (Some(r), Some(p)) => r.value(style, *character, *use_, p),
-                    _ => String::new(),
-                };
-                format!("{}{}{}", v.before, body, v.after)
+                match (running, page) {
+                    (Some(r), Some(p)) => format!("{}{}{}", v.before, r.value(style, *character, *use_, p), v.after),
+                    (None, Some(_)) => format!("{}{}", v.before, v.after),
+                    // A parent page has no entries of its own: show which variable sits there.
+                    (_, None) => format!("<{}>", v.name),
+                }
             }
             _ => doc.variable_value(i, page).unwrap_or_default(),
         })
