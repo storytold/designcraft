@@ -267,7 +267,11 @@ impl Session {
                     self.execute(&cmd, &p)?;
                 }
                 Action::Dialog(id, params) => self.ui_requests.push(UiRequest::Dialog { id, params }),
-                Action::SwitchTool(id) => self.set_tool(&id),
+                Action::SwitchTool(id) => {
+                    let prev = self.tool.id().to_string();
+                    self.set_tool(&id);
+                    self.tool.set_option("prevTool", &serde_json::json!(prev));
+                }
                 Action::View(params) => self.ui_requests.push(UiRequest::View { params }),
                 Action::Handled => {}
             }

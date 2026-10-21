@@ -42,6 +42,8 @@ pub struct TypeTool {
     preedit: Option<Preedit>,
     /// A press on a table row or column border: a drag resizes it.
     border: Option<BorderDrag>,
+    /// Previous tool ID before switching to Type tool (e.g. "selection" or "directSelection").
+    pub prev_tool: Option<String>,
 }
 
 /// A table border under the pointer, and the frame's canvas → inner-space mapping.
@@ -61,9 +63,9 @@ struct BorderDrag {
 
 /// The row or column border of a table near canvas point `pos`, in an unlocked text frame.
 fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
-    let (_, id) = cx.hit(pos)?;
+    let (_, id) = cx.hit_leaf(pos).or_else(|| cx.hit(pos))?;
     let it = cx.doc.item(id)?;
-    if it.locked {
+    if cx.doc.is_locked(id) {
         return None;
     }
     let sid = it.text_frame()?.story;
@@ -234,10 +236,12 @@ impl Tool for TypeTool {
                 }
                 // Text frames take the caret (locked ones too, as in InDesign); an empty frame
                 // becomes one, unless it's locked: then the press draws a new text frame over it.
-                if let Some((_, id)) = cx.hit(ev.pos)
+                let hit_target = cx.hit_leaf(ev.pos).or_else(|| cx.hit(ev.pos));
+                if let Some((_, id)) = hit_target
                     && let Some(it) = cx.doc.item(id)
                     && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
                     && (it.is_text_frame() || !it.locked)
+                    && !cx.doc.is_locked(id)
                 {
                     let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
                     let clicks = ev.click_count();
@@ -372,7 +376,10 @@ impl Tool for TypeTool {
             ToolKey::Delete => vec![Action::Exec("text.delete".into(), json!({"forward": true, "word": mods.alt}))],
             ToolKey::Enter => vec![Action::Exec("text.insert".into(), json!({"text": if mods.shift { "\u{2028}" } else { "\n" }}))],
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
-            ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
+            ToolKey::Escape => {
+                let target = self.prev_tool.as_deref().filter(|&t| t == "selection" || t == "directSelection").unwrap_or("selection");
+                vec![Action::SwitchTool(target.into()), Action::Exec("text.exitToFrame".into(), json!({}))]
+            }
             _ => vec![],
         }
     }
@@ -475,6 +482,15 @@ impl Tool for TypeTool {
             let r = it.inner_bounds();
             Some((m * Point::new(r.x1, r.y1 - 12.0), m * Point::new(r.x1, r.y1)))
         })
+    }
+
+    fn set_option(&mut self, key: &str, value: &serde_json::Value) {
+        match key {
+            "prevTool" | "previousTool" => {
+                self.prev_tool = value.as_str().map(String::from);
+            }
+            _ => {}
+        }
     }
 }
 

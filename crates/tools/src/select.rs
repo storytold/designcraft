@@ -671,10 +671,10 @@ impl Tool for SelectionTool {
             self.drag = Drag::None;
             return vec![Action::Exec("object.fit".into(), json!({"mode": "fitFrameToContent", "axis": fitting_axis(cx, h)}))];
         }
-        // The second press of a double click on a text frame: edit its text.
+        // The second press of a double click on a text frame or group: drill down or edit text.
         if matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
-            && let Some(actions) = edit_text_at(cx, p)
+            && let Some(actions) = double_click(self.direct, cx, p)
         {
             self.drag = Drag::None;
             return actions;
@@ -775,9 +775,25 @@ impl Tool for SelectionTool {
                     self.drag = Drag::Pending { start: p, hit: true, content: false };
                     return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
                 }
-                match cx.hit(p) {
+                let hit_opt = if self.direct {
+                    if let Some((sr, leaf)) = cx.hit_leaf(p) { if cx.doc.is_locked(leaf) { None } else { Some((sr, leaf)) } } else { cx.hit(p) }
+                } else {
+                    cx.hit(p)
+                };
+                match hit_opt {
                     Some((sr, id)) => {
-                        let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
+                        let id = if self.direct {
+                            id
+                        } else {
+                            let leaf = cx.hit_leaf(p).map(|(_, lid)| lid).unwrap_or(id);
+                            let chain = cx.doc.ancestry_chain(leaf);
+                            chain
+                                .iter()
+                                .copied()
+                                .rev()
+                                .find(|item_id| cx.selection.contains(*item_id))
+                                .unwrap_or_else(|| cx.doc.top_level_of(id).unwrap_or(id))
+                        };
                         let mut out = vec![];
                         if ev.mods.shift {
                             if cx.selection.contains(id) {
@@ -1105,10 +1121,17 @@ impl Tool for SelectionTool {
                         for slot in &cx.layout.slots {
                             let Some(sp) = cx.doc.spread(slot.spread) else { continue };
                             for it in &sp.items {
-                                let b = slot.xf.transform_rect_bbox(it.bounds());
                                 let locked = it.locked || cx.doc.layer(it.layer).is_some_and(|l| l.locked || !l.visible);
-                                if !locked && !it.hidden && b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0 {
-                                    ids.push(Value::from(it.id.0));
+                                if locked || it.hidden {
+                                    continue;
+                                }
+                                if self.direct && it.is_group() {
+                                    collect_direct_marquee_ids(cx, it, &r, &mut ids);
+                                } else {
+                                    let b = slot.xf.transform_rect_bbox(it.bounds());
+                                    if b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0 {
+                                        ids.push(Value::from(it.id.0));
+                                    }
                                 }
                             }
                         }
@@ -1141,7 +1164,23 @@ impl Tool for SelectionTool {
             ToolKey::Up => mv(0.0, -inc),
             ToolKey::Down => mv(0.0, inc),
             ToolKey::Delete | ToolKey::Backspace => vec![Action::Exec("edit.clear".into(), json!({}))],
-            ToolKey::Escape => vec![Action::Exec("selection.set".into(), json!({"ids": []}))],
+            ToolKey::Escape => {
+                if self.direct {
+                    return vec![Action::Exec("selection.set".into(), json!({"ids": []}))];
+                }
+                let has_parent = cx.selection.items.iter().any(|&id| cx.doc.parent_of(id).is_some());
+                if has_parent {
+                    let mut parents: Vec<u64> = Vec::new();
+                    for &id in &cx.selection.items {
+                        let pid = cx.doc.parent_of(id).map_or(id.0, |p| p.0);
+                        if !parents.contains(&pid) {
+                            parents.push(pid);
+                        }
+                    }
+                    return vec![Action::Exec("selection.set".into(), json!({"ids": parents}))];
+                }
+                vec![Action::Exec("selection.set".into(), json!({"ids": []}))]
+            }
             _ => vec![],
         }
     }
@@ -1195,7 +1234,7 @@ impl Tool for SelectionTool {
         if self.direct {
             let over_content = matches!(self.drag, Drag::None)
                 && anchor_at(cx, p).is_none()
-                && cx.hit(p).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
+                && cx.hit_leaf(p).or_else(|| cx.hit(p)).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
             return if over_content { Cursor::Hand } else { Cursor::ArrowHollow };
         }
         if let Some(l) = self.loaded.and_then(|l| l.resolve(cx.doc)) {
@@ -1254,12 +1293,81 @@ fn handle_cursor(h: usize) -> Cursor {
     }
 }
 
-/// Switch to the Type tool with the caret at `p` when it is over a text frame.
-fn edit_text_at(cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
-    let (_, id) = cx.hit(p)?;
-    if !cx.doc.item(id).is_some_and(|i| i.is_text_frame()) {
+/// Double-clicking with Selection or Direct Selection tool:
+/// - With Direct Selection: double-clicking a text frame enters text editing mode immediately.
+/// - With Selection tool:
+///   - On a standalone text frame: switches to Type tool immediately.
+///   - On a nested item in a group: drills down one level into the group per double-click.
+///   - On an already selected text frame (even in a group): switches to Type tool.
+fn double_click(direct: bool, cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
+    let (_, leaf_id) = cx.hit_leaf(p)?;
+    if cx.doc.is_locked(leaf_id) {
         return None;
     }
-    let (_, sp) = cx.layout.spread_at(p).unwrap_or((SpreadRef::Doc(0), p));
-    Some(vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))])
+    let is_text = cx.doc.item(leaf_id).is_some_and(|i| i.is_text_frame());
+
+    // Direct Selection: double-clicking a text frame directly enters text editing.
+    if direct {
+        if is_text {
+            let (_, sp) = cx.layout.spread_at(p).unwrap_or((SpreadRef::Doc(0), p));
+            return Some(vec![
+                Action::SwitchTool("type".into()),
+                Action::Exec("text.placeCaret".into(), json!({"frame": leaf_id.0, "point": [sp.x, sp.y]})),
+            ]);
+        }
+        return None;
+    }
+
+    // Selection tool:
+    let chain = cx.doc.ancestry_chain(leaf_id);
+    if chain.len() <= 1 {
+        // Standalone item (not in a group)
+        if is_text {
+            let (_, sp) = cx.layout.spread_at(p).unwrap_or((SpreadRef::Doc(0), p));
+            return Some(vec![
+                Action::SwitchTool("type".into()),
+                Action::Exec("text.placeCaret".into(), json!({"frame": leaf_id.0, "point": [sp.x, sp.y]})),
+            ]);
+        }
+        return None;
+    }
+
+    // Item nested inside a group:
+    // If leaf item itself is already selected:
+    if cx.selection.contains(leaf_id) {
+        if is_text {
+            let (_, sp) = cx.layout.spread_at(p).unwrap_or((SpreadRef::Doc(0), p));
+            return Some(vec![
+                Action::SwitchTool("type".into()),
+                Action::Exec("text.placeCaret".into(), json!({"frame": leaf_id.0, "point": [sp.x, sp.y]})),
+            ]);
+        }
+        return None;
+    }
+
+    // Drill down: find the lowest ancestor in `chain` that is currently selected,
+    // and select the next item down the chain.
+    let selected_pos = chain.iter().rposition(|id| cx.selection.contains(*id));
+    let next_idx = match selected_pos {
+        Some(idx) => (idx + 1).min(chain.len() - 1),
+        None => 1.min(chain.len() - 1),
+    };
+    let next_id = chain[next_idx];
+    Some(vec![Action::Exec("selection.set".into(), json!({"ids": [next_id.0]}))])
+}
+
+fn collect_direct_marquee_ids(cx: &ToolContext, it: &Item, r: &Rect, ids: &mut Vec<Value>) {
+    if it.hidden || cx.doc.is_locked(it.id) {
+        return;
+    }
+    if it.is_group() {
+        for c in it.children() {
+            collect_direct_marquee_ids(cx, c, r, ids);
+        }
+    } else if let Some(c_xf) = cx.item_canvas_xf(it.id) {
+        let b = c_xf.transform_rect_bbox(it.bounds());
+        if b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0 {
+            ids.push(Value::from(it.id.0));
+        }
+    }
 }

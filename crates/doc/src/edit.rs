@@ -199,6 +199,43 @@ impl Document {
         Some(self.spread(loc.spread)?.items[loc.top()].id)
     }
 
+    /// The immediate parent group of `id`, if `id` is nested inside a group.
+    pub fn parent_of(&self, id: ItemId) -> Option<ItemId> {
+        let loc = self.find(id)?;
+        if loc.path.len() <= 1 {
+            return None;
+        }
+        let sp = self.spread(loc.spread)?;
+        let mut items = &sp.items;
+        let mut parent_id = None;
+        for &i in &loc.path[..loc.path.len() - 1] {
+            let it = items.get(i)?;
+            parent_id = Some(it.id);
+            items = match &it.content {
+                Content::Group { items } => items,
+                _ => return None,
+            };
+        }
+        parent_id
+    }
+
+    /// Item IDs along the ancestry path from top-level down to `id` (inclusive).
+    pub fn ancestry_chain(&self, id: ItemId) -> Vec<ItemId> {
+        let Some(loc) = self.find(id) else { return vec![] };
+        let Some(sp) = self.spread(loc.spread) else { return vec![] };
+        let mut items = &sp.items;
+        let mut chain = Vec::with_capacity(loc.path.len());
+        for &i in &loc.path {
+            let Some(it) = items.get(i) else { break };
+            chain.push(it.id);
+            items = match &it.content {
+                Content::Group { items } => items,
+                _ => break,
+            };
+        }
+        chain
+    }
+
     /// Spread-space transform of the parent group chain of the item at `loc` (identity at top level).
     pub fn parent_xf(&self, loc: &ItemLoc) -> designcraft_geom::Affine {
         let mut xf = designcraft_geom::Affine::IDENTITY;
@@ -636,6 +673,29 @@ impl Document {
             }
         }
         found
+    }
+
+    /// True if `id` itself is locked, sits on a locked layer, or has any locked ancestor group.
+    pub fn is_locked(&self, id: ItemId) -> bool {
+        let Some(loc) = self.find(id) else { return false };
+        let Some(it) = self.item(id) else { return false };
+        if it.locked || self.layer(it.layer).is_some_and(|l| l.locked) {
+            return true;
+        }
+        if let Some(sp) = self.spread(loc.spread) {
+            let mut items = &sp.items;
+            for &i in &loc.path[..loc.path.len().saturating_sub(1)] {
+                let Some(group) = items.get(i) else { break };
+                if group.locked {
+                    return true;
+                }
+                items = match &group.content {
+                    Content::Group { items } => items,
+                    _ => break,
+                };
+            }
+        }
+        false
     }
 
     /// Every item id (pre-order) on document spreads.

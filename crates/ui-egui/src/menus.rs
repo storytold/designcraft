@@ -3103,7 +3103,11 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
                     eprintln!("tool shortcut {sc} ({key:?}, {modifiers:?}) -> {tool}");
                 }
                 app.select_tool(tool);
-            } else if key == egui::Key::Escape && app.session.tool_id() != "selection" && !app.session.tool_busy() && app.ui.flyout.is_none() {
+            } else if key == egui::Key::Escape
+                && !matches!(app.session.tool_id(), "selection" | "directSelection")
+                && !app.session.tool_busy()
+                && app.ui.flyout.is_none()
+            {
                 app.select_tool("selection");
             }
         }
