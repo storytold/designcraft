@@ -120,7 +120,10 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   `.joboptions` load/save, output-intent choice beyond the built-in profile, PDF/UA validation;
   #159, #32.
 - **Have:** PDF/X-4 with output intent and a validator (`#200`), PDF/A-2b, tagged PDF, CMYK and
-  spot, marks and bleed, the options dialog with remembered settings (#196).
+  spot, marks and bleed, the options dialog with remembered settings (#196). File ▸ Export
+  Layouts and Versions (`file.exportBatch`): several outputs at once (PDF with any marks/bleed,
+  PNG, JPEG), per alternate layout or combined, in a folder per version, saved as export presets
+  (`file.saveExportPreset`) — DesignCraft's own presets, not Adobe `.joboptions`.
 - **Estimate:** 40–70 h. **Doc:** [file-format-parity.md](file-format-parity.md)
 
 ### 10. Printing (H, F)
@@ -173,9 +176,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   Profile / Edit Original, File ▸ File Info / Open PDF / Document and Print Presets / User
   Settings, Type ▸ Size presets, Table ▸ Table Options / Cell Options submenus, Paste Before/After,
   Convert Columns, Object ▸ Interactive ▸ Convert to (form fields),
-  View ▸ Extras badges and Story Editor options. Pages panel ▸ Parent Options (Based on Parent is
-  the `layout.parents.options` command only); overriding a base parent's items on a parent spread
-  itself (overrides work on document pages only).
+  View ▸ Extras badges and Story Editor options. Overriding a base parent's items on a parent
+  spread itself (overrides work on document pages only); Save as Parent; new parents for an
+  alternate layout (its pages keep their source pages' parents).
 - **Estimate:** 40–70 h (most are thin wrappers over existing engine features).
 - **Doc:** [ui-parity.md](ui-parity.md)
 

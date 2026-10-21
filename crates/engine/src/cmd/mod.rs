@@ -15,6 +15,7 @@ mod edit;
 mod editorial;
 mod endnotes;
 mod export;
+pub mod export_batch;
 mod file;
 pub(crate) mod find;
 pub use find::same_find_domain;
@@ -170,6 +171,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file::specs());
         v.extend(interchange::specs());
         v.extend(export::specs());
+        v.extend(export_batch::specs());
         v.extend(edit::specs());
         v.extend(paste_svg::specs());
         v.extend(endnotes::specs());

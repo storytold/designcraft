@@ -15,6 +15,7 @@ pub mod cursors;
 pub mod dialogs;
 pub mod dock;
 pub mod effects_dialog;
+pub mod export_batch_dialog;
 pub mod i18n;
 pub mod icons;
 pub mod menus;
@@ -72,6 +73,9 @@ pub struct Services {
     pub pick_open: Option<PickFn>,
     /// Save dialog with a suggested name → path.
     pub pick_save: Option<PickFn>,
+    /// Choose-folder dialog with a title → path (File › Export Layouts and Versions). Unset on the
+    /// web, where each file downloads instead.
+    pub pick_folder: Option<PickFn>,
     pub read: Option<ReadFn>,
     pub write: Option<WriteFn>,
     /// Asynchronous open dialog for a purpose (`open`, `place`); the chosen file arrives later
@@ -218,6 +222,11 @@ pub struct UiState {
     /// The Pages panel's parents part as its divider was last dragged, and the height the two
     /// parts shared then (None: a few rows).
     pub pages_parents_height: Option<[f32; 2]>,
+    /// The parent selected (clicked) in the Pages panel's parents list: what the panel menu's
+    /// Duplicate Parent Spread, Parent Options and Delete Parent act on, with the uid of the
+    /// document it belongs to (a selection never carries over to another document or session).
+    #[serde(skip)]
+    pub pages_selected_parent: Option<(u64, designcraft_doc::SpreadId)>,
     /// The Pages panel's Panel Options.
     pub pages_panel: panels::pages::PanelOptions,
     /// Edit › Color Settings (re-applied at start).
@@ -235,6 +244,8 @@ pub struct UiState {
     pub flattener: String,
     /// File › Export PDF… options (persisted; see `PdfExportSettings`).
     pub pdf_export: PdfExportSettings,
+    /// File › Export Layouts and Versions…: the last job exported (persisted).
+    pub export_batch: Option<designcraft_engine::cmd::export_batch::ExportJob>,
     /// View › Separations Preview: a process plate (0–3) and/or an ink limit (total, 0–4).
     #[serde(skip)]
     pub separation: Option<u8>,
@@ -379,6 +390,7 @@ impl Default for UiState {
             hidden_panels: 0,
             skip_delete_pages_warning: false,
             pages_parents_height: None,
+            pages_selected_parent: None,
             pages_panel: Default::default(),
             color_settings: None,
             proof_colors: false,
@@ -387,6 +399,7 @@ impl Default for UiState {
             language: String::new(),
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),
+            export_batch: None,
             separation: None,
             ink_limit: None,
             display_quality: designcraft_render::DisplayQuality::High,

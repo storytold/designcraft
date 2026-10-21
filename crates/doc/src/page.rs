@@ -405,6 +405,10 @@ pub struct Section {
     pub marker: String,
     #[serde(default)]
     pub include_prefix: bool,
+    /// The name of the alternate layout this section starts (Pages panel: a column of its own).
+    /// A layout runs from its section to the next section that starts a layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
 }
 
 #[cfg(test)]

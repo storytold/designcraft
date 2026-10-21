@@ -406,10 +406,14 @@ impl<'a> Ex<'a> {
                     prefix: String::new(),
                     marker: String::new(),
                     include_prefix: false,
+                    layout: None,
                 },
             );
         }
         let total = d.page_count();
+        // Alternate layouts: every section names the layout it is in (InDesign's AlternateLayout).
+        let layouts = d.layouts();
+        let alternates = layouts.len() > 1 || secs.iter().any(|s| s.layout.is_some());
         for (i, s) in secs.iter().enumerate() {
             if s.start >= total {
                 continue;
@@ -426,6 +430,9 @@ impl<'a> Ex<'a> {
                 el.set("PageNumberStart", n);
             }
             el = el.attr("Marker", &s.marker).attr("PageStart", uid(page.id.0)).attr("SectionPrefix", &s.prefix);
+            if alternates && let Some(l) = layouts.iter().rfind(|l| l.start <= s.start) {
+                el = el.attr("AlternateLayout", &l.name).attr("AlternateLayoutLength", l.end.saturating_sub(l.start));
+            }
             root.push(with_props(el, vec![p("PageNumberStyle", "enumeration", names::number_style_out(s.style))]));
         }
         if !self.index_topics.is_empty() || !self.index_xrefs.is_empty() {

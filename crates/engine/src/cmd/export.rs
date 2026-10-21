@@ -709,6 +709,18 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
 }
 
 fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
+    let r = pdf_report(s, p)?;
+    match str_param(p, "path") {
+        Some(path) => {
+            write_file(path, &r.bytes)?;
+            Ok(json!({"path": path, "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings}))
+        }
+        None => Ok(json!({"base64": super::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
+    }
+}
+
+/// The PDF `file.exportPdf` makes for parameters `p` (its `path` aside).
+pub(crate) fn pdf_report(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
     let st = s.doc()?;
     let opts = options(p, st.doc.page_count())?;
     // Transparency Flattener presets: High / Medium / Low Resolution, or a ppi.
@@ -805,21 +817,15 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     {
         r.warnings.push(format!("transparency flattened: {n} region(s) rasterised"));
     }
-    match str_param(p, "path") {
-        Some(path) => {
-            write_file(path, &r.bytes)?;
-            Ok(json!({"path": path, "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings}))
-        }
-        None => Ok(json!({"base64": super::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
-    }
+    Ok(r)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
     crate::io::write_file(path, bytes).map_err(EngineError::Other)
 }
 #[cfg(target_arch = "wasm32")]
-fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
     Err(EngineError::Other(format!("{path}: no file system on the web; omit `path` to get the bytes")))
 }
 

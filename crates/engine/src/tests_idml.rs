@@ -672,3 +672,20 @@ fn idml_non_finite_numbers_import_to_a_document_that_reopens() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+#[test]
+fn alternate_layouts_round_trip_through_idml() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    s.execute("layout.createAlternate", &json!({"name": "Tablet H", "width": 1024, "height": 768, "fromName": "Print"})).unwrap();
+    s.execute("layout.section", &json!({"page": 4, "startNumber": 9})).unwrap();
+    let names = |d: &designcraft_doc::Document| d.layouts().into_iter().map(|l| (l.name, l.start, l.end)).collect::<Vec<_>>();
+    let before = names(&s.doc().unwrap().doc);
+    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+    assert_eq!(names(&back), before);
+    // A document without alternate layouts writes none.
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2})).unwrap();
+    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+    assert!(back.sections.iter().all(|x| x.layout.is_none()));
+}

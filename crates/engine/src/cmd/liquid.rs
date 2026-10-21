@@ -200,79 +200,254 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Alternate Layout…",
             ["Layout"],
             None,
-            "{name, width, height, rule?: page rule for the copies (default: keep each page's)} — every page copied after the last at the new size (a new section marked `name`), objects following the liquid rules",
+            "{name, width, height, from?: source layout name|index (default: the first), fromName?: names the source layout, rule?: page rule for the copies (default: keep each page's)} → {layout, firstPage, pages} — the source layout's pages copied after the last page at the new size (a layout of their own, its own column in the Pages panel), objects following the liquid rules",
             has_doc,
             create_alternate
+        ),
+        cmd!(
+            "layout.alternate.duplicate",
+            "Duplicate Alternate Layout",
+            ["Layout"],
+            None,
+            "{layout: name|index, name?: (default \"<layout> copy\")} → {layout, firstPage, pages} — the layout's pages and objects copied at the same size",
+            has_doc,
+            duplicate_alternate
+        ),
+        cmd!(
+            "layout.alternate.delete",
+            "Delete Alternate Layout",
+            ["Layout"],
+            None,
+            "{layout: name|index} — delete the layout's pages and their objects; the last layout cannot be deleted",
+            has_doc,
+            delete_alternate
+        ),
+        cmd!(
+            "layout.alternate.options",
+            "Alternate Layout Options…",
+            ["Layout"],
+            None,
+            "{layout: name|index, name?, width?, height?} → {layout} — rename the layout, or resize its pages (objects follow the liquid rules)",
+            has_doc,
+            alternate_options
         ),
     ]
 }
 
-fn create_alternate(s: &mut crate::Session, p: &Value) -> Result<Value> {
-    const ID: &str = "layout.createAlternate";
-    let name = str_param(p, "name").unwrap_or("Alternate").to_string();
-    let w = p.get("width").and_then(Value::as_f64).ok_or_else(|| bad(ID, "`width` required"))?.max(1.0);
-    let h = p.get("height").and_then(Value::as_f64).ok_or_else(|| bad(ID, "`height` required"))?.max(1.0);
-    let rule = p.get("rule").map(|_| rule_param(p, ID)).transpose()?;
-    let n = s.doc()?.doc.page_count();
-    s.edit(|d, _| {
-        let src = d.clone();
-        let parent = d.page_loc(n - 1).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
-        d.insert_pages(Some(n - 1), n, parent)?;
-        for i in 0..n {
-            let (Some((si, pi)), Some((ti, tj))) = (src.page_loc(i), d.page_loc(n + i)) else { continue };
-            let from = &src.spreads[si];
-            let pb = from.pages[pi].bounds();
-            let last = from.pages.len() - 1;
-            let ids: Vec<_> = from
-                .items
-                .iter()
-                .filter(|it| {
-                    let c = it.bounds().center().x;
-                    (pi == 0 || c >= pb.x0) && (pi == last || c < pb.x1)
-                })
-                .map(|it| it.id)
-                .collect();
-            // The copy keeps the page's liquid rule (or takes the one given).
-            let to = d.spreads[ti].pages[tj].bounds();
-            Arc::make_mut(&mut d.spreads[ti]).pages[tj].liquid = rule.unwrap_or(from.pages[pi].liquid);
-            Arc::make_mut(&mut d.spreads[ti]).pages[tj].guides = from.pages[pi]
-                .guides
-                .iter()
-                .cloned()
-                .map(|mut g| {
-                    if g.orientation == Orientation::Vertical {
-                        g.position += to.x0 - pb.x0;
-                    }
-                    g
-                })
-                .collect();
-            let new = super::object::duplicate_from(d, &src, &ids, SpreadRef::Doc(ti), designcraft_geom::Vec2::new(to.x0 - pb.x0, 0.0))?;
-            // The copies' stories stay linked to the originals (Links panel: update when they change).
-            for (old, new) in ids.iter().zip(&new) {
-                let (Some(os), Some(ns)) =
-                    (src.item(*old).and_then(|i| i.text_frame()).map(|t| t.story), d.item(*new).and_then(|i| i.text_frame()).map(|t| t.story))
-                else {
-                    continue;
-                };
-                let rev = src.story(os).map_or(0, |s| s.rev);
-                if let Some(st) = d.story_mut(ns) {
-                    st.link = Some((os, rev));
-                }
-            }
-        }
-        let pages: Vec<usize> = (n + 1..=2 * n).collect();
-        super::layout::resize_pages(d, &pages, Some(w), Some(h));
-        d.sections.retain(|x| x.start != n);
+/// A layout named by a command parameter: its name or its index in [`Document::layouts`].
+fn layout_param(id: &str, d: &Document, v: Option<&Value>) -> Result<designcraft_doc::LayoutRange> {
+    let layouts = d.layouts();
+    let found = match v {
+        Some(Value::Number(n)) => n.as_u64().and_then(|i| usize::try_from(i).ok()).and_then(|i| layouts.get(i)),
+        Some(Value::String(s)) => layouts.iter().find(|l| l.name == *s),
+        Some(_) => return Err(bad(id, "`layout` is a layout name or index")),
+        None => return Err(bad(id, "`layout` names a layout")),
+    };
+    found.cloned().ok_or_else(|| bad(id, format!("no layout {}", v.map(Value::to_string).unwrap_or_default())))
+}
+
+/// A layout name parameter: trimmed, 1–100 characters.
+fn layout_name(id: &str, v: &str) -> Result<String> {
+    let v = v.trim();
+    if v.is_empty() || v.chars().count() > 100 {
+        return Err(bad(id, "a layout name has 1 to 100 characters"));
+    }
+    Ok(v.to_string())
+}
+
+/// `base`, or `base 2`, `base 3`… when another layout (but `except`) has the name.
+fn unique_layout_name(d: &Document, base: &str, except: Option<usize>) -> String {
+    let taken: Vec<String> = d.layouts().into_iter().enumerate().filter(|(i, _)| Some(*i) != except).map(|(_, l)| l.name).collect();
+    if !taken.iter().any(|t| t == base) {
+        return base.to_string();
+    }
+    (2..=taken.len().saturating_add(2)).map(|k| format!("{base} {k}")).find(|c| !taken.contains(c)).unwrap_or_else(|| base.to_string())
+}
+
+/// The section starting at absolute page `start`, made when there is none.
+fn section_at(d: &mut Document, start: usize) -> Option<&mut designcraft_doc::Section> {
+    if !d.sections.iter().any(|x| x.start == start) {
         d.sections.push(designcraft_doc::Section {
-            start: n,
-            start_number: Some(1),
+            start,
+            start_number: if start == 0 { Some(1) } else { None },
             style: Default::default(),
             prefix: String::new(),
-            marker: name.clone(),
+            marker: String::new(),
             include_prefix: false,
+            layout: None,
         });
         d.sections.sort_by_key(|x| x.start);
-        Ok(json!({"firstPage": n + 1, "pages": n}))
+    }
+    d.sections.iter_mut().find(|x| x.start == start)
+}
+
+/// Copy the pages of layout `from` after the last page as a new layout `name`, sized `size`
+/// (None keeps each page's), with `rule` as the copies' page rule. → {layout, firstPage, pages}
+fn copy_layout(
+    id: &str,
+    d: &mut Document,
+    from: &designcraft_doc::LayoutRange,
+    name: &str,
+    size: Option<(f64, f64)>,
+    rule: Option<LiquidRule>,
+) -> Result<Value> {
+    let n = d.page_count();
+    let count = from.end.saturating_sub(from.start);
+    if count == 0 || from.end > n {
+        return Err(bad(id, format!("layout {} has no pages", from.name)));
+    }
+    let name = unique_layout_name(d, name, None);
+    let src = d.clone();
+    let last_parent = d.page_loc(n.saturating_sub(1)).and_then(|(si, pi)| d.spreads.get(si).and_then(|sp| sp.pages.get(pi))).and_then(|p| p.parent);
+    d.insert_pages(n.checked_sub(1), count, last_parent)?;
+    // The new layout starts numbering at 1 and a spread of its own.
+    d.sections.retain(|x| x.start != n);
+    d.sections.push(designcraft_doc::Section {
+        start: n,
+        start_number: Some(1),
+        style: Default::default(),
+        prefix: String::new(),
+        marker: name.clone(),
+        include_prefix: false,
+        layout: Some(name.clone()),
+    });
+    d.sections.sort_by_key(|x| x.start);
+    d.repaginate();
+    for k in 0..count {
+        let i = from.start + k;
+        let (Some((si, pi)), Some((ti, tj))) = (src.page_loc(i), d.page_loc(n + k)) else { continue };
+        let Some(from_sp) = src.spreads.get(si) else { continue };
+        let Some(from_pg) = from_sp.pages.get(pi) else { continue };
+        let pb = from_pg.bounds();
+        let last = from_sp.pages.len().saturating_sub(1);
+        let ids: Vec<_> = from_sp
+            .items
+            .iter()
+            .filter(|it| {
+                let c = it.bounds().center().x;
+                (pi == 0 || c >= pb.x0) && (pi == last || c < pb.x1)
+            })
+            .map(|it| it.id)
+            .collect();
+        let Some(sp) = d.spreads.get_mut(ti) else { continue };
+        let sp = Arc::make_mut(sp);
+        let Some(pg) = sp.pages.get_mut(tj) else { continue };
+        // The copy is the page it copies (size, margins, columns, parent, guides), with the
+        // page rule given or its own.
+        let dx = pg.x - from_pg.x;
+        (pg.width, pg.height, pg.margins, pg.columns, pg.parent) =
+            (from_pg.width, from_pg.height, from_pg.margins, from_pg.columns.clone(), from_pg.parent);
+        pg.liquid = rule.unwrap_or(from_pg.liquid);
+        pg.guides = from_pg
+            .guides
+            .iter()
+            .cloned()
+            .map(|mut g| {
+                if g.orientation == Orientation::Vertical {
+                    g.position += dx;
+                }
+                g
+            })
+            .collect();
+        sp.relayout();
+        let to = sp.pages.get(tj).map_or(pb, |p| p.bounds());
+        let new = super::object::duplicate_from(d, &src, &ids, SpreadRef::Doc(ti), designcraft_geom::Vec2::new(to.x0 - pb.x0, to.y0 - pb.y0))?;
+        // The copies' stories stay linked to the originals (Links panel: update when they change).
+        for (old, new) in ids.iter().zip(&new) {
+            let (Some(os), Some(ns)) =
+                (src.item(*old).and_then(|i| i.text_frame()).map(|t| t.story), d.item(*new).and_then(|i| i.text_frame()).map(|t| t.story))
+            else {
+                continue;
+            };
+            let rev = src.story(os).map_or(0, |s| s.rev);
+            if let Some(st) = d.story_mut(ns) {
+                st.link = Some((os, rev));
+            }
+        }
+    }
+    if let Some((w, h)) = size {
+        let pages: Vec<usize> = (n + 1..=n + count).collect();
+        super::layout::resize_pages(d, &pages, Some(w), Some(h));
+    }
+    Ok(json!({"layout": name, "firstPage": n + 1, "pages": count}))
+}
+
+fn create_alternate(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layout.createAlternate";
+    let name = layout_name(ID, str_param(p, "name").unwrap_or("Alternate"))?;
+    let size = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(ID, format!("`{k}` is a number")));
+    let (w, h) = (size("width")?.clamp(1.0, 15_552.0), size("height")?.clamp(1.0, 15_552.0));
+    let rule = p.get("rule").map(|_| rule_param(p, ID)).transpose()?;
+    let from_name = str_param(p, "fromName").map(|v| layout_name(ID, v)).transpose()?;
+    let from = match p.get("from") {
+        None | Some(Value::Null) => s.doc()?.doc.layouts().into_iter().next().ok_or_else(|| bad(ID, "no layout"))?,
+        v => layout_param(ID, &s.doc()?.doc, v)?,
+    };
+    s.edit(|d, _| {
+        if let Some(fname) = from_name {
+            let index = d.layouts().iter().position(|l| l.start == from.start);
+            let fname = unique_layout_name(d, &fname, index);
+            if let Some(sec) = section_at(d, from.start) {
+                sec.layout = Some(fname);
+            }
+        }
+        copy_layout(ID, d, &from, &name, Some((w, h)), rule)
+    })
+}
+
+fn duplicate_alternate(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layout.alternate.duplicate";
+    let from = layout_param(ID, &s.doc()?.doc, p.get("layout"))?;
+    let name = match str_param(p, "name") {
+        Some(v) => layout_name(ID, v)?,
+        None => format!("{} copy", from.name),
+    };
+    s.edit(|d, _| copy_layout(ID, d, &from, &name, None, None))
+}
+
+fn delete_alternate(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layout.alternate.delete";
+    let d = &s.doc()?.doc;
+    let layout = layout_param(ID, d, p.get("layout"))?;
+    if d.layouts().len() < 2 {
+        return Err(bad(ID, "the only layout cannot be deleted"));
+    }
+    let pages: Vec<usize> = (layout.start..layout.end).collect();
+    s.edit(|d, sel| {
+        d.delete_pages(&pages)?;
+        *sel = Default::default();
+        Ok(json!({"layout": layout.name, "pages": pages.len()}))
+    })
+}
+
+fn alternate_options(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layout.alternate.options";
+    let d = &s.doc()?.doc;
+    let layout = layout_param(ID, d, p.get("layout"))?;
+    let index = d.layouts().iter().position(|l| l.start == layout.start);
+    let name = str_param(p, "name").map(|v| layout_name(ID, v)).transpose()?;
+    let dim = |k: &str| -> Result<Option<f64>> {
+        p.get(k)
+            .map(|v| v.as_f64().filter(|v| v.is_finite()).map(|v| v.clamp(1.0, 15_552.0)).ok_or_else(|| bad(ID, format!("`{k}` is a number"))))
+            .transpose()
+    };
+    let (w, h) = (dim("width")?, dim("height")?);
+    if name.as_ref().is_none_or(|n| *n == layout.name) && w.is_none() && h.is_none() {
+        return Ok(json!({"layout": layout.name}));
+    }
+    s.edit(|d, _| {
+        let mut out = layout.name.clone();
+        if let Some(name) = name {
+            out = unique_layout_name(d, &name, index);
+            if let Some(sec) = section_at(d, layout.start) {
+                sec.layout = Some(out.clone());
+            }
+        }
+        if w.is_some() || h.is_some() {
+            let pages: Vec<usize> = (layout.start + 1..=layout.end).collect();
+            super::layout::resize_pages(d, &pages, w, h);
+        }
+        Ok(json!({"layout": out}))
     })
 }
 
@@ -341,5 +516,105 @@ mod tests {
         s.execute("layout.createAlternate", &json!({"name": "Tall", "width": 600, "height": 1200})).unwrap();
         let links = s.execute("story.links", &json!({})).unwrap();
         assert!(links.as_array().unwrap().iter().any(|l| l["parent"] == t["story"]), "{links}");
+    }
+
+    fn layouts(s: &Session) -> Vec<(String, usize, usize)> {
+        s.doc().unwrap().doc.layouts().into_iter().map(|l| (l.name, l.start, l.end)).collect()
+    }
+
+    #[test]
+    fn alternate_layouts_copy_one_layout_and_can_be_duplicated_renamed_and_deleted() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "width": 600, "height": 800, "facingPages": true})).unwrap();
+        assert_eq!(layouts(&s), vec![("Layout 1".into(), 0, 3)]);
+        let r = s.execute("layout.createAlternate", &json!({"name": "Tablet H", "width": 1024, "height": 768, "fromName": "Print"})).unwrap();
+        assert_eq!(r["layout"], "Tablet H");
+        assert_eq!(layouts(&s), vec![("Print".into(), 0, 3), ("Tablet H".into(), 3, 6)]);
+        // Again from the first layout: only its 3 pages are copied, and the name is made unique.
+        let r = s.execute("layout.createAlternate", &json!({"name": "Tablet H", "width": 768, "height": 1024, "from": "Print"})).unwrap();
+        assert_eq!(r["layout"], "Tablet H 2");
+        assert_eq!(layouts(&s).last().cloned(), Some(("Tablet H 2".into(), 6, 9)));
+        // Every layout starts a spread of its own.
+        let d = s.doc().unwrap().doc.clone();
+        for l in d.layouts() {
+            assert_eq!(d.page_loc(l.start).unwrap().1, 0, "{l:?} starts a spread");
+        }
+        let (si, pi) = d.page_loc(3).unwrap();
+        assert!((d.spreads[si].pages[pi].width - 1024.0).abs() < 1e-6);
+        // Duplicate keeps the size; delete removes the layout's pages; undo brings them back.
+        let r = s.execute("layout.alternate.duplicate", &json!({"layout": "Tablet H"})).unwrap();
+        assert_eq!(r["layout"], "Tablet H copy");
+        let d = s.doc().unwrap().doc.clone();
+        let (si, pi) = d.page_loc(9).unwrap();
+        assert!((d.spreads[si].pages[pi].width - 1024.0).abs() < 1e-6);
+        assert_eq!(d.page_count(), 12);
+        s.execute("layout.alternate.delete", &json!({"layout": "Tablet H"})).unwrap();
+        assert_eq!(layouts(&s), vec![("Print".into(), 0, 3), ("Tablet H 2".into(), 3, 6), ("Tablet H copy".into(), 6, 9)]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(layouts(&s).len(), 4);
+        // Rename (kept unique) and resize.
+        let r = s.execute("layout.alternate.options", &json!({"layout": 3, "name": "Print"})).unwrap();
+        assert_eq!(r["layout"], "Print 2");
+        s.execute("layout.alternate.options", &json!({"layout": "Print 2", "width": 500})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let (si, pi) = d.page_loc(9).unwrap();
+        assert!((d.spreads[si].pages[pi].width - 500.0).abs() < 1e-6);
+        // Deleting the first layout leaves the next one first.
+        s.execute("layout.alternate.delete", &json!({"layout": 0})).unwrap();
+        assert_eq!(layouts(&s).first().cloned(), Some(("Tablet H".into(), 0, 3)));
+        // Inserting a page at the end of a layout keeps the next layout's pages its own.
+        s.execute("layout.pages.insert", &json!({"after": 2, "count": 1})).unwrap();
+        assert_eq!(layouts(&s)[0], ("Tablet H".into(), 0, 4));
+        assert_eq!(layouts(&s)[1].1, 4);
+    }
+
+    #[test]
+    fn alternate_layout_commands_refuse_bad_input() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        // The only layout cannot be deleted.
+        assert!(s.execute("layout.alternate.delete", &json!({"layout": 0})).is_err());
+        assert_eq!(s.doc().unwrap().doc.page_count(), 1);
+        for p in [json!({}), json!({"layout": "Nope"}), json!({"layout": 7}), json!({"layout": true}), json!({"layout": -1})] {
+            assert!(s.execute("layout.alternate.duplicate", &p).is_err(), "{p}");
+            assert!(s.execute("layout.alternate.options", &p).is_err(), "{p}");
+        }
+        assert!(s.execute("layout.alternate.options", &json!({"layout": 0, "name": " "})).is_err());
+        assert!(s.execute("layout.alternate.options", &json!({"layout": 0, "width": "wide"})).is_err());
+        assert!(s.execute("layout.createAlternate", &json!({"name": "", "width": 10, "height": 10})).is_err());
+        assert!(s.execute("layout.createAlternate", &json!({"name": "X", "height": 10})).is_err());
+        assert!(s.execute("layout.createAlternate", &json!({"name": "X", "width": 10, "height": 10, "from": "Nope"})).is_err());
+        assert!(s.doc().unwrap().history.undo.is_empty());
+        // A layout survives Numbering & Section Options › remove section.
+        s.execute("layout.createAlternate", &json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+        s.execute("layout.section", &json!({"page": 2, "remove": true})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.layouts().len(), 2);
+    }
+
+    #[test]
+    fn deleting_a_layouts_first_page_keeps_the_layout_when_a_section_follows() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        s.execute("layout.createAlternate", &json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+        // The layout starts at page 3; a numbering section starts at page 4.
+        s.execute("layout.section", &json!({"page": 4, "startNumber": 7})).unwrap();
+        s.execute("layout.pages.delete", &json!({"pages": [2]})).unwrap();
+        let names: Vec<(String, usize, usize)> = layouts(&s);
+        assert_eq!(names, vec![("Layout 1".into(), 0, 2), ("Wide".into(), 2, 3)]);
+        // The kept section's numbering stays.
+        assert_eq!(s.doc().unwrap().doc.page_number(2), 7);
+    }
+
+    #[test]
+    fn layouts_survive_a_save_and_old_sections_load() {
+        let sec: designcraft_doc::Section = serde_json::from_value(json!({"start": 2, "marker": "x"})).unwrap();
+        assert_eq!(sec.layout, None);
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        s.execute("layout.createAlternate", &json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let back: Vec<designcraft_doc::Section> = serde_json::from_value(serde_json::to_value(&d.sections).unwrap()).unwrap();
+        assert_eq!(back, d.sections);
+        assert!(back.iter().any(|x| x.layout.as_deref() == Some("Wide")));
     }
 }

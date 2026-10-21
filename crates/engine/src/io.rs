@@ -103,6 +103,15 @@ pub fn read_to_string(path: impl AsRef<Path>) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Make the folder at `path` and the folders above it, inside the automation write root when
+/// there is one.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn create_dir_all(path: impl AsRef<Path>) -> Result<(), String> {
+    let path = path.as_ref();
+    crate::file_access::check_write(path)?;
+    std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Write `bytes` to the file at `path`, inside the automation write root when there is one.
 pub fn write_file(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), String> {
     let path = path.as_ref();

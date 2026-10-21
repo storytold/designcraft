@@ -180,6 +180,14 @@ pub struct Condition {
     pub visible: bool,
 }
 
+/// One layout of the document: absolute pages `start..end`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutRange {
+    pub name: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 impl Document {
     /// A stroke type with named styles resolved (unknown names draw solid).
     pub fn stroke_kind(&self, t: &StrokeType) -> StrokeType {
@@ -841,6 +849,32 @@ impl Document {
     /// Iterate all pages with their absolute index and spread index.
     pub fn pages(&self) -> impl Iterator<Item = (usize, usize, &Page)> {
         self.spreads.iter().enumerate().flat_map(|(si, s)| s.pages.iter().map(move |p| (si, p))).enumerate().map(|(i, (si, p))| (i, si, p))
+    }
+
+    /// The document's layouts (Layout › Create Alternate Layout), in page order: the pages up to
+    /// the first section that starts a layout are the first layout. Always at least one; a layout
+    /// whose pages are gone is skipped.
+    pub fn layouts(&self) -> Vec<LayoutRange> {
+        let n = self.page_count();
+        let mut starts: Vec<(usize, Option<&str>)> =
+            self.sections.iter().filter_map(|s| s.layout.as_deref().map(|l| (s.start, Some(l)))).filter(|(st, _)| *st < n).collect();
+        starts.sort_by_key(|(st, _)| *st);
+        starts.dedup_by_key(|(st, _)| *st);
+        if starts.first().is_none_or(|(st, _)| *st != 0) {
+            starts.insert(0, (0, None));
+        }
+        let mut out: Vec<LayoutRange> = Vec::with_capacity(starts.len());
+        for (k, (start, name)) in starts.iter().enumerate() {
+            let end = starts.get(k + 1).map_or(n, |(e, _)| *e);
+            let name = name.map_or_else(|| format!("Layout {}", k + 1), str::to_string);
+            out.push(LayoutRange { name, start: *start, end });
+        }
+        out
+    }
+
+    /// The layout holding absolute page `abs` (an index into [`Document::layouts`]).
+    pub fn layout_of(&self, abs: usize) -> usize {
+        self.layouts().iter().rposition(|l| l.start <= abs).unwrap_or(0)
     }
 
     /// The section containing absolute page `abs`.

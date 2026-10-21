@@ -246,6 +246,7 @@ fn page_numbers_saturate_at_the_largest_start() {
         prefix: String::new(),
         marker: String::new(),
         include_prefix: false,
+        layout: None,
     }];
     assert_eq!((0..3).map(|i| d.page_number(i)).collect::<Vec<_>>(), [u32::MAX; 3]);
     d.sections.push(crate::Section { start: 2, start_number: None, ..d.sections[0].clone() });
@@ -262,6 +263,7 @@ fn page_names_follow_sections() {
         style: NumberStyle::LowerRoman,
         prefix: "A-".into(),
         marker: String::new(),
+        layout: None,
         include_prefix: true,
     });
     assert_eq!(d.page_name(1), "2");
@@ -273,6 +275,7 @@ fn page_names_follow_sections() {
         start_number: None,
         style: NumberStyle::Arabic,
         prefix: String::new(),
+        layout: None,
         marker: String::new(),
         include_prefix: false,
     });
@@ -288,6 +291,7 @@ fn consecutive_right_pages_get_separate_spreads() {
         start: 1,
         start_number: Some(1),
         style: NumberStyle::Arabic,
+        layout: None,
         prefix: String::new(),
         marker: String::new(),
         include_prefix: false,

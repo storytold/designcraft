@@ -778,9 +778,15 @@ impl<'r> Importer<'r> {
             let sp = self.spread(e, id, false);
             self.spreads.push(sp);
         }
-        // Sections.
+        // Sections. A section whose AlternateLayout differs from the one before starts that layout.
+        let mut last_layout: Option<String> = None;
         for e in top.iter().filter(|e| e.local() == "Section") {
             let Some(start) = e.get("PageStart").and_then(|p| self.page_index.get(p)).copied() else { continue };
+            let layout = e.get("AlternateLayout").map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
+            let starts_layout = layout.is_some() && layout != last_layout;
+            if layout.is_some() {
+                last_layout = layout.clone();
+            }
             let cont = e.get("ContinueNumbering") != Some("false");
             self.sections.push(Section {
                 start,
@@ -789,6 +795,7 @@ impl<'r> Importer<'r> {
                 prefix: e.get("SectionPrefix").unwrap_or("").to_string(),
                 marker: e.get("Marker").unwrap_or("").to_string(),
                 include_prefix: e.get("IncludeSectionPrefix") == Some("true"),
+                layout: if starts_layout { layout } else { None },
             });
         }
         self.sections.sort_by_key(|s| s.start);
@@ -802,6 +809,7 @@ impl<'r> Importer<'r> {
                     style: Default::default(),
                     prefix: String::new(),
                     marker: String::new(),
+                    layout: None,
                     include_prefix: false,
                 },
             );
