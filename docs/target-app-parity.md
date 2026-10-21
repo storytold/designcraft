@@ -313,7 +313,7 @@ It is evidence of breadth: each item exists. It is not a claim of InDesign-level
 - Preferences › Composition › Highlight: keep violations, H&J violations (three shades), custom tracking/kerning, substituted fonts.
 - File ▸ Export HTML (`file.exportHtml`): one self-contained page in reading order, styles as CSS, images inline, alt text from Object Export Options (also in EPUB).
 - Swatches panel colour groups (`swatch.newColorGroup`, `moveToGroup`, `ungroupColorGroup`, `renameColorGroup`; folders and a row context menu; IDML ColorGroup).
-- Object ▸ Generate QR Code (`object.qrCode`: web link, text, SMS, email, business card; vector modules as a compound path, into a frame or re-encoded in place).
+- Object ▸ Generate QR Code (`object.qrCode`: web link, text, phone number, SMS, email, vCard 3.0 business card with work, mobile and fax numbers; vector modules as a compound path, into a frame or re-encoded in place; `object.qrCodeRead` reads a code back into the dialog; any field can name Data Merge columns as `<<Field>>`, so each merged record gets its own code).
 - Conditional text (`condition.new/options/delete/apply/list`, Conditional Text panel): hidden conditions drop their text from layout and exports, indicators underline on screen, IDML Condition/AppliedConditions.
 - Endnotes (`endnote.insert/edit/delete/list/options`, Type ▸ Insert Endnote): references number through the document, the endnote frame on a new last page lists them under a heading; IDML keeps the listed text only.
 - Editorial notes (`note.new/edit/delete/convertToText/list`, Notes panel): anchored in text, flagged on screen, never printed or exported.

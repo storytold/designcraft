@@ -3,6 +3,8 @@
 //! Phase 1 stores at most one source. The list is the seam for a later multi-source manager.
 //! Preview is session state and is not stored here.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{ItemId, StoryId};
@@ -162,6 +164,11 @@ pub struct Placeholder {
     pub field: String,
     pub role: PlaceholderRole,
     pub anchor: PlaceholderAnchor,
+    /// A QR placeholder built from several fields: the `object.qrCode` params (`type`, `name`,
+    /// `phone`, `mobile`…), each of which may hold `<<Field>>` references. Empty: the code is
+    /// `field`'s cell.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub qr: BTreeMap<String, String>,
 }
 
 /// Last merge options, saved with the document. The merge command reads these and does not

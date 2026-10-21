@@ -523,7 +523,7 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
         }
     };
     let id = d.alloc();
-    d.data_merge.placeholders.push(Placeholder { id, source_id, field: name.to_string(), role, anchor });
+    d.data_merge.placeholders.push(Placeholder { id, source_id, field: name.to_string(), role, anchor, qr: Default::default() });
     Ok(json!({"id": id}))
 }
 

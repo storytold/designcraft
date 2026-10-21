@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use designcraft_doc::{Content, DataField, DataFieldKind, DataSource, Delimiter, HyperlinkDest, SourceStatus};
+use designcraft_doc::{Content, DataField, DataFieldKind, DataSource, Delimiter, HyperlinkDest, ItemId, PlaceholderAnchor, SourceStatus};
 use serde_json::{Value, json};
 
 use super::parse::{self, parse_csv};
@@ -1156,4 +1156,50 @@ fn facing_pages_merge_tiles_short_blocks_without_stacking() {
     assert_eq!(origins.len(), 3, "one text frame per record");
     let unique: std::collections::BTreeSet<_> = origins.iter().collect();
     assert_eq!(unique.len(), 3, "no two records may share a page and coordinates: {origins:?}");
+}
+
+#[test]
+fn qr_business_cards_merge_work_and_mobile_numbers_from_their_own_columns() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,Office,Cell\nAda Lovelace,+44 20 1,+44 77 1\nGrace Hopper,+1 202 2,\n");
+    let r = exec(
+        &mut s,
+        "object.qrCode",
+        json!({"type": "vcard", "name": "<<Name>>", "phone": "<<Office>>", "mobile": "<<Cell>>", "org": "<<Missing>>", "rect": [10.0, 10.0, 100.0, 100.0]}),
+    );
+    let frame = r["id"].as_u64().unwrap();
+    // The template reads back, references and all, for the QR Code dialog.
+    let back = exec(&mut s, "object.qrCodeRead", json!({}));
+    assert_eq!((back["merge"].as_bool(), back["mobile"].as_str(), back["org"].as_str()), (Some(true), Some("<<Cell>>"), Some("<<Missing>>")));
+    let placeholders = &s.documents()[s.active_index().unwrap()].doc.data_merge.placeholders;
+    assert_eq!(placeholders.len(), 1);
+    assert_eq!((placeholders[0].field.as_str(), &placeholders[0].anchor), ("Name", &PlaceholderAnchor::Item { id: ItemId(frame) }));
+    exec(&mut s, "data.merge", json!({}));
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let mut alts = Vec::new();
+    for sp in &doc.spreads {
+        for it in &sp.items {
+            if let Content::Group { items } = &it.content {
+                alts.extend(items.iter().map(|c| c.alt_text.clone()));
+            }
+        }
+    }
+    assert_eq!(alts.len(), 2, "{alts:?}");
+    assert!(
+        alts[0].contains("FN:Ada Lovelace\r\n")
+            && alts[0].contains("TEL;TYPE=WORK,VOICE:+44 20 1\r\n")
+            && alts[0].contains("TEL;TYPE=CELL:+44 77 1\r\n")
+    );
+    // An empty cell leaves its line out; an unknown field stays as typed.
+    assert!(alts[1].contains("FN:Grace Hopper") && !alts[1].contains("TYPE=CELL") && alts[1].contains("ORG:<<Missing>>"), "{}", alts[1]);
+
+    // Re-encoding with no fields drops the merge placeholder.
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name\nAda\n");
+    exec(&mut s, "object.qrCode", json!({"type": "text", "content": "<<Name>>", "rect": [10.0, 10.0, 100.0, 100.0]}));
+    // Another type's leftover field (as the dialog keeps them) is not part of the code.
+    exec(&mut s, "object.qrCode", json!({"type": "text", "content": "static", "phone": "<<Name>>"}));
+    assert!(s.documents()[s.active_index().unwrap()].doc.data_merge.placeholders.is_empty());
 }

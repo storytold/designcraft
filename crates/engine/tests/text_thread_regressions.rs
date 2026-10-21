@@ -179,6 +179,7 @@ fn threading_moves_data_placeholders_and_primary_story_with_text() {
             field: "name".into(),
             role: PlaceholderRole::Text,
             anchor: PlaceholderAnchor::Text { story: StoryId(sb), start: 0, end: 8 },
+            qr: Default::default(),
         });
         Ok(())
     })

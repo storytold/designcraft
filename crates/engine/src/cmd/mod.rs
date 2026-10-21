@@ -47,7 +47,7 @@ mod place_text;
 pub mod preflight;
 mod prefs;
 mod print;
-mod qr;
+pub(crate) mod qr;
 mod rulers;
 mod scripts;
 mod select;

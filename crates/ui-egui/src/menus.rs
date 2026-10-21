@@ -1140,7 +1140,14 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.qrCode" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("qrCode", json!({})));
+            // Edit QR Code: a selected code (or its frame) opens on the fields that made it.
+            let mut fields = app.session.execute("object.qrCodeRead", &json!({})).unwrap_or_else(|_| json!({}));
+            if let Some(o) = fields.as_object_mut() {
+                for k in ["id", "encoded", "merge"] {
+                    o.remove(k);
+                }
+            }
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("qrCode", fields));
             Ok(Value::Null)
         }
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),

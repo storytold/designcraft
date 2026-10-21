@@ -176,7 +176,19 @@ pub fn fill_row(
                 };
                 match ph.role {
                     PlaceholderRole::Image => place_image(doc, mapped, &ph.field, &cell, record, options, data_dir, doc_dir, &mut report),
-                    PlaceholderRole::Qr => place_qr(doc, mapped, &ph.field, &cell, record, &mut report),
+                    PlaceholderRole::Qr if ph.qr.is_empty() => {
+                        place_qr(doc, mapped, &ph.field, &cell, designcraft_color::swatch::BLACK, record, &mut report)
+                    }
+                    PlaceholderRole::Qr => {
+                        // A code built from several fields, e.g. a business card's work and mobile numbers.
+                        let params =
+                            crate::cmd::qr::fill_template(&ph.qr, |name| fields.iter().any(|f| f.name == name).then(|| cell_of(fields, row, name)));
+                        let color = ph.qr.get("color").map_or(designcraft_color::swatch::BLACK, String::as_str);
+                        match crate::cmd::qr::encode(&params) {
+                            Ok(text) => place_qr(doc, mapped, &ph.field, &text, color, record, &mut report),
+                            Err(e) => report.warnings.push(format!("Record {record}, field {}: the QR code is empty ({e}).", ph.field)),
+                        }
+                    }
                     PlaceholderRole::Hyperlink => {
                         if let Some(dest) = classify_link(&cell) {
                             links.push((PlaceholderAnchor::Item { id: mapped }, dest, ph.field.clone()));
@@ -414,7 +426,7 @@ fn place_image(
     }
 }
 
-fn place_qr(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell: &str, record: u32, report: &mut FillReport) {
+fn place_qr(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell: &str, color: &str, record: u32, report: &mut FillReport) {
     if cell.is_empty() {
         report.warnings.push(format!("Record {record}, field {field}: the QR cell is empty."));
         return;
@@ -429,7 +441,7 @@ fn place_qr(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell
     };
     let id = ItemId(doc.alloc());
     let mut code = Item::new(id, it.layer, Shape::Path, path);
-    code.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    code.fill = Fill::swatch(color);
     code.alt_text = format!("QR code: {cell}");
     if let Some(frame) = doc.item_mut(item) {
         frame.content = Content::Group { items: vec![Arc::new(code)] };

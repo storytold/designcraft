@@ -2709,6 +2709,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Type:"));
                             let label = |v: &str| match v {
                                 "text" => crate::i18n::tr(&app.ui.language, "Plain Text"),
+                                "tel" => crate::i18n::tr(&app.ui.language, "Phone Number"),
                                 "sms" => crate::i18n::tr(&app.ui.language, "Text Message"),
                                 "email" => crate::i18n::tr(&app.ui.language, "Email"),
                                 "vcard" => crate::i18n::tr(&app.ui.language, "Business Card"),
@@ -2717,7 +2718,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             egui::ComboBox::from_id_salt("qr_type").selected_text(crate::rtl::widget(ui, label(&cur))).width(160.0).show_ui(
                                 ui,
                                 |ui| {
-                                    for v in ["url", "text", "sms", "email", "vcard"] {
+                                    for v in ["url", "text", "tel", "sms", "email", "vcard"] {
                                         if ui.selectable_label(cur == v, crate::rtl::widget(ui, label(v))).clicked() {
                                             d.fields.insert("type".into(), json!(v));
                                         }
@@ -2726,9 +2727,20 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             );
                         });
                         let fields: &[(&str, &str)] = match cur.as_str() {
+                            "tel" => &[("number", "Phone Number:")],
                             "sms" => &[("number", "Cell Number:"), ("message", "Message:")],
                             "email" => &[("to", "Email Address:"), ("subject", "Subject:"), ("body", "Message:")],
-                            "vcard" => &[("name", "Name:"), ("org", "Organization:"), ("phone", "Phone:"), ("email", "Email:"), ("url", "URL:")],
+                            "vcard" => &[
+                                ("name", "Name:"),
+                                ("org", "Organization:"),
+                                ("title", "Job Title:"),
+                                ("phone", "Work Phone:"),
+                                ("mobile", "Mobile Phone:"),
+                                ("fax", "Fax:"),
+                                ("email", "Email:"),
+                                ("url", "URL:"),
+                                ("address", "Address:"),
+                            ],
                             "text" => &[("content", "Text:")],
                             _ => &[("content", "URL:")],
                         };
@@ -2742,6 +2754,22 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             text_field(ui, &mut d, "color", 160.0);
                             ui.end_row();
                         });
+                        // Data Merge: a field typed as <<Name>> takes each record's value.
+                        let merge_fields = app
+                            .session
+                            .active()
+                            .and_then(|st| st.doc.data_merge.sources.first())
+                            .map(|src| src.fields.iter().map(|f| format!("<<{}>>", f.name)).collect::<Vec<_>>().join("  "));
+                        if let Some(names) = merge_fields.filter(|n| !n.is_empty()) {
+                            ui.add_space(4.0);
+                            crate::rtl::label(
+                                ui,
+                                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Data Merge fields (type one into any box):"))
+                                    .size(11.0)
+                                    .color(crate::theme::Tokens::get(ui.ctx()).text_dim),
+                            );
+                            crate::rtl::label(ui, egui::RichText::new(names).size(11.0).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+                        }
                     }
                     "polygonSettings" => {
                         egui::Grid::new("poly").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
