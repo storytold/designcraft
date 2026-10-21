@@ -11,8 +11,15 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{Result, Session};
 
-fn math_item(d: &mut designcraft_doc::Document, latex: &str, size: f64, lid: designcraft_doc::LayerId, at: (f64, f64)) -> Item {
-    let (svg, (w, h)) = crate::math::to_svg(latex, size);
+fn math_item(
+    d: &mut designcraft_doc::Document,
+    latex: &str,
+    size: f64,
+    opts: &crate::math::Options,
+    lid: designcraft_doc::LayerId,
+    at: (f64, f64),
+) -> Item {
+    let (svg, (w, h)) = crate::math::to_svg_with(latex, size, opts);
     let fresh = AssetId(d.alloc());
     let aid = d.add_asset(Asset { id: fresh, name: "math.svg".into(), mime: "image/svg+xml".into(), data: Arc::new(svg), ..Default::default() });
     let id = ItemId(d.alloc());
@@ -41,19 +48,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Math Expression…",
             ["Type"],
             None,
-            "{latex, size?: points (12), x?, y?, spread?} or {id, latex, size?} — at the text insertion point (inline), else as a frame; with `id`: edits that equation",
+            "{latex, size?: points (12), display?: bool (false; display style: `\\lim` etc. stack their limits), x?, y?, spread?} or {id, latex, size?, display?} — at the text insertion point (inline), else as a frame; with `id`: edits that equation",
             has_doc,
             insert
         ),
-        cmd!(query "math.svg", "Math Expression SVG", [], None, "{latex, size?} → {svg, width, height} — typeset without placing", has_doc, |_s, p| {
+        cmd!(query "math.svg", "Math Expression SVG", [], None, "{latex, size?, display?: bool} → {svg, width, height} — typeset without placing", has_doc, |_s, p| {
             let latex = str_param(p, "latex").ok_or_else(|| bad("math.svg", "`latex` required"))?;
-            let (svg, (w, h)) = crate::math::to_svg(latex, p.get("size").and_then(Value::as_f64).unwrap_or(12.0));
+            let (svg, (w, h)) = crate::math::to_svg_with(latex, p.get("size").and_then(Value::as_f64).unwrap_or(12.0), &opts_param(p));
             Ok(json!({"svg": String::from_utf8_lossy(&svg), "width": w, "height": h}))
         }),
     ]
 }
 
+/// The typesetting options a math command takes.
+fn opts_param(p: &Value) -> crate::math::Options {
+    crate::math::Options { display: p.get("display").and_then(Value::as_bool).unwrap_or(false) }
+}
+
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
+    let opts = opts_param(p);
     let latex = str_param(p, "latex").ok_or_else(|| bad("math.insert", "`latex` required"))?.to_string();
     let size = p.get("size").and_then(Value::as_f64).unwrap_or(12.0).clamp(2.0, 400.0);
     let lid = s.doc()?.active_layer;
@@ -64,7 +77,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             // The path and graphic live in the item's inner space, which `xf` maps to the spread:
             // build the new ones at the old inner corner and keep `xf`.
             let at = old.path.bounds().ok_or_else(|| bad("math.insert", "equation has no geometry"))?;
-            let it = math_item(d, &latex, size, lid, (at.x0, at.y0));
+            let it = math_item(d, &latex, size, &opts, lid, (at.x0, at.y0));
             let target = d.item_mut(id).ok_or_else(|| bad("math.insert", "no such object"))?;
             target.path = it.path;
             target.content = it.content;
@@ -77,7 +90,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let (px, py) = (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64));
     s.edit(|d, sel| {
         if let Some(t) = text {
-            let it = math_item(d, &latex, size, lid, (0.0, 0.0));
+            let it = math_item(d, &latex, size, &opts, lid, (0.0, 0.0));
             let r = t.range();
             if let Some(st) = d.story_mut(t.story) {
                 st.delete(r.start.min(st.len())..r.end.min(st.len()));
@@ -87,7 +100,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             return Ok(json!({"inline": true, "pos": end}));
         }
         let pr = d.spread(spread).and_then(|sp| sp.pages.first()).map(|pg| pg.margin_rect()).unwrap_or(Rect::new(36.0, 36.0, 300.0, 300.0));
-        let it = math_item(d, &latex, size, lid, (px.unwrap_or(pr.x0), py.unwrap_or(pr.y0)));
+        let it = math_item(d, &latex, size, &opts, lid, (px.unwrap_or(pr.x0), py.unwrap_or(pr.y0)));
         let id = it.id;
         d.insert_item(spread, it, None)?;
         sel.items = vec![id];
@@ -130,6 +143,21 @@ mod tests {
         assert_eq!(s.execute("math.insert", &json!({"latex": r"\pi r^2"})).unwrap()["inline"], true);
         let st = &s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(f["story"].as_u64().unwrap())];
         assert_eq!(st.objects.len(), 1);
+    }
+
+    /// `display` is a documented parameter (so the unknown-parameter check accepts it) and
+    /// stacks a named operator's limits.
+    #[test]
+    fn display_style_stacks_operator_limits() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let h = |s: &mut Session, display: bool| {
+            s.execute("math.svg", &json!({"latex": r"\lim_{x\to 0} f(x)", "display": display})).unwrap()["height"].as_f64().unwrap()
+        };
+        let (text, display) = (h(&mut s, false), h(&mut s, true));
+        assert!(display > text + 2.0, "{text} {display}");
+        let r = s.execute("math.insert", &json!({"latex": r"\max_{k} a_k", "display": true, "x": 100, "y": 100})).unwrap();
+        assert!(r["id"].as_u64().is_some());
     }
 
     /// The item's top-left corner in spread space (inner path corner through its transform).

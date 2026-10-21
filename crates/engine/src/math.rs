@@ -1,7 +1,8 @@
 //! Math expressions: a LaTeX subset typeset into boxes and written as SVG (text in the bundled
 //! serif, rules and radicals as paths). Covers fractions, super/subscripts, square and n-th roots,
 //! big operators with limits, Greek letters, common symbols, `\text{}`, `\mathrm{}`, spacing
-//! commands and `\left( … \right)`.
+//! commands and `\left( … \right)`. Named operators (`\lim`, `\max`, …) stack their limits under
+//! them with `\limits` or in display style; `\nolimits` sets any operator's limits as scripts.
 
 use std::fmt::Write as _;
 
@@ -73,10 +74,14 @@ enum Node {
     },
     Text(String),
     Space(f64),
-    /// A big operator (∑ ∏ ∫): drawn larger, limits as scripts.
-    Big(String),
+    /// A big operator; `true` stacks its limits over and under it (`\nolimits` clears it).
+    Big(String, bool),
+    /// A named operator (`lim`, `max`, …), upright; `true` stacks its limits under/over it.
+    Op(String, bool),
     /// `\left( … \right)`: delimiters sized to the content.
     Fenced(String, Box<Node>, String),
+    /// Any other `\underset` base (`\frac{a}{b}`, `x`): laid out as itself, limits stacked.
+    Stacked(Box<Node>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,6 +174,8 @@ struct Parser<'a> {
     i: usize,
     /// Enclosing group depth, at most [`MAX_NESTING`].
     depth: usize,
+    /// Display style: named operators stack their limits unless `\nolimits` follows.
+    display: bool,
 }
 
 impl Parser<'_> {
@@ -265,6 +272,21 @@ impl Parser<'_> {
             None => String::new(),
         }
     }
+    /// Consume a `\limits` (`Some(true)`) or `\nolimits` (`Some(false)`) right after an operator.
+    fn limits_flag(&mut self) -> Option<bool> {
+        let save = self.i;
+        self.skip_ws();
+        for (word, v) in [("\\limits", true), ("\\nolimits", false)] {
+            let w: Vec<char> = word.chars().collect();
+            let rest = self.s.get(self.i..).unwrap_or_default();
+            if rest.starts_with(&w) && !rest.get(w.len()).is_some_and(char::is_ascii_alphabetic) {
+                self.i += w.len();
+                return Some(v);
+            }
+        }
+        self.i = save;
+        None
+    }
     fn atom(&mut self) -> Option<Node> {
         self.skip_ws();
         let c = self.peek()?;
@@ -291,13 +313,24 @@ impl Parser<'_> {
                                 }
                                 s.push(c);
                             }
-                            Box::new(parse_at(&s, self.depth + 1))
+                            Box::new(parse_at(&s, self.depth + 1, self.display))
                         });
                         let a = self.arg();
                         Node::Sqrt(idx, Box::new(a))
                     }
                     "text" | "mathrm" | "textrm" | "operatorname" => Node::Text(self.raw_group()),
-                    "sin" | "cos" | "tan" | "log" | "ln" | "exp" | "lim" | "max" | "min" => Node::Text(name),
+                    "sin" | "cos" | "tan" | "log" | "ln" | "exp" => Node::Text(name),
+                    "lim" | "max" | "min" | "sup" | "inf" | "limsup" | "liminf" => {
+                        let stacked = self.limits_flag().unwrap_or(self.display);
+                        Node::Op(name, stacked)
+                    }
+                    // A stray `\limits`/`\nolimits` (not after an operator) sets nothing.
+                    "limits" | "nolimits" => Node::Space(0.0),
+                    "underset" => {
+                        let under = self.arg();
+                        let base = self.arg();
+                        Node::Scripts { base: Box::new(stack_base(base)), sup: None, sub: Some(Box::new(under)) }
+                    }
                     "," => Node::Space(3.0 / 18.0),
                     ":" | ">" => Node::Space(4.0 / 18.0),
                     ";" => Node::Space(5.0 / 18.0),
@@ -315,7 +348,7 @@ impl Parser<'_> {
                     "}" => Node::Sym("}".into(), Class::Punct),
                     "%" | "$" | "#" | "&" | "_" => Node::Sym(name, Class::Plain),
                     n => match (big_op(n), symbol(n)) {
-                        (Some(op), _) => Node::Big(op.into()),
+                        (Some(op), _) => Node::Big(op.into(), self.limits_flag().unwrap_or(true)),
                         (None, Some((s, cl))) => Node::Sym(s.into(), cl),
                         _ => Node::Text(format!("\\{n}")),
                     },
@@ -394,7 +427,7 @@ impl Parser<'_> {
                 self.i += 6;
                 break;
             }
-            let mut p = Parser { s: self.s, i: self.i, depth: self.depth + 1 };
+            let mut p = Parser { s: self.s, i: self.i, depth: self.depth + 1, display: self.display };
             let one = p.list_one();
             self.i = p.i;
             out.extend(one);
@@ -429,13 +462,28 @@ impl Parser<'_> {
 }
 
 fn parse(src: &str) -> Node {
-    parse_at(src, 0)
+    parse_at(src, 0, false)
 }
 
-fn parse_at(src: &str, depth: usize) -> Node {
+fn parse_at(src: &str, depth: usize, display: bool) -> Node {
     let chars: Vec<char> = src.chars().collect();
-    let mut p = Parser { s: &chars, i: 0, depth };
+    let mut p = Parser { s: &chars, i: 0, depth, display };
     Node::Group(p.list(None))
+}
+
+/// The base of `\underset{under}{base}`: a named operator (`\underset{x\to 0}{\lim}`), upright
+/// text (`\mathrm{arg}`), or anything else laid out as itself, with `under` stacked below it.
+fn stack_base(base: Node) -> Node {
+    match base {
+        Node::Op(name, _) => Node::Op(name, true),
+        Node::Big(op, _) => Node::Big(op, true),
+        Node::Group(mut v) if v.len() == 1 => match v.pop() {
+            Some(n) => stack_base(n),
+            None => Node::Group(v),
+        },
+        Node::Text(s) => Node::Op(s, true),
+        other => Node::Stacked(Box::new(other)),
+    }
 }
 
 /// Typesetting fonts and metrics.
@@ -488,8 +536,9 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
     let axis = size * 0.25;
     match n {
         Node::Sym(s, cl) => text_box(f, s, size, *cl == Class::Ident),
-        Node::Text(s) => text_box(f, s, size, false),
+        Node::Text(s) | Node::Op(s, _) => text_box(f, s, size, false),
         Node::Space(em) => MBox { w: em * size, ..Default::default() },
+        Node::Stacked(b) => layout(f, b, size),
         Node::Group(list) => {
             let mut parts = Vec::new();
             let mut prev: Option<Class> = None;
@@ -498,6 +547,7 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
                     Node::Sym(_, c) => Some(*c),
                     Node::Scripts { base, .. } => match &**base {
                         Node::Sym(_, c) => Some(*c),
+                        Node::Op(..) => Some(Class::Plain),
                         _ => None,
                     },
                     _ => None,
@@ -564,7 +614,7 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
             }
             out
         }
-        Node::Big(op) => {
+        Node::Big(op, _) => {
             let mut b = text_box(f, op, size * 1.5, false);
             b.asc = size * 1.05;
             b.desc = size * 0.35;
@@ -577,7 +627,7 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
             b
         }
         Node::Scripts { base, sup, sub } => {
-            let big = matches!(&**base, Node::Big(_));
+            let big = matches!(&**base, Node::Big(_, true) | Node::Op(_, true) | Node::Stacked(_));
             let b = layout(f, base, size);
             let s2 = size * 0.7;
             let (bw, basc, bdesc) = (b.w, b.asc, b.desc);
@@ -654,11 +704,27 @@ fn layout(f: &Fonts, n: &Node, size: f64) -> MBox {
     }
 }
 
-/// Typeset `latex` at `size` points: SVG bytes and the size in points.
+/// How an expression is set.
+#[derive(Clone, Debug, Default)]
+pub struct Options {
+    /// Display style (`\[ … \]`): named operators like `\lim` stack their limits.
+    pub display: bool,
+}
+
+/// Typeset `latex` at `size` points in text style: SVG bytes and the size in points.
 pub fn to_svg(latex: &str, size: f64) -> (Vec<u8>, (f64, f64)) {
+    render(&parse(latex), size)
+}
+
+/// [`to_svg`] with [`Options`].
+pub fn to_svg_with(latex: &str, size: f64, opts: &Options) -> (Vec<u8>, (f64, f64)) {
+    render(&parse_at(latex, 0, opts.display), size)
+}
+
+fn render(tree: &Node, size: f64) -> (Vec<u8>, (f64, f64)) {
     let db = FontDb::global();
     let f = Fonts { upright: db.face(FAMILY, "Regular"), italic: db.face(FAMILY, "Italic"), fallback: db.face(FALLBACK, "Regular") };
-    let b = layout(&f, &parse(latex), size);
+    let b = layout(&f, tree, size);
     let pad = size * 0.1;
     let (w, h) = (b.w + 2.0 * pad, b.asc + b.desc + 2.0 * pad);
     let base = pad + b.asc;
@@ -713,7 +779,7 @@ mod tests {
         assert!(matches!(&v[0], Node::Frac(_, _)));
         let n = parse(r"\sum_{i=1}^{n} i^2 \le \alpha");
         let Node::Group(v) = n else { panic!() };
-        assert!(matches!(&v[0], Node::Scripts { base, sup: Some(_), sub: Some(_) } if matches!(**base, Node::Big(_))));
+        assert!(matches!(&v[0], Node::Scripts { base, sup: Some(_), sub: Some(_) } if matches!(**base, Node::Big(_, true))));
         assert!(v.iter().any(|x| *x == Node::Sym("≤".into(), Class::Rel)));
         assert!(v.iter().any(|x| *x == Node::Sym("α".into(), Class::Ident)));
         let n = parse(r"\left( \frac{1}{2} \right) + \text{if } x");
@@ -741,6 +807,43 @@ mod tests {
             let Node::Group(v) = parse(src) else { panic!() };
             assert!(matches!(&v[0], Node::Fenced(_, _, c) if c == close), "{src}: {v:?}");
         }
+    }
+
+    /// `\lim` sets its limit as a subscript in text style and stacks it under the operator with
+    /// `\limits`, in display style, or via `\underset`; `\nolimits` turns stacking off.
+    #[test]
+    fn operator_limits_stack_on_request() {
+        let op = |n: &Node| match n {
+            Node::Group(v) => match v.first() {
+                Some(Node::Scripts { base, .. }) => match &**base {
+                    Node::Op(s, st) => Some((s.clone(), *st)),
+                    Node::Big(s, st) => Some((s.clone(), *st)),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        assert_eq!(op(&parse(r"\lim_{x\to 0} f(x)")), Some(("lim".into(), false)));
+        assert_eq!(op(&parse(r"\lim\limits_{x\to 0} f(x)")), Some(("lim".into(), true)));
+        assert_eq!(op(&parse_at(r"\max_{k} a_k", 0, true)), Some(("max".into(), true)));
+        assert_eq!(op(&parse_at(r"\max\nolimits_{k} a_k", 0, true)), Some(("max".into(), false)));
+        assert_eq!(op(&parse(r"\sum\nolimits_{i} a_i")), Some(("∑".into(), false)));
+        assert_eq!(op(&parse(r"\underset{x\to 0}{\lim} f(x)")), Some(("lim".into(), true)));
+        assert_eq!(op(&parse(r"\underset{n}{\mathrm{arg}} f")), Some(("arg".into(), true)));
+        // Not a prefix match: `\limitsfoo` is an unknown command, not `\limits` + "foo".
+        assert_eq!(op(&parse(r"\lim\limitsfoo_{x}")), None);
+        // Stacked limits make the expression taller than a subscript does.
+        let h = |src: &str, display: bool| to_svg_with(src, 12.0, &Options { display }).1.1;
+        let (inline, stacked, display) = (h(r"\lim_{x\to 0} f(x)", false), h(r"\lim\limits_{x\to 0} f(x)", false), h(r"\lim_{x\to 0} f(x)", true));
+        assert!(stacked > inline + 2.0, "{inline} {stacked}");
+        assert!((display - stacked).abs() < 0.01, "{display} {stacked}");
+        assert_eq!(to_svg(r"\lim_{x} x", 12.0).1, to_svg_with(r"\lim_{x} x", 12.0, &Options::default()).1);
+        // Any other `\underset` base keeps its own layout: the fraction is set, with `x` under it.
+        let (svg, (_, uh)) = to_svg(r"\underset{x}{\frac{a}{b}}", 12.0);
+        let svg = String::from_utf8(svg).unwrap();
+        assert!(svg.contains(">a<") && svg.contains(">b<") && svg.contains(">x<"), "{svg}");
+        assert!(uh > to_svg(r"\frac{a}{b}", 12.0).1.1 + 2.0, "{uh}");
     }
 
     #[test]
