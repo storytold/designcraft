@@ -246,6 +246,24 @@ impl ToolContext<'_> {
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
+    /// Like [`Self::hit`], with the groups opened: the top-level item under a canvas point down to
+    /// the innermost object, on document and parent spreads alike. `None` if nothing is hit.
+    pub fn hit_chain(&self, p: Point) -> Option<(SpreadRef, Vec<ItemId>)> {
+        let (sr, sp) = self.layout.spread_at(p)?;
+        let SpreadRef::Doc(si) = sr else {
+            let (sr, id) = self.hit_parent(sr, sp)?;
+            let top = self.doc.spread(sr)?.items.iter().find(|i| i.id == id)?;
+            return Some((sr, self.doc.chain_below(top, sp, self.tol(4.0))));
+        };
+        let chain = self.doc.hit_chain(si, sp, self.tol(4.0));
+        if chain.is_empty() { None } else { Some((sr, chain)) }
+    }
+
+    /// The innermost object under a canvas point (inside groups).
+    pub fn hit_leaf(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
+        self.hit_chain(p).and_then(|(sr, chain)| chain.last().map(|id| (sr, *id)))
+    }
+
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
     /// group, so a loaded text cursor over a text frame in a group found nothing to thread into
     /// (gaps 27); InDesign threads into it.

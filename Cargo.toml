@@ -23,6 +23,7 @@ designcraft-images = { path = "crates/images" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }
+designcraft-affinity = { path = "crates/affinity" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-pptx = { path = "crates/pptx" }
 designcraft-textimport = { path = "crates/textimport" }
@@ -70,6 +71,10 @@ flo_curves = "0.8"
 qrcodegen = "1.8"
 quick-xml = "0.41"
 zip = { version = "3", default-features = false, features = ["deflate"] }
+# Affinity documents (designcraft-affinity): entry checksums, zlib and zstd entries.
+crc32fast = "1.5"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 # INDD/INDT → IDML conversion for File › Open: storytold/indd-utils, tracking its main branch
 # (MIT OR Apache-2.0, no dependencies, builds for wasm).
 indd = { git = "https://github.com/storytold/indd-utils", branch = "main" }

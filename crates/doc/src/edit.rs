@@ -196,7 +196,7 @@ impl Document {
     /// The top-level item (group root) containing `id`.
     pub fn top_level_of(&self, id: ItemId) -> Option<ItemId> {
         let loc = self.find(id)?;
-        Some(self.spread(loc.spread)?.items[loc.top()].id)
+        Some(self.spread(loc.spread)?.items.get(*loc.path.first()?)?.id)
     }
 
     /// Spread-space transform of the parent group chain of the item at `loc` (identity at top level).
@@ -620,6 +620,32 @@ impl Document {
             }
         }
         None
+    }
+
+    /// The items under spread point `p` on spread `si`, from the frontmost top-level item down to
+    /// the innermost object of its groups (or the content pasted into a frame). Empty if nothing is hit.
+    pub fn hit_chain(&self, si: usize, p: Point, tol: f64) -> Vec<ItemId> {
+        let Some(top) = self.hit_item(si, p, tol) else { return Vec::new() };
+        match self.spreads.get(si).and_then(|sp| sp.items.iter().find(|i| i.id == top)) {
+            Some(it) => self.chain_below(it, p, tol),
+            None => vec![top],
+        }
+    }
+
+    /// `top` (an item hit at spread point `p`) and the objects under `p` inside it, down to the
+    /// innermost one: hidden objects and those on hidden or locked layers are passed over, as
+    /// [`Self::hit_item`] passes over top-level ones.
+    pub fn chain_below(&self, top: &Item, p: Point, tol: f64) -> Vec<ItemId> {
+        let mut chain = vec![top.id];
+        let (mut it, mut p) = (top, p);
+        while let Content::Group { items } = &it.content {
+            p = it.xf.inverse() * p;
+            let open = |c: &Item| !c.hidden && self.layer(c.layer).is_none_or(|l| l.visible && !l.locked);
+            let Some(child) = items.iter().rev().find(|c| open(c) && item_hit(c, p, tol)) else { break };
+            chain.push(child.id);
+            it = child;
+        }
+        chain
     }
 
     /// The first item on a document or parent spread whose geometry isn't finite

@@ -41,7 +41,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
             "{path} — a DesignCraft or IDML file (recognised by its content, so the extension may be missing), or an InDesign .indd/.indt (recognised by its signature or extension, converted to IDML; its conversion warnings join `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, GREP styles whose pattern can't compile, Based on Parent links cleared and, for IDML and InDesign files, package parts missing}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package or an InDesign .indd/.indt → {index, warnings}", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package, an InDesign .indd/.indt or an Affinity document → {index, warnings}", always, file_open_bytes),
         cmd!(noundo "file.openRecent", "Open Recent File", [], None,
             "{index} — reopen entry `index` of File › Open Recent (as file.open); a file that is gone is an error and stays listed",
             has_recent, file_open_recent),
@@ -474,6 +474,11 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         if designcraft_idml::is_idml(&bytes) || (!native && (super::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return super::interchange::open_idml(s, p);
         }
+        // Affinity documents by their signature, or by their name when it isn't there (the reader
+        // then says what is wrong with the file).
+        if designcraft_affinity::is_affinity(&bytes) || (!native && super::interchange::is_affinity_path(path)) {
+            return super::interchange::open_affinity(s, p);
+        }
         if !native && ext != designcraft_format::EXTENSION {
             return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
         }
@@ -541,6 +546,9 @@ fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     // signature (or their name).
     if designcraft_idml::is_idml(&b) || super::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return super::interchange::open_idml(s, p);
+    }
+    if designcraft_affinity::is_affinity(&b) {
+        return super::interchange::open_affinity(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;
     super::datamerge::resolve_sources_on_open(&mut d, None);

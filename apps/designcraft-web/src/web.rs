@@ -6,7 +6,7 @@ use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
+const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt", "afpub", "af", "afdesign", "afphoto"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
     "jpg",

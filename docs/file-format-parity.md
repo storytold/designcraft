@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (Affinity `.afpub`, `.af`, `.afdesign` and `.afphoto` open read-only (designcraft-affinity); IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -30,6 +30,7 @@ score below).
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
 | PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
+| Affinity document (Publisher, Designer, Photo) | `.afpub`, `.af`, `.afdesign`, `.afphoto` | — | ✓ (read-only; `designcraft-affinity`; a new unsaved document, everything not imported listed in the open warnings) | ✗ | Synthetic fixtures (`crates/affinity/tests`), limit tests and an import fuzzer through open, render and PDF export; checked by hand against an Affinity PDF export of a 56-artboard document (6.1 % RMSE). Not InDesign's format, so it carries no InDesign weight | — |
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and

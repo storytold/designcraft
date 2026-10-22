@@ -1,11 +1,11 @@
 //! Layers panel: expandable layer rows listing the current spread's objects topmost first
-//! (`<rectangle>`, `<first words…>` for text frames; groups expand to their members), with eye /
-//! lock columns per layer and per object and a selection square in the layer colour. Drag a
-//! layer row to reorder layers, an object row to restack it or move it to another layer (group
-//! members restack within their group), and a filled selection square onto another layer to move
-//! the selection there. A selected row drags the selected objects that share its parent (for a
-//! top-level row, those on its layer). Locked and hidden layers take drops only with Cmd/Ctrl
-//! held.
+//! (`<rectangle>`, `<first words…>` for text frames, `<table>` for a frame holding just a table;
+//! groups expand to their members), with eye / lock columns per layer and per object and a
+//! selection square in the layer colour. Drag a layer row to reorder layers, an object row to
+//! restack it or move it to another layer (group members restack within their group), and a
+//! filled selection square onto another layer to move the selection there. A selected row drags
+//! the selected objects that share its parent (for a top-level row, those on its layer). Locked
+//! and hidden layers take drops only with Cmd/Ctrl held.
 
 use designcraft_doc::{Content, Document, Item, ItemId, LayerId};
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
@@ -45,6 +45,9 @@ pub fn item_label(doc: &Document, it: &Item) -> String {
             let short: String = short.chars().take(24).collect();
             let ell = if short.chars().count() < words.chars().count() { "…" } else { "" };
             return format!("<{short}{ell}>");
+        }
+        if !story.tables.is_empty() {
+            return "<table>".to_string();
         }
     }
     if let Some(name) = it.graphic().and_then(|g| doc.assets.get(&g.asset)).map(|a| a.name.trim()).filter(|n| !n.is_empty()) {
@@ -620,6 +623,16 @@ mod tests {
         assert_eq!(item_label(doc, tf), "<Every page begins as an…>");
         let rr = doc.item(ItemId(rect["id"].as_u64().unwrap())).unwrap();
         assert_eq!(item_label(doc, rr), "<rectangle>");
+    }
+
+    #[test]
+    fn a_frame_holding_just_a_table_is_labelled_table() {
+        let mut s = designcraft_engine::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(item_label(doc, doc.item(ItemId(r["id"].as_u64().unwrap())).unwrap()), "<table>");
     }
 
     /// The panel alone, 304 pt wide; rows start at (8, 8).

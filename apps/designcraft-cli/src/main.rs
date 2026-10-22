@@ -1,7 +1,7 @@
 //! Headless DesignCraft.
 //!
 //! ```text
-//! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub|.pptx|.html|.rtf|.txt] [--all-pages DIR]
+//! designcraft-cli run [--in FILE.designcraft|FILE.idml|FILE.afpub | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub|.pptx|.html|.rtf|.txt] [--all-pages DIR]
 //!                                      # --page, --scale and --pdf-options apply to the exports that follow them
 //!                                      # .rtf and .txt hold the story being edited or of the selected frame
 //! designcraft-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER

@@ -4109,6 +4109,25 @@ mod transform_values_tests {
         s.execute("transform.set", &json!({"scaleX": 200, "ids": [b]})).unwrap();
         assert_eq!(info(&mut s, b)["scaleX"], 100.0);
     }
+
+    #[test]
+    fn moving_an_object_inside_a_turned_group_follows_the_pointer() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 150]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [300, 100, 350, 150]})).unwrap()["id"].as_u64().unwrap();
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("transform.rotate", &json!({"angle": 90, "ids": [g]})).unwrap();
+        let centre = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            let loc = d.find(ItemId(a)).unwrap();
+            d.parent_xf(&loc) * d.item(ItemId(a)).unwrap().bounds().center()
+        };
+        let c0 = centre(&s);
+        s.execute("transform.move", &json!({"dx": 10, "dy": 0, "ids": [a]})).unwrap();
+        let c1 = centre(&s);
+        assert!((c1.x - c0.x - 10.0).abs() < 1e-9 && (c1.y - c0.y).abs() < 1e-9, "{c0:?} -> {c1:?}");
+    }
 }
 
 #[cfg(test)]

@@ -716,6 +716,18 @@ impl Tool for SelectionTool {
             self.drag = Drag::None;
             return actions;
         }
+        // The second press of a double click on a group: one level into it, the object under the
+        // pointer below the selected one (clicks then stay at that level, see `pick_in_chain`).
+        if !self.direct
+            && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
+            && ev.click_count() == 2
+            && let Some((_, chain)) = cx.hit_chain(p)
+            && chain.len() > 1
+            && let Some(&id) = chain.get(chain.iter().rposition(|id| cx.selection.contains(*id)).map_or(0, |d| d + 1))
+        {
+            self.drag = Drag::None;
+            return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]}))];
+        }
         // The second press of a double click on a frame with content: toggle between the frame and
         // its content.
         if !self.direct
@@ -812,9 +824,11 @@ impl Tool for SelectionTool {
                     self.drag = Drag::Pending { start: p, hit: true, content: false };
                     return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
                 }
-                match cx.hit(p) {
-                    Some((sr, id)) => {
-                        let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
+                match cx.hit_chain(p) {
+                    Some((sr, chain)) => {
+                        let Some(id) = (if self.direct { chain.last().copied() } else { pick_in_chain(cx, &chain) }) else {
+                            return vec![];
+                        };
                         let mut out = vec![];
                         if ev.mods.shift {
                             if cx.selection.contains(id) {
@@ -1283,6 +1297,26 @@ impl Tool for SelectionTool {
     }
 }
 
+/// What a Selection tool click on `chain` (top-level item → innermost object) selects: a selected
+/// object in it, else its sibling of an object selected inside a group (staying at that level),
+/// else the top-level item.
+fn pick_in_chain(cx: &ToolContext, chain: &[ItemId]) -> Option<ItemId> {
+    for (k, id) in chain.iter().enumerate().rev() {
+        if cx.selection.contains(*id) {
+            return Some(*id);
+        }
+        let in_group = k
+            .checked_sub(1)
+            .and_then(|parent| chain.get(parent))
+            .and_then(|parent| cx.doc.item(*parent))
+            .is_some_and(|g| g.children().iter().any(|c| cx.selection.contains(c.id)));
+        if in_group {
+            return Some(*id);
+        }
+    }
+    chain.first().copied()
+}
+
 /// The start and end brackets of the selected type-on-a-path items, in the selection colour: a
 /// line across the path with a short tick pointing at the text between them.
 fn brackets(cx: &ToolContext) -> Vec<Overlay> {
@@ -1315,7 +1349,8 @@ fn handle_cursor(h: usize) -> Cursor {
 
 /// Switch to the Type tool with the caret at `p` when it is over a text frame.
 fn edit_text_at(cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
-    let (_, id) = cx.hit(p)?;
+    // A text frame inside a group (a table's cells included) takes the caret straight away.
+    let (_, id) = cx.hit_leaf(p)?;
     if !cx.doc.item(id).is_some_and(|i| i.is_text_frame()) {
         return None;
     }
