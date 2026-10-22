@@ -3647,6 +3647,18 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Set", ["Set", "Jeu", "Set", "Set", "样式集"]),
     ("unused", ["unused", "inutilisé", "unused", "unused", "未使用"]),
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
+    ("Checking", ["Wird geprüft", "Vérification", "Comprobando", "確認中", "正在检查"]),
+    ("Checking links…", ["Verknüpfungen werden geprüft …", "Vérification des liens…", "Comprobando vínculos…", "リンクを確認中…", "正在检查链接…"]),
+    (
+        "Link status is unavailable.",
+        [
+            "Der Verknüpfungsstatus ist nicht verfügbar.",
+            "L'état des liens n'est pas disponible.",
+            "El estado de los vínculos no está disponible.",
+            "リンクの状態を取得できません。",
+            "链接状态不可用。",
+        ],
+    ),
     ("▲ Modified", ["▲ Modified", "▲ Modifié", "▲ Modified", "▲ Modified", "▲ 已修改"]),
     ("(Text Color)", ["(Text Color)", "(Couleur du texte)", "(Text Color)", "(Text Color)", "（文本颜色）"]),
     (
@@ -5122,6 +5134,15 @@ mod tests {
         assert_eq!(tr("de", "Low Quality Print"), "Low Quality Print");
         // Fixed standard names stay identical in every language.
         assert_eq!(tr("ja", "PDF/X-4"), "PDF/X-4");
+    }
+
+    #[test]
+    fn links_panel_check_strings_are_translated_in_every_language() {
+        for (code, _) in LANGUAGES.iter().filter(|(c, _)| !c.is_empty()) {
+            for key in ["Checking", "Checking links…", "Link status is unavailable."] {
+                assert_ne!(tr(code, key), key, "{code}: {key}");
+            }
+        }
     }
 
     #[test]

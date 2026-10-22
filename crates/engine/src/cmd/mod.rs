@@ -29,6 +29,7 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+pub use links::{LinkListChecks, list_document_links, preview_document_links};
 mod liquid;
 mod lists;
 mod load_styles;

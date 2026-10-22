@@ -662,7 +662,17 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         _ => PdfCrop::Crop,
     };
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let mut asset = Asset { page: pdf_page, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
+    let mut asset = Asset {
+        page: pdf_page,
+        name,
+        mime,
+        link,
+        link_fingerprint: before,
+        data: Arc::new(bytes),
+        pixels: Some((pw, ph)),
+        pdf_crop,
+        ..Default::default()
+    };
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
     // and then the document says so).
     let (bw, bh) = match crop_pdf(&mut asset) {
@@ -839,11 +849,15 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
 }
 
 fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
+    // Remember the file that is about to be read, not a later version that may replace it while a
+    // network or syncing source is being loaded. `file.place` uses the same ordering.
+    let link_fingerprint =
+        if str_param(p, "base64").is_none() { str_param(p, "path").and_then(super::datamerge::fingerprint_from_path) } else { None };
     let (bytes, name, link) = read_source(p)?;
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
     let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
     let mime = designcraft_render::image_mime(&bytes).to_string();
-    let asset = Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
+    let asset = Asset { name, mime, link, link_fingerprint, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
     load_cursor(s, asset, natural)
 }
 
@@ -1102,7 +1116,7 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod image_place_tests {
-    use designcraft_doc::{Content, ItemId};
+    use designcraft_doc::{AssetId, Content, ItemId};
     use designcraft_geom::Rect;
     use serde_json::{Value, json};
 
@@ -1156,6 +1170,20 @@ mod image_place_tests {
             assert_eq!(row["uses"].as_array().unwrap().len(), 1);
             assert_eq!(row["uses"][0]["id"], placed["id"]);
         }
+    }
+
+    #[test]
+    fn place_load_remembers_the_fingerprint_captured_for_its_link() {
+        let image = image_file().unwrap();
+        let expected = super::super::datamerge::fingerprint_from(&std::fs::metadata(image.path()).unwrap());
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+
+        let loaded = session.execute("place.load", &json!({"path": image.path()})).unwrap();
+        let asset = &session.doc().unwrap().doc.assets[&AssetId(loaded["asset"].as_u64().unwrap())];
+
+        assert_eq!(asset.link_fingerprint, Some(expected));
+        assert_eq!(asset.link.as_deref(), image.path().to_str());
     }
 
     #[test]

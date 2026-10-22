@@ -2329,19 +2329,40 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let Some(st) = app.session.active() else { return };
     let t = Tokens::get(ui.ctx());
-    // The list checks files on disk: refresh it at most twice a second.
-    let key = egui::Id::new("links_panel");
-    let now = ui.input(|i| i.time);
-    let rev = (st.uid, st.revision);
-    let cached: Option<(f64, (u64, u64), Vec<Value>)> = ui.data(|d| d.get_temp(key));
-    let rows = match cached {
-        Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
-        _ => {
-            let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-            ui.data_mut(|d| d.insert_temp(key, (now, rev, rows.clone())));
-            rows
-        }
+    // Network paths may take an operating-system timeout. Native builds check them on one bounded
+    // worker and keep drawing the last completed result; web builds have no filesystem access.
+    #[cfg(not(target_arch = "wasm32"))]
+    let refresh = app.links_worker.rows(
+        ui.ctx(),
+        crate::links_worker::Snapshot {
+            key: crate::links_worker::Key::new(st.uid, &st.doc, st.path.as_deref()),
+            doc: std::sync::Arc::clone(&st.doc),
+            cache: std::sync::Arc::clone(&app.session.cache),
+            document: st.path.as_ref().map(std::path::PathBuf::from),
+        },
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let rows = &refresh.values;
+    #[cfg(target_arch = "wasm32")]
+    let rows = {
+        let _ = st;
+        app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default()
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    if refresh.checking && rows.is_empty() {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Checking links…")).color(t.text_dim).size(11.0));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if refresh.unavailable {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Link status is unavailable.")).color(t.text_dim));
+        if rows.is_empty() {
+            return;
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if refresh.checking && rows.is_empty() {
+        return;
+    }
     if rows.is_empty() {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No placed graphics.")).color(t.text_dim));
         return;
@@ -2355,7 +2376,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Status")).color(t.text_dim).size(11.0));
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page · PPI")).color(t.text_dim).size(11.0));
         ui.end_row();
-        for r in &rows {
+        for r in rows.iter() {
             // Asset and story ids come from one counter: a row is chosen by either.
             let aid = r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0);
             let name = r["name"].as_str().unwrap_or("");
@@ -2384,6 +2405,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
                 "modified" => ("\u{25B2} Modified", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 "embedded" => ("Embedded", t.text_dim),
+                "checking" => ("Checking", t.text_dim),
                 "tooLarge" => ("Too large to check", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 _ => ("OK", t.text_dim),
             };
@@ -2939,7 +2961,19 @@ mod tests {
         );
         h.input_mut().max_texture_side = Some(8192);
         h.run_steps(3);
+        settle_links(&mut h);
         h
+    }
+
+    fn settle_links(h: &mut Harness<'static, DesignApp>) {
+        for _ in 0..500 {
+            h.run_steps(1);
+            if !h.state().links_worker.checking() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!h.state().links_worker.checking(), "the background link check did not finish");
     }
 
     /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
@@ -3011,6 +3045,7 @@ mod tests {
         assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[1]]);
         h.get_by_label("Embed").click();
         h.run_steps(3);
+        settle_links(&mut h);
         assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
         assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
         assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");

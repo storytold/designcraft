@@ -1519,6 +1519,7 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
+            link_fingerprint: None,
             data: std::sync::Arc::new(vec![]),
             pixels: Some((100, 100)),
             page: 0,

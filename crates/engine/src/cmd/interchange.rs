@@ -46,7 +46,7 @@ pub(crate) fn import_idml_confined(bytes: &[u8], package: Option<&std::path::Pat
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            read_packaged_link(link, package).map(|(_, data)| data)
+            read_packaged_link(link, package).map(|(_, data, _)| data)
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -80,8 +80,8 @@ fn import_report_with_previews(
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (path, data) = read_packaged_link(link, package)?;
-            resolved.borrow_mut().insert(link.to_string(), path);
+            let (path, data, fingerprint) = read_packaged_link(link, package)?;
+            resolved.borrow_mut().insert(link.to_string(), (path, fingerprint));
             Some(data)
         }
         #[cfg(target_arch = "wasm32")]
@@ -97,9 +97,11 @@ fn import_report_with_previews(
     let document = {
         let mut document = document;
         for asset in document.assets.values_mut() {
-            if let Some(path) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
+            if let Some((path, fingerprint)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
                 // Relocated packages must also use the new path for preflight and link updates.
-                std::sync::Arc::make_mut(asset).link = Some(path);
+                let asset = std::sync::Arc::make_mut(asset);
+                asset.link = Some(path);
+                asset.link_fingerprint = Some(fingerprint);
             }
         }
         resolve_packaged_links(&mut document, package);
@@ -275,17 +277,24 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&s
 /// The first candidate for `link` ([`packaged_link_candidates`]) that is a regular file no larger
 /// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path.
 #[cfg(not(target_arch = "wasm32"))]
-fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>)> {
+fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>, designcraft_doc::Fingerprint)> {
     for path in packaged_link_candidates(link, package) {
-        if !crate::io::is_file(&path) || !crate::io::metadata(&path).is_ok_and(|m| m.len() <= MAX_LINKED_FILE_BYTES) {
+        if !crate::io::is_file(&path) {
             continue;
         }
+        // Capture the version about to be read. If a syncing or network file changes during the
+        // read, its later metadata will differ and the next Links check will report it modified.
+        let Ok(metadata) = crate::io::metadata(&path) else { continue };
+        if metadata.len() > MAX_LINKED_FILE_BYTES {
+            continue;
+        }
+        let fingerprint = super::datamerge::fingerprint_from(&metadata);
         // At most one byte over the limit, in case the file grew since.
         let Ok(bytes) = crate::io::read_capped(&path, MAX_LINKED_FILE_BYTES) else { continue };
         if bytes.len() as u64 > MAX_LINKED_FILE_BYTES || !is_graphic(&bytes) {
             continue;
         }
-        return Some((path.to_string_lossy().into_owned(), bytes));
+        return Some((path.to_string_lossy().into_owned(), bytes, fingerprint));
     }
     None
 }
@@ -399,6 +408,8 @@ mod tests {
         assert_eq!(*asset.data, png, "the packaged graphic must render even when its author-machine path no longer exists");
         let resolved = std::path::absolute(&path).unwrap();
         assert_eq!(asset.link.as_deref(), resolved.to_str(), "remember the resolved link so update and preflight use the packaged file");
+        let expected = super::super::datamerge::fingerprint_from(&std::fs::metadata(&path).unwrap());
+        assert_eq!(asset.link_fingerprint, Some(expected), "remember the same version of the file whose bytes were imported");
         assert_eq!(super::super::links::status(asset, None), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -511,8 +522,13 @@ mod tests {
         for link in links {
             let (idml, _) = linked_idml(link, false).unwrap();
             let (doc, seen) = crate::io::touched(|| import(&idml, Some(&package)).unwrap());
-            // Beside the package, and the link itself where it is on this computer.
-            assert!(seen.iter().all(|p| p.starts_with(&dir) || p == std::path::Path::new(link)), "{link}: {seen:?}");
+            // Beside the package, and the link itself where it is on this computer (on Windows,
+            // `/dev/zero` is `\dev\zero` on the current drive).
+            let itself = Some(std::path::Path::new(link))
+                .filter(|l| l.has_root())
+                .and_then(|l| std::path::absolute(l).ok())
+                .unwrap_or_else(|| std::path::PathBuf::from(link));
+            assert!(seen.iter().all(|p| p.starts_with(&dir) || p == std::path::Path::new(link) || *p == itself), "{link}: {seen:?}");
             let asset = doc.assets.values().next().unwrap();
             assert!(asset.data.is_empty(), "{link}");
             assert_eq!(super::super::links::status(asset, None), "missing", "{link}");

@@ -369,9 +369,10 @@ pub struct Session {
     /// New Document's Preview: the preview document's uid and the uid of the document that was
     /// active before it (see [`Session::preview_new_document`]).
     pub(crate) new_document_preview: Option<(u64, Option<u64>)>,
-    /// Linked text files checked by the Links panel: path → the size and modification time the
-    /// file had and the hash of its contents then, so a file touched but not changed is read once.
-    pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
+    /// Linked files checked by `links.list`: the size and modification time each text file and
+    /// graphic had and what its contents were found to be then, so a file touched but not changed
+    /// is read once.
+    pub(crate) text_link_checks: cmd::LinkListChecks,
 }
 
 impl Default for Session {

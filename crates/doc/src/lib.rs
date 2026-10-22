@@ -518,6 +518,10 @@ pub struct Asset {
     /// Original location on disk (Links panel), if linked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// Size and modification time when the linked bytes were last loaded. Link status can compare
+    /// metadata first instead of rereading a large file from a network share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_fingerprint: Option<Fingerprint>,
     #[serde(skip)]
     pub data: Arc<Vec<u8>>,
     /// Pixel size for raster images.
