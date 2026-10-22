@@ -35,12 +35,26 @@ struct Overlay<'a> {
     blend: Blend,
 }
 
-/// `node` with its colour and gradient overlays baked in (borrowed unchanged when it has none,
-/// or when what is left of `work`, see [`MAX_WORK`], can't pay for them). `warn` hears what
-/// could only be approximated or was left out.
+/// `node` with its colour and gradient overlays baked in, and those of everything in it
+/// (borrowed unchanged when `node` has none, or when what is left of `work`, see [`MAX_WORK`],
+/// can't pay for copying it). `warn` hears what could only be approximated or was left out.
 pub fn apply<'a>(node: &'a Node, work: &mut u64, warn: &mut dyn FnMut(&str)) -> Cow<'a, Node> {
-    let overlays: Vec<Overlay> = node
-        .effects
+    if overlays(&node.effects).is_empty() {
+        return Cow::Borrowed(node);
+    }
+    let Some(left) = work.checked_sub(subtree_cost(node, *work, 0)) else {
+        warn("overlay effects beyond the work one import may take (left out)");
+        return Cow::Borrowed(node);
+    };
+    *work = left;
+    let mut out = node.clone();
+    bake_tree(&mut out, work, 0, warn);
+    Cow::Owned(out)
+}
+
+/// The visible colour and gradient overlays among `effects`.
+fn overlays(effects: &[Effect]) -> Vec<Overlay<'_>> {
+    effects
         .iter()
         .filter_map(|e| match e {
             Effect::ColorOverlay { color, opacity, blend } => Some(Overlay { source: Source::Solid(*color), opacity: *opacity, blend: *blend }),
@@ -50,26 +64,45 @@ pub fn apply<'a>(node: &'a Node, work: &mut u64, warn: &mut dyn FnMut(&str)) -> 
             _ => None,
         })
         .filter(|o| o.opacity > 0.0)
-        .collect();
-    if overlays.is_empty() {
-        return Cow::Borrowed(node);
+        .collect()
+}
+
+fn is_overlay(e: &Effect) -> bool {
+    matches!(e, Effect::ColorOverlay { .. } | Effect::GradientOverlay { .. })
+}
+
+/// Bakes the overlays of `node` and its subtree into their paint, innermost first: an overlay
+/// lies over what its node shows, its children's overlays included. Each overlay pays for the
+/// subtree it is baked into out of `work`; past it, it is left out (and said).
+fn bake_tree(node: &mut Node, work: &mut u64, depth: usize, warn: &mut dyn FnMut(&str)) {
+    if depth > MAX_DEPTH {
+        return;
     }
-    let copies = u64::try_from(overlays.len()).unwrap_or(u64::MAX).saturating_add(1);
-    let cost = subtree_cost(node, *work / copies, 0).saturating_mul(copies);
+    for c in &mut node.children {
+        bake_tree(c, work, depth + 1, warn);
+    }
+    if !node.effects.iter().any(is_overlay) {
+        return;
+    }
+    let (effects, rest): (Vec<Effect>, Vec<Effect>) = std::mem::take(&mut node.effects).into_iter().partition(is_overlay);
+    node.effects = rest;
+    let overlays = overlays(&effects);
+    if overlays.is_empty() {
+        return;
+    }
+    let count = u64::try_from(overlays.len()).unwrap_or(u64::MAX);
+    let cost = subtree_cost(node, *work / count, 0).saturating_mul(count);
     let Some(left) = work.checked_sub(cost) else {
         warn("overlay effects beyond the work one import may take (left out)");
-        return Cow::Borrowed(node);
+        return;
     };
     *work = left;
-    let mut out = node.clone();
-    out.effects.retain(|e| !matches!(e, Effect::ColorOverlay { .. } | Effect::GradientOverlay { .. }));
     for o in &overlays {
         if matches!(o.blend, Blend::Erase | Blend::PassThrough) {
             warn("overlay effects in a blend mode DesignCraft doesn't have (imported as Normal)");
         }
-        bake_node(&mut out, o, 0, warn);
+        bake_node(node, o, 0, warn);
     }
-    Cow::Owned(out)
 }
 
 /// Nodes and pixels in `node`'s subtree, counted only until they pass `limit`.
@@ -575,6 +608,28 @@ mod tests {
         let out = apply(&n, &mut { MAX_WORK }, &mut |_| {}).into_owned();
         let Kind::Shape { fills, .. } = &out.kind else { panic!() };
         assert_eq!(fills.first(), Some(&Paint::Gradient(g)));
+    }
+
+    #[test]
+    fn a_group_overlay_lies_over_its_childrens_overlays() {
+        let red = Color::Rgb { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+        let blue = Color::Rgb { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+        let mut group = solid(red, 0.5, Blend::Normal);
+        group.kind = Kind::Group;
+        group.children = vec![solid(blue, 1.0, Blend::Normal)];
+        // The copy (2 nodes), the child's overlay (1) and the group's (2).
+        let mut work = 5;
+        let out = apply(&group, &mut work, &mut |_| {}).into_owned();
+        assert_eq!(work, 0);
+        let child = out.children.first().unwrap();
+        // Blue first, then half of the group's red over it.
+        assert_eq!(fill(child), Color::Rgb { r: 0.5, g: 0.0, b: 0.5, a: 1.0 });
+        assert!(out.effects.is_empty() && child.effects.is_empty(), "both overlays are baked");
+        // With no work left for the group's overlay, the child's still applies.
+        let mut warnings = Vec::new();
+        let out = apply(&group, &mut { 4 }, &mut |w| warnings.push(w.to_string())).into_owned();
+        assert_eq!(fill(out.children.first().unwrap()), blue);
+        assert!(warnings.iter().any(|w| w.contains("beyond the work")), "{warnings:?}");
     }
 
     #[test]

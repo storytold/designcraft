@@ -45,12 +45,12 @@ accept the four extensions.
 | Placed images (the embedded original), pixel layers | graphic frames with embedded images |
 | CMYK pixel layers (placed HEIC photos in CMYK documents) | RGB images through the document's CMYK profile, as Affinity shows them (relative colorimetric with black-point compensation); without one, through the working CMYK profile, and said |
 | Pixel masks on images, images inside pixel layers (clipped to them) | worked into the image's transparency |
-| Embedded Affinity documents and symbols (`EmbN`) | their content as editable objects, grouped; nested at most four deep; the cached picture only when the document can't be read |
+| Embedded Affinity documents and symbols (`EmbN`) | their content as editable objects, grouped; nested at most four deep (their master pages are left out); the cached picture only when the document can't be read |
 | Opacity, visibility, lock, names, blend modes DesignCraft has | the same |
 | Layer effects: drop shadow, inner shadow, outer glow (an Affinity shadow angle is where the shadow goes; DesignCraft's where the light comes from) | the same effects |
 | Outline effect (its radius reaches that far on each side when centred) | the stroke of a shape without one, or the characters' stroke on text; on a stroked shape, a group of the shape and stroke-only copies around its stroke |
 | Bevel and emboss effect (approximated: no visible example has been checked yet; one without a radius draws nothing) | Bevel and Emboss (inner bevel), with its size, light angle, highlight and shadow |
-| Colour and gradient overlay effects, in any blend mode | worked into what the object paints: its fill, stroke and text colours (a gradient overlay on one colour becomes a gradient) and its pixels |
+| Colour and gradient overlay effects, in any blend mode | worked into what the object paints: its fill, stroke and text colours (a gradient overlay on one colour becomes a gradient) and its pixels; a group's over its children's |
 | Placed HEIC/HEIF photos | the pixels Affinity stored with them |
 | Pixel layers over 64 megapixels | read at a half, a quarter… of their resolution; pixel masks (which can cover a whole spread at a gigapixel) are read only over what they mask |
 

@@ -1000,7 +1000,26 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         if doc.spreads.len() > 1 {
             self.warn("embedded documents with several pages (the first is used)");
         }
-        doc.spreads.into_iter().next().map(|s| s.nodes)
+        let mut nodes = doc.spreads.into_iter().next()?.nodes;
+        // Its master page instances count its own masters, which aren't kept: in this document
+        // they would show other masters.
+        fn strip_masters(nodes: &mut [Node], depth: usize) -> bool {
+            let mut found = false;
+            for n in nodes {
+                if matches!(n.kind, Kind::MasterInstance { .. }) {
+                    n.kind = Kind::Unsupported;
+                    found = true;
+                }
+                if depth < MAX_TREE_DEPTH {
+                    found |= strip_masters(&mut n.children, depth + 1);
+                }
+            }
+            found
+        }
+        if strip_masters(&mut nodes, 0) {
+            self.warn("master pages of embedded documents (left out)");
+        }
+        Some(nodes)
     }
 
     fn artboard(&mut self, id: ObjId, world: Affine) -> Kind {

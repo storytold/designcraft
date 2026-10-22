@@ -362,10 +362,21 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
         }
     }
     // Outlined characters: `Objs` 1 is the outline's paint, 2 its line style (as for shapes).
-    let stroke = match (attribute_budget.is_some(), objects.get(1).copied().flatten(), objects.get(2).copied().flatten()) {
+    let mut stroke = match (attribute_budget.is_some(), objects.get(1).copied().flatten(), objects.get(2).copied().flatten()) {
         (true, Some(pen), Some(style)) => paint::stroke(r, pen, style, Affine::IDENTITY, false),
         _ => None,
     };
+    // Its gradient stops and dashes are owned data too, charged like the fill's.
+    if let Some(st) = &stroke {
+        let stops = match &st.paint {
+            Paint::Gradient(g) => g.stops.len().saturating_mul(std::mem::size_of::<paint::Stop>()),
+            _ => 0,
+        };
+        let dash = st.dash.as_ref().map_or(0, |(d, _)| d.len().saturating_mul(std::mem::size_of::<f64>()));
+        if !charge_attributes(r, attribute_budget, stops.saturating_add(dash)) {
+            stroke = None;
+        }
+    }
     // Underline (slot 0) and strikethrough (slot 1): 1 is a single line.
     let mut decoration = |i: usize| match slot(ints, i, int) {
         Some(1) => true,

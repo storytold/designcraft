@@ -3,6 +3,8 @@
 #![cfg(feature = "synth")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../engine/tests/support/affinity_docs.rs"]
+mod affinity_docs;
 #[path = "support/text_fixture.rs"]
 mod text_fixture;
 
@@ -856,4 +858,25 @@ fn artboards_are_the_pages_even_beside_the_documents_own_page() {
     for sp in &d.spreads {
         assert_eq!(sp.items.len(), 1, "{:?}", sp.items.iter().map(|i| &i.name).collect::<Vec<_>>());
     }
+}
+
+/// An embedded document's master pages aren't kept, so its instances of them are left out: in the
+/// document it is embedded in they would show that document's masters.
+#[test]
+fn master_pages_of_embedded_documents_are_left_out() {
+    use designcraft_affinity::model::{Kind, Node as AfNode};
+    fn instances(nodes: &[AfNode]) -> usize {
+        nodes.iter().map(|n| usize::from(matches!(n.kind, Kind::MasterInstance { .. })) + instances(&n.children)).sum()
+    }
+    let outer = affinity_docs::canvas_with(vec![affinity_docs::embedded_node(20)], Some(&affinity_docs::with_master(1)));
+    let d = designcraft_affinity::read(&outer, designcraft_affinity::Limits::default()).unwrap();
+    assert_eq!(instances(&d.spreads[0].nodes), 0);
+    assert!(d.warnings.iter().any(|w| w.contains("master pages of embedded documents")), "{:?}", d.warnings);
+    // Its own objects still come in.
+    let imported = designcraft_affinity::import(&outer).unwrap();
+    let mut names = Vec::new();
+    for it in &imported.document.spreads[0].items {
+        it.walk(&mut |i| names.push(i.name.clone()));
+    }
+    assert!(names.iter().any(|n| n == "Page box"), "{names:?}");
 }

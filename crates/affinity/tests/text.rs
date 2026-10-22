@@ -307,3 +307,39 @@ fn shared_gradient_attributes_are_bounded_without_losing_characters() {
     assert!(warning(&d, "text attribute budget exceeded"));
     assert!(!warning(&d, "text without character attributes"), "budget recovery must not claim source attributes are absent");
 }
+
+#[test]
+fn shared_gradient_outlines_are_bounded_without_losing_characters() {
+    let color =
+        F::Def(43, vec![tag(b"RGBA")], vec![(tag(b"_col"), F::Struct([0.2f32, 0.4, 0.6, 1.0].iter().flat_map(|v| v.to_le_bytes()).collect()))]);
+    let mut colors = vec![color];
+    colors.extend((1..1024).map(|_| F::Ref(43)));
+    let positions = (0..1024).map(|i| [(i as f32) / 1023.0, 0.5].iter().flat_map(|v| v.to_le_bytes()).collect()).collect();
+    let pen = F::Obj(
+        tag(b"FilG"),
+        vec![(tag(b"Grad"), F::Obj(tag(b"Grad"), vec![(tag(b"Cols"), F::Shared(colors)), (tag(b"Posn"), F::Records(8, positions))]))],
+    );
+    let style = F::Obj(tag(b"LSty"), vec![(tag(b"Wght"), F::F64(2.0))]);
+    // `Objs` 1 and 2: the outline's paint and line style, shared by every run.
+    let attrs = F::Def(42, vec![tag(b"GAtt")], vec![(tag(b"Objs"), F::Shared(vec![solid(1.0), pen, style]))]);
+    let mut runs = vec![run(1, Some(attrs))];
+    runs.extend((2..=1000).map(|end| run(end, Some(F::Ref(42)))));
+    let d = read(vec![block(utf8(&"x".repeat(1000)), runs, &[])]);
+    let t = text(&d);
+    assert_eq!(content(t), "x".repeat(1000));
+    assert_eq!(t.runs.len(), 1000);
+    let stop_count: usize = t
+        .runs
+        .iter()
+        .filter_map(|r| r.stroke.as_ref())
+        .map(|s| match &s.paint {
+            Paint::Gradient(g) => g.stops.len(),
+            _ => 0,
+        })
+        .sum();
+    assert!(stop_count * std::mem::size_of::<designcraft_affinity::paint::Stop>() <= 16 << 20);
+    let Some(Paint::Gradient(first)) = t.runs[0].stroke.as_ref().map(|s| &s.paint) else { panic!("the first outline must fit") };
+    assert_eq!(first.stops.len(), 1024);
+    assert!(t.runs.last().unwrap().stroke.is_none());
+    assert!(warning(&d, "text attribute budget exceeded"));
+}
