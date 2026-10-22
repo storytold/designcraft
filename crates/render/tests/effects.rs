@@ -430,6 +430,10 @@ fn kept_shadows_look_as_drawn_afresh() {
     // Zoomed: drawn anew.
     let zoom = Affine::scale(1.5);
     assert!(worst(&render_view(&mut r, &cache, &d, zoom), &fresh(&d, zoom)) <= 4);
+    // Zoomed on (kept without a margin while zooming), then panned and zoomed back.
+    for view in [Affine::scale(1.6), Affine::translate((13.0, -7.0)) * Affine::scale(1.6), Affine::IDENTITY] {
+        assert!(worst(&render_view(&mut r, &cache, &d, view), &fresh(&d, view)) <= 4, "{view:?}");
+    }
     // Edits: an object without text (only the object itself tells), the shadow, the text and the
     // frame, each after a render that kept what it drew.
     render_view(&mut r, &cache, &d, Affine::IDENTITY);
@@ -455,6 +459,31 @@ fn kept_shadows_look_as_drawn_afresh() {
         *color = designcraft_color::Color::rgb(1.0, 0.0, 0.0);
     }
     assert!(worst(&render_view(&mut r, &cache, &d, Affine::IDENTITY), &fresh(&d, Affine::IDENTITY)) <= 4, "swatch edited");
+}
+
+/// A kept shadow of a stroke in a stroke style of the document is drawn anew when the style changes.
+#[test]
+fn kept_shadows_follow_an_edited_stroke_style() {
+    use designcraft_doc::{Stroke, StrokeStyleDef, StrokeType};
+    let mut d = doc();
+    let id = rect_item(&mut d, Rect::new(30.0, 30.0, 110.0, 110.0), "C=100 M=0 Y=0 K=0");
+    let style = |pattern: Vec<f64>| StrokeStyleDef { name: "Dashes".into(), kind: StrokeType::Dashed { pattern } };
+    d.stroke_styles.push(style(vec![12.0, 12.0]));
+    let it = d.item_mut(id).unwrap();
+    it.fill = Fill::none();
+    it.stroke = Stroke { weight: 10.0, kind: StrokeType::Style { name: "Dashes".into() }, ..Default::default() };
+    let ds = &mut it.effects.drop_shadow;
+    ds.on = true;
+    ds.distance = 8.0;
+    ds.size = 2.0;
+    ds.opacity = 1.0;
+    let (mut r, cache) = (Renderer::new(), Cache::new());
+    r.threads = 3;
+    render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    d.stroke_styles[0] = style(vec![3.0, 20.0]);
+    let w = worst(&render_view(&mut r, &cache, &d, Affine::IDENTITY), &fresh(&d, Affine::IDENTITY));
+    assert!(w <= 4, "style edited: max channel difference {w}");
 }
 
 /// A shadow too large to keep whole at a high zoom keeps what is on screen and a margin; panning
@@ -564,22 +593,31 @@ fn wide_blurs_drawn_coarser_look_as_drawn_at_full_resolution() {
 
 /// A large effect image is drawn in bands of rows on several cores, each reaching past its rows
 /// by the blur's spread: no seams, as drawn whole on a single thread; placed again from what was
-/// kept, the same.
+/// kept, the same, and panned by a fraction of a pixel. Also with a shadow cast further than a band reaches past its rows: the text
+/// above or below a band casting into it is drawn there.
 #[test]
 fn large_effect_images_drawn_in_bands_look_as_drawn_whole() {
+    for (distance, at) in [(1.0, (-100.0, -100.0)), (6.0, (-100.0, -100.0)), (1.0, (-100.3, -100.45))] {
+        banded_like_whole(distance, at);
+    }
+}
+
+/// `at`: where the spread's origin is on the device (at a fraction of a pixel, band edges fall
+/// inside rows of pixels).
+fn banded_like_whole(distance: f64, at: (f64, f64)) {
     let mut d = doc();
     let lid = d.default_layer();
     let text = "Shadowed text fills the frame. ".repeat(40);
     let (tid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 150.0, 150.0), lid, &text, ParaFormat::default()).unwrap();
     let ds = &mut d.item_mut(tid).unwrap().effects.drop_shadow;
     ds.on = true;
-    ds.distance = 1.0;
+    ds.distance = distance;
     ds.size = 0.6;
     ds.opacity = 1.0;
     // 1,400 × 1,400 pixels at 10×: the text's shadow is drawn in several bands, their edges
     // across lines of text.
     let (w, h) = (1400, 1400);
-    let view = Affine::translate((-100.0, -100.0)) * Affine::scale(10.0);
+    let view = Affine::translate(at) * Affine::scale(10.0);
     let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
     let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
     let cache = Cache::new();
@@ -590,6 +628,11 @@ fn large_effect_images_drawn_in_bands_look_as_drawn_whole() {
     one.threads = 0;
     let whole = one.render(&d, &cache, &placed, w, h, view, &opts);
     let (w8, m) = (worst(&first, &whole), mean(&first, &whole));
-    assert!(w8 <= 8 && m < 0.5, "max channel difference {w8}, mean {m:.3}");
+    assert!(w8 <= 8 && m < 0.5, "distance {distance} at {at:?}: max channel difference {w8}, mean {m:.3}");
     assert_eq!(banded.render(&d, &cache, &placed, w, h, view, &opts).pixels, first.pixels, "placed again unchanged");
+    // Panned by half a pixel, the bands are placed again across rows of pixels: no seams.
+    let panned = Affine::translate((0.0, 0.5)) * view;
+    let (kept, whole) = (banded.render(&d, &cache, &placed, w, h, panned, &opts), one.render(&d, &cache, &placed, w, h, panned, &opts));
+    let (w8, m) = (worst(&kept, &whole), mean(&kept, &whole));
+    assert!(w8 <= 8 && m < 0.5, "distance {distance} at {at:?}, panned: max channel difference {w8}, mean {m:.3}");
 }

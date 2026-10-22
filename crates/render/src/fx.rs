@@ -128,7 +128,8 @@ impl Renderer {
             let r = (cast + off).inflate(grow, grow);
             let tint = color_of(&c, opacity.clamp(0.0, 1.0));
             self.with_filters(ctx, f, Some((it, xf, page, slot)), r, sigma, Some(tint), None, |me, c, fr, filtered| {
-                let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
+                // What shows is cast from the offset's distance away (a band's neighbour casts into it).
+                let moved = Frame { view: fr.view * Affine::translate(off), visible: fr.visible - off, ..*fr };
                 c.set_transform(moved.view);
                 if filtered {
                     c.push_layer(None, None, None, None, Some(filter.clone()));
@@ -438,7 +439,7 @@ impl Renderer {
         clip: Option<(&BezPath, Affine)>,
         draw: impl Fn(&mut Self, &mut RenderContext, &Frame, bool),
     ) {
-        use crate::fx_cache::{Band, FxCache, FxImage, MAX_ENTRY_PIXELS, Source};
+        use crate::fx_cache::{Band, FxCache, FxImage, Lookup, MAX_ENTRY_PIXELS, Source};
         // 3σ of the Gaussian in pixels, plus a pixel of antialiasing.
         let spread = sigma.max(0.0) * 3.0 / f.px + 2.0;
         if !f.mt && spread <= MAX_BLUR_SPREAD {
@@ -452,12 +453,47 @@ impl Renderer {
         // A blur has no detail finer than itself: drawn at a lower resolution where it is
         // [`BLUR_SIGMA_PX`] wide, it looks the same and costs a fraction.
         let coarse = sigma.max(0.0) / f.px / BLUR_SIGMA_PX;
+        // Placed again from what was kept, if it was; otherwise what to keep it by.
+        let mut zooming = false;
+        let mut keeping = None;
+        if let Some((it, xf, page, slot)) = keep {
+            let mut stories = Vec::new();
+            it.walk(&mut |i: &Item| {
+                if let designcraft_doc::Content::Text(tf) = &i.content {
+                    stories.push(tf.story);
+                }
+            });
+            let stories = stories.into_iter().map(|sid| self.story(f, sid, page)).collect();
+            // What must be in the image now: what shows, and what a blur brings onto the screen.
+            let sw = f64::from(screen.0);
+            let sh = f64::from(screen.1);
+            let needed = all.inflate(spread, spread).intersect(Rect::new(0.0, 0.0, sw, sh).inflate(spread, spread));
+            let src = Source { item: it, xf, view: f.view, px: f.px, stories, needed };
+            // A shadow's coverage is the same on every plate (it is coloured as it is placed).
+            let (plate, opts) = match shadow {
+                Some(_) => (None, RenderOptions { plate: None, ..f.opts.clone() }),
+                None => (f.opts.plate, f.opts.clone()),
+            };
+            let key = (it.id, page, slot, plate);
+            match self.fx_cache.get(key, &src, &opts) {
+                Lookup::Hit(p) => {
+                    push_clip(ctx, f, clip_if(p.scale > 1.0, clip));
+                    for b in p.image.bands {
+                        place(ctx, vello_cpu::ImageSource::Pixmap(b.image), (p.x0, p.y0, p.scale), p.image.width, b.top, b.core, shadow);
+                    }
+                    pop_clip(ctx, clip_if(p.scale > 1.0, clip));
+                    return;
+                }
+                Lookup::Miss { zoomed } => zooming = zoomed,
+            }
+            keeping = Some((key, src, opts));
+        }
         // Kept: what is on screen and a margin around it, so panning within that only moves the
-        // image. Too large to keep: what is on screen, drawn each time.
-        let kept = keep.and_then(|k| {
-            offscreen(all, spread, screen, KEEP_MARGIN, coarse)
-                .filter(|o| f64::from(o.width) * f64::from(o.height) <= MAX_ENTRY_PIXELS)
-                .map(|o| (k, o))
+        // image (no margin while zooming: the next frame draws it anew anyway). Too large to keep:
+        // what is on screen, drawn each time.
+        let margin = if zooming { 0.0 } else { KEEP_MARGIN };
+        let kept = keeping.and_then(|k| {
+            offscreen(all, spread, screen, margin, coarse).filter(|o| f64::from(o.width) * f64::from(o.height) <= MAX_ENTRY_PIXELS).map(|o| (k, o))
         });
         let o = match &kept {
             Some((_, o)) => *o,
@@ -468,42 +504,7 @@ impl Renderer {
         };
         // Clip where the result is at full resolution: offscreen unless that is reduced.
         let (inner, outer) = if o.scale > 1.0 { (None, clip) } else { (clip, None) };
-        let mut prepared = match kept {
-            Some(((it, xf, page, slot), _)) => {
-                let mut stories = Vec::new();
-                it.walk(&mut |i: &Item| {
-                    if let designcraft_doc::Content::Text(tf) = &i.content {
-                        stories.push(tf.story);
-                    }
-                });
-                let stories = stories.into_iter().map(|sid| self.story(f, sid, page)).collect();
-                // What must be in the image now: what shows, and what a blur brings onto the screen.
-                let sw = f64::from(screen.0);
-                let sh = f64::from(screen.1);
-                let needed = all.inflate(spread, spread).intersect(Rect::new(0.0, 0.0, sw, sh).inflate(spread, spread));
-                let src = Source { item: it, xf, view: f.view, px: f.px, stories, needed };
-                // A shadow's coverage is the same on every plate (it is coloured as it is placed).
-                let plain;
-                let (plate, opts) = match shadow {
-                    Some(_) => {
-                        plain = RenderOptions { plate: None, ..f.opts.clone() };
-                        (None, &plain)
-                    }
-                    None => (f.opts.plate, f.opts),
-                };
-                let key = (it.id, page, slot, plate);
-                if let Some(p) = self.fx_cache.get(key, &src, f.doc, opts) {
-                    push_clip(ctx, f, outer);
-                    for b in p.image.bands {
-                        place(ctx, vello_cpu::ImageSource::Pixmap(b.image), (p.x0, p.y0, p.scale), p.image.width, b.top, b.core, shadow);
-                    }
-                    pop_clip(ctx, outer);
-                    return;
-                }
-                Some(FxCache::prepare(key, src, opts, o.x0, o.y0, o.scale))
-            }
-            None => None,
-        };
+        let mut prepared = kept.map(|((key, src, opts), o)| FxCache::prepare(key, src, &opts, o.x0, o.y0, o.scale));
         let at = (o.x0, o.y0, o.scale);
         // Drawn with the others on the cores, a large image is drawn in bands of rows, each
         // reaching past its rows by the blur's spread.
@@ -575,17 +576,20 @@ fn place(
     core: (u32, u32),
     tint: Option<peniko::Color>,
 ) {
-    ctx.set_transform(Affine::translate((x0, y0)) * Affine::scale(scale) * Affine::translate((0.0, f64::from(top))));
+    // The image is placed by its paint transform, filling device rows: the edge between two bands
+    // falls between rows of pixels, so no row is covered partly by each (a faint line).
+    ctx.set_transform(Affine::IDENTITY);
+    ctx.set_paint_transform(Affine::translate((x0, y0)) * Affine::scale(scale) * Affine::translate((0.0, f64::from(top))));
     ctx.set_paint(vello_cpu::Image { image, sampler: peniko::ImageSampler::default() });
     if let Some(color) = tint {
         ctx.set_tint(Some(vello_common::paint::Tint { color, mode: vello_common::paint::TintMode::AlphaMask }));
     }
-    let rows = |r: u32| f64::from(r.saturating_sub(top));
-    ctx.fill_rect(&Rect::new(0.0, rows(core.0), f64::from(width), rows(core.1)));
+    let row = |r: u32| (y0 + f64::from(r) * scale).round();
+    ctx.fill_rect(&Rect::new(x0, row(core.0), x0 + f64::from(width) * scale, row(core.1)));
     if tint.is_some() {
         ctx.set_tint(None);
     }
-    ctx.set_transform(Affine::IDENTITY);
+    ctx.reset_paint_transform();
 }
 
 /// Pixels of an effect image drawn as one band at most when it is drawn with the others on the
@@ -606,6 +610,11 @@ fn bands_of(width: u16, height: u16, pad: u32, split: bool) -> Vec<(u32, u32)> {
         y = end;
     }
     out
+}
+
+/// `clip` if `cond`.
+fn clip_if(cond: bool, clip: Option<(&BezPath, Affine)>) -> Option<(&BezPath, Affine)> {
+    if cond { clip } else { None }
 }
 
 fn push_clip(ctx: &mut RenderContext, f: &Frame, clip: Option<(&BezPath, Affine)>) {

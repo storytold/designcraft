@@ -244,6 +244,9 @@ pub struct Renderer {
     /// Whether effect images are drawn together on the cores (off once the registry numbered
     /// one differently; they are then drawn one by one, as they come).
     fx_defer: bool,
+    /// Whether an effect image recorded since the ids were last reset was numbered differently
+    /// (the context placing it must not be rasterized).
+    fx_misnumbered: bool,
     /// Whether the last render ran the CMYK ink passes (only then is its view worth keeping).
     cmyk_ran: bool,
     #[cfg(test)]
@@ -307,6 +310,7 @@ impl Renderer {
             fx_pixels: 0,
             fx_next_id: 0,
             fx_defer: true,
+            fx_misnumbered: false,
             cmyk_ran: false,
             #[cfg(test)]
             cmyk_passes: 0,
@@ -352,9 +356,12 @@ impl Renderer {
             self.stats.micros = now().saturating_sub(start);
             return image;
         }
-        // Release the old snapshot before rendering an edited document or resized viewport; its
-        // pixel buffer is reused for the new one (a fresh one costs more to touch than to fill).
-        let spare = self.cmyk_view.take().map(blendspace::CachedView::into_pixels);
+        // Release the old snapshot before rendering an edited document or resized viewport. Its
+        // pixel buffer is kept for the new snapshot when there will be one of the same size (a
+        // fresh one costs more to touch than to fill), at the cost of holding it while rendering.
+        let again = opts.blend_space_view && doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk && opts.plate.is_none();
+        let size = (width.clamp(1, MAX_SIDE) as usize).saturating_mul(height.clamp(1, MAX_SIDE) as usize).saturating_mul(4);
+        let spare = self.cmyk_view.take().map(blendspace::CachedView::into_pixels).filter(|p| again && p.len() == size);
         self.cmyk_ran = false;
         let image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
         // Kept only when the ink passes ran: other views render at their usual cost anyway.
@@ -392,7 +399,7 @@ impl Renderer {
         self.stats = FrameStats::default();
         self.stories.clear();
         self.glyphs.tick();
-        self.fx_cache.next_frame();
+        self.fx_cache.next_frame(doc);
         if let Some(bg) = opts.background {
             ctx.set_transform(Affine::IDENTITY);
             ctx.set_paint(peniko::Color::from_rgba8(bg[0], bg[1], bg[2], bg[3]));
@@ -421,8 +428,7 @@ impl Renderer {
             ctx.render(pm, &mut self.resources);
         }
         // The effect images are referenced by the context only, which is reset before it is used again.
-        self.resources.clear_images();
-        self.fx_next_id = 0;
+        self.fx_reset_ids();
         if opts.blend_space_view && doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk && opts.plate.is_none() {
             let mut img = Rendered { width: w as u32, height: h as u32, pixels };
             for pl in spreads {
@@ -993,9 +999,10 @@ struct PlateCache {
 }
 
 /// An image's ink coverage on one process plate, as grey; plate 4 is the C, M and Y plates as the
-/// complements of red, green and blue (the CMYK blend passes). Kept per image and plate. The
-/// blend passes draw plates 4 and 3 (black) one after the other, so either separates both.
+/// complements of red, green and blue (the CMYK blend passes); a plate past black is black. Kept
+/// per image and plate. The blend passes draw plate 4, then 3 (black): plate 4 separates both.
 fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync::Arc<vello_cpu::Pixmap> {
+    let plate = if plate == 4 { 4 } else { plate.min(3) };
     static CACHE: std::sync::Mutex<Option<PlateCache>> = std::sync::Mutex::new(None);
     let id = std::sync::Arc::as_ptr(pm) as usize;
     let settings = designcraft_color::cms::active_settings();
@@ -1010,7 +1017,7 @@ fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync:
             }
         }
     }
-    let plates: &[u8] = if plate >= 3 { &[4, 3] } else { std::slice::from_ref(&plate) };
+    let plates: &[u8] = if plate == 4 { &[4, 3] } else { std::slice::from_ref(&plate) };
     let separated = separate(pm, plates);
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let c = guard.get_or_insert_with(|| PlateCache { settings: settings.clone(), map: HashMap::new(), used: 0, tick: 0 });
@@ -1093,61 +1100,48 @@ fn separate(pm: &vello_cpu::Pixmap, plates: &[u8]) -> Vec<vello_cpu::Pixmap> {
             }
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
-    #[cfg(target_arch = "wasm32")]
-    let threads = 1usize;
-    let chunk = src.len().div_ceil(threads).max(1 << 15);
+    let chunk = src.len().div_ceil(worker_threads()).max(1 << 15);
     let mut iters: Vec<_> = outs.iter_mut().map(|o| o.chunks_mut(chunk)).collect();
     let jobs: Vec<(&[PremulRgba8], Vec<&mut [PremulRgba8]>)> =
         src.chunks(chunk).map(|s| (s, iters.iter_mut().filter_map(|it| it.next()).collect())).collect();
     let table = &table[..];
-    let helpers = jobs.len().saturating_sub(1);
-    // The calling thread and its helpers take rows until none are left: whatever threads start,
-    // every row is done.
-    let queue = std::sync::Mutex::new(jobs);
-    let run = || {
-        loop {
-            let job = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
-            let Some((s, mut o)) = job else { break };
-            work(table, plates, s, &mut o);
-        }
-    };
-    std::thread::scope(|scope| {
-        for _ in 0..helpers {
-            if let Err(e) = std::thread::Builder::new().spawn_scoped(scope, run) {
-                log::warn!("separating an image on fewer threads: {e}");
-                break;
-            }
-        }
-        run();
-    });
+    share_out(jobs, |(s, mut o)| work(table, plates, s, &mut o));
     outs.into_iter().map(|data| vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height())).collect()
 }
 
 /// `work` over `dst` and `src` (the same length) in pieces shared out among the cores (one on
 /// the web); the calling thread works too, so every piece is done whatever threads start.
 pub(crate) fn in_parallel<T: Send, U: Sync>(dst: &mut [T], src: &[U], work: impl Fn(&mut [T], &[U]) + Sync) {
+    let chunk = dst.len().div_ceil(worker_threads()).max(1 << 15);
+    share_out(dst.chunks_mut(chunk).zip(src.chunks(chunk)).collect(), |(d, s)| work(d, s));
+}
+
+/// Threads to share work out among: the cores, up to 8 (one on the web).
+fn worker_threads() -> usize {
     #[cfg(not(target_arch = "wasm32"))]
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
     #[cfg(target_arch = "wasm32")]
     let threads = 1usize;
-    let chunk = dst.len().div_ceil(threads).max(1 << 15);
-    let jobs: Vec<(&mut [T], &[U])> = dst.chunks_mut(chunk).zip(src.chunks(chunk)).collect();
-    if jobs.len() <= 1 {
-        for (d, s) in jobs {
-            work(d, s);
+    threads
+}
+
+/// `work` on each of `jobs`, last first, taken in turn by the calling thread and helpers (up to
+/// [`worker_threads`] in all): the calling thread works too, so every job is done whatever
+/// threads start.
+fn share_out<J: Send>(jobs: Vec<J>, work: impl Fn(J) + Sync) {
+    let helpers = worker_threads().min(jobs.len()).saturating_sub(1);
+    if helpers == 0 {
+        for job in jobs.into_iter().rev() {
+            work(job);
         }
         return;
     }
-    let helpers = jobs.len() - 1;
     let queue = std::sync::Mutex::new(jobs);
-    let work = &work;
     let run = || {
         loop {
-            let job = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
-            let Some((d, s)) = job else { break };
-            work(d, s);
+            let job = queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop();
+            let Some(job) = job else { break };
+            work(job);
         }
     };
     std::thread::scope(|scope| {
@@ -1189,8 +1183,14 @@ impl Renderer {
         self.fx_jobs.clear();
         self.fx_keep.clear();
         self.fx_pixels = 0;
+        self.fx_reset_ids();
+    }
+
+    /// The image registry is cleared: it numbers the effect images recorded from now on from 0.
+    fn fx_reset_ids(&mut self) {
         self.resources.clear_images();
         self.fx_next_id = 0;
+        self.fx_misnumbered = false;
     }
 
     /// Whether effect images drawn into a multithreaded context are recorded for
@@ -1237,7 +1237,7 @@ impl Renderer {
         let jobs = std::mem::take(&mut self.fx_jobs);
         self.fx_pixels = 0;
         if jobs.is_empty() {
-            return self.fx_defer;
+            return !self.fx_misnumbered;
         }
         // Each context goes to the one thread that draws it.
         let (ctxs, ids): (Vec<_>, Vec<_>) = jobs.into_iter().map(|j| (std::sync::Mutex::new(Some((j.ctx, j.post))), j.id)).unzip();
@@ -1286,42 +1286,21 @@ impl Renderer {
         if !ok {
             log::error!("effect images were numbered differently than placed; drawing them one by one from now on");
             self.fx_defer = false;
+            self.fx_misnumbered = true;
         }
-        ok && self.fx_defer
+        !self.fx_misnumbered
     }
 }
 
 /// `work` on each of `items`, shared out among the cores (one on the web); the results in the
 /// order of `items`. The calling thread works too, so every item is done whatever threads start.
 pub(crate) fn run_parallel<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
-    #[cfg(target_arch = "wasm32")]
-    let threads = 1usize;
-    let helpers = threads.min(items.len()).saturating_sub(1);
-    let next = std::sync::atomic::AtomicUsize::new(0);
     let results = std::sync::Mutex::new(Vec::with_capacity(items.len()));
-    let run = || {
-        loop {
-            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let Some(item) = items.get(i) else { break };
-            let r = work(item);
-            results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((i, r));
-        }
-    };
-    if helpers == 0 {
-        run();
-    } else {
-        std::thread::scope(|scope| {
-            for _ in 0..helpers {
-                if let Err(e) = std::thread::Builder::new().spawn_scoped(scope, run) {
-                    log::warn!("working on fewer threads: {e}");
-                    break;
-                }
-            }
-            run();
-        });
-    }
+    // Taken last first: the first item is taken first.
+    share_out(items.iter().enumerate().rev().collect(), |(i, item)| {
+        let r = work(item);
+        results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((i, r));
+    });
     let mut results = results.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     results.sort_by_key(|(i, _)| *i);
     results.into_iter().map(|(_, r)| r).collect()
@@ -1927,6 +1906,37 @@ mod tests {
         assert_eq!(ids, [0, 1, 2]);
     }
 
+    /// Once effect images are drawn one by one (after the registry numbered one differently),
+    /// renders still draw: before, every later render came back blank.
+    #[test]
+    fn renders_draw_after_falling_back_to_effects_one_by_one() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Document, Fill, Item, ItemId, Shape, SpreadRef};
+        use designcraft_geom::{Rect, shapes};
+        let mut d = Document::new(&NewDocument { width: 160.0, height: 160.0, facing_pages: false, ..Default::default() });
+        let id = ItemId(d.alloc());
+        let lid = d.default_layer();
+        let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(30.0, 30.0, 100.0, 100.0)));
+        it.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
+        it.effects.drop_shadow.on = true;
+        it.effects.drop_shadow.distance = 12.0;
+        it.effects.drop_shadow.size = 10.0;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+        let spreads = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let draw = |r: &mut Renderer| r.render(&d, &designcraft_compose::Cache::new(), &spreads, 160, 160, Affine::IDENTITY, &opts);
+        let mut together = Renderer::new();
+        together.threads = 3;
+        let mut fallen_back = Renderer::new();
+        fallen_back.threads = 3;
+        fallen_back.fx_defer = false;
+        for _ in 0..2 {
+            let (a, b) = (draw(&mut together), draw(&mut fallen_back));
+            assert!(b.pixels.chunks(4).any(|p| p[0] < 128), "the fallen-back render is blank");
+            assert!(a.pixels.iter().zip(&b.pixels).all(|(x, y)| x.abs_diff(*y) <= 2));
+        }
+    }
+
     /// The plates of an image large enough to be separated on several threads are, pixel for
     /// pixel, those of the inks found one pixel at a time; both blend-pass plates come at once.
     #[test]
@@ -1957,6 +1967,8 @@ mod tests {
         }
         // Kept: asked again, the same images.
         assert!(std::sync::Arc::ptr_eq(&cmy, &plate_pixmap(&pm, 4)) && std::sync::Arc::ptr_eq(&black, &plate_pixmap(&pm, 3)));
+        // A plate past black is black.
+        assert!(std::sync::Arc::ptr_eq(&black, &plate_pixmap(&pm, 9)));
     }
     use super::*;
     use designcraft_doc::build::NewDocument;

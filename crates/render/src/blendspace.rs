@@ -281,11 +281,10 @@ fn srgb_in(table: &[[f32; 3]], cmyk: [f32; 4]) -> [f32; 3] {
     let at =
         |c: usize, m: usize, y: usize, k: usize| table.get((((i[0] + c) * N + i[1] + m) * N + i[2] + y) * N + i[3] + k).copied().unwrap_or([0.0; 3]);
     let lerp = |a: [f32; 3], b: [f32; 3], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-    // Corners (c, m, y) in the order c·4 + m·2 + y, each already along K.
-    let cube: [[f32; 3]; 8] = std::array::from_fn(|n| lerp(at(n >> 2 & 1, n >> 1 & 1, 0, 0), at(n >> 2 & 1, n >> 1 & 1, 0, 1), d[3]));
-    let cube_y1: [[f32; 3]; 8] = std::array::from_fn(|n| lerp(at(n >> 2 & 1, n >> 1 & 1, 1, 0), at(n >> 2 & 1, n >> 1 & 1, 1, 1), d[3]));
+    // Corner (c, m) = (n >> 1, n & 1) at `y`, along K.
+    let along_k = |n: usize, y: usize| lerp(at(n >> 1, n & 1, y, 0), at(n >> 1, n & 1, y, 1), d[3]);
     // Along Y, then M, then C.
-    let square: [[f32; 3]; 4] = std::array::from_fn(|n| lerp(cube[n * 2], cube_y1[n * 2], d[2]));
+    let square: [[f32; 3]; 4] = std::array::from_fn(|n| lerp(along_k(n, 0), along_k(n, 1), d[2]));
     let line = [lerp(square[0], square[1], d[1]), lerp(square[2], square[3], d[1])];
     lerp(line[0], line[1], d[0])
 }

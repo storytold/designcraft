@@ -4,7 +4,7 @@
 //! shadows took 44 of a frame's 50 ms). Each is now drawn once per object and zoom and placed
 //! again while nothing it depends on changes: the object (its transform within its parent too),
 //! its composed text, the zoom and rotation, the render options, and the document's swatches,
-//! inks, settings, images and the colour settings. Panning only moves it.
+//! inks, stroke styles, layers, settings, images and the colour settings. Panning only moves it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use designcraft_color::Swatch;
 use designcraft_color::cms::Cms;
 use designcraft_compose::{ComposedStory, ShownOn};
-use designcraft_doc::{Asset, AssetId, DocSettings, Document, InkManager, Item, ItemId};
+use designcraft_doc::{Asset, AssetId, DocSettings, Document, InkManager, Item, ItemId, Layer, StrokeStyleDef};
 use designcraft_geom::{Affine, Rect, Vec2};
 use vello_cpu::Pixmap;
 
@@ -105,6 +105,8 @@ struct Deps {
     swatches: Vec<Swatch>,
     settings: DocSettings,
     inks: InkManager,
+    stroke_styles: Vec<StrokeStyleDef>,
+    layers: Vec<Layer>,
     assets: Vec<(AssetId, Arc<Asset>)>,
 }
 
@@ -115,6 +117,8 @@ impl Deps {
             swatches: doc.swatches.clone(),
             settings: doc.settings.clone(),
             inks: doc.inks.clone(),
+            stroke_styles: doc.stroke_styles.clone(),
+            layers: doc.layers.clone(),
             assets: doc.assets.iter().map(|(id, a)| (*id, a.clone())).collect(),
         }
     }
@@ -124,6 +128,8 @@ impl Deps {
             && self.swatches == doc.swatches
             && self.settings == doc.settings
             && self.inks == doc.inks
+            && self.stroke_styles == doc.stroke_styles
+            && self.layers == doc.layers
             && self.assets.len() == doc.assets.len()
             && self.assets.iter().zip(&doc.assets).all(|((id, a), (id2, b))| id == id2 && Arc::ptr_eq(a, b))
     }
@@ -142,6 +148,16 @@ pub(crate) struct Prepared {
     x0: f64,
     y0: f64,
     scale: f64,
+}
+
+/// What [`FxCache::get`] found.
+pub(crate) enum Lookup {
+    Hit(Placed),
+    /// Nothing to place; `zoomed` when an image was kept for the object at another zoom or rotation
+    /// in the last render (it is being zoomed: the next render draws it anew too).
+    Miss {
+        zoomed: bool,
+    },
 }
 
 /// A kept image to place: the image, its top left on the device now, and its pixel scale.
@@ -166,8 +182,13 @@ fn linear(a: Affine) -> [f64; 4] {
 }
 
 impl FxCache {
-    /// A new render begins: images not drawn in the last few are let go.
-    pub(crate) fn next_frame(&mut self) {
+    /// A render of `doc` begins: images not drawn in the last few are let go, and all of them
+    /// once something every one depends on changed.
+    pub(crate) fn next_frame(&mut self, doc: &Document) {
+        if !self.deps.as_ref().is_some_and(|d| d.matches(doc)) {
+            self.clear();
+            self.deps = Some(Deps::of(doc));
+        }
         self.frame = self.frame.wrapping_add(1);
         let frame = self.frame;
         let before = self.entries.len();
@@ -184,22 +205,18 @@ impl FxCache {
     }
 
     /// The kept image for `key` where `src` is what it was drawn from, placed for `src.view`.
-    pub(crate) fn get(&mut self, key: Key, src: &Source, doc: &Document, opts: &RenderOptions) -> Option<Placed> {
-        if !self.deps.as_ref().is_some_and(|d| d.matches(doc)) {
-            self.clear();
-            self.deps = Some(Deps::of(doc));
-            return None;
+    pub(crate) fn get(&mut self, key: Key, src: &Source, opts: &RenderOptions) -> Lookup {
+        let Some(e) = self.entries.get_mut(&key) else { return Lookup::Miss { zoomed: false } };
+        if e.linear != linear(src.view) || e.px != src.px {
+            return Lookup::Miss { zoomed: e.used.saturating_add(1) >= self.frame };
         }
-        let e = self.entries.get_mut(&key)?;
         let same = e.opts == *opts
-            && e.linear == linear(src.view)
-            && e.px == src.px
             && e.xf == src.xf
             && e.stories.len() == src.stories.len()
             && e.stories.iter().zip(&src.stories).all(|(a, b)| Arc::ptr_eq(a, b))
             && e.item == *src.item;
         if !same {
-            return None;
+            return Lookup::Miss { zoomed: false };
         }
         // Panning moves the device position only, as long as the image still covers what shows.
         let t = src.view.translation();
@@ -207,10 +224,10 @@ impl FxCache {
         let (w, h) = (f64::from(e.image.width) * e.scale, f64::from(e.image.height) * e.scale);
         let n = src.needed;
         if n.x0 < x0 - 0.5 || n.y0 < y0 - 0.5 || n.x1 > x0 + w + 0.5 || n.y1 > y0 + h + 0.5 {
-            return None;
+            return Lookup::Miss { zoomed: false };
         }
         e.used = self.frame;
-        Some(Placed { image: e.image.clone(), x0, y0, scale: e.scale })
+        Lookup::Hit(Placed { image: e.image.clone(), x0, y0, scale: e.scale })
     }
 
     /// What to keep of an image about to be drawn from `src` with its top left at (`x0`, `y0`) on
