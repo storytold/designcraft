@@ -560,3 +560,35 @@ fn wide_blurs_drawn_coarser_look_as_drawn_at_full_resolution() {
     let (w, m) = (worst(&coarse, &full), mean(&coarse, &full));
     assert!(w <= 10 && m < 0.5, "max channel difference {w}, mean {m:.3}");
 }
+
+/// A large effect image is drawn in bands of rows on several cores, each reaching past its rows
+/// by the blur's spread: no seams, as drawn whole on a single thread; placed again from what was
+/// kept, the same.
+#[test]
+fn large_effect_images_drawn_in_bands_look_as_drawn_whole() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let text = "Shadowed text fills the frame. ".repeat(40);
+    let (tid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 150.0, 150.0), lid, &text, ParaFormat::default()).unwrap();
+    let ds = &mut d.item_mut(tid).unwrap().effects.drop_shadow;
+    ds.on = true;
+    ds.distance = 1.0;
+    ds.size = 0.6;
+    ds.opacity = 1.0;
+    // 1,400 × 1,400 pixels at 10×: the text's shadow is drawn in several bands, their edges
+    // across lines of text.
+    let (w, h) = (1400, 1400);
+    let view = Affine::translate((-100.0, -100.0)) * Affine::scale(10.0);
+    let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+    let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+    let cache = Cache::new();
+    let mut banded = Renderer::new();
+    banded.threads = 3;
+    let first = banded.render(&d, &cache, &placed, w, h, view, &opts);
+    let mut one = Renderer::new();
+    one.threads = 0;
+    let whole = one.render(&d, &cache, &placed, w, h, view, &opts);
+    let (w8, m) = (worst(&first, &whole), mean(&first, &whole));
+    assert!(w8 <= 8 && m < 0.2, "max channel difference {w8}, mean {m:.3}");
+    assert_eq!(banded.render(&d, &cache, &placed, w, h, view, &opts).pixels, first.pixels, "placed again unchanged");
+}

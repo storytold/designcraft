@@ -234,6 +234,8 @@ pub struct Renderer {
     fx_cache: fx_cache::FxCache,
     /// Effect images recorded for the multithreaded context and not drawn yet ([`Self::raster_fx`]).
     fx_jobs: Vec<FxJob>,
+    /// Effect images to keep once their bands in `fx_jobs` are drawn.
+    fx_keep: Vec<FxKeep>,
     /// Pixels of `fx_jobs`.
     fx_pixels: u64,
     /// The image id the next recorded effect image takes: the registry numbers images in the
@@ -301,6 +303,7 @@ impl Renderer {
             cmyk_view: None,
             fx_cache: fx_cache::FxCache::default(),
             fx_jobs: Vec::new(),
+            fx_keep: Vec::new(),
             fx_pixels: 0,
             fx_next_id: 0,
             fx_defer: true,
@@ -1150,12 +1153,22 @@ pub(crate) fn in_parallel<T: Send, U: Sync>(dst: &mut [T], src: &[U], work: impl
     });
 }
 
-/// An effect image recorded for the multithreaded context: its single-threaded context, the
-/// image id the context places it by, and what to keep of it once drawn.
+/// A band of an effect image recorded for the multithreaded context: its single-threaded
+/// context and the image id the multithreaded context places it by.
 struct FxJob {
     ctx: RenderContext,
     id: vello_common::paint::ImageId,
-    keep: Option<fx_cache::Prepared>,
+    /// A shadow's blur (σ, pixels) and colour, put on once it is drawn ([`fx::colour_shadow`]).
+    post: Option<(f32, peniko::Color)>,
+}
+
+/// An effect image to keep once its bands are drawn: what it was drawn from, its width and height,
+/// and each band's image id, first row and own rows.
+struct FxKeep {
+    prepared: fx_cache::Prepared,
+    width: u16,
+    height: u32,
+    bands: Vec<(vello_common::paint::ImageId, u32, (u32, u32))>,
 }
 
 /// Pixels of recorded effect images drawn at once at most: more are drawn before recording goes on.
@@ -1166,6 +1179,7 @@ impl Renderer {
     /// from now on from 0, as [`Self::defer_fx`] expects.
     fn fx_begin(&mut self) {
         self.fx_jobs.clear();
+        self.fx_keep.clear();
         self.fx_pixels = 0;
         self.resources.clear_images();
         self.fx_next_id = 0;
@@ -1177,17 +1191,34 @@ impl Renderer {
         self.fx_defer
     }
 
-    /// Record `ctx` (a flushed single-threaded context holding an effect image) to be drawn with
-    /// the others in [`Self::raster_fx`]; the image id to place it by.
-    pub(crate) fn defer_fx(&mut self, ctx: RenderContext, keep: Option<fx_cache::Prepared>) -> vello_common::paint::ImageId {
+    /// Record `ctx` (a flushed single-threaded context holding a band of an effect image) to be
+    /// drawn with the others in [`Self::raster_fx`]; the image id to place it by.
+    pub(crate) fn defer_fx(&mut self, ctx: RenderContext, post: Option<(f32, peniko::Color)>) -> vello_common::paint::ImageId {
         let id = vello_common::paint::ImageId::new(self.fx_next_id);
         self.fx_next_id = self.fx_next_id.saturating_add(1);
         self.fx_pixels = self.fx_pixels.saturating_add(u64::from(ctx.width()) * u64::from(ctx.height()));
-        self.fx_jobs.push(FxJob { ctx, id, keep });
+        self.fx_jobs.push(FxJob { ctx, id, post });
+        id
+    }
+
+    /// Keep the effect image whose `bands` (image id, first row, own rows) were recorded with
+    /// [`Self::defer_fx`], once they are drawn.
+    pub(crate) fn keep_fx(
+        &mut self,
+        prepared: fx_cache::Prepared,
+        width: u16,
+        height: u32,
+        bands: Vec<(vello_common::paint::ImageId, u32, (u32, u32))>,
+    ) {
+        self.fx_keep.push(FxKeep { prepared, width, height, bands });
+    }
+
+    /// Draw the recorded effect images now if they hold many pixels (between images: the bands of
+    /// one are drawn together).
+    pub(crate) fn fx_flush_if_full(&mut self) {
         if self.fx_pixels > FX_BATCH_PIXELS {
             self.raster_fx();
         }
-        id
     }
 
     /// Draw the recorded effect images, shared out among the cores, and register them under the
@@ -1201,34 +1232,47 @@ impl Renderer {
             return self.fx_defer;
         }
         // Each context goes to the one thread that draws it.
-        let (ctxs, jobs): (Vec<_>, Vec<_>) = jobs.into_iter().map(|j| (std::sync::Mutex::new(Some(j.ctx)), (j.id, j.keep))).unzip();
-        let size = |c: &std::sync::Mutex<Option<RenderContext>>| {
-            c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map_or(0, |c| u64::from(c.width()) * u64::from(c.height()))
+        let (ctxs, ids): (Vec<_>, Vec<_>) = jobs.into_iter().map(|j| (std::sync::Mutex::new(Some((j.ctx, j.post))), j.id)).unzip();
+        type Job = std::sync::Mutex<Option<(RenderContext, Option<(f32, peniko::Color)>)>>;
+        let size = |c: &Job| {
+            c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map_or(0, |(c, _)| u64::from(c.width()) * u64::from(c.height()))
         };
         // Largest first, so the last ones to finish are small.
         let mut order: Vec<usize> = (0..ctxs.len()).collect();
         order.sort_by_cached_key(|i| std::cmp::Reverse(ctxs.get(*i).map_or(0, size)));
         let images = run_parallel(&order, |i| {
-            let ctx = ctxs.get(*i)?.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()?;
+            let (ctx, post) = ctxs.get(*i)?.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()?;
             let mut pm = vello_cpu::Pixmap::new(ctx.width(), ctx.height());
             // Each image is drawn on its own: its paints carry their pixels, nothing is registered.
             ctx.render(&mut pm, &mut Resources::new());
+            if let Some((sigma, color)) = post {
+                fx::colour_shadow(&mut pm, sigma, color);
+            }
             Some(Arc::new(pm))
         });
-        let mut drawn: Vec<Option<Arc<vello_cpu::Pixmap>>> = vec![None; jobs.len()];
+        let mut drawn: Vec<Option<Arc<vello_cpu::Pixmap>>> = vec![None; ids.len()];
         for (i, image) in order.into_iter().zip(images) {
             if let Some(slot) = drawn.get_mut(i) {
                 *slot = image;
             }
         }
         let mut ok = true;
-        for ((want, keep), image) in jobs.into_iter().zip(drawn) {
+        let mut images = HashMap::new();
+        for (want, image) in ids.into_iter().zip(drawn) {
             let image = image.unwrap_or_else(|| Arc::new(vello_cpu::Pixmap::new(1, 1)));
             if self.resources.register_image(image.clone()) != want {
                 ok = false;
             }
-            if let Some(keep) = keep {
-                self.fx_cache.put(keep, image);
+            images.insert(want, image);
+        }
+        for k in std::mem::take(&mut self.fx_keep) {
+            let bands: Option<Vec<fx_cache::Band>> = k
+                .bands
+                .iter()
+                .map(|(id, top, core)| images.get(id).map(|image| fx_cache::Band { image: image.clone(), top: *top, core: *core }))
+                .collect();
+            if let Some(bands) = bands {
+                self.fx_cache.put(k.prepared, fx_cache::FxImage { width: k.width, height: k.height, bands });
             }
         }
         if !ok {

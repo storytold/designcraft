@@ -117,17 +117,22 @@ impl Renderer {
                 d.opacity,
             ));
         }
+        // A text frame's text casts them, not its frame: they need not cover the frame.
+        let cast = if solid || below.is_empty() { reach } else { self.text_ink(f, it, xf, page).unwrap_or(reach) };
         for (slot, off, size, pct, color, opacity) in below {
             let Some(c) = doc.resolve_color(&color, 1.0) else { continue };
             let (sigma, grow) = split(size, pct);
             let filter = shadow(sigma, color_of(&c, opacity.clamp(0.0, 1.0)));
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
-            let r = (reach + off).inflate(grow, grow);
-            self.with_filters(ctx, f, Some((it, xf, page, slot)), r, sigma, None, |me, c, fr| {
+            let r = (cast + off).inflate(grow, grow);
+            let tint = color_of(&c, opacity.clamp(0.0, 1.0));
+            self.with_filters(ctx, f, Some((it, xf, page, slot)), r, sigma, Some(tint), None, |me, c, fr, filtered| {
                 let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
                 c.set_transform(moved.view);
-                c.push_layer(None, None, None, None, Some(filter));
+                if filtered {
+                    c.push_layer(None, None, None, None, Some(filter.clone()));
+                }
                 me.draw_body(c, &moved, it, bp, xf, page);
                 if grow > 0.0 && solid {
                     c.set_transform(moved.view * xf);
@@ -135,7 +140,9 @@ impl Renderer {
                     c.set_stroke(kurbo::Stroke::new(grow * 2.0).with_join(kurbo::Join::Round));
                     c.stroke_path(bp);
                 }
-                c.pop_layer();
+                if filtered {
+                    c.pop_layer();
+                }
             });
         }
         // Gradient feather: the object (feathered or not) drawn in its own layer, then kept as
@@ -164,7 +171,7 @@ impl Renderer {
             // Keep the body where the blurred inset silhouette is.
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
-            self.with_filters(ctx, f, Some((it, xf, page, Slot::Feather)), reach, sigma, None, |_, c, fr| {
+            self.with_filters(ctx, f, Some((it, xf, page, Slot::Feather)), reach, sigma, None, None, |_, c, fr, _| {
                 c.set_transform(fr.view);
                 c.push_layer(None, None, None, None, Some(blur(sigma)));
                 c.set_transform(fr.view * xf);
@@ -251,7 +258,7 @@ impl Renderer {
             let mix = crate::blend_mode(g.mode).mix;
             let paint = color_of(&c, g.opacity.clamp(0.0, 1.0));
             if g.center {
-                self.with_blended_filters(ctx, f, (it, xf, page, Slot::InnerGlow), reach, sigma, mix, bp, |_, c, fr| {
+                self.with_blended_filters(ctx, f, (it, xf, page, Slot::InnerGlow), reach, sigma, mix, bp, |_, c, fr, _| {
                     c.set_transform(fr.view);
                     c.push_layer(None, None, None, None, Some(blur(sigma)));
                     c.set_transform(fr.view * xf);
@@ -280,7 +287,7 @@ impl Renderer {
             let sigma = st.size.max(0.0) / 2.0;
             let paint = color_of(&c, st.opacity.clamp(0.0, 1.0));
             let invert = st.invert;
-            self.with_blended_filters(ctx, f, (it, xf, page, Slot::Satin), reach, sigma, Mix::Multiply, bp, |_, c, fr| {
+            self.with_blended_filters(ctx, f, (it, xf, page, Slot::Satin), reach, sigma, Mix::Multiply, bp, |_, c, fr, _| {
                 c.set_transform(fr.view);
                 c.push_layer(None, None, None, None, Some(blur(sigma)));
                 if invert {
@@ -356,7 +363,7 @@ impl Renderer {
         mix: Mix,
     ) {
         let xf = keep.1;
-        self.with_blended_filters(ctx, f, keep, reach, sigma, mix, bp, |_, c, fr| {
+        self.with_blended_filters(ctx, f, keep, reach, sigma, mix, bp, |_, c, fr, _| {
             c.set_transform(fr.view);
             c.push_layer(None, None, None, None, Some(blur(sigma)));
             // Everything outside the offset shape, so the colour bleeds in from the edges.
@@ -391,13 +398,13 @@ impl Renderer {
         sigma: f64,
         mix: Mix,
         clip: &BezPath,
-        draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
+        draw: impl Fn(&mut Self, &mut RenderContext, &Frame, bool),
     ) {
         if mix != Mix::Normal {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
         }
-        self.with_filters(ctx, f, Some(keep), reach, sigma, Some((clip, keep.1)), draw);
+        self.with_filters(ctx, f, Some(keep), reach, sigma, None, Some((clip, keep.1)), draw);
         if mix != Mix::Normal {
             ctx.pop_layer();
         }
@@ -414,6 +421,10 @@ impl Renderer {
     /// [`crate::fx_cache`] while nothing it depends on changes. On a multithreaded context the
     /// image is only recorded here: [`Renderer::raster_fx`] draws all of them together on the
     /// cores before the context is rasterized.
+    ///
+    /// `draw` pushes its filter layer when told to (its last argument). A drop shadow or glow
+    /// (`shadow`, its colour) drawn offscreen is drawn without it, and its coverage is blurred and
+    /// coloured afterwards ([`colour_shadow`]): the same, at a fraction of the filter's cost.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_filters(
         &mut self,
@@ -422,15 +433,16 @@ impl Renderer {
         keep: Option<Keep>,
         reach: Rect,
         sigma: f64,
+        shadow: Option<peniko::Color>,
         clip: Option<(&BezPath, Affine)>,
-        draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
+        draw: impl Fn(&mut Self, &mut RenderContext, &Frame, bool),
     ) {
-        use crate::fx_cache::{FxCache, MAX_ENTRY_PIXELS, Source};
+        use crate::fx_cache::{Band, FxCache, FxImage, MAX_ENTRY_PIXELS, Source};
         // 3σ of the Gaussian in pixels, plus a pixel of antialiasing.
         let spread = sigma.max(0.0) * 3.0 / f.px + 2.0;
         if !f.mt && spread <= MAX_BLUR_SPREAD {
             push_clip(ctx, f, clip);
-            draw(self, ctx, f);
+            draw(self, ctx, f, true);
             pop_clip(ctx, clip);
             return;
         }
@@ -455,7 +467,7 @@ impl Renderer {
         };
         // Clip where the result is at full resolution: offscreen unless that is reduced.
         let (inner, outer) = if o.scale > 1.0 { (None, clip) } else { (clip, None) };
-        let prepared = match kept {
+        let mut prepared = match kept {
             Some(((it, xf, page, slot), _)) => {
                 let mut stories = Vec::new();
                 it.walk(&mut |i: &Item| {
@@ -472,8 +484,9 @@ impl Renderer {
                 let key = (it.id, page, slot, f.opts.plate);
                 if let Some(p) = self.fx_cache.get(key, &src, f.doc, f.opts) {
                     push_clip(ctx, f, outer);
-                    let size = (p.image.width(), p.image.height());
-                    place(ctx, vello_cpu::ImageSource::Pixmap(p.image), (p.x0, p.y0, p.scale), size);
+                    for b in p.image.bands {
+                        place(ctx, vello_cpu::ImageSource::Pixmap(b.image), (p.x0, p.y0, p.scale), p.image.width, b.top, b.core);
+                    }
                     pop_clip(ctx, outer);
                     return;
                 }
@@ -481,30 +494,52 @@ impl Renderer {
             }
             None => None,
         };
-        let mut off = RenderContext::new_with(o.width, o.height, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
-        let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -o.y0)) * f.view;
-        // Culling inside sees the whole image as visible.
-        let area = Rect::new(o.x0, o.y0, o.x0 + f64::from(o.width) * o.scale, o.y0 + f64::from(o.height) * o.scale);
-        let visible = if f.view.determinant().abs() > 1e-12 { f.view.inverse().transform_rect_bbox(area) } else { f.visible };
-        let shifted = Frame { mt: false, view, px: f.px * o.scale, visible, ..*f };
-        push_clip(&mut off, &shifted, inner);
-        draw(self, &mut off, &shifted);
-        pop_clip(&mut off, inner);
-        off.flush();
         let at = (o.x0, o.y0, o.scale);
-        let size = (o.width, o.height);
+        // Drawn with the others on the cores, a large image is drawn in bands of rows, each
+        // reaching past its rows by the blur's spread.
+        let deferred = f.mt && self.fx_deferred();
+        // A shadow's blur (σ, offscreen pixels) and colour, put on after it is drawn.
+        let post = shadow.map(|c| ((sigma.max(0.0) / (f.px * o.scale)) as f32, c));
+        let pad = (spread / o.scale).ceil().clamp(0.0, f64::from(u16::MAX)) as u32 + 2;
+        let mut bands = Vec::new();
         push_clip(ctx, f, outer);
-        if f.mt && self.fx_deferred() {
-            let id = self.defer_fx(off, prepared);
-            place(ctx, vello_cpu::ImageSource::OpaqueId { id, may_have_transparency: true }, at, size);
-        } else {
-            let mut pm = vello_cpu::Pixmap::new(o.width, o.height);
-            off.render(&mut pm, &mut self.resources);
-            let image = std::sync::Arc::new(pm);
-            if let Some(p) = prepared {
-                self.fx_cache.put(p, image.clone());
+        for core in bands_of(o.width, o.height, pad, deferred) {
+            let top = core.0.saturating_sub(pad);
+            let bottom = core.1.saturating_add(pad).min(u32::from(o.height));
+            let rows = u16::try_from(bottom.saturating_sub(top)).unwrap_or(o.height).max(1);
+            let mut off = RenderContext::new_with(o.width, rows, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
+            let band_y0 = o.y0 + f64::from(top) * o.scale;
+            let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -band_y0)) * f.view;
+            // Culling inside sees the whole band as visible.
+            let area = Rect::new(o.x0, band_y0, o.x0 + f64::from(o.width) * o.scale, band_y0 + f64::from(rows) * o.scale);
+            let visible = if f.view.determinant().abs() > 1e-12 { f.view.inverse().transform_rect_bbox(area) } else { f.visible };
+            let shifted = Frame { mt: false, view, px: f.px * o.scale, visible, ..*f };
+            push_clip(&mut off, &shifted, inner);
+            draw(self, &mut off, &shifted, post.is_none());
+            pop_clip(&mut off, inner);
+            off.flush();
+            if deferred {
+                let id = self.defer_fx(off, post);
+                place(ctx, vello_cpu::ImageSource::OpaqueId { id, may_have_transparency: true }, at, o.width, top, core);
+                bands.push((id, top, core));
+            } else {
+                let mut pm = vello_cpu::Pixmap::new(o.width, rows);
+                off.render(&mut pm, &mut self.resources);
+                if let Some((sigma, color)) = post {
+                    colour_shadow(&mut pm, sigma, color);
+                }
+                let image = std::sync::Arc::new(pm);
+                place(ctx, vello_cpu::ImageSource::Pixmap(image.clone()), at, o.width, top, core);
+                if let Some(p) = prepared.take() {
+                    self.fx_cache.put(p, FxImage { width: o.width, height: u32::from(o.height), bands: vec![Band { image, top, core }] });
+                }
             }
-            place(ctx, vello_cpu::ImageSource::Pixmap(image), at, size);
+        }
+        if deferred {
+            if let Some(p) = prepared {
+                self.keep_fx(p, o.width, u32::from(o.height), bands);
+            }
+            self.fx_flush_if_full();
         }
         pop_clip(ctx, outer);
     }
@@ -517,13 +552,35 @@ pub(crate) type Keep<'a> = (&'a Item, Affine, ShownOn, Slot);
 /// Device pixels kept around the screen of an effect image, for panning.
 const KEEP_MARGIN: f64 = 256.0;
 
-/// An image `size` pixels large on the device, its top left at (`x0`, `y0`), each of its pixels
-/// `scale` device pixels wide.
-fn place(ctx: &mut RenderContext, image: vello_cpu::ImageSource, (x0, y0, scale): (f64, f64, f64), (w, h): (u16, u16)) {
-    ctx.set_transform(Affine::translate((x0, y0)) * Affine::scale(scale));
+/// Rows `core` of an effect image `width` pixels wide whose top left is at (`x0`, `y0`) on the
+/// device and each of whose pixels is `scale` device pixels wide, from `image`, which holds its
+/// rows from `top` on.
+fn place(ctx: &mut RenderContext, image: vello_cpu::ImageSource, (x0, y0, scale): (f64, f64, f64), width: u16, top: u32, core: (u32, u32)) {
+    ctx.set_transform(Affine::translate((x0, y0)) * Affine::scale(scale) * Affine::translate((0.0, f64::from(top))));
     ctx.set_paint(vello_cpu::Image { image, sampler: peniko::ImageSampler::default() });
-    ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
+    let rows = |r: u32| f64::from(r.saturating_sub(top));
+    ctx.fill_rect(&Rect::new(0.0, rows(core.0), f64::from(width), rows(core.1)));
     ctx.set_transform(Affine::IDENTITY);
+}
+
+/// Pixels of an effect image drawn as one band at most when it is drawn with the others on the
+/// cores: a large one is shared out among them.
+const BAND_PIXELS: u64 = 1 << 19;
+
+/// The bands of rows an effect image `width` × `height` pixels large is drawn in (one unless
+/// `split`): none thinner than twice the rows each reaches past its own (`pad`).
+fn bands_of(width: u16, height: u16, pad: u32, split: bool) -> Vec<(u32, u32)> {
+    let h = u32::from(height);
+    let n = if split { (u64::from(width) * u64::from(h)).div_ceil(BAND_PIXELS).clamp(1, 64) as u32 } else { 1 };
+    let rows = h.div_ceil(n.max(1)).max(pad.saturating_mul(2)).max(1);
+    let mut out = Vec::new();
+    let mut y = 0;
+    while y < h {
+        let end = y.saturating_add(rows).min(h);
+        out.push((y, end));
+        y = end;
+    }
+    out
 }
 
 fn push_clip(ctx: &mut RenderContext, f: &Frame, clip: Option<(&BezPath, Affine)>) {
@@ -576,6 +633,72 @@ fn offscreen(reach: Rect, spread: f64, (width, height): (u16, u16), margin: f64,
     let side = |len: f64| (len / scale).ceil().min(crate::MAX_SIDE as f64);
     let (w, h) = (side(r.x1.ceil() - x0), side(r.y1.ceil() - y0));
     (w >= 1.0 && h >= 1.0).then_some(Offscreen { x0, y0, scale, width: w as u16, height: h as u16 })
+}
+
+/// What vello's drop-shadow filter (no offset) makes of `pm`, without it: its coverage blurred by
+/// `sigma` pixels (a Gaussian 3σ wide, nothing beyond the edges), in `color`. One channel where
+/// the filter blurs four, and nothing blurred where nothing is.
+pub(crate) fn colour_shadow(pm: &mut vello_cpu::Pixmap, sigma: f32, color: peniko::Color) {
+    let w = usize::from(pm.width());
+    let mut cov: Vec<f32> = pm.data().iter().map(|p| f32::from(p.a)).collect();
+    if sigma > 0.0 && w > 0 {
+        blur_coverage(&mut cov, w, sigma);
+    }
+    let [r, g, b, a] = color.components;
+    let channel = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u16;
+    let (r, g, b) = (channel(r), channel(g), channel(b));
+    for (p, v) in pm.data_mut().iter_mut().zip(&cov) {
+        let alpha = channel((v / 255.0 * a).clamp(0.0, 1.0));
+        let pre = |c: u16| (c * alpha / 255) as u8;
+        *p = vello_cpu::color::PremulRgba8 { r: pre(r), g: pre(g), b: pre(b), a: alpha as u8 };
+    }
+}
+
+/// The weights of a Gaussian of `sigma` pixels, 3σ either way (as vello's).
+fn gaussian(sigma: f32) -> Vec<f32> {
+    let radius = (3.0 * sigma).ceil().clamp(0.0, 255.0) as usize;
+    let k: Vec<f32> = (0..=2 * radius)
+        .map(|i| {
+            let x = i as f32 - radius as f32;
+            (-(x * x) / (2.0 * sigma * sigma)).exp()
+        })
+        .collect();
+    let sum: f32 = k.iter().sum();
+    k.into_iter().map(|v| if sum > 0.0 { v / sum } else { v }).collect()
+}
+
+/// `cov` (rows `w` wide) blurred by a Gaussian of `sigma` pixels, along the rows then the columns;
+/// rows with nothing in them are passed over.
+fn blur_coverage(cov: &mut [f32], w: usize, sigma: f32) {
+    let k = gaussian(sigma);
+    let r = k.len() / 2;
+    let mut tmp = vec![0.0f32; cov.len()];
+    let mut inked = Vec::with_capacity(cov.len() / w);
+    for (src, dst) in cov.chunks(w).zip(tmp.chunks_mut(w)) {
+        let any = src.iter().any(|v| *v > 0.0);
+        inked.push(any);
+        if !any {
+            continue;
+        }
+        for (x, d) in dst.iter_mut().enumerate() {
+            let lo = x.saturating_sub(r);
+            let taps = k.iter().skip(lo + r - x);
+            *d = src.iter().skip(lo).zip(taps).map(|(s, t)| s * t).sum();
+        }
+    }
+    for (y, out) in cov.chunks_mut(w).enumerate() {
+        out.fill(0.0);
+        let lo = y.saturating_sub(r);
+        for (j, (row, t)) in tmp.chunks(w).zip(&inked).enumerate().skip(lo).take(y + r + 1 - lo) {
+            if !*t {
+                continue;
+            }
+            let Some(weight) = k.get(j + r - y) else { continue };
+            for (o, s) in out.iter_mut().zip(row) {
+                *o += s * weight;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

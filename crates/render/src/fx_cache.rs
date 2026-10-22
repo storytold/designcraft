@@ -69,8 +69,34 @@ struct Entry {
     x0: f64,
     y0: f64,
     scale: f64,
-    image: Arc<Pixmap>,
+    image: FxImage,
     used: u64,
+}
+
+/// An effect image: one or more bands of rows, drawn on their own (on several cores) and placed
+/// side by side.
+#[derive(Clone)]
+pub(crate) struct FxImage {
+    /// Its width (pixels).
+    pub width: u16,
+    /// Its height (rows) in all.
+    pub height: u32,
+    pub bands: Vec<Band>,
+}
+
+/// Rows `core` of an [`FxImage`], from `image` whose first row is the image's row `top`. The
+/// image reaches past the core by the blur's spread, so each band is blurred as the whole is.
+#[derive(Clone)]
+pub(crate) struct Band {
+    pub image: Arc<Pixmap>,
+    pub top: u32,
+    pub core: (u32, u32),
+}
+
+impl FxImage {
+    fn pixels(&self) -> u64 {
+        self.bands.iter().map(|b| u64::from(b.image.width()) * u64::from(b.image.height())).sum()
+    }
 }
 
 /// What every kept image depends on beyond its own object.
@@ -120,7 +146,7 @@ pub(crate) struct Prepared {
 
 /// A kept image to place: the image, its top left on the device now, and its pixel scale.
 pub(crate) struct Placed {
-    pub image: Arc<Pixmap>,
+    pub image: FxImage,
     pub x0: f64,
     pub y0: f64,
     pub scale: f64,
@@ -147,7 +173,7 @@ impl FxCache {
         let before = self.entries.len();
         self.entries.retain(|_, e| e.used.saturating_add(KEEP_FRAMES) >= frame);
         if self.entries.len() != before {
-            self.pixels = self.entries.values().map(|e| u64::from(e.image.width()) * u64::from(e.image.height())).sum();
+            self.pixels = self.entries.values().map(|e| e.image.pixels()).sum();
         }
     }
 
@@ -178,7 +204,7 @@ impl FxCache {
         // Panning moves the device position only, as long as the image still covers what shows.
         let t = src.view.translation();
         let (x0, y0) = (e.x0 + (t.x - e.translation.x), e.y0 + (t.y - e.translation.y));
-        let (w, h) = (f64::from(e.image.width()) * e.scale, f64::from(e.image.height()) * e.scale);
+        let (w, h) = (f64::from(e.image.width) * e.scale, f64::from(e.image.height) * e.scale);
         let n = src.needed;
         if n.x0 < x0 - 0.5 || n.y0 < y0 - 0.5 || n.x1 > x0 + w + 0.5 || n.y1 > y0 + h + 0.5 {
             return None;
@@ -206,16 +232,16 @@ impl FxCache {
     }
 
     /// Keep `image`, drawn as `p` describes.
-    pub(crate) fn put(&mut self, p: Prepared, image: Arc<Pixmap>) {
-        let size = u64::from(image.width()) * u64::from(image.height());
+    pub(crate) fn put(&mut self, p: Prepared, image: FxImage) {
+        let size = image.pixels();
         if let Some(old) = self.entries.remove(&p.key) {
-            self.pixels = self.pixels.saturating_sub(u64::from(old.image.width()) * u64::from(old.image.height()));
+            self.pixels = self.pixels.saturating_sub(old.image.pixels());
         }
         if self.pixels.saturating_add(size) > MAX_PIXELS {
             // Make room: first what wasn't drawn lately, then everything else.
             let frame = self.frame;
             self.entries.retain(|_, e| e.used.saturating_add(KEEP_FRAMES) >= frame);
-            self.pixels = self.entries.values().map(|e| u64::from(e.image.width()) * u64::from(e.image.height())).sum();
+            self.pixels = self.entries.values().map(|e| e.image.pixels()).sum();
             if self.pixels.saturating_add(size) > MAX_PIXELS {
                 self.clear();
             }
