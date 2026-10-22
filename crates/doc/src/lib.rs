@@ -35,6 +35,7 @@ pub mod story;
 pub mod styles;
 mod swatch_refs;
 pub mod table;
+pub mod time;
 pub mod vars;
 pub mod xref;
 

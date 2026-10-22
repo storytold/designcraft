@@ -442,19 +442,8 @@ fn date_time(t: i64) -> krilla::metadata::DateTime {
 /// `civil`), rather than resetting to the epoch. `date_time` applies the PDF `0..=9999` year clamp.
 pub(crate) fn civil(t: i64) -> (i64, u8, u8, u8, u8, u8) {
     use chrono::{Datelike, Timelike};
-    let (days, sod) = (t.div_euclid(86_400), t.rem_euclid(86_400));
-    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
-    // `rest + 719_163` (1970-01-01 is CE day 719_163) is always a valid CE day, and `sod` < 86_400.
-    let date = i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
-    let time = u32::try_from(sod).ok().and_then(|s| chrono::NaiveTime::from_num_seconds_from_midnight_opt(s, 0));
-    match (date, time) {
-        (Some(d), Some(t)) => {
-            let y = i128::from(d.year()) + i128::from(cycles) * 400;
-            let y = i64::try_from(y).unwrap_or(if y < 0 { i64::MIN } else { i64::MAX });
-            (y, d.month() as u8, d.day() as u8, t.hour() as u8, t.minute() as u8, t.second() as u8)
-        }
-        _ => (1970, 1, 1, 0, 0, 0), // unreachable
-    }
+    let (y, t) = designcraft_doc::time::utc_parts(t, 0);
+    (y, t.month() as u8, t.day() as u8, t.hour() as u8, t.minute() as u8, t.second() as u8)
 }
 
 /// A successful conversion and its name-independent diagnostic. Replayed once for each asset.

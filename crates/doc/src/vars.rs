@@ -126,24 +126,12 @@ pub fn now() -> i64 {
     }
 }
 
-/// (year, month 1–12, day 1–31) from days since 1970-01-01.
-///
-/// `NaiveDate` only covers about ±262143 years, but the system clock can run past it, so this
-/// stays exact for every `days`. The Gregorian calendar repeats every 400 years (146_097 days):
-/// chrono converts the day within its cycle and whole cycles go back into the year (an i128 so no
-/// `days` overflows), which matches the proleptic Gregorian answer the old hand-rolled code gave.
-/// 1970-01-01 is `num_days_from_ce` 719_163.
+/// (year, month 1–12, day 1–31) from days since 1970-01-01, exact for every `days`
+/// (see [`crate::time::date_parts`]).
 fn civil(days: i64) -> (i64, u32, u32) {
     use chrono::Datelike;
-    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
-    match i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt) {
-        Some(d) => {
-            let y = i128::from(d.year()) + i128::from(cycles) * 400;
-            (i64::try_from(y).unwrap_or(if y < 0 { i64::MIN } else { i64::MAX }), d.month(), d.day())
-        }
-        // Unreachable: `rest + 719_163` is always a valid CE day.
-        None => (1970, 1, 1),
-    }
+    let (y, d) = crate::time::date_parts(days);
+    (y, d.month(), d.day())
 }
 
 /// Days since 1970-01-01 of a civil date (inverse of [`civil`]), exact for any year.

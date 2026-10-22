@@ -127,28 +127,9 @@ fn font_file(k: usize, f: &EmbeddedFont) -> (String, &'static str) {
 /// instant is moved into range by whole cycles and only the year is carried (matches the old
 /// `civil_from_days`), rather than resetting to the epoch.
 fn iso8601(t: i64) -> String {
-    let (y, dt) = utc_parts(t, 0);
+    let (y, dt) = designcraft_doc::time::utc_parts(t, 0);
     // `{:04}` rather than `%Y`, which writes a `+` before years past 9999.
     format!("{y:04}-{}", dt.format("%m-%dT%H:%M:%SZ"))
-}
-
-/// Unix seconds (+ nanos) → (proleptic Gregorian year, the instant moved into chrono's range by
-/// whole 400-year cycles). Month, day and time of day come from chrono; only the year is carried,
-/// which keeps every `i64` exact. chrono is the only calendar logic.
-fn utc_parts(secs: i64, nanos: u32) -> (i64, chrono::NaiveDateTime) {
-    use chrono::Datelike;
-    let (days, sod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
-    // `rest + 719_163` (1970-01-01 is CE day 719_163) is always a valid CE day, and `sod` < 86_400.
-    let date = i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
-    let time = u32::try_from(sod).ok().and_then(|s| chrono::NaiveTime::from_num_seconds_from_midnight_opt(s, nanos.min(999_999_999)));
-    match (date, time) {
-        (Some(d), Some(t)) => {
-            let y = i128::from(d.year()) + i128::from(cycles) * 400;
-            (i64::try_from(y).unwrap_or(if y < 0 { i64::MIN } else { i64::MAX }), d.and_time(t))
-        }
-        _ => (1970, chrono::NaiveDateTime::default()), // unreachable
-    }
 }
 
 /// The package's `dcterms:modified`: the given time, else the document's last save or creation.
@@ -206,8 +187,6 @@ pub struct FixedPage {
 
 /// A pre-paginated (fixed-layout) EPUB: one XHTML page per document page.
 pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions) -> Result<Vec<u8>, EpubError> {
-    let io = |e: std::io::Error| EpubError(e.to_string());
-    let zerr = |e: zip::result::ZipError| EpubError(e.to_string());
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let lang = language_tag(&opts.language);
     let id = identifier(doc, opts, &title);
@@ -239,12 +218,41 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title></head>\n<body><nav epub:type=\"page-list\" id=\"toc\"><h1>Pages</h1><ol>{nav_items}</ol></nav></body>\n</html>\n",
         xml_text(&title)
     );
-    let author = opts.author.as_deref().map(|a| format!("<dc:creator>{}</dc:creator>", xml_text(a))).unwrap_or_default();
-    let opf = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\" xml:lang=\"{lang}\" prefix=\"rendition: http://www.idpf.org/vocab/rendition/#\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dc:identifier id=\"bookid\">{}</dc:identifier>\n<dc:title>{}</dc:title>\n<dc:language>{lang}</dc:language>{author}\n<meta property=\"dcterms:modified\">{modified}</meta>\n<meta property=\"rendition:layout\">pre-paginated</meta>\n<meta property=\"rendition:spread\">auto</meta>\n<meta name=\"original-resolution\" content=\"{vw}x{vh}\"/>\n<meta name=\"generator\" content=\"DesignCraft\"/>\n</metadata>\n<manifest>\n{manifest}</manifest>\n<spine>\n{spine}</spine>\n</package>\n",
-        xml_text(&id),
-        xml_text(&title)
+    let rendition = format!(
+        "\n<meta property=\"rendition:layout\">pre-paginated</meta>\n<meta property=\"rendition:spread\">auto</meta>\n<meta name=\"original-resolution\" content=\"{vw}x{vh}\"/>"
     );
+    let head = PackageHead { lang, id: &id, title: &title, author: opts.author.as_deref(), modified: &modified };
+    let opf = package_opf(&head, " prefix=\"rendition: http://www.idpf.org/vocab/rendition/#\"", &rendition, &manifest, &spine);
+    let entries = files.iter().map(|(name, data)| (name.clone(), data.as_slice(), name.ends_with(".png")));
+    write_package(&opf, &nav, entries)
+}
+
+/// The package metadata both EPUB flavours share.
+struct PackageHead<'a> {
+    lang: &'a str,
+    id: &'a str,
+    title: &'a str,
+    author: Option<&'a str>,
+    modified: &'a str,
+}
+
+/// The OPF package document. `prefix` goes on `<package>` (with its leading space), `meta` after
+/// `dcterms:modified` (with its leading newline); `manifest` and `spine` are the item lines.
+fn package_opf(h: &PackageHead, prefix: &str, meta: &str, manifest: &str, spine: &str) -> String {
+    let PackageHead { lang, id, title, author, modified } = h;
+    let author = author.map(|a| format!("<dc:creator>{}</dc:creator>", xml_text(a))).unwrap_or_default();
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\" xml:lang=\"{lang}\"{prefix}>\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dc:identifier id=\"bookid\">{}</dc:identifier>\n<dc:title>{}</dc:title>\n<dc:language>{lang}</dc:language>{author}\n<meta property=\"dcterms:modified\">{modified}</meta>{meta}\n<meta name=\"generator\" content=\"DesignCraft\"/>\n</metadata>\n<manifest>\n{manifest}</manifest>\n<spine>\n{spine}</spine>\n</package>\n",
+        xml_text(id),
+        xml_text(title)
+    )
+}
+
+/// Zips an EPUB: the stored `mimetype`, `container.xml`, the OPF and nav, then `entries` in order
+/// as (path, bytes, stored uncompressed).
+fn write_package<'a>(opf: &str, nav: &str, entries: impl IntoIterator<Item = (String, &'a [u8], bool)>) -> Result<Vec<u8>, EpubError> {
+    let io = |e: std::io::Error| EpubError(e.to_string());
+    let zerr = |e: zip::result::ZipError| EpubError(e.to_string());
     let container = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\"><rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles></container>\n";
     let mut buf = std::io::Cursor::new(Vec::new());
     {
@@ -259,9 +267,8 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
             z.start_file(name, deflate).map_err(zerr)?;
             z.write_all(data).map_err(io)?;
         }
-        for (name, data) in &files {
-            let o = if name.ends_with(".png") { stored } else { deflate };
-            z.start_file(name.as_str(), o).map_err(zerr)?;
+        for (name, data, store) in entries {
+            z.start_file(name, if store { stored } else { deflate }).map_err(zerr)?;
             z.write_all(data).map_err(io)?;
         }
         z.finish().map_err(zerr)?;
@@ -1379,8 +1386,6 @@ fn base64(data: &[u8]) -> String {
 
 /// Export the document as a reflowable EPUB 3.
 pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubError> {
-    let io = |e: std::io::Error| EpubError(e.to_string());
-    let zerr = |e: zip::result::ZipError| EpubError(e.to_string());
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let id = identifier(doc, opts, &title);
     let modified = modified(doc, opts);
@@ -1441,56 +1446,26 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
         );
     }
     let cover_spine = if opts.cover.is_some() { "<itemref idref=\"cover\"/>\n" } else { "" };
-    let author = opts.author.as_deref().map(|a| format!("<dc:creator>{}</dc:creator>", xml_text(a))).unwrap_or_default();
-    let opf = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\" xml:lang=\"{lang}\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dc:identifier id=\"bookid\">{}</dc:identifier>\n<dc:title>{}</dc:title>\n<dc:language>{lang}</dc:language>{author}\n<meta property=\"dcterms:modified\">{modified}</meta>\n<meta name=\"generator\" content=\"DesignCraft\"/>\n</metadata>\n<manifest>\n{manifest}</manifest>\n<spine>\n{cover_spine}{spine}</spine>\n</package>\n",
-        xml_text(&id),
-        xml_text(&title)
-    );
-    let container = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\"><rootfiles><rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles></container>\n";
-    let mut buf = std::io::Cursor::new(Vec::new());
-    {
-        let mut z = zip::ZipWriter::new(&mut buf);
-        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        z.start_file("mimetype", stored).map_err(zerr)?;
-        z.write_all(b"application/epub+zip").map_err(io)?;
-        for (name, data) in [
-            ("META-INF/container.xml", container.as_bytes()),
-            ("OEBPS/content.opf", opf.as_bytes()),
-            ("OEBPS/nav.xhtml", nav.as_bytes()),
-            ("OEBPS/style.css", stylesheet_with(doc, &opts.generic_families, &opts.fonts).as_bytes()),
-        ] {
-            z.start_file(name, deflate).map_err(zerr)?;
-            z.write_all(data).map_err(io)?;
-        }
-        for (k, c) in chapters.iter().enumerate() {
-            z.start_file(format!("OEBPS/{}", chapter_file(k)), deflate).map_err(zerr)?;
-            z.write_all(c.as_bytes()).map_err(io)?;
-        }
-        for (name, (_, data)) in &images {
-            z.start_file(format!("OEBPS/{name}"), stored).map_err(zerr)?;
-            z.write_all(data).map_err(io)?;
-        }
-        for (k, f) in opts.fonts.iter().enumerate() {
-            z.start_file(format!("OEBPS/{}", font_file(k, f).0), deflate).map_err(zerr)?;
-            z.write_all(&f.data).map_err(io)?;
-        }
-        if let Some(c) = &opts.cover {
-            z.start_file(format!("OEBPS/{}", cover_file(c).0), stored).map_err(zerr)?;
-            z.write_all(c).map_err(io)?;
-            let xhtml = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title><style>body{{margin:0;text-align:center}} img{{max-width:100%;max-height:100vh}}</style></head>\n<body epub:type=\"cover\"><img src=\"{}\" alt=\"{}\"/></body>\n</html>\n",
-                xml_text(&title),
-                cover_file(c).0,
-                xml_attr(&title)
-            );
-            z.start_file("OEBPS/cover.xhtml", deflate).map_err(zerr)?;
-            z.write_all(xhtml.as_bytes()).map_err(io)?;
-        }
-        z.finish().map_err(zerr)?;
+    let head = PackageHead { lang, id: &id, title: &title, author: opts.author.as_deref(), modified: &modified };
+    let opf = package_opf(&head, "", "", &manifest, &format!("{cover_spine}{spine}"));
+    let css = stylesheet_with(doc, &opts.generic_families, &opts.fonts);
+    let mut entries: Vec<(String, &[u8], bool)> = vec![("OEBPS/style.css".into(), css.as_bytes(), false)];
+    entries.extend(chapters.iter().enumerate().map(|(k, c)| (format!("OEBPS/{}", chapter_file(k)), c.as_bytes(), false)));
+    entries.extend(images.iter().map(|(name, (_, data))| (format!("OEBPS/{name}"), *data, true)));
+    entries.extend(opts.fonts.iter().enumerate().map(|(k, f)| (format!("OEBPS/{}", font_file(k, f).0), f.data.as_slice(), false)));
+    let cover_xhtml = opts.cover.as_ref().map(|c| {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title><style>body{{margin:0;text-align:center}} img{{max-width:100%;max-height:100vh}}</style></head>\n<body epub:type=\"cover\"><img src=\"{}\" alt=\"{}\"/></body>\n</html>\n",
+            xml_text(&title),
+            cover_file(c).0,
+            xml_attr(&title)
+        )
+    });
+    if let (Some(c), Some(xhtml)) = (&opts.cover, &cover_xhtml) {
+        entries.push((format!("OEBPS/{}", cover_file(c).0), c.as_slice(), true));
+        entries.push(("OEBPS/cover.xhtml".into(), xhtml.as_bytes(), false));
     }
-    Ok(buf.into_inner())
+    write_package(&opf, &nav, entries)
 }
 
 #[cfg(test)]
