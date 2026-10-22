@@ -28,7 +28,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     {
         match app.run("note.new", json!({"text": draft.trim()})) {
             Ok(_) => draft.clear(),
-            Err(e) => app.status(format!("Notes: {e}")),
+            Err(e) => app.status_error("Notes", e),
         }
     }
     ui.data_mut(|d| d.insert_temp(id, draft));

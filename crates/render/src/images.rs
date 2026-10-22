@@ -3,7 +3,7 @@
 //!
 //! Entries are keyed by the address of the asset's encoded bytes (`Arc<Vec<u8>>`) and hold a
 //! clone of that `Arc`, so the address can't be reused while cached. Least recently used levels
-//! are evicted beyond a memory budget.
+//! are evicted beyond a memory budget; at most `MAX_BAD` failed assets are remembered.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,9 @@ use crate::{decode_pixmap_page, halve};
 
 /// Decoded pixels kept (bytes).
 const BUDGET: usize = 768 << 20;
+
+/// Failed assets remembered; the oldest is forgotten (and retried if drawn again) beyond this.
+const MAX_BAD: usize = 64;
 
 struct Entry {
     _bytes: Arc<Vec<u8>>,
@@ -28,7 +31,22 @@ struct Cache {
     bytes: usize,
     clock: u64,
     /// Assets that failed to decode (don't retry every frame).
-    bad: HashMap<(usize, u32), Arc<Vec<u8>>>,
+    /// Value: (insertion stamp, the encoded bytes keeping the address reserved).
+    bad: HashMap<(usize, u32), (u64, Arc<Vec<u8>>)>,
+    /// The colour settings the pixels were converted with ([`designcraft_color::cms::generation`]).
+    colour: u64,
+}
+
+impl Cache {
+    /// Remember a failed asset, evicting the oldest failures beyond [`MAX_BAD`].
+    fn mark_bad(&mut self, key: (usize, u32), bytes: &Arc<Vec<u8>>) {
+        self.clock += 1;
+        self.bad.insert(key, (self.clock, bytes.clone()));
+        while self.bad.len() > MAX_BAD {
+            let Some(oldest) = self.bad.iter().min_by_key(|(_, (stamp, _))| *stamp).map(|(k, _)| *k) else { break };
+            self.bad.remove(&oldest);
+        }
+    }
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -39,7 +57,13 @@ fn size_of(pm: &Pixmap) -> usize {
 
 fn with<R>(f: impl FnOnce(&mut Cache) -> R) -> R {
     let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(Cache::default))
+    let c = g.get_or_insert_with(Cache::default);
+    // Decoding converts CMYK through the working space: new colour settings, new pixels.
+    let colour = designcraft_color::cms::generation();
+    if c.colour != colour {
+        *c = Cache { clock: c.clock, colour, ..Cache::default() };
+    }
+    f(c)
 }
 
 fn lookup(key: (usize, u32, u8)) -> Option<Arc<Pixmap>> {
@@ -97,7 +121,7 @@ pub fn decoded(bytes: &Arc<Vec<u8>>, page: u32) -> Option<Arc<Pixmap>> {
             Some(pm)
         }
         None => {
-            with(|c| c.bad.insert((id, page), bytes.clone()));
+            with(|c| c.mark_bad((id, page), bytes));
             None
         }
     }
@@ -132,4 +156,24 @@ pub fn clear() {
         c.bad.clear();
         c.bytes = 0;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_assets_are_capped_and_oldest_is_dropped() {
+        let mut c = Cache::default();
+        let buffers: Vec<Arc<Vec<u8>>> = (0..MAX_BAD + 10).map(|i| Arc::new(vec![i as u8; 4])).collect();
+        for b in &buffers {
+            c.mark_bad((Arc::as_ptr(b) as usize, 0), b);
+        }
+        assert_eq!(c.bad.len(), MAX_BAD);
+        let first = &buffers[0];
+        assert!(!c.bad.contains_key(&(Arc::as_ptr(first) as usize, 0)));
+        assert_eq!(Arc::strong_count(first), 1, "evicted buffer must be released");
+        let last = &buffers[MAX_BAD + 9];
+        assert!(c.bad.contains_key(&(Arc::as_ptr(last) as usize, 0)));
+    }
 }

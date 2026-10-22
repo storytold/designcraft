@@ -50,6 +50,8 @@ pub struct Spacing {
     pub optical: bool,
     /// Korean text breaks between syllables instead of at spaces.
     pub korean_char_breaks: bool,
+    /// 0: minimum adjustment; 1: push in; 2: push out first; 3: push out only.
+    pub kinsoku_priority: u8,
 }
 
 impl Default for Spacing {
@@ -71,6 +73,7 @@ impl Default for Spacing {
             hyph_zone: 0.0,
             optical: false,
             korean_char_breaks: false,
+            kinsoku_priority: 0,
         }
     }
 }
@@ -78,30 +81,58 @@ impl Default for Spacing {
 impl Spacing {
     /// Per-tier (word, letter, glyph) stretch and shrink of glyph `g` as a box.
     fn box_elastic(&self, g: &Glyph) -> ([f64; 3], [f64; 3]) {
-        if !self.justify || g.locked_advance {
+        if g.locked_advance {
             return ([0.0; 3], [0.0; 3]);
+        }
+        let moji_stretch = if self.justify { g.moji.stretch } else { 0.0 };
+        let moji_shrink = if self.kinsoku_priority == 3 { 0.0 } else { g.moji.shrink };
+        if !self.justify {
+            return ([0.0; 3], [moji_shrink, 0.0, 0.0]);
+        }
+        // A space that is no break opportunity (No Break, U+00A0) is a box with word-space elasticity.
+        if g.is_justify_space() {
+            let (st, sh) = self.space_elastic(g);
+            return ([moji_stretch + st, 0.0, 0.0], [moji_shrink + sh, 0.0, 0.0]);
         }
         let natural = g.adv / self.glyph_desired.max(0.01);
         (
-            [0.0, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
-            [0.0, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
+            [moji_stretch, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
+            [moji_shrink, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
         )
     }
-    /// Word-space stretch and shrink of space glyph `g` (only U+0020 is elastic).
+    /// Word-space stretch and shrink of space glyph `g` (see [`Glyph::is_word_space`]); none
+    /// inside a jidori run, whose width is fitted.
     fn space_elastic(&self, g: &Glyph) -> (f64, f64) {
-        if g.ch != ' ' && !(g.ch == '\u{3000}' && g.ideographic_space_elastic) {
+        if !g.is_word_space() || g.locked_advance {
             return (0.0, 0.0);
         }
         (g.space * (self.word_max - self.word_desired).max(0.0), g.space * (self.word_desired - self.word_min).max(0.0))
     }
+    /// The unit in which stretch past the maximum word spacing is rated (see [`tiered_ratio`]): the
+    /// word space's own stretch, but at least [`OVERFLOW_STRETCH`] of its width, so a tight
+    /// spacing range doesn't make a loose line with several word spaces look worse than a line
+    /// letter-spaced across the measure.
+    fn space_overflow(&self, g: &Glyph) -> f64 {
+        if !g.is_word_space() {
+            return 0.0;
+        }
+        g.space * (self.word_max - self.word_desired).max(OVERFLOW_STRETCH)
+    }
 }
+
+/// Minimum stretch of a word space, as a fraction of its width, for rating lines that stretch
+/// past the maximum word spacing (the default range's 133% − 100%).
+const OVERFLOW_STRETCH: f64 = 0.33;
 
 /// Relative cost of using each tier of elastic material (word, letter, glyph).
 pub const TIER_COST: [f64; 3] = [1.0, 0.75, 1.0];
 
 /// Effective adjustment ratio for `d` points of stretch (`d > 0`) or shrink (`d < 0`), consuming
 /// the tiers in priority order. Returns `(r, feasible)`; shrinking beyond all tiers is infeasible.
-pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3]) -> (f64, bool) {
+/// Stretch past every tier goes into the word spaces and is rated in units of `over` (their
+/// overflow stretch, see [`Spacing::space_overflow`]); a line without word spaces rates it
+/// against its letter and glyph stretch.
+pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3], over: f64) -> (f64, bool) {
     const EPS: f64 = 1e-9;
     if d.abs() < EPS {
         return (0.0, true);
@@ -120,7 +151,7 @@ pub fn tiered_ratio(d: f64, y: [f64; 3], z: [f64; 3]) -> (f64, bool) {
     }
     if rem > 1e-6 {
         // Beyond every maximum: word spaces grow without bound (an H&J violation).
-        let unit = if cap[0] > EPS { cap[0] } else { cap.iter().sum::<f64>() };
+        let unit = if over > EPS { over } else { cap.iter().sum::<f64>() };
         r = if unit > EPS { r + rem / unit } else { INF };
     }
     (r, true)
@@ -146,25 +177,82 @@ struct Item {
     auto: bool,
     /// Breaks: optical hang of the glyph ending the line. Boxes: hang of the glyph starting one.
     hang: f64,
+    edge_elastic: [f64; 2],
+    start_elastic: [f64; 2],
     /// Auto hyphenation points: index of the break opportunity before the word (or `NONE`).
     zone_from: usize,
+    /// An emergency break inside a word wider than the measure.
+    emergency: bool,
+    /// Glue: stretch past the maximum word spacing ([`Spacing::space_overflow`]).
+    over: f64,
 }
 
 const NONE: usize = usize::MAX;
 
 impl Item {
     fn boxed(w: f64, st: [f64; 3], sh: [f64; 3]) -> Item {
-        Item { kind: Kind::Box, w, st, sh, p: 0.0, flagged: false, auto: false, hang: 0.0, zone_from: NONE }
+        Item {
+            kind: Kind::Box,
+            w,
+            st,
+            sh,
+            p: 0.0,
+            flagged: false,
+            auto: false,
+            hang: 0.0,
+            edge_elastic: [0.0; 2],
+            start_elastic: [0.0; 2],
+            zone_from: NONE,
+            emergency: false,
+            over: 0.0,
+        }
     }
     fn glue(w: f64, st: f64, sh: f64) -> Item {
-        Item { kind: Kind::Glue, w, st: [st, 0.0, 0.0], sh: [sh, 0.0, 0.0], p: 0.0, flagged: false, auto: false, hang: 0.0, zone_from: NONE }
+        Item {
+            kind: Kind::Glue,
+            w,
+            st: [st, 0.0, 0.0],
+            sh: [sh, 0.0, 0.0],
+            p: 0.0,
+            flagged: false,
+            auto: false,
+            hang: 0.0,
+            edge_elastic: [0.0; 2],
+            start_elastic: [0.0; 2],
+            zone_from: NONE,
+            emergency: false,
+            over: 0.0,
+        }
     }
     fn penalty(w: f64, p: f64, flagged: bool) -> Item {
-        Item { kind: Kind::Penalty, w, st: [0.0; 3], sh: [0.0; 3], p, flagged, auto: false, hang: 0.0, zone_from: NONE }
+        Item {
+            kind: Kind::Penalty,
+            w,
+            st: [0.0; 3],
+            sh: [0.0; 3],
+            p,
+            flagged,
+            auto: false,
+            hang: 0.0,
+            edge_elastic: [0.0; 2],
+            start_elastic: [0.0; 2],
+            zone_from: NONE,
+            emergency: false,
+            over: 0.0,
+        }
     }
 }
 
 const INF: f64 = 10000.0;
+
+/// A line whose natural width exceeds its measure by no more than this (points) still fits: frame
+/// widths and glyph advances are rounded, so a line that exactly fills the measure can come out a
+/// hair too wide.
+const FIT_EPS: f64 = 0.01;
+
+/// Penalty for an emergency break inside a word wider than the measure: high, so a paragraph
+/// takes no more of them than it must, but below [`INF`] so they are legal.
+const EMERGENCY_PENALTY: f64 = 5000.0;
 
 /// Does the glyph force a line end after it?
 /// A line may break between `a` and `b` in CJK text (any break next to an ideograph, kana or
@@ -208,7 +296,7 @@ fn cjk_break(a: &Glyph, b: &Glyph, sp: &Spacing) -> bool {
 
 pub fn is_forced(c: char) -> bool {
     use designcraft_doc::story::*;
-    matches!(c, FORCED_LINE_BREAK | COLUMN_BREAK | FRAME_BREAK | PAGE_BREAK)
+    c == FORCED_LINE_BREAK || is_break_char(c)
 }
 
 /// Optical margin protrusion of `c` as fractions of its advance: (left edge, right edge).
@@ -235,7 +323,7 @@ fn hang_left(g: &Glyph) -> f64 {
 }
 
 fn right_hang(g: &Glyph, sp: &Spacing) -> f64 {
-    g.cjk_hang.max(if sp.optical { hang_right(g) } else { 0.0 })
+    g.cjk_hang.max(if sp.optical { hang_right(g) } else { 0.0 }) - g.moji.end
 }
 
 fn hang_right(g: &Glyph) -> f64 {
@@ -274,19 +362,32 @@ fn push_inword(it: &mut Vec<Item>, ig: &mut Vec<usize>, p: Item, g: usize, sp: &
 }
 
 /// Build Knuth items. `item_glyph[k]` = glyph index of item k (penalties: the glyph *before* which the break happens).
-fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec<usize>) {
+/// `emergency_after[i]` allows an emergency break after glyph `i` (see [`overlong_words`]).
+fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec<usize>) {
     let mut it: Vec<Item> = Vec::with_capacity(glyphs.len() * 2 + 2);
     let mut ig = Vec::with_capacity(glyphs.len() * 2 + 2);
     let n = glyphs.len();
     let mut hy_cache = Vec::new();
     let mut last_space = NONE;
+    // Spaces before the paragraph end or a forced break hang: they take no room on the line (as
+    // in InDesign, where "2 VOOR " fits a frame as wide as "2 VOOR").
+    let mut hangs = vec![false; n];
+    for i in (0..n).rev() {
+        hangs[i] = glyphs[i].is_space() && glyphs.get(i + 1).is_none_or(|nx| hangs[i + 1] || is_forced(nx.ch));
+    }
     for (i, g) in glyphs.iter().enumerate() {
         let prev_hang = if i > 0 { right_hang(&glyphs[i - 1], sp) } else { 0.0 };
+        if hangs[i] {
+            continue;
+        }
         if is_forced(g.ch) {
             it.push(Item::glue(0.0, INF, 0.0));
             ig.push(i);
             let mut p = Item::penalty(0.0, -INF, false);
             p.hang = prev_hang;
+            if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
+                p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+            }
             it.push(p);
             ig.push(i + 1);
             last_space = NONE;
@@ -298,6 +399,10 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
                 let (st, sh) = sp.space_elastic(g);
                 let mut gl = Item::glue(w, st, sh);
                 gl.hang = prev_hang;
+                if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
+                    gl.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                }
+                gl.over = sp.space_overflow(g);
                 last_space = it.len();
                 it.push(gl);
                 ig.push(i);
@@ -307,6 +412,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
                 ig.push(i);
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = prev_hang;
+                if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
+                    p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                }
                 last_space = it.len();
                 it.push(p);
                 ig.push(i);
@@ -328,9 +436,8 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
         }
         let (st, sh) = sp.box_elastic(g);
         let mut bx = Item::boxed(g.adv, st, sh);
-        if sp.optical {
-            bx.hang = hang_left(g);
-        }
+        bx.hang = (if sp.optical { hang_left(g) } else { 0.0 }) - g.moji.start;
+        bx.start_elastic = crate::mojikumi::start_elastic(g, sp.justify, sp.kinsoku_priority != 3);
         it.push(bx);
         ig.push(i);
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
@@ -338,10 +445,12 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
             if matches!(g.ch, '-' | '\u{2010}') {
                 let mut p = Item::penalty(0.0, 50.0, true);
                 p.hang = right_hang(g, sp);
+                p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp)) {
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = right_hang(g, sp);
+                p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if hyph_after[i] {
                 let hw = hyphen_width(g, &mut hy_cache);
@@ -352,6 +461,10 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
                     p.hang = hw * hang('-').1;
                 }
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
+            } else if emergency_after.get(i) == Some(&true) {
+                let mut p = Item::penalty(0.0, EMERGENCY_PENALTY, false);
+                p.emergency = true;
+                push_inword(&mut it, &mut ig, p, i + 1, sp);
             }
         }
     }
@@ -360,6 +473,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> (Vec<Item>, Vec
     ig.push(n);
     let mut p = Item::penalty(0.0, -INF, false);
     p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
+    if let Some(g) = glyphs.last() {
+        p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+    }
     it.push(p);
     ig.push(n);
     (it, ig)
@@ -373,6 +489,7 @@ struct Node {
     tw: f64,
     ty: [f64; 3],
     tz: [f64; 3],
+    to: f64,
     demerits: f64,
     prev: Option<usize>,
     hyphens: u32,
@@ -384,13 +501,87 @@ pub fn knuth_plass(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &
     if glyphs.is_empty() {
         return vec![Break { start: 0, end: 0, next: 0, hyphen: false, forced: true }];
     }
-    let (items, ig) = items(glyphs, hyph_after, sp);
+    let (mut items, mut ig) = items(glyphs, hyph_after, &[], sp);
+    // A word gets emergency breaks only when no line could hold it: beside a wrap object some
+    // lines are slivers much narrower than the measure, and a word that fits a full line goes
+    // there instead of being split.
+    let widest = (0..=glyphs.len().min(64)).map(width).fold(1.0, f64::max);
+    if let Some(emergency_after) = overlong_words(&items, &ig, glyphs, widest) {
+        (items, ig) = self::items(glyphs, hyph_after, &emergency_after, sp);
+    }
     for tolerance in [2.5, 12.0, f64::INFINITY] {
         if let Some(b) = kp_pass(&items, &ig, glyphs, sp, width, tolerance, tolerance.is_infinite()) {
             return b;
         }
     }
-    greedy(glyphs, hyph_after, sp, width)
+    greedy(glyphs, hyph_after, sp, width, &|_, _, _| 0.0)
+}
+
+/// Width of the first word of `glyphs` after any leading spaces, fully shrunk (the boxes up to
+/// the first break opportunity, emergency breaks aside, and the hyphen a break there adds).
+pub fn first_word_width(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> f64 {
+    // A word this long is wider than any line; the rest of the paragraph doesn't matter.
+    let n = glyphs.len().min(256);
+    let (items, _) = items(glyphs.get(..n).unwrap_or(glyphs), hyph_after.get(..n).unwrap_or(hyph_after), &[], sp);
+    let mut w = 0.0;
+    let mut started = false;
+    for it in &items {
+        match it.kind {
+            Kind::Box => {
+                started = true;
+                w += it.w - it.sh.iter().sum::<f64>();
+            }
+            Kind::Penalty if it.p >= INF => {}
+            Kind::Penalty if started => return w + it.w,
+            Kind::Glue if started => return w,
+            Kind::Glue | Kind::Penalty => {}
+        }
+    }
+    w
+}
+
+/// Glyphs after which a word wider than `measure` may take an emergency break, or `None` when every
+/// word fits. A word is a run of boxes between two break opportunities (so a word with hyphenation
+/// points only gets emergency breaks where a part between them is still too wide), measured at
+/// its narrowest (fully shrunk) width. Emergency breaks respect no-break text and kinsoku.
+fn overlong_words(items: &[Item], ig: &[usize], glyphs: &[Glyph], measure: f64) -> Option<Vec<bool>> {
+    let mut out: Option<Vec<bool>> = None;
+    let mut seg: Option<(usize, usize)> = None;
+    let mut w = 0.0;
+    for (k, it) in items.iter().enumerate() {
+        match it.kind {
+            Kind::Box => {
+                let g = ig.get(k).copied().unwrap_or(0);
+                seg = Some(seg.map_or((g, g), |(a, _)| (a, g)));
+                w += it.w - it.sh.iter().sum::<f64>();
+            }
+            Kind::Penalty if it.p >= INF => {}
+            Kind::Glue | Kind::Penalty => {
+                if let Some((a, b)) = seg.take()
+                    && w > measure + FIT_EPS
+                {
+                    let marks = out.get_or_insert_with(|| vec![false; glyphs.len()]);
+                    for i in a..b {
+                        let (Some(g), Some(next)) = (glyphs.get(i), glyphs.get(i + 1)) else { continue };
+                        // Glyphs of one source character (an automatic page number's digits, a
+                        // multi-glyph cluster) stay together, as InDesign keeps them.
+                        let one_char = next.byte == g.byte && (next.len == 0 || next.len == g.len);
+                        let ok = !g.no_break
+                            && !one_char
+                            && g.break_after != Some(false)
+                            && next.ch != SOFT_HYPHEN
+                            && !is_forced(next.ch)
+                            && kinsoku_allows(g.ch, next.ch);
+                        if let Some(m) = marks.get_mut(i) {
+                            *m = ok;
+                        }
+                    }
+                }
+                w = 0.0;
+            }
+        }
+    }
+    out
 }
 
 /// Upper bound on the hyphen-count states tracked per breakpoint.
@@ -411,20 +602,35 @@ fn kp_pass(
     let mut sw = vec![0.0; m + 1];
     let mut sy = vec![[0.0; 3]; m + 1];
     let mut sz = vec![[0.0; 3]; m + 1];
+    let mut so = vec![0.0; m + 1];
     for (i, it) in items.iter().enumerate() {
         let (w, y, z) = match it.kind {
             Kind::Box | Kind::Glue => (it.w, it.st, it.sh),
             Kind::Penalty => (0.0, [0.0; 3], [0.0; 3]),
         };
         sw[i + 1] = sw[i] + w;
+        so[i + 1] = so[i] + it.over;
         for t in 0..3 {
             sy[i + 1][t] = sy[i][t] + y[t];
             sz[i + 1][t] = sz[i][t] + z[t];
         }
     }
-    let first_hang = items.iter().find(|i| i.kind == Kind::Box).map_or(0.0, |b| b.hang);
-    let mut arena: Vec<Node> =
-        vec![Node { pos: 0, line: 0, fitness: 1, tw: first_hang, ty: [0.0; 3], tz: [0.0; 3], demerits: 0.0, prev: None, hyphens: 0, flagged: false }];
+    let first_box = items.iter().find(|i| i.kind == Kind::Box);
+    let first_hang = first_box.map_or(0.0, |b| b.hang);
+    let first_elastic = first_box.map_or([0.0; 2], |b| b.start_elastic);
+    let mut arena: Vec<Node> = vec![Node {
+        pos: 0,
+        line: 0,
+        fitness: 1,
+        tw: first_hang,
+        ty: [-first_elastic[0], 0.0, 0.0],
+        tz: [-first_elastic[1], 0.0, 0.0],
+        to: 0.0,
+        demerits: 0.0,
+        prev: None,
+        hyphens: 0,
+        flagged: false,
+    }];
     let limit = sp.hyphen_limit as usize;
     let states = if limit == 0 { 2 } else { (limit + 1).min(MAX_HYPHEN_STATES) };
     let mut active: Vec<usize> = vec![0];
@@ -454,7 +660,17 @@ fn kp_pass(
                 y[t] = sy[b][t] - n.ty[t];
                 z[t] = sz[b][t] - n.tz[t];
             }
-            let (r, feasible) = tiered_ratio(target - l, y, z);
+            y[0] = (y[0] + it.edge_elastic[0]).max(0.0);
+            z[0] = (z[0] + it.edge_elastic[1]).max(0.0);
+            // A line that overruns its measure by a rounding error fits exactly.
+            let d = target - l;
+            let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
+            let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
+            if it.emergency && sp.justify && r > 0.0 {
+                // A piece of an overlong word usually has no elastic material: rate it by the
+                // space it leaves, so the fullest piece wins (the break at the last glyph that fits).
+                r = d / target;
+            }
             if feasible && !forced {
                 keep.push(a);
             } else {
@@ -477,7 +693,12 @@ fn kp_pass(
                     }
                 }
             }
-            let bad = 100.0 * r.abs().powi(3);
+            let preference = match sp.kinsoku_priority {
+                1 if r > 0.0 => 4.0,
+                2 if r < 0.0 => 4.0,
+                _ => 1.0,
+            };
+            let bad = preference * 100.0 * r.abs().powi(3);
             let lp = 10.0 + bad;
             let mut d = if pp >= 0.0 {
                 lp * lp + pp * pp
@@ -524,17 +745,20 @@ fn kp_pass(
             continue;
         }
         // Totals after the break: skip glue and penalties up to the next box.
-        let (mut tw, mut ty, mut tz) = (sw[b], sy[b], sz[b]);
+        let (mut tw, mut ty, mut tz, mut to) = (sw[b], sy[b], sz[b], so[b]);
         let mut i = b;
         while i < m {
             let x = items[i];
             match x.kind {
                 Kind::Box => {
                     tw += x.hang;
+                    ty[0] -= x.start_elastic[0];
+                    tz[0] -= x.start_elastic[1];
                     break;
                 }
                 Kind::Glue => {
                     tw += x.w;
+                    to += x.over;
                     for t in 0..3 {
                         ty[t] += x.st[t];
                         tz[t] += x.sh[t];
@@ -559,6 +783,7 @@ fn kp_pass(
                     tw,
                     ty,
                     tz,
+                    to,
                     demerits: d,
                     prev: Some(a),
                     hyphens: if flagged { prev.hyphens + 1 } else { 0 },
@@ -613,8 +838,9 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
     if out.is_empty() {
         out.push(Break { start: 0, end: n, next: n, hyphen: false, forced: true });
     }
-    // Lines produced past the paragraph end (e.g. a trailing forced break) are dropped.
-    let trailing_forced = glyphs.last().is_some_and(|g| is_forced(g.ch));
+    // Lines produced past the paragraph end are dropped, except the empty line after a trailing
+    // forced line break (a trailing column, frame or page break ends the paragraph).
+    let trailing_forced = glyphs.last().is_some_and(|g| g.ch == designcraft_doc::story::FORCED_LINE_BREAK);
     out.retain(|b| b.start < n || (b.start == n && trailing_forced));
     out
 }
@@ -628,7 +854,16 @@ fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
 }
 
 /// Greedy first-fit breaking (single-line composer; also used for paragraphs with tabs).
-pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn Fn(usize) -> f64) -> Vec<Break> {
+///
+/// `tab(line, x, i)` is the advance of the tab glyph `i` when it starts `x` from the start of
+/// line `line`: tabs have no width until they reach their stop, which depends on where they sit.
+pub fn greedy(
+    glyphs: &[Glyph],
+    hyph_after: &[bool],
+    sp: &Spacing,
+    width: &dyn Fn(usize) -> f64,
+    tab: &dyn Fn(usize, f64, usize) -> f64,
+) -> Vec<Break> {
     let n = glyphs.len();
     let mut out = Vec::new();
     let mut start = 0;
@@ -641,8 +876,9 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
     let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
     while start < n {
         let w = width(line).max(1.0);
-        let mut x = if sp.optical { -hang_left(&glyphs[start]) } else { 0.0 };
-        let mut shrink = 0.0;
+        let mut x = (if sp.optical { -hang_left(&glyphs[start]) } else { 0.0 }) + glyphs[start].moji.start;
+        let mut shrink = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, sp.kinsoku_priority != 3)[1];
+        let mut last_natural: Option<(usize, bool)> = None;
         let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
         let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
         let mut i = start;
@@ -658,13 +894,26 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                     shrink += sp.space_elastic(g).1;
                 }
                 last_ok = Some((i, false));
+                if x <= w + FIT_EPS {
+                    last_natural = last_ok;
+                }
                 last_space = Some((i, x));
                 x += g.adv;
                 i += 1;
                 continue;
             }
             let hang_r = right_hang(g, sp);
-            if x + g.adv - hang_r > w + shrink
+            let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
+            let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
+            let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
+            if sp.kinsoku_priority == 2
+                && x + adv - hang_r > w + FIT_EPS
+                && let Some((end, hyphen)) = last_natural
+            {
+                brk = Some((end, hyphen, false));
+                break;
+            }
+            if x + adv - hang_r > w + available.max(0.0) + FIT_EPS
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
             {
@@ -679,18 +928,19 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 });
                 break;
             }
-            x += g.adv;
-            if sp.justify {
-                shrink += sp.box_elastic(g).1.iter().sum::<f64>();
-            }
+            x += adv;
+            shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
                 if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
                     last_ok = Some((i + 1, false));
+                    if x - hang_r <= w + FIT_EPS {
+                        last_natural = last_ok;
+                    }
                 } else if hyph_after[i] && may_hyphenate(hyphens) {
                     let hy = hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
-                    if x + hy <= w + shrink {
+                    if x + hy <= w + shrink + FIT_EPS {
                         last_ok = Some((i + 1, true));
                     }
                 }
@@ -715,9 +965,10 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
         start = next;
         line += 1;
     }
-    // A forced break as the very last glyph leaves an empty final line (InDesign shows it).
+    // A forced line break as the very last glyph leaves an empty final line (InDesign shows it);
+    // a column, frame or page break there ends the paragraph.
     if let Some(last) = glyphs.last()
-        && is_forced(last.ch)
+        && last.ch == designcraft_doc::story::FORCED_LINE_BREAK
     {
         out.push(Break { start: n, end: n, next: n, hyphen: false, forced: true });
     }
@@ -765,16 +1016,16 @@ mod tests {
     #[test]
     fn tiers_are_used_in_order() {
         // Word stretch alone.
-        let (r, ok) = tiered_ratio(5.0, [10.0, 10.0, 10.0], [0.0; 3]);
+        let (r, ok) = tiered_ratio(5.0, [10.0, 10.0, 10.0], [0.0; 3], 10.0);
         assert!(ok && (r - 0.5).abs() < 1e-9);
         // Word saturated, half the letter tier.
-        let (r, _) = tiered_ratio(15.0, [10.0, 10.0, 10.0], [0.0; 3]);
+        let (r, _) = tiered_ratio(15.0, [10.0, 10.0, 10.0], [0.0; 3], 10.0);
         assert!((r - (1.0 + 0.5 * TIER_COST[1])).abs() < 1e-9);
         // Beyond every tier: unbounded word spacing.
-        let (r, _) = tiered_ratio(40.0, [10.0, 10.0, 10.0], [0.0; 3]);
+        let (r, _) = tiered_ratio(40.0, [10.0, 10.0, 10.0], [0.0; 3], 10.0);
         assert!(r > 2.0);
         // Shrink beyond the tiers is infeasible.
-        assert!(!tiered_ratio(-25.0, [0.0; 3], [10.0, 10.0, 0.0]).1);
-        assert!(tiered_ratio(-15.0, [0.0; 3], [10.0, 10.0, 0.0]).1);
+        assert!(!tiered_ratio(-25.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0).1);
+        assert!(tiered_ratio(-15.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0).1);
     }
 }

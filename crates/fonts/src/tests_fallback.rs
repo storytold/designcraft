@@ -127,3 +127,33 @@ fn chain_fonts_load_from_the_font_folders_when_first_needed() {
     assert_eq!(family(&db, HAN, Some("ko")).as_deref(), Some(first_loaded("Other CJK")));
     assert!(!db.is_loaded("AppleMyungjo"));
 }
+
+const KA: char = 'ക';
+const VIRAMA: char = '\u{0D4D}';
+const AA: char = '\u{0D3E}';
+
+#[test]
+fn malayalam_takes_a_font_made_for_it() {
+    // Arial Unicode MS maps Malayalam but can't shape it (no conjuncts); loaded first, it won.
+    let db = db_with(&[("Arial Unicode MS", &[KA, VIRAMA, AA]), ("Malayalam Sangam MN", &[KA, VIRAMA, AA])]);
+    for c in [KA, VIRAMA, AA] {
+        for language in [None, Some("en-US"), Some("ml")] {
+            assert_eq!(family(&db, c, language).as_deref(), Some("Malayalam Sangam MN"), "{c:?} {language:?}");
+        }
+    }
+    // Past the Malayalam fonts, the language-blind search as before.
+    let sangam = db.face("Malayalam Sangam MN", "Regular");
+    assert_eq!(db.fallback_for(KA, sangam.id(), None).map(|f| f.family.clone()).as_deref(), Some("Arial Unicode MS"));
+}
+
+#[test]
+fn malayalam_fonts_load_from_the_font_folders_when_first_needed() {
+    let dir = std::env::temp_dir().join(format!("dc-malayalam-fallback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("noto.ttf"), font_with("Noto Sans Malayalam", &[KA]).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![dir]);
+    db.add_font(font_with("Arial Unicode MS", &[KA]).unwrap());
+    assert!(!db.is_loaded("Noto Sans Malayalam"));
+    assert_eq!(family(&db, KA, None).as_deref(), Some("Noto Sans Malayalam"));
+}

@@ -2,22 +2,45 @@
 //!
 //! An entry is valid while the inputs it was composed from are the *same allocations*: the story
 //! `Arc` (and its revision), the styles `Arc`, the frame items' `Arc`s and the `Arc`s of every
-//! wrapping item on the frames' spreads. Entries hold clones of those `Arc`s, so the pointers can't
-//! be reused by other allocations while the entry lives.
+//! wrapping item on the frames' spreads, and the same for every story whose anchored objects wrap
+//! its text ([`crate::wrap::neighbours`]). Entries hold clones of those `Arc`s, so the pointers
+//! can't be reused by other allocations while the entry lives.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use designcraft_doc::{Document, Item, Story, StoryId, Styles, WrapMode};
+use designcraft_doc::{Document, Item, Story, StoryId, Styles};
 
 use crate::vars::RunningIndex;
 use crate::{ComposeOptions, ComposedStory};
 
-type Key = (StoryId, Option<String>);
+/// Where a story's frames are shown, which decides what its page-number markers and variables
+/// read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ShownOn {
+    /// In its own frames.
+    #[default]
+    Own,
+    /// As a parent item on this absolute document page.
+    Page(usize),
+    /// As a base parent's item on this parent spread (index into `parents`): markers show that
+    /// parent's prefix.
+    Parent(usize),
+}
+
+impl From<Option<usize>> for ShownOn {
+    fn from(page: Option<usize>) -> Self {
+        page.map_or(ShownOn::Own, ShownOn::Page)
+    }
+}
+
+/// A story, composed for where it is shown, with other stories' anchored objects wrapping it
+/// (`true`) or not.
+type Key = (StoryId, ShownOn, bool);
 
 struct Entry {
     sig: Vec<usize>,
-    _keep: (Arc<Story>, Arc<Styles>, Vec<Arc<Item>>),
+    _keep: (Arc<Story>, Arc<Styles>, Vec<Arc<Item>>, Vec<Arc<Story>>),
     out: Arc<ComposedStory>,
     stamp: u64,
 }
@@ -46,7 +69,18 @@ fn doc_signature(doc: &Document) -> u64 {
     }
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
+    sections_hash(doc).hash(&mut h);
+    h.finish()
+}
+
+/// Everything page names and section markers are made from.
+fn sections_hash(doc: &Document) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
     doc.sections.len().hash(&mut h);
+    for s in &doc.sections {
+        (s.start, s.start_number, s.style as u8, &s.prefix, &s.marker, s.include_prefix).hash(&mut h);
+    }
     h.finish()
 }
 
@@ -55,11 +89,56 @@ impl Cache {
         Self::default()
     }
 
-    /// The composed story, from cache or freshly composed.
-    pub fn get(&self, doc: &Document, sid: StoryId, page_name: Option<&str>) -> Arc<ComposedStory> {
+    /// The composed story, from cache or freshly composed. `page` is the absolute page a
+    /// parent-page item is shown on (its page number markers and variables are that page's), or
+    /// `None` for a story's own frames. Pages are identified by index, not name: names repeat when
+    /// sections restart their numbering.
+    pub fn get(&self, doc: &Document, sid: StoryId, page: Option<usize>) -> Arc<ComposedStory> {
+        self.get_on(doc, sid, page.into())
+    }
+
+    /// [`Cache::get`] for any [`ShownOn`].
+    pub fn get_on(&self, doc: &Document, sid: StoryId, on: ShownOn) -> Arc<ComposedStory> {
+        self.get_with(doc, sid, on, true)
+    }
+
+    /// [`Cache::get_on`], wrapped by other stories' anchored objects only when `cross` is set.
+    fn get_with(&self, doc: &Document, sid: StoryId, on: ShownOn, cross: bool) -> Arc<ComposedStory> {
         let Some(story) = doc.stories.get(&sid) else { return Arc::new(ComposedStory { story: sid, ..Default::default() }) };
-        let (mut sig, keep_items) = signature(doc, story);
-        let key = (sid, page_name.map(str::to_string));
+        let (mut sig, mut keep_items) = signature(doc, story);
+        let neighbours = if cross { crate::wrap::neighbours(doc, sid) } else { Vec::new() };
+        let mut keep_stories = Vec::new();
+        for n in &neighbours {
+            if let Some(ns) = doc.stories.get(n) {
+                let (s, k) = signature(doc, ns);
+                sig.push(usize::MAX - 1);
+                sig.extend(s);
+                keep_items.extend(k);
+                keep_stories.push(ns.clone());
+            }
+        }
+        let key = (sid, on, !neighbours.is_empty());
+        // The key holds the page's index, which a renumbering doesn't change: its name (section
+        // start number, style, prefix) is part of the signature.
+        let (page_name, page) = match on {
+            ShownOn::Own => (None, None),
+            ShownOn::Page(p) => (Some(doc.page_name(p)), Some(p)),
+            ShownOn::Parent(pi) => (doc.parents.get(pi).and_then(|sp| sp.parent.as_ref()).map(|i| i.prefix.clone()), None),
+        };
+        let section_marker = page.map(|p| crate::section_marker(doc, p));
+        if let Some(name) = &page_name {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (name, &section_marker).hash(&mut h);
+            sig.push(h.finish() as usize);
+        }
+        if story.text.contains(designcraft_doc::story::SECTION_MARKER) {
+            // Frames on document pages show their section's marker text.
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            doc.sections.iter().for_each(|s| (s.start, &s.marker).hash(&mut h));
+            sig.push(h.finish() as usize);
+        }
         let with_vars = crate::vars::has_vars(story);
         let running = with_vars && crate::vars::has_running(doc, story);
         if with_vars {
@@ -112,7 +191,9 @@ impl Cache {
         sig.push(usize::from(doc.settings.glyph_fallback));
         // Named lists continue from earlier stories.
         for l in &doc.settings.lists {
-            sig.push(doc.list_start(sid, &l.name) as usize);
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&doc.list_start(sid, &l.name), &mut h);
+            sig.push(std::hash::Hasher::finish(&h) as usize);
         }
         {
             let mut g = self.map.lock().unwrap_or_else(|e| e.into_inner());
@@ -125,25 +206,26 @@ impl Cache {
                 return e.out.clone();
             }
         }
-        // Parent-page items are composed per page; variables need that page's index.
-        let page = match page_name {
-            Some(n) if with_vars => (0..doc.page_count()).find(|&i| doc.page_name(i) == n),
-            _ => None,
-        };
+        // Parent-page items are composed per page: markers show its name, variables need its index.
+        let page = page.filter(|_| with_vars);
         let running = running.then(|| self.running_index(doc));
-        let out = Arc::new(crate::compose_story(
+        let others: Vec<Arc<ComposedStory>> = neighbours.iter().map(|n| self.neighbour(doc, *n)).collect();
+        let out = Arc::new(crate::wrap::compose_among(
             doc,
             sid,
-            &ComposeOptions { page_name: page_name.map(str::to_string), page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)) },
+            &ComposeOptions { page_name, section_marker, page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)) },
+            &others.iter().map(|o| &**o).collect::<Vec<_>>(),
         ));
         let mut g = self.map.lock().unwrap_or_else(|e| e.into_inner());
         let stamp = g.1;
         if g.0.len() > 4096 {
             g.0.retain(|_, e| stamp - e.stamp < 64);
         }
-        let replaced = g.0.insert(key.clone(), Entry { sig, _keep: (story.clone(), doc.styles.clone(), keep_items), out: out.clone(), stamp });
+        let replaced = g.0.insert(key, Entry { sig, _keep: (story.clone(), doc.styles.clone(), keep_items, keep_stories), out: out.clone(), stamp });
         drop(g);
-        if key.1.is_none()
+        // Only the composition that is shown (not one made for another story's wrap).
+        if key.1 == ShownOn::Own
+            && cross
             && let Some(old) = replaced
         {
             self.previous.lock().unwrap_or_else(|e| e.into_inner()).insert(sid, (old.sig, old.out));
@@ -160,10 +242,12 @@ impl Cache {
         let matches = |s: &[usize]| s.len() >= sig.len() && s[..sig.len()] == sig[..];
         {
             let g = self.map.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(e) = g.0.get(&(sid, None))
-                && matches(&e.sig)
-            {
-                return Some(e.out.clone());
+            for cross in [true, false] {
+                if let Some(e) = g.0.get(&(sid, ShownOn::Own, cross))
+                    && matches(&e.sig)
+                {
+                    return Some(e.out.clone());
+                }
             }
         }
         let g = self.previous.lock().unwrap_or_else(|e| e.into_inner());
@@ -208,6 +292,19 @@ impl Cache {
         out
     }
 
+    /// Story `sid` composed for the wrap of its anchored objects in other stories: without other
+    /// stories' anchored objects (no cycles), and outside the cache when it needs the document-wide
+    /// indexes (they compose every story).
+    fn neighbour(&self, doc: &Document, sid: StoryId) -> Arc<ComposedStory> {
+        let indexed =
+            doc.stories.get(&sid).is_some_and(|st| crate::xref::has_xrefs(st) || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st)));
+        if indexed {
+            Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions::default(), &[]))
+        } else {
+            self.get_with(doc, sid, ShownOn::Own, false)
+        }
+    }
+
     pub fn clear(&self) {
         self.map.lock().unwrap_or_else(|e| e.into_inner()).0.clear();
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -243,13 +340,29 @@ impl Cache {
 
 fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>) {
     // The document's font scope: another document's fonts of the same name set it differently.
-    let mut sig =
-        vec![Arc::as_ptr(story) as usize, story.rev as usize, Arc::as_ptr(&doc.styles) as usize, doc.sections.len(), doc.font_scope as usize];
+    // Sections name the pages under the frames (page-number and section markers).
+    let g = &doc.settings.baseline_grid;
+    let mut sig = vec![
+        Arc::as_ptr(story) as usize,
+        story.rev as usize,
+        Arc::as_ptr(&doc.styles) as usize,
+        sections_hash(doc) as usize,
+        doc.font_scope as usize,
+        g.start.to_bits() as usize,
+        g.increment.to_bits() as usize,
+    ];
     let mut keep = Vec::new();
     let mut spreads = Vec::new();
     for f in &story.frames {
         let Some(loc) = doc.find(*f) else {
-            sig.push(0);
+            // Embedded frames live in another story (possibly in a note/cell),
+            // so changing their geometry does not change this story's pointer.
+            use std::hash::{Hash, Hasher};
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            if let Some(item) = doc.anchored_item(*f) {
+                format!("{item:?}").hash(&mut hash);
+            }
+            sig.push(hash.finish() as usize);
             continue;
         };
         if let Some(sp) = doc.spread(loc.spread) {
@@ -261,8 +374,12 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
             if !spreads.contains(&loc.spread) {
                 spreads.push(loc.spread);
                 for it in &sp.items {
-                    if it.wrap.mode != WrapMode::None {
+                    let mut wraps = false;
+                    it.walk(&mut |i| wraps |= i.has_wrap());
+                    if wraps {
                         sig.push(Arc::as_ptr(it) as usize);
+                        // Wrap objects on hidden layers don't wrap text.
+                        sig.push(usize::from(doc.layer(it.layer).is_some_and(|l| l.visible)));
                         keep.push(it.clone());
                     }
                 }

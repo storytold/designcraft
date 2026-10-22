@@ -2,6 +2,7 @@
 name = "designcraft-ui-egui"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "DesignCraft egui frontend (InDesign-style UI); swappable — nothing below depends on it"
 
@@ -9,6 +10,7 @@ description = "DesignCraft egui frontend (InDesign-style UI); swappable — noth
 workspace = true
 
 [dependencies]
+craft-ui = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
@@ -20,14 +22,15 @@ designcraft-engine = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-bidi-mirroring = { workspace = true }
 unicode-segmentation = { workspace = true }
-regex = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 designcraft-idml = { workspace = true }
+zip = { workspace = true }
 # Headless (offscreen wgpu) rendering of the whole window for UI screenshots: `examples/ui_shot.rs`.
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 designcraft-fonts = { workspace = true, features = ["testing"] }

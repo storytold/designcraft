@@ -1,6 +1,6 @@
 //! Text import (File › Place of text files): plain text, Word documents (`.docx`) and RTF become
 //! a frameless [`Story`] with paragraph and character styles, local bold/italic/underline/size,
-//! footnotes (Word) and tables (Word), ready to flow into text frames.
+//! footnotes, tables and bullets/numbering (Word), ready to flow into text frames.
 //!
 //! Word styles are imported by name (their font, size, bold/italic and space before/after become
 //! the style definition, like InDesign's "Use Word styles" import option). RTF keeps bold,
@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod docx;
+mod docx_numbering;
 pub mod export;
 mod rtf;
 pub mod tagged;

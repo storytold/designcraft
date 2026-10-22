@@ -24,6 +24,13 @@ use parse::{
     tile,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use parse::fingerprint_from;
+
+pub(crate) fn fingerprint_from_path(path: &str) -> Option<designcraft_doc::Fingerprint> {
+    fingerprint_of(Path::new(path))
+}
+
 const PARENT_WARNING: &str = "A parent-page placeholder was left unfilled.";
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -44,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Data Fields",
             [],
             None,
-            "{csv? | rows? | path? | bytes?, name?} → [{name, kind, uses}]; no params reads the linked source and does not attach one",
+            "{csv? | rows? | path? | bytes? | base64?, name?, delimiter?, sheet?} → [{name, kind, uses}]; no params reads the linked source and does not attach one",
             has_doc,
             fields_cmd
         ),
@@ -74,7 +81,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Merged Document…",
             [],
             None,
-            "{csv? | rows? | path? | bytes?, name?, records?, one?, range?, perPage?, arrange?, insets?, columnSpacing?, rowSpacing?, fitting?, center?, linkImages?, limit?} → {records, pages, missingImages, oversetStories, warnings}",
+            "{csv? | rows? | path? | bytes? | base64?, name?, delimiter?, sheet?, records?, one?, range?, perPage?, arrange?, insets?, columnSpacing?, rowSpacing?, fitting?, center?, linkImages?, limit?, spread?: removed (passing it is an error)} → {records, pages, missingImages, oversetStories, warnings}",
             has_doc,
             merge_cmd
         ),
@@ -91,11 +98,20 @@ fn source_select(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Where a data source's file is, resolved against the document's file (`document`); `None` when
+/// it has none or the path may not be followed ([`crate::io::document_path`]).
+fn source_file(src: &DataSource, document: Option<&Path>) -> Option<PathBuf> {
+    crate::io::document_path(src.path.as_deref()?, document).ok()
+}
+
 fn source_update(s: &mut Session, _p: &Value) -> Result<Value> {
     let (path, name, delimiter, sheet) = {
-        let src = s.doc()?.doc.data_merge.sources.first().ok_or_else(|| bad("data.source.update", "select a data source"))?;
+        let st = s.doc()?;
+        let src = st.doc.data_merge.sources.first().ok_or_else(|| bad("data.source.update", "select a data source"))?;
         let path = src.path.clone().ok_or_else(|| bad("data.source.update", "this source has no file to update"))?;
-        (path, src.name.clone(), src.delimiter, src.sheet.clone())
+        let at =
+            crate::io::document_path(&path, st.path.as_deref().map(Path::new)).map_err(|why| bad("data.source.update", format!("{path}: {why}")))?;
+        (at.to_string_lossy().into_owned(), src.name.clone(), src.delimiter, src.sheet.clone())
     };
     let bytes = read_path(&path).map_err(|e| bad("data.source.update", e))?;
     let table = parse_file(&bytes, &name, Some(delimiter), sheet.as_deref()).map_err(|e| bad("data.source.update", e))?;
@@ -192,12 +208,12 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let options = doc.data_merge.options.clone();
     let maps = identity_map(&doc);
     let row = source.rows.get((record as usize).saturating_sub(1)).cloned().unwrap_or_default();
-    let data_dir = source.path.as_deref().and_then(parent_dir);
+    let data_dir = source_file(&source, st.path.as_deref().map(Path::new)).as_deref().and_then(Path::parent).map(Path::to_path_buf);
     let doc_dir = st.path.as_deref().and_then(parent_dir);
     fill_row(&mut doc, &source.fields, &row, record as u32, &options, &maps, data_dir.as_deref(), doc_dir.as_deref());
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
-    st.revision = st.revision.saturating_add(1);
+    st.bump_revision();
     Ok(json!({"record": record}))
 }
 
@@ -211,7 +227,7 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             let (table, dir) = load_inline(p).map_err(|e| bad("data.merge", e))?;
             (table, Vec::new(), dir, None)
         } else {
-            let (table, warnings, dir, status) = linked_table(&st.doc).map_err(|e| bad("data.merge", e))?;
+            let (table, warnings, dir, status) = linked_table(&st.doc, st.path.as_deref().map(Path::new)).map_err(|e| bad("data.merge", e))?;
             (table, warnings, dir, Some(status))
         };
         let mut options = st.doc.data_merge.options.clone();
@@ -420,7 +436,8 @@ fn assign_page(dst: &mut Document, abs: usize, from: &Page) {
     p.guides = from.guides.clone();
     p.parent = from.parent;
     p.margins = from.margins;
-    p.columns = from.columns.clone();
+    p.columns = p.columns_from(from);
+    p.local_margins = from.local_margins;
     p.width = from.width;
     p.height = from.height;
     if size_changed {
@@ -616,28 +633,24 @@ pub(crate) fn refresh_relative_paths(doc: &mut Document, doc_path: &Path) {
 }
 
 /// On open, compare the absolute path with its fingerprint. A missing absolute path is tried
-/// again as `relative_path` beside the document.
+/// again as `relative_path` beside the document. Paths that may not be followed ([`crate::io::document_path`]) are missing.
 pub(crate) fn resolve_sources_on_open(doc: &mut Document, doc_path: Option<&Path>) {
     for src in &mut doc.data_merge.sources {
-        let abs_exists = src.path.as_deref().is_some_and(|p| Path::new(p).is_file());
-        if abs_exists {
-            if let Some(path) = src.path.clone() {
-                src.status = status_of(Path::new(&path), src.fingerprint);
-            }
+        if let Some(path) = source_file(src, doc_path).filter(|p| crate::io::is_file(p)) {
+            src.status = status_of(&path, src.fingerprint);
             continue;
         }
         if let (Some(doc_path), Some(rel)) = (doc_path, src.relative_path.clone())
             && let Some(dir) = doc_path.parent()
+            && let Ok(candidate) = crate::io::document_path(&rel, Some(doc_path))
+            && crate::io::is_file(&candidate)
         {
-            let candidate = dir.join(&rel);
-            if candidate.is_file() {
-                let saved = candidate.to_string_lossy().into_owned();
-                src.fingerprint = fingerprint_of(Path::new(&saved));
-                src.status = SourceStatus::Ok;
-                src.relative_path = Some(relative_between(dir, Path::new(&saved)));
-                src.path = Some(saved);
-                continue;
-            }
+            let saved = candidate.to_string_lossy().into_owned();
+            src.fingerprint = fingerprint_of(Path::new(&saved));
+            src.status = SourceStatus::Ok;
+            src.relative_path = Some(relative_between(dir, Path::new(&saved)));
+            src.path = Some(saved);
+            continue;
         }
         if src.path.is_some() {
             src.status = SourceStatus::Missing;
@@ -672,11 +685,17 @@ fn read_source(p: &Value) -> std::result::Result<(DataSource, Value), String> {
     Ok((source, report))
 }
 
-fn linked_table(doc: &Document) -> std::result::Result<(Table, Vec<String>, Option<PathBuf>, SourceStatus), String> {
+fn linked_table(doc: &Document, document: Option<&Path>) -> std::result::Result<(Table, Vec<String>, Option<PathBuf>, SourceStatus), String> {
     let src = doc.data_merge.sources.first().ok_or_else(|| "select a data source or pass csv or rows".to_string())?;
     let mut warnings = Vec::new();
     let status = if let Some(path) = &src.path {
-        let status = status_of(Path::new(path), src.fingerprint);
+        let status = match crate::io::document_path(path, document) {
+            Ok(path) => status_of(&path, src.fingerprint),
+            Err(why) => {
+                warnings.push(format!("The data file is not read ({why}). This merge used the cached rows."));
+                return Ok((cached_table(src), warnings, None, SourceStatus::Missing));
+            }
+        };
         match status {
             SourceStatus::Modified => warnings.push("The data file changed since it was read. This merge used the cached rows.".into()),
             SourceStatus::Missing => warnings.push("The data file is missing. This merge used the cached rows.".into()),
@@ -686,9 +705,12 @@ fn linked_table(doc: &Document) -> std::result::Result<(Table, Vec<String>, Opti
     } else {
         src.status
     };
-    let data_dir = src.path.as_deref().and_then(parent_dir);
-    let table = Table { fields: src.fields.clone(), rows: src.rows.clone(), warnings: src.warnings.clone(), delimiter: src.delimiter };
-    Ok((table, warnings, data_dir, status))
+    let data_dir = source_file(src, document).as_deref().and_then(Path::parent).map(Path::to_path_buf);
+    Ok((cached_table(src), warnings, data_dir, status))
+}
+
+fn cached_table(src: &DataSource) -> Table {
+    Table { fields: src.fields.clone(), rows: src.rows.clone(), warnings: src.warnings.clone(), delimiter: src.delimiter }
 }
 
 fn set_source_status(doc: &mut Document, status: SourceStatus) -> bool {
@@ -709,7 +731,7 @@ fn remember_source_status(s: &mut Session, status: SourceStatus) {
         return;
     }
     st.doc = Arc::new(doc);
-    st.revision = st.revision.saturating_add(1);
+    st.bump_revision();
 }
 
 fn load_inline(p: &Value) -> std::result::Result<(Table, Option<PathBuf>), String> {
@@ -767,17 +789,26 @@ fn read_path(path: &str) -> std::result::Result<Vec<u8>, String> {
     read_path_capped(path, MAX_DATA_FILE_BYTES)
 }
 
-fn read_path_capped(path: &str, cap: u64) -> std::result::Result<Vec<u8>, String> {
-    match std::fs::metadata(path) {
-        Ok(m) if m.len() > cap => return Err(format!("{path}: the data file is larger than {} MiB", cap / (1024 * 1024))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{path}: the data file is missing")),
+/// The file at `path`, refused when it is larger than `cap` bytes. The read itself stops past
+/// `cap`, so a device or a file that grows while it is read can't exhaust memory.
+pub(crate) fn read_path_capped(path: &str, cap: u64) -> std::result::Result<Vec<u8>, String> {
+    let too_big = || format!("{path}: the file is larger than {} MiB", cap / (1024 * 1024));
+    // The roots' own message when they refuse the path, missing or not.
+    crate::file_access::check_read(path)?;
+    match crate::io::metadata(path) {
+        Ok(m) if m.len() > cap => return Err(too_big()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{path}: the file is missing")),
         _ => {}
     }
-    match std::fs::read(path) {
-        Ok(b) => Ok(b),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{path}: the data file is missing")),
-        Err(e) => Err(format!("{path}: {e}")),
+    let b = match crate::io::read_capped(path, cap) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{path}: the file is missing")),
+        Err(e) => return Err(format!("{path}: {e}")),
+    };
+    if b.len() as u64 > cap {
+        return Err(too_big());
     }
+    Ok(b)
 }
 
 fn parent_dir(path: &str) -> Option<PathBuf> {

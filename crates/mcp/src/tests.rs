@@ -147,6 +147,7 @@ fn tool_definitions_are_well_formed() {
         "pointer",
         "key",
         "type_text",
+        "ime",
         "click",
         "drag",
         "select_tool",
@@ -164,6 +165,16 @@ fn tool_definitions_are_well_formed() {
     for name in names {
         let r = call(&mut s, name, json!({}));
         assert!(!text_of(&r).contains("unknown tool"), "{name} not dispatched");
+    }
+}
+
+#[test]
+fn tools_that_write_files_are_not_read_only() {
+    // `render_page` and `screenshot` write a file when given `path`, so they must not advertise `readOnlyHint: true`.
+    for name in ["render_page", "screenshot", "export_png"] {
+        let definition = tool_definitions().into_iter().find(|v| v["name"] == name).unwrap();
+        assert!(definition["inputSchema"]["properties"].get("path").is_some(), "{name} takes a path");
+        assert_eq!(definition["annotations"]["readOnlyHint"], false, "{name} writes files");
     }
 }
 
@@ -223,6 +234,34 @@ fn type_tool_gesture_then_typing() {
     assert_eq!(k["command"], "edit.undo");
     // Tool shortcut when not typing.
     assert_eq!(ok(&mut s, "key", json!({"key": "V"}))["tool"], "selection");
+}
+
+#[test]
+fn ime_composes_at_the_type_tool_caret() {
+    let mut s = server();
+    // No caret yet: the error says how to get one.
+    assert_eq!(call(&mut s, "ime", json!({"preedit": "に"}))["isError"], true);
+    ok(
+        &mut s,
+        "pointer",
+        json!({"tool": "type", "events": [{"kind": "down", "x": 72, "y": 72}, {"kind": "drag", "x": 300, "y": 200}, {"kind": "up", "x": 300, "y": 200}]}),
+    );
+    let story = |s: &mut Server| {
+        let doc = ok(s, "inspect_document", json!({}));
+        let id = doc["stories"][0]["id"].as_u64().unwrap();
+        ok(s, "get_story", json!({"story": id}))["text"].as_str().unwrap().to_string()
+    };
+    assert_eq!(ok(&mut s, "ime", json!({"preedit": "にほん", "active": [3, 3]}))["composing"], true);
+    ok(&mut s, "ime", json!({"preedit": "日本", "active": [0, 2]}));
+    assert_eq!(story(&mut s), "日本", "marked text shows in place");
+    assert_eq!(ok(&mut s, "ime", json!({"commit": "日本"}))["composing"], false);
+    assert_eq!(story(&mut s), "日本");
+    // A cancelled composition leaves nothing; the commit is one undo step.
+    ok(&mut s, "ime", json!({"preedit": "ご"}));
+    ok(&mut s, "ime", json!({"preedit": ""}));
+    assert_eq!(story(&mut s), "日本");
+    ok(&mut s, "execute", json!({"command": "edit.undo"}));
+    assert_eq!(story(&mut s), "");
 }
 
 #[test]
@@ -499,4 +538,142 @@ fn explicit_typing_rejects_stale_selection_and_closed_document() {
     assert_eq!(b.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
     b.session.execute("file.close", &json!({})).unwrap();
     assert!(b.call("ui.text", json!({"text":"X"})).is_err());
+}
+
+/// #776: a key a command (or a tool) doesn't take is an invalid-params error, not ignored.
+#[test]
+fn unknown_params_are_invalid_params() {
+    let mut s = server();
+    let code_and_message = |v: &Value| (v["error"]["code"].as_i64(), v["error"]["message"].as_str().unwrap_or("").to_string());
+    let f = ok(&mut s, "execute", json!({"command": "frame.create", "params": {"rect": [36, 36, 300, 200], "content": "text", "text": "Hello"}}));
+    let v = rpc(
+        &mut s,
+        1,
+        "tools/call",
+        json!({"name": "execute", "arguments": {"command": "text.select", "params": {"story": f["story"], "start": 0, "end": 5}}}),
+    );
+    let (code, msg) = code_and_message(&v);
+    assert_eq!(code, Some(-32602), "{v}");
+    assert!(msg.contains("unknown parameter `end`; the command takes: story, anchor, focus"), "{msg}");
+    let v = rpc(&mut s, 2, "tools/call", json!({"name": "execute", "arguments": {"command": "style.list", "params": {"bogus": 1}}}));
+    let (code, msg) = code_and_message(&v);
+    assert_eq!(code, Some(-32602), "{v}");
+    assert!(msg.contains("unknown parameter `bogus`; the command takes no parameters"), "{msg}");
+    // A batch is checked step by step before any step runs: the frame isn't created.
+    let before = ok(&mut s, "inspect_document", json!({}));
+    for args in [
+        json!({"commands": [{"command": "frame.create", "params": {"rect": [0, 0, 50, 50]}}, {"command": "file.new", "params": {"widht": 300}}]}),
+        json!({"script": "frame.create {\"rect\": [0, 0, 50, 50]}\nfile.new {\"widht\": 300}"}),
+    ] {
+        let v = rpc(&mut s, 3, "tools/call", json!({"name": "batch", "arguments": args}));
+        let (code, msg) = code_and_message(&v);
+        assert_eq!(code, Some(-32602), "{v}");
+        assert!(msg.contains("step 1") && msg.contains("did you mean `width`?"), "{msg}");
+    }
+    assert_eq!(ok(&mut s, "inspect_document", json!({})), before);
+    // An argument the tool doesn't take.
+    let v = rpc(&mut s, 4, "tools/call", json!({"name": "execute", "arguments": {"command": "style.list", "parms": {}}}));
+    assert_eq!(code_and_message(&v), (Some(-32602), "unknown argument `parms` for `execute`".to_string()));
+    // The right keys still run.
+    ok(&mut s, "execute", json!({"command": "text.select", "params": {"story": f["story"], "anchor": 0, "focus": 5}}));
+}
+
+/// A backend that answers every call with `{}` and keeps what each call forwarded.
+struct Recorder(Vec<(String, Value)>);
+
+impl Backend for Recorder {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.0.push((method.to_string(), params));
+        Ok(json!({}))
+    }
+    fn has_ui(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "recorder".into()
+    }
+}
+
+/// The server refuses arguments a tool's schema doesn't list, so every key a tool forwards to a
+/// command or UI method has to be in its schema. Tools that pass their arguments on whole
+/// (`new_document`, `ui_set`) list every key their target reads.
+#[test]
+fn every_forwarded_key_is_in_the_tool_schema() {
+    let defs = tool_definitions();
+    let props = |t: &Value| t["inputSchema"]["properties"].as_object().cloned().unwrap_or_default();
+    // Every key any tool or command names, typed as the first schema that lists it.
+    let mut every: serde_json::Map<String, Value> = serde_json::Map::new();
+    for t in &defs {
+        for (k, p) in props(t) {
+            let v = match p["type"].as_str() {
+                Some("string") => p["enum"].get(0).cloned().unwrap_or(json!("a")),
+                Some("boolean") => json!(true),
+                Some("object") => json!({}),
+                Some("array") => json!([]),
+                _ => json!(1),
+            };
+            every.entry(k).or_insert(v);
+        }
+    }
+    for spec in designcraft_engine::command_specs() {
+        for k in designcraft_engine::cmd::params::doc_keys(spec.params).map(|d| d.keys).unwrap_or_default() {
+            every.entry(k.to_string()).or_insert(json!(1));
+        }
+    }
+    let whole = ["new_document", "ui_set"];
+    // Tools that run commands named in their arguments forward whatever those take.
+    let generic = ["execute", "batch"];
+    let mut missing = Vec::new();
+    for t in &defs {
+        let name = t["name"].as_str().unwrap();
+        if whole.contains(&name) || generic.contains(&name) {
+            continue;
+        }
+        let own = props(t);
+        let mut args = every.clone();
+        args.extend(own.iter().filter_map(|(k, _)| every.get(k).map(|v| (k.clone(), v.clone()))));
+        let mut rec = Recorder(Vec::new());
+        let _ = crate::tools::call_tool(&mut rec, name, &Value::Object(args));
+        for (method, params) in &rec.0 {
+            let forwarded = if method == "engine.execute" { &params["params"] } else { params };
+            for k in forwarded.as_object().into_iter().flatten().map(|(k, _)| k) {
+                if !own.contains_key(k) {
+                    missing.push(format!("{name} forwards `{k}` to {method}"));
+                }
+            }
+        }
+    }
+
+    let new_document = defs.iter().find(|t| t["name"] == "new_document").map(props).unwrap();
+    let spec = designcraft_engine::find_command("file.new").unwrap();
+    for k in designcraft_engine::cmd::params::doc_keys(spec.params).unwrap().keys {
+        if !new_document.contains_key(k) {
+            missing.push(format!("new_document: file.new takes `{k}`"));
+        }
+    }
+
+    // `ui.set` lives in the UI crate, which this one doesn't depend on: read its keys from the source.
+    let control = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui-egui/src/control.rs")).unwrap();
+    let start = control.find("\"ui.set\" => {").unwrap();
+    let arm = &control[start..start + control[start..].find("\"ui.dialog.set\"").unwrap()];
+    let mut read = Vec::new();
+    for pat in ["s(\"", "p.get(\"", "(\""] {
+        for (i, _) in arm.match_indices(pat) {
+            let rest = &arm[i + pat.len()..];
+            let key = &rest[..rest.find('"').unwrap()];
+            if !key.contains('.') && !key.is_empty() {
+                read.push(key);
+            }
+        }
+    }
+    read.sort_unstable();
+    read.dedup();
+    assert!(read.contains(&"zoom") && read.contains(&"rulers"), "{read:?}");
+    let ui_set = defs.iter().find(|t| t["name"] == "ui_set").map(props).unwrap();
+    for k in read {
+        if !ui_set.contains_key(k) {
+            missing.push(format!("ui_set: ui.set reads `{k}`"));
+        }
+    }
+    assert!(missing.is_empty(), "keys missing from tool schemas: {missing:#?}");
 }

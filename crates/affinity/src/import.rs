@@ -158,6 +158,9 @@ impl Builder {
                     side,
                     overridden: vec![],
                     guides: vec![],
+                    // The margins set here are the page's own, as in Affinity.
+                    local_margins: true,
+                    show_parent_overlay: false,
                     show_parent_items: true,
                     liquid: Default::default(),
                     transition: None,
@@ -282,6 +285,9 @@ impl Builder {
             overridden: vec![],
             guides: vec![],
             show_parent_items: true,
+            // The margins set here are the page's own, as in Affinity.
+            local_margins: true,
+            show_parent_overlay: false,
             liquid: Default::default(),
             transition: None,
             view_rotation: 0,
@@ -999,7 +1005,7 @@ impl Builder {
             match s {
                 Some(Some(s)) => {
                     let (stroke, _) = b.stroke(s, xf);
-                    CellStroke { weight: stroke.weight, color: stroke.swatch, tint: 1.0, kind: stroke.kind }
+                    CellStroke { weight: stroke.weight, color: stroke.swatch, tint: 1.0, kind: stroke.kind, ..CellStroke::default() }
                 }
                 _ => CellStroke::none(),
             }
@@ -1297,10 +1303,21 @@ impl Builder {
                 data: Arc::new(data),
                 pixels: Some((img.width, img.height)),
                 page: 0,
+                ..Default::default()
             }),
         );
         let mut it = self.new_item(layer, Shape::Rectangle, rect_path(&corners));
-        it.content = Content::Graphic(Graphic { asset: aid, size: (w, h), xf: m, auto_fit: Default::default(), fit_align: 4, crop: [0.0; 4] });
+        it.content = Content::Graphic(Graphic {
+            asset: aid,
+            size: (w, h),
+            xf: m,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
         Some(it)
     }
 }

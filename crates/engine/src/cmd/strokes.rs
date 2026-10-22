@@ -42,8 +42,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     "dash" => {
                         let pattern = p.get("pattern").map(nums).unwrap_or_else(|| vec![12.0, 4.0]);
-                        if pattern.is_empty() || pattern.iter().all(|v| *v <= 0.0) {
-                            return Err(bad(ID, "a dash `pattern` needs a positive length"));
+                        if !StrokeType::valid_dash_pattern(&pattern) {
+                            return Err(bad(ID, "a dash `pattern` needs 1 to 64 lengths, each 0 or 0.1 to 10000 pt, not all 0"));
                         }
                         StrokeType::Dashed { pattern }
                     }

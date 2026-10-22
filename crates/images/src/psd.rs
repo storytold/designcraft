@@ -3,8 +3,10 @@
 //! spot channels don't change the placed image; when the layer count is negative, the first extra
 //! channel is the composite's merged transparency.
 
-use designcraft_color::Color;
 use designcraft_color::cms::{Lab, lab::lab_to_srgb};
+
+use crate::CmykRaster;
+use crate::colour::{DisplayColour, Pixels, to_display_rgba};
 
 /// The largest decoded image, in RGBA bytes (the `image` crate's default allocation limit).
 const MAX_RGBA_BYTES: usize = 512 << 20;
@@ -112,7 +114,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
 
     let colour_mode_data = r.block(false)?;
-    r.block(false)?; // image resources
+    let icc = icc_profile(r.block(false)?);
     let layers = r.block(psb)?;
     let transparency = channels > colours && layer_count(layers, psb).is_some_and(|n| n < 0);
     let row_bytes = wu.checked_mul(usize::from(depth))?.div_ceil(8);
@@ -165,19 +167,45 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
                 [pr[i], pg[i], pb[i], a]
             }
             Mode::Rgb => [byte(v0), byte(v1), byte(v2), a],
-            Mode::Cmyk => {
-                // Stored inverted: 255 is no ink.
-                let ink = |v: f32| 1.0 - v / 255.0;
-                let [r, g, b] = Color::cmyk(ink(v0), ink(v1), ink(v2), ink(v3)).to_rgb_uncalibrated();
-                [q(r), q(g), q(b), a]
-            }
+            // Stored inverted (255 is no ink): ink values, converted below.
+            Mode::Cmyk => [v0, v1, v2, v3].map(|v| 255 - byte(v)),
             Mode::Lab => {
                 let [r, g, b] = lab_to_srgb(Lab::new(v0 * 100.0 / 255.0, v1 - 128.0, v2 - 128.0));
                 [q(r), q(g), q(b), a]
             }
         };
     }
-    image::RgbaImage::from_raw(w, h, rgba)
+    let icc = icc.filter(|_| matches!(mode, Mode::Gray | Mode::Rgb | Mode::Cmyk));
+    if mode == Mode::Cmyk {
+        let alpha = transparency.then_some(alpha);
+        let raster = CmykRaster { width: w, height: h, cmyk: rgba, alpha };
+        return to_display_rgba(Pixels::Cmyk(raster), icc, &DisplayColour::active());
+    }
+    let img = image::RgbaImage::from_raw(w, h, rgba)?;
+    match icc {
+        Some(icc) if mode == Mode::Gray => to_display_rgba(Pixels::Gray(img), Some(icc), &DisplayColour::active()),
+        Some(icc) => to_display_rgba(Pixels::Rgb(img), Some(icc), &DisplayColour::active()),
+        None => Some(img),
+    }
+}
+
+/// The ICC profile in the image resources section (resource 1039), if any.
+fn icc_profile(resources: &[u8]) -> Option<&[u8]> {
+    let mut r = Reader { b: resources };
+    while r.take(4)? == b"8BIM" {
+        let id = r.u16()?;
+        // Pascal name, padded to an even length including its length byte.
+        let name_len = usize::from(*r.b.first()?);
+        r.take((name_len + 2) & !1)?;
+        let data = r.block(false)?;
+        if data.len() % 2 == 1 {
+            r.take(1)?;
+        }
+        if id == 1039 {
+            return Some(data);
+        }
+    }
+    None
 }
 
 /// The layer count from the layer and mask section. 16- and 32-bit documents keep their layer
@@ -321,6 +349,8 @@ fn fill(dst: &mut [u8], slot: usize, step: usize, src: &[u8], depth: u16) {
 
 #[cfg(test)]
 mod tests {
+    use crate::CmykRaster;
+    use crate::colour::{DisplayColour, Pixels, to_display_rgba};
     use crate::decode_rgba;
 
     const W: u32 = 12;
@@ -373,11 +403,13 @@ mod tests {
         palette: Vec<u8>,
         layers: Layers,
         rle: bool,
+        /// An ICC profile resource (1039) when not empty.
+        icc: Vec<u8>,
     }
 
     impl Psd {
         fn new(mode: u16, channels: Vec<Vec<u8>>) -> Self {
-            Psd { version: 1, mode, depth: 8, w: W, h: H, channels, palette: Vec::new(), layers: Layers::None, rle: false }
+            Psd { version: 1, mode, depth: 8, w: W, h: H, channels, palette: Vec::new(), layers: Layers::None, rle: false, icc: Vec::new() }
         }
         fn rle(self) -> Self {
             Psd { rle: true, ..self }
@@ -488,6 +520,16 @@ mod tests {
             res.extend(16u32.to_be_bytes());
             for v in [72u32 << 16, 0x0001_0001, 72 << 16, 0x0001_0001] {
                 res.extend(v.to_be_bytes());
+            }
+            if !self.icc.is_empty() {
+                res.extend(b"8BIM");
+                res.extend(1039u16.to_be_bytes());
+                res.extend([0, 0]);
+                res.extend((self.icc.len() as u32).to_be_bytes());
+                res.extend(&self.icc);
+                if self.icc.len() % 2 == 1 {
+                    res.push(0);
+                }
             }
             b.extend((res.len() as u32).to_be_bytes());
             b.extend(res);
@@ -606,21 +648,39 @@ mod tests {
         let m = plane(255, None);
         let y = plane(255, None);
         let k = plane(255, Some((6, 0, 12, 8, 127)));
-        let rgb8 = |c: f32, m: f32, y: f32, k: f32| {
-            let [r, g, b] = designcraft_color::Color::cmyk(c, m, y, k).to_rgb_uncalibrated();
-            [r, g, b].map(|v| (v * 255.0).round() as u8)
+        // Through the working CMYK space, like CMYK JPEGs and TIFFs.
+        let expect = |cmyk: [u8; 4]| {
+            let raster = CmykRaster { width: 1, height: 1, cmyk: cmyk.to_vec(), alpha: None };
+            to_display_rgba(Pixels::Cmyk(raster), None, &DisplayColour::active()).unwrap().get_pixel(0, 0).0
         };
         for rle in [false, true] {
             // An extra alpha channel (5 channels) doesn't become the alpha.
             let mut psd = Psd::new(4, vec![c.clone(), m.clone(), y.clone(), k.clone(), sel()]);
             psd.rle = rle;
             let px = pixels(&psd.write());
-            let [r, g, b] = rgb8(1.0, 0.0, 0.0, 0.0);
-            assert_eq!(px[at(0, 0)], [r, g, b, 255]);
-            let [r, g, b] = rgb8(0.0, 0.0, 0.0, 128.0 / 255.0);
-            assert_eq!(px[at(11, 7)], [r, g, b, 255]);
+            let cyan = px[at(0, 0)];
+            assert_eq!(cyan, expect([255, 0, 0, 0]));
+            assert!(cyan[1] < 200 && cyan[2] < 250, "press cyan, not (0, 255, 255): {cyan:?}");
+            assert_eq!(px[at(11, 7)], expect([0, 0, 0, 128]));
             assert!(px.iter().all(|p| p[3] == 255));
         }
+    }
+
+    #[test]
+    fn embedded_profile_converts_rgb_to_srgb() {
+        let r = plane(64, None);
+        let g = plane(192, None);
+        let b = plane(64, None);
+        let plain = pixels(&Psd::new(3, vec![r.clone(), g.clone(), b.clone()]).write());
+        assert_eq!(plain[0], [64, 192, 64, 255]);
+        let mut psd = Psd::new(3, vec![r, g, b]);
+        psd.icc = craft_cms::Builtin::AdobeRgbCompat.profile().to_bytes().to_vec();
+        let px = pixels(&psd.write());
+        // Adobe RGB green is greener than sRGB's: less red once shown as sRGB.
+        assert!(px[0][0] < 50 && px[0][1] > 180 && px[0][3] == 255, "{:?}", px[0]);
+        // A damaged profile is ignored.
+        psd.icc.truncate(100);
+        assert_eq!(pixels(&psd.write())[0], [64, 192, 64, 255]);
     }
 
     /// 8-bit plane → 16-bit big-endian samples (v × 257).

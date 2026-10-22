@@ -305,7 +305,7 @@ pub fn specs() -> Vec<CommandSpec> {
             match str_param(p, "path") {
                 Some(path) => {
                     #[cfg(not(target_arch = "wasm32"))]
-                    std::fs::write(path, text.as_bytes()).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
+                    crate::io::write_file(path, text.as_bytes()).map_err(crate::EngineError::Other)?;
                     Ok(json!({"path": path, "bytes": text.len()}))
                 }
                 None => Ok(json!({"text": text, "bytes": text.len()})),
@@ -385,7 +385,7 @@ fn text_or_path(p: &Value, id: &str) -> Result<String> {
         (Some(t), _) => t.to_string(),
         (None, Some(path)) => {
             #[cfg(not(target_arch = "wasm32"))]
-            let t = std::fs::read_to_string(path).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
+            let t = crate::io::read_to_string(path).map_err(crate::EngineError::Other)?;
             #[cfg(target_arch = "wasm32")]
             let t = {
                 let _ = path;
@@ -438,7 +438,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             fresh.frames = frames;
-            fresh.rev = st.rev + 1;
+            fresh.rev = st.rev.wrapping_add(1);
             *st = fresh;
         }
         Ok(json!({"placed": placed, "unmatched": unmatched}))

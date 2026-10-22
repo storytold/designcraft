@@ -5,8 +5,7 @@
 
 use std::fmt::Write as _;
 
-use designcraft_doc::{Document, FieldKind, FormField, Item, MediaOptions, SpreadRef};
-use designcraft_geom::Affine;
+use designcraft_doc::{Document, FieldKind, FormField, Item, MediaOptions};
 
 use crate::export::Sheet;
 use crate::transitions::{int_after, object, rfind};
@@ -18,16 +17,11 @@ pub(crate) type Placed = (usize, [f64; 4], FormField);
 /// bytes, options).
 pub(crate) type PlacedMedia = (usize, [f64; 4], String, String, std::sync::Arc<Vec<u8>>, MediaOptions);
 
-/// Every shown item of the exported pages with its PDF rectangle (origin bottom left).
+/// Every item of the exported pages that goes into the PDF, with its PDF rectangle (origin bottom
+/// left).
 fn visit(doc: &Document, sheets: &[Sheet], mut f: impl FnMut(usize, [f64; 4], &Item)) {
     for (pi, sh) in sheets.iter().enumerate() {
-        let Some(sp) = doc.spread(SpreadRef::Doc(sh.spread)) else { continue };
-        let mut stack: Vec<(Affine, &std::sync::Arc<Item>)> = sp.items.iter().map(|it| (Affine::IDENTITY, it)).collect();
-        while let Some((xf, it)) = stack.pop() {
-            stack.extend(it.shown_children().map(|c| (xf * it.xf, c)));
-            if it.hidden {
-                continue;
-            }
+        for (xf, it) in crate::export::exported_items(doc, sh.spread) {
             let r = xf.transform_rect_bbox(it.bounds()).intersect(sh.bleed);
             if r.width() <= 0.0 || r.height() <= 0.0 {
                 continue;

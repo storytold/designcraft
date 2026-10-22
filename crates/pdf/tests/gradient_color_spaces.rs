@@ -53,7 +53,7 @@ fn mixed_gradient_export_survives_in_subprocess() {
     let rgb = Color::rgb(1.0, 0.0, 0.0);
     let cmyk = Color::cmyk(1.0, 0.0, 0.0, 0.0);
     let gray = Color::gray(0.4);
-    for colors in [vec![cmyk, rgb], vec![rgb, cmyk], vec![rgb, gray], vec![gray, cmyk], vec![gray, rgb, cmyk]] {
+    for colors in [vec![cmyk, rgb], vec![rgb, cmyk], vec![rgb, gray], vec![gray, rgb, cmyk]] {
         for kind in [GradientKind::Linear, GradientKind::Radial] {
             for standard in [Standard::None, Standard::PdfX4, Standard::PdfA2b] {
                 let d = document(&colors, kind, 0.5, 0.7);
@@ -78,15 +78,14 @@ fn mixed_gradient_export_survives_in_subprocess() {
             }
         }
     }
-    // Expansion inserts an RGB midpoint even when the authoring stops share CMYK or Gray.
+    // A midpoint's expanded stop blends in the stops' own space: CMYK or Gray stays homogeneous.
     for colors in [[cmyk, Color::cmyk(0.0, 1.0, 0.0, 0.0)], [gray, Color::gray(0.8)]] {
         for kind in [GradientKind::Linear, GradientKind::Radial] {
             for standard in [Standard::None, Standard::PdfX4, Standard::PdfA2b] {
                 let report =
                     export_pdf_with_report(&document(&colors, kind, 0.25, 1.0), &Cache::new(), &PdfOptions { standard, ..Default::default() })
                         .unwrap();
-                let archival_cmyk = standard == Standard::PdfA2b && matches!(colors[0], Color::Cmyk { .. });
-                assert_eq!(conversion_warnings(&report.warnings), usize::from(!archival_cmyk), "{standard:?}: {:?}", report.warnings);
+                assert_eq!(conversion_warnings(&report.warnings), 0, "{standard:?}: {:?}", report.warnings);
                 assert_eq!(Pdf::new(report.bytes).unwrap().pages().len(), 1);
             }
         }
@@ -108,6 +107,8 @@ fn homogeneous_gradients_keep_device_spaces_and_components() {
         ([Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 0.0, 1.0)], "DeviceRGB", vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 1.0]),
         ([Color::cmyk(1.0, 0.0, 0.0, 0.0), Color::cmyk(0.0, 1.0, 0.0, 0.0)], "DeviceCMYK", vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]),
         ([Color::gray(0.2), Color::gray(0.8)], "DeviceGray", vec![0.8], vec![0.2]),
+        // Grey beside CMYK is the K ink, so the shading stays CMYK.
+        ([Color::gray(0.4), Color::cmyk(1.0, 0.0, 0.0, 0.0)], "DeviceCMYK", vec![0.0, 0.0, 0.0, 0.4], vec![1.0, 0.0, 0.0, 0.0]),
     ] {
         for standard in [Standard::None, Standard::PdfX4] {
             let report = export_pdf_with_report(

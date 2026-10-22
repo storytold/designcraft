@@ -20,13 +20,13 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
         let st = s.active()?;
         st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
     });
-    let spread = super::spread_param(p, "spread");
+    let spread = super::spread_param(p, "file.place")?;
     let lid = s.doc()?.active_layer;
     let (px, py) = (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64));
     let mime = mime.to_string();
     s.edit(|d, sel| {
-        let aid = AssetId(d.alloc());
-        d.assets.insert(aid, Arc::new(Asset { page: 0, id: aid, name, mime, link, data: Arc::new(bytes), pixels: None }));
+        let fresh = AssetId(d.alloc());
+        let aid = d.add_asset(Asset { id: fresh, name, mime, link, data: Arc::new(bytes), ..Default::default() });
         let id = match target {
             Some(fid) => {
                 let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
@@ -35,9 +35,12 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
                     asset: aid,
                     size: (r.width(), r.height()),
                     xf: Affine::translate((r.x0, r.y0)),
+                    clip: None,
                     auto_fit: Default::default(),
                     fit_align: 4,
                     crop: [0.0; 4],
+                    wrap: Default::default(),
+                    fill: Default::default(),
                 });
                 it.media = Some(MediaOptions { controls: true, ..Default::default() });
                 fid
@@ -46,14 +49,18 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
                 let pr = d.spread(spread).and_then(|sp| sp.pages.first()).map(|pg| pg.margin_rect()).unwrap_or(Rect::new(36.0, 36.0, 300.0, 300.0));
                 let (x, y) = (px.unwrap_or(pr.x0), py.unwrap_or(pr.y0));
                 let id = ItemId(d.alloc());
-                let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(x, y, x + w, y + h)));
+                let r = super::finite_rect("file.place", Rect::new(x, y, x + w, y + h))?;
+                let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
                 it.content = Content::Graphic(Graphic {
                     asset: aid,
                     size: (w, h),
                     xf: Affine::translate((x, y)),
+                    clip: None,
                     auto_fit: Default::default(),
                     fit_align: 4,
                     crop: [0.0; 4],
+                    wrap: Default::default(),
+                    fill: Default::default(),
                 });
                 it.media = Some(MediaOptions { controls: true, ..Default::default() });
                 d.insert_item(spread, it, None)?;
@@ -90,10 +97,17 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.edit(|d, _| {
                     let poster_id = match poster {
                         Some(Some((bytes, name, link, px))) => {
-                            let aid = AssetId(d.alloc());
+                            let fresh = AssetId(d.alloc());
                             let mime = designcraft_render::image_mime(&bytes).to_string();
-                            d.assets.insert(aid, Arc::new(Asset { page: 0, id: aid, name, mime, link, data: Arc::new(bytes), pixels: Some(px) }));
-                            Some(Some(aid))
+                            Some(Some(d.add_asset(Asset {
+                                id: fresh,
+                                name,
+                                mime,
+                                link,
+                                data: Arc::new(bytes),
+                                pixels: Some(px),
+                                ..Default::default()
+                            })))
                         }
                         Some(None) => Some(None),
                         None => None,

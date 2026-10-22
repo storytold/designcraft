@@ -1,6 +1,7 @@
 //! Interactive PDF: hyperlink annotations (frames and text ranges → URLs, e-mail, pages) and the
 //! bookmark outline.
 
+use craft_pdf::write::backend as krilla;
 use designcraft_doc::{Bookmark, Document, HyperlinkDest, HyperlinkSource, SpreadRef};
 use designcraft_geom::{Affine, Rect};
 use krilla::action::{Action, LinkAction};
@@ -81,14 +82,8 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
         let first = doc.spreads[..sh.spread].iter().map(|s| s.pages.len()).sum::<usize>();
         sp.pages.iter().position(|p| p.bounds().intersect(sh.trim).area() > 0.0).map(|i| first + i)
     });
-    let mut stack: Vec<(Affine, &std::sync::Arc<designcraft_doc::Item>)> =
-        doc.spreads.get(sh.spread).map(|sp| sp.items.iter().map(|it| (Affine::IDENTITY, it)).collect()).unwrap_or_default();
-    while let Some((xf, it)) = stack.pop() {
-        stack.extend(it.shown_children().map(|c| (xf * it.xf, c)));
+    for (xf, it) in crate::export::exported_items(doc, sh.spread) {
         let Some(action) = &it.button else { continue };
-        if it.hidden {
-            continue;
-        }
         let r = xf.transform_rect_bbox(it.bounds()).intersect(sh.bleed);
         let rect = krilla::geom::Rect::from_ltrb(
             (r.x0 - sh.media.x0) as f32,

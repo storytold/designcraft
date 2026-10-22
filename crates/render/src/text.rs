@@ -7,9 +7,9 @@
 //! the greeking threshold become grey bars without touching any outline.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
-use designcraft_compose::{ComposedStory, FrameText, Line};
+use designcraft_compose::{ComposedStory, FrameText, Line, ShownOn};
 use designcraft_doc::ItemId;
 use designcraft_fonts::FontDb;
 use designcraft_geom::{Affine, BezPath, Rect, Shape};
@@ -17,7 +17,46 @@ use vello_cpu::RenderContext;
 use vello_cpu::kurbo;
 use vello_cpu::peniko;
 
-use crate::{Frame, Renderer, color_of, rect_overlaps};
+use crate::{Frame, Renderer, color_of, rect_overlaps, screen_color};
+
+/// A text colour: solid, or a gradient swatch laid across the frame (InDesign spans a gradient on
+/// text across its frame's box).
+#[derive(Clone)]
+enum TextPaint {
+    Solid(peniko::Color),
+    Gradient(designcraft_doc::Fill),
+}
+
+impl TextPaint {
+    fn of(doc: &designcraft_doc::Document, swatch: &str, tint: f32) -> Option<Self> {
+        if designcraft_color::swatch::resolve_gradient(&doc.swatches, swatch).is_some() {
+            return Some(TextPaint::Gradient(designcraft_doc::Fill { swatch: swatch.into(), tint, ..designcraft_doc::Fill::none() }));
+        }
+        doc.resolve_color(swatch, tint).map(|c| TextPaint::Solid(color_of(&c, 1.0)))
+    }
+
+    /// Make this the context's paint; a gradient runs across `area` (text space).
+    fn set(&self, ctx: &mut RenderContext, doc: &designcraft_doc::Document, area: Rect) {
+        match self {
+            TextPaint::Solid(c) => ctx.set_paint(*c),
+            TextPaint::Gradient(fill) => {
+                crate::set_fill_paint(ctx, doc, fill, area);
+            }
+        }
+    }
+}
+
+/// The box a gradient on a frame's text spans: the frame's, in text space (the union of its lines
+/// when the frame is gone).
+fn text_area(doc: &designcraft_doc::Document, ft: &FrameText) -> Rect {
+    if let Some(it) = doc.item(ft.frame) {
+        let local = doc.text_local(it);
+        if local.determinant().abs() > 1e-12 {
+            return local.inverse().transform_rect_bbox(it.inner_bounds());
+        }
+    }
+    ft.lines.iter().filter_map(line_box).reduce(|a, b| a.union(b)).unwrap_or(Rect::new(0.0, 0.0, 1.0, 1.0))
+}
 
 /// Cached outlines of one composed line.
 pub(crate) struct LineGlyphs {
@@ -38,8 +77,10 @@ pub(crate) struct FrameGlyphs {
 }
 
 struct Entry {
-    /// Keeps the composed story alive so its address can't be reused while cached.
-    _story: Arc<ComposedStory>,
+    /// Pins only the allocation identity used by the key. The cached paths own their data;
+    /// old story layout buffers can drop once composition/render users release them. A Weak
+    /// still prevents this allocation address from being reused by another story.
+    _story: Weak<ComposedStory>,
     glyphs: Arc<FrameGlyphs>,
     stamp: u64,
 }
@@ -69,7 +110,7 @@ impl GlyphCache {
         }
         let g = Arc::new(build(cs, ft));
         self.elements += g.elements;
-        self.map.insert(key, Entry { _story: cs.clone(), glyphs: g.clone(), stamp });
+        self.map.insert(key, Entry { _story: Arc::downgrade(cs), glyphs: g.clone(), stamp });
         if self.elements > MAX_ELEMENTS {
             self.evict();
         }
@@ -117,8 +158,8 @@ fn union(r: Option<Rect>, b: Rect) -> Option<Rect> {
 
 fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> LineGlyphs {
     let mut runs: Vec<(u32, BezPath)> = Vec::new();
-    let mut underlines = Vec::new();
-    let mut strikes = Vec::new();
+    let mut underlines: Vec<(String, f32, Rect)> = Vec::new();
+    let mut strikes: Vec<(String, f32, Rect)> = Vec::new();
     let mut glyphs = 0;
     for g in &l.glyphs {
         if !g.visible {
@@ -127,7 +168,21 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
         let style = &cs.styles[g.style as usize];
         for (on, rule, bars) in [(style.underline, &style.underline_rule, &mut underlines), (style.strikethrough, &style.strike_rule, &mut strikes)] {
             if on {
-                bars.push((rule.color.clone(), rule.tint, rule.rect(g.x, g.x + g.adv, l.baseline)));
+                let r = rule.rect(g.x, g.x + g.adv, designcraft_compose::rule_baseline(style, l, g));
+                // One bar per stretch, as the PDF export draws them: a bar per glyph left
+                // anti-aliased seams between the letters.
+                match bars.last_mut() {
+                    Some((color, tint, last))
+                        if *color == rule.color
+                            && *tint == rule.tint
+                            && (last.y0 - r.y0).abs() < 1e-6
+                            && (last.y1 - r.y1).abs() < 1e-6
+                            && (r.x0 - last.x1).abs() < 0.5 =>
+                    {
+                        last.x1 = last.x1.max(r.x1);
+                    }
+                    _ => bars.push((rule.color.clone(), rule.tint, r)),
+                }
             }
         }
         let outline = db.outline(&g.face, g.gid);
@@ -136,6 +191,9 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
         }
         let skew = if style.skew != 0.0 { Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
         let mut a = Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+        if let Some(shatai) = style.shatai_xf(g, l.baseline) {
+            a = shatai * a;
+        }
         if vertical && let Some(turn) = g.vertical_xf(l.baseline) {
             // Upright in vertical text.
             a = turn * a;
@@ -178,7 +236,9 @@ fn line_box(l: &Line) -> Option<Rect> {
     let x0 = l.glyphs.iter().map(|g| g.x).fold(first.x, f64::min);
     let x1 = l.glyphs.iter().map(|g| g.x + g.adv.max(0.0)).fold(l.end_x, f64::max);
     let pad = l.ascent.max(1.0);
-    Some(Rect::new(x0 - pad, l.baseline - l.ascent - pad, x1 + pad, l.baseline + l.descent.max(0.0) + pad))
+    // A drop cap reaches down past its line.
+    let bottom = l.drop_cap.map_or(l.baseline + l.descent.max(0.0), |dc| dc.rect.y1.max(l.baseline + l.descent.max(0.0)));
+    Some(Rect::new(x0 - pad, l.baseline - l.ascent - pad, x1 + pad, bottom + pad))
 }
 
 impl Renderer {
@@ -192,13 +252,16 @@ impl Renderer {
         let vis = xf.inverse().transform_rect_bbox(f.visible);
         // Decorations under text (shading) and rules.
         for d in &ft.decos {
-            if !rect_overlaps(d.rect, vis) {
+            if !rect_overlaps(d.rect, vis) || d.nonprinting && f.opts.printing_only {
                 continue;
             }
             if let Some(c) = doc.resolve_color(&d.color, d.tint) {
                 ctx.set_transform(m);
                 ctx.set_paint(color_of(&c, 1.0));
-                ctx.fill_rect(&d.rect);
+                match &d.path {
+                    Some(p) => ctx.fill_path(p),
+                    None => ctx.fill_rect(&d.rect),
+                }
             }
         }
         if !ft.tables.is_empty() {
@@ -207,7 +270,7 @@ impl Renderer {
         // Text in fonts that aren't installed: pink behind the glyphs (screen only).
         if f.opts.highlight_missing_fonts && cs.styles.iter().any(|s| s.missing_font) {
             ctx.set_transform(m);
-            ctx.set_paint(peniko::Color::from_rgb8(255, 166, 214));
+            ctx.set_paint(screen_color([255, 166, 214], 255));
             for l in &ft.lines {
                 for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.missing_font)) {
                     ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
@@ -216,7 +279,7 @@ impl Renderer {
         }
         if f.opts.highlight_keeps && ft.lines.iter().any(|l| l.keep_violation) {
             ctx.set_transform(m);
-            ctx.set_paint(peniko::Color::from_rgb8(255, 236, 120));
+            ctx.set_paint(screen_color([255, 236, 120], 255));
             for l in ft.lines.iter().filter(|l| l.keep_violation) {
                 ctx.fill_rect(&kurbo::Rect::new(l.x0, l.baseline - l.ascent, l.x1, l.baseline + l.descent));
             }
@@ -225,13 +288,13 @@ impl Renderer {
             ctx.set_transform(m);
             for l in ft.lines.iter().filter(|l| l.hj > 0) {
                 let shade = [0u8, 0xF6, 0xEA, 0xD8][l.hj.min(3) as usize];
-                ctx.set_paint(peniko::Color::from_rgb8(255, shade, [0u8, 0xB0, 0x70, 0x30][l.hj.min(3) as usize]));
+                ctx.set_paint(screen_color([255, shade, [0u8, 0xB0, 0x70, 0x30][l.hj.min(3) as usize]], 255));
                 ctx.fill_rect(&kurbo::Rect::new(l.x0, l.baseline - l.ascent, l.end_x.max(l.x0 + 1.0), l.baseline + l.descent));
             }
         }
         if f.opts.highlight_custom_tracking && cs.styles.iter().any(|s| s.custom_tracking) {
             ctx.set_transform(m);
-            ctx.set_paint(peniko::Color::from_rgb8(176, 236, 176));
+            ctx.set_paint(screen_color([176, 236, 176], 255));
             for l in &ft.lines {
                 for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.custom_tracking)) {
                     ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
@@ -255,7 +318,7 @@ impl Renderer {
                         j += 1;
                     }
                     let c = f.doc.xml.tags.iter().find(|t| t.name == tag).map_or([100, 100, 220], |t| t.color);
-                    ctx.set_paint(peniko::Color::from_rgb8(c[0], c[1], c[2]));
+                    ctx.set_paint(screen_color([c[0], c[1], c[2]], 255));
                     let (x0, x1) = (gs[i].x, gs[j - 1].x + gs[j - 1].adv);
                     let (top, bot) = (l.baseline - l.ascent, l.baseline + l.descent);
                     let (w, t) = (2.5 * px, px.max(0.3));
@@ -275,7 +338,7 @@ impl Renderer {
             ctx.set_transform(m);
             for l in &ft.lines {
                 for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.inserted)) {
-                    ctx.set_paint(peniko::Color::from_rgba8(120, 190, 255, 110));
+                    ctx.set_paint(screen_color([120, 190, 255], 110));
                     ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
                 }
             }
@@ -285,7 +348,7 @@ impl Renderer {
         {
             // A small flag at each note anchor, in the notes' amber.
             ctx.set_transform(m);
-            ctx.set_paint(peniko::Color::from_rgb8(232, 160, 32));
+            ctx.set_paint(screen_color([232, 160, 32], 255));
             for l in &ft.lines {
                 for g in l.glyphs.iter().filter(|g| st.text.get(g.byte..).is_some_and(|t| t.starts_with(designcraft_doc::NOTE_MARK))) {
                     let h = l.ascent.max(4.0);
@@ -306,7 +369,7 @@ impl Renderer {
                 for g in l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0) {
                     let Some(name) = cs.styles.get(g.style as usize).and_then(|s| s.condition.as_deref()) else { continue };
                     let Some(c) = f.doc.conditions.iter().find(|c| c.name == name) else { continue };
-                    ctx.set_paint(peniko::Color::from_rgb8(c.color[0], c.color[1], c.color[2]));
+                    ctx.set_paint(screen_color([c.color[0], c.color[1], c.color[2]], 255));
                     let y = l.baseline + l.descent * 0.6;
                     ctx.fill_rect(&kurbo::Rect::new(g.x, y, g.x + g.adv, y + 2.0 * px));
                 }
@@ -335,13 +398,16 @@ impl Renderer {
         ctx.set_transform(m);
         if !shown.is_empty() {
             let fg = self.glyphs.get(cs, ft);
-            // Resolve each style's paints once per frame.
-            let mut fills: Vec<Option<Option<peniko::Color>>> = vec![None; cs.styles.len()];
-            let mut fill_of = |si: u32| -> Option<peniko::Color> {
-                *fills[si as usize].get_or_insert_with(|| {
-                    let st = &cs.styles[si as usize];
-                    doc.resolve_color(&st.fill, st.fill_tint).map(|c| color_of(&c, 1.0))
-                })
+            // Resolve each style's paints once per frame; gradients span the frame.
+            let area = text_area(doc, ft);
+            let mut fills: Vec<Option<Option<TextPaint>>> = vec![None; cs.styles.len()];
+            let mut fill_of = |si: u32| -> Option<TextPaint> {
+                fills[si as usize]
+                    .get_or_insert_with(|| {
+                        let st = &cs.styles[si as usize];
+                        TextPaint::of(doc, &st.fill, st.fill_tint)
+                    })
+                    .clone()
             };
             shown.retain(|&i| fg.lines[i].bounds.is_some_and(|b| rect_overlaps(b, vis)));
             // Paint all underlines before any glyphs: skewed runs and tightly spaced lines
@@ -358,32 +424,10 @@ impl Renderer {
                 let lg = &fg.lines[i];
                 self.stats.glyphs += lg.glyphs;
                 for (si, bp) in &lg.runs {
-                    if let Some(c) = fill_of(*si) {
-                        let st = &cs.styles[*si as usize];
-                        let op = crate::overprints(f, &st.fill, st.fill_tint, false);
-                        if op {
-                            ctx.push_layer(
-                                None,
-                                Some(vello_cpu::peniko::BlendMode::new(vello_cpu::peniko::Mix::Multiply, vello_cpu::peniko::Compose::SrcOver)),
-                                None,
-                                None,
-                                None,
-                            );
-                        }
-                        ctx.set_paint(c);
-                        ctx.fill_path(bp);
-                        if op {
-                            ctx.pop_layer();
-                        }
-                    }
                     let st = &cs.styles[*si as usize];
-                    if st.stroke != designcraft_color::swatch::NONE
-                        && let Some(c) = doc.resolve_color(&st.stroke, st.stroke_tint)
-                    {
-                        ctx.set_paint(color_of(&c, 1.0));
-                        ctx.set_stroke(kurbo::Stroke::new(st.stroke_weight));
-                        ctx.stroke_path(bp);
-                    }
+                    let fill = fill_of(*si).map(|c| (c, crate::overprints(f, &st.fill, st.fill_tint, st.overprint_fill)));
+                    let stroke = stroke_of(doc, st).map(|c| (c, crate::overprints(f, &st.stroke, st.stroke_tint, st.overprint_stroke)));
+                    paint_glyphs(ctx, doc, area, bp, fill, stroke, st.stroke_weight, st.stroke_behind_fill);
                 }
             }
             for &i in &shown {
@@ -405,14 +449,8 @@ impl Renderer {
             }
         }
         // Anchored objects ride on their lines.
-        if !ft.objects.is_empty()
-            && let Some(st) = doc.story(cs.story)
-        {
-            for o in &ft.objects {
-                if let Some(obj) = st.objects.get(o.index) {
-                    self.draw_item(ctx, f, &obj.item, xf * Affine::translate(o.origin.to_vec2()), None);
-                }
-            }
+        for o in &ft.objects {
+            self.draw_item(ctx, f, &o.object.item, xf * Affine::translate(o.origin.to_vec2()), ShownOn::Own);
         }
     }
 }
@@ -447,22 +485,121 @@ impl Renderer {
             ctx.set_transform(f.view * xf);
             for s in &t.strokes {
                 let Some(col) = doc.resolve_color(&s.stroke.color, s.stroke.tint) else { continue };
+                let kind = doc.stroke_kind(&s.stroke.kind);
+                let line = kurbo::Line::new(s.a, s.b).to_path(0.1);
+                // Butt-ended fills close the table's corners the way square caps do.
+                let (ca, cb) = t.corner_capped(s);
+                let capped = kurbo::Line::new(ca, cb).to_path(0.1);
+                // Gap colour under dashes, dots and stripes: the whole edge, solid.
+                if !matches!(kind, designcraft_doc::StrokeType::Solid)
+                    && let Some(gap) = doc.resolve_color(&s.stroke.gap_color, s.stroke.gap_tint)
+                {
+                    ctx.set_paint(color_of(&gap, 1.0));
+                    ctx.set_stroke(kurbo::Stroke::new(s.stroke.weight).with_caps(kurbo::Cap::Butt));
+                    ctx.stroke_path(&capped);
+                }
                 ctx.set_paint(color_of(&col, 1.0));
-                ctx.set_stroke(cell_stroke(&s.stroke));
-                ctx.stroke_path(&kurbo::Line::new(s.a, s.b).to_path(0.1));
+                // Stripes, wavy and hash types are fills along the edge.
+                if let Some(o) = kind.outline(&capped, s.stroke.weight, 0.05 * f.px) {
+                    ctx.fill_path(&o);
+                    continue;
+                }
+                ctx.set_stroke(cell_stroke(&kind, s.stroke.weight, s.a.distance(s.b)));
+                ctx.stroke_path(&line);
             }
         }
     }
 }
 
-/// Kurbo stroke for a table edge.
-fn cell_stroke(s: &designcraft_doc::CellStroke) -> kurbo::Stroke {
-    let st = kurbo::Stroke::new(s.weight).with_caps(kurbo::Cap::Square);
-    match &s.kind {
-        designcraft_doc::StrokeType::Dashed { pattern } if !pattern.is_empty() => {
+/// A run's stroke colour, if it has one.
+fn stroke_of(doc: &designcraft_doc::Document, st: &designcraft_compose::RunStyle) -> Option<TextPaint> {
+    if st.stroke == designcraft_color::swatch::NONE {
+        return None;
+    }
+    TextPaint::of(doc, &st.stroke, st.stroke_tint)
+}
+
+/// Run `paint` in a Multiply layer when `overprint` is set.
+fn overprinting(ctx: &mut RenderContext, overprint: bool, paint: impl FnOnce(&mut RenderContext)) {
+    if overprint {
+        ctx.push_layer(None, Some(peniko::BlendMode::new(peniko::Mix::Multiply, peniko::Compose::SrcOver)), None, None, None);
+    }
+    paint(ctx);
+    if overprint {
+        ctx.pop_layer();
+    }
+}
+
+/// Paint glyph outlines: the fill, then the stroke over it, each multiplied when it overprints
+/// (`(colour, overprint)`). With stroke behind fill a double-width stroke goes first and the fill
+/// covers its inner half; with no fill to cover it, the glyph shapes are cut out of the stroke
+/// instead.
+#[allow(clippy::too_many_arguments)]
+fn paint_glyphs(
+    ctx: &mut RenderContext,
+    doc: &designcraft_doc::Document,
+    area: Rect,
+    bp: &BezPath,
+    fill: Option<(TextPaint, bool)>,
+    stroke: Option<(TextPaint, bool)>,
+    weight: f64,
+    behind: bool,
+) {
+    // A gradient paint runs across `area`; reset its transform after each use.
+    let paint_fill = |ctx: &mut RenderContext| {
+        let Some((c, overprint)) = &fill else { return };
+        overprinting(ctx, *overprint, |ctx| {
+            c.set(ctx, doc, area);
+            ctx.fill_path(bp);
+            ctx.reset_paint_transform();
+        });
+    };
+    let Some((sc, stroke_overprint)) = stroke else {
+        paint_fill(ctx);
+        return;
+    };
+    let paint_stroke = |ctx: &mut RenderContext, width: f64| {
+        overprinting(ctx, stroke_overprint, |ctx| {
+            sc.set(ctx, doc, area);
+            ctx.set_stroke(kurbo::Stroke::new(width));
+            ctx.stroke_path(bp);
+            ctx.reset_paint_transform();
+        });
+    };
+    if !behind {
+        paint_fill(ctx);
+        paint_stroke(ctx, weight);
+        return;
+    }
+    if fill.is_some() {
+        paint_stroke(ctx, weight * 2.0);
+        paint_fill(ctx);
+    } else {
+        overprinting(ctx, stroke_overprint, |ctx| {
+            ctx.push_layer(None, None, None, None, None);
+            sc.set(ctx, doc, area);
+            ctx.set_stroke(kurbo::Stroke::new(weight * 2.0));
+            ctx.stroke_path(bp);
+            ctx.push_layer(None, Some(peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut)), None, None, None);
+            ctx.fill_path(bp);
+            ctx.pop_layer();
+            ctx.pop_layer();
+            ctx.reset_paint_transform();
+        });
+    }
+}
+
+/// Kurbo stroke for a table edge `length` points long of a resolved stroke type.
+pub(crate) fn cell_stroke(kind: &designcraft_doc::StrokeType, weight: f64, length: f64) -> kurbo::Stroke {
+    use designcraft_doc::StrokeType;
+    let st = kurbo::Stroke::new(weight).with_caps(kurbo::Cap::Square);
+    match kind {
+        StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
             st.with_caps(kurbo::Cap::Butt).with_dashes(0.0, pattern.iter().copied())
         }
-        designcraft_doc::StrokeType::Dotted => st.with_dashes(0.0, [0.0, s.weight * 2.0]).with_caps(kurbo::Cap::Round),
+        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => {
+            st.with_dashes(0.0, [0.0, weight * 2.0]).with_caps(kurbo::Cap::Round)
+        }
         _ => st,
     }
 }
@@ -482,20 +619,109 @@ impl Renderer {
     ) {
         let doc = f.doc;
         ctx.set_transform(f.view * xf);
+        // A gradient on type on a path spans the path's box.
+        let area = path.bounding_box();
         for (si, bp) in designcraft_compose::path_glyphs(cs, ft, path, pt) {
             let st = &cs.styles[si as usize];
-            if let Some(c) = doc.resolve_color(&st.fill, st.fill_tint) {
-                ctx.set_paint(color_of(&c, 1.0));
-                ctx.fill_path(&bp);
-            }
-            if st.stroke != designcraft_color::swatch::NONE
-                && let Some(c) = doc.resolve_color(&st.stroke, st.stroke_tint)
-            {
-                ctx.set_paint(color_of(&c, 1.0));
-                ctx.set_stroke(kurbo::Stroke::new(st.stroke_weight));
-                ctx.stroke_path(&bp);
-            }
+            let fill = TextPaint::of(doc, &st.fill, st.fill_tint).map(|c| (c, false));
+            paint_glyphs(ctx, doc, area, &bp, fill, stroke_of(doc, st).map(|c| (c, false)), st.stroke_weight, st.stroke_behind_fill);
             self.stats.glyphs += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_identity_tests {
+    use super::*;
+
+    fn composition() -> Arc<ComposedStory> {
+        Arc::new(ComposedStory { frames: vec![FrameText { frame: ItemId(1), ..Default::default() }], ..Default::default() })
+    }
+
+    fn rich_composition() -> (crate::Cache, Arc<ComposedStory>) {
+        let mut doc = designcraft_doc::Document::new(&Default::default());
+        for style in &mut doc.styles_mut().paragraph {
+            style.chars.underline = Some(true);
+        }
+        let layer = doc.default_layer();
+        let (_, sid) = doc
+            .add_text_frame(
+                designcraft_doc::SpreadRef::Doc(0),
+                Rect::new(36.0, 36.0, 300.0, 300.0),
+                layer,
+                "Visible decorated glyphs.",
+                designcraft_doc::ParaFormat::default(),
+            )
+            .unwrap();
+        let owner = crate::Cache::new();
+        let cs = owner.get(&doc, sid, None);
+        (owner, cs)
+    }
+
+    #[test]
+    fn cache_owns_weak_identity_and_reuses_live_glyphs() {
+        let cs = composition();
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let first = cache.get(&cs, &cs.frames[0]);
+        assert_eq!(Arc::strong_count(&cs), 1, "the glyph cache must not own the whole layout");
+        assert_eq!(Arc::weak_count(&cs), 1, "the glyph cache must still pin the allocation identity");
+        assert!(Arc::ptr_eq(&first, &cache.get(&cs, &cs.frames[0])));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn make_mut_moves_to_a_new_cache_identity_without_reusing_old_paths() {
+        let mut cs = composition();
+        let old_address = Arc::as_ptr(&cs) as usize;
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let original_paths = cache.get(&cs, &cs.frames[0]);
+        Arc::make_mut(&mut cs).text_len = 5;
+        assert_ne!(Arc::as_ptr(&cs) as usize, old_address);
+        let new_paths = cache.get(&cs, &cs.frames[0]);
+        assert!(!Arc::ptr_eq(&original_paths, &new_paths));
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn in_flight_owner_keeps_layout_valid_then_releases_it_without_losing_outlines() {
+        let (origin, cs) = rich_composition();
+        let in_flight = cs.clone();
+        let lifetime = Arc::downgrade(&cs);
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let glyphs = cache.get(&cs, &cs.frames[0]);
+        assert!(glyphs.elements > 0);
+        let runs = glyphs.lines[0].runs.clone();
+        let underlines = glyphs.lines[0].underlines.clone();
+        assert!(!underlines.is_empty());
+        drop(cs);
+        origin.clear();
+        assert!(lifetime.upgrade().is_some());
+        assert!(!in_flight.styles.is_empty());
+        assert!(Arc::ptr_eq(&glyphs, &cache.get(&in_flight, &in_flight.frames[0])));
+        drop(in_flight);
+        assert!(lifetime.upgrade().is_none(), "only the real in-flight owner should keep the layout alive");
+        assert_eq!(glyphs.lines[0].runs, runs);
+        assert_eq!(glyphs.lines[0].underlines, underlines);
+        assert_eq!(cache.len(), 1, "no path eviction was needed");
+    }
+
+    #[test]
+    fn clearing_cache_releases_weak_identity_but_not_independently_owned_paths() {
+        let (origin, cs) = rich_composition();
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let glyphs = cache.get(&cs, &cs.frames[0]);
+        let runs = glyphs.lines[0].runs.clone();
+        assert!(glyphs.elements > 0);
+        assert_eq!(Arc::weak_count(&cs), 1);
+        cache.clear();
+        assert_eq!(Arc::weak_count(&cs), 0);
+        assert_eq!(cache.len(), 0);
+        origin.clear();
+        drop(cs);
+        assert_eq!(glyphs.lines[0].runs, runs);
     }
 }

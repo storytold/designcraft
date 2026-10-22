@@ -34,6 +34,16 @@ fn targets(cx: &ToolContext, p: Point) -> Vec<ItemId> {
     if cx.selection.items.is_empty() { cx.hit(p).map(|(_, id)| vec![id]).unwrap_or_default() } else { cx.selection.items.clone() }
 }
 
+/// The first of `ids` whose outline passes within 5 screen pixels of canvas point `p`.
+pub(crate) fn segment_at(cx: &ToolContext, ids: &[ItemId], p: Point) -> Option<ItemId> {
+    ids.iter().copied().find(|&id| {
+        let (Some(it), Some(xf)) = (cx.doc.item(id), cx.item_canvas_xf(id)) else { return false };
+        let inner = (xf * it.xf).inverse() * p;
+        let scale = (xf * it.xf).inverse().determinant().abs().sqrt();
+        it.path.nearest(inner).is_some_and(|n| n.4 <= cx.tol(5.0) * scale)
+    })
+}
+
 impl Tool for AnchorTool {
     fn id(&self) -> &'static str {
         match self.kind {
@@ -49,21 +59,12 @@ impl Tool for AnchorTool {
         match (self.kind, ev.kind) {
             (Kind::Add | Kind::Scissors, PointerKind::Down) => {
                 let Some((_, sp)) = cx.layout.spread_at(p) else { return vec![] };
-                // The first target whose outline passes near the pointer.
-                for id in targets(cx, p) {
-                    let Some(it) = cx.doc.item(id) else { continue };
-                    let Some(xf) = cx.item_canvas_xf(id) else { continue };
-                    let inner = (xf * it.xf).inverse() * p;
-                    let scale = (xf * it.xf).inverse().determinant().abs().sqrt();
-                    if it.path.nearest(inner).is_some_and(|n| n.4 <= cx.tol(5.0) * scale) {
-                        return vec![if self.kind == Kind::Scissors {
-                            Action::Exec("path.split".into(), json!({"id": id.0, "at": [sp.x, sp.y]}))
-                        } else {
-                            Action::Exec("path.addAnchor".into(), json!({"id": id.0, "at": [sp.x, sp.y], "tolerance": cx.tol(5.0)}))
-                        }];
-                    }
-                }
-                vec![]
+                let Some(id) = segment_at(cx, &targets(cx, p), p) else { return vec![] };
+                vec![if self.kind == Kind::Scissors {
+                    Action::Exec("path.split".into(), json!({"id": id.0, "at": [sp.x, sp.y]}))
+                } else {
+                    Action::Exec("path.addAnchor".into(), json!({"id": id.0, "at": [sp.x, sp.y], "tolerance": cx.tol(5.0)}))
+                }]
             }
             (Kind::Delete, PointerKind::Down) => match anchor_at_in(cx, &targets(cx, p), p) {
                 Some((id, si, ai, None)) => vec![Action::Exec("path.deleteAnchor".into(), json!({"id": id, "subpath": si, "anchor": ai}))],
@@ -100,7 +101,12 @@ impl Tool for AnchorTool {
     }
 
     fn cursor(&self, _cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {
-        if self.kind == Kind::Scissors { Cursor::Crosshair } else { Cursor::Pen }
+        match self.kind {
+            Kind::Add => Cursor::PenAdd,
+            Kind::Scissors => Cursor::Crosshair,
+            Kind::Delete => Cursor::PenDelete,
+            Kind::Convert => Cursor::PenConvert,
+        }
     }
 
     fn busy(&self) -> bool {

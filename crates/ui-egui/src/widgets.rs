@@ -5,7 +5,7 @@
 //! section headers and 1.5 pt section rules.
 
 use designcraft_geom::Unit;
-use designcraft_geom::units::{format_measure_prec, parse_measure};
+use designcraft_geom::units::{format_measure, parse_measure};
 use egui::{Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::theme::Tokens;
@@ -35,7 +35,7 @@ pub enum NumKind<'a> {
 impl NumKind<'_> {
     pub fn format(&self, v: f64) -> String {
         match *self {
-            NumKind::Measure(u) => format_measure_prec(v, u, 3),
+            NumKind::Measure(u) => format_measure(v, u),
             NumKind::Number { suffix, decimals } => {
                 let s = format!("{v:.decimals$}");
                 let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
@@ -201,9 +201,15 @@ impl<'a> NumField<'a> {
             .text_color(fg)
             .margin(egui::Margin::ZERO)
             .vertical_align(egui::Align::Center);
-        let r = ui
-            .add_enabled_ui(self.enabled, |ui| ui.put(Rect::from_min_max(text_rect.min + vec2(5.0, 1.0), text_rect.max - vec2(1.0, 1.0)), te))
-            .inner;
+        // The field already allocated its slot. A scoped allocation here would consume another
+        // grid cell and enlarge toolbar rows; the value editor must stay inside that same slot.
+        let value_rect = Rect::from_min_max(text_rect.min + vec2(5.0, 1.0), text_rect.max - vec2(1.0, 1.0));
+        let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(value_rect));
+        editor_ui.set_clip_rect(editor_ui.clip_rect().intersect(text_rect));
+        if !self.enabled {
+            editor_ui.disable();
+        }
+        let r = editor_ui.put(value_rect, te);
         if r.has_focus() {
             // ↑/↓ step the value while typing.
             let (up, down, shift) = ui.input_mut(|i| {
@@ -334,6 +340,8 @@ pub fn outline_button(ui: &mut Ui, label: &str, width: f32) -> Response {
     }
     p.rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     crate::rtl::paint(p, r.center(), egui::Align2::CENTER_CENTER, label, label_font(), t.text);
+    // Screen readers (and tests) find it by its label.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     resp
 }
 
@@ -364,6 +372,7 @@ pub fn link_label(ui: &mut Ui, text: &str, width: f32) -> Response {
     ui.painter().galley(pos, g, t.text);
     let y = r.center().y + 6.5;
     ui.painter().line_segment([pos2(r.min.x, y), pos2(r.min.x + w, y)], Stroke::new(1.0, if resp.hovered() { t.text_strong } else { t.text_dim }));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, text));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -390,7 +399,9 @@ pub fn caption(ui: &mut Ui, s: &str) {
 /// A right-aligned caption of a fixed width (`W:` before a spinner).
 pub fn caption_w(ui: &mut Ui, s: &str, w: f32) {
     let t = Tokens::get(ui.ctx());
-    let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
+    let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
+    // Painted, so tell screen readers (and UI tests) what it says.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, s));
     crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, egui::FontId::proportional(11.5), t.text);
 }
 
@@ -408,8 +419,10 @@ pub fn selection_band(ui: &mut Ui, title: &str) {
 pub fn section(ui: &mut Ui, title: &str, _default_open: bool) -> bool {
     let t = Tokens::get(ui.ctx());
     ui.add_space(7.0);
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
     crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
+    // Screen readers hear the section's title.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title));
     ui.add_space(3.0);
     true
 }
@@ -525,6 +538,8 @@ pub fn icon_toggle_sized(ui: &mut Ui, icon: &str, on: bool, tip: &str, size: egu
     }
     let s = (size.y - 4.0).min(17.0);
     crate::icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, if on { t.text_strong } else { t.icon });
+    // Named by its tooltip, for screen readers.
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, tip));
     if tip.is_empty() {
         resp
     } else {
@@ -702,6 +717,34 @@ mod tests {
     }
 
     #[test]
+    fn numeric_fields_use_one_cell_in_a_two_row_grid() {
+        let ctx = egui::Context::default();
+        let mut bounds = Rect::NOTHING;
+        let mut draw = |ui: &mut Ui| {
+            bounds = egui::Grid::new("numeric_field_grid")
+                .num_columns(4)
+                .min_col_width(0.0)
+                .spacing(vec2(4.0, 4.0))
+                .show(ui, |ui| {
+                    for row in 0..2 {
+                        for column in 0..2 {
+                            caption_w(ui, if column == 0 { "X:" } else { "W:" }, 14.0);
+                            let id = [["grid_x", "grid_w"], ["grid_y", "grid_h"]][row][column];
+                            NumField::number(id, Some(100.0), "%", 0).width(72.0).show(ui);
+                        }
+                        ui.end_row();
+                    }
+                })
+                .response
+                .rect;
+        };
+        run(&ctx, vec![], egui::Modifiers::NONE, &mut draw);
+        run(&ctx, vec![], egui::Modifiers::NONE, &mut draw);
+        assert!(bounds.height() <= 2.0 * FIELD_H + 4.0, "both rows fit their allocated height: {bounds:?}");
+        assert!(bounds.width() <= 190.0, "editors do not add extra grid columns: {bounds:?}");
+    }
+
+    #[test]
     fn number_kind_formats_and_parses() {
         let k = NumKind::Number { suffix: "%", decimals: 0 };
         assert_eq!(k.format(100.0), "100%");
@@ -710,5 +753,51 @@ mod tests {
         let m = NumKind::Measure(Unit::Picas);
         assert_eq!(m.parse("1p0+0p6"), Some(18.0));
         assert_eq!(m.step(), 1.0);
+    }
+}
+
+/// `img` made to fit the GPU's largest texture (`max_side` pixels a side), sampled down
+/// (nearest pixel) when it is larger. A texture past the limit panics in the renderer, so every
+/// UI texture goes through this: an oversized image loses resolution, not the document.
+pub fn fit_texture(img: egui::ColorImage, max_side: usize) -> egui::ColorImage {
+    let [w, h] = img.size;
+    let max_side = max_side.max(1);
+    if w <= max_side && h <= max_side {
+        return img;
+    }
+    let k = (max_side as f64 / w.max(h) as f64).min(1.0);
+    let (nw, nh) = (((w as f64 * k).floor() as usize).clamp(1, max_side), ((h as f64 * k).floor() as usize).clamp(1, max_side));
+    let mut pixels = Vec::with_capacity(nw * nh);
+    for y in 0..nh {
+        let sy = (y * h / nh).min(h.saturating_sub(1));
+        for x in 0..nw {
+            let sx = (x * w / nw).min(w.saturating_sub(1));
+            pixels.push(img.pixels.get(sy * w + sx).copied().unwrap_or(Color32::TRANSPARENT));
+        }
+    }
+    egui::ColorImage::new([nw, nh], pixels)
+}
+
+/// [`egui::Context::load_texture`] for an image of any size (see [`fit_texture`]).
+pub fn load_texture(ctx: &egui::Context, name: impl Into<String>, img: egui::ColorImage, options: egui::TextureOptions) -> egui::TextureHandle {
+    let max = ctx.input(|i| i.max_texture_side);
+    ctx.load_texture(name, fit_texture(img, max), options)
+}
+
+#[cfg(test)]
+mod texture_tests {
+    /// The glyph grid that crashed the renderer: 7 columns of 1200 characters at 60 px, 10320 px
+    /// tall against an 8192 px limit.
+    #[test]
+    fn oversized_images_fit_the_texture_limit() {
+        let img = egui::ColorImage::new([420, 10320], vec![egui::Color32::WHITE; 420 * 10320]);
+        let out = super::fit_texture(img, 8192);
+        assert!(out.size[0] <= 8192 && out.size[1] == 8192, "{:?}", out.size);
+        assert_eq!(out.pixels.len(), out.size[0] * out.size[1]);
+        let small = egui::ColorImage::new([10, 10], vec![egui::Color32::RED; 100]);
+        assert_eq!(super::fit_texture(small, 8192).size, [10, 10]);
+        let wide = egui::ColorImage::new([20000, 3], vec![egui::Color32::RED; 60000]);
+        let out = super::fit_texture(wide, 8192);
+        assert!(out.size[0] == 8192 && out.size[1] >= 1);
     }
 }

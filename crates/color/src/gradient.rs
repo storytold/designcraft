@@ -103,10 +103,33 @@ impl Gradient {
         }
         out
     }
+    /// Stops for a renderer that blends between them in RGB: the expanded stops, plus samples
+    /// through each span that isn't RGB at both ends, so process colours keep blending as inks.
+    pub fn display_stops(&self) -> Vec<(f32, Color, f32)> {
+        const STEPS: usize = 16;
+        let stops = self.expanded_stops();
+        let mut out: Vec<(f32, Color, f32)> = Vec::with_capacity(stops.len() * STEPS);
+        for (i, s) in stops.iter().enumerate() {
+            out.push(*s);
+            let Some(n) = stops.get(i + 1) else { continue };
+            if matches!((s.1, n.1), (Color::Rgb { .. }, Color::Rgb { .. })) || n.0 - s.0 <= 1e-4 {
+                continue;
+            }
+            for j in 1..STEPS {
+                let t = s.0 + (n.0 - s.0) * j as f32 / STEPS as f32;
+                let (c, a) = self.sample(t);
+                out.push((t, c, a));
+            }
+        }
+        out
+    }
     pub fn reverse(&mut self) {
+        // A midpoint belongs to the segment after its stop, so it moves with that segment and mirrors.
+        let mids: Vec<_> = self.stops.iter().rev().skip(1).map(|s| 1.0 - s.midpoint).collect();
         self.stops.reverse();
-        for s in &mut self.stops {
+        for (s, m) in self.stops.iter_mut().zip(mids.into_iter().chain([0.5])) {
             s.offset = 1.0 - s.offset;
+            s.midpoint = m;
         }
     }
     pub fn sort(&mut self) {
@@ -197,6 +220,25 @@ mod tests {
     }
 
     #[test]
+    fn process_stops_blend_as_inks() {
+        // LYH Studio episode 6: magenta to cyan is C 50 M 50 halfway (a light lilac), not the RGB mix.
+        let mut g = Gradient::default();
+        g.stops[0].color = Color::cmyk(0.0, 1.0, 0.0, 0.0);
+        g.stops[1].color = Color::cmyk(1.0, 0.0, 0.0, 0.0);
+        assert_eq!(g.sample(0.5).0, Color::cmyk(0.5, 0.5, 0.0, 0.0));
+        let d = g.display_stops();
+        assert_eq!(d.len(), 17, "sampled through the span");
+        assert!(d.iter().any(|(o, c, _)| (*o - 0.5).abs() < 1e-6 && *c == Color::cmyk(0.5, 0.5, 0.0, 0.0)));
+        // A midpoint stays an ink too; RGB stops aren't sampled.
+        g.stops[0].midpoint = 0.25;
+        assert!(matches!(g.expanded_stops()[1].1, Color::Cmyk { .. }));
+        assert_eq!(Gradient::default().display_stops().len(), 2);
+        // Grey and CMYK meet as inks; RGB with anything else blends in RGB.
+        assert_eq!(Color::gray(1.0).lerp(&Color::cmyk(1.0, 0.0, 0.0, 0.0), 0.5), Color::cmyk(0.5, 0.0, 0.0, 0.5));
+        assert!(matches!(Color::rgb(1.0, 0.0, 0.0).lerp(&Color::cmyk(1.0, 0.0, 0.0, 0.0), 0.5), Color::Rgb { .. }));
+    }
+
+    #[test]
     fn midpoint_shifts() {
         let mut g = Gradient::default();
         g.stops[0].midpoint = 0.25;
@@ -219,8 +261,24 @@ mod tests {
     #[test]
     fn reverse_stops() {
         let mut g = Gradient::default();
+        g.stops[0].midpoint = 0.25;
         g.reverse();
         assert_eq!(g.stops[0].color.to_hex(), "#000000");
         assert_eq!(g.stops[0].offset, 0.0);
+        // The midpoint moves to its reversed segment and mirrors.
+        assert!((g.sample(0.75).0.to_rgb()[0] - 0.5).abs() < 1e-5);
+        assert_eq!(g.stops.iter().map(|s| s.midpoint).collect::<Vec<_>>(), [0.75, 0.5]);
+
+        // With several stops, the reversed gradient is the original mirrored.
+        let mut g = Gradient::default();
+        g.stops[0].midpoint = 0.3;
+        g.stops.insert(1, GradientStop { offset: 0.4, color: Color::rgb(1.0, 0.0, 0.0), opacity: 0.5, midpoint: 0.8 });
+        let original = g.clone();
+        g.reverse();
+        for t in [0.1, 0.3, 0.5, 0.7, 0.9] {
+            let ((c, o), (want_c, want_o)) = (g.sample(t), original.sample(1.0 - t));
+            assert!(c.to_rgb().iter().zip(want_c.to_rgb()).all(|(a, b)| (a - b).abs() < 1e-5), "colour at {t}");
+            assert!((o - want_o).abs() < 1e-5, "opacity at {t}");
+        }
     }
 }

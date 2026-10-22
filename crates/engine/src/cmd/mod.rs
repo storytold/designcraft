@@ -7,6 +7,7 @@ pub mod book;
 mod buttons;
 pub(crate) mod captions;
 mod changes;
+mod color_theme;
 mod colorsettings;
 mod conditions;
 mod datamerge;
@@ -15,9 +16,11 @@ mod editorial;
 mod endnotes;
 mod export;
 mod file;
-mod find;
+pub(crate) mod find;
+pub use find::same_find_domain;
+pub(crate) mod flex;
 mod fonts;
-mod guides;
+pub(crate) mod guides;
 mod index;
 mod inspect;
 mod interactive;
@@ -28,12 +31,15 @@ mod linked;
 mod links;
 mod liquid;
 mod lists;
+mod load_styles;
 mod mathexpr;
 mod media;
 mod notes;
 mod object;
 mod overrides;
 mod package;
+pub mod params;
+mod paste_svg;
 mod path_type;
 mod paths;
 mod pdflayers;
@@ -42,6 +48,7 @@ pub mod preflight;
 mod prefs;
 mod print;
 mod qr;
+mod rulers;
 mod scripts;
 mod select;
 pub mod spelling;
@@ -49,7 +56,9 @@ mod states;
 mod strokes;
 mod style;
 pub mod table;
+pub mod tabs;
 pub mod text;
+mod thread;
 mod toc;
 mod transitions;
 mod variables;
@@ -116,6 +125,14 @@ pub fn has_doc(s: &Session) -> std::result::Result<(), String> {
 /// Why [`has_selection`] disables a command. A command that documents `ids` still runs when the
 /// call names its objects (see [`named_targets`]).
 pub const NOTHING_SELECTED: &str = "nothing selected";
+/// Why Object › Group is disabled for a selection it can't group. Like [`NOTHING_SELECTED`], a
+/// call that names its objects still runs, and the command checks those instead.
+pub const CANT_GROUP_SELECTION: &str = "select two or more objects on one spread, all top-level or all in the same group";
+
+/// Whether `reason` only concerns the selection, so a call that names its objects runs anyway.
+pub(crate) fn selection_reason(reason: &str) -> bool {
+    reason == NOTHING_SELECTED || reason == CANT_GROUP_SELECTION
+}
 pub fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     if s.active().is_some_and(|d| !d.selection.items.is_empty()) { Ok(()) } else { Err(NOTHING_SELECTED.into()) }
@@ -154,16 +171,19 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(interchange::specs());
         v.extend(export::specs());
         v.extend(edit::specs());
+        v.extend(paste_svg::specs());
         v.extend(endnotes::specs());
         v.extend(editorial::specs());
         v.extend(object::specs());
         v.extend(anchors::specs());
         v.extend(articles::specs());
         v.extend(paths::specs());
+        v.extend(flex::specs());
         v.extend(book::specs());
         v.extend(buttons::specs());
         v.extend(captions::specs());
         v.extend(colorsettings::specs());
+        v.extend(color_theme::specs());
         v.extend(changes::specs());
         v.extend(conditions::specs());
         v.extend(library::specs());
@@ -184,7 +204,10 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(package::specs());
         v.extend(print::specs());
         v.extend(text::specs());
+        v.extend(thread::specs());
+        v.extend(tabs::specs());
         v.extend(style::specs());
+        v.extend(load_styles::specs());
         v.extend(table::specs());
         v.extend(layout::specs());
         v.extend(overrides::specs());
@@ -198,6 +221,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(index::specs());
         v.extend(anchored::specs());
         v.extend(guides::specs());
+        v.extend(rulers::specs());
         v.extend(links::specs());
         v.extend(fonts::specs());
         v.extend(spelling::specs());
@@ -235,9 +259,14 @@ pub(crate) fn str_param<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
 }
 /// Plain text from a parameter, with CR LF and lone CR (classic Mac and InDesign line ends) as
 /// `\n`, the paragraph separator, as edit.paste and text import already do. Kept as they were,
-/// the CRs joined the paragraphs into one.
+/// the CRs joined the paragraphs into one. A vertical tab (Word's and PowerPoint's Shift+Enter,
+/// Chr(11)) is a forced line break: kept, it was drawn as a missing-glyph box.
 pub(crate) fn text_param(p: &Value, key: &str) -> String {
-    str_param(p, key).unwrap_or("").replace("\r\n", "\n").replace('\r', "\n")
+    str_param(p, key)
+        .unwrap_or("")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\u{B}', designcraft_doc::story::FORCED_LINE_BREAK.encode_utf8(&mut [0; 4]))
 }
 pub(crate) fn id_param(p: &Value, key: &str) -> Option<ItemId> {
     p.get(key).and_then(Value::as_u64).map(ItemId)
@@ -249,17 +278,34 @@ pub(crate) fn point_param(p: &Value, key: &str) -> Option<Point> {
     let a = p.get(key)?.as_array()?;
     Some(Point::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
 }
+/// `r`, computed from coordinate params, or an error when a value overflowed to infinity or NaN:
+/// a document holding one can't be saved (#1050).
+pub(crate) fn finite_rect(command: &str, r: Rect) -> Result<Rect> {
+    if [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite()) { Ok(r) } else { Err(bad(command, "the position and size must stay finite numbers")) }
+}
+
 pub(crate) fn rect_param(p: &Value, key: &str) -> Option<Rect> {
     let a = p.get(key)?.as_array()?;
     let f = |i: usize| a.get(i).and_then(Value::as_f64);
     Some(Rect::new(f(0)?, f(1)?, f(2)?, f(3)?))
 }
-/// `{"kind":"doc","index":0}`, `0` or absent (= spread 0).
-pub(crate) fn spread_param(p: &Value, key: &str) -> SpreadRef {
-    match p.get(key) {
-        Some(Value::Number(n)) => SpreadRef::Doc(n.as_u64().unwrap_or(0) as usize),
-        Some(v) => serde_json::from_value(v.clone()).unwrap_or(SpreadRef::Doc(0)),
-        None => SpreadRef::Doc(0),
+/// The `spread` param: a body spread index (`0`), a spread reference (`{"kind":"doc"|"parent","index":0}`)
+/// or absent or null (= spread 0; commands that forward an optional `spread` pass null). Anything else is an error: read as spread 0, a script aiming at a parent
+/// spread got its items on the first page without a word.
+pub(crate) fn spread_param(p: &Value, command: &str) -> Result<SpreadRef> {
+    let index = |v: &Value, key: &str| {
+        v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(command, format!("`{key}` must be a non-negative integer")))
+    };
+    let Some(value) = p.get("spread").filter(|v| !v.is_null()) else { return Ok(SpreadRef::Doc(0)) };
+    if value.is_number() {
+        return Ok(SpreadRef::Doc(index(value, "spread")?));
+    }
+    let object = value.as_object().ok_or_else(|| bad(command, "`spread` must be a non-negative integer or {kind: doc|parent, index}"))?;
+    let i = index(object.get("index").ok_or_else(|| bad(command, "missing `spread.index`"))?, "spread.index")?;
+    match object.get("kind").and_then(Value::as_str) {
+        Some("doc") => Ok(SpreadRef::Doc(i)),
+        Some("parent") => Ok(SpreadRef::Parent(i)),
+        _ => Err(bad(command, "`spread.kind` must be `doc` or `parent`")),
     }
 }
 
@@ -291,7 +337,7 @@ pub(crate) fn ok() -> Result<Value> {
     Ok(Value::Null)
 }
 
-pub fn file_bytes(d: &designcraft_doc::Document) -> Vec<u8> {
+pub fn file_bytes(d: &designcraft_doc::Document) -> Result<Vec<u8>> {
     file::to_bytes(d)
 }
 pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
@@ -299,5 +345,9 @@ pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
 }
 pub(crate) use datamerge::sync_placeholders;
 pub(crate) use file::load_document_fonts;
-pub use file::{base64_decode, base64_encode, from_bytes, to_bytes};
+pub use file::{
+    DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, recent_preview, to_bytes, with_document_extension,
+};
+pub use layout::chapter_numbering;
+pub use paste_svg::is_svg_markup;
 pub(crate) use place_text::autoflow as place_text_autoflow;

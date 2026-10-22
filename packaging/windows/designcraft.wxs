@@ -2,11 +2,11 @@
 <!--
   DesignCraft MSI (WiX Toolset v5: `dotnet tool install -g wix`). Built by package.ps1:
 
-    wix build designcraft.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
+    wix build designcraft.wxs installer-ui.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
 
-  Per-machine install into Program Files, a Start Menu shortcut, `.pcraft` owned by DesignCraft,
-  and DesignCraft offered under "Open with" for PSD/PSB and the image formats it reads (without
-  taking over the user's default app for them).
+  Per-machine install into Program Files, a Start Menu shortcut, `.designcraft` owned by
+  DesignCraft, and DesignCraft offered under "Open with" for IDML (without taking over the user's
+  default app for it).
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -30,6 +30,8 @@
     <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/designcraft" />
     <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
 
+    <!-- Shared native setup UI, including install/uninstall completion. -->
+
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="DesignCraft" />
     </StandardDirectory>
@@ -37,7 +39,10 @@
 
     <Feature Id="Main" Title="DesignCraft" Level="1">
       <ComponentGroupRef Id="DesigncraftFiles" />
+      <ComponentGroupRef Id="CraftInstallerSettings" />
     </Feature>
+    <!-- Shared full UI; app installation policy remains below. -->
+    <UIRef Id="CraftInstallerUI" />
   </Package>
 
   <Fragment>
@@ -49,6 +54,22 @@
               Icon="DesigncraftIcon.ico" IconIndex="0" />
         </File>
 
+        <!-- .designcraft: DesignCraft's own format; DesignCraft is its default app. -->
+        <ProgId Id="Designcraft.Document" Description="DesignCraft Document" Icon="DesigncraftExe" IconIndex="0">
+          <Extension Id="designcraft" ContentType="application/x-designcraft">
+            <Verb Id="open" Command="Open" TargetFile="DesigncraftExe" Argument="&quot;%1&quot;" />
+          </Extension>
+        </ProgId>
+        <!-- IDML: offered under "Open with", never forced as the default. -->
+        <ProgId Id="Designcraft.Idml" Description="IDML Document" Icon="DesigncraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Designcraft.Idml\shell\open\command" Value="&quot;[#DesigncraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.idml\OpenWithProgids" Name="Designcraft.Idml" Value="" Type="string" />
+
+        <!-- "Open with" app list and the Run dialog (Win+R "designcraft"). -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe" Name="FriendlyAppName" Value="DesignCraft" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\shell\open\command" Value="&quot;[#DesigncraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\SupportedTypes" Name=".designcraft" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\SupportedTypes" Name=".idml" Value="" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\designcraft.exe" Value="[#DesigncraftExe]" Type="string" />
       </Component>
 

@@ -5,7 +5,7 @@
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
     designcraft-<version>-windows-<arch>.msi            per-machine installer (WiX v5)
-    designcraft-<version>-windows-<arch>-portable.zip   designcraft.exe + designcraft-cli.exe
+    designcraft-<version>-windows-<arch>-portable.zip   designcraft.exe + designcraft-cli.exe + portable.txt
 
   The binaries link the C runtime statically (+crt-static), so neither the MSI nor the portable
   zip needs the Visual C++ redistributable. Signing is delegated to sign.ps1 (skipped with a
@@ -93,7 +93,7 @@ Copy-Item (Join-Path $Bin 'designcraft.exe'), (Join-Path $Bin 'designcraft-cli.e
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "designcraft-$Version-windows-$Arch.msi"
 Invoke-Native 'wix build' {
-  wix build (Join-Path $PSScriptRoot 'designcraft.wxs') -arch $Arch `
+  wix build (Join-Path $PSScriptRoot 'designcraft.wxs') (Join-Path $PSScriptRoot 'installer-ui.wxs') -arch $Arch `
     -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\designcraft.ico')" `
     -o $Msi
 }
@@ -106,6 +106,12 @@ $Portable = Join-Path $TargetDir "windows-package\designcraft-$Version-windows-$
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
+# The marker that makes DesignCraft keep its data in .\DesignCraftData next to the exe instead of
+# %APPDATA% (#574; see apps/designcraft/src/profile.rs).
+Set-Content -Encoding ascii -Path (Join-Path $Portable 'portable.txt') -Value @(
+  'DesignCraft portable: preferences, logs and crash recovery are kept in the DesignCraftData folder',
+  'next to designcraft.exe. Delete this file to use %APPDATA%\DesignCraft instead.'
+)
 foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }

@@ -4,7 +4,7 @@
 use designcraft_doc::{ParaFormat, SpreadRef, StoryId};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_doc, has_text, ok, str_param};
+use super::{CommandSpec, bad, cmd, has_doc, has_text, ok};
 use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -20,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("endnote.edit", "Edit Endnote", [], None, "{story, id, text}", has_doc, |s, p| {
             let (sid, id) = target(p)?;
-            let text = str_param(p, "text").unwrap_or("").to_string();
+            let text = super::text_param(p, "text");
             s.edit(|d, _| {
                 let style = d.endnote_options.para_style.clone();
                 let st = d.story_mut(sid).ok_or_else(|| bad("endnote.edit", "no such story"))?;
@@ -61,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Endnote Options…",
             ["Type"],
             None,
-            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters, startAt?, prefix?, suffix?, heading?, headingStyle?, paraStyle?, separator?} → the options",
+            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|kanji, startAt?, prefix?, suffix?, heading?, headingStyle?, paraStyle?, separator?} → the options",
             has_doc,
             |s, p| {
                 let cur = serde_json::to_value(&s.doc()?.doc.endnote_options).map_err(|e| bad("endnote.options", e.to_string()))?;
@@ -103,7 +103,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     if st.doc.endnote_story == Some(ts.story) {
         return Err(bad(ID, "the endnote frame lists the endnotes"));
     }
-    let text = str_param(p, "text").unwrap_or("").to_string();
+    let text = super::text_param(p, "text");
     let at = ts.anchor.max(ts.focus);
     s.edit(|d, sel| {
         // The endnote frame: a text frame in the margins of a new last page.
@@ -121,7 +121,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let style = d.endnote_options.para_style.clone();
         let story = d.story_mut(ts.story).ok_or_else(|| bad(ID, "no such story"))?;
-        let id = story.insert_endnote(at, &text, ParaFormat { style, ..Default::default() });
+        let id = story
+            .insert_endnote(at, &text, ParaFormat { style, ..Default::default() })
+            .ok_or_else(|| bad(ID, "the story's endnotes don't match its references"))?;
         let caret = at + designcraft_doc::ENDNOTE_REF.len_utf8();
         if let Some(t) = &mut sel.text {
             (t.anchor, t.focus) = (caret, caret);

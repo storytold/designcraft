@@ -110,6 +110,10 @@ impl Unit {
 
     /// Ruler tick spacing (major, subdivisions) in points for a given zoom (screen px per pt).
     pub fn ruler_ticks(self, zoom: f64) -> (f64, u32) {
+        // A non-positive zoom can keep the major-spacing loop growing forever. Clamp
+        // extreme positive values too, so saved/corrupt viewport state cannot overflow
+        // the spacing calculation before the view restores a usable zoom.
+        let zoom = if zoom.is_finite() && zoom > 0.0 { zoom.clamp(1e-6, 1e6) } else { 1.0 };
         let (base, subs): (f64, &[u32]) = match self {
             Unit::Inches | Unit::InchesDecimal => (PT_PER_INCH, &[8, 4, 2]),
             Unit::Picas => (PT_PER_PICA, &[6, 3, 2]),
@@ -254,7 +258,10 @@ fn parse_single(tok: &str, default: Unit, percent_base: Option<f64>) -> Option<f
 /// Format a value (points) in `unit` the way InDesign fields show it: up to 3 decimals, trailing
 /// zeros trimmed; picas as `3p6`, ciceros as `2c4`.
 pub fn format_measure(pt: f64, unit: Unit) -> String {
-    format_measure_prec(pt, unit, 3)
+    // As InDesign shows them: inches to four decimals (a 1p gutter is 0.1667 in, A4 is
+    // 8.2677 in wide), the other units to three.
+    let decimals = if matches!(unit, Unit::Inches | Unit::InchesDecimal) { 4 } else { 3 };
+    format_measure_prec(pt, unit, decimals)
 }
 
 pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
@@ -270,7 +277,12 @@ pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
             let a = pt.abs();
             let mut whole = (a / big).floor();
             let mut rest = (a - whole * big) / small;
-            if (rest - 12.0).abs() < 1e-6 || rest > 12.0 - 1e-6 {
+            // Carry when the displayed fractional points round up to a full pica/cicero.
+            // Checking unrounded rest misses values such as 11.9999 at 3 decimals,
+            // which would otherwise render as the misleading "0p12".
+            let scale = 10.0_f64.powi(decimals.min(12) as i32);
+            rest = (rest * scale).round() / scale;
+            if rest >= 12.0 {
                 whole += 1.0;
                 rest = 0.0;
             }
@@ -290,6 +302,17 @@ mod tests {
     }
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
+    }
+
+    /// Inches show four decimals, as InDesign's fields do; other units three.
+    #[test]
+    fn inches_show_four_decimals() {
+        assert_eq!(format_measure(12.0, Unit::Inches), "0.1667 in");
+        assert_eq!(format_measure(210.0 * PT_PER_MM, Unit::Inches), "8.2677 in");
+        assert_eq!(format_measure(612.0, Unit::Inches), "8.5 in");
+        assert_eq!(format_measure(9.0, Unit::Inches), "0.125 in");
+        assert_eq!(format_measure(10.0, Unit::Millimeters), "3.528 mm");
+        assert_eq!(format_measure(10.0, Unit::Points), "10 pt");
     }
 
     #[test]
@@ -336,6 +359,17 @@ mod tests {
     }
 
     #[test]
+    fn pica_and_cicero_rounding_carries_into_the_major_unit() {
+        assert_eq!(format_measure_prec(11.9999, Unit::Picas, 3), "1p0");
+        assert_eq!(format_measure_prec(-11.9999, Unit::Picas, 3), "-1p0");
+        assert_eq!(format_measure_prec(11.9994, Unit::Picas, 3), "0p11.999");
+        assert_eq!(format_measure_prec(11.6, Unit::Picas, 0), "1p0");
+        let almost_cicero = PT_PER_CICERO - 0.0001 * PT_PER_DIDOT;
+        assert_eq!(format_measure_prec(almost_cicero, Unit::Ciceros, 3), "1c0");
+        assert!(close(p(&format_measure_prec(11.9999, Unit::Picas, 3)), 12.0));
+    }
+
+    #[test]
     fn formatting() {
         assert_eq!(format_measure(18.0, Unit::Picas), "1p6");
         assert_eq!(format_measure(36.0, Unit::Picas), "3p0");
@@ -353,6 +387,20 @@ mod tests {
                 let s = format_measure_prec(v, u, 6);
                 let back = parse_measure(&s, u).unwrap_or_else(|e| panic!("{u:?} {s}: {e}"));
                 assert!((back - v).abs() < 1e-3, "{u:?}: {v} -> {s} -> {back}");
+            }
+        }
+    }
+
+    #[test]
+    fn ruler_ticks_reject_invalid_zoom_without_hanging_or_overflowing() {
+        for unit in Unit::ALL {
+            let fallback = unit.ruler_ticks(1.0);
+            for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.0, 0.0] {
+                assert_eq!(unit.ruler_ticks(bad), fallback, "{unit:?}: {bad}");
+            }
+            for extreme in [f64::MIN_POSITIVE, 1e-300, 1e300, f64::MAX] {
+                let (major, subdivisions) = unit.ruler_ticks(extreme);
+                assert!(major.is_finite() && major > 0.0 && subdivisions > 0, "{unit:?}: {extreme}");
             }
         }
     }

@@ -58,7 +58,7 @@ fn qr_code(s: &mut Session, p: &Value) -> Result<Value> {
     let text = encode(p).map_err(|e| bad(ID, e))?;
     let color = str_param(p, "color").unwrap_or(designcraft_color::swatch::BLACK).to_string();
     let rect = rect_param(p, "rect");
-    let sr = spread_param(p, "spread");
+    let sr = spread_param(p, ID)?;
     let st = s.doc()?;
     let lid = st.active_layer;
     let sel = st.selection.items.clone();

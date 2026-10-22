@@ -6,7 +6,7 @@
 use skrifa::raw::TableProvider;
 
 use super::*;
-use crate::testing::{font_mapping, font_with, with_table_len, with_table_u16, with_vmtx, with_vorg};
+use crate::testing::{font_mapping, font_with, with_base, with_code_pages, with_table_len, with_table_u16, with_vmtx, with_vorg};
 use crate::{ShapeContext, feature, shape_vertical, shape_with_context};
 
 /// Text in Japanese.
@@ -111,14 +111,50 @@ fn fonts_without_vmtx_use_the_em_box() {
     assert_eq!(face.em_box(), (830.0, -170.0));
     assert_eq!(face.v_advance(gid), face.upem);
     assert_eq!(face.v_origin(gid), 830.0);
-    // Without BASE either: the OS/2 typo ascender and descender (1000, -326), centred on one em.
+    // Without BASE either: the typo ascender and descender (1000, -326) span more than one em, so
+    // the em box is centred on half the OS/2 cap height (660).
     let face = face_of(with_table_len(font_with("No Base", &['一']).unwrap(), b"BASE", 0).unwrap());
-    assert_eq!(face.em_box(), (837.0, -163.0));
-    // Without OS/2: the ascender and descender, the same way.
-    let face = face_of(with_table_len(with_table_len(font_with("No OS2", &['一']).unwrap(), b"BASE", 0).unwrap(), b"OS/2", 0).unwrap());
-    let (top, bottom) = face.em_box();
-    assert_eq!(top - bottom, face.upem);
-    assert!((top + bottom - (face.ascent - face.descent)).abs() < 1e-9, "{top} {bottom}");
+    assert_eq!(face.em_box(), (830.0, -170.0));
+    assert_eq!(face.declared_em_box(), Some((830.0, -170.0)));
+    // Typo ascender and descender one em apart: a CJK font (JIS code page) tops at the typo
+    // ascender; a Latin one (Source Sans 3's own code pages) still centres on the cap height.
+    let typo = |family: &str, code_pages: Option<u32>| {
+        let font = with_table_u16(font_with(family, &['一']).unwrap(), b"OS/2", 68, 860).unwrap();
+        let font = with_table_u16(font, b"OS/2", 70, u16::from_be_bytes((-140i16).to_be_bytes())).unwrap();
+        let font = match code_pages {
+            Some(r1) => with_code_pages(font, r1, 0).unwrap(),
+            None => font,
+        };
+        face_of(with_table_len(font, b"BASE", 0).unwrap())
+    };
+    let face = typo("Typo Em CJK", Some(1 << 17));
+    assert_ne!(face.menu_group().0, crate::FontGroup::Western);
+    assert_eq!(face.em_box(), (860.0, -140.0));
+    let face = typo("Typo Em Latin", None);
+    assert_eq!(face.menu_group().0, crate::FontGroup::Western);
+    assert_eq!(face.em_box(), (830.0, -170.0));
+    // Without OS/2: centred on half the H glyph's height (656).
+    let no_os2 = |font: Vec<u8>| face_of(with_table_len(with_table_len(font, b"BASE", 0).unwrap(), b"OS/2", 0).unwrap());
+    let face = no_os2(font_mapping("No OS2", &[('一', 'X'), ('H', 'H')]).unwrap());
+    assert_eq!(face.em_box(), (828.0, -172.0));
+    // Without an H either: 0.88 em above the baseline, which the font doesn't declare.
+    let face = no_os2(font_with("No OS2 No H", &['一']).unwrap());
+    assert_eq!(face.em_box(), (880.0, -120.0));
+    assert_eq!(face.declared_em_box(), None);
+}
+
+#[test]
+fn icf_box_comes_from_base_else_an_inset_em_box() {
+    let font = font_with("ICF", &['一']).unwrap();
+    let face = face_of(with_base(&font, &[(*b"ideo", -120), (*b"idtp", 880), (*b"icfb", -80), (*b"icft", 840)]).unwrap());
+    assert_eq!((face.em_box(), face.icf_box()), ((880.0, -120.0), (840.0, -80.0)));
+    // One of the two: mirrored inside the em box.
+    let face = face_of(with_base(&font, &[(*b"ideo", -120), (*b"icfb", -90)]).unwrap());
+    assert_eq!(face.icf_box(), (850.0, -90.0));
+    // No ICF baselines (Source Sans 3's BASE has only ideo and romn): the em box inset by 5% of the em.
+    let face = face_of(font);
+    assert_eq!(face.em_box(), (830.0, -170.0));
+    assert_eq!(face.icf_box(), (780.0, -120.0));
 }
 
 #[test]
@@ -146,6 +182,8 @@ fn broken_vertical_tables_do_not_panic() {
         let face = face_of(bytes);
         let (top, bottom) = face.em_box();
         assert!(top > bottom && (top - bottom - face.upem).abs() < 1e-9, "{what}: {top} {bottom}");
+        let (icf_top, icf_bottom) = face.icf_box();
+        assert!(icf_top > icf_bottom && icf_top.is_finite() && icf_bottom.is_finite(), "{what}: ICF {icf_top} {icf_bottom}");
         for gid in [0, face.glyph_for('一'), face.glyph_for('、'), u32::from(u16::MAX), u32::MAX] {
             let (adv, origin) = (face.v_advance(gid), face.v_origin(gid));
             assert!(adv.is_finite() && adv >= 0.0 && origin.is_finite(), "{what}: {gid} {adv} {origin}");

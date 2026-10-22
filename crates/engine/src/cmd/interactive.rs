@@ -51,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     designcraft_doc::Selection::text(designcraft_doc::TextSel { story, anchor: start, focus: end, frame, cell: None })
                 }
             };
-            st.revision += 1;
+            st.bump_revision();
             Ok(Value::Null)
         }),
         cmd!("bookmark.rename", "Rename Bookmark", [], None, "{index, name}", has_doc, |s, p| {

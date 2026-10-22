@@ -1,11 +1,12 @@
 //! Colour management: working spaces, RGB ↔ CMYK ↔ Lab conversions with rendering intents,
 //! gamut checks and soft-proof transforms.
 //!
-//! * **RGB working spaces** are ICC matrix/shaper profiles via [`moxcms`] (sRGB, Adobe RGB (1998)
-//!   compatible, Display P3, ProPhoto RGB) or user `.icc` files. Display output is sRGB.
-//! * **CMYK spaces:** [`GENERIC_CMYK`] is our own documented parametric press model
-//!   ([`generic`]); [`DEVICE_CMYK`] is the old profile-free formula (kept for exact legacy numbers);
-//!   any CMYK `.icc` the user loads goes through `moxcms` (LUT-based profiles).
+//! * **ICC profiles** go through `craft-cms`: the built-in RGB working spaces (sRGB, Adobe RGB
+//!   (1998) compatible, Display P3, ProPhoto RGB), the default CMYK space [`COATED_FOGRA39`],
+//!   and any `.icc` the user loads. Display output is sRGB; CMYK is shown relative colorimetric
+//!   with the settings' black point compensation, as placed CMYK images are.
+//! * **Other CMYK spaces:** [`GENERIC_CMYK`] is our own documented parametric press model
+//!   ([`generic`]); [`DEVICE_CMYK`] is the old profile-free formula (kept for exact legacy numbers).
 //! * The **active settings** (Edit → Color Settings) are process-wide; [`crate::Color::to_rgb`]
 //!   uses them. Code that needs deterministic numbers builds its own [`Cms`] with [`Cms::new`].
 
@@ -14,7 +15,8 @@ pub mod icc;
 pub mod icc_out;
 pub mod lab;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +31,9 @@ pub const SRGB: &str = "sRGB IEC61966-2.1";
 pub const ADOBE_RGB: &str = "Adobe RGB (1998) compatible";
 pub const DISPLAY_P3: &str = "Display P3";
 pub const PROPHOTO_RGB: &str = "ProPhoto RGB";
+/// craft-cms's coated offset profile fitted to the FOGRA39 characterisation data: the default
+/// CMYK working space.
+pub const COATED_FOGRA39: &str = craft_cms::builtin::COATED_FOGRA39_DESCRIPTION;
 /// Our parametric press model (see [`generic`]). Not an Adobe/ECI profile.
 pub const GENERIC_CMYK: &str = "DesignCraft Generic CMYK (SWOP-like)";
 /// Profile-free CMYK (`rgb = (1−c)(1−k)` …): uncalibrated, kept for legacy numbers.
@@ -78,6 +83,17 @@ impl Intent {
     }
 }
 
+impl From<Intent> for craft_cms::Intent {
+    fn from(i: Intent) -> Self {
+        match i {
+            Intent::Perceptual => craft_cms::Intent::Perceptual,
+            Intent::RelativeColorimetric => craft_cms::Intent::RelativeColorimetric,
+            Intent::Saturation => craft_cms::Intent::Saturation,
+            Intent::AbsoluteColorimetric => craft_cms::Intent::AbsoluteColorimetric,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProfileKind {
@@ -122,8 +138,31 @@ pub struct ColorSettings {
 
 impl Default for ColorSettings {
     fn default() -> Self {
-        Self { rgb: SRGB.into(), cmyk: GENERIC_CMYK.into(), intent: Intent::RelativeColorimetric, bpc: true }
+        Self { rgb: SRGB.into(), cmyk: COATED_FOGRA39.into(), intent: Intent::RelativeColorimetric, bpc: true }
     }
+}
+
+impl ColorSettings {
+    /// These settings with each working space that isn't available (a profile that is no longer
+    /// loaded, a name from another version) replaced by the default one: for saved settings.
+    pub fn with_known_profiles(&self) -> Self {
+        let d = Self::default();
+        Self {
+            rgb: if rgb_space(&self.rgb).is_ok() { self.rgb.clone() } else { d.rgb },
+            cmyk: if cmyk_space(&self.cmyk).is_ok() { self.cmyk.clone() } else { d.cmyk },
+            ..self.clone()
+        }
+    }
+}
+
+/// A PDF/X output intent: the destination profile and the condition it names.
+#[derive(Clone, Debug)]
+pub struct OutputIntent {
+    pub icc: Cow<'static, [u8]>,
+    /// `OutputConditionIdentifier`: a registered characterisation, or `Custom`.
+    pub identifier: &'static str,
+    /// `OutputCondition` / `Info`: the profile's name.
+    pub condition: String,
 }
 
 /// Target colour model for [`Cms::convert`].
@@ -145,6 +184,12 @@ enum CmykSpace {
 enum RgbSpace {
     Srgb,
     Icc(Arc<IccProfile>),
+}
+
+/// The built-in Coated FOGRA39 space; `None` only if craft-cms can't use its own profile.
+fn fogra39() -> Option<Arc<IccProfile>> {
+    static P: OnceLock<Option<Arc<IccProfile>>> = OnceLock::new();
+    P.get_or_init(|| icc::coated_fogra39().map(Arc::new)).clone()
 }
 
 fn generic() -> Arc<GenericCmyk> {
@@ -169,13 +214,21 @@ fn user_profile(name: &str) -> Option<Arc<IccProfile>> {
     USER.read().unwrap_or_else(|e| e.into_inner()).iter().find(|p| p.name == name).cloned()
 }
 
+/// The default CMYK space: Coated FOGRA39, or Generic CMYK should that profile be unusable.
+fn default_cmyk() -> CmykSpace {
+    fogra39().map_or_else(|| CmykSpace::Generic(generic()), CmykSpace::Icc)
+}
+
 fn cmyk_space(name: &str) -> Result<CmykSpace, CmsError> {
     match name {
         GENERIC_CMYK => Ok(CmykSpace::Generic(generic())),
         DEVICE_CMYK => Ok(CmykSpace::Device),
+        COATED_FOGRA39 => Ok(default_cmyk()),
         _ => match user_profile(name) {
             Some(p) if p.kind == ProfileKind::Cmyk => Ok(CmykSpace::Icc(p)),
             Some(_) => Err(CmsError::Unsupported(format!("{name} is not a CMYK profile"))),
+            // Names of the profiles the built-in stands in for (Coated FOGRA39 (ISO 12647-2:2004), ISO Coated v2 (ECI) …).
+            None if craft_cms::Builtin::stand_in_for(name) == Some(craft_cms::Builtin::CoatedFogra39) => Ok(default_cmyk()),
             None => Err(CmsError::UnknownProfile(name.into())),
         },
     }
@@ -200,7 +253,7 @@ pub fn profiles() -> Vec<ProfileInfo> {
     let mut v: Vec<ProfileInfo> = [SRGB, ADOBE_RGB, DISPLAY_P3, PROPHOTO_RGB]
         .iter()
         .map(|n| ProfileInfo { name: (*n).into(), kind: ProfileKind::Rgb, builtin: true })
-        .chain([GENERIC_CMYK, DEVICE_CMYK].iter().map(|n| ProfileInfo { name: (*n).into(), kind: ProfileKind::Cmyk, builtin: true }))
+        .chain([COATED_FOGRA39, GENERIC_CMYK, DEVICE_CMYK].iter().map(|n| ProfileInfo { name: (*n).into(), kind: ProfileKind::Cmyk, builtin: true }))
         .collect();
     for p in USER.read().unwrap_or_else(|e| e.into_inner()).iter() {
         v.push(ProfileInfo { name: p.name.clone(), kind: p.kind, builtin: false });
@@ -215,7 +268,7 @@ pub fn register_icc(bytes: &[u8], name: Option<String>) -> Result<ProfileInfo, C
     if p.kind == ProfileKind::Gray {
         return Err(CmsError::Unsupported("grayscale profiles can't be working spaces yet".into()));
     }
-    if [SRGB, ADOBE_RGB, DISPLAY_P3, PROPHOTO_RGB, GENERIC_CMYK, DEVICE_CMYK].contains(&p.name.as_str()) {
+    if [SRGB, ADOBE_RGB, DISPLAY_P3, PROPHOTO_RGB, COATED_FOGRA39, GENERIC_CMYK, DEVICE_CMYK].contains(&p.name.as_str()) {
         return Err(CmsError::Unsupported(format!("{} clashes with a built-in profile name", p.name)));
     }
     if !p.usable() {
@@ -227,14 +280,8 @@ pub fn register_icc(bytes: &[u8], name: Option<String>) -> Result<ProfileInfo, C
     u.push(Arc::new(p));
     drop(u);
     clear_proof_cache();
+    GENERATION.fetch_add(1, Ordering::Relaxed);
     Ok(info)
-}
-
-/// Load a `.icc`/`.icm` file from disk (native only).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn load_icc_file(path: &std::path::Path) -> Result<ProfileInfo, CmsError> {
-    let bytes = std::fs::read(path).map_err(|e| CmsError::Io(format!("{}: {e}", path.display())))?;
-    register_icc(&bytes, None)
 }
 
 /// A colour-management context: resolved working spaces plus conversion settings.
@@ -253,7 +300,7 @@ impl std::fmt::Debug for Cms {
 
 impl Default for Cms {
     fn default() -> Self {
-        Self { settings: ColorSettings::default(), rgb: RgbSpace::Srgb, cmyk: CmykSpace::Generic(generic()) }
+        Self { settings: ColorSettings::default(), rgb: RgbSpace::Srgb, cmyk: default_cmyk() }
     }
 }
 
@@ -268,29 +315,61 @@ impl Cms {
         matches!(self.rgb, RgbSpace::Srgb)
     }
 
+    /// The working CMYK space as an ICC profile, for converting CMYK pixels in bulk. `None` for
+    /// Device CMYK, which has no profile (the `(1−c)(1−k)` formula).
+    pub fn cmyk_icc_profile(&self) -> Option<Arc<craft_cms::Profile>> {
+        match &self.cmyk {
+            CmykSpace::Generic(_) => {
+                static P: OnceLock<Option<Arc<craft_cms::Profile>>> = OnceLock::new();
+                P.get_or_init(|| icc_out::generic_cmyk_profile().ok().map(|p| Arc::new(p.clone()))).clone()
+            }
+            CmykSpace::Device => None,
+            CmykSpace::Icc(p) => Some(p.profile().clone()),
+        }
+    }
+
+    /// The PDF/X output intent for the working CMYK space. Device CMYK has no profile and is
+    /// described by the Generic CMYK one.
+    pub fn output_intent(&self) -> Result<OutputIntent, CmsError> {
+        Ok(match &self.cmyk {
+            CmykSpace::Icc(p) if p.name == COATED_FOGRA39 => {
+                OutputIntent { icc: Cow::Borrowed(craft_cms::builtin::COATED_FOGRA39_ICC), identifier: "FOGRA39", condition: COATED_FOGRA39.into() }
+            }
+            CmykSpace::Icc(p) => OutputIntent { icc: Cow::Owned(p.profile().to_bytes().to_vec()), identifier: "Custom", condition: p.name.clone() },
+            CmykSpace::Generic(_) | CmykSpace::Device => {
+                OutputIntent { icc: Cow::Borrowed(icc_out::generic_cmyk_icc()?), identifier: "Custom", condition: GENERIC_CMYK.into() }
+            }
+        })
+    }
+
     /// Working RGB → display sRGB.
     pub fn rgb_to_srgb(&self, rgb: [f32; 3]) -> [f32; 3] {
         match &self.rgb {
             RgbSpace::Srgb => rgb,
-            RgbSpace::Icc(p) => p.to_srgb(&rgb, Intent::RelativeColorimetric).unwrap_or(rgb),
+            RgbSpace::Icc(p) => p.to_srgb(&rgb, Intent::RelativeColorimetric, false).unwrap_or(rgb),
         }
     }
     /// Display sRGB → working RGB.
     pub fn srgb_to_rgb(&self, srgb: [f32; 3]) -> [f32; 3] {
         match &self.rgb {
             RgbSpace::Srgb => srgb,
-            RgbSpace::Icc(p) => p.from_srgb(srgb, Intent::RelativeColorimetric).map(|v| [v[0], v[1], v[2]]).unwrap_or(srgb),
+            RgbSpace::Icc(p) => match p.from_srgb(srgb, Intent::RelativeColorimetric, false).as_deref() {
+                Some(&[r, g, b]) => [r, g, b],
+                _ => srgb,
+            },
         }
     }
 
-    fn cmyk_to_srgb_in(space: &CmykSpace, cmyk: [f32; 4], absolute: bool) -> [f32; 3] {
+    /// `absolute` simulates the paper colour (absolute colorimetric, no black point
+    /// compensation); otherwise relative colorimetric with `bpc`.
+    fn cmyk_to_srgb_in(space: &CmykSpace, cmyk: [f32; 4], absolute: bool, bpc: bool) -> [f32; 3] {
         let cmyk = cmyk.map(|v| v.clamp(0.0, 1.0));
         match space {
             CmykSpace::Generic(g) => g.to_srgb(cmyk, absolute),
             CmykSpace::Device => naive_cmyk_to_rgb(cmyk),
             CmykSpace::Icc(p) => {
-                let i = if absolute { Intent::AbsoluteColorimetric } else { Intent::RelativeColorimetric };
-                p.to_srgb(&cmyk, i).unwrap_or_else(|| naive_cmyk_to_rgb(cmyk))
+                let (i, bpc) = if absolute { (Intent::AbsoluteColorimetric, false) } else { (Intent::RelativeColorimetric, bpc) };
+                p.to_srgb(&cmyk, i, bpc).unwrap_or_else(|| naive_cmyk_to_rgb(cmyk))
             }
         }
     }
@@ -299,13 +378,13 @@ impl Cms {
         match space {
             CmykSpace::Generic(g) => g.from_srgb(srgb, intent, bpc),
             CmykSpace::Device => naive_rgb_to_cmyk(srgb),
-            CmykSpace::Icc(p) => p.from_srgb(srgb, intent).map(|v| [v[0], v[1], v[2], v[3]]).unwrap_or_else(|| naive_rgb_to_cmyk(srgb)),
+            CmykSpace::Icc(p) => cmyk4(p.from_srgb(srgb, intent, bpc)).unwrap_or_else(|| naive_rgb_to_cmyk(srgb)),
         }
     }
 
     /// CMYK in the working space → display sRGB (`absolute` simulates the paper colour).
     pub fn cmyk_to_srgb(&self, cmyk: [f32; 4], absolute: bool) -> [f32; 3] {
-        Self::cmyk_to_srgb_in(&self.cmyk, cmyk, absolute)
+        Self::cmyk_to_srgb_in(&self.cmyk, cmyk, absolute, self.settings.bpc)
     }
     /// Display sRGB → working CMYK with `intent`.
     pub fn srgb_to_cmyk(&self, srgb: [f32; 3], intent: Intent) -> [f32; 4] {
@@ -313,16 +392,19 @@ impl Cms {
     }
     /// Media-relative Lab of a working-space CMYK colour.
     pub fn cmyk_to_lab(&self, cmyk: [f32; 4]) -> Lab {
+        let cmyk = cmyk.map(|v| v.clamp(0.0, 1.0));
         match &self.cmyk {
-            CmykSpace::Generic(g) => g.to_lab_rel(cmyk.map(|v| v.clamp(0.0, 1.0))),
-            _ => lab::srgb_to_lab(self.cmyk_to_srgb(cmyk, false)),
+            CmykSpace::Generic(g) => g.to_lab_rel(cmyk),
+            CmykSpace::Icc(p) => p.to_lab(&cmyk).unwrap_or_else(|| lab::srgb_to_lab(naive_cmyk_to_rgb(cmyk))),
+            CmykSpace::Device => lab::srgb_to_lab(self.cmyk_to_srgb(cmyk, false)),
         }
     }
     /// Lab → working CMYK with `intent`.
     pub fn lab_to_cmyk(&self, l: Lab, intent: Intent) -> [f32; 4] {
         match &self.cmyk {
             CmykSpace::Generic(g) => g.from_lab(l, intent, self.settings.bpc),
-            _ => self.srgb_to_cmyk(lab::lab_to_srgb(l), intent),
+            CmykSpace::Icc(p) => cmyk4(p.from_lab(l, intent, self.settings.bpc)).unwrap_or_else(|| self.srgb_to_cmyk(lab::lab_to_srgb(l), intent)),
+            CmykSpace::Device => self.srgb_to_cmyk(lab::lab_to_srgb(l), intent),
         }
     }
 
@@ -388,10 +470,11 @@ impl Cms {
                 match &self.cmyk {
                     CmykSpace::Generic(g) => g.gamut_error(src),
                     CmykSpace::Device => 0.0,
-                    CmykSpace::Icc(_) => {
-                        let back = self.cmyk_to_srgb(self.srgb_to_cmyk(srgb, Intent::RelativeColorimetric), false);
-                        delta_e2000(src, lab::srgb_to_lab(back))
-                    }
+                    // The colour sent to the press (relative colorimetric, clipped) and measured back.
+                    CmykSpace::Icc(p) => match p.from_srgb(srgb, Intent::RelativeColorimetric, false).and_then(|cmyk| p.to_lab(&cmyk)) {
+                        Some(back) => delta_e2000(src, back),
+                        None => 0.0,
+                    },
                 }
             }
             _ => 0.0,
@@ -418,7 +501,7 @@ impl Cms {
             ProofTarget::Cmyk(name) => match cmyk_space(name) {
                 Ok(sp) => {
                     let cmyk = Self::srgb_to_cmyk_in(&sp, srgb, proof.intent, self.settings.bpc);
-                    Self::cmyk_to_srgb_in(&sp, cmyk, proof.simulate_paper)
+                    Self::cmyk_to_srgb_in(&sp, cmyk, proof.simulate_paper, self.settings.bpc)
                 }
                 Err(_) => srgb,
             },
@@ -429,7 +512,7 @@ impl Cms {
     pub fn proof_cmyk_to_srgb(&self, cmyk: [f32; 4], proof: &ProofSetup) -> [f32; 3] {
         match &proof.target {
             ProofTarget::Cmyk(name) => match cmyk_space(name) {
-                Ok(sp) => Self::cmyk_to_srgb_in(&sp, cmyk, proof.simulate_paper),
+                Ok(sp) => Self::cmyk_to_srgb_in(&sp, cmyk, proof.simulate_paper, self.settings.bpc),
                 Err(_) => self.cmyk_to_srgb(cmyk, proof.simulate_paper),
             },
             _ => self.cmyk_to_srgb(cmyk, proof.simulate_paper),
@@ -456,6 +539,13 @@ static PROOF_CACHE: Mutex<Vec<(String, Arc<ProofLut>)>> = Mutex::new(Vec::new())
 
 fn clear_proof_cache() {
     PROOF_CACHE.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+fn cmyk4(v: Option<Vec<f32>>) -> Option<[f32; 4]> {
+    match v?.as_slice() {
+        &[c, m, y, k] => Some([c, m, y, k]),
+        _ => None,
+    }
 }
 
 pub(crate) fn naive_cmyk_to_rgb([c, m, y, k]: [f32; 4]) -> [f32; 3] {
@@ -604,6 +694,13 @@ impl ProofLut {
 static ACTIVE: RwLock<Option<Arc<Cms>>> = RwLock::new(None);
 static RGB_IS_SRGB: AtomicBool = AtomicBool::new(true);
 static CMYK_IS_DEVICE: AtomicBool = AtomicBool::new(false);
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// A number that changes whenever the active settings change or a profile is registered: caches
+/// of colour-converted pixels compare it to know when to convert again.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
+}
 
 /// The active colour-management context (Edit → Color Settings).
 pub fn active() -> Arc<Cms> {
@@ -621,9 +718,13 @@ pub fn active_settings() -> ColorSettings {
 /// Replace the active settings (fails, leaving them unchanged, if a profile is unknown).
 pub fn set_active(settings: &ColorSettings) -> Result<(), CmsError> {
     let cms = Cms::new(settings)?;
+    let changed = active().settings != *settings;
     RGB_IS_SRGB.store(cms.rgb_is_srgb(), Ordering::Relaxed);
     CMYK_IS_DEVICE.store(matches!(cms.cmyk, CmykSpace::Device), Ordering::Relaxed);
     *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(cms));
+    if changed {
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+    }
     Ok(())
 }
 

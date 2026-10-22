@@ -31,7 +31,7 @@ pub const FIGURES: &[(&str, &str, &[&str], &str)] = &[
 
 /// Features shaping turns on by itself: "off" is an explicit `-tag`.
 fn default_on(tag: &str) -> bool {
-    matches!(tag, "calt" | "locl" | "mark")
+    matches!(tag, "calt" | "liga" | "locl" | "mark")
 }
 
 pub fn is_on(list: &[String], tag: &str) -> bool {

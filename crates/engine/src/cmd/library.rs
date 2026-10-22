@@ -29,7 +29,7 @@ impl Library {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(p) = &self.path {
             let bytes = serde_json::to_vec_pretty(self).map_err(|e| crate::EngineError::Other(e.to_string()))?;
-            std::fs::write(p, bytes).map_err(|e| crate::EngineError::Other(format!("{p}: {e}")))?;
+            crate::io::write_file(p, &bytes).map_err(crate::EngineError::Other)?;
         }
         Ok(())
     }
@@ -56,7 +56,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 (Some(j), _) => (j.to_string(), None),
                 (None, Some(path)) => {
                     #[cfg(not(target_arch = "wasm32"))]
-                    let t = std::fs::read_to_string(path).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
+                    let t = crate::io::read_to_string(path).map_err(crate::EngineError::Other)?;
                     #[cfg(target_arch = "wasm32")]
                     let t = String::new();
                     (t, Some(path.to_string()))
@@ -86,10 +86,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 let n = st.selection.items.len();
                 (str_param(p, "name").map(str::to_string).unwrap_or_else(|| if n > 1 { format!("{n} objects") } else { kind.clone() }), str_param(p, "description").unwrap_or("").to_string())
             };
-            let lib = s.library.as_mut().ok_or_else(no_library)?;
+            let mut lib = s.library.as_ref().ok_or_else(no_library)?.clone();
+            let index = lib.items.len();
             lib.items.push(LibraryItem { name, description, snippet: super::file::base64_encode(&snip) });
             lib.save()?;
-            Ok(json!({"index": lib.items.len() - 1}))
+            s.library = Some(lib);
+            Ok(json!({"index": index}))
         }),
         cmd!(
             "library.place",
@@ -107,13 +109,14 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(noundo "library.remove", "Delete Item", [], None, "{index}", has_library, |s, p| {
-            let lib = s.library.as_mut().ok_or_else(no_library)?;
+            let mut lib = s.library.as_ref().ok_or_else(no_library)?.clone();
             let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad("library.remove", "`index` required"))? as usize;
             if i >= lib.items.len() {
                 return Err(bad("library.remove", format!("no item {i}")));
             }
             lib.items.remove(i);
             lib.save()?;
+            s.library = Some(lib);
             ok()
         }),
         cmd!(noundo "conveyor.collect", "Collect", [], None, "{ids? (default: the selection)} — each object onto the Content Collector conveyor → {count}", has_selection, |s, p| {

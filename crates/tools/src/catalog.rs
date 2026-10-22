@@ -16,6 +16,9 @@ const fn t(id: &'static str, label: &'static str, shortcut: Option<&'static str>
 
 /// Tools-panel groups in order (the first tool of each group shows by default). A `None` group
 /// marks a separator.
+///
+/// In two columns InDesign lays some groups out tool by tool (Content Collector and Content
+/// Placer side by side): see [`SPLIT_IN_TWO_COLUMNS`].
 pub const TOOL_GROUPS: &[&[ToolInfo]] = &[
     &[t("selection", "Selection Tool", Some("V"), "tool-selection")],
     &[t("directSelection", "Direct Selection Tool", Some("A"), "tool-direct")],
@@ -62,10 +65,8 @@ pub const TOOL_GROUPS: &[&[ToolInfo]] = &[
         t("scale", "Scale Tool", Some("S"), "tool-scale"),
         t("shear", "Shear Tool", Some("O"), "tool-shear"),
     ],
-    &[
-        t("gradientSwatch", "Gradient Swatch Tool", Some("G"), "tool-gradient"),
-        t("gradientFeather", "Gradient Feather Tool", Some("Shift+G"), "tool-gradient-feather"),
-    ],
+    &[t("gradientSwatch", "Gradient Swatch Tool", Some("G"), "tool-gradient")],
+    &[t("gradientFeather", "Gradient Feather Tool", Some("Shift+G"), "tool-gradient-feather")],
     &[],
     &[t("note", "Note Tool", None, "tool-note")],
     &[
@@ -76,6 +77,10 @@ pub const TOOL_GROUPS: &[&[ToolInfo]] = &[
     &[t("hand", "Hand Tool", Some("H"), "tool-hand")],
     &[t("zoom", "Zoom Tool", Some("Z"), "tool-zoom")],
 ];
+
+/// Groups (by their first tool) whose tools get a button each when the Tools panel has two
+/// columns, as InDesign's does.
+pub const SPLIT_IN_TWO_COLUMNS: &[&str] = &["contentCollector"];
 
 pub fn tool_info(id: &str) -> Option<ToolInfo> {
     TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| t.id == id).copied()

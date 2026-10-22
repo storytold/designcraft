@@ -16,15 +16,18 @@ pub fn specs() -> Vec<CommandSpec> {
             if ts.cell.is_some() {
                 return Err(bad("note.new", "notes go in story text"));
             }
-            let text = str_param(p, "text").unwrap_or("").to_string();
+            let text = super::text_param(p, "text");
             let author = str_param(p, "author").unwrap_or("").to_string();
             let at = ts.anchor.max(ts.focus);
             s.edit(|d, sel| {
                 let story = d.story_mut(ts.story).ok_or_else(|| bad("note.new", "no such story"))?;
                 let fmt = story.char_format_at(at).clone();
                 story.insert_with(at, &NOTE_MARK.to_string(), fmt);
+                // A file may hold fewer notes than anchors; give every anchor one.
+                story.fix_marks();
                 let k = story.text[..at].matches(NOTE_MARK).count();
-                let n = Arc::make_mut(&mut story.editorial[k]);
+                let n = story.editorial.get_mut(k).ok_or_else(|| bad("note.new", "the story's notes don't match their anchors"))?;
+                let n = Arc::make_mut(n);
                 (n.text, n.author) = (text, author);
                 let id = n.id;
                 if let Some(t) = &mut sel.text {
@@ -36,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("note.edit", "Edit Note", [], None, "{story, id, text?, author?}", has_doc, |s, p| {
             let (sid, id) = target(p)?;
-            let (text, author) = (str_param(p, "text").map(str::to_string), str_param(p, "author").map(str::to_string));
+            let (text, author) = (str_param(p, "text").map(|_| super::text_param(p, "text")), str_param(p, "author").map(str::to_string));
             s.edit(|d, _| {
                 let st = d.story_mut(sid).ok_or_else(|| bad("note.edit", "no such story"))?;
                 let n = st.editorial.iter_mut().find(|n| n.id == id).ok_or_else(|| bad("note.edit", format!("no note {id}")))?;
@@ -47,7 +50,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 if let Some(a) = author {
                     n.author = a;
                 }
-                st.rev += 1;
+                st.rev = st.rev.wrapping_add(1);
                 ok()
             })
         }),
@@ -131,5 +134,29 @@ mod tests {
         s.execute("note.convertToText", &json!({"story": n["story"], "id": n["id"]})).unwrap();
         assert_eq!(s.doc().unwrap().doc.stories[&sid].text, "Draft (checked) copy.");
         assert!(s.doc().unwrap().doc.stories[&sid].editorial.is_empty());
+    }
+
+    #[test]
+    fn notes_insert_into_a_story_whose_markers_lack_payloads() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Draft copy."})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        // A damaged file: a note anchor, an endnote and a footnote reference without payloads.
+        let st = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc).story_mut(sid).unwrap();
+        st.insert(0, &format!("{}{}{}", designcraft_doc::NOTE_MARK, designcraft_doc::ENDNOTE_REF, designcraft_doc::FOOTNOTE_REF));
+        st.editorial.clear();
+        st.endnotes.clear();
+        st.notes.clear();
+        let end = st.len();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": end, "focus": end})).unwrap();
+        s.execute("note.new", &json!({"text": "check this"})).unwrap();
+        s.execute("endnote.insert", &json!({"text": "An endnote."})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "A footnote."})).unwrap();
+        let st = &s.doc().unwrap().doc.stories[&sid];
+        st.check().unwrap();
+        assert_eq!(st.editorial[1].text, "check this");
+        assert_eq!(st.endnotes[1].text.text, "An endnote.");
+        assert_eq!(st.notes[1].text.text, "A footnote.");
     }
 }

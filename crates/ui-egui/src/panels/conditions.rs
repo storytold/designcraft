@@ -58,10 +58,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             if has_text {
                 let on = !applied.contains(&c.name);
                 if let Err(e) = app.run("condition.apply", json!({"name": c.name, "on": on})) {
-                    app.status(format!("Conditional Text: {e}"));
+                    app.status_error("Conditional Text", e);
                 }
             } else {
-                app.status("Select text to apply a condition".to_string());
+                app.status(crate::i18n::tr(&app.ui.language, "Select text to apply a condition"));
             }
         }
         nr.context_menu(|ui| {
@@ -83,7 +83,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New"))).clicked() && !name.trim().is_empty() {
             match app.run("condition.new", json!({"name": name.trim()})) {
                 Ok(_) => name.clear(),
-                Err(e) => app.status(format!("Conditional Text: {e}")),
+                Err(e) => app.status_error("Conditional Text", e),
             }
         }
     });

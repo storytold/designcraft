@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Cross-Reference…",
             ["Type", "Hyperlinks & Cross-References"],
             None,
-            "{anchor? | paragraph?: text to find (first paragraph containing it) | story? + para? (0-based), format?: name (default Full Paragraph & Page Number)} — at the insertion point; the text updates itself as the destination moves",
+            "{anchor? | paragraph?: text to find (first paragraph containing it) | story?: with para? | para?: 0-based paragraph of `story`, format?: name (default Full Paragraph & Page Number)} — at the insertion point; the text updates itself as the destination moves",
             in_story_text,
             insert
         ),
@@ -162,7 +162,7 @@ fn set_format(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let x = st.xrefs.get_mut(k).ok_or_else(|| bad("xref.setFormat", "no such cross-reference"))?;
         std::sync::Arc::make_mut(x).format = format;
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
         Ok(Value::Null)
     })
 }
@@ -213,5 +213,24 @@ mod tests {
         assert_eq!(s.execute("xref.list", &json!({})).unwrap()[0]["text"], "??");
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.execute("xref.list", &json!({})).unwrap()[0]["text"], "(p. 3)");
+    }
+
+    #[test]
+    fn cross_reference_into_a_story_with_a_running_header_composes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+        let head = s.execute("frame.create", &json!({"rect": [72, 72, 400, 120], "content": "text", "text": "Chapter"})).unwrap()["story"].clone();
+        let body = s.execute("frame.create", &json!({"rect": [72, 200, 400, 300], "content": "text", "text": "See"})).unwrap()["story"].clone();
+        s.execute("text.select", &json!({"story": head, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("variables.insert", &json!({"name": "Running Header"})).unwrap();
+        s.execute("text.select", &json!({"story": body, "anchor": 3, "focus": 3})).unwrap();
+        s.execute("xref.insert", &json!({"story": head, "para": 0})).unwrap();
+        // The cross-reference index and the running-header index used to build each other without end.
+        assert_eq!(s.execute("xref.list", &json!({})).unwrap()[0]["text"], "\u{201C}Chapter\u{201D} on page 1");
+        // The header shows the body's paragraph in front of its own text.
+        let d = s.doc().unwrap().doc.clone();
+        let cs = s.cache.get(&d, StoryId(head.as_u64().unwrap()), None);
+        let glyphs: usize = cs.frames[0].lines.iter().map(|l| l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).count()).sum();
+        assert_eq!(glyphs, "SeeChapter".len());
     }
 }

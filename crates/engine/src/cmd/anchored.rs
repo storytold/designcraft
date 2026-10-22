@@ -18,7 +18,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Anchored Object…",
             ["Object", "Anchored Object"],
             None,
-            "{ids, story?, pos? (default: the text insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative?/yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint?/refPoint?: 0..8, keepWithinColumn?} — moves the items into the text",
+            "{ids, story?, pos? (default: the text insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?} — moves the items into the text",
             has_doc,
             insert
         ),
@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Anchored Object Options…",
             ["Object", "Anchored Object"],
             None,
-            "{story?, index? (default: the object at the insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative?/yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint?/refPoint?: 0..8, keepWithinColumn?}",
+            "{story?, index? (default: the object at the insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?}",
             has_doc,
             options
         ),
@@ -190,7 +190,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let o = st.objects.get_mut(k).ok_or_else(|| bad("anchored.options", "no such anchored object"))?;
         Arc::make_mut(o).position = position.clone();
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
         Ok(json!({"position": position}))
     })
 }

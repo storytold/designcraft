@@ -200,5 +200,24 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
     Ok(out)
 }
 
+impl From<craft_pdf::write::WriteError> for PdfError {
+    fn from(error: craft_pdf::write::WriteError) -> Self {
+        Self::Write(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod rtl_tests;
 #[cfg(test)]
 mod tests;
+
+// Run the same public API/output contracts with the unit-only colliding cache hasher as well
+// as the production RandomState used by the integration-test executable.
+#[cfg(test)]
+extern crate self as designcraft_pdf;
+#[cfg(test)]
+#[path = "../tests/support/image_content_cache_contract.rs"]
+mod image_content_cache_collision_exports;
+#[cfg(test)]
+#[path = "../tests/support/image_fixtures.rs"]
+mod image_fixtures;

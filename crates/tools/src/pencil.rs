@@ -51,7 +51,7 @@ impl Tool for PencilTool {
         }
     }
 
-    fn overlays(&self, _cx: &ToolContext) -> Vec<Overlay> {
+    fn overlays(&self, cx: &ToolContext) -> Vec<Overlay> {
         let Some((_, _, pts)) = &self.stroke else { return vec![] };
         let mut path = BezPath::new();
         for (i, p) in pts.iter().enumerate() {
@@ -61,7 +61,9 @@ impl Tool for PencilTool {
                 path.line_to(*p);
             }
         }
-        vec![Overlay::Path { path, color: [0, 0, 0], dashed: false }]
+        // In the colour of the layer the path goes on, as InDesign draws it.
+        let color = cx.doc.layer(cx.layer).map_or([60, 120, 220], |l| l.color);
+        vec![Overlay::Path { path, color, dashed: false }]
     }
 
     fn cursor(&self, _cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {

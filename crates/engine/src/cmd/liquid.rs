@@ -35,7 +35,7 @@ fn axis(lo: f64, hi: f64, o: (f64, f64), n: (f64, f64), pin_lo: bool, pin_hi: bo
 fn target(rule: LiquidRule, b: Rect, old: Rect, new: Rect, liquid: Option<ObjectLiquid>, vguides: &[f64], hguides: &[f64]) -> Rect {
     let (ox, oy, nx, ny) = ((old.x0, old.x1), (old.y0, old.y1), (new.x0, new.x1), (new.y0, new.y1));
     match rule {
-        LiquidRule::Off => b,
+        LiquidRule::Off | LiquidRule::ControlledByParent => b,
         LiquidRule::ReCenter => b + (new.center() - old.center()),
         LiquidRule::Scale => {
             let k = (new.width() / old.width()).min(new.height() / old.height());
@@ -63,7 +63,7 @@ fn target(rule: LiquidRule, b: Rect, old: Rect, new: Rect, liquid: Option<Object
 pub(crate) fn apply(d: &mut Document, sr: SpreadRef, pi: usize, old: Rect) {
     let Some(sp) = d.spread(sr) else { return };
     let Some(pg) = sp.pages.get(pi) else { return };
-    let (rule, new) = (pg.liquid, pg.bounds());
+    let (rule, new) = (effective_rule(d, sr, pi), pg.bounds());
     if rule == LiquidRule::Off || old == new || old.width() < 1e-6 || old.height() < 1e-6 {
         return;
     }
@@ -108,8 +108,24 @@ pub(crate) fn apply(d: &mut Document, sr: SpreadRef, pi: usize, old: Rect) {
     }
 }
 
+/// The rule page `pi` of spread `sr` follows: its own, or its parent page's when it's controlled
+/// by the parent (Off when that's unset too).
+pub(crate) fn effective_rule(d: &Document, sr: SpreadRef, pi: usize) -> LiquidRule {
+    let Some(pg) = d.spread(sr).and_then(|sp| sp.pages.get(pi)) else { return LiquidRule::Off };
+    if pg.liquid != LiquidRule::ControlledByParent {
+        return pg.liquid;
+    }
+    let SpreadRef::Doc(si) = sr else { return LiquidRule::Off };
+    let abs = d.first_page_of_spread(si) + pi;
+    match d.parent_page_for(abs).and_then(|(ppi, ppg)| d.parents.get(ppi)?.pages.get(ppg).map(|p| p.liquid)) {
+        Some(LiquidRule::ControlledByParent) | None => LiquidRule::Off,
+        Some(r) => r,
+    }
+}
+
 fn rule_param(p: &Value, id: &str) -> Result<LiquidRule> {
-    serde_json::from_value(p.get("rule").cloned().unwrap_or(json!("off"))).map_err(|_| bad(id, "`rule`: off|scale|reCenter|guideBased|objectBased"))
+    serde_json::from_value(p.get("rule").cloned().unwrap_or(json!("off")))
+        .map_err(|_| bad(id, "`rule`: off|scale|reCenter|guideBased|objectBased|controlledByParent"))
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -119,7 +135,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Liquid Page Rule",
             ["Layout", "Liquid Layout"],
             None,
-            "{rule: off|scale|reCenter|guideBased|objectBased, pages?: [1-based] (default: all)}",
+            "{rule: off|scale|reCenter|guideBased|objectBased|controlledByParent (the parent page's rule), pages?: [1-based] (default: all)}",
             has_doc,
             |s, p| {
                 let rule = rule_param(p, "liquid.pageRule")?;
@@ -168,7 +184,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!("guide.liquid", "Convert to Liquid Guide", [], None, "{spread?, page, index, on?: bool (default true)}", has_doc, |s, p| {
-            let sr = super::spread_param(p, "spread");
+            let sr = super::spread_param(p, "guide.liquid")?;
             let pi = p.get("page").and_then(Value::as_u64).unwrap_or(0) as usize;
             let gi = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad("guide.liquid", "`index` required"))? as usize;
             let on = p.get("on").and_then(Value::as_bool).unwrap_or(true);

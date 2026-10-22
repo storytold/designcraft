@@ -14,6 +14,10 @@ designcraft-fonts = { workspace = true }
 image = { workspace = true }
 tiff = { workspace = true }
 resvg = { workspace = true }
+log = { workspace = true }
+craft-cms = { workspace = true }
+zune-core = { version = "0.5", default-features = false }
+zune-jpeg = "0.5"
 
 [dev-dependencies]
 designcraft-fonts = { workspace = true, features = ["testing"] }

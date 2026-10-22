@@ -78,8 +78,8 @@ fn arrow(pen: &Pen, hollow: bool) {
 pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
     let mut pen = Pen { p, r, c, w: 1.3 };
     match name {
-        "tool-selection" => arrow(&pen, true),
-        "tool-direct" => arrow(&pen, false),
+        "tool-selection" => arrow(&pen, false),
+        "tool-direct" => arrow(&pen, true),
         "tool-page" => {
             pen.closed(&[(5.0, 3.0), (12.0, 3.0), (15.0, 6.0), (15.0, 17.0), (5.0, 17.0)]);
             pen.line(&[(12.0, 3.0), (12.0, 6.0), (15.0, 6.0)]);
@@ -168,15 +168,26 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(7.0, 4.0), (16.0, 4.0)]);
             pen.line(&[(13.5, 2.0), (16.0, 4.0), (13.5, 6.0)]);
         }
-        "tool-rotate" => {
+        "tool-rotate" | "rotate-clockwise" => {
+            let direction = if name == "rotate-clockwise" { -1.0 } else { 1.0 };
             let pts: Vec<(f32, f32)> = (0..24)
                 .map(|i| {
                     let a = (i as f32 / 23.0) * 4.6 - 0.6;
-                    (10.0 + 6.5 * a.cos(), 10.0 - 6.5 * a.sin())
+                    (10.0 + direction * 6.5 * a.cos(), 10.0 - 6.5 * a.sin())
                 })
                 .collect();
             pen.line(&pts);
-            pen.line(&[(13.0, 4.0), (15.5, 6.0), (16.5, 2.8)]);
+            pen.line(&[(10.0 + direction * 3.0, 4.0), (10.0 + direction * 5.5, 6.0), (10.0 + direction * 6.5, 2.8)]);
+        }
+        "flip-horizontal" => {
+            pen.line(&[(10.0, 2.0), (10.0, 18.0)]);
+            pen.fill(&[(3.0, 4.0), (8.0, 10.0), (3.0, 16.0)]);
+            pen.closed(&[(17.0, 4.0), (12.0, 10.0), (17.0, 16.0)]);
+        }
+        "flip-vertical" => {
+            pen.line(&[(2.0, 10.0), (18.0, 10.0)]);
+            pen.fill(&[(4.0, 3.0), (10.0, 8.0), (16.0, 3.0)]);
+            pen.closed(&[(4.0, 17.0), (10.0, 12.0), (16.0, 17.0)]);
         }
         "tool-gradient" | "tool-gradient-feather" => {
             for i in 0..6 {
@@ -278,6 +289,7 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
         }
         "panel-effects" => pen.text(10.0, 10.0, "fx", 11.0),
         "panel-character" => pen.text(10.0, 10.5, "A", 15.0),
+        "panel-typography" => pen.text(10.0, 10.5, "OT", 11.5),
         "panel-paragraph" => pen.text(10.0, 10.5, "¶", 15.0),
         "panel-pstyles" => {
             pen.text(8.0, 10.0, "¶", 13.0);
@@ -309,6 +321,24 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(3.0, 3.0), (3.0, 17.0)]);
             pen.frect(5.0, 5.0, 15.0, 9.0);
             pen.frect(5.0, 11.0, 11.0, 15.0);
+        }
+        "objdistribute-h" => {
+            pen.frect(2.5, 5.0, 6.0, 15.0);
+            pen.frect(14.0, 5.0, 17.5, 15.0);
+            pen.line(&[(7.5, 10.0), (12.5, 10.0)]);
+            pen.line(&[(7.5, 10.0), (9.0, 8.5)]);
+            pen.line(&[(7.5, 10.0), (9.0, 11.5)]);
+            pen.line(&[(12.5, 10.0), (11.0, 8.5)]);
+            pen.line(&[(12.5, 10.0), (11.0, 11.5)]);
+        }
+        "objdistribute-v" => {
+            pen.frect(5.0, 2.5, 15.0, 6.0);
+            pen.frect(5.0, 14.0, 15.0, 17.5);
+            pen.line(&[(10.0, 7.5), (10.0, 12.5)]);
+            pen.line(&[(10.0, 7.5), (8.5, 9.0)]);
+            pen.line(&[(10.0, 7.5), (11.5, 9.0)]);
+            pen.line(&[(10.0, 12.5), (8.5, 11.0)]);
+            pen.line(&[(10.0, 12.5), (11.5, 11.0)]);
         }
         "panel-transform" => {
             pen.rect(4.0, 4.0, 16.0, 16.0);
@@ -431,6 +461,19 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(5.0, 10.0), (4.0, 10.0), (4.0, 17.0), (16.0, 17.0), (16.0, 10.0), (15.0, 10.0)]);
         }
         "screen-normal" => pen.rect(3.0, 4.0, 17.0, 16.0),
+        // View Options: a frame's dashed edges with a ruler's ticks above.
+        "view-options" => {
+            pen.w = 1.1;
+            for (x0, x1) in [(4.0, 6.5), (8.5, 11.5), (13.5, 16.0)] {
+                pen.line(&[(x0, 9.0), (x1, 9.0)]);
+                pen.line(&[(x0, 17.0), (x1, 17.0)]);
+            }
+            pen.line(&[(4.0, 9.0), (4.0, 17.0)]);
+            pen.line(&[(16.0, 9.0), (16.0, 17.0)]);
+            for x in [5.0, 8.0, 11.0, 14.0] {
+                pen.line(&[(x, 4.0), (x, 6.0)]);
+            }
+        }
         "screen-preview" => {
             pen.rect(3.0, 4.0, 17.0, 16.0);
             pen.frect(6.0, 7.0, 14.0, 13.0);
@@ -449,6 +492,36 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 };
                 pen.line(&[(x0, y), (x1, y)]);
             }
+        }
+        // Tab stops: a stem standing on a foot that runs the way the text runs from the stop.
+        "tab-left" | "tab-center" | "tab-right" | "tab-char" => {
+            pen.w = 1.8;
+            pen.line(&[(10.0, 4.0), (10.0, 15.0)]);
+            let (x0, x1) = match name {
+                "tab-left" => (10.0, 16.0),
+                "tab-right" => (4.0, 10.0),
+                _ => (5.0, 15.0),
+            };
+            pen.line(&[(x0, 15.0), (x1, 15.0)]);
+            if name == "tab-char" {
+                pen.fcircle(14.0, 10.0, 1.4);
+            }
+        }
+        // Position the panel above the text frame: a horseshoe magnet.
+        "tab-snap" => {
+            pen.w = 1.6;
+            let arc: Vec<(f32, f32)> = (0..=12)
+                .map(|i| {
+                    let a = i as f32 / 12.0 * std::f32::consts::PI;
+                    (10.0 + 5.5 * a.cos(), 10.0 + 5.5 * a.sin())
+                })
+                .collect();
+            let mut pts = vec![(15.5, 3.5)];
+            pts.extend(arc);
+            pts.push((4.5, 3.5));
+            pen.line(&pts);
+            pen.line(&[(3.0, 5.5), (6.0, 5.5)]);
+            pen.line(&[(14.0, 5.5), (17.0, 5.5)]);
         }
         "ref-point" => {
             for i in 0..9 {
@@ -495,7 +568,186 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 _ => {}
             }
         }
+        // Pathfinder: a back square (top left) and a front one (bottom right), the result filled.
+        "pf-add" | "pf-subtract" | "pf-intersect" | "pf-exclude" | "pf-minus-back" => {
+            let (back, front) = ((3.0, 3.0, 13.0, 13.0), (7.0, 7.0, 17.0, 17.0));
+            match name {
+                "pf-add" => {
+                    pen.frect(back.0, back.1, back.2, back.3);
+                    pen.frect(front.0, front.1, front.2, front.3);
+                }
+                "pf-subtract" => {
+                    pen.frect(3.0, 3.0, 13.0, 7.0);
+                    pen.frect(3.0, 7.0, 7.0, 13.0);
+                    pen.rect(front.0, front.1, front.2, front.3);
+                }
+                "pf-intersect" => {
+                    pen.rect(back.0, back.1, back.2, back.3);
+                    pen.rect(front.0, front.1, front.2, front.3);
+                    pen.frect(7.0, 7.0, 13.0, 13.0);
+                }
+                "pf-exclude" => {
+                    pen.frect(3.0, 3.0, 13.0, 7.0);
+                    pen.frect(3.0, 7.0, 7.0, 13.0);
+                    pen.frect(13.0, 7.0, 17.0, 17.0);
+                    pen.frect(7.0, 13.0, 13.0, 17.0);
+                    pen.rect(7.0, 7.0, 13.0, 13.0);
+                }
+                _ => {
+                    pen.rect(back.0, back.1, back.2, back.3);
+                    pen.frect(13.0, 7.0, 17.0, 17.0);
+                    pen.frect(7.0, 13.0, 13.0, 17.0);
+                }
+            }
+        }
+        // Flex Layout panel (original drawings): direction arrows, wrap, justification, spacing.
+        "flex-right" | "flex-left" | "flex-down" | "flex-up" => {
+            let pts: [(f32, f32); 5] = match name {
+                "flex-right" => [(3.0, 10.0), (16.0, 10.0), (11.5, 6.0), (16.0, 10.0), (11.5, 14.0)],
+                "flex-left" => [(17.0, 10.0), (4.0, 10.0), (8.5, 6.0), (4.0, 10.0), (8.5, 14.0)],
+                "flex-down" => [(10.0, 3.0), (10.0, 16.0), (6.0, 11.5), (10.0, 16.0), (14.0, 11.5)],
+                _ => [(10.0, 17.0), (10.0, 4.0), (6.0, 8.5), (10.0, 4.0), (14.0, 8.5)],
+            };
+            pen.line(&pts[..2]);
+            pen.line(&pts[2..]);
+        }
+        "flex-wrap" => {
+            pen.line(&[(16.0, 4.0), (16.0, 12.0), (5.0, 12.0)]);
+            pen.line(&[(8.5, 8.5), (5.0, 12.0), (8.5, 15.5)]);
+        }
+        "flex-start" | "flex-center" | "flex-end" | "flex-between" | "flex-around" | "flex-evenly" => {
+            // Three bars in a box, where the justification puts them.
+            pen.rect(1.5, 6.0, 18.5, 14.0);
+            let xs: [f32; 3] = match name {
+                "flex-start" => [3.0, 6.0, 9.0],
+                "flex-center" => [6.5, 9.5, 12.5],
+                "flex-end" => [10.0, 13.0, 16.0],
+                "flex-between" => [3.0, 9.5, 16.0],
+                "flex-around" => [4.5, 9.5, 14.5],
+                _ => [5.0, 9.5, 14.0],
+            };
+            for x in xs {
+                pen.frect(x, 7.5, x + 1.8, 12.5);
+            }
+        }
+        "gap-h" => {
+            pen.line(&[(3.0, 4.0), (3.0, 16.0)]);
+            pen.line(&[(17.0, 4.0), (17.0, 16.0)]);
+            pen.line(&[(5.5, 10.0), (14.5, 10.0)]);
+            pen.line(&[(8.0, 7.5), (5.5, 10.0), (8.0, 12.5)]);
+            pen.line(&[(12.0, 7.5), (14.5, 10.0), (12.0, 12.5)]);
+        }
+        "gap-v" => {
+            pen.line(&[(4.0, 3.0), (16.0, 3.0)]);
+            pen.line(&[(4.0, 17.0), (16.0, 17.0)]);
+            pen.line(&[(10.0, 5.5), (10.0, 14.5)]);
+            pen.line(&[(7.5, 8.0), (10.0, 5.5), (12.5, 8.0)]);
+            pen.line(&[(7.5, 12.0), (10.0, 14.5), (12.5, 12.0)]);
+        }
+        "panel-flex" => {
+            pen.rect(2.5, 3.5, 17.5, 16.5);
+            pen.frect(5.0, 6.0, 8.5, 14.0);
+            pen.frect(11.5, 6.0, 15.0, 14.0);
+            pen.line(&[(8.5, 10.0), (11.5, 10.0)]);
+        }
+        // Pathfinder panel › Paths: a join point, a path opened and one closed, two opposed arrows.
+        "path-join" => {
+            pen.line(&[(3.0, 16.0), (5.0, 12.0), (10.0, 10.0)]);
+            pen.line(&[(10.0, 10.0), (15.0, 8.0), (17.0, 4.0)]);
+            pen.fcircle(10.0, 10.0, 2.2);
+        }
+        "path-open" | "path-close" => {
+            let gap = if name == "path-open" { 0.9 } else { 0.0 };
+            let n = 28;
+            let pts: Vec<(f32, f32)> = (0..=n)
+                .map(|i| {
+                    let a = -std::f32::consts::FRAC_PI_2 + gap / 2.0 + (std::f32::consts::TAU - gap) * i as f32 / n as f32;
+                    (10.0 + 6.5 * a.cos(), 10.5 + 6.5 * a.sin())
+                })
+                .collect();
+            pen.line(&pts);
+            if name == "path-open" {
+                pen.frect(11.0, 2.5, 14.0, 5.5);
+                pen.frect(6.0, 2.5, 9.0, 5.5);
+            } else {
+                pen.fcircle(10.0, 4.0, 1.8);
+            }
+        }
+        "path-reverse" => {
+            pen.line(&[(3.0, 7.0), (16.0, 7.0)]);
+            pen.line(&[(13.0, 4.0), (16.5, 7.0), (13.0, 10.0)]);
+            pen.line(&[(17.0, 13.0), (4.0, 13.0)]);
+            pen.line(&[(7.0, 10.0), (3.5, 13.0), (7.0, 16.0)]);
+        }
+        // Pathfinder panel › Convert Shape: the shape outlined.
+        "shape-rect" => pen.rect(3.0, 5.0, 17.0, 15.0),
+        "shape-rounded" | "shape-beveled" | "shape-inverse" => {
+            let (x0, y0, x1, y1, r): (f32, f32, f32, f32, f32) = (3.0, 5.0, 17.0, 15.0, 3.5);
+            // Clockwise from the top left: each corner's two ends, and the centre of its arc
+            // (inside for a rounded corner, the corner itself for an inverse rounded one).
+            let corners = [
+                ((x0, y0), (x0, y0 + r), (x0 + r, y0), (x0 + r, y0 + r)),
+                ((x1, y0), (x1 - r, y0), (x1, y0 + r), (x1 - r, y0 + r)),
+                ((x1, y1), (x1, y1 - r), (x1 - r, y1), (x1 - r, y1 - r)),
+                ((x0, y1), (x0 + r, y1), (x0, y1 - r), (x0 + r, y1 - r)),
+            ];
+            let mut pts = Vec::new();
+            for (corner, a, b, inner) in corners {
+                if name == "shape-beveled" {
+                    pts.extend([a, b]);
+                    continue;
+                }
+                let c = if name == "shape-inverse" { corner } else { inner };
+                let a0 = (a.1 - c.1).atan2(a.0 - c.0);
+                let mut d = (b.1 - c.1).atan2(b.0 - c.0) - a0;
+                if d > std::f32::consts::PI {
+                    d -= std::f32::consts::TAU;
+                } else if d < -std::f32::consts::PI {
+                    d += std::f32::consts::TAU;
+                }
+                pts.extend((0..=6).map(|k| {
+                    let t = a0 + d * k as f32 / 6.0;
+                    (c.0 + r * t.cos(), c.1 + r * t.sin())
+                }));
+            }
+            pen.closed(&pts);
+        }
+        "shape-ellipse" => pen.ellipse(10.0, 10.0, 7.5, 5.0),
+        "shape-triangle" => pen.closed(&[(10.0, 3.5), (17.0, 16.0), (3.0, 16.0)]),
+        "shape-polygon" => pen.closed(&[(6.5, 4.0), (13.5, 4.0), (17.0, 10.0), (13.5, 16.0), (6.5, 16.0), (3.0, 10.0)]),
+        "shape-line" => pen.line(&[(4.0, 16.0), (16.0, 4.0)]),
+        "shape-orthogonal" => {
+            pen.line(&[(10.0, 3.0), (10.0, 17.0)]);
+            pen.line(&[(3.0, 10.0), (17.0, 10.0)]);
+        }
+        // Pathfinder panel › Convert Point: a point on a path, with its direction handles.
+        "point-plain" | "point-corner" | "point-smooth" | "point-symmetrical" => {
+            match name {
+                "point-plain" | "point-corner" => pen.line(&[(3.0, 16.0), (10.0, 8.0), (17.0, 16.0)]),
+                _ => pen.line(&[(3.0, 16.0), (5.5, 11.5), (10.0, 8.0), (14.5, 11.5), (17.0, 16.0)]),
+            }
+            let handles: &[(f32, f32)] = match name {
+                "point-corner" => &[(4.5, 4.0), (16.0, 5.0)],
+                "point-smooth" => &[(5.0, 8.0), (17.5, 8.0)],
+                "point-symmetrical" => &[(4.0, 8.0), (16.0, 8.0)],
+                _ => &[],
+            };
+            for &(hx, hy) in handles {
+                pen.line(&[(10.0, 8.0), (hx, hy)]);
+                pen.fcircle(hx, hy, 1.4);
+            }
+            pen.frect(8.5, 6.5, 11.5, 9.5);
+        }
         // ---- Properties panel glyphs (original drawings)
+        "clock" => {
+            pen.circle(10.0, 10.0, 7.5);
+            pen.line(&[(10.0, 5.5), (10.0, 10.0), (13.5, 12.5)]);
+        }
+        "preset-save" => {
+            pen.line(&[(3.0, 11.0), (3.0, 17.0), (17.0, 17.0), (17.0, 11.0)]);
+            pen.line(&[(10.0, 3.0), (10.0, 13.0)]);
+            pen.line(&[(6.5, 9.5), (10.0, 13.0), (13.5, 9.5)]);
+        }
         "orient-portrait" => {
             pen.rect(5.5, 3.0, 14.5, 17.0);
             pen.fcircle(10.0, 8.0, 1.8);
@@ -823,11 +1075,44 @@ mod tests {
     /// What icon `name` paints into a 20×20 rect, as the painter's shape list.
     fn drawing(name: &str) -> String {
         let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             paint(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(20.0, 20.0)), name, Color32::WHITE);
         });
         out.textures_delta.clear();
         format!("{:?}", out.shapes.iter().map(|s| &s.shape).collect::<Vec<_>>())
+    }
+
+    /// The Pathfinder panel's icons are all drawn, and all differ.
+    #[test]
+    fn pathfinder_panel_icons_are_drawn() {
+        let names = [
+            "path-join",
+            "path-open",
+            "path-close",
+            "path-reverse",
+            "shape-rect",
+            "shape-rounded",
+            "shape-beveled",
+            "shape-inverse",
+            "shape-ellipse",
+            "shape-triangle",
+            "shape-polygon",
+            "shape-line",
+            "shape-orthogonal",
+            "point-plain",
+            "point-corner",
+            "point-smooth",
+            "point-symmetrical",
+        ];
+        let unknown = drawing("no-such-icon");
+        let drawn: Vec<String> = names.iter().map(|n| drawing(n)).collect();
+        for (i, (n, d)) in names.iter().zip(&drawn).enumerate() {
+            assert_ne!(*d, unknown, "{n} falls back to the placeholder");
+            for (m, e) in names.iter().zip(&drawn).skip(i + 1) {
+                assert_ne!(d, e, "{n} draws like {m}");
+            }
+        }
     }
 
     #[test]
@@ -841,5 +1126,50 @@ mod tests {
         assert_ne!(drawn[0], drawn[1], "Scale draws like Free Transform");
         assert_ne!(drawn[0], drawn[2], "Shear draws like Free Transform");
         assert_ne!(drawn[1], drawn[2], "Scale and Shear draw alike");
+    }
+
+    #[test]
+    fn typography_panel_has_its_own_icon() {
+        let unknown = drawing("no-such-icon");
+        let typography = drawing("panel-typography");
+        assert_ne!(typography, unknown, "panel-typography falls back to the placeholder");
+        assert_ne!(typography, drawing("panel-character"), "Typography draws the Character icon");
+    }
+
+    /// Whether the arrow icon `name` paints is filled, from the fill of its one path shape.
+    fn arrow_filled(name: &str) -> bool {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(20.0, 20.0)), name, Color32::WHITE);
+        });
+        out.textures_delta.clear();
+        out.shapes.iter().any(|s| matches!(&s.shape, Shape::Path(p) if p.fill != Color32::TRANSPARENT))
+    }
+
+    #[test]
+    fn selection_arrow_is_filled_and_direct_selection_hollow() {
+        assert!(arrow_filled("tool-selection"), "Selection draws a hollow arrow");
+        assert!(!arrow_filled("tool-direct"), "Direct Selection draws a filled arrow");
+    }
+
+    #[test]
+    fn distribute_icons_are_distinct_from_align_and_each_other() {
+        // `objalign-*` ship upstream and back the Properties Align row; only the
+        // two `objdistribute-*` icons are new here, so they must be real glyphs and
+        // must not collide with any `objalign-*` (one glyph per command).
+        let distribute = ["objdistribute-h", "objdistribute-v"];
+        let align = ["objalign-left", "objalign-hcenter", "objalign-right", "objalign-top", "objalign-vcenter", "objalign-bottom"];
+        let unknown = drawing("no-such-icon");
+        let d: Vec<String> = distribute.iter().map(|n| drawing(n)).collect();
+        for (n, g) in distribute.iter().zip(&d) {
+            assert_ne!(*g, unknown, "{n} falls back to the placeholder");
+        }
+        assert_ne!(d[0], d[1], "objdistribute-h and objdistribute-v draw alike");
+        for dn in &d {
+            for an in &align {
+                let ag = drawing(an);
+                assert_ne!(*dn, ag, "distribute icon draws like {an}");
+            }
+        }
     }
 }

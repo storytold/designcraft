@@ -36,7 +36,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Graphic…"))).clicked()
             && let Err(e) = app.run("app.graphicCell", json!({}))
         {
-            app.status(format!("Table: {e}"));
+            app.status_error("Table", e);
         }
         if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Text"))).clicked() {
             let _ = app.run("table.textCell", json!({}));
@@ -52,10 +52,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ("Col ←", "table.moveColumn", c0, c0.saturating_sub(1), c0 > 0),
             ("Col →", "table.moveColumn", c0, c0 + 1, c0 + 1 < nc),
         ] {
-            if ui.add_enabled(ok, egui::Button::new(crate::rtl::widget(ui, label)).small()).clicked()
+            if ui.add_enabled(ok, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).small()).clicked()
                 && let Err(e) = app.run(id, json!({"from": from, "to": to}))
             {
-                app.status(format!("Table: {e}"));
+                app.status_error("Table", e);
             }
         }
     });
@@ -76,7 +76,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         }
                     }
                 });
-                if crate::icons::button(ui, "plus", 20.0, false, &format!("New {label}")).clicked() {
+                if crate::icons::button(
+                    ui,
+                    "plus",
+                    20.0,
+                    false,
+                    crate::i18n::tr(&app.ui.language, if kind == "cell" { "New Cell Style" } else { "New Table Style" }),
+                )
+                .clicked()
+                {
                     if kind == "cell" {
                         run(app, "style.cell.create", json!({"name": "Cell Style 1", "fromSelection": true}));
                     } else {
@@ -141,11 +149,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     if ui
         .button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Distribute Rows Evenly")))
-        .on_hover_text("Equal fixed heights for the selected rows; cell text may become overset.")
+        .on_hover_text(crate::i18n::tr(&app.ui.language, "Equal fixed heights for the selected rows; cell text may become overset."))
         .clicked()
         && let Err(e) = app.run("table.distributeRows", json!({}))
     {
-        app.status(format!("Table: {e}"));
+        app.status_error("Table", e);
     }
     divider(ui);
     caption(ui, crate::i18n::tr(&app.ui.language, "Cell Text"));

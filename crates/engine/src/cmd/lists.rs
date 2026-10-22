@@ -1,4 +1,4 @@
-//! Type › Bulleted and Numbered Lists › Define Lists: named lists whose numbers can continue from
+//! Type › Bulleted & Numbered Lists › Define Lists: named lists whose numbers can continue from
 //! story to story. Paragraphs join one with `listName` (and restart with `startAt`).
 
 use designcraft_doc::NumberedList;
@@ -11,7 +11,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "list.define",
             "Define Lists…",
-            ["Type", "Bulleted and Numbered Lists"],
+            ["Type", "Bulleted & Numbered Lists"],
             None,
             "{name, continueAcrossStories?: true, rename?} — paragraphs join it with type.para {listType: numbers, listName}",
             has_doc,

@@ -1,4 +1,4 @@
-//! PDF/X-4: the output intent (our Generic CMYK profile), the PDF/X version in the document
+//! PDF/X-4: the output intent (the working CMYK space's profile), the PDF/X version in the document
 //! information and XMP, written as an incremental update of krilla's PDF 1.6 output; and a
 //! check of the requirements this exporter is responsible for.
 
@@ -23,9 +23,11 @@ fn lit(s: &str) -> String {
     o
 }
 
-/// Turn krilla's output into PDF/X-4. `None` when the file isn't the simple kind this
-/// understands (a classic cross-reference table and plain dictionaries).
-pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
+/// Turn krilla's output into PDF/X-4. `date` (Unix seconds, UTC) is the XMP metadata date; `None`
+/// (no clock, as on wasm) writes the epoch, because PDF/X-4 requires the entry. `None` back when
+/// the file isn't the simple kind this understands (a classic cross-reference table and plain
+/// dictionaries).
+pub fn make_pdfx4(pdf: &[u8], title: &str, date: Option<i64>) -> Option<Vec<u8>> {
     let t_at = rfind(pdf, b"trailer")?;
     let trailer = String::from_utf8_lossy(&pdf[t_at..]).to_string();
     let size = int_after(&trailer, "/Size")?;
@@ -46,19 +48,19 @@ pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
         out.extend_from_slice(b"\nendobj\n");
     };
     // The output profile and the output intent.
-    let icc = designcraft_color::cms::icc_out::generic_cmyk_icc();
+    let intent = designcraft_color::cms::active().output_intent().ok()?;
     let (icc_id, oi_id) = (size, size + 1);
-    let mut s = format!("<</N 4/Length {}>>\nstream\n", icc.len()).into_bytes();
-    s.extend_from_slice(icc);
+    let mut s = format!("<</N 4/Length {}>>\nstream\n", intent.icc.len()).into_bytes();
+    s.extend_from_slice(&intent.icc);
     s.extend_from_slice(b"\nendstream");
     put(&mut out, icc_id, &s);
-    let cond = designcraft_color::cms::GENERIC_CMYK;
+    let cond = &intent.condition;
     put(
         &mut out,
         oi_id,
         format!(
             "<</Type/OutputIntent/S/GTS_PDFX/OutputConditionIdentifier{}/OutputCondition{}/Info{}/RegistryName(http://www.color.org)/DestOutputProfile {icc_id} 0 R>>",
-            lit("Custom"),
+            lit(intent.identifier),
             lit(cond),
             lit(cond)
         )
@@ -84,7 +86,8 @@ pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
             i
         }
     };
-    // XMP: the PDF/X identification schema, and the trapping state that Info also states.
+    // XMP: the PDF/X identification schema, the trapping state that Info also states, and the
+    // metadata date and version ID that PDF/X-4 requires.
     if let Some(meta) = int_after(&cat, "/Metadata") {
         let r = object(pdf, meta)?;
         let body = &pdf[r];
@@ -96,11 +99,17 @@ pub fn make_pdfx4(pdf: &[u8], title: &str) -> Option<Vec<u8>> {
         if dict.contains("/Filter") {
             return None;
         }
+        let (y, mo, d, h, mi, se) = crate::export::civil(date.unwrap_or(0));
+        let stamp = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{se:02}Z");
         let add = concat!(
             "<rdf:Description rdf:about=\"\" xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\"><pdfxid:GTS_PDFXVersion>PDF/X-4</pdfxid:GTS_PDFXVersion></rdf:Description>",
             "<rdf:Description rdf:about=\"\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"><pdf:Trapped>False</pdf:Trapped></rdf:Description>"
         );
-        let xml = xml.replacen("</rdf:RDF>", &format!("{add}</rdf:RDF>"), 1);
+        let dates = format!(
+            "<rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:xmpMM=\"http://ns.adobe.com/xap/1.0/mm/\">\
+             <xmp:MetadataDate>{stamp}</xmp:MetadataDate><xmpMM:VersionID>1</xmpMM:VersionID></rdf:Description>"
+        );
+        let xml = xml.replacen("</rdf:RDF>", &format!("{add}{dates}</rdf:RDF>"), 1);
         let dict = {
             let i = dict.find("/Length")?;
             let rest = &dict[i + 7..];
@@ -215,6 +224,12 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     }
     if !text.contains("pdfxid:GTS_PDFXVersion>PDF/X-4<") {
         issues.push("the XMP metadata doesn't name PDF/X-4".into());
+    }
+    if !text.contains("<xmp:MetadataDate>") {
+        issues.push("the XMP metadata has no xmp:MetadataDate".into());
+    }
+    if !text.contains("<xmpMM:VersionID>") {
+        issues.push("the XMP metadata has no xmpMM:VersionID".into());
     }
     if text.contains("/Interpolate true") {
         issues.push("an image asks for interpolation".into());
@@ -452,6 +467,7 @@ impl RgbScan {
 
 #[cfg(test)]
 mod tests {
+    use craft_pdf::write::backend as krilla;
     use std::sync::Arc;
 
     use designcraft_color::{Color, Swatch};
@@ -468,7 +484,7 @@ mod tests {
         let asset = AssetId(d.alloc());
         let mime = designcraft_images::mime(&data).into();
         let pixels = designcraft_images::pixel_size(&data);
-        d.assets.insert(asset, Arc::new(Asset { id: asset, name: name.into(), mime, link: None, data: data.into(), pixels, page: 0 }));
+        d.assets.insert(asset, Arc::new(Asset { id: asset, name: name.into(), mime, data: data.into(), pixels, ..Default::default() }));
         let lid = d.default_layer();
         let id = ItemId(d.alloc());
         let r = Rect::new(at.0, at.1, at.0 + 100.0, at.1 + 50.0);
@@ -477,9 +493,12 @@ mod tests {
             asset,
             size,
             xf: Affine::translate(at) * Affine::scale(100.0 / size.0),
+            clip: None,
             auto_fit: Fitting::FillProportionally,
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
     }

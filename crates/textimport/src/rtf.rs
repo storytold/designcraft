@@ -109,6 +109,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 if stack.len() > 1 {
                     stack.pop();
                 }
+                // The `\uN` fallback skip ends with the group.
+                pending = 0;
                 fmt = stack.last().map(State::format).unwrap_or_default();
                 i += 1;
             }
@@ -157,7 +159,9 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 }
                 let word: String = chars[i + 1..j].iter().collect();
                 let mut k = j;
-                if k < chars.len() && (chars[k] == '-' || chars[k].is_ascii_digit()) {
+                // A '-' only starts the parameter when a digit follows; otherwise it is text.
+                let negative = chars.get(k) == Some(&'-') && chars.get(k + 1).is_some_and(char::is_ascii_digit);
+                if negative || chars.get(k).is_some_and(char::is_ascii_digit) {
                     k += 1;
                     while k < chars.len() && chars[k].is_ascii_digit() {
                         k += 1;
@@ -212,7 +216,10 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     "ul" => restyle(&|s| s.underline = on),
                     "ulnone" => restyle(&|s| s.underline = false),
                     "strike" => restyle(&|s| s.strike = on),
-                    "fs" => restyle(&|s| s.size = param.map(|p| p as f64 / 2.0)),
+                    // Half-points; sizes outside the engine's 0.1–1296 pt range fall back to the default.
+                    "fs" => restyle(&|s| {
+                        s.size = param.map(|p| p as f64 / 2.0).filter(|pt| (0.1..=1296.0).contains(pt));
+                    }),
                     "plain" => restyle(&|s| {
                         s.bold = false;
                         s.italic = false;
@@ -257,6 +264,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         let n = st.len();
         st.delete(n - 1..n);
     }
+    // A page or column break ends its paragraph.
+    st.end_paragraphs_at_breaks();
     Ok(Imported { story: st, para_styles: vec![], char_styles: vec![], warnings })
 }
 
@@ -291,6 +300,26 @@ Caf\'e9 \u8364? price\tab tab\line next\par
         assert!(!st.text.contains("Times"), "font table skipped");
     }
 
+    /// `\fs` sizes outside the engine's 0.1–1296 pt character size range are not stored.
+    #[test]
+    fn font_size_out_of_range_is_not_stored() {
+        let i = import(br"{\rtf1\ansi\fs0 A\fs-8 B\fs999999999 C\fs24 D}").unwrap();
+        let st = &i.story;
+        for ch in ["A", "B", "C"] {
+            let size = st.format_after(st.text.find(ch).unwrap()).over.size;
+            assert!(size.is_none_or(|s| (0.1..=1296.0).contains(&s)), "{ch}: {size:?}");
+        }
+        assert_eq!(st.format_after(st.text.find('D').unwrap()).over.size, Some(12.0));
+    }
+
+    /// A '-' right after a control word is text unless a digit follows it (then it is a negative
+    /// parameter). It used to be swallowed.
+    #[test]
+    fn hyphen_after_control_word_without_digits_is_text() {
+        let i = import(br"{\rtf1\ansi Rock\emdash-roll, x\tab-y, a\li-720 b}").unwrap();
+        assert_eq!(i.story.text, "Rock\u{2014}-roll, x\t-y, ab");
+    }
+
     /// Characters past U+FFFF are written as two `\uN` words, a UTF-16 surrogate pair (the form
     /// our own exporter and Word write). Each half was converted alone and dropped.
     #[test]
@@ -304,5 +333,13 @@ Caf\'e9 \u8364? price\tab tab\line next\par
         assert_eq!(import(crate::export::rtf(&doc, &st).as_bytes()).unwrap().story.text, st.text);
         // Half a pair is not a character: it is still left out.
         assert_eq!(import(br"{\rtf1 A\u-10179?B\u-8704?C}").unwrap().story.text, "ABC");
+    }
+
+    /// A `\uN` at the end of a group has no fallback character inside it. The skip count must
+    /// end with the group, not eat the text after it.
+    #[test]
+    fn unicode_fallback_skip_ends_with_group() {
+        assert_eq!(import(br"{\rtf1 {\b \u8364} AB}").unwrap().story.text, "\u{20AC} AB");
+        assert_eq!(import(br"{\rtf1 {\uc2\b \u8364} ABC}").unwrap().story.text, "\u{20AC} ABC");
     }
 }

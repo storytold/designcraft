@@ -32,6 +32,43 @@ impl Default for Fill {
 }
 
 impl Fill {
+    /// A radial gradient's ellipse on an object whose bounds (in its own space) are `b`: centre and
+    /// horizontal and vertical radii. As in InDesign, a radial gradient stretches with the object's
+    /// box: by default it's centred and reaches the box's sides (an ellipse in a non-square box);
+    /// with a Gradient Swatch tool vector it's centred at the vector's start, and the vector's
+    /// length, measured with the box made square, sets its size.
+    pub fn radial_ellipse(&self, b: designcraft_geom::Rect) -> (designcraft_geom::Point, f64, f64) {
+        let k = if b.width() > 1e-9 && b.height() > 1e-9 { b.height() / b.width() } else { 1.0 };
+        match self.gradient_vector {
+            Some([x0, y0, x1, y1]) => {
+                let r = designcraft_geom::Vec2::new(x1 - x0, (y1 - y0) / k).hypot();
+                (designcraft_geom::Point::new(x0, y0), r, r * k)
+            }
+            // A box with no width or height (a straight line's) has no ellipse: a circle across
+            // its length.
+            None if b.width() <= 1e-9 || b.height() <= 1e-9 => {
+                let r = b.width().max(b.height()).max(1e-3) / 2.0;
+                (b.center(), r, r)
+            }
+            None => (b.center(), b.width() / 2.0, b.height() / 2.0),
+        }
+    }
+
+    /// A linear gradient's axis on an object whose bounds (in its own space) are `b`: the
+    /// Gradient Swatch tool's vector, or the box's extent along the gradient's angle through its
+    /// centre. A box with no extent along that angle (a straight line, across it) takes its longer
+    /// side.
+    pub fn linear_axis(&self, b: Rect) -> (Point, Point) {
+        if let Some([x0, y0, x1, y1]) = self.gradient_vector {
+            return (Point::new(x0, y0), Point::new(x1, y1));
+        }
+        let a = self.gradient_angle.unwrap_or(0.0).to_radians();
+        let half = (b.width() * a.cos().abs() + b.height() * a.sin().abs()) / 2.0;
+        let half = if half > 1e-9 { half } else { b.width().max(b.height()).max(1e-3) / 2.0 };
+        let d = designcraft_geom::Vec2::new(a.cos(), -a.sin()) * half;
+        (b.center() - d, b.center() + d)
+    }
+
     pub fn none() -> Self {
         Fill { swatch: designcraft_color::swatch::NONE.into(), tint: 1.0, gradient_angle: None, gradient_vector: None, overprint: false }
     }
@@ -68,6 +105,27 @@ pub enum Join {
     Miter,
     Round,
     Bevel,
+}
+
+/// The shortest non-zero dash or gap a command accepts, in points.
+pub const MIN_DASH: f64 = 0.1;
+/// The longest dash or gap a command accepts, in points.
+pub const MAX_DASH: f64 = 10_000.0;
+/// The most lengths a dash pattern holds.
+pub const MAX_DASH_ENTRIES: usize = 64;
+/// The most pattern repeats a renderer expands along one path; finer patterns draw solid.
+pub const MAX_DASH_PERIODS: f64 = 20_000.0;
+
+/// An upper bound of the length of `bp`: the length of its control polygon.
+pub fn path_length_bound(bp: &designcraft_geom::BezPath) -> f64 {
+    use designcraft_geom::PathSeg;
+    bp.segments()
+        .map(|s| match s {
+            PathSeg::Line(l) => l.p0.distance(l.p1),
+            PathSeg::Quad(q) => q.p0.distance(q.p1) + q.p1.distance(q.p2),
+            PathSeg::Cubic(c) => c.p0.distance(c.p1) + c.p1.distance(c.p2) + c.p2.distance(c.p3),
+        })
+        .sum()
 }
 
 /// Stroke types (Stroke panel → Type). Dash/gap arrays are in points.
@@ -115,6 +173,28 @@ impl StrokeType {
             StrokeType::Stripes { .. } => "Stripes",
             StrokeType::Style { .. } => "Custom",
         }
+    }
+
+    /// Whether `pattern` is a dash pattern commands accept: 1 to [`MAX_DASH_ENTRIES`] lengths,
+    /// each 0 or from [`MIN_DASH`] to [`MAX_DASH`] points, not all 0.
+    pub fn valid_dash_pattern(pattern: &[f64]) -> bool {
+        !pattern.is_empty()
+            && pattern.len() <= MAX_DASH_ENTRIES
+            && pattern.iter().all(|x| *x == 0.0 || (MIN_DASH..=MAX_DASH).contains(x))
+            && pattern.iter().any(|x| *x > 0.0)
+    }
+
+    /// Whether a renderer may expand `pattern` along a path at most `length` points long: at
+    /// most [`MAX_DASH_ENTRIES`] finite, non-negative lengths that repeat at most
+    /// [`MAX_DASH_PERIODS`] times. Otherwise the stroke draws solid, so a degenerate pattern
+    /// from a file can't stall rendering.
+    pub fn expandable_dashes(pattern: &[f64], length: f64) -> bool {
+        let period: f64 = pattern.iter().sum();
+        pattern.len() <= MAX_DASH_ENTRIES
+            && pattern.iter().all(|x| x.is_finite() && *x >= 0.0)
+            && period > 0.0
+            && length.is_finite()
+            && length / period <= MAX_DASH_PERIODS
     }
 
     /// The bands of a striped type (start, width as fractions of the weight).
@@ -224,6 +304,12 @@ pub struct Stroke {
     /// Overprint Gap (Attributes panel).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gap_overprint: bool,
+    /// A gradient swatch's angle on the stroke, as [`Fill::gradient_angle`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gradient_angle: Option<f64>,
+    /// The Gradient Swatch tool's vector on the stroke, as [`Fill::gradient_vector`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gradient_vector: Option<[f64; 4]>,
 }
 
 impl Default for Stroke {
@@ -244,11 +330,25 @@ impl Default for Stroke {
             gap_tint: 1.0,
             overprint: false,
             gap_overprint: false,
+            gradient_angle: None,
+            gradient_vector: None,
         }
     }
 }
 
 impl Stroke {
+    /// The stroke's paint (swatch, tint and gradient geometry) as a fill, to paint it the same way:
+    /// a gradient swatch on a stroke runs across the object's box as on its fill.
+    pub fn as_fill(&self) -> Fill {
+        Fill {
+            swatch: self.swatch.clone(),
+            tint: self.tint,
+            gradient_angle: self.gradient_angle,
+            gradient_vector: self.gradient_vector,
+            overprint: self.overprint,
+        }
+    }
+
     /// How far the painted stroke can reach beyond the path (arrowheads reach further).
     pub fn extent(&self) -> f64 {
         if self.start == Arrowhead::None && self.end == Arrowhead::None { self.weight } else { self.weight.max(0.5) * 5.5 }
@@ -281,6 +381,10 @@ pub enum FirstBaseline {
     Leading,
     XHeight,
     Fixed,
+    /// The top of the font's em box: its `BASE` em box; else, for a CJK font, its OS/2 typo
+    /// ascender when the typo ascender and descender span one em; else half an em above half the
+    /// cap height.
+    EmboxHeight,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,11 +425,31 @@ pub struct TextFrameOptions {
     pub first_baseline_min: f64,
     pub ignore_wrap: bool,
     pub auto_size: AutoSize,
-    /// Reference point (0..9) that stays fixed when auto-sizing.
+    /// Reference point (0..9, row-major from the top left) that stays fixed when auto-sizing.
     pub auto_size_ref: u8,
+    /// Auto-size never makes the frame shorter than `auto_size_min_height` while this is on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_size_use_min_height: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub auto_size_min_height: f64,
+    /// Auto-size never makes the frame narrower than `auto_size_min_width` while this is on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_size_use_min_width: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub auto_size_min_width: f64,
+    /// Width-growing auto-size sets each paragraph on one line (the frame widens to the longest).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_size_no_line_breaks: bool,
     pub column_rule: bool,
     pub column_rule_weight: f64,
     pub column_rule_color: String,
+    /// 0..1.
+    pub column_rule_tint: f32,
+    /// Horizontal offset of each rule from the middle of its gutter.
+    pub column_rule_offset: f64,
+    /// The rule starts this far below the column top and ends this far above its bottom.
+    pub column_rule_top_inset: f64,
+    pub column_rule_bottom_inset: f64,
     /// Use a custom baseline grid for this frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_grid: Option<(f64, f64)>,
@@ -338,8 +462,12 @@ pub struct TextFrameOptions {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PathType {
-    /// Where the text starts, as a distance along the path.
+    /// Where the text starts, as a distance along the path (the start bracket).
     pub start: f64,
+    /// Where the text ends, as a distance along the path (the end bracket); `None` is the path's
+    /// end. Text past it is overset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<f64>,
     /// Run the other way (the text sits on the other side).
     pub flip: bool,
     pub align: PathAlign,
@@ -371,10 +499,19 @@ impl Default for TextFrameOptions {
             first_baseline_min: 0.0,
             ignore_wrap: false,
             auto_size: AutoSize::Off,
-            auto_size_ref: 1,
+            auto_size_ref: 4,
+            auto_size_use_min_height: false,
+            auto_size_min_height: 0.0,
+            auto_size_use_min_width: false,
+            auto_size_min_width: 0.0,
+            auto_size_no_line_breaks: false,
             column_rule: false,
             column_rule_weight: 1.0,
             column_rule_color: designcraft_color::swatch::BLACK.into(),
+            column_rule_tint: 1.0,
+            column_rule_offset: 0.0,
+            column_rule_top_inset: 0.0,
+            column_rule_bottom_inset: 0.0,
             baseline_grid: None,
             path: None,
         }
@@ -404,8 +541,28 @@ pub enum WrapSide {
     LargestArea,
 }
 
+/// Text Wrap panel › Contour Options › Type: the outline a contour wrap follows on a graphic frame.
+/// Other frames always wrap around their own path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ContourType {
+    /// The placed graphic's rectangle (within the frame).
+    BoundingBox,
+    /// Edges detected in the image. Composition follows the frame path.
+    DetectEdges,
+    /// The image's alpha channel. Composition follows the frame path.
+    AlphaChannel,
+    /// A path saved in the image. Composition follows the frame path.
+    PhotoshopPath,
+    /// The frame's path.
+    GraphicFrame,
+    /// The graphic's clipping path, or the frame's path when it has none.
+    #[default]
+    SameAsClipping,
+}
+
 /// Text Wrap panel settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextWrap {
     pub mode: WrapMode,
@@ -413,6 +570,18 @@ pub struct TextWrap {
     pub offsets: [f64; 4],
     pub invert: bool,
     pub side: WrapSide,
+    pub contour: ContourType,
+    /// A custom wrap boundary in the item's inner space, offsets already included. Bounding-box
+    /// and contour wraps follow it instead of the frame; other modes use its bounds. Resizing the
+    /// item transforms it with the path; other path edits keep it as it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathData>,
+}
+
+impl TextWrap {
+    pub fn is_default(&self) -> bool {
+        *self == TextWrap::default()
+    }
 }
 
 /// Frame fitting options (Object → Fitting → Frame Fitting Options).
@@ -436,6 +605,9 @@ pub struct Graphic {
     pub size: (f64, f64),
     /// Graphic space (0,0)-(w,h) → frame inner space.
     pub xf: Affine,
+    /// Clipping path: only the part of the graphic inside it shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<Arc<ClippingPath>>,
     #[serde(default)]
     pub auto_fit: Fitting,
     /// Frame Fitting Options › Align From: the reference point (0–8, row-major; 4 = centre).
@@ -444,10 +616,103 @@ pub struct Graphic {
     /// Frame Fitting Options › Crop Amount: top, left, bottom, right (negative adds space).
     #[serde(default)]
     pub crop: [f64; 4],
+    /// Text wrap set on the graphic itself (Direct Selection), around the part its frame shows.
+    #[serde(default, skip_serializing_if = "TextWrap::is_default")]
+    pub wrap: TextWrap,
+    /// The swatch applied to the image itself: InDesign colours a greyscale or bitmap image with
+    /// it, colour images ignore it. `None` (the default, like InDesign's Black) leaves it as is.
+    #[serde(default, skip_serializing_if = "Fill::is_none")]
+    pub fill: Fill,
 }
 
 fn center_ref() -> u8 {
     4
+}
+
+/// Most anchors a clipping path read from a file keeps (detected edges can be dense).
+pub const MAX_CLIP_ANCHORS: usize = 100_000;
+
+/// Clipping Path › Type: where the clipping path came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClippingKind {
+    /// Traced from the image's edges against a light background.
+    DetectEdges,
+    /// Traced from one of the image's alpha channels.
+    AlphaChannel,
+    /// A path saved in the image file.
+    PhotoshopPath,
+    /// One of the above, edited by hand.
+    UserModifiedPath,
+}
+
+/// A placed graphic's clipping path. The tracing options are kept as the file had them; the
+/// outline itself is `path`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClippingPath {
+    pub kind: ClippingKind,
+    /// The outline in graphic space ((0,0)-(w,h) is the graphic's natural rectangle).
+    pub path: PathData,
+    /// Show the graphic outside the path instead of inside it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
+    /// Holes inside the traced shape are part of the path.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_inside_edges: bool,
+    /// Detect Edges: trace only the part of the image the frame shows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restrict_to_frame: bool,
+    /// Trace the full-resolution image rather than the screen proxy.
+    #[serde(default = "yes")]
+    pub use_high_resolution: bool,
+    /// Detect Edges / Alpha Channel: the darkness or opacity level that counts as inside (0–255).
+    #[serde(default = "clip_threshold")]
+    pub threshold: f64,
+    /// How closely the traced path follows the pixels, in pixels.
+    #[serde(default = "clip_tolerance")]
+    pub tolerance: f64,
+    /// Inset Frame: how far the path is pulled in (points; negative pushes it out).
+    #[serde(default)]
+    pub inset: f64,
+    /// The alpha channel or image path the clip came from.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_name: String,
+    /// Index of the alpha channel (-1 = none).
+    #[serde(default = "no_index")]
+    pub source_index: i32,
+}
+
+fn yes() -> bool {
+    true
+}
+fn clip_threshold() -> f64 {
+    25.0
+}
+fn clip_tolerance() -> f64 {
+    2.0
+}
+fn no_index() -> i32 {
+    -1
+}
+
+impl ClippingPath {
+    /// A clipping path of `kind` with the default options.
+    pub fn new(kind: ClippingKind, path: PathData) -> Self {
+        Self {
+            kind,
+            path,
+            invert: false,
+            include_inside_edges: false,
+            restrict_to_frame: false,
+            use_high_resolution: true,
+            threshold: clip_threshold(),
+            tolerance: clip_tolerance(),
+            inset: 0.0,
+            source_name: String::new(),
+            source_index: no_index(),
+        }
+    }
 }
 
 /// Liquid Layout object rules: which edges stay at their distance from the page edge, and
@@ -603,6 +868,31 @@ fn is_zero_usize(v: &usize) -> bool {
 }
 
 impl Graphic {
+    /// The part of the graphic its frame shows, in the frame's inner space (bounding boxes);
+    /// None when nothing shows.
+    pub fn shown_bounds(&self, frame: Rect) -> Option<Rect> {
+        let r = self.xf.transform_rect_bbox(Rect::new(0.0, 0.0, self.size.0, self.size.1)).intersect(frame);
+        (r.width() > 0.0 && r.height() > 0.0).then_some(r)
+    }
+
+    /// The region the clipping path lets through, in frame inner space, and whether it is filled
+    /// even-odd (an inverted clip: the graphic's rectangle minus the path). `None` when the graphic
+    /// has no clipping path or the path is empty.
+    pub fn clip_region(&self) -> Option<(designcraft_geom::BezPath, bool)> {
+        use designcraft_geom::Shape;
+        let c = self.clip.as_ref().filter(|c| !c.path.is_empty())?;
+        let mut path = c.path.to_bezpath();
+        if !c.invert {
+            path.apply_affine(self.xf);
+            return Some((path, false));
+        }
+        let outer = Rect::new(0.0, 0.0, self.size.0, self.size.1).union(path.bounding_box()).inflate(1.0, 1.0);
+        let mut region = outer.to_path(0.1);
+        region.extend(path.iter());
+        region.apply_affine(self.xf);
+        Some((region, true))
+    }
+
     /// The graphic transform that fits it into `frame` (the frame's inner rect) with `mode`,
     /// honouring the crop amounts and the reference point.
     pub fn fitted(&self, frame: Rect, mode: Fitting) -> Option<Affine> {
@@ -691,7 +981,7 @@ impl Default for DropShadow {
             on: false,
             color: designcraft_color::swatch::BLACK.into(),
             opacity: 0.75,
-            angle: 135.0,
+            angle: 120.0,
             distance: 7.0,
             size: 5.0,
             spread: 0.0,
@@ -723,7 +1013,7 @@ impl Default for InnerShadow {
             on: false,
             color: designcraft_color::swatch::BLACK.into(),
             opacity: 0.75,
-            angle: 135.0,
+            angle: 120.0,
             distance: 7.0,
             size: 7.0,
             choke: 0.0,
@@ -762,6 +1052,9 @@ pub struct Effects {
     pub drop_shadow: DropShadow,
     /// Basic feather width (0 = off).
     pub feather: f64,
+    /// Basic feather's choke and corners.
+    #[serde(skip_serializing_if = "is_default")]
+    pub feather_options: FeatherOptions,
     #[serde(skip_serializing_if = "is_default")]
     pub inner_shadow: InnerShadow,
     #[serde(skip_serializing_if = "is_default")]
@@ -776,6 +1069,39 @@ pub struct Effects {
     pub satin: Satin,
     #[serde(skip_serializing_if = "is_default")]
     pub directional_feather: DirectionalFeather,
+}
+
+/// Basic Feather › Corners: how the fade follows the shape's corners.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FeatherCorners {
+    /// Mitred: the fade keeps the corners sharp.
+    Sharp,
+    /// The fade rounds the corners by its width.
+    Rounded,
+    /// From opaque to transparent, softly (InDesign's default).
+    #[default]
+    Diffused,
+}
+
+/// Basic Feather options besides its width.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FeatherOptions {
+    /// Percentage (0–100) of the width that stays opaque: the fade gets shorter.
+    pub choke: f64,
+    pub corners: FeatherCorners,
+}
+
+/// Inner/Outer Glow › Technique.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GlowTechnique {
+    /// A soft, blurred glow.
+    #[default]
+    Softer,
+    /// A glow that keeps closer to the shape's edges.
+    Precise,
 }
 
 /// Directional Feather: each side fades over its own width (item space, before rotation).
@@ -799,11 +1125,23 @@ pub struct InnerGlow {
     pub choke: f64,
     /// Glow from the centre instead of the edges.
     pub center: bool,
+    /// How the glow blends with the object (InDesign: Screen).
+    pub mode: BlendMode,
+    pub technique: GlowTechnique,
 }
 
 impl Default for InnerGlow {
     fn default() -> Self {
-        InnerGlow { on: false, color: designcraft_color::swatch::PAPER.into(), opacity: 0.75, size: 7.0, choke: 0.0, center: false }
+        InnerGlow {
+            on: false,
+            color: designcraft_color::swatch::PAPER.into(),
+            opacity: 0.75,
+            size: 7.0,
+            choke: 0.0,
+            center: false,
+            mode: BlendMode::Screen,
+            technique: GlowTechnique::Softer,
+        }
     }
 }
 
@@ -900,6 +1238,62 @@ impl GradientFeather {
 }
 
 impl Effects {
+    /// These effects with opacities in 0–1, percentages in 0–100 and sizes, widths and distances
+    /// not below 0, or an error naming the first value that isn't a finite number.
+    pub fn sanitized(mut self) -> Result<Effects, String> {
+        fn finite(name: &str, v: f64) -> Result<f64, String> {
+            if v.is_finite() { Ok(v) } else { Err(format!("{name} must be a finite number")) }
+        }
+        let len = |name: &str, v: f64| finite(name, v).map(|v| v.max(0.0));
+        let pct = |name: &str, v: f64| finite(name, v).map(|v| v.clamp(0.0, 100.0));
+        let opacity = |name: &str, v: f32| finite(name, f64::from(v)).map(|v| v.clamp(0.0, 1.0) as f32);
+        let ds = &mut self.drop_shadow;
+        ds.opacity = opacity("dropShadow.opacity", ds.opacity)?;
+        ds.angle = finite("dropShadow.angle", ds.angle)?;
+        ds.distance = len("dropShadow.distance", ds.distance)?;
+        ds.size = len("dropShadow.size", ds.size)?;
+        ds.spread = pct("dropShadow.spread", ds.spread)?;
+        self.feather = len("feather", self.feather)?;
+        let e = &mut self.inner_shadow;
+        e.opacity = opacity("innerShadow.opacity", e.opacity)?;
+        e.angle = finite("innerShadow.angle", e.angle)?;
+        e.distance = len("innerShadow.distance", e.distance)?;
+        e.size = len("innerShadow.size", e.size)?;
+        e.choke = pct("innerShadow.choke", e.choke)?;
+        let e = &mut self.outer_glow;
+        e.opacity = opacity("outerGlow.opacity", e.opacity)?;
+        e.size = len("outerGlow.size", e.size)?;
+        e.spread = pct("outerGlow.spread", e.spread)?;
+        let e = &mut self.gradient_feather;
+        e.angle = finite("gradientFeather.angle", e.angle)?;
+        e.start = opacity("gradientFeather.start", e.start)?;
+        e.end = opacity("gradientFeather.end", e.end)?;
+        if let Some(v) = &mut e.vector {
+            for c in v.iter_mut() {
+                *c = finite("gradientFeather.vector", *c)?;
+            }
+        }
+        let e = &mut self.inner_glow;
+        e.opacity = opacity("innerGlow.opacity", e.opacity)?;
+        e.size = len("innerGlow.size", e.size)?;
+        e.choke = pct("innerGlow.choke", e.choke)?;
+        let e = &mut self.bevel;
+        e.size = len("bevel.size", e.size)?;
+        e.depth = len("bevel.depth", e.depth)?;
+        e.angle = finite("bevel.angle", e.angle)?;
+        e.highlight_opacity = opacity("bevel.highlightOpacity", e.highlight_opacity)?;
+        e.shadow_opacity = opacity("bevel.shadowOpacity", e.shadow_opacity)?;
+        let e = &mut self.satin;
+        e.opacity = opacity("satin.opacity", e.opacity)?;
+        e.angle = finite("satin.angle", e.angle)?;
+        e.distance = len("satin.distance", e.distance)?;
+        e.size = len("satin.size", e.size)?;
+        for w in self.directional_feather.widths.iter_mut() {
+            *w = len("directionalFeather.widths", *w)?;
+        }
+        Ok(self)
+    }
+
     /// Any effect drawn with soft (raster) filters?
     pub fn any(&self) -> bool {
         self.drop_shadow.on
@@ -997,6 +1391,9 @@ pub struct Item {
     pub isolate: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub knockout: bool,
+    /// Flex Layout: this frame lays out the objects nested in it (see [`crate::flex`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flex: Option<crate::flex::FlexLayout>,
 }
 
 fn identity() -> Affine {
@@ -1042,6 +1439,7 @@ impl Item {
             active_state: 0,
             isolate: false,
             knockout: false,
+            flex: None,
         }
     }
 
@@ -1059,6 +1457,10 @@ impl Item {
             Content::Text(t) => Some(t),
             _ => None,
         }
+    }
+    /// Does this item, or the graphic it holds, wrap text?
+    pub fn has_wrap(&self) -> bool {
+        self.wrap.mode != WrapMode::None || self.graphic().is_some_and(|g| g.wrap.mode != WrapMode::None)
     }
     pub fn graphic(&self) -> Option<&Graphic> {
         match &self.content {
@@ -1090,6 +1492,29 @@ impl Item {
         self.path.bounds().unwrap_or(Rect::ZERO)
     }
 
+    /// The box a gradient feather spans, in item space: the path's bounds, or a group's visible
+    /// objects' (a group has no path of its own). Only the active states contribute, including in
+    /// nested groups. Walk iteratively so deeply nested documents don't exhaust the call stack.
+    pub fn feather_bounds(&self) -> Rect {
+        if !self.is_group() {
+            return self.inner_bounds();
+        }
+        let mut stack: Vec<_> = self.shown_children().map(|c| (c.as_ref(), c.xf)).collect();
+        let mut bounds: Option<Rect> = None;
+        while let Some((it, xf)) = stack.pop() {
+            if it.hidden {
+                continue;
+            }
+            if it.is_group() {
+                stack.extend(it.shown_children().map(|c| (c.as_ref(), xf * c.xf)));
+            } else {
+                let b = xf.transform_rect_bbox(it.inner_bounds());
+                bounds = Some(bounds.map_or(b, |have| have.union(b)));
+            }
+        }
+        bounds.unwrap_or(Rect::ZERO)
+    }
+
     /// Spread-space geometric bounds (axis-aligned box of the transformed path; groups: union).
     /// A group (its bounds are its children's). A frame holding pasted-into items is not.
     pub fn is_group(&self) -> bool {
@@ -1112,17 +1537,20 @@ impl Item {
     }
 
     pub fn bounds(&self) -> Rect {
+        self.bounds_under(Affine::IDENTITY).unwrap_or(Rect::ZERO)
+    }
+
+    /// Bounds of the outline under `outer` (then this item's own transform). A group's are its
+    /// children's outlines transformed by the full transform, which a rotated group's box of its
+    /// children's boxes would overstate.
+    fn bounds_under(&self, outer: Affine) -> Option<Rect> {
+        let xf = outer * self.xf;
         if self.shape == Shape::Group
             && let Content::Group { items } = &self.content
         {
-            let mut r: Option<Rect> = None;
-            for c in items {
-                let b = self.xf.transform_rect_bbox(c.bounds());
-                r = Some(r.map_or(b, |r| r.union(b)));
-            }
-            return r.unwrap_or(Rect::ZERO);
+            return items.iter().filter_map(|c| c.bounds_under(xf)).reduce(|a, b| a.union(b));
         }
-        self.path.transformed(self.xf).bounds().unwrap_or(Rect::ZERO)
+        self.path.transformed(xf).bounds()
     }
 
     /// Visible bounds including stroke weight (approximate for inside/outside alignment).
@@ -1141,11 +1569,27 @@ impl Item {
         b.inflate(w, w)
     }
 
-    /// The frame's text area (inner space) after inset.
+    /// The text frame's text area (inner space): inside the part of a visible stroke that lies
+    /// within the frame, then the inset, on each edge.
     pub fn text_area(&self) -> Rect {
         let r = self.inner_bounds();
-        let inset = self.text_frame().map(|t| t.options.inset).unwrap_or([0.0; 4]);
+        let s = self.stroke_inside();
+        let inset = self.text_frame().map(|t| t.options.inset).unwrap_or([0.0; 4]).map(|v| v + s);
         Rect::new(r.x0 + inset[1], r.y0 + inset[0], (r.x1 - inset[3]).max(r.x0 + inset[1]), (r.y1 - inset[2]).max(r.y0 + inset[0]))
+    }
+
+    /// How far a visible stroke reaches inside the path: half its weight centred, all of it inside,
+    /// none outside.
+    fn stroke_inside(&self) -> f64 {
+        let w = self.stroke.weight;
+        if self.stroke.is_none() || !w.is_finite() {
+            return 0.0;
+        }
+        match self.stroke.align {
+            StrokeAlign::Center => w / 2.0,
+            StrokeAlign::Inside => w,
+            StrokeAlign::Outside => 0.0,
+        }
     }
 
     /// Spread-space centre.
@@ -1156,7 +1600,8 @@ impl Item {
     /// The Layers-panel label: `<rectangle>`, the first words of a text frame, the placed file name…
     pub fn default_label(&self) -> &'static str {
         match (&self.content, self.shape) {
-            (Content::Group { .. }, _) => "<group>",
+            // A frame with items pasted into it is named by its shape, as in InDesign.
+            (Content::Group { .. }, Shape::Group) => "<group>",
             (Content::Text(_), _) => "<text frame>",
             (Content::Graphic(_), _) => "<image>",
             (_, Shape::Rectangle) => "<rectangle>",
@@ -1165,6 +1610,19 @@ impl Item {
             (_, Shape::GraphicLine) => "<line>",
             (_, Shape::Path) | (_, Shape::Group) => "<path>",
         }
+    }
+
+    /// Whether the item's own geometry (path, transform, a placed graphic's size and transform)
+    /// is finite. JSON has no infinity or NaN, so a document holding one can't be saved.
+    pub fn geometry_is_finite(&self) -> bool {
+        let pt = |p: Point| p.x.is_finite() && p.y.is_finite();
+        let affine = |a: &Affine| a.as_coeffs().iter().all(|c| c.is_finite());
+        let path = self.path.subpaths.iter().flat_map(|s| &s.anchors).all(|a| pt(a.p) && pt(a.h_in) && pt(a.h_out));
+        let graphic = match &self.content {
+            Content::Graphic(g) => g.size.0.is_finite() && g.size.1.is_finite() && affine(&g.xf),
+            _ => true,
+        };
+        path && affine(&self.xf) && graphic
     }
 
     /// Visit this item and descendants (pre-order).
@@ -1182,6 +1640,29 @@ mod tests {
     use designcraft_geom::shapes;
 
     #[test]
+    fn graphics_without_a_clipping_path_load_and_save_as_before() {
+        let g = Graphic {
+            asset: AssetId(3),
+            size: (40.0, 30.0),
+            xf: Affine::translate((5.0, 5.0)),
+            clip: None,
+            auto_fit: Fitting::None,
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        };
+        let v = serde_json::to_value(&g).unwrap();
+        assert!(v.get("clip").is_none(), "{v}");
+        assert_eq!(serde_json::from_value::<Graphic>(v.clone()).unwrap(), g);
+        // A clip written with only its type and path gets the default options.
+        let mut v = v;
+        v["clip"] = serde_json::json!({"kind": "alphaChannel", "path": {"subpaths": []}});
+        let c = serde_json::from_value::<Graphic>(v).unwrap().clip.unwrap();
+        assert_eq!(*c, ClippingPath::new(ClippingKind::AlphaChannel, PathData::default()));
+    }
+
+    #[test]
     fn bounds_and_text_area() {
         let mut it = Item::new(ItemId(1), LayerId(1), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 50.0)));
         it.xf = Affine::translate((10.0, 20.0));
@@ -1190,6 +1671,32 @@ mod tests {
         assert_eq!(it.text_area(), Rect::new(6.0, 5.0, 92.0, 43.0));
         it.stroke = Stroke { weight: 4.0, ..Stroke::default() };
         assert_eq!(it.visible_bounds(), Rect::new(8.0, 18.0, 112.0, 72.0));
+    }
+
+    #[test]
+    fn text_area_starts_inside_the_stroke() {
+        let mut it = Item::new(ItemId(1), LayerId(1), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 50.0)));
+        it.content = Content::Text(TextFrame { story: StoryId(2), options: TextFrameOptions { inset: [5.0, 6.0, 7.0, 8.0], ..Default::default() } });
+        let unstroked = Rect::new(6.0, 5.0, 92.0, 43.0);
+        let stroked = |align: StrokeAlign, swatch: &str| {
+            let mut it = it.clone();
+            it.stroke = Stroke { weight: 4.0, align, swatch: swatch.into(), ..Stroke::default() };
+            it.text_area()
+        };
+        let black = designcraft_color::swatch::BLACK;
+        // The part of the stroke inside the frame, on every edge, then the inset.
+        assert_eq!(stroked(StrokeAlign::Center, black), Rect::new(8.0, 7.0, 90.0, 41.0));
+        assert_eq!(stroked(StrokeAlign::Inside, black), Rect::new(10.0, 9.0, 88.0, 39.0));
+        assert_eq!(stroked(StrokeAlign::Outside, black), unstroked);
+        // A stroke without a colour doesn't count.
+        assert_eq!(stroked(StrokeAlign::Inside, designcraft_color::swatch::NONE), unstroked);
+        // Nor does a weight that isn't a number.
+        it.stroke = Stroke { weight: f64::NAN, ..Stroke::default() };
+        assert_eq!(it.text_area(), unstroked);
+        // A stroke wider than the frame leaves no room for text.
+        it.stroke = Stroke { weight: 200.0, align: StrokeAlign::Inside, ..Stroke::default() };
+        let a = it.text_area();
+        assert!(a.width() == 0.0 && a.height() == 0.0, "{a:?}");
     }
 
     #[test]
@@ -1202,6 +1709,57 @@ mod tests {
         let mut n = 0;
         g.walk(&mut |_| n += 1);
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn rotated_group_bounds_follow_the_children_outlines() {
+        let rects = [Rect::new(0.0, 0.0, 120.0, 20.0), Rect::new(10.0, 40.0, 200.0, 70.0)];
+        let child_xf = Affine::rotate(-20f64.to_radians());
+        let items = rects
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let mut c = Item::new(ItemId(i as u64 + 1), LayerId(1), Shape::Rectangle, shapes::rectangle(*r));
+                c.xf = child_xf;
+                Arc::new(c)
+            })
+            .collect();
+        let mut g = Item::new(ItemId(9), LayerId(1), Shape::Group, PathData::default());
+        g.content = Content::Group { items };
+        g.xf = Affine::translate((50.0, 60.0)) * Affine::rotate(30f64.to_radians());
+        let full = g.xf * child_xf;
+        let corners = rects.iter().flat_map(|r| [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)]).map(|(x, y)| full * Point::new(x, y));
+        let want = corners.fold(None::<Rect>, |acc, p| Some(acc.map_or(Rect::from_points(p, p), |r| r.union_pt(p)))).unwrap();
+        let got = g.bounds();
+        for (a, b) in [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)] {
+            assert!((a - b).abs() < 1e-9, "{got:?} != {want:?}");
+        }
+        // The box of the children's rotated boxes is larger.
+        let boxes = rects.iter().map(|r| g.xf.transform_rect_bbox(child_xf.transform_rect_bbox(*r))).reduce(|a, b| a.union(b)).unwrap();
+        assert!(boxes.height() > got.height() + 1.0);
+    }
+
+    #[test]
+    fn feather_bounds_follow_visible_states_in_nested_groups() {
+        let a = Item::new(ItemId(1), LayerId(1), Shape::Rectangle, shapes::rectangle(Rect::new(10.0, 20.0, 30.0, 40.0)));
+        let mut b = a.clone();
+        b.id = ItemId(2);
+        b.xf = Affine::translate((500.0, 500.0));
+        let mut state = Item::new(ItemId(3), LayerId(1), Shape::Group, PathData::default());
+        state.content = Content::Group { items: vec![Arc::new(a), Arc::new(b)] };
+        state.states = vec!["Visible".into(), "Inactive".into()];
+        assert_eq!(state.feather_bounds(), Rect::new(10.0, 20.0, 30.0, 40.0));
+        state.active_state = 1;
+        assert_eq!(state.feather_bounds(), Rect::new(510.0, 520.0, 530.0, 540.0));
+        state.active_state = 0;
+        state.xf = Affine::translate((5.0, 10.0)) * Affine::scale(2.0);
+        let mut hidden = state.clone();
+        hidden.id = ItemId(4);
+        hidden.hidden = true;
+        hidden.xf = Affine::translate((-1000.0, -1000.0));
+        let mut outer = Item::new(ItemId(5), LayerId(1), Shape::Group, PathData::default());
+        outer.content = Content::Group { items: vec![Arc::new(state), Arc::new(hidden)] };
+        assert_eq!(outer.feather_bounds(), Rect::new(25.0, 50.0, 65.0, 90.0));
     }
 
     #[test]
