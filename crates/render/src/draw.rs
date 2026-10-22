@@ -198,8 +198,14 @@ impl Renderer {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
         }
+        // Drop shadow and outer glow: cast by the group's objects together.
+        let e = &it.effects;
+        if f.opts.quality != DisplayQuality::Fast && !self.bare && (e.drop_shadow.on || e.outer_glow.on) {
+            let reach = fx::group_reach(it, xf);
+            self.draw_below(ctx, f, it, &it.path.to_bezpath(), xf, page, reach);
+        }
         // Gradient feather: the group's objects drawn together, then faded as one.
-        let feather = it.effects.gradient_feather.on && f.opts.quality != DisplayQuality::Fast;
+        let feather = it.effects.gradient_feather.on && f.opts.quality != DisplayQuality::Fast && !self.bare;
         if feather {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, None, None, None, None);
@@ -253,7 +259,7 @@ impl Renderer {
             Content::Text(_) => 36.0 + 0.25 * vb.width().max(vb.height()),
             _ => 0.0,
         };
-        let effects = it.effects.any() && f.opts.quality != DisplayQuality::Fast;
+        let effects = it.effects.any() && f.opts.quality != DisplayQuality::Fast && !self.bare;
         let fx_outset = if effects { fx::outset_scaled(it, scale) } else { 0.0 };
         if !rect_overlaps(vb.inflate(margin + fx_outset, margin + fx_outset), f.visible) {
             return;
