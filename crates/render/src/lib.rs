@@ -247,6 +247,12 @@ pub struct Renderer {
     /// Whether an effect image recorded since the ids were last reset was numbered differently
     /// (the context placing it must not be rasterized).
     fx_misnumbered: bool,
+    /// Whether an effect image of this render was numbered differently: the render is drawn again,
+    /// effects one by one, rather than left blank where it could not be rasterized.
+    fx_redraw: bool,
+    /// Added to the image ids predicted for effect images (tests: a registry numbering otherwise).
+    #[cfg(test)]
+    fx_id_skew: u32,
     /// Whether the last render ran the CMYK ink passes (only then is its view worth keeping).
     cmyk_ran: bool,
     #[cfg(test)]
@@ -311,6 +317,9 @@ impl Renderer {
             fx_next_id: 0,
             fx_defer: true,
             fx_misnumbered: false,
+            fx_redraw: false,
+            #[cfg(test)]
+            fx_id_skew: 0,
             cmyk_ran: false,
             #[cfg(test)]
             cmyk_passes: 0,
@@ -363,7 +372,13 @@ impl Renderer {
         let size = (width.clamp(1, MAX_SIDE) as usize).saturating_mul(height.clamp(1, MAX_SIDE) as usize).saturating_mul(4);
         let spare = self.cmyk_view.take().map(blendspace::CachedView::into_pixels).filter(|p| again && p.len() == size);
         self.cmyk_ran = false;
-        let image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
+        self.fx_redraw = false;
+        let mut image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
+        if self.fx_redraw {
+            self.cmyk_ran = false;
+            self.fx_redraw = false;
+            image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
+        }
         // Kept only when the ink passes ran: other views render at their usual cost anyway.
         if self.cmyk_ran && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads, spare));
@@ -1202,7 +1217,10 @@ impl Renderer {
     /// Record `ctx` (a flushed single-threaded context holding a band of an effect image) to be
     /// drawn with the others in [`Self::raster_fx`]; the image id to place it by.
     pub(crate) fn defer_fx(&mut self, ctx: RenderContext, post: Option<f32>) -> vello_common::paint::ImageId {
+        #[cfg(not(test))]
         let id = vello_common::paint::ImageId::new(self.fx_next_id);
+        #[cfg(test)]
+        let id = vello_common::paint::ImageId::new(self.fx_next_id.saturating_add(self.fx_id_skew));
         self.fx_next_id = self.fx_next_id.saturating_add(1);
         self.fx_pixels = self.fx_pixels.saturating_add(u64::from(ctx.width()) * u64::from(ctx.height()));
         self.fx_jobs.push(FxJob { ctx, id, post });
@@ -1287,6 +1305,7 @@ impl Renderer {
             log::error!("effect images were numbered differently than placed; drawing them one by one from now on");
             self.fx_defer = false;
             self.fx_misnumbered = true;
+            self.fx_redraw = true;
         }
         !self.fx_misnumbered
     }
@@ -1934,6 +1953,24 @@ mod tests {
             let (a, b) = (draw(&mut together), draw(&mut fallen_back));
             assert!(b.pixels.chunks(4).any(|p| p[0] < 128), "the fallen-back render is blank");
             assert!(a.pixels.iter().zip(&b.pixels).all(|(x, y)| x.abs_diff(*y) <= 2));
+        }
+        // The render in which the registry numbers an effect image differently is drawn again,
+        // effects one by one: not blank, also in the CMYK blend space view, whose snapshot is
+        // then kept for the next render.
+        for cmyk in [false, true] {
+            d.settings.blend_space = if cmyk { designcraft_doc::BlendSpace::Cmyk } else { designcraft_doc::BlendSpace::Rgb };
+            let opts = RenderOptions { blend_space_view: cmyk, ..opts.clone() };
+            let draw = |r: &mut Renderer| r.render(&d, &designcraft_compose::Cache::new(), &spreads, 160, 160, Affine::IDENTITY, &opts);
+            let expected = draw(&mut together);
+            let mut misnumbering = Renderer::new();
+            misnumbering.threads = 3;
+            misnumbering.fx_id_skew = 7;
+            for n in 0..2 {
+                let got = draw(&mut misnumbering);
+                assert!(!misnumbering.fx_defer, "effects fell back to one by one");
+                let w = expected.pixels.iter().zip(&got.pixels).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+                assert!(w <= 2, "cmyk {cmyk}, render {n}: max channel difference {w}");
+            }
         }
     }
 
