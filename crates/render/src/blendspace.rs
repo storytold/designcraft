@@ -387,7 +387,10 @@ impl Renderer {
             }
             off.flush();
             let mut pm = vello_cpu::Pixmap::new(aw, ah);
-            off.render(&mut pm, &mut self.resources);
+            // The effect images the pass placed, drawn first (an image it names must be there).
+            if self.raster_fx() {
+                off.render(&mut pm, &mut self.resources);
+            }
             #[cfg(test)]
             {
                 self.cmyk_passes += 1;
@@ -402,16 +405,20 @@ impl Renderer {
         self.stats.items = (self.stats.items - stats.items) / 2 + stats.items;
         self.stats.glyphs = (self.stats.glyphs - stats.glyphs) / 2 + stats.glyphs;
         let table = srgb_table();
-        for (c, k) in cmy.data_mut().iter_mut().zip(black.data()) {
-            if c.a == 0 {
-                continue;
+        let rich_black = f.opts.rich_black;
+        // Every pixel of the area through the table: on all the cores.
+        crate::in_parallel(cmy.data_mut(), black.data(), |cmy, black| {
+            for (c, k) in cmy.iter_mut().zip(black) {
+                if c.a == 0 {
+                    continue;
+                }
+                let a = c.a as f32;
+                let inks = [1.0 - c.r as f32 / a, 1.0 - c.g as f32 / a, 1.0 - c.b as f32 / a, 1.0 - k.r as f32 / a];
+                let rgb = if rich_black && inks[0..3].iter().all(|v| *v <= 1e-3) && inks[3] >= 0.999 { [0.0; 3] } else { srgb_in(&table, inks) };
+                let [r, g, b] = rgb.map(|v| (v.clamp(0.0, 1.0) * a).round() as u8);
+                (c.r, c.g, c.b) = (r, g, b);
             }
-            let a = c.a as f32;
-            let inks = [1.0 - c.r as f32 / a, 1.0 - c.g as f32 / a, 1.0 - c.b as f32 / a, 1.0 - k.r as f32 / a];
-            let rgb = if f.opts.rich_black && inks[0..3].iter().all(|v| *v <= 1e-3) && inks[3] >= 0.999 { [0.0; 3] } else { srgb_in(&table, inks) };
-            let [r, g, b] = rgb.map(|v| (v.clamp(0.0, 1.0) * a).round() as u8);
-            (c.r, c.g, c.b) = (r, g, b);
-        }
+        });
         ctx.set_transform(Affine::translate((area.x0, area.y0)));
         ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(cmy)), sampler: peniko::ImageSampler::default() });
         ctx.fill_rect(&Rect::new(0.0, 0.0, aw as f64, ah as f64));

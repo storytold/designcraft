@@ -374,3 +374,189 @@ fn feather_choke_and_corners() {
     let rounded = render(&d);
     assert!(lum(sharp.pixel(41, 41)) + 20 < lum(rounded.pixel(41, 41)), "{:?} vs {:?}", sharp.pixel(41, 41), rounded.pixel(41, 41));
 }
+
+/// A shadowed square and a shadowed text frame, for the kept-shadow tests.
+fn shadowed_text_doc() -> (Document, ItemId, designcraft_doc::StoryId) {
+    let mut d = shadow_doc(20.0);
+    let lid = d.default_layer();
+    let (tid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 105.0, 150.0, 150.0), lid, "Shadow", ParaFormat::default()).unwrap();
+    let ds = &mut d.item_mut(tid).unwrap().effects.drop_shadow;
+    ds.on = true;
+    ds.distance = 3.0;
+    ds.size = 2.0;
+    ds.opacity = 0.9;
+    (d, tid, sid)
+}
+
+/// One render of `d` through `view` with the composition `cache`, which an app keeps between
+/// renders as it keeps its renderer.
+fn render_view(r: &mut Renderer, cache: &Cache, d: &Document, view: Affine) -> Rendered {
+    let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+    r.render(d, cache, &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }], SIZE, SIZE, view, &opts)
+}
+
+fn fresh(d: &Document, view: Affine) -> Rendered {
+    let mut r = Renderer::new();
+    r.threads = 3;
+    render_view(&mut r, &Cache::new(), d, view)
+}
+
+fn worst(a: &Rendered, b: &Rendered) -> u8 {
+    a.pixels.iter().zip(&b.pixels).map(|(x, y)| x.abs_diff(*y)).max().unwrap()
+}
+
+fn mean(a: &Rendered, b: &Rendered) -> f64 {
+    a.pixels.iter().zip(&b.pixels).map(|(x, y)| f64::from(x.abs_diff(*y))).sum::<f64>() / a.pixels.len() as f64
+}
+
+/// Multithreaded renders keep drop shadows and glows between frames: placed again, they look as
+/// drawn afresh, also after panning, and an edit draws them anew.
+#[test]
+fn kept_shadows_look_as_drawn_afresh() {
+    let (mut d, tid, sid) = shadowed_text_doc();
+    let (mut r, cache) = (Renderer::new(), Cache::new());
+    r.threads = 3;
+    let first = render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    assert_eq!(render_view(&mut r, &cache, &d, Affine::IDENTITY).pixels, first.pixels, "placed again unchanged");
+    // Panned by whole pixels: as drawn afresh.
+    let view = Affine::translate((13.0, -7.0));
+    let w = worst(&render_view(&mut r, &cache, &d, view), &fresh(&d, view));
+    assert!(w <= 4, "panned by whole pixels: max channel difference {w}");
+    // By fractions of a pixel the kept image is resampled: a few levels at shadow edges.
+    let view = Affine::translate((-4.5, 6.25));
+    let kept = render_view(&mut r, &cache, &d, view);
+    let (w, m) = (worst(&kept, &fresh(&d, view)), mean(&kept, &fresh(&d, view)));
+    assert!(w <= 24 && m < 1.0, "panned by fractions: max channel difference {w}, mean {m:.3}");
+    // Zoomed: drawn anew.
+    let zoom = Affine::scale(1.5);
+    assert!(worst(&render_view(&mut r, &cache, &d, zoom), &fresh(&d, zoom)) <= 4);
+    // Edits: an object without text (only the object itself tells), the shadow, the text and the
+    // frame, each after a render that kept what it drew.
+    render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    let square = d.spreads[0].items.iter().find(|i| i.id != tid && i.effects.drop_shadow.on).unwrap().id;
+    // (Its opacity: the same extent, so nothing but the object itself has changed.)
+    d.item_mut(square).unwrap().effects.drop_shadow.opacity = 0.3;
+    assert!(worst(&render_view(&mut r, &cache, &d, Affine::IDENTITY), &fresh(&d, Affine::IDENTITY)) <= 4, "square's shadow edited");
+    render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    d.item_mut(tid).unwrap().effects.drop_shadow.opacity = 0.3;
+    assert!(worst(&render_view(&mut r, &cache, &d, Affine::IDENTITY), &fresh(&d, Affine::IDENTITY)) <= 4, "shadow edited");
+    render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    let story = d.story_mut(sid).unwrap();
+    let fmt = story.char_format_at(0).clone();
+    story.insert_with(0, "Long ", fmt);
+    assert!(worst(&render_view(&mut r, &cache, &d, Affine::IDENTITY), &fresh(&d, Affine::IDENTITY)) <= 4, "text edited");
+    render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    d.item_mut(tid).unwrap().xf = Affine::translate((0.0, -40.0));
+    assert!(worst(&render_view(&mut r, &cache, &d, Affine::IDENTITY), &fresh(&d, Affine::IDENTITY)) <= 4, "frame moved");
+    // A swatch the shadows use (their colour, [Black]), changed in the document.
+    render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    let black = d.swatches.iter_mut().find(|s| s.name == "[Black]").unwrap();
+    if let designcraft_color::SwatchValue::Color { color, .. } = &mut black.value {
+        *color = designcraft_color::Color::rgb(1.0, 0.0, 0.0);
+    }
+    assert!(worst(&render_view(&mut r, &cache, &d, Affine::IDENTITY), &fresh(&d, Affine::IDENTITY)) <= 4, "swatch edited");
+}
+
+/// A shadow too large to keep whole at a high zoom keeps what is on screen and a margin; panning
+/// past that draws it anew.
+#[test]
+fn large_kept_shadows_are_redrawn_where_panning_leaves_them() {
+    let d = shadow_doc(0.0);
+    let (mut r, cache) = (Renderer::new(), Cache::new());
+    r.threads = 3;
+    // 40×: the square's shadow is thousands of pixels wide. The view starts on the square's
+    // right edge (x 100 pt at 80 px) and pans across the shadow's soft edge, by less and by more
+    // than what is kept around the screen.
+    for x in [0.0, -100.0, -300.0, -600.0, -150.0, 200.0] {
+        let view = Affine::translate((80.0 - 4000.0 + x, -2600.0)) * Affine::scale(40.0);
+        let w = worst(&render_view(&mut r, &cache, &d, view), &fresh(&d, view));
+        assert!(w <= 12, "at {x}: max channel difference {w}");
+    }
+}
+
+/// Every kind of soft effect, on several objects, drawn on a multithreaded context: the effect
+/// images are drawn together on the cores and kept. Drawn so, placed again, panned and after an
+/// edit, they look as drawn on a single thread.
+#[test]
+fn all_effects_drawn_together_and_kept_look_as_drawn_one_by_one() {
+    let mut d = doc();
+    let mut ids = vec![];
+    for (k, r) in [
+        Rect::new(20.0, 20.0, 70.0, 70.0),
+        Rect::new(90.0, 20.0, 140.0, 70.0),
+        Rect::new(20.0, 90.0, 70.0, 140.0),
+        Rect::new(90.0, 90.0, 140.0, 140.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = rect_item(&mut d, r, if k % 2 == 0 { "C=100 M=0 Y=0 K=0" } else { "C=0 M=100 Y=0 K=0" });
+        let e = &mut d.item_mut(id).unwrap().effects;
+        match k {
+            0 => {
+                e.drop_shadow.on = true;
+                e.inner_shadow.on = true;
+            }
+            1 => {
+                e.bevel.on = true;
+                e.bevel.size = 6.0;
+                e.outer_glow.on = true;
+            }
+            2 => e.feather = 8.0,
+            _ => {
+                e.inner_glow.on = true;
+                e.satin.on = true;
+            }
+        }
+        ids.push(id);
+    }
+    let one_by_one = |d: &Document, view: Affine| {
+        let mut r = Renderer::new();
+        r.threads = 0;
+        render_view(&mut r, &Cache::new(), d, view)
+    };
+    let (mut r, cache) = (Renderer::new(), Cache::new());
+    r.threads = 3;
+    let first = render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    let w = worst(&first, &one_by_one(&d, Affine::IDENTITY));
+    assert!(w <= 4, "drawn together: max channel difference {w}");
+    assert_eq!(render_view(&mut r, &cache, &d, Affine::IDENTITY).pixels, first.pixels, "placed again unchanged");
+    let view = Affine::translate((11.0, -6.0));
+    let w = worst(&render_view(&mut r, &cache, &d, view), &one_by_one(&d, view));
+    assert!(w <= 4, "panned: max channel difference {w}");
+    let zoom = Affine::scale(1.5);
+    let w = worst(&render_view(&mut r, &cache, &d, zoom), &one_by_one(&d, zoom));
+    assert!(w <= 4, "zoomed: max channel difference {w}");
+    // Edited, each effect as far as before (only the objects themselves tell): the bevel's
+    // highlight and the inner glow fainter.
+    render_view(&mut r, &cache, &d, Affine::IDENTITY);
+    d.item_mut(ids[1]).unwrap().effects.bevel.highlight_opacity = 0.2;
+    d.item_mut(ids[3]).unwrap().effects.inner_glow.opacity = 0.2;
+    let w = worst(&render_view(&mut r, &cache, &d, Affine::IDENTITY), &one_by_one(&d, Affine::IDENTITY));
+    assert!(w <= 4, "edited: max channel difference {w}");
+}
+
+/// Zoomed in, a wide blur is drawn at a lower resolution and scaled up: it looks as drawn at full
+/// resolution on a single thread, within a few levels.
+#[test]
+fn wide_blurs_drawn_coarser_look_as_drawn_at_full_resolution() {
+    let mut d = shadow_doc(0.0);
+    let id = rect_item(&mut d, Rect::new(110.0, 30.0, 150.0, 70.0), "C=0 M=100 Y=0 K=0");
+    {
+        let e = &mut d.item_mut(id).unwrap().effects;
+        e.bevel.on = true;
+        e.bevel.size = 6.0;
+        e.inner_shadow.on = true;
+        e.outer_glow.on = true;
+    }
+    // 6×: the shadow's σ is 30 pixels, drawn at a tenth of the resolution.
+    let view = Affine::translate((-560.0, -100.0)) * Affine::scale(6.0);
+    let mut r = Renderer::new();
+    r.threads = 3;
+    let coarse = render_view(&mut r, &Cache::new(), &d, view);
+    let mut one = Renderer::new();
+    one.threads = 0;
+    let full = render_view(&mut one, &Cache::new(), &d, view);
+    let (w, m) = (worst(&coarse, &full), mean(&coarse, &full));
+    assert!(w <= 10 && m < 0.5, "max channel difference {w}, mean {m:.3}");
+}

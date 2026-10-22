@@ -27,6 +27,7 @@ mod blendspace;
 mod colorize;
 pub mod damage;
 mod fx;
+mod fx_cache;
 mod grid;
 
 /// How far (points) an object's soft effects reach outside its geometry.
@@ -229,6 +230,18 @@ pub struct Renderer {
     stories: HashMap<(StoryId, ShownOn), Arc<ComposedStory>>,
     drawing_items: Vec<designcraft_doc::ItemId>,
     cmyk_view: Option<blendspace::CachedView>,
+    /// Soft effects kept between renders.
+    fx_cache: fx_cache::FxCache,
+    /// Effect images recorded for the multithreaded context and not drawn yet ([`Self::raster_fx`]).
+    fx_jobs: Vec<FxJob>,
+    /// Pixels of `fx_jobs`.
+    fx_pixels: u64,
+    /// The image id the next recorded effect image takes: the registry numbers images in the
+    /// order they are registered, from 0 after it is cleared at the start of each render.
+    fx_next_id: u32,
+    /// Whether effect images are drawn together on the cores (off once the registry numbered
+    /// one differently; they are then drawn one by one, as they come).
+    fx_defer: bool,
     /// Whether the last render ran the CMYK ink passes (only then is its view worth keeping).
     cmyk_ran: bool,
     #[cfg(test)]
@@ -286,6 +299,11 @@ impl Renderer {
             stories: HashMap::new(),
             drawing_items: Vec::new(),
             cmyk_view: None,
+            fx_cache: fx_cache::FxCache::default(),
+            fx_jobs: Vec::new(),
+            fx_pixels: 0,
+            fx_next_id: 0,
+            fx_defer: true,
             cmyk_ran: false,
             #[cfg(test)]
             cmyk_passes: 0,
@@ -303,6 +321,7 @@ impl Renderer {
         self.cmyk_view = None;
         self.glyphs.clear();
         self.stories.clear();
+        self.fx_cache.clear();
     }
 
     /// Number of text frames whose glyph paths are cached.
@@ -363,11 +382,13 @@ impl Renderer {
             _ => RenderContext::new_with(w, h, vello_cpu::RenderSettings { num_threads: self.threads, ..Default::default() }),
         };
         let mt = ctx.render_settings().num_threads > 0;
+        self.fx_begin();
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
         self.stats = FrameStats::default();
         self.stories.clear();
         self.glyphs.tick();
+        self.fx_cache.next_frame();
         if let Some(bg) = opts.background {
             ctx.set_transform(Affine::IDENTITY);
             ctx.set_paint(peniko::Color::from_rgba8(bg[0], bg[1], bg[2], bg[3]));
@@ -390,9 +411,14 @@ impl Renderer {
         ctx.flush();
         // Render straight into the returned buffer (no extra copy of the frame).
         let mut pixels = vec![0u8; w as usize * h as usize * 4];
-        if let Some(pm) = vello_cpu::PixmapMut::new(w, h, &mut pixels) {
+        if self.raster_fx()
+            && let Some(pm) = vello_cpu::PixmapMut::new(w, h, &mut pixels)
+        {
             ctx.render(pm, &mut self.resources);
         }
+        // The effect images are referenced by the context only, which is reset before it is used again.
+        self.resources.clear_images();
+        self.fx_next_id = 0;
         if opts.blend_space_view && doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk && opts.plate.is_none() {
             let mut img = Rendered { width: w as u32, height: h as u32, pixels };
             for pl in spreads {
@@ -950,62 +976,303 @@ pub(crate) fn cmyk_in(table: &[[f32; 4]], rgb: [f32; 3]) -> [f32; 4] {
     out
 }
 
-/// An image's ink coverage on one process plate, as grey (cached per image and plate).
+/// Separated images kept between renders, least recently used let go first (bytes).
+const PLATE_BUDGET: usize = 384 << 20;
+
+struct PlateEntry {
+    /// Kept alive: its address is the key (never read).
+    #[allow(dead_code)]
+    source: std::sync::Arc<vello_cpu::Pixmap>,
+    plate: std::sync::Arc<vello_cpu::Pixmap>,
+    bytes: usize,
+    used: u64,
+}
+
+struct PlateCache {
+    settings: designcraft_color::cms::ColorSettings,
+    map: HashMap<(usize, u8), PlateEntry>,
+    used: usize,
+    tick: u64,
+}
+
+/// An image's ink coverage on one process plate, as grey; plate 4 is the C, M and Y plates as the
+/// complements of red, green and blue (the CMYK blend passes). Kept per image and plate. The
+/// blend passes draw plates 4 and 3 (black) one after the other, so either separates both.
 fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync::Arc<vello_cpu::Pixmap> {
-    // Keep source allocations alive (their addresses are keys), invalidate on colour settings,
-    // and cap derived raster memory rather than merely counting differently sized images.
-    type Entry = (std::sync::Arc<vello_cpu::Pixmap>, std::sync::Arc<vello_cpu::Pixmap>);
-    type Cache = (designcraft_color::cms::ColorSettings, std::collections::HashMap<(usize, u8), Entry>, usize);
-    const BUDGET: usize = 64 << 20;
-    static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
-    let key = (std::sync::Arc::as_ptr(pm) as usize, plate);
+    static CACHE: std::sync::Mutex<Option<PlateCache>> = std::sync::Mutex::new(None);
+    let id = std::sync::Arc::as_ptr(pm) as usize;
     let settings = designcraft_color::cms::active_settings();
     {
         let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((previous, map, _)) = guard.as_ref() {
-            if *previous == settings {
-                if let Some((_, derived)) = map.get(&key) {
-                    return derived.clone();
-                }
-            } else {
-                *guard = None;
+        if let Some(c) = guard.as_mut().filter(|c| c.settings == settings) {
+            c.tick += 1;
+            let tick = c.tick;
+            if let Some(e) = c.map.get_mut(&(id, plate)) {
+                e.used = tick;
+                return e.plate.clone();
             }
         }
     }
+    let plates: &[u8] = if plate >= 3 { &[4, 3] } else { std::slice::from_ref(&plate) };
+    let separated = separate(pm, plates);
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let c = guard.get_or_insert_with(|| PlateCache { settings: settings.clone(), map: HashMap::new(), used: 0, tick: 0 });
+    if c.settings != settings {
+        *c = PlateCache { settings, map: HashMap::new(), used: 0, tick: 0 };
+    }
+    let mut wanted = None;
+    for (p, out) in plates.iter().zip(separated) {
+        let out = std::sync::Arc::new(out);
+        if *p == plate {
+            wanted = Some(out.clone());
+        }
+        let bytes = (out.width() as usize).saturating_mul(out.height() as usize).saturating_mul(4);
+        if bytes > PLATE_BUDGET {
+            continue;
+        }
+        // Let the least recently used go until it fits.
+        while c.used.saturating_add(bytes) > PLATE_BUDGET {
+            let Some(oldest) = c.map.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| *k) else { break };
+            if let Some(e) = c.map.remove(&oldest) {
+                c.used = c.used.saturating_sub(e.bytes);
+            }
+        }
+        c.tick += 1;
+        let entry = PlateEntry { source: pm.clone(), plate: out, bytes, used: c.tick };
+        if let Some(old) = c.map.insert((id, *p), entry) {
+            c.used = c.used.saturating_sub(old.bytes);
+        }
+        c.used = c.used.saturating_add(bytes);
+    }
+    wanted.unwrap_or_else(|| pm.clone())
+}
+
+/// `pm` separated into `plates` (see [`plate_pixmap`]), each pixel's inks found once for all of
+/// them, the rows shared out among the cores.
+fn separate(pm: &vello_cpu::Pixmap, plates: &[u8]) -> Vec<vello_cpu::Pixmap> {
+    use vello_cpu::color::PremulRgba8;
     let table = cmyk_table();
-    let data: Vec<vello_cpu::color::PremulRgba8> = pm
-        .data()
-        .iter()
-        .map(|p| {
+    let src = pm.data();
+    let clear = PremulRgba8 { r: 0, g: 0, b: 0, a: 0 };
+    let mut outs: Vec<Vec<PremulRgba8>> = plates.iter().map(|_| vec![clear; src.len()]).collect();
+    fn work(table: &[[f32; 4]], plates: &[u8], src: &[PremulRgba8], outs: &mut [&mut [PremulRgba8]]) {
+        for (i, p) in src.iter().enumerate() {
             if p.a == 0 {
-                return *p;
+                for o in outs.iter_mut() {
+                    if let Some(x) = o.get_mut(i) {
+                        *x = *p;
+                    }
+                }
+                continue;
             }
             let k = 255.0 / p.a as f32;
             let rgb = [p.r, p.g, p.b].map(|v| (v as f32 * k / 255.0).min(1.0));
-            let cmyk = cmyk_in(&table, rgb);
-            let ink = |i: usize| ((1.0 - cmyk[i].clamp(0.0, 1.0)) * p.a as f32).round() as u8;
-            if plate == 4 {
-                return vello_cpu::color::PremulRgba8 { r: ink(0), g: ink(1), b: ink(2), a: p.a };
+            let cmyk = cmyk_in(table, rgb);
+            let ink = |i: usize| ((1.0 - cmyk.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0)) * p.a as f32).round() as u8;
+            for (o, plate) in outs.iter_mut().zip(plates) {
+                let px = if *plate == 4 {
+                    PremulRgba8 { r: ink(0), g: ink(1), b: ink(2), a: p.a }
+                } else {
+                    let v = ink((*plate).min(3) as usize);
+                    PremulRgba8 { r: v, g: v, b: v, a: p.a }
+                };
+                if let Some(x) = o.get_mut(i) {
+                    *x = px;
+                }
             }
-            let v = ink(plate.min(3) as usize);
-            vello_cpu::color::PremulRgba8 { r: v, g: v, b: v, a: p.a }
-        })
-        .collect();
-    let out = std::sync::Arc::new(vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height()));
-    let bytes = (pm.width() as usize).saturating_mul(pm.height() as usize).saturating_mul(8);
-    if bytes <= BUDGET {
-        let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let (previous, map, used) = guard.get_or_insert_with(|| (settings.clone(), Default::default(), 0));
-        if *previous != settings || used.saturating_add(bytes) > BUDGET {
-            map.clear();
-            *used = 0;
-            *previous = settings;
-        }
-        if map.insert(key, (pm.clone(), out.clone())).is_none() {
-            *used += bytes;
         }
     }
-    out
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1usize;
+    let chunk = src.len().div_ceil(threads).max(1 << 15);
+    let mut iters: Vec<_> = outs.iter_mut().map(|o| o.chunks_mut(chunk)).collect();
+    let jobs: Vec<(&[PremulRgba8], Vec<&mut [PremulRgba8]>)> =
+        src.chunks(chunk).map(|s| (s, iters.iter_mut().filter_map(|it| it.next()).collect())).collect();
+    let table = &table[..];
+    let helpers = jobs.len().saturating_sub(1);
+    // The calling thread and its helpers take rows until none are left: whatever threads start,
+    // every row is done.
+    let queue = std::sync::Mutex::new(jobs);
+    let run = || {
+        loop {
+            let job = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
+            let Some((s, mut o)) = job else { break };
+            work(table, plates, s, &mut o);
+        }
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..helpers {
+            if let Err(e) = std::thread::Builder::new().spawn_scoped(scope, run) {
+                log::warn!("separating an image on fewer threads: {e}");
+                break;
+            }
+        }
+        run();
+    });
+    outs.into_iter().map(|data| vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height())).collect()
+}
+
+/// `work` over `dst` and `src` (the same length) in pieces shared out among the cores (one on
+/// the web); the calling thread works too, so every piece is done whatever threads start.
+pub(crate) fn in_parallel<T: Send, U: Sync>(dst: &mut [T], src: &[U], work: impl Fn(&mut [T], &[U]) + Sync) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1usize;
+    let chunk = dst.len().div_ceil(threads).max(1 << 15);
+    let jobs: Vec<(&mut [T], &[U])> = dst.chunks_mut(chunk).zip(src.chunks(chunk)).collect();
+    if jobs.len() <= 1 {
+        for (d, s) in jobs {
+            work(d, s);
+        }
+        return;
+    }
+    let helpers = jobs.len() - 1;
+    let queue = std::sync::Mutex::new(jobs);
+    let work = &work;
+    let run = || {
+        loop {
+            let job = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
+            let Some((d, s)) = job else { break };
+            work(d, s);
+        }
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..helpers {
+            if let Err(e) = std::thread::Builder::new().spawn_scoped(scope, run) {
+                log::warn!("working on fewer threads: {e}");
+                break;
+            }
+        }
+        run();
+    });
+}
+
+/// An effect image recorded for the multithreaded context: its single-threaded context, the
+/// image id the context places it by, and what to keep of it once drawn.
+struct FxJob {
+    ctx: RenderContext,
+    id: vello_common::paint::ImageId,
+    keep: Option<fx_cache::Prepared>,
+}
+
+/// Pixels of recorded effect images drawn at once at most: more are drawn before recording goes on.
+const FX_BATCH_PIXELS: u64 = 48 << 20;
+
+impl Renderer {
+    /// A render begins: the image registry is cleared, so it numbers the effect images recorded
+    /// from now on from 0, as [`Self::defer_fx`] expects.
+    fn fx_begin(&mut self) {
+        self.fx_jobs.clear();
+        self.fx_pixels = 0;
+        self.resources.clear_images();
+        self.fx_next_id = 0;
+    }
+
+    /// Whether effect images drawn into a multithreaded context are recorded for
+    /// [`Self::raster_fx`] (rather than drawn as they come).
+    pub(crate) fn fx_deferred(&self) -> bool {
+        self.fx_defer
+    }
+
+    /// Record `ctx` (a flushed single-threaded context holding an effect image) to be drawn with
+    /// the others in [`Self::raster_fx`]; the image id to place it by.
+    pub(crate) fn defer_fx(&mut self, ctx: RenderContext, keep: Option<fx_cache::Prepared>) -> vello_common::paint::ImageId {
+        let id = vello_common::paint::ImageId::new(self.fx_next_id);
+        self.fx_next_id = self.fx_next_id.saturating_add(1);
+        self.fx_pixels = self.fx_pixels.saturating_add(u64::from(ctx.width()) * u64::from(ctx.height()));
+        self.fx_jobs.push(FxJob { ctx, id, keep });
+        if self.fx_pixels > FX_BATCH_PIXELS {
+            self.raster_fx();
+        }
+        id
+    }
+
+    /// Draw the recorded effect images, shared out among the cores, and register them under the
+    /// ids they were placed by. `false` when the registry numbered one differently: the context
+    /// that places them must not be rasterized then (an image it names would be missing), and
+    /// effect images are drawn as they come from now on.
+    pub(crate) fn raster_fx(&mut self) -> bool {
+        let jobs = std::mem::take(&mut self.fx_jobs);
+        self.fx_pixels = 0;
+        if jobs.is_empty() {
+            return self.fx_defer;
+        }
+        // Each context goes to the one thread that draws it.
+        let (ctxs, jobs): (Vec<_>, Vec<_>) = jobs.into_iter().map(|j| (std::sync::Mutex::new(Some(j.ctx)), (j.id, j.keep))).unzip();
+        let size = |c: &std::sync::Mutex<Option<RenderContext>>| {
+            c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map_or(0, |c| u64::from(c.width()) * u64::from(c.height()))
+        };
+        // Largest first, so the last ones to finish are small.
+        let mut order: Vec<usize> = (0..ctxs.len()).collect();
+        order.sort_by_cached_key(|i| std::cmp::Reverse(ctxs.get(*i).map_or(0, size)));
+        let images = run_parallel(&order, |i| {
+            let ctx = ctxs.get(*i)?.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()?;
+            let mut pm = vello_cpu::Pixmap::new(ctx.width(), ctx.height());
+            // Each image is drawn on its own: its paints carry their pixels, nothing is registered.
+            ctx.render(&mut pm, &mut Resources::new());
+            Some(Arc::new(pm))
+        });
+        let mut drawn: Vec<Option<Arc<vello_cpu::Pixmap>>> = vec![None; jobs.len()];
+        for (i, image) in order.into_iter().zip(images) {
+            if let Some(slot) = drawn.get_mut(i) {
+                *slot = image;
+            }
+        }
+        let mut ok = true;
+        for ((want, keep), image) in jobs.into_iter().zip(drawn) {
+            let image = image.unwrap_or_else(|| Arc::new(vello_cpu::Pixmap::new(1, 1)));
+            if self.resources.register_image(image.clone()) != want {
+                ok = false;
+            }
+            if let Some(keep) = keep {
+                self.fx_cache.put(keep, image);
+            }
+        }
+        if !ok {
+            log::error!("effect images were numbered differently than placed; drawing them one by one from now on");
+            self.fx_defer = false;
+        }
+        ok && self.fx_defer
+    }
+}
+
+/// `work` on each of `items`, shared out among the cores (one on the web); the results in the
+/// order of `items`. The calling thread works too, so every item is done whatever threads start.
+pub(crate) fn run_parallel<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1usize;
+    let helpers = threads.min(items.len()).saturating_sub(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(Vec::with_capacity(items.len()));
+    let run = || {
+        loop {
+            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(item) = items.get(i) else { break };
+            let r = work(item);
+            results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((i, r));
+        }
+    };
+    if helpers == 0 {
+        run();
+    } else {
+        std::thread::scope(|scope| {
+            for _ in 0..helpers {
+                if let Err(e) = std::thread::Builder::new().spawn_scoped(scope, run) {
+                    log::warn!("working on fewer threads: {e}");
+                    break;
+                }
+            }
+            run();
+        });
+    }
+    let mut results = results.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    results.sort_by_key(|(i, _)| *i);
+    results.into_iter().map(|(_, r)| r).collect()
 }
 
 fn rect_overlaps(a: Rect, b: Rect) -> bool {
@@ -1560,6 +1827,50 @@ pub fn image_mime(bytes: &[u8]) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+
+    /// Effect images recorded for drawing together are placed by the ids the image registry gives
+    /// them when they are registered afterwards: it numbers images in order from 0 once cleared.
+    #[test]
+    fn the_image_registry_numbers_images_in_order_from_0_once_cleared() {
+        let mut res = Resources::new();
+        let image = || std::sync::Arc::new(vello_cpu::Pixmap::new(1, 1));
+        let _ = res.register_image(image());
+        res.clear_images();
+        let ids: Vec<u32> = (0..3).map(|_| res.register_image(image()).as_u32()).collect();
+        assert_eq!(ids, [0, 1, 2]);
+    }
+
+    /// The plates of an image large enough to be separated on several threads are, pixel for
+    /// pixel, those of the inks found one pixel at a time; both blend-pass plates come at once.
+    #[test]
+    fn images_separate_on_several_threads_as_pixel_by_pixel() {
+        use vello_cpu::color::PremulRgba8;
+        let (w, h) = (400u16, 300u16);
+        let data: Vec<PremulRgba8> = (0..u32::from(w) * u32::from(h))
+            .map(|i| {
+                let a = (i % 7 * 40).min(255) as u8;
+                let c = |k: u32| ((i * k % 256) as u16 * u16::from(a) / 255) as u8;
+                PremulRgba8 { r: c(3), g: c(5), b: c(11), a }
+            })
+            .collect();
+        let pm = std::sync::Arc::new(vello_cpu::Pixmap::from_parts(data.clone(), w, h));
+        let table = cmyk_table();
+        let (cmy, black) = (plate_pixmap(&pm, 4), plate_pixmap(&pm, 3));
+        for (i, p) in data.iter().enumerate() {
+            let (c, k) = (cmy.data()[i], black.data()[i]);
+            if p.a == 0 {
+                assert_eq!((c, k), (*p, *p));
+                continue;
+            }
+            let rgb = [p.r, p.g, p.b].map(|v| (v as f32 * (255.0 / p.a as f32) / 255.0).min(1.0));
+            let inks = cmyk_in(&table, rgb);
+            let ink = |n: usize| ((1.0 - inks[n].clamp(0.0, 1.0)) * p.a as f32).round() as u8;
+            assert_eq!((c.r, c.g, c.b, c.a), (ink(0), ink(1), ink(2), p.a), "pixel {i}");
+            assert_eq!((k.r, k.g, k.b, k.a), (ink(3), ink(3), ink(3), p.a), "pixel {i}");
+        }
+        // Kept: asked again, the same images.
+        assert!(std::sync::Arc::ptr_eq(&cmy, &plate_pixmap(&pm, 4)) && std::sync::Arc::ptr_eq(&black, &plate_pixmap(&pm, 3)));
+    }
     use super::*;
     use designcraft_doc::build::NewDocument;
     use designcraft_doc::{Fill, ParaFormat};
