@@ -25,7 +25,7 @@ use vello_cpu::peniko::{self, BlendMode, Compose, Mix};
 use vello_cpu::{RenderContext, kurbo};
 
 use crate::fx_cache::Slot;
-use crate::{Frame, Renderer, color_of};
+use crate::{Frame, RenderOptions, Renderer, color_of};
 use designcraft_compose::ShownOn;
 
 /// Shadow offset (spread units) for an InDesign angle (degrees, light direction) and distance.
@@ -423,8 +423,9 @@ impl Renderer {
     /// cores before the context is rasterized.
     ///
     /// `draw` pushes its filter layer when told to (its last argument). A drop shadow or glow
-    /// (`shadow`, its colour) drawn offscreen is drawn without it, and its coverage is blurred and
-    /// coloured afterwards ([`colour_shadow`]): the same, at a fraction of the filter's cost.
+    /// (`shadow`, its colour) drawn offscreen is drawn without it; its coverage is blurred
+    /// afterwards ([`shadow_coverage`]) and placed in its colour: the same, at a fraction of the
+    /// filter's cost, and kept once for every plate.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_filters(
         &mut self,
@@ -481,16 +482,25 @@ impl Renderer {
                 let sh = f64::from(screen.1);
                 let needed = all.inflate(spread, spread).intersect(Rect::new(0.0, 0.0, sw, sh).inflate(spread, spread));
                 let src = Source { item: it, xf, view: f.view, px: f.px, stories, needed };
-                let key = (it.id, page, slot, f.opts.plate);
-                if let Some(p) = self.fx_cache.get(key, &src, f.doc, f.opts) {
+                // A shadow's coverage is the same on every plate (it is coloured as it is placed).
+                let plain;
+                let (plate, opts) = match shadow {
+                    Some(_) => {
+                        plain = RenderOptions { plate: None, ..f.opts.clone() };
+                        (None, &plain)
+                    }
+                    None => (f.opts.plate, f.opts),
+                };
+                let key = (it.id, page, slot, plate);
+                if let Some(p) = self.fx_cache.get(key, &src, f.doc, opts) {
                     push_clip(ctx, f, outer);
                     for b in p.image.bands {
-                        place(ctx, vello_cpu::ImageSource::Pixmap(b.image), (p.x0, p.y0, p.scale), p.image.width, b.top, b.core);
+                        place(ctx, vello_cpu::ImageSource::Pixmap(b.image), (p.x0, p.y0, p.scale), p.image.width, b.top, b.core, shadow);
                     }
                     pop_clip(ctx, outer);
                     return;
                 }
-                Some(FxCache::prepare(key, src, f.opts, o.x0, o.y0, o.scale))
+                Some(FxCache::prepare(key, src, opts, o.x0, o.y0, o.scale))
             }
             None => None,
         };
@@ -498,8 +508,8 @@ impl Renderer {
         // Drawn with the others on the cores, a large image is drawn in bands of rows, each
         // reaching past its rows by the blur's spread.
         let deferred = f.mt && self.fx_deferred();
-        // A shadow's blur (σ, offscreen pixels) and colour, put on after it is drawn.
-        let post = shadow.map(|c| ((sigma.max(0.0) / (f.px * o.scale)) as f32, c));
+        // A shadow's blur (σ, offscreen pixels), put on its coverage after it is drawn.
+        let post = shadow.map(|_| (sigma.max(0.0) / (f.px * o.scale)) as f32);
         let pad = (spread / o.scale).ceil().clamp(0.0, f64::from(u16::MAX)) as u32 + 2;
         let mut bands = Vec::new();
         push_clip(ctx, f, outer);
@@ -520,16 +530,16 @@ impl Renderer {
             off.flush();
             if deferred {
                 let id = self.defer_fx(off, post);
-                place(ctx, vello_cpu::ImageSource::OpaqueId { id, may_have_transparency: true }, at, o.width, top, core);
+                place(ctx, vello_cpu::ImageSource::OpaqueId { id, may_have_transparency: true }, at, o.width, top, core, shadow);
                 bands.push((id, top, core));
             } else {
                 let mut pm = vello_cpu::Pixmap::new(o.width, rows);
                 off.render(&mut pm, &mut self.resources);
-                if let Some((sigma, color)) = post {
-                    colour_shadow(&mut pm, sigma, color);
+                if let Some(sigma) = post {
+                    shadow_coverage(&mut pm, sigma);
                 }
                 let image = std::sync::Arc::new(pm);
-                place(ctx, vello_cpu::ImageSource::Pixmap(image.clone()), at, o.width, top, core);
+                place(ctx, vello_cpu::ImageSource::Pixmap(image.clone()), at, o.width, top, core, shadow);
                 if let Some(p) = prepared.take() {
                     self.fx_cache.put(p, FxImage { width: o.width, height: u32::from(o.height), bands: vec![Band { image, top, core }] });
                 }
@@ -554,12 +564,27 @@ const KEEP_MARGIN: f64 = 256.0;
 
 /// Rows `core` of an effect image `width` pixels wide whose top left is at (`x0`, `y0`) on the
 /// device and each of whose pixels is `scale` device pixels wide, from `image`, which holds its
-/// rows from `top` on.
-fn place(ctx: &mut RenderContext, image: vello_cpu::ImageSource, (x0, y0, scale): (f64, f64, f64), width: u16, top: u32, core: (u32, u32)) {
+/// rows from `top` on; a shadow's coverage in its colour (`tint`).
+#[allow(clippy::too_many_arguments)]
+fn place(
+    ctx: &mut RenderContext,
+    image: vello_cpu::ImageSource,
+    (x0, y0, scale): (f64, f64, f64),
+    width: u16,
+    top: u32,
+    core: (u32, u32),
+    tint: Option<peniko::Color>,
+) {
     ctx.set_transform(Affine::translate((x0, y0)) * Affine::scale(scale) * Affine::translate((0.0, f64::from(top))));
     ctx.set_paint(vello_cpu::Image { image, sampler: peniko::ImageSampler::default() });
+    if let Some(color) = tint {
+        ctx.set_tint(Some(vello_common::paint::Tint { color, mode: vello_common::paint::TintMode::AlphaMask }));
+    }
     let rows = |r: u32| f64::from(r.saturating_sub(top));
     ctx.fill_rect(&Rect::new(0.0, rows(core.0), f64::from(width), rows(core.1)));
+    if tint.is_some() {
+        ctx.set_tint(None);
+    }
     ctx.set_transform(Affine::IDENTITY);
 }
 
@@ -635,22 +660,19 @@ fn offscreen(reach: Rect, spread: f64, (width, height): (u16, u16), margin: f64,
     (w >= 1.0 && h >= 1.0).then_some(Offscreen { x0, y0, scale, width: w as u16, height: h as u16 })
 }
 
-/// What vello's drop-shadow filter (no offset) makes of `pm`, without it: its coverage blurred by
-/// `sigma` pixels (a Gaussian 3σ wide, nothing beyond the edges), in `color`. One channel where
-/// the filter blurs four, and nothing blurred where nothing is.
-pub(crate) fn colour_shadow(pm: &mut vello_cpu::Pixmap, sigma: f32, color: peniko::Color) {
+/// What vello's drop-shadow filter (no offset) blurs of `pm`, without it: its coverage blurred by
+/// `sigma` pixels (a Gaussian 3σ wide, nothing beyond the edges), as white of that coverage. It
+/// is coloured as it is placed (an alpha-mask tint), so one image serves every colour and plate.
+/// One channel where the filter blurs four, and nothing blurred where nothing is.
+pub(crate) fn shadow_coverage(pm: &mut vello_cpu::Pixmap, sigma: f32) {
     let w = usize::from(pm.width());
     let mut cov: Vec<f32> = pm.data().iter().map(|p| f32::from(p.a)).collect();
     if sigma > 0.0 && w > 0 {
         blur_coverage(&mut cov, w, sigma);
     }
-    let [r, g, b, a] = color.components;
-    let channel = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u16;
-    let (r, g, b) = (channel(r), channel(g), channel(b));
     for (p, v) in pm.data_mut().iter_mut().zip(&cov) {
-        let alpha = channel((v / 255.0 * a).clamp(0.0, 1.0));
-        let pre = |c: u16| (c * alpha / 255) as u8;
-        *p = vello_cpu::color::PremulRgba8 { r: pre(r), g: pre(g), b: pre(b), a: alpha as u8 };
+        let a = v.round().clamp(0.0, 255.0) as u8;
+        *p = vello_cpu::color::PremulRgba8 { r: a, g: a, b: a, a };
     }
 }
 

@@ -352,13 +352,14 @@ impl Renderer {
             self.stats.micros = now().saturating_sub(start);
             return image;
         }
-        // Release the old snapshot before rendering an edited document or resized viewport.
-        self.cmyk_view = None;
+        // Release the old snapshot before rendering an edited document or resized viewport; its
+        // pixel buffer is reused for the new one (a fresh one costs more to touch than to fill).
+        let spare = self.cmyk_view.take().map(blendspace::CachedView::into_pixels);
         self.cmyk_ran = false;
         let image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
         // Kept only when the ink passes ran: other views render at their usual cost anyway.
         if self.cmyk_ran && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
-            self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
+            self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads, spare));
         }
         self.stats.micros = now().saturating_sub(start);
         image
@@ -958,25 +959,18 @@ pub(crate) fn cmyk_table() -> std::sync::Arc<Vec<[f32; 4]>> {
     }
 }
 
-/// Trilinear lookup of `rgb` in a [`cmyk_table`].
+/// Trilinear lookup of `rgb` in a [`cmyk_table`]: the 8 surrounding entries interpolated along
+/// blue, then green and red.
 pub(crate) fn cmyk_in(table: &[[f32; 4]], rgb: [f32; 3]) -> [f32; 4] {
     const N: usize = CMYK_N;
     let f = rgb.map(|v| v.clamp(0.0, 1.0) * (N - 1) as f32);
     let i = f.map(|v| (v as usize).min(N - 2));
     let d = [f[0] - i[0] as f32, f[1] - i[1] as f32, f[2] - i[2] as f32];
-    let mut out = [0.0f32; 4];
-    for (corner, w) in (0..8).map(|c| {
-        let (a, b, cc) = (c >> 2 & 1, c >> 1 & 1, c & 1);
-        let w = (if a == 1 { d[0] } else { 1.0 - d[0] }) * (if b == 1 { d[1] } else { 1.0 - d[1] }) * (if cc == 1 { d[2] } else { 1.0 - d[2] });
-        ((i[0] + a) * N * N + (i[1] + b) * N + i[2] + cc, w)
-    }) {
-        if let Some(t) = table.get(corner) {
-            for k in 0..4 {
-                out[k] += t[k] * w;
-            }
-        }
-    }
-    out
+    let at = |r: usize, g: usize, b: usize| table.get(((i[0] + r) * N + i[1] + g) * N + i[2] + b).copied().unwrap_or([0.0; 4]);
+    let lerp = |a: [f32; 4], b: [f32; 4], t: f32| std::array::from_fn::<f32, 4, _>(|k| a[k] + (b[k] - a[k]) * t);
+    // Corners (r, g) in the order r·2 + g, along blue; then along green and red.
+    let square: [[f32; 4]; 4] = std::array::from_fn(|n| lerp(at(n >> 1 & 1, n & 1, 0), at(n >> 1 & 1, n & 1, 1), d[2]));
+    lerp(lerp(square[0], square[1], d[1]), lerp(square[2], square[3], d[1]), d[0])
 }
 
 /// Separated images kept between renders, least recently used let go first (bytes).
@@ -1059,6 +1053,8 @@ fn separate(pm: &vello_cpu::Pixmap, plates: &[u8]) -> Vec<vello_cpu::Pixmap> {
     let clear = PremulRgba8 { r: 0, g: 0, b: 0, a: 0 };
     let mut outs: Vec<Vec<PremulRgba8>> = plates.iter().map(|_| vec![clear; src.len()]).collect();
     fn work(table: &[[f32; 4]], plates: &[u8], src: &[PremulRgba8], outs: &mut [&mut [PremulRgba8]]) {
+        // Neighbouring pixels often share a colour: the last inks found, by the pixel's bytes.
+        let mut memo = vec![(0u32, [0u8; 4]); 1 << 14];
         for (i, p) in src.iter().enumerate() {
             if p.a == 0 {
                 for o in outs.iter_mut() {
@@ -1068,10 +1064,22 @@ fn separate(pm: &vello_cpu::Pixmap, plates: &[u8]) -> Vec<vello_cpu::Pixmap> {
                 }
                 continue;
             }
-            let k = 255.0 / p.a as f32;
-            let rgb = [p.r, p.g, p.b].map(|v| (v as f32 * k / 255.0).min(1.0));
-            let cmyk = cmyk_in(table, rgb);
-            let ink = |i: usize| ((1.0 - cmyk.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0)) * p.a as f32).round() as u8;
+            let key = u32::from(p.r) | u32::from(p.g) << 8 | u32::from(p.b) << 16 | u32::from(p.a) << 24;
+            let slot = (key.wrapping_mul(0x9E37_79B1) >> 18) as usize;
+            let inks = match memo.get(slot) {
+                Some((seen, inks)) if *seen == key => *inks,
+                _ => {
+                    let k = 255.0 / p.a as f32;
+                    let rgb = [p.r, p.g, p.b].map(|v| (v as f32 * k / 255.0).min(1.0));
+                    let cmyk = cmyk_in(table, rgb);
+                    let inks = cmyk.map(|v| ((1.0 - v.clamp(0.0, 1.0)) * p.a as f32).round() as u8);
+                    if let Some(m) = memo.get_mut(slot) {
+                        *m = (key, inks);
+                    }
+                    inks
+                }
+            };
+            let ink = |i: usize| inks.get(i).copied().unwrap_or(p.a);
             for (o, plate) in outs.iter_mut().zip(plates) {
                 let px = if *plate == 4 {
                     PremulRgba8 { r: ink(0), g: ink(1), b: ink(2), a: p.a }
@@ -1158,8 +1166,8 @@ pub(crate) fn in_parallel<T: Send, U: Sync>(dst: &mut [T], src: &[U], work: impl
 struct FxJob {
     ctx: RenderContext,
     id: vello_common::paint::ImageId,
-    /// A shadow's blur (σ, pixels) and colour, put on once it is drawn ([`fx::colour_shadow`]).
-    post: Option<(f32, peniko::Color)>,
+    /// A shadow's blur (σ, pixels), put on its coverage once it is drawn ([`fx::shadow_coverage`]).
+    post: Option<f32>,
 }
 
 /// An effect image to keep once its bands are drawn: what it was drawn from, its width and height,
@@ -1193,7 +1201,7 @@ impl Renderer {
 
     /// Record `ctx` (a flushed single-threaded context holding a band of an effect image) to be
     /// drawn with the others in [`Self::raster_fx`]; the image id to place it by.
-    pub(crate) fn defer_fx(&mut self, ctx: RenderContext, post: Option<(f32, peniko::Color)>) -> vello_common::paint::ImageId {
+    pub(crate) fn defer_fx(&mut self, ctx: RenderContext, post: Option<f32>) -> vello_common::paint::ImageId {
         let id = vello_common::paint::ImageId::new(self.fx_next_id);
         self.fx_next_id = self.fx_next_id.saturating_add(1);
         self.fx_pixels = self.fx_pixels.saturating_add(u64::from(ctx.width()) * u64::from(ctx.height()));
@@ -1233,7 +1241,7 @@ impl Renderer {
         }
         // Each context goes to the one thread that draws it.
         let (ctxs, ids): (Vec<_>, Vec<_>) = jobs.into_iter().map(|j| (std::sync::Mutex::new(Some((j.ctx, j.post))), j.id)).unzip();
-        type Job = std::sync::Mutex<Option<(RenderContext, Option<(f32, peniko::Color)>)>>;
+        type Job = std::sync::Mutex<Option<(RenderContext, Option<f32>)>>;
         let size = |c: &Job| {
             c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map_or(0, |(c, _)| u64::from(c.width()) * u64::from(c.height()))
         };
@@ -1245,8 +1253,8 @@ impl Renderer {
             let mut pm = vello_cpu::Pixmap::new(ctx.width(), ctx.height());
             // Each image is drawn on its own: its paints carry their pixels, nothing is registered.
             ctx.render(&mut pm, &mut Resources::new());
-            if let Some((sigma, color)) = post {
-                fx::colour_shadow(&mut pm, sigma, color);
+            if let Some(sigma) = post {
+                fx::shadow_coverage(&mut pm, sigma);
             }
             Some(Arc::new(pm))
         });
@@ -1871,6 +1879,41 @@ pub fn image_mime(bytes: &[u8]) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+
+    /// The lookup interpolated along one channel after another is the 8-corner weighted sum.
+    #[test]
+    fn cmyk_lookup_is_the_weighted_sum_of_its_8_corners() {
+        const N: usize = CMYK_N;
+        let table = cmyk_table();
+        let reference = |rgb: [f32; 3]| {
+            let f = rgb.map(|v| v.clamp(0.0, 1.0) * (N - 1) as f32);
+            let i = f.map(|v| (v as usize).min(N - 2));
+            let d = [f[0] - i[0] as f32, f[1] - i[1] as f32, f[2] - i[2] as f32];
+            let mut out = [0.0f32; 4];
+            for c in 0..8usize {
+                let (a, b, cc) = (c >> 2 & 1, c >> 1 & 1, c & 1);
+                let w =
+                    (if a == 1 { d[0] } else { 1.0 - d[0] }) * (if b == 1 { d[1] } else { 1.0 - d[1] }) * (if cc == 1 { d[2] } else { 1.0 - d[2] });
+                let t = table[(i[0] + a) * N * N + (i[1] + b) * N + i[2] + cc];
+                for k in 0..4 {
+                    out[k] += t[k] * w;
+                }
+            }
+            out
+        };
+        let mut seed = 0xc0ffee_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_001) as f32 / 10_000.0
+        };
+        for _ in 0..20_000 {
+            let rgb = [next(), next(), next()];
+            let (a, b) = (cmyk_in(&table, rgb), reference(rgb));
+            assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4), "{rgb:?}: {a:?} vs {b:?}");
+        }
+    }
 
     /// Effect images recorded for drawing together are placed by the ids the image registry gives
     /// them when they are registered afterwards: it numbers images in order from 0 once cleared.
