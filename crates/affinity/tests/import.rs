@@ -604,7 +604,8 @@ fn outline_effects_become_strokes() {
     let frame = d.spreads[0].items.iter().find(|i| i.is_text_frame()).unwrap();
     let Content::Text(tf) = &frame.content else { unreachable!() };
     let f = &d.story(tf.story).unwrap().chars[0].format.over;
-    assert_eq!(f.stroke_weight, Some(3.0));
+    // Centred: the 3 px radius on each side of the glyph outlines.
+    assert_eq!(f.stroke_weight, Some(6.0));
     assert_eq!(d.resolve_color(f.stroke.as_deref().unwrap(), 1.0), Some(Color::rgb(1.0, 0.0, 0.0)));
 }
 
@@ -639,5 +640,220 @@ proptest::proptest! {
         if let Ok(imported) = designcraft_affinity::import(&file) {
             proptest::prop_assert!(imported.document.check().is_ok());
         }
+    }
+}
+
+/// A byte blob field, as `LSty` `Data` and `ICCP` `Data` are stored.
+fn blob(field: &[u8; 4], bytes: &[u8]) -> F {
+    let mut b = vec![0x2d];
+    b.extend(tag(field).0.to_le_bytes());
+    b.extend((bytes.len() as u32).to_le_bytes());
+    b.extend_from_slice(bytes);
+    F::Raw(b)
+}
+
+/// A rectangle with a black stroke 2 px wide (centred) in line style `style` (`LSty` `Data`
+/// byte 10: 0 none, 1 solid).
+fn stroked(id: u32, style: u8) -> F {
+    let mut node = rectangle(id, (0.0, 0.0), (50.0, 50.0));
+    let mut data = 10.0f64.to_le_bytes().to_vec();
+    data.extend([0, 0, style]);
+    if let F::Def(_, _, fields) = &mut node {
+        fields.push((tag(b"PFil"), cmyk(0.0, 0.0, 0.0, 1.0)));
+        fields.push((tag(b"LSty"), F::Obj(tag(b"LSty"), vec![(tag(b"Wght"), F::F64(2.0)), (tag(b"Data"), blob(b"Data", &data))])));
+    }
+    node
+}
+
+fn red_outline(align: u16, width: f64) -> F {
+    F::Obj(
+        tag(b"Strk"),
+        vec![
+            (tag(b"Enab"), F::Bool(true)),
+            (tag(b"Radi"), F::F64(width)),
+            (tag(b"Alig"), F::Enum(align, 0)),
+            (
+                tag(b"Colr"),
+                F::Obj(tag(b"RGBA"), vec![(tag(b"_col"), F::Struct([1.0f32, 0.0, 0.0, 1.0].iter().flat_map(|v| v.to_le_bytes()).collect()))]),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn strokes_whose_style_is_none_are_left_out() {
+    // Every Affinity shape stores a stroke, black and 1 px; style 0 is "None".
+    let imported = designcraft_affinity::import(&canvas_with(vec![stroked(10, 0)], None)).unwrap();
+    assert!(imported.document.spreads[0].items[0].stroke.is_none());
+    let imported = designcraft_affinity::import(&canvas_with(vec![stroked(10, 1)], None)).unwrap();
+    assert_eq!(imported.document.spreads[0].items[0].stroke.weight, 2.0);
+}
+
+#[test]
+fn outline_effects_on_stroked_shapes_go_around_their_stroke() {
+    use designcraft_doc::StrokeAlign;
+    let mut node = stroked(10, 1);
+    if let F::Def(_, _, fields) = &mut node {
+        fields.push((tag(b"FiEf"), F::Shared(vec![red_outline(2, 4.0), red_outline(0, 3.0)])));
+    }
+    let imported = designcraft_affinity::import(&canvas_with(vec![node], None)).unwrap();
+    assert!(!imported.warnings.iter().any(|w| w.contains("outline")), "{:?}", imported.warnings);
+    let d = &imported.document;
+    let g = &d.spreads[0].items[0];
+    assert_eq!(g.name, "Magenta box", "the group stands for the shape");
+    let Content::Group { items } = &g.content else { panic!("a group: {:?}", g.content) };
+    let strokes: Vec<(f64, StrokeAlign, Option<Color>)> =
+        items.iter().map(|i| (i.stroke.weight, i.stroke.align, d.resolve_color(&i.stroke.swatch, 1.0))).collect();
+    let (red, black) = (Some(Color::rgb(1.0, 0.0, 0.0)), Some(Color::cmyk(0.0, 0.0, 0.0, 1.0)));
+    assert_eq!(
+        strokes,
+        [
+            // Outside: from the path to 3 px past the stroke, under the shape.
+            (4.0, StrokeAlign::Outside, red),
+            (2.0, StrokeAlign::Center, black),
+            // Centred on the stroke's outer edge, over it: the 4 px radius on each side of it.
+            (10.0, StrokeAlign::Center, red),
+        ]
+    );
+    assert!(items[0].fill.is_none() && items[2].fill.is_none() && !items[1].fill.is_none(), "only the shape fills");
+}
+
+#[test]
+fn underlined_and_struck_through_characters_stay_so() {
+    let decorated = |ints: &[i32]| {
+        let mut a = attrs("Inter", "Inter-Regular", 400, false, 40.0);
+        if let F::Obj(_, fields) = &mut a {
+            for (t, v) in fields.iter_mut() {
+                if *t == tag(b"Ints") {
+                    *v = array_i32(b"Ints", ints);
+                }
+            }
+        }
+        a
+    };
+    let blk = block(
+        utf8("Plain under struck"),
+        vec![
+            run(6, Some(attrs("Inter", "Inter-Regular", 400, false, 40.0))),
+            run(12, Some(decorated(&[1, 0, 0, 0, 1]))),
+            run(18, Some(decorated(&[0, 1, 0, 0, 1]))),
+        ],
+        &[0],
+    );
+    let node = F::Def(
+        70,
+        vec![tag(b"TxtA")],
+        vec![
+            (tag(b"StSt"), F::Obj(tag(b"Stry"), vec![(tag(b"Blok"), F::Shared(vec![blk]))])),
+            (tag(b"TxtH"), F::Obj(tag(b"ArFr"), vec![(tag(b"FrmB"), F::F64s(vec![0.0, 0.0, 400.0, 100.0])), (tag(b"ArtV"), F::F64(80.0))])),
+        ],
+    );
+    let imported = designcraft_affinity::import(&canvas_with(vec![node], None)).unwrap();
+    let d = &imported.document;
+    let Content::Text(tf) = &d.spreads[0].items[0].content else { panic!("text") };
+    let story = d.story(tf.story).unwrap();
+    let at = |i: usize| {
+        let mut n = 0;
+        let run = story.chars.iter().find(|r| {
+            n += r.len;
+            i < n
+        });
+        run.map(|r| (r.format.over.underline, r.format.over.strikethrough)).unwrap()
+    };
+    assert_eq!([at(0), at(7), at(13)], [(None, None), (Some(true), None), (None, Some(true))]);
+}
+
+/// A 16 × 16 CMYK pixel layer of pure cyan (opaque), in a document that embeds `profile` as its
+/// CMYK profile.
+fn cmyk_layer(profile: Option<&[u8]>) -> Vec<u8> {
+    let mut bitmap = vec![(tag(b"Frmt"), F::Enum(4, 0)), (tag(b"BmpW"), F::I32(16)), (tag(b"BmpH"), F::I32(16))];
+    for c in 1..=5 {
+        // Tile state 2: every sample 255; 0: every sample 0.
+        let full = c == 1 || c == 5;
+        bitmap.push((tag(&[b'T', b'W', b'i', b'0' + c]), F::I32(1)));
+        bitmap.push((tag(&[b'T', b'H', b'i', b'0' + c]), F::I32(1)));
+        bitmap.push((tag(&[b'S', b't', b'a', b'0' + c]), F::U8s(vec![if full { 2 } else { 0 }])));
+    }
+    let layer = F::Def(10, vec![tag(b"Rstr")], vec![(tag(b"Bitm"), F::Obj(tag(b"DyBm"), bitmap)), (tag(b"Desc"), F::Str("Photo".into()))]);
+    let spread = F::Def(2, vec![tag(b"Sprd")], vec![(tag(b"SprB"), F::F64s(vec![0.0, 0.0, 16.0, 16.0])), (tag(b"Chld"), F::Shared(vec![layer]))]);
+    let mut root = vec![(tag(b"DocR"), F::Def(1, vec![tag(b"DocN")], vec![(tag(b"Chld"), F::Shared(vec![spread]))]))];
+    if let Some(icc) = profile {
+        root.push((tag(b"CMYP"), F::Obj(tag(b"ICCP"), vec![(tag(b"Data"), blob(b"Data", icc))])));
+    }
+    synth::container(&[("doc.dat", &stream(root), Method::Zstd)], None)
+}
+
+/// The colour at the centre of the image of the item named "Photo".
+fn photo_pixel(imported: &designcraft_affinity::Imported) -> [u8; 4] {
+    let d = &imported.document;
+    let it = d.spreads[0].items.iter().find(|i| i.name == "Photo").unwrap();
+    let Content::Graphic(g) = &it.content else { panic!("an image") };
+    let png = &d.assets[&g.asset].data;
+    image::load_from_memory(png).unwrap().to_rgba8().get_pixel(8, 8).0
+}
+
+#[test]
+fn cmyk_pixel_layers_show_through_the_documents_cmyk_profile() {
+    use designcraft_color::cms::{IccProfile, Intent};
+    let icc = designcraft_color::cms::icc_out::generic_cmyk_icc().unwrap();
+    let imported = designcraft_affinity::import(&cmyk_layer(Some(icc))).unwrap();
+    let want = IccProfile::from_bytes(None, icc)
+        .unwrap()
+        .to_srgb(&[1.0, 0.0, 0.0, 0.0], Intent::RelativeColorimetric, true)
+        .unwrap()
+        .map(|v| (v * 255.0).round() as i32);
+    let got = photo_pixel(&imported);
+    assert!((0..3).all(|i| (i32::from(got[i]) - want[i]).abs() <= 2) && got[3] == 255, "{got:?} vs {want:?}");
+    // Not the profile-free formula's pure cyan.
+    assert_ne!(&got[..3], &[0, 255, 255]);
+    assert!(!imported.warnings.iter().any(|w| w.contains("CMYK")), "{:?}", imported.warnings);
+}
+
+#[test]
+fn cmyk_pixel_layers_without_a_profile_go_through_the_working_cmyk_profile() {
+    let imported = designcraft_affinity::import(&cmyk_layer(None)).unwrap();
+    let want = Color::cmyk(1.0, 0.0, 0.0, 0.0).to_rgb().map(|v| (v * 255.0).round() as i32);
+    let got = photo_pixel(&imported);
+    assert!((0..3).all(|i| (i32::from(got[i]) - want[i]).abs() <= 2), "{got:?} vs {want:?}");
+    assert!(imported.warnings.iter().any(|w| w.contains("without a CMYK profile")), "{:?}", imported.warnings);
+}
+
+/// An artboard (`ABEn`) named `name` of `size` at `at`, holding `children`.
+fn board(id: u32, name: &str, at: (f64, f64), size: (f64, f64), children: Vec<F>) -> F {
+    F::Def(
+        id,
+        vec![tag(b"ShpN")],
+        vec![
+            (tag(b"Desc"), F::Str(name.into())),
+            (tag(b"ABEn"), F::Bool(true)),
+            (tag(b"Shpe"), F::Def(id + 10_000, vec![tag(b"ShNR")], vec![])),
+            (tag(b"ShpB"), F::F64s(vec![0.0, 0.0, size.0, size.1])),
+            (tag(b"Xfrm"), F::F64s(vec![1.0, 0.0, at.0, 0.0, 1.0, at.1])),
+            (tag(b"Chld"), F::Shared(children)),
+        ],
+    )
+}
+
+#[test]
+fn artboards_are_the_pages_even_beside_the_documents_own_page() {
+    // A Designer document: its page (1000 × 1000) and two artboards on the canvas.
+    let page = F::Obj(tag(b"PagR"), vec![(tag(b"rctp"), F::F64s(vec![0.0, 0.0, 1000.0, 1000.0]))]);
+    let boards = vec![
+        board(40, "Small", (0.0, 0.0), (200.0, 100.0), vec![rectangle(10, (10.0, 10.0), (20.0, 20.0))]),
+        board(50, "Tall", (300.0, 0.0), (100.0, 400.0), vec![rectangle(20, (5.0, 5.0), (30.0, 30.0))]),
+    ];
+    let spread = F::Def(
+        2,
+        vec![tag(b"Sprd")],
+        vec![(tag(b"SpMd"), F::Obj(tag(b"SpMd"), vec![(tag(b"PagR"), F::Shared(vec![page]))])), (tag(b"Chld"), F::Shared(boards))],
+    );
+    let data = stream(vec![(tag(b"DocR"), F::Def(1, vec![tag(b"DocN")], vec![(tag(b"Chld"), F::Shared(vec![spread]))]))]);
+    let d = designcraft_affinity::import(&synth::container(&[("doc.dat", &data, Method::Zstd)], None)).unwrap().document;
+    assert_eq!(d.page_count(), 2);
+    let sizes: Vec<(f64, f64)> = d.spreads.iter().flat_map(|s| s.pages.iter().map(|p| (p.width, p.height))).collect();
+    assert_eq!(sizes, [(200.0, 100.0), (100.0, 400.0)]);
+    // Each artboard's objects are on its own page.
+    for sp in &d.spreads {
+        assert_eq!(sp.items.len(), 1, "{:?}", sp.items.iter().map(|i| &i.name).collect::<Vec<_>>());
     }
 }

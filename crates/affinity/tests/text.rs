@@ -224,8 +224,18 @@ fn excessive_feature_settings_are_bounded_and_reported() {
 }
 
 #[test]
+fn font_names_longer_than_256_bytes_are_dropped() {
+    // Each paragraph and run carries its font's name: a huge one would be copied with each.
+    let d = read(vec![block(utf8("x"), vec![run(1, Some(attrs(&"F".repeat(257), "Inter-Regular", 400, false, 12.0)))], &[])]);
+    let r = &text(&d).runs[0];
+    assert!(r.family.is_empty() && r.postscript == "Inter-Regular");
+    assert!(warning(&d, "font names longer than 256 bytes"));
+}
+
+#[test]
 fn shared_font_metadata_amplification_is_bounded_without_losing_characters() {
-    let mut a = attrs(&"F".repeat(16 * 1024), &"P".repeat(16 * 1024), 400, false, 12.0);
+    // The longest font names kept (see `font_names_longer_than_256_bytes_are_dropped`).
+    let mut a = attrs(&"F".repeat(256), &"P".repeat(256), 400, false, 12.0);
     if let F::Obj(_, fields) = &mut a {
         let settings = F::Obj(
             tag(b"OtAt"),
@@ -242,11 +252,12 @@ fn shared_font_metadata_amplification_is_bounded_without_losing_characters() {
     }
     let F::Obj(class, fields) = a else { panic!("attributes must be an object") };
     let mut runs = vec![run(1, Some(F::Def(42, vec![class], fields)))];
-    runs.extend((2..=1000).map(|end| run(end, Some(F::Ref(42)))));
-    let d = read(vec![block(utf8(&"x".repeat(1000)), runs, &[])]);
+    // About 7.7 kB of names and features per run: the budget runs out after about 2200 runs.
+    runs.extend((2..=4000).map(|end| run(end, Some(F::Ref(42)))));
+    let d = read(vec![block(utf8(&"x".repeat(4000)), runs, &[])]);
     let t = text(&d);
-    assert_eq!(content(t), "x".repeat(1000));
-    assert_eq!(t.runs.len(), 1000);
+    assert_eq!(content(t), "x".repeat(4000));
+    assert_eq!(t.runs.len(), 4000);
     let metadata: usize = t
         .runs
         .iter()
@@ -255,7 +266,7 @@ fn shared_font_metadata_amplification_is_bounded_without_losing_characters() {
         .map(|s| s.len() + std::mem::size_of::<String>())
         .sum();
     assert!(metadata <= 16 << 20, "shared metadata was amplified to {metadata} bytes");
-    assert_eq!(t.runs[0].family.len(), 16 * 1024);
+    assert_eq!(t.runs[0].family.len(), 256);
     assert_eq!(t.runs[0].features.len(), 256);
     assert!(t.runs.last().unwrap().family.is_empty());
     assert!(t.runs.last().unwrap().features.is_empty());

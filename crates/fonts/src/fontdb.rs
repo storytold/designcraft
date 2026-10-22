@@ -112,6 +112,9 @@ pub struct FontFace {
     pub typo_ascent: f64,
     /// Descender in font units (positive = down).
     pub descent: f64,
+    /// The line gap the font asks for between lines, in font units (from the same table as the
+    /// ascent and descent; 0 when it has none).
+    pub line_gap: f64,
     /// Cap height and x height in font units (without plausible OS/2 values, the cap height is the
     /// top of the H, and either is estimated from the ascent): the Cap Height and x Height first
     /// baseline offsets.
@@ -926,6 +929,7 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         ascent: m.ascent as f64,
         typo_ascent: typo_ascent(&f, &location, upem).unwrap_or(m.ascent as f64),
         descent: -(m.descent as f64),
+        line_gap: f64::from(m.leading).max(0.0),
         // Fonts with an OS/2 table older than version 2 don't declare these: measure them from
         // flat-topped letters before falling back to a share of the ascent, which can be far off
         // (drop caps are sized from the cap height).

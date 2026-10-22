@@ -24,7 +24,7 @@ accept the four extensions.
 | Affinity | DesignCraft |
 |---|---|
 | Publisher spreads (one or two pages) | spreads with left/right pages, in points |
-| Documents without pages (Designer, Photo) | a page per artboard, or one page for the canvas |
+| Documents with artboards (Designer; the document's own page is then left aside) or without pages (Photo) | a page per artboard, or one page for the canvas |
 | Master spreads and the master page each page shows | a one-page parent per master page in use (A, B, …) with that page's objects, applied to the pages |
 | Top-level layers | document layers, by name |
 | Nested layers, groups | groups |
@@ -32,21 +32,23 @@ accept the four extensions.
 | A shape with children, a vector mask | a frame with the children pasted into it (clipped) |
 | Solid fills and strokes in RGB, CMYK and grey | unnamed colours in the same space; CMYK stays CMYK |
 | Linear and radial gradients | gradient swatches placed with their vector |
-| Stroke weight, alignment, caps, joins, miter limit, dashes | the same |
+| Stroke weight, alignment, caps, joins, miter limit, dashes; a stroke styled None (every shape stores one, black and 1 px) | the same; none |
 | Artistic text | a text frame whose first baseline sits at Affinity's anchor |
-| Frame text, also rotated | a text frame with one story |
-| Font family, weight, italic, size, tracking, horizontal scale, fixed leading, colour, outline (stroked characters), all caps, OpenType features | character overrides |
+| Frame text, also rotated | a text frame with one story, its first baseline at the cap height; it reaches down by its fonts' deepest descent, so a last line whose baseline fits shows (as in Affinity) |
+| Font family, weight, italic, size, tracking, horizontal scale, fixed leading, colour, outline (stroked characters), all caps, underline, strikethrough, OpenType features | character overrides |
+| A paragraph mark at the start of a run (Affinity sizes no line by it) | the format of the character before it, so a large next paragraph doesn't push the line down |
 | Paragraph alignment, left/right/first-line indents, space before/after (Affinity keeps the larger of two neighbouring spaces), fixed paragraph leading | paragraph overrides (spacing converted so the result matches) |
-| Automatic leading: artistic text 100 % of the size, frame text the font's own line height (ascent + descent) | the paragraph's auto leading |
+| Automatic leading: artistic text the size plus the font's line gap, character by character (DIN Condensed 1.2 em, Bebas Neue 1 em; spacer paragraphs at a quarter of a line too), frame text the font's own line height (ascent + descent) | the paragraph's auto leading (from its first character's font), or fixed leading on runs in another font |
 | Type size: artistic text scales with its node; frame text and tables only with their text scale (`FTxS`), never with their frame's or groups' transform | font size and horizontal scale on the characters |
 | Text whose characters share one transparency | a text frame with that opacity |
 | Tables: grid, cell text, cells merged across columns, vertical alignment, insets, the line on every cell edge | a text frame holding a DesignCraft table (rows grow only where the fonts need it) |
 | Placed images (the embedded original), pixel layers | graphic frames with embedded images |
+| CMYK pixel layers (placed HEIC photos in CMYK documents) | RGB images through the document's CMYK profile, as Affinity shows them (relative colorimetric with black-point compensation); without one, through the working CMYK profile, and said |
 | Pixel masks on images, images inside pixel layers (clipped to them) | worked into the image's transparency |
 | Embedded Affinity documents and symbols (`EmbN`) | their content as editable objects, grouped; nested at most four deep; the cached picture only when the document can't be read |
 | Opacity, visibility, lock, names, blend modes DesignCraft has | the same |
 | Layer effects: drop shadow, inner shadow, outer glow (an Affinity shadow angle is where the shadow goes; DesignCraft's where the light comes from) | the same effects |
-| Outline effect | the stroke of a shape without one, or the characters' stroke on text |
+| Outline effect (its radius reaches that far on each side when centred) | the stroke of a shape without one, or the characters' stroke on text; on a stroked shape, a group of the shape and stroke-only copies around its stroke |
 | Bevel and emboss effect (approximated: no visible example has been checked yet; one without a radius draws nothing) | Bevel and Emboss (inner bevel), with its size, light angle, highlight and shadow |
 | Colour and gradient overlay effects, in any blend mode | worked into what the object paints: its fill, stroke and text colours (a gradient overlay on one colour becomes a gradient) and its pixels |
 | Placed HEIC/HEIF photos | the pixels Affinity stored with them |
@@ -55,7 +57,7 @@ accept the four extensions.
 Everything that is not imported, or only approximately, is listed in the open result's
 `warnings`, one line per kind with a count. Not yet imported: masters based on other masters, text threading
 between frames, hyphenation settings (imported paragraphs don't hyphenate), text fields such as page numbers, inline objects
-in text, table cell fills, cells merged across rows, blur effects, outlines on stroked objects, groups and images, adjustment layers and live
+in text, table cell fills, cells merged across rows, blur effects, outlines on groups and images, adjustment layers and live
 filters, HEIC photos Affinity kept no pixels of, pixel masks on objects other than images, brush strokes, embedded files other than
 Affinity documents without a cached picture, Lab colours (converted to RGB) and Affinity-only blend modes. Pages larger than 216 in, DesignCraft's largest page, are refused
 with that reason.
@@ -104,7 +106,12 @@ description of the format and from public files, never from Affinity itself:
 ## Tests
 
 * `tests/import.rs`, `tests/text.rs`, `tests/outline_limits.rs` and the unit tests run on
-  synthetic documents built with the `synth` feature. Those builders write only what this reader
+  synthetic documents built with the `synth` feature. `tests/import_limits.rs` builds hostile
+  documents against the limits below (grids of 16 million cells, grids and stories shared by many
+  layers, 200 000 paragraphs, a document embedded hundreds of times), and
+  `engine/tests/affinity_fuzz.rs` mutates documents with effects, overlays, line styles,
+  paragraph and character formats, tables, master pages, CMYK pixel layers and embedded documents
+  and checks that whatever opens renders every page and exports PDF without a panic. Those builders write only what this reader
   accepts; Affinity has never opened their output, so they are fixtures, not an exporter.
 * `tests/real_files.rs` runs on real documents only when `AFFINITY_SAMPLES` names a folder of
   them (searched recursively) and skips otherwise. No Affinity documents are committed or
@@ -127,7 +134,14 @@ bytes left, 16 777 216 decoded values per document stream (fields and array elem
 counted before anything is allocated), 384 levels of object nesting, 128 levels of layers,
 500 000 layers, four million curve nodes per curve; compound outlines also cap recursion at 128
 levels, operand visits at 100 000 and cumulative geometry work at four million. Pixel layers are
-limited to 64 megapixels; gradients to 1024 stops; text to a million characters per node.
+limited to 64 megapixels each and 512 megapixels in all. One budget covers the whole read: layers,
+pixels, 16 million characters of stories and 262 144 table cells, so content that many layers
+link, or a document embedded many times, can't multiply them; embedded documents' two readings
+are charged to it and to the archive's limits, also when they fail. Tables have at most 4096 rows
+and columns and 65 536 cells; gradients 1024 stops; text a million characters per node, font
+names 256 bytes; paragraph formats are matched to runs by binary search. Colour and gradient
+overlays share one work budget per import (`overlay::MAX_WORK`); past it they are left out, and
+said. Stories are built in one pass, and each page finds its master in about linear time.
 Malformed input returns an `Error`; the crate has no panics outside tests.
 
 ## Privacy

@@ -48,6 +48,8 @@ pub(crate) fn read(r: &mut Reader, id: ObjId, world: Affine) -> Option<Text> {
 
 /// Rows and columns a table may have.
 const MAX_TABLE_LINES: usize = 4096;
+/// Cells a table may have (rows × columns): each becomes a text object with its edge lines.
+const MAX_TABLE_CELLS: usize = 1 << 16;
 
 /// A table node (`TxtT`): the grid, the cells' text and the lines on the cell edges.
 pub(crate) fn table(r: &mut Reader, id: ObjId, world: Affine) -> Option<Table> {
@@ -63,10 +65,24 @@ pub(crate) fn table(r: &mut Reader, id: ObjId, world: Affine) -> Option<Table> {
     let rows = bounds(s.obj(tabl, b"RPos"))?;
     let (ncols, nrows) = (columns.len() - 1, rows.len() - 1);
     let count = ncols.checked_mul(nrows)?;
-    let cell_objs = s.obj(tabl, b"Cell").map(|c| s.objs(c, b"Cell")).unwrap_or_default();
-    if cell_objs.len() != count {
-        r.warn("tables whose cells don't match their grid (cell formatting left out)");
+    if count > MAX_TABLE_CELLS {
+        r.warn("tables with more than 65536 cells (left out)");
+        return None;
     }
+    let Some(left) = r.budget.cells.checked_sub(count) else {
+        r.warn("tables beyond the cells one document may hold (left out)");
+        return None;
+    };
+    r.budget.cells = left;
+    let cell_objs = s.obj(tabl, b"Cell").map(|c| s.objs(c, b"Cell")).unwrap_or_default();
+    // Formatting that doesn't match the grid would land on the wrong cells (and merging them,
+    // move text between cells): only text then.
+    let cell_objs = if cell_objs.len() == count {
+        cell_objs
+    } else {
+        r.warn("tables whose cells don't match their grid (cell formatting left out)");
+        Vec::new()
+    };
     let blank = || TableCell { runs: Vec::new(), inset: [0.0; 4], valign: VAlign::Top, merged_left: false };
     let mut cells: Vec<TableCell> = (0..count).map(|_| blank()).collect();
     for (i, (cell, obj)) in cells.iter_mut().zip(&cell_objs).enumerate() {
@@ -109,7 +125,7 @@ pub(crate) fn table(r: &mut Reader, id: ObjId, world: Affine) -> Option<Table> {
         let objs = s.obj(tabl, tag).map(|e| s.objs(e, b"Edge")).unwrap_or_default();
         if objs.len() != expected {
             r.warn("tables whose lines don't match their grid (lines left out)");
-            return vec![None; expected];
+            return Vec::new();
         }
         objs.into_iter()
             .map(|e| match (s.obj(e, b"Fill"), s.obj(e, b"Line")) {
@@ -145,8 +161,9 @@ pub(crate) fn story_runs(r: &mut Reader, story: ObjId, world: Affine) -> (Vec<Te
             r.warn("a text block without readable characters (left out)");
             continue;
         };
-        // Bound collection itself, including placeholders, before allocating the character buffer.
-        let budget = MAX_CHARS - total;
+        // Bound collection itself, including placeholders, before allocating the character buffer:
+        // by the story's limit and by what the document's other stories left.
+        let budget = (MAX_CHARS - total).min(r.budget.chars.saturating_sub(total));
 
         let mut chars: Vec<char> = match s.str(glyphs, b"Utf8") {
             Some(t) => t.chars().take(budget + 1).collect(),
@@ -182,7 +199,11 @@ pub(crate) fn story_runs(r: &mut Reader, story: ObjId, world: Affine) -> (Vec<Te
         let truncated = chars.len() > budget;
         if truncated {
             chars.truncate(budget);
-            r.warn("text longer than a million characters (truncated)");
+            if budget < MAX_CHARS - total {
+                r.warn("text beyond the characters one document may hold (truncated)");
+            } else {
+                r.warn("text longer than a million characters (truncated)");
+            }
         }
         total += chars.len();
         // Paragraph formats by end index; a run without an index covers the rest of the block.
@@ -201,14 +222,17 @@ pub(crate) fn story_runs(r: &mut Reader, story: ObjId, world: Affine) -> (Vec<Te
                 },
             }
         }
-        let align_at = |i: usize| paragraphs.iter().find(|(end, _)| i < *end).map(|(_, a)| *a).or(open).unwrap_or_default();
+        // Sorted by end (they are in order in every file), so both lookups below are binary
+        // searches: a block can have as many paragraphs and runs as characters.
+        paragraphs.sort_by_key(|(end, _)| *end);
+        let align_at = |i: usize| paragraphs.get(paragraphs.partition_point(|(end, _)| *end <= i)).map(|(_, a)| *a).or(open).unwrap_or_default();
         let mut cuts: Vec<usize> = paragraphs.iter().map(|(end, _)| *end).filter(|e| *e < chars.len()).collect();
-        cuts.sort_unstable();
         cuts.dedup();
         let push = |r: &mut Reader, runs: &mut Vec<TextRun>, attrs: Option<ObjId>, from: usize, to: usize, budget: &mut Option<usize>| {
             // Split at paragraph ends so every run has one paragraph format.
+            let inside = cuts.get(cuts.partition_point(|c| *c <= from)..cuts.partition_point(|c| *c < to)).unwrap_or_default();
             let mut a = from;
-            for &c in cuts.iter().filter(|c| **c > from && **c < to).chain(std::iter::once(&to)) {
+            for &c in inside.iter().chain(std::iter::once(&to)) {
                 push_run(r, runs, attrs, characters(&chars, a, c), world, budget, align_at(a));
                 a = c;
             }
@@ -236,6 +260,7 @@ pub(crate) fn story_runs(r: &mut Reader, story: ObjId, world: Affine) -> (Vec<Te
             break;
         }
     }
+    r.budget.chars = r.budget.chars.saturating_sub(total);
     if placeholders {
         r.warn("text fields such as page numbers (left out of the text)");
     }
@@ -273,6 +298,8 @@ fn push_run(
                 italic: false,
                 features: Vec::new(),
                 all_caps: false,
+                underline: false,
+                strikethrough: false,
                 size: 12.0 * r.dpi / 72.0,
                 tracking: 0.0,
                 h_scale: 1.0,
@@ -339,6 +366,16 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
         (true, Some(pen), Some(style)) => paint::stroke(r, pen, style, Affine::IDENTITY, false),
         _ => None,
     };
+    // Underline (slot 0) and strikethrough (slot 1): 1 is a single line.
+    let mut decoration = |i: usize| match slot(ints, i, int) {
+        Some(1) => true,
+        Some(0) | None => false,
+        Some(_) => {
+            r.warn("text decorations of an unknown kind (left out)");
+            false
+        }
+    };
+    let (underline, strikethrough) = (decoration(0), decoration(1));
     let h_scale = slot(doubles, 10, float).filter(|h| *h > 0.0 && *h < 100.0).unwrap_or(1.0);
     // A resolved font is populated on the emoji run of the public Affinity 3 text-runs file
     // (Courier New requested, Segoe UI Emoji stored in RFnt). Empty RFnt records are common.
@@ -358,8 +395,8 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
     if font.and_then(|f| s.int(f, b"Widh")).is_some_and(|w| w != 5) {
         r.warn("font width variants (exact face depends on the installed PostScript font)");
     }
-    let postscript = metadata_string(r, attribute_budget, font.and_then(|f| s.str(f, b"Post")).unwrap_or_default());
-    let family = metadata_string(r, attribute_budget, font.and_then(|f| s.str(f, b"Famy")).unwrap_or_default());
+    let postscript = font_name(r, attribute_budget, font.and_then(|f| s.str(f, b"Post")).unwrap_or_default());
+    let family = font_name(r, attribute_budget, font.and_then(|f| s.str(f, b"Famy")).unwrap_or_default());
     let (features, all_caps) = font_features(r, objects.get(7).copied().flatten(), attribute_budget);
     let weight = font.and_then(|f| s.int(f, b"Wegt")).unwrap_or(400);
     let weight = if (1..=1000).contains(&weight) {
@@ -376,6 +413,8 @@ fn run_attrs(r: &mut Reader, attrs: ObjId, text: String, world: Affine, attribut
         italic: font.and_then(|f| s.bool(f, b"Ital")).unwrap_or(false),
         features,
         all_caps,
+        underline,
+        strikethrough,
         size,
         tracking,
         h_scale,
@@ -399,6 +438,17 @@ fn charge_attributes(r: &mut Reader, budget: &mut Option<usize>, bytes: usize) -
             false
         }
     }
+}
+
+/// Longest font name kept (OpenType names are far shorter); every run and paragraph carries it.
+const MAX_FONT_NAME: usize = 256;
+
+fn font_name(r: &mut Reader, budget: &mut Option<usize>, value: &str) -> String {
+    if value.len() > MAX_FONT_NAME {
+        r.warn("font names longer than 256 bytes (the default font is used)");
+        return String::new();
+    }
+    metadata_string(r, budget, value)
 }
 
 fn metadata_string(r: &mut Reader, budget: &mut Option<usize>, value: &str) -> String {

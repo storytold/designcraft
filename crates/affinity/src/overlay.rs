@@ -17,6 +17,11 @@ const MAX_DEPTH: usize = 256;
 /// Most pixels an overlay is baked into per image.
 const MAX_PIXELS: usize = 64 << 20;
 
+/// Work the overlays of one import may take together: each overlay counts the nodes and pixels
+/// of the subtree it is baked into (which is copied once more for them all). Nested overlays
+/// and shared content would otherwise multiply it; past it, overlays are left out and said.
+pub const MAX_WORK: u64 = 1 << 29;
+
 #[derive(Clone, Copy)]
 enum Source<'a> {
     Solid(Color),
@@ -30,9 +35,10 @@ struct Overlay<'a> {
     blend: Blend,
 }
 
-/// `node` with its colour and gradient overlays baked in (borrowed unchanged when it has none).
-/// `warn` hears what could only be approximated.
-pub(crate) fn apply<'a>(node: &'a Node, warn: &mut dyn FnMut(&str)) -> Cow<'a, Node> {
+/// `node` with its colour and gradient overlays baked in (borrowed unchanged when it has none,
+/// or when what is left of `work`, see [`MAX_WORK`], can't pay for them). `warn` hears what
+/// could only be approximated or was left out.
+pub fn apply<'a>(node: &'a Node, work: &mut u64, warn: &mut dyn FnMut(&str)) -> Cow<'a, Node> {
     let overlays: Vec<Overlay> = node
         .effects
         .iter()
@@ -48,6 +54,13 @@ pub(crate) fn apply<'a>(node: &'a Node, warn: &mut dyn FnMut(&str)) -> Cow<'a, N
     if overlays.is_empty() {
         return Cow::Borrowed(node);
     }
+    let copies = u64::try_from(overlays.len()).unwrap_or(u64::MAX).saturating_add(1);
+    let cost = subtree_cost(node, *work / copies, 0).saturating_mul(copies);
+    let Some(left) = work.checked_sub(cost) else {
+        warn("overlay effects beyond the work one import may take (left out)");
+        return Cow::Borrowed(node);
+    };
+    *work = left;
     let mut out = node.clone();
     out.effects.retain(|e| !matches!(e, Effect::ColorOverlay { .. } | Effect::GradientOverlay { .. }));
     for o in &overlays {
@@ -57,6 +70,26 @@ pub(crate) fn apply<'a>(node: &'a Node, warn: &mut dyn FnMut(&str)) -> Cow<'a, N
         bake_node(&mut out, o, 0, warn);
     }
     Cow::Owned(out)
+}
+
+/// Nodes and pixels in `node`'s subtree, counted only until they pass `limit`.
+fn subtree_cost(node: &Node, limit: u64, depth: usize) -> u64 {
+    if depth > MAX_DEPTH {
+        return 0;
+    }
+    let mut cost: u64 = match &node.kind {
+        Kind::Image(img) => (u64::from(img.width) * u64::from(img.height)).saturating_add(1),
+        Kind::Text(t) => u64::try_from(t.runs.len()).unwrap_or(u64::MAX).saturating_add(1),
+        Kind::Table(t) => u64::try_from(t.cells.len()).unwrap_or(u64::MAX).saturating_add(1),
+        _ => 1,
+    };
+    for c in &node.children {
+        if cost > limit {
+            break;
+        }
+        cost = cost.saturating_add(subtree_cost(c, limit - cost, depth + 1));
+    }
+    cost
 }
 
 fn bake_node(node: &mut Node, o: &Overlay, depth: usize, warn: &mut dyn FnMut(&str)) {
@@ -88,6 +121,9 @@ fn bake_node(node: &mut Node, o: &Overlay, depth: usize, warn: &mut dyn FnMut(&s
             for c in &mut t.cells {
                 for r in &mut c.runs {
                     r.fill = paint(&r.fill, o, warn);
+                    if let Some(s) = &mut r.stroke {
+                        stroke(s, o, warn);
+                    }
                 }
             }
             for s in t.vertical.iter_mut().chain(t.horizontal.iter_mut()).flatten() {
@@ -221,8 +257,22 @@ fn pixels(img: &mut Image, o: &Overlay) -> bool {
             Some(p) => p.to_vec(),
             None => return false,
         },
-        Pixels::Encoded(bytes) => match image::load_from_memory(bytes) {
-            Ok(d) if d.width() == img.width && d.height() == img.height => d.to_rgba8().into_raw(),
+        Pixels::Encoded(bytes) => match decode(bytes, img.width, img.height) {
+            Some(p) => p,
+            None => return false,
+        },
+        // An overlay is blended in RGB: CMYK pixels take the profile-free formula here.
+        Pixels::Cmyka8(p) => match p.get(..n.saturating_mul(5)) {
+            Some(p) if p.len() == n * 5 => p
+                .as_chunks::<5>()
+                .0
+                .iter()
+                .flat_map(|[c, m, y, k, a]| {
+                    let w = 255 - u16::from(*k);
+                    let ch = |v: u8| ((u16::from(255 - v) * w + 127) / 255) as u8;
+                    [ch(*c), ch(*m), ch(*y), *a]
+                })
+                .collect(),
             _ => return false,
         },
     };
@@ -261,6 +311,21 @@ fn pixels(img: &mut Image, o: &Overlay) -> bool {
     }
     img.pixels = Pixels::Rgba8(px);
     true
+}
+
+/// An encoded original's RGBA pixels, decoded only if it is `width` × `height` as its layer says.
+pub(crate) fn decode(bytes: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let probe = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    if probe.into_dimensions().ok()? != (width, height) {
+        return None;
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(width);
+    limits.max_image_height = Some(height);
+    limits.max_alloc = u64::try_from(MAX_PIXELS).ok().map(|n| n * 8);
+    reader.limits(limits);
+    Some(reader.decode().ok()?.into_rgba8().into_raw())
 }
 
 /// The gradient's colour at unit-space point `q`.
@@ -466,11 +531,11 @@ mod tests {
     #[test]
     fn a_full_colour_overlay_replaces_the_fill_and_keeps_its_alpha() {
         let white = Color::Rgb { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-        let n = apply(&solid(white, 1.0, Blend::Normal), &mut |_| {}).into_owned();
+        let n = apply(&solid(white, 1.0, Blend::Normal), &mut { MAX_WORK }, &mut |_| {}).into_owned();
         assert_eq!(fill(&n), white);
         assert!(n.effects.is_empty(), "the overlay is baked, not kept");
         // Half way, mixed in RGB.
-        let n = apply(&solid(white, 0.5, Blend::Normal), &mut |_| {}).into_owned();
+        let n = apply(&solid(white, 0.5, Blend::Normal), &mut { MAX_WORK }, &mut |_| {}).into_owned();
         assert_eq!(fill(&n), Color::Rgb { r: 1.0, g: 0.75, b: 0.5, a: 1.0 });
     }
 
@@ -490,7 +555,7 @@ mod tests {
     fn overlays_recolour_pixels_inside_their_alpha() {
         let mut n = solid(Color::Rgb { r: 0.0, g: 0.0, b: 1.0, a: 1.0 }, 1.0, Blend::Normal);
         n.kind = Kind::Image(Image { width: 2, height: 1, pixels: Pixels::Rgba8(vec![255, 0, 0, 255, 255, 0, 0, 0]), transform: Affine::IDENTITY });
-        let out = apply(&n, &mut |_| {}).into_owned();
+        let out = apply(&n, &mut { MAX_WORK }, &mut |_| {}).into_owned();
         let Kind::Image(img) = &out.kind else { panic!() };
         assert_eq!(img.pixels, Pixels::Rgba8(vec![0, 0, 255, 255, 255, 0, 0, 0]));
     }
@@ -507,8 +572,22 @@ mod tests {
         };
         let mut n = solid(Color::Rgb { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }, 1.0, Blend::Normal);
         n.effects = vec![Effect::GradientOverlay { gradient: g.clone(), opacity: 1.0, blend: Blend::Normal }];
-        let out = apply(&n, &mut |_| {}).into_owned();
+        let out = apply(&n, &mut { MAX_WORK }, &mut |_| {}).into_owned();
         let Kind::Shape { fills, .. } = &out.kind else { panic!() };
         assert_eq!(fills.first(), Some(&Paint::Gradient(g)));
+    }
+
+    #[test]
+    fn overlays_stop_at_the_work_one_import_may_take() {
+        let mut n = solid(Color::Rgb { r: 0.0, g: 0.0, b: 1.0, a: 1.0 }, 1.0, Blend::Normal);
+        n.kind = Kind::Image(Image { width: 4, height: 4, pixels: Pixels::Rgba8(vec![255; 64]), transform: Affine::IDENTITY });
+        // 16 pixels and the node, for the copy and for the overlay: 34.
+        let mut work = 40;
+        let mut warnings = Vec::new();
+        assert!(matches!(apply(&n, &mut work, &mut |w| warnings.push(w.to_string())), Cow::Owned(_)));
+        assert_eq!((work, warnings.len()), (6, 0));
+        assert!(matches!(apply(&n, &mut work, &mut |w| warnings.push(w.to_string())), Cow::Borrowed(_)));
+        assert_eq!(work, 6);
+        assert!(warnings.iter().any(|w| w.contains("beyond the work")), "{warnings:?}");
     }
 }

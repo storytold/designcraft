@@ -51,28 +51,44 @@ pub(crate) fn shape(r: &mut Reader, shape: ObjId, b: [f64; 4], world: Affine) ->
     let class = r.s.class(shape)?;
     let sub = match &class.0.to_be_bytes() {
         b"ShNR" | b"ShRR" => {
-            let rounded = matches!(last(r, shape, b"CTyp"), Some(Value::Array(a)) if !a.is_empty());
-            let radius = match last(r, shape, b"ShCR") {
-                Some(Value::Floats(v)) => v.first().copied().filter(|f| f.is_finite() && *f > 0.0),
-                _ => None,
+            let types = match last(r, shape, b"CTyp") {
+                Some(Value::Array(a)) => a.iter().map(|t| if let Value::Enum { id, .. } = t { Some(*id) } else { None }).collect(),
+                _ => Vec::new(),
             };
-            if let (true, Some(f)) = (rounded, radius) {
-                if let Some(Value::Array(types)) = last(r, shape, b"CTyp")
-                    && types.iter().any(|t| !matches!(t, Value::Enum { id: 0 | 4, .. }))
-                {
-                    r.warn("rectangles with straight, concave or other corner types (imported with round corners)");
-                }
-                let (crx, cry) = if r.s.bool(shape, b"AbSz") == Some(true) {
-                    // An absolute radius is in document pixels, whatever the node's scale.
-                    let [a, b2, c, d, ..] = world.0;
-                    let (sx, sy) = ((a * a + b2 * b2).sqrt(), (c * c + d * d).sqrt());
-                    if sx > 0.0 && sy > 0.0 { (f / sx, f / sy) } else { (0.0, 0.0) }
-                } else {
-                    (f * w.min(h), f * w.min(h))
-                };
-                rounded_rect(b, crx.min(w / 2.0), cry.min(h / 2.0))
-            } else {
+            let radii = match last(r, shape, b"ShCR") {
+                Some(Value::Floats(v)) => v.iter().map(|f| if f.is_finite() && *f > 0.0 { *f } else { 0.0 }).collect(),
+                _ => Vec::new(),
+            };
+            // Corners follow the first one (top left) unless they were unlocked; then each has
+            // its own radius and type, clockwise from the top left.
+            let locked = !matches!(last(r, shape, b"Lock"), Some(Value::Bool(false)));
+            let corners: [(f64, Option<u16>); 4] = std::array::from_fn(|i| {
+                let i = if locked { 0 } else { i };
+                (radii.get(i).copied().unwrap_or(0.0), types.get(i).copied().flatten())
+            });
+            if types.is_empty() || corners.iter().all(|(f, _)| *f == 0.0) {
                 polygon([pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)])?
+            } else {
+                if corners.iter().any(|(f, t)| *f > 0.0 && !matches!(t, Some(0 | 1 | 4))) {
+                    r.warn("rectangles with concave or other corner types (imported with round corners)");
+                }
+                let absolute = r.s.bool(shape, b"AbSz") == Some(true);
+                let [a, b2, c, d, ..] = world.0;
+                let (sx, sy) = ((a * a + b2 * b2).sqrt(), (c * c + d * d).sqrt());
+                cornered_rect(
+                    b,
+                    corners.map(|(f, t)| {
+                        let (crx, cry) = if !absolute {
+                            (f * w.min(h), f * w.min(h))
+                        } else if sx > 0.0 && sy > 0.0 {
+                            // An absolute radius is in document pixels, whatever the node's scale.
+                            (f / sx, f / sy)
+                        } else {
+                            (0.0, 0.0)
+                        };
+                        (crx, cry, t == Some(1))
+                    }),
+                )
             }
         }
         b"ShpE" => ellipse(cx, cy, rx, ry),
@@ -165,22 +181,31 @@ fn ellipse(cx: f64, cy: f64, rx: f64, ry: f64) -> SubPath {
     }
 }
 
-fn rounded_rect([x0, y0, x1, y1]: [f64; 4], rx: f64, ry: f64) -> SubPath {
-    let (kx, ky) = ((1.0 - KAPPA) * rx, (1.0 - KAPPA) * ry);
-    SubPath {
-        start: pt(x0 + rx, y0),
-        segments: vec![
-            [pt(x1 - rx, y0), pt(x1 - rx, y0), pt(x1 - rx, y0)],
-            [pt(x1 - kx, y0), pt(x1, y0 + ky), pt(x1, y0 + ry)],
-            [pt(x1, y1 - ry), pt(x1, y1 - ry), pt(x1, y1 - ry)],
-            [pt(x1, y1 - ky), pt(x1 - kx, y1), pt(x1 - rx, y1)],
-            [pt(x0 + rx, y1), pt(x0 + rx, y1), pt(x0 + rx, y1)],
-            [pt(x0 + kx, y1), pt(x0, y1 - ky), pt(x0, y1 - ry)],
-            [pt(x0, y0 + ry), pt(x0, y0 + ry), pt(x0, y0 + ry)],
-            [pt(x0, y0 + ky), pt(x0 + kx, y0), pt(x0 + rx, y0)],
-        ],
-        closed: true,
+/// A rectangle whose corners (top left, top right, bottom right, bottom left) are each rounded,
+/// or cut straight across, by their (horizontal, vertical) radii. Two radii that don't fit along
+/// one side shrink in proportion until they do.
+fn cornered_rect([x0, y0, x1, y1]: [f64; 4], corners: [(f64, f64, bool); 4]) -> SubPath {
+    let fit = |r: f64, pair: f64, side: f64| if pair > side { side * (r / pair) } else { r };
+    let [tl, tr, br, bl] = corners;
+    let (w, h) = (x1 - x0, y1 - y0);
+    let rx = [fit(tl.0, tl.0 + tr.0, w), fit(tr.0, tl.0 + tr.0, w), fit(br.0, bl.0 + br.0, w), fit(bl.0, bl.0 + br.0, w)];
+    let ry = [fit(tl.1, tl.1 + bl.1, h), fit(tr.1, tr.1 + br.1, h), fit(br.1, tr.1 + br.1, h), fit(bl.1, tl.1 + bl.1, h)];
+    let (kx, ky) = (rx.map(|r| (1.0 - KAPPA) * r), ry.map(|r| (1.0 - KAPPA) * r));
+    // (where the corner leaves the previous side, its two handles, where it joins the next side)
+    let arcs = [
+        [pt(x1 - rx[1], y0), pt(x1 - kx[1], y0), pt(x1, y0 + ky[1]), pt(x1, y0 + ry[1])],
+        [pt(x1, y1 - ry[2]), pt(x1, y1 - ky[2]), pt(x1 - kx[2], y1), pt(x1 - rx[2], y1)],
+        [pt(x0 + rx[3], y1), pt(x0 + kx[3], y1), pt(x0, y1 - ky[3]), pt(x0, y1 - ry[3])],
+        [pt(x0, y0 + ry[0]), pt(x0, y0 + ky[0]), pt(x0 + kx[0], y0), pt(x0 + rx[0], y0)],
+    ];
+    let mut segments = Vec::with_capacity(8);
+    for ([s, c1, c2, e], straight) in arcs.into_iter().zip([tr.2, br.2, bl.2, tl.2]) {
+        segments.push([s, s, s]);
+        if s != e {
+            segments.push(if straight { [e, e, e] } else { [c1, c2, e] });
+        }
     }
+    SubPath { start: pt(x0 + rx[0], y0), segments, closed: true }
 }
 
 /// Elliptical arc from angle `a0` to `a1` (radians, measured y-up as Affinity's pie angles are),

@@ -1069,6 +1069,7 @@ dependencies = [
  "indd",
  "kurbo",
  "log",
+ "proptest",
  "quick-xml",
  "same-file",
  "serde",

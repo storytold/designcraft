@@ -166,3 +166,39 @@ fn wrapped_pie_angles_keep_the_same_geometry_as_the_positive_span() {
     let make = |end| read(vec![shape(100, b"ShPi", vec![(tag(b"AngS"), F::F64(0.0)), (tag(b"AngE"), F::F64(end))])], 100);
     assert_eq!(path(&make(-std::f64::consts::FRAC_PI_2)), path(&make(3.0 * std::f64::consts::FRAC_PI_2)));
 }
+
+/// `CTyp`: an array of corner-type enums (top left, top right, bottom right, bottom left).
+fn corner_types(ids: [u16; 4]) -> F {
+    let mut raw = vec![0xaa];
+    raw.extend(tag(b"CTyp").0.to_le_bytes());
+    raw.extend(4u32.to_le_bytes());
+    raw.extend(0u16.to_le_bytes());
+    raw.extend(ids.iter().flat_map(|id| id.to_le_bytes()));
+    F::Raw(raw)
+}
+
+#[test]
+fn unlocked_rectangle_corners_keep_their_own_radius_and_type() {
+    let p = |x: f64, y: f64| Point { x, y };
+    // 10×20 box: relative radii scale by 10. Round 5, round 1, straight 3, none.
+    let corners = |lock: Option<bool>| {
+        let mut fields = vec![(tag(b"ShCR"), F::F64s(vec![0.5, 0.1, 0.3, 0.0])), (tag(b"CTyp"), corner_types([0, 0, 1, 4]))];
+        fields.extend(lock.map(|l| (tag(b"Lock"), F::Bool(l))));
+        read(vec![shape(100, b"ShNR", fields)], 100)
+    };
+
+    let unlocked = corners(Some(false));
+    assert!(unlocked.warnings.is_empty(), "{:?}", unlocked.warnings);
+    let sub = &path(&unlocked).subpaths[0];
+    assert_eq!(sub.start, p(5.0, 0.0));
+    let ends: Vec<Point> = sub.segments.iter().map(|s| s[2]).collect();
+    assert_eq!(ends, [p(9.0, 0.0), p(10.0, 1.0), p(10.0, 17.0), p(7.0, 20.0), p(0.0, 20.0), p(0.0, 5.0), p(5.0, 0.0)]);
+    assert_eq!(sub.segments[3], [p(7.0, 20.0); 3], "the straight corner is a line");
+    assert_ne!(sub.segments[1][0], p(9.0, 0.0), "the round corner is a curve");
+
+    // Locked (the default): every corner follows the top left one.
+    let locked = corners(None);
+    let sub = &path(&locked).subpaths[0];
+    assert_eq!(sub.segments.len(), 8);
+    assert_eq!(sub.segments[3][2], p(5.0, 20.0));
+}

@@ -295,6 +295,13 @@ pub(crate) fn stroke(r: &mut Reader, pen: ObjId, ldsc: ObjId, local: Affine, beh
     let scales = s.bool(ldsc, b"LDSc").unwrap_or(true);
     let width = if scales { weight * local.scale() } else { weight };
     let data = s.bytes(lsty, b"Data").unwrap_or_default();
+    // Byte 10 is the stroke's style: 0 none, 1 solid, 2 dashed, 3 a brush. A shape without a
+    // stroke still stores one (black, 1 px wide), with style 0. Identified on two documents their
+    // owner made, where every such stroke is invisible in Affinity's own PDF export, and checked
+    // against the public corpus's thumbnails.
+    if data.get(10) == Some(&0) {
+        return None;
+    }
     let miter_limit = data.get(0..8).and_then(|b| b.try_into().ok()).map(f64::from_le_bytes).filter(|m| m.is_finite() && *m >= 1.0).unwrap_or(4.0);
     // Cap and join bytes are only partly understood: (0, 0) is butt/miter in every clean sample;
     // (2, 2) ends plain lines square and brush lines round; joins import round, which never

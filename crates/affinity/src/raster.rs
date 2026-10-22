@@ -166,16 +166,20 @@ fn decode_within(r: &mut Reader, bitmap: ObjId, crop: (u32, u32, u32, u32), worl
             return Ok(None);
         }
     }
+    // Before anything is allocated: a layer's tiles can be flat colour, with nothing to extract.
+    let pixels = u64::from(w.div_ceil(step)) * u64::from(h.div_ceil(step));
+    let Some(left) = r.budget.pixels.checked_sub(pixels) else {
+        r.warn("pixel layers beyond the pixels one document may hold");
+        return Ok(None);
+    };
+    r.budget.pixels = left;
     let format = s.enumeration(bitmap, b"Frmt").map(|(f, _)| f);
     let (channels, bps) = match format {
         Some(0) => (4, 1),
         Some(1) => (4, 2),
         Some(6) => (1, 1),
         Some(7) => (1, 2),
-        Some(4) => {
-            r.warn("CMYK pixel layers (converted to RGB without the document's colour profile)");
-            (5, 1)
-        }
+        Some(4) => (5, 1),
         _ => {
             r.warn("pixel layers in grey, Lab or 32-bit formats");
             return Ok(None);
@@ -213,7 +217,7 @@ fn decode_within(r: &mut Reader, bitmap: ObjId, crop: (u32, u32, u32, u32), worl
         let alpha = states(channels);
         let blank = (1..channels).any(|c| states(c).iter().enumerate().any(|(i, v)| *v == Value::UInt(5) && alpha.get(i) != Some(&Value::UInt(5))));
         if blank {
-            r.warn("placed images whose pixels are only in an original DesignCraft can't decode, such as HEIC photos (left out)");
+            r.warn("placed images whose pixels are only in an original the reader can't decode, such as HEIC photos (left out)");
             return Ok(None);
         }
     }
@@ -232,6 +236,18 @@ fn decode_within(r: &mut Reader, bitmap: ObjId, crop: (u32, u32, u32, u32), worl
     }
     let (w, h) = (w.div_ceil(step), h.div_ceil(step));
     let n = (w as usize) * (h as usize);
+    let k = f64::from(step);
+    let transform = Affine([k, 0.0, 0.0, k, f64::from(x0), f64::from(y0)]).then(world);
+    if channels == 5 {
+        // Ink amounts and alpha as stored (8 bits), interleaved.
+        let mut cmyka = vec![0u8; n * 5];
+        for (i, px) in cmyka.as_chunks_mut::<5>().0.iter_mut().enumerate() {
+            for (c, v) in px.iter_mut().enumerate() {
+                *v = planes.get(c).and_then(|p| p.get(i)).copied().unwrap_or(0);
+            }
+        }
+        return Ok(Some(Image { width: w, height: h, pixels: Pixels::Cmyka8(cmyka), transform }));
+    }
     let mut rgba = vec![0u8; n * 4];
     let sample = |p: &Vec<u8>, i: usize| -> f64 {
         if bps == 2 {
@@ -242,18 +258,9 @@ fn decode_within(r: &mut Reader, bitmap: ObjId, crop: (u32, u32, u32, u32), worl
     };
     for (i, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let v: Vec<f64> = planes.iter().map(|p| sample(p, i)).collect();
-        let (r2, g, b, a) = if channels == 1 {
-            (v[0], v[0], v[0], 1.0)
-        } else if channels == 5 {
-            let k = 1.0 - v[3];
-            ((1.0 - v[0]) * k, (1.0 - v[1]) * k, (1.0 - v[2]) * k, v[4])
-        } else {
-            (v[0], v[1], v[2], v[3])
-        };
+        let (r2, g, b, a) = if channels == 1 { (v[0], v[0], v[0], 1.0) } else { (v[0], v[1], v[2], v[3]) };
         px.copy_from_slice(&[r2, g, b, a].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
     }
-    let k = f64::from(step);
-    let transform = Affine([k, 0.0, 0.0, k, f64::from(x0), f64::from(y0)]).then(world);
     Ok(Some(Image { width: w, height: h, pixels: Pixels::Rgba8(rgba), transform }))
 }
 
@@ -589,6 +596,41 @@ mod tests {
             assert_eq!(&pixels[..4], &[0, 0, 0, 0]);
             assert_eq!(&pixels[6 * 4..7 * 4], &[200, 10, 30, 255]);
         }
+    }
+
+    /// Pixel layers of one flat colour: nothing in the archive but `doc.dat` (state 2 is a tile
+    /// of 0xFF). Written by hand for the reader, like [`fixture`].
+    fn flat_layers(count: u32, side: i32) -> Vec<u8> {
+        let layer = |i: u32| {
+            let mut bitmap = vec![(tag(b"Frmt"), F::Enum(0, 0)), (tag(b"BmpW"), F::I32(side)), (tag(b"BmpH"), F::I32(side))];
+            for c in 1..=4 {
+                bitmap.push((tag(&super::tag(b"TWi", c)), F::I32(1)));
+                bitmap.push((tag(&super::tag(b"THi", c)), F::I32(1)));
+                bitmap.push((tag(&super::tag(b"Sta", c)), F::U8s(vec![2])));
+            }
+            F::Def(10 + i, vec![tag(b"Rstr")], vec![(tag(b"Bitm"), F::Obj(tag(b"DyBm"), bitmap))])
+        };
+        let spread = F::Def(1, vec![tag(b"Sprd")], vec![(tag(b"Chld"), F::Shared((0..count).map(layer).collect()))]);
+        let doc = synth::stream(&[(tag(b"DocR"), F::Obj(tag(b"DocN"), vec![(tag(b"Chld"), F::Shared(vec![spread]))]))]);
+        synth::container(&[("doc.dat", &doc, Method::Zlib)], None)
+    }
+
+    /// #1704: the pixels of all pixel layers together are bounded, also when the archive holds
+    /// no data for them: the layers past the allowance are left out with a note.
+    #[test]
+    fn pixel_layers_share_one_allowance_for_the_whole_document() {
+        let file = flat_layers(5, 16);
+        let layers = |pixels: u64| {
+            let doc = crate::model::read_within(&file, crate::Limits::default(), pixels).unwrap();
+            let n = doc.spreads[0].nodes.iter().filter(|n| matches!(n.kind, Kind::Image(_))).count();
+            (n, doc.warnings)
+        };
+        assert_eq!(layers(5 * 256), (5, vec![]));
+        let (kept, warnings) = layers(3 * 256 + 255);
+        assert_eq!(kept, 3);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("pixel layers beyond the pixels one document may hold"), "{warnings:?}");
+        assert_eq!(crate::read(&file, crate::Limits::default()).unwrap().spreads[0].nodes.len(), 5);
     }
 
     #[test]

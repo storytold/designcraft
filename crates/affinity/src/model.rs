@@ -175,6 +175,12 @@ pub struct TextRun {
     /// Boolean OpenType feature overrides, as tags or `-tag` for disabled features.
     pub features: Vec<String>,
     pub all_caps: bool,
+    /// Underlined characters (`Ints` slot 0 is 1; identified on underlined words in a document its
+    /// owner made, all other characters there and in the public corpus have 0).
+    pub underline: bool,
+    /// Struck-through characters (`Ints` slot 1 is 1; identified the same way, on prices struck
+    /// through in another document its owner made).
+    pub strikethrough: bool,
     /// Font size in document pixels, before the node's transform.
     pub size: f64,
     /// Tracking in em.
@@ -265,9 +271,11 @@ pub struct Table {
     pub rows: Vec<f64>,
     /// Row by row.
     pub cells: Vec<TableCell>,
-    /// Vertical edges row by row, one more per row than the columns; `None` draws no line.
+    /// Vertical edges row by row, one more per row than the columns; `None` draws no line, and
+    /// the list is empty when the file's didn't match the grid.
     pub vertical: Vec<Option<Stroke>>,
-    /// Horizontal edges boundary by boundary (one more than the rows), one per column.
+    /// Horizontal edges boundary by boundary (one more than the rows), one per column (empty
+    /// as `vertical` can be).
     pub horizontal: Vec<Option<Stroke>>,
     /// Node space to document pixels.
     pub transform: Affine,
@@ -289,6 +297,11 @@ impl Table {
 pub enum Pixels {
     /// Straight-alpha RGBA, 8 bits per channel, row by row.
     Rgba8(Vec<u8>),
+    /// A CMYK pixel layer: cyan, magenta, yellow and black ink amounts (0 none, 255 full) and
+    /// straight alpha, 8 bits each, row by row. Left in CMYK for the importer to show through a
+    /// colour profile: the profile-free formula turns the extra cyan of a separation's neutrals
+    /// into a blue cast.
+    Cmyka8(Vec<u8>),
     /// The original file a placed image was made from (PNG, JPEG…), as embedded.
     Encoded(Vec<u8>),
 }
@@ -412,7 +425,7 @@ pub struct Node {
     pub mask: Option<Path>,
     /// Pixel mask: grey levels (white shows the node, black hides it); outside it the node is hidden.
     pub pixel_mask: Option<Image>,
-    /// Layer effects DesignCraft can show (others are reported).
+    /// Layer effects the importer can show or bake in (others are reported).
     pub effects: Vec<Effect>,
     /// Bottom to top.
     pub children: Vec<Node>,
@@ -441,29 +454,86 @@ pub struct Document {
     pub saved_by: Option<String>,
     /// Content that was not imported or was approximated, one line per kind, deduplicated.
     pub warnings: Vec<String>,
+    /// The document's CMYK colour profile (an ICC file), when it embeds one: the root's `CMYP`,
+    /// which each CMYK pixel layer's colour settings (`Prof`) also name, with relative
+    /// colorimetric intent and black-point compensation in every document checked.
+    pub cmyk_profile: Option<Vec<u8>>,
 }
+
+/// Largest embedded colour profile kept (real CMYK profiles are a few megabytes).
+const MAX_PROFILE_BYTES: usize = 32 << 20;
 
 /// Deepest layer nesting followed; deeper content is reported, not imported.
 const MAX_TREE_DEPTH: usize = 128;
 /// Total layer nodes imported.
 const MAX_NODES: usize = 500_000;
 
+/// Pixels decoded from pixel layers over a whole document (2 GB as RGBA). The archive's limits
+/// count the bytes extracted from it, and a layer of one flat colour needs none (#1704).
+const MAX_LAYER_PIXELS: u64 = 512 << 20;
+
 /// Embedded documents inside embedded documents are followed this deep.
 const MAX_EMBED_DEPTH: usize = 4;
+/// Characters of all stories together (a story may be shared by many text layers).
+const MAX_DOCUMENT_CHARS: usize = 16 << 20;
+/// Table cells of all tables together (each becomes a text object with its edge lines).
+const MAX_DOCUMENT_CELLS: usize = 1 << 18;
+
+/// What a whole read may still use. Shared objects can be linked from many layers, and embedded
+/// documents are read with what their embedding document left, so linking or embedding the
+/// same content many times can't multiply the work.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Budget {
+    /// Layer nodes ([`MAX_NODES`] in all).
+    pub(crate) nodes: usize,
+    /// Pixels the pixel layers may decode ([`MAX_LAYER_PIXELS`] in all).
+    pub(crate) pixels: u64,
+    /// Characters of stories ([`MAX_DOCUMENT_CHARS`] in all).
+    pub(crate) chars: usize,
+    /// Table cells ([`MAX_DOCUMENT_CELLS`] in all).
+    pub(crate) cells: usize,
+}
+
+impl Budget {
+    pub(crate) const FULL: Budget = Budget { nodes: MAX_NODES, pixels: MAX_LAYER_PIXELS, chars: MAX_DOCUMENT_CHARS, cells: MAX_DOCUMENT_CELLS };
+}
 
 /// Read a document: archive, `doc.dat` and the model.
 pub fn read(bytes: &[u8], limits: Limits) -> Result<Document, Error> {
-    read_at(bytes, limits, Affine::IDENTITY, 0).map(|(d, _)| d)
+    read_within(bytes, limits, MAX_LAYER_PIXELS)
+}
+
+/// [`read`], its pixel layers holding at most `pixels` pixels together.
+pub(crate) fn read_within(bytes: &[u8], limits: Limits, pixels: u64) -> Result<Document, Error> {
+    read_at(bytes, limits, &mut Budget { pixels, ..Budget::FULL }, Affine::IDENTITY, 0).document
+}
+
+/// A document read by [`read_at`] (or why it couldn't be), with the bytes its archive extracted
+/// either way.
+struct ReadAt {
+    document: Result<Document, Error>,
+    extracted: usize,
 }
 
 /// Read a document whose spreads are placed by `base` (for embedded documents, nested `depth`
-/// deep) → the document and the bytes its archive extracted.
-fn read_at(bytes: &[u8], limits: Limits, base: Affine, depth: usize) -> Result<(Document, usize), Error> {
-    let mut archive = Archive::open(bytes, limits)?;
+/// deep). What it uses is taken from `budget`, also when it fails part of the way.
+fn read_at(bytes: &[u8], limits: Limits, budget: &mut Budget, base: Affine, depth: usize) -> ReadAt {
+    let mut archive = match Archive::open(bytes, limits) {
+        Ok(a) => a,
+        Err(e) => return ReadAt { document: Err(e), extracted: 0 },
+    };
+    let document = read_archive(&mut archive, budget, base, depth);
+    ReadAt { document, extracted: archive.extracted() }
+}
+
+fn read_archive(archive: &mut Archive, budget: &mut Budget, base: Affine, depth: usize) -> Result<Document, Error> {
     let doc = archive.read("doc.dat")?;
     let s = stream::parse(&doc)?;
-    let d = Reader::new(&s, &mut archive, base, depth).document()?;
-    Ok((d, archive.extracted()))
+    let mut reader = Reader::new(&s, archive, base, depth);
+    reader.budget = *budget;
+    let document = reader.document();
+    *budget = reader.budget;
+    document
 }
 
 pub(crate) struct Reader<'s, 'a, 'b> {
@@ -471,7 +541,6 @@ pub(crate) struct Reader<'s, 'a, 'b> {
     pub(crate) archive: &'b mut Archive<'a>,
     pub(crate) dpi: f64,
     pub(crate) warnings: BTreeMap<String, usize>,
-    nodes: usize,
     active: HashSet<ObjId>,
     /// Where the spreads go: the identity, or an embedding document's placement.
     base: Affine,
@@ -483,6 +552,8 @@ pub(crate) struct Reader<'s, 'a, 'b> {
     pending: Option<Vec<Node>>,
     /// The master spreads, in the order of [`Document::masters`].
     master_ids: Vec<ObjId>,
+    /// What the rest of the read may use.
+    pub(crate) budget: Budget,
 }
 
 impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
@@ -493,13 +564,13 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             archive,
             dpi: 72.0,
             warnings: BTreeMap::new(),
-            nodes: 0,
             active: HashSet::new(),
             base,
             type_base: Affine([a, b, c, d, 0.0, 0.0]),
             depth,
             pending: None,
             master_ids: Vec::new(),
+            budget: Budget::FULL,
         }
     }
 
@@ -507,7 +578,8 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         *self.warnings.entry(what.into()).or_default() += 1;
     }
 
-    fn document(mut self) -> Result<Document, Error> {
+    /// The document.
+    fn document(&mut self) -> Result<Document, Error> {
         let s = self.s;
         let root = s.root;
         self.dpi = s.obj(root, b"UVCn").and_then(|u| s.f64(u, b"UPPI")).filter(|d| *d > 0.0 && *d < 100_000.0).unwrap_or(72.0);
@@ -542,8 +614,13 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
                 }),
             }
         }
-        let warnings = self.warnings.into_iter().map(|(w, n)| if n > 1 { format!("{w} ({n}×)") } else { w }).collect();
-        Ok(Document { dpi: self.dpi, spreads, masters, saved_by, warnings })
+        let cmyk_profile = s
+            .obj(root, b"CMYP")
+            .and_then(|p| s.bytes(p, b"Data"))
+            .filter(|b| b.len() <= MAX_PROFILE_BYTES && b.get(16..20) == Some(b"CMYK".as_slice()))
+            .map(<[u8]>::to_vec);
+        let warnings = std::mem::take(&mut self.warnings).into_iter().map(|(w, n)| if n > 1 { format!("{w} ({n}×)") } else { w }).collect();
+        Ok(Document { dpi: self.dpi, spreads, masters, saved_by, warnings, cmyk_profile })
     }
 
     /// A spread (`Sprd`) of the document `doc`, or of its master spreads.
@@ -603,10 +680,10 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             self.warn("layers nested deeper than 128 levels");
             return Ok(None);
         }
-        self.nodes += 1;
-        if self.nodes > MAX_NODES {
+        let Some(left) = self.budget.nodes.checked_sub(1) else {
             return Err(Error::Limit("too many layers"));
-        }
+        };
+        self.budget.nodes = left;
         // A node that contains itself (a shared object linked back into its own subtree).
         if !self.active.insert(id) {
             self.warn("a layer that contains itself");
@@ -633,17 +710,16 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         } else {
             self.kind(id, class, world, parent)?
         };
+        // This node's embedded content, before its children's `node` calls can take it.
+        let embedded = self.pending.take();
         // A compound's children are its operands, already merged into its outline.
         let (mut children, child_mask) = if class == Tag::of(b"Comp") { (Vec::new(), None) } else { self.children(id, world, depth)? };
-        if let Some(embedded) = self.pending.take() {
+        if let Some(embedded) = embedded {
             children.extend(embedded);
         }
         // Pixel masks are read only over what they mask (they can span a whole spread at print
         // resolution, a gigapixel).
-        let over = match (kind_bounds(&kind), nodes_bounds(&children)) {
-            (Some(a), Some(b)) => Some(union(a, b)),
-            (a, b) => a.or(b),
-        };
+        let over = mask_extent(&kind, &children);
         let child_mask = match child_mask {
             Some((c, at)) => crate::raster::mask(self, c, at, over)?,
             None => None,
@@ -652,8 +728,8 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         let pixel_mask = attached_mask.or(child_mask);
         self.active.remove(&id);
         let mut node = Node { class, name, visible, locked, opacity, blend, kind, mask, pixel_mask, effects: Vec::new(), children };
-        // Gradient overlays are laid out over the node's bounds.
-        let bounds = nodes_bounds(std::slice::from_ref(&node));
+        // Gradient overlays are laid out over the node's bounds, also while it is hidden.
+        let bounds = tree_bounds(&node);
         node.effects = self.effects(id, world, bounds);
         Ok(Some(node))
     }
@@ -878,8 +954,17 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             return None;
         }
         // A first reading finds its page and resolution, the second places it.
-        let (probe, used) = match read_at(inner, self.archive.remaining(), Affine::IDENTITY, self.depth + 1) {
-            Ok(r) => r,
+        // Both readings are charged to the budget and the archive's limits, also when they fail:
+        // each does the work.
+        let mut budget = self.budget;
+        let probe = read_at(inner, self.archive.remaining(), &mut budget, Affine::IDENTITY, self.depth + 1);
+        self.budget = budget;
+        if self.archive.charge(probe.extracted).is_err() {
+            self.warn("embedded documents beyond the size limit (left out)");
+            return None;
+        }
+        let probe = match probe.document {
+            Ok(d) => d,
             Err(e) => {
                 self.warn(format!("embedded documents that could not be read ({e})"));
                 return None;
@@ -891,6 +976,8 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
         let first_board = spread.nodes.iter().find_map(|n| if let Kind::Artboard { rect, .. } = &n.kind { Some(*rect) } else { None });
         let page = if content { None } else { spread.pages.first().copied().or(first_board) };
         let page = page.or_else(|| nodes_bounds(&spread.nodes)).unwrap_or(spread.bounds);
+        // Its pixels aren't needed any more: never hold both readings' at once.
+        drop(probe);
         // Its document pixels are the node's units, whatever either document's resolution.
         let k = 1.0;
         let (cx, cy) = ((page.x0 + page.x1) / 2.0, (page.y0 + page.y1) / 2.0);
@@ -899,15 +986,14 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
             self.warn("embedded documents with an invalid placement");
             return None;
         }
-        if self.archive.charge(used).is_err() {
+        let mut budget = self.budget;
+        let placed = read_at(inner, self.archive.remaining(), &mut budget, base, self.depth + 1);
+        self.budget = budget;
+        if self.archive.charge(placed.extracted).is_err() {
             self.warn("embedded documents beyond the size limit (left out)");
             return None;
         }
-        let (doc, used) = read_at(inner, self.archive.remaining(), base, self.depth + 1).ok()?;
-        if self.archive.charge(used).is_err() {
-            self.warn("embedded documents beyond the size limit (left out)");
-            return None;
-        }
+        let doc = placed.document.ok()?;
         for w in doc.warnings {
             self.warn(format!("{w} [in embedded documents]"));
         }
@@ -953,23 +1039,55 @@ impl<'s, 'a, 'b> Reader<'s, 'a, 'b> {
 
 /// The bounds of what visible `nodes` draw (control points of outlines, corners of images, frames
 /// and tables), in document pixels.
-pub(crate) fn nodes_bounds(nodes: &[Node]) -> Option<Rect> {
-    fn walk(nodes: &[Node], depth: usize, out: &mut Option<Rect>) {
-        if depth > MAX_TREE_DEPTH {
-            return;
-        }
-        for n in nodes.iter().filter(|n| n.visible) {
-            kind_points(&n.kind, &mut |p| add_point(out, p));
-            walk(&n.children, depth + 1, out);
-        }
-    }
+pub fn nodes_bounds(nodes: &[Node]) -> Option<Rect> {
     let mut out = None;
-    walk(nodes, 0, &mut out);
+    walk_bounds(nodes, true, 0, &mut out);
     out
 }
 
-/// The bounds of what one node's own kind draws (not its children).
-pub(crate) fn kind_bounds(kind: &Kind) -> Option<Rect> {
+/// The bounds of `node` and everything in it, hidden or not.
+fn tree_bounds(node: &Node) -> Option<Rect> {
+    let mut out = None;
+    walk_bounds(std::slice::from_ref(node), false, 0, &mut out);
+    out
+}
+
+fn walk_bounds(nodes: &[Node], visible_only: bool, depth: usize, out: &mut Option<Rect>) {
+    if depth > MAX_TREE_DEPTH {
+        return;
+    }
+    for n in nodes.iter().filter(|n| n.visible || !visible_only) {
+        kind_points(&n.kind, &mut |p| add_point(out, p));
+        walk_bounds(&n.children, visible_only, depth + 1, out);
+    }
+}
+
+/// What a pixel mask over a node of `kind` with `children` is read over: the bounds of what they
+/// draw, strokes included, or `None` (all of the mask) when some of it has no bounds known here:
+/// artistic text, whose glyphs only the layout places.
+fn mask_extent(kind: &Kind, children: &[Node]) -> Option<Rect> {
+    fn visit(kind: &Kind, children: &[Node], depth: usize, out: &mut Option<Rect>) -> bool {
+        if depth > MAX_TREE_DEPTH || matches!(kind, Kind::Text(t) if t.frame.is_none()) {
+            return false;
+        }
+        let mut own = kind_bounds(kind);
+        if let (Some(r), Kind::Shape { strokes, .. } | Kind::Artboard { strokes, .. }) = (own, kind) {
+            // As far as a stroke can reach out of its path, miter joins included.
+            let reach = strokes.iter().map(|s| s.width * s.miter_limit.clamp(1.0, 10.0)).filter(|w| w.is_finite()).fold(0.0, f64::max);
+            own = Some(Rect { x0: r.x0 - reach, y0: r.y0 - reach, x1: r.x1 + reach, y1: r.y1 + reach });
+        }
+        if let Some(r) = own {
+            *out = Some(out.map_or(r, |o| union(o, r)));
+        }
+        children.iter().filter(|n| n.visible).all(|n| visit(&n.kind, &n.children, depth + 1, out))
+    }
+    let mut out = None;
+    if visit(kind, children, 0, &mut out) { out } else { None }
+}
+
+/// The bounds of what one node's own kind draws (not its children): its outline's points, its
+/// image's or frame's corners, or artistic text's anchor.
+pub fn kind_bounds(kind: &Kind) -> Option<Rect> {
     let mut out = None;
     kind_points(kind, &mut |p| add_point(&mut out, p));
     out

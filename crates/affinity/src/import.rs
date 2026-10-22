@@ -74,8 +74,18 @@ struct Builder {
     colors: Vec<(Color, String)>,
     warnings: BTreeMap<String, usize>,
     images: usize,
-    /// Fonts' line heights in em, by family and style.
-    line_heights: HashMap<(String, String), f64>,
+    /// Fonts' line heights and line gaps in em, by family and style.
+    line_heights: HashMap<(String, String), (f64, f64)>,
+    /// What baking colour and gradient overlays may still take ([`crate::overlay::MAX_WORK`]).
+    overlay_work: u64,
+    /// The document's CMYK profile, until [`Builder::cmyk_lut`] makes its table.
+    cmyk_profile: Option<Vec<u8>>,
+    /// The table CMYK pixel layers go through, once made: the document's profile, or the
+    /// working CMYK conversion when it has none or one that doesn't read.
+    cmyk_lut: Option<Arc<CmykLut>>,
+    /// Outline effects of the node being mapped that go around its own stroke: (the outline as
+    /// a stroke, whether it lies over the node). See [`Builder::with_outlines`].
+    outlines: Vec<(Stroke, bool)>,
 }
 
 impl Builder {
@@ -108,6 +118,10 @@ impl Builder {
             warnings: BTreeMap::new(),
             images: 0,
             line_heights: HashMap::new(),
+            overlay_work: crate::overlay::MAX_WORK,
+            cmyk_profile: src.cmyk_profile.clone(),
+            cmyk_lut: None,
+            outlines: Vec::new(),
         }
     }
 
@@ -124,13 +138,12 @@ impl Builder {
             let to_spread = Affine::scale(self.scale) * Affine::translate((-set.origin.x, -set.origin.y));
             let mut pages = Vec::new();
             let count = set.pages.len();
-            let instances = master_instances(set.nodes.iter().copied());
+            let owners = page_masters(&master_instances(set.nodes.iter().copied()), count);
             for (pi, r) in set.pages.iter().enumerate() {
                 // The master page Affinity shows on this page, as a DesignCraft parent.
-                let parent = instances
-                    .iter()
-                    .find(|(_, page, _, n)| pi >= *page && pi < page.saturating_add(*n))
-                    .and_then(|(master, page, master_page, _)| self.parent_for(src, *master, master_page + (pi - page), default_layer));
+                let parent = owners.get(pi).copied().flatten().and_then(|(master, page, master_page)| {
+                    self.parent_for(src, master, master_page.saturating_add(pi.saturating_sub(page)), default_layer)
+                });
                 let (w, h) = ((r.x1 - r.x0) * self.scale, (r.y1 - r.y0) * self.scale);
                 if !valid_size(w) || !valid_size(h) {
                     self.warn("pages larger than 216 in or without a size (left out)");
@@ -209,7 +222,10 @@ impl Builder {
     fn page_sets<'a>(&mut self, src: &'a model::Document) -> Vec<PageSet<'a>> {
         let mut sets = Vec::new();
         for spread in &src.spreads {
-            if !spread.pages.is_empty() {
+            // Artboards are the pages where there are any: Designer documents also store the
+            // document's page, which their artboards replace.
+            let boards = spread.nodes.iter().any(|n| matches!(n.kind, Kind::Artboard { .. }));
+            if !spread.pages.is_empty() && !boards {
                 let origin = spread
                     .pages
                     .iter()
@@ -397,7 +413,9 @@ impl Builder {
         if matches!(node.kind, Kind::Text(_) | Kind::Table(_)) && !node.children.is_empty() {
             self.warn("objects inside text (left out)");
         }
+        self.outlines.clear();
         self.node_props(node, &mut it);
+        let it = self.with_outlines(it, layer);
         // An image's pixel mask is part of its pixels (see `image_node`).
         if node.pixel_mask.is_some() && !matches!(node.kind, Kind::Image(_)) {
             self.warn("pixel masks on objects other than images (imported without them)");
@@ -414,6 +432,36 @@ impl Builder {
             }
             None => Some(it),
         }
+    }
+
+    /// `it` with the outlines [`Builder::effects`] left in `self.outlines`: a group of `it` and
+    /// copies of its outline that only stroke, under or over it.
+    fn with_outlines(&mut self, mut it: Item, layer: LayerId) -> Item {
+        let outlines = std::mem::take(&mut self.outlines);
+        if outlines.is_empty() {
+            return it;
+        }
+        let (mut under, mut over) = (Vec::new(), Vec::new());
+        for (stroke, above) in outlines {
+            let mut o = self.new_item(layer, it.shape, it.path.clone());
+            o.xf = it.xf;
+            o.stroke = stroke;
+            o.name = "Outline".to_string();
+            if above { over.push(Arc::new(o)) } else { under.push(Arc::new(o)) }
+        }
+        // The group shows what the object did: its name, visibility, lock, opacity, blend mode
+        // and effects, over the outlines too.
+        let mut g = self.new_item(layer, Shape::Group, PathData::default());
+        g.name = std::mem::take(&mut it.name);
+        g.hidden = std::mem::take(&mut it.hidden);
+        g.locked = std::mem::take(&mut it.locked);
+        g.opacity = std::mem::replace(&mut it.opacity, 1.0);
+        g.blend = std::mem::take(&mut it.blend);
+        g.effects = std::mem::take(&mut it.effects);
+        under.push(Arc::new(it));
+        under.extend(over);
+        g.content = Content::Group { items: under };
+        g
     }
 
     /// Name, visibility, lock, opacity and blend mode of `node` onto `it`.
@@ -497,10 +545,14 @@ impl Builder {
                 model::Effect::Outline { color, opacity, width, align } => {
                     let (color, alpha) = self.color(color);
                     let swatch = self.swatch(color);
-                    let weight = pt(*width);
-                    if weight <= 0.0 {
+                    // The effect's radius is how far it reaches from the outline: on each side when
+                    // centred (measured on a sign whose 40 px centred outline shows 9.6 pt inside
+                    // the artboard it lies on the edge of, in Affinity's own PDF export).
+                    let radius = pt(*width);
+                    if radius <= 0.0 {
                         continue;
                     }
+                    let weight = if *align == 2 { 2.0 * radius } else { radius };
                     if (opacity * alpha) < 0.999 {
                         self.warn("semi-transparent outline effects (imported opaque)");
                     }
@@ -532,7 +584,25 @@ impl Builder {
                                 ..Stroke::default()
                             };
                         }
-                        _ => self.warn("outline effects on stroked objects, groups or images (left out)"),
+                        // A stroked shape: an outline around its stroke, drawn by an object of its own
+                        // (see `with_outlines`). Outside it reaches from the path past the stroke,
+                        // under it; centred and inside it lies over the stroke.
+                        _ if shape => {
+                            let reach = match it.stroke.align {
+                                StrokeAlign::Center => it.stroke.weight / 2.0,
+                                StrokeAlign::Outside => it.stroke.weight,
+                                StrokeAlign::Inside => 0.0,
+                            };
+                            let reach = if reach.is_finite() { reach.max(0.0) } else { 0.0 };
+                            let (align, weight, over) = match align {
+                                1 => (StrokeAlign::Inside, weight, true),
+                                // Centred on the stroke's outer edge: as far in as out.
+                                2 => (StrokeAlign::Center, weight + 2.0 * reach, true),
+                                _ => (StrokeAlign::Outside, weight + reach, false),
+                            };
+                            self.outlines.push((Stroke { swatch, weight: weight.min(1000.0), align, join: Join::Round, ..Stroke::default() }, over));
+                        }
+                        _ => self.warn("outline effects on groups or images (left out)"),
                     }
                 }
                 model::Effect::OuterGlow { color, opacity, radius } => {
@@ -574,8 +644,15 @@ impl Builder {
 
     /// `node` with its colour and gradient overlays baked into its paint and pixels.
     fn overlaid<'n>(&mut self, node: &'n Node) -> std::borrow::Cow<'n, Node> {
-        let mut warnings = Vec::new();
-        let out = crate::overlay::apply(node, &mut |w| warnings.push(w.to_string()));
+        // Each kind of message once, however often it is heard.
+        let mut warnings: Vec<String> = Vec::new();
+        let mut work = self.overlay_work;
+        let out = crate::overlay::apply(node, &mut work, &mut |w| {
+            if !warnings.iter().any(|x| x == w) {
+                warnings.push(w.to_string());
+            }
+        });
+        self.overlay_work = work;
         for w in warnings {
             self.warn(&w);
         }
@@ -945,7 +1022,17 @@ impl Builder {
         let alpha = self.text_alpha(&t.runs);
         let mut options = TextFrameOptions::default();
         let rect = match t.frame {
-            Some(r) => Rect::from_points(p.to_frame * Point::new(r.x0, r.y0), p.to_frame * Point::new(r.x1, r.y1)),
+            Some(r) => {
+                // Affinity hangs frame text from the cap height, and shows each line whose baseline
+                // is inside the frame, its descenders below it; DesignCraft leaves such a line
+                // out. The frame reaches down by the deepest descent of its fonts, so that line
+                // shows (measured on signs against Affinity's PDF export; a line whose baseline is
+                // outside stays out, the next baseline being a whole line further down).
+                options.first_baseline = FirstBaseline::CapHeight;
+                let r = Rect::from_points(p.to_frame * Point::new(r.x0, r.y0), p.to_frame * Point::new(r.x1, r.y1));
+                let descent = self.deepest_descent(&story);
+                if descent.is_finite() && descent > 0.0 { Rect::new(r.x0, r.y0, r.x1, r.y1 + descent.min(r.height().max(0.0) + 1000.0)) } else { r }
+            }
             None => {
                 // Artistic text: a frame wide enough for its longest line, with the first baseline
                 // exactly at Affinity's anchor.
@@ -1073,8 +1160,18 @@ impl Builder {
     fn story(&mut self, id: StoryId, runs: &[model::TextRun], scale: (f64, f64), artistic: bool) -> (Story, f64) {
         let mut story = Story::new(id);
         let mut max_size: f64 = 0.0;
-        let mut first = true;
         let mut formats: Vec<(usize, model::Paragraph)> = Vec::new();
+        // The text and its runs, built in one pass (inserting run by run looks each insertion's
+        // paragraph up from the start: quadratic in a story of many runs).
+        let mut all = String::new();
+        let mut chars: Vec<designcraft_doc::CharRun> = Vec::new();
+        let push = |chars: &mut Vec<designcraft_doc::CharRun>, len: usize, format: &CharFormat| match chars.last_mut() {
+            Some(last) if last.format == *format => last.len += len,
+            _ => chars.push(designcraft_doc::CharRun { len, format: format.clone() }),
+        };
+        let mut previous: Option<CharFormat> = None;
+        // The line gap of the font the current paragraph starts with (see below).
+        let mut para_gap = 0.0;
         for run in runs {
             let text: String = run
                 .text
@@ -1092,17 +1189,52 @@ impl Builder {
             if text.is_empty() {
                 continue;
             }
-            let attrs = self.char_attrs(run, scale);
+            let mut attrs = self.char_attrs(run, scale);
             max_size = max_size.max(attrs.size.unwrap_or(12.0));
-            let format = CharFormat { style: NO_CHAR_STYLE.into(), over: attrs };
-            let at = story.text.len();
-            if first {
-                // The empty story's run holds the typing format: replace it with the first run's.
-                story.chars = vec![designcraft_doc::CharRun { len: 0, format: format.clone() }];
-                first = false;
+            // A paragraph's fixed leading, where its characters don't set their own (an empty
+            // paragraph's line is only its mark, which this covers too).
+            if attrs.leading.is_none()
+                && let Some(l) = run.paragraph.leading.map(|l| l * scale.0).filter(|l| l.is_finite() && *l > 0.0)
+            {
+                attrs.leading = Some(Leading::Points(l.min(5000.0)));
             }
-            formats.push((at, run.paragraph));
-            story.insert_with(at, &text, format);
+            let rest = text.trim_start_matches('\n');
+            let marks = text.len() - rest.len();
+            // Artistic text's automatic leading is the size plus the font's line gap, for each
+            // character (see the paragraphs below). DesignCraft's applies the paragraph's ratio,
+            // made from its first character's font, to all of it: a run in a paragraph begun in a
+            // font with another gap (a line break from Bebas Neue to DIN Condensed) gets its own.
+            let gap = self.line_height(attrs.font_family.as_deref().unwrap_or_default(), attrs.font_style.as_deref().unwrap_or_default()).1;
+            let starts_paragraph = marks > 0 || all.is_empty() || all.ends_with('\n');
+            if artistic && !starts_paragraph && (gap - para_gap).abs() > 1e-3 && attrs.leading.is_none() {
+                let l = attrs.size.unwrap_or(12.0) * (1.0 + gap) * run.paragraph.auto_leading;
+                if l.is_finite() && l > 0.0 {
+                    attrs.leading = Some(Leading::Points(l.min(5000.0)));
+                }
+            }
+            if starts_paragraph || rest.trim_end_matches('\n').contains('\n') {
+                para_gap = gap;
+            }
+            let format = CharFormat { style: NO_CHAR_STYLE.into(), over: attrs };
+            formats.push((all.len(), run.paragraph));
+            // A paragraph mark that starts a run after a character ends that character's paragraph:
+            // it takes the character's format. Affinity sizes no line by its paragraph mark;
+            // DesignCraft's leading counts the mark's size (a big "-70%" would push the line before
+            // it down). Marks after it end empty paragraphs of their own and keep the run's.
+            let ends_previous = usize::from(marks > 0 && !all.is_empty() && !all.ends_with('\n'));
+            if ends_previous > 0 {
+                push(&mut chars, 1, previous.as_ref().unwrap_or(&format));
+            }
+            if text.len() > ends_previous {
+                push(&mut chars, text.len() - ends_previous, &format);
+            }
+            all.push_str(&text);
+            previous = Some(format);
+        }
+        if !all.is_empty() {
+            story.paras = vec![designcraft_doc::ParaFormat::default(); all.matches('\n').count() + 1];
+            story.chars = chars;
+            story.text = all;
         }
         // Affinity ends a story with a paragraph mark; DesignCraft's last paragraph has none.
         if story.text.ends_with('\n') {
@@ -1110,19 +1242,22 @@ impl Builder {
             story.delete(n - 1..n);
         }
         let ranges = story.para_ranges();
-        let fonts: Vec<(String, String)> = ranges
-            .iter()
-            .map(|r| {
-                let f = &story.char_format_at(r.start).over;
-                (f.font_family.clone().unwrap_or_default(), f.font_style.clone().unwrap_or_default())
-            })
+        // Each paragraph's first character's font, in one walk over the runs.
+        let fonts: Vec<(String, String)> = formats_at(&story, ranges.iter().map(|r| r.start))
+            .into_iter()
+            .map(|f| (f.over.font_family.clone().unwrap_or_default(), f.over.font_style.clone().unwrap_or_default()))
             .collect();
-        let line_heights: HashMap<(String, String), f64> = fonts.iter().map(|f| (f.clone(), self.line_height(&f.0, &f.1))).collect();
+        let line_heights: HashMap<(String, String), f64> = fonts.iter().map(|f| (f.clone(), self.line_height(&f.0, &f.1).0)).collect();
+        let line_gaps: HashMap<(String, String), f64> = fonts.iter().map(|f| (f.clone(), self.line_height(&f.0, &f.1).1)).collect();
         let (v, h) = (scale.0, scale.0 * scale.1);
         let mut previous_after = 0.0;
-        let mut para_leading: Vec<(std::ops::Range<usize>, f64)> = Vec::new();
         for (pi, range) in ranges.iter().enumerate() {
-            let f = formats.iter().rev().find(|(at, _)| *at <= range.start).map(|(_, f)| *f).unwrap_or_default();
+            let f = formats
+                .partition_point(|(at, _)| *at <= range.start)
+                .checked_sub(1)
+                .and_then(|i| formats.get(i))
+                .map(|(_, f)| *f)
+                .unwrap_or_default();
             let Some(p) = story.paras.get_mut(pi) else { continue };
             let pt = |x: f64, k: f64| if (x * k).is_finite() { x * k } else { 0.0 };
             let align = align_of(f.align);
@@ -1150,35 +1285,54 @@ impl Builder {
                 p.para.space_after = Some(after);
             }
             previous_after = after;
-            if let Some(l) = f.leading.map(|l| pt(l, v)).filter(|l| *l > 0.0) {
-                para_leading.push((range.clone(), l.min(5000.0)));
-            }
-            // Automatic leading, measured on thumbnails: artistic text spaces its lines by the font
-            // size (Bebas Neue Pro and Impact lines exactly 1 em apart), frame text by the font's
-            // own line height (Arial 1.14–1.17 em); DesignCraft uses 120 % of the size.
-            let ratio =
-                if artistic { f.auto_leading } else { fonts.get(pi).and_then(|f| line_heights.get(f)).copied().unwrap_or(1.2) * f.auto_leading };
-            if ratio.is_finite() && (0.5..=3.0).contains(&ratio) && (ratio - 1.2).abs() > 0.005 {
+            // Automatic leading, measured on thumbnails and an Affinity PDF export: artistic text
+            // spaces its lines by the font size plus the font's line gap (Bebas Neue Pro and
+            // Impact lines exactly 1 em apart, DIN Condensed, with a gap of 0.2 em, 1.2 em), frame
+            // text by the font's own line height (Arial 1.14–1.17 em); DesignCraft uses 120 % of
+            // the size.
+            let font = fonts.get(pi);
+            let ratio = if artistic {
+                (1.0 + font.and_then(|f| line_gaps.get(f)).copied().unwrap_or(0.0)) * f.auto_leading
+            } else {
+                font.and_then(|f| line_heights.get(f)).copied().unwrap_or(1.2) * f.auto_leading
+            };
+            // Affinity documents use tiny factors for spacer paragraphs (a quarter or half of a
+            // line between two blocks); DesignCraft takes them as they are.
+            if ratio.is_finite() && (0.01..=5.0).contains(&ratio) && (ratio - 1.2).abs() > 0.005 {
                 p.para.auto_leading = Some(ratio);
             }
             // Affinity's hyphenation settings aren't read yet; none of the documents checked
             // hyphenates, while DesignCraft's paragraphs do by default.
             p.para.hyphenate = Some(false);
         }
-        // A paragraph's fixed leading, where its characters don't set their own.
-        for (range, l) in para_leading {
-            story.format_chars(range, |f| {
-                if f.over.leading.is_none() {
-                    f.over.leading = Some(Leading::Points(l));
-                }
-            });
-        }
         (story, if max_size > 0.0 { max_size } else { 12.0 })
     }
 
-    /// A font's own line height (ascent plus descent) in em, as DesignCraft will lay it out (an
-    /// installed face, or the fallback DesignCraft uses for a missing one).
-    fn line_height(&mut self, family: &str, style: &str) -> f64 {
+    /// How far the characters of `story` reach below their baseline at most, in points.
+    fn deepest_descent(&mut self, story: &Story) -> f64 {
+        let db = designcraft_fonts::FontDb::global();
+        let defaults = designcraft_doc::CharProps::default();
+        let mut seen: HashMap<(&str, &str), f64> = HashMap::new();
+        let mut deepest: f64 = 0.0;
+        for r in story.chars.iter().filter(|r| r.len > 0) {
+            let f = &r.format.over;
+            let family = f.font_family.as_deref().filter(|s| !s.is_empty()).unwrap_or(defaults.font_family.as_str());
+            let style = f.font_style.as_deref().filter(|s| !s.is_empty()).unwrap_or(defaults.font_style.as_str());
+            let em = *seen.entry((family, style)).or_insert_with(|| {
+                let face = db.face(family, style);
+                if face.upem > 0.0 { face.descent / face.upem } else { 0.25 }
+            });
+            let d = em * f.size.unwrap_or(defaults.size);
+            if d.is_finite() {
+                deepest = deepest.max(d);
+            }
+        }
+        deepest
+    }
+
+    /// A font's own line height (ascent plus descent) and line gap in em, as DesignCraft will lay
+    /// it out (an installed face, or the fallback DesignCraft uses for a missing one).
+    fn line_height(&mut self, family: &str, style: &str) -> (f64, f64) {
         let key = (family.to_string(), style.to_string());
         if let Some(h) = self.line_heights.get(&key) {
             return *h;
@@ -1189,8 +1343,10 @@ impl Builder {
         let face = designcraft_fonts::FontDb::global().face(family, style);
         let h = if face.upem > 0.0 { (face.ascent + face.descent) / face.upem } else { 1.2 };
         let h = if h.is_finite() && h > 0.0 { h } else { 1.2 };
-        self.line_heights.insert(key, h);
-        h
+        let gap = if face.upem > 0.0 { face.line_gap / face.upem } else { 0.0 };
+        let gap = if gap.is_finite() { gap.clamp(0.0, 2.0) } else { 0.0 };
+        self.line_heights.insert(key, (h, gap));
+        (h, gap)
     }
 
     /// Character attributes; `scale` is the vertical scale to points and the horizontal scale
@@ -1220,6 +1376,12 @@ impl Builder {
         }
         if run.all_caps {
             a.capitalization = Some(Capitalization::AllCaps);
+        }
+        if run.underline {
+            a.underline = Some(true);
+        }
+        if run.strikethrough {
+            a.strikethrough = Some(true);
         }
         if !run.features.is_empty() {
             a.otf_features = Some(run.features.clone());
@@ -1259,7 +1421,62 @@ impl Builder {
 
     // ---------- images ----------
 
+    /// A CMYK pixel layer's RGBA pixels (`inks`: ink amounts and alpha, 5 bytes a pixel).
+    fn cmyk_pixels(&mut self, width: u32, height: u32, inks: &[u8]) -> Option<Vec<u8>> {
+        let n = (width as usize).checked_mul(height as usize)?;
+        let px = inks.get(..n.checked_mul(5)?)?.as_chunks::<5>().0;
+        let lut = self.cmyk_lut();
+        Some(
+            px.iter()
+                .flat_map(|&[c, m, y, k, a]| {
+                    let [r, g, b] = lut.apply8([c, m, y, k]);
+                    [r, g, b, a]
+                })
+                .collect(),
+        )
+    }
+
+    /// The table CMYK pixel layers go through, made once: the document's CMYK profile (relative
+    /// colorimetric with black-point compensation, as Affinity's pixel layers convert), or the
+    /// working CMYK conversion.
+    fn cmyk_lut(&mut self) -> Arc<CmykLut> {
+        use designcraft_color::cms::{IccProfile, Intent, ProfileKind};
+        if let Some(lut) = &self.cmyk_lut {
+            return lut.clone();
+        }
+        let embedded = self.cmyk_profile.is_some();
+        let profile = self.cmyk_profile.take().and_then(|bytes| {
+            let p = IccProfile::from_bytes(None, &bytes).ok().filter(|p| p.kind == ProfileKind::Cmyk)?;
+            p.to_srgb(&[0.0; 4], Intent::RelativeColorimetric, true)?;
+            Some(p)
+        });
+        let working = |[c, m, y, k]: [f32; 4]| Color::cmyk(c, m, y, k).to_rgb();
+        let lut = Arc::new(match profile {
+            Some(p) => CmykLut::build(|inks| p.to_srgb(&inks, Intent::RelativeColorimetric, true).unwrap_or_else(|| working(inks))),
+            None => {
+                self.warn(if embedded {
+                    "CMYK pixel layers whose document's colour profile could not be read (shown through the working CMYK profile)"
+                } else {
+                    "CMYK pixel layers in a document without a CMYK profile (shown through the working CMYK profile)"
+                });
+                CmykLut::build(working)
+            }
+        });
+        self.cmyk_lut = Some(lut.clone());
+        lut
+    }
+
     fn image(&mut self, img: &model::Image, xf: Affine, layer: LayerId, name: &str, masks: &[AlphaMask]) -> Option<Item> {
+        // CMYK pixel layers show through the document's CMYK profile, as Affinity shows them.
+        let converted;
+        let img = match &img.pixels {
+            Pixels::Cmyka8(inks) => {
+                let pixels = Pixels::Rgba8(self.cmyk_pixels(img.width, img.height, inks)?);
+                converted = model::Image { width: img.width, height: img.height, pixels, transform: img.transform };
+                &converted
+            }
+            _ => img,
+        };
         let (w, h) = (f64::from(img.width), f64::from(img.height));
         if img.width == 0 || img.height == 0 {
             return None;
@@ -1283,6 +1500,11 @@ impl Builder {
                     return None;
                 }
             },
+            // Converted above.
+            (None, Pixels::Cmyka8(_)) => {
+                self.warn("pixel layers that could not be stored (left out)");
+                return None;
+            }
         };
         let m = xf * affine(img.transform);
         let corners = [Point::ZERO, Point::new(w, 0.0), Point::new(w, h), Point::new(0.0, h)].map(|p| m * p);
@@ -1391,6 +1613,43 @@ fn master_instances<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Vec<(usize
     let mut out = Vec::new();
     nodes.into_iter().for_each(|n| visit(n, 0, &mut out));
     out
+}
+
+/// Which master page instance each of `pages` pages shows: (master, first page, first master
+/// page) of the first instance in `instances` that covers it. Each page is settled once (the
+/// next page still open is found by a path-halving jump), so this is about linear in pages and
+/// instances however much their ranges overlap.
+fn page_masters(instances: &[(usize, usize, usize, usize)], pages: usize) -> Vec<Option<(usize, usize, usize)>> {
+    fn open_from(next: &mut [usize], mut i: usize) -> usize {
+        while let Some(&n) = next.get(i) {
+            if n == i {
+                break;
+            }
+            let skip = next.get(n).copied().unwrap_or(n);
+            if let Some(slot) = next.get_mut(i) {
+                *slot = skip;
+            }
+            i = n;
+        }
+        i
+    }
+    let mut owner = vec![None; pages];
+    // `next[p]` leads towards the first page from `p` on with no master yet (`pages`: none).
+    let mut next: Vec<usize> = (0..=pages).collect();
+    for &(master, first, master_page, count) in instances {
+        let end = first.saturating_add(count).min(pages);
+        let mut p = open_from(&mut next, first.min(pages));
+        while p < end {
+            if let Some(o) = owner.get_mut(p) {
+                *o = Some((master, first, master_page));
+            }
+            if let Some(n) = next.get_mut(p) {
+                *n = p + 1;
+            }
+            p = open_from(&mut next, p + 1);
+        }
+    }
+    owner
 }
 
 /// Parent prefixes: A, B … Z, then A1, B1 ….
@@ -1523,6 +1782,83 @@ struct AlphaMask<'a> {
     alpha: bool,
 }
 
+/// The formats of the characters at `positions` (increasing), in one walk over the story's runs.
+/// The character at a position, not the typing format there ([`Story::char_format_at`] gives
+/// the character before it at the start of a run); past the end, the last run's.
+fn formats_at(story: &Story, positions: impl IntoIterator<Item = usize>) -> Vec<&CharFormat> {
+    let mut out = Vec::new();
+    let (mut i, mut start) = (0, 0);
+    let fallback = story.chars.last().map(|r| &r.format);
+    for pos in positions {
+        while let Some(r) = story.chars.get(i) {
+            if pos < start + r.len {
+                break;
+            }
+            start += r.len;
+            i += 1;
+        }
+        if let Some(f) = story.chars.get(i).map(|r| &r.format).or(fallback) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+/// Grid points per ink of [`CmykLut`].
+const LUT_N: usize = 17;
+
+/// CMYK ink amounts → sRGB, sampled on a 17⁴ grid and interpolated: a photo's millions of
+/// pixels then cost one table, not millions of colour transforms.
+struct CmykLut {
+    data: Vec<[f32; 3]>,
+}
+
+impl CmykLut {
+    fn build(f: impl Fn([f32; 4]) -> [f32; 3]) -> Self {
+        let s = (LUT_N - 1) as f32;
+        let mut data = Vec::with_capacity(LUT_N.pow(4));
+        for c in 0..LUT_N {
+            for m in 0..LUT_N {
+                for y in 0..LUT_N {
+                    for k in 0..LUT_N {
+                        data.push(f([c, m, y, k].map(|i| i as f32 / s)));
+                    }
+                }
+            }
+        }
+        Self { data }
+    }
+
+    /// 8-bit ink amounts → 8-bit sRGB, interpolated between the 16 surrounding grid points.
+    fn apply8(&self, inks: [u8; 4]) -> [u8; 3] {
+        const STRIDE: [usize; 4] = [LUT_N * LUT_N * LUT_N, LUT_N * LUT_N, LUT_N, 1];
+        let p = inks.map(|v| f32::from(v) / 255.0 * (LUT_N - 1) as f32);
+        let i = p.map(|v| (v as usize).min(LUT_N - 2));
+        let base: usize = (0..4).map(|d| i[d] * STRIDE[d]).sum();
+        let mut out = [0.0f32; 3];
+        for corner in 0..16 {
+            let (mut w, mut at) = (1.0f32, base);
+            for d in 0..4 {
+                let t = p[d] - i[d] as f32;
+                if corner >> d & 1 == 1 {
+                    w *= t;
+                    at += STRIDE[d];
+                } else {
+                    w *= 1.0 - t;
+                }
+            }
+            if w > 0.0
+                && let Some(v) = self.data.get(at)
+            {
+                for (o, v) in out.iter_mut().zip(v) {
+                    *o += w * v;
+                }
+            }
+        }
+        out.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+    }
+}
+
 /// Largest image (pixels) whose masks are worked into its pixels.
 const MAX_BAKE_PIXELS: usize = 100_000_000;
 
@@ -1533,9 +1869,22 @@ fn rgba(img: &model::Image) -> Option<std::borrow::Cow<'_, [u8]>> {
     match &img.pixels {
         Pixels::Rgba8(p) => p.get(..len).map(std::borrow::Cow::Borrowed),
         Pixels::Encoded(bytes) => {
-            let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
-            (decoded.width() == img.width && decoded.height() == img.height).then(|| std::borrow::Cow::Owned(decoded.into_raw()))
+            // Decoded only if it is as large as its layer says, within the decoder's limits.
+            crate::overlay::decode(bytes, img.width, img.height).map(std::borrow::Cow::Owned)
         }
+        // Masks use only their alpha (CMYK images are converted before they are masked).
+        Pixels::Cmyka8(p) => Some(std::borrow::Cow::Owned(
+            p.get(..pixels.checked_mul(5)?)?
+                .as_chunks::<5>()
+                .0
+                .iter()
+                .flat_map(|&[c, m, y, k, a]| {
+                    let w = 255 - u16::from(k);
+                    let ch = |v: u8| ((u16::from(255 - v) * w + 127) / 255) as u8;
+                    [ch(c), ch(m), ch(y), a]
+                })
+                .collect(),
+        )),
     }
 }
 
@@ -1685,6 +2034,7 @@ mod tests {
             masters: vec![],
             saved_by: None,
             warnings: vec![],
+            cmyk_profile: None,
         };
         let imported = Builder::new(&src).build(&src).unwrap();
         let d = &imported.document;
@@ -1709,6 +2059,7 @@ mod tests {
             masters: vec![],
             saved_by: None,
             warnings: vec![],
+            cmyk_profile: None,
         }
     }
 
