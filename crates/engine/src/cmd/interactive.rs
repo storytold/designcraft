@@ -93,11 +93,14 @@ pub fn specs() -> Vec<CommandSpec> {
 /// `url`, `email`, `page` (1-based) or `anchor` (a text anchor's id, or its name).
 ///
 /// `None` is "no destination given", which `hyperlink.edit` needs for an edit that only renames.
-/// An `anchor` that is given and names none is an error, not `None`: an unknown name made
-/// `hyperlink.create` fall through to `page` and an unknown id was stored as it stood, so the
-/// link went to an anchor nobody has and the export quietly left it out -- and on
-/// `hyperlink.edit` the `None` read as "no destination given", so the command reported success
-/// and kept the old destination (noted in review).
+/// A destination that *is* given and cannot be used is an error.
+///
+/// The anchor half of that landed with the anchor feature (#1555): an unknown id was stored as it
+/// stood and an unknown name read as no destination at all.
+///
+/// The page half is this one. A page number is 1-based and the document has as many pages as it
+/// has, so `page 0` became page 1 (`saturating_sub`) and a page past the end was accepted and
+/// then left out of the export, since no sheet shows it.
 fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Option<HyperlinkDest>> {
     if let Some(u) = str_param(p, "url") {
         return Ok(Some(HyperlinkDest::Url(u.to_string())));
@@ -130,7 +133,16 @@ fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Opti
             (None, _) => Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))),
         };
     }
-    Ok(p.get("page").and_then(Value::as_u64).map(|pg| HyperlinkDest::Page((pg as usize).saturating_sub(1))))
+    match p.get("page").filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(pg) => {
+            let pages = d.page_count();
+            match pg.as_u64().map(|n| n as usize) {
+                Some(n) if n >= 1 && n <= pages => Ok(Some(HyperlinkDest::Page(n - 1))),
+                _ => Err(bad(id, format!("page {pg}: the document has {pages} page(s), numbered from 1"))),
+            }
+        }
+    }
 }
 
 /// The anchor's own name, for a link to one that was not given a name.
@@ -300,6 +312,29 @@ mod anchor_dest_tests {
         s.execute("layout.pages.insert", &json!({"count": 1, "after": 0})).unwrap();
         assert_eq!(s.execute("anchor.list", &json!({})).unwrap()[0]["page"], "4");
         assert_eq!(link_pages(&mut s), vec![3], "the link follows the text");
+
+        // A page number the document does not have is refused, rather than becoming page 1 or a
+        // link the export quietly leaves out.
+        let dest_err = |s: &mut Session, dest: serde_json::Value| {
+            let mut params = dest;
+            params["ids"] = json!([thumb["id"].clone()]);
+            s.execute("hyperlink.create", &params).expect_err("refused").to_string()
+        };
+        for (params, wanted) in [
+            (json!({"page": 0}), "numbered from 1"),
+            (json!({"page": 99}), "the document has 4 page(s)"),
+            (json!({"anchor": 12345}), "no text anchor"),
+            (json!({"anchor": "No Such Anchor"}), "no text anchor"),
+        ] {
+            let e = dest_err(&mut s, params.clone());
+            assert!(e.contains(wanted), "{params}: {e}");
+        }
+        // The pages it does have still work, 1-based.
+        let made = s.execute("hyperlink.create", &json!({"page": 4, "ids": [thumb["id"].clone()]})).unwrap()["ids"][0].clone();
+        let links = s.execute("hyperlink.list", &json!({})).unwrap();
+        let link = links.as_array().unwrap().iter().find(|h| h["id"] == made).expect("the new link");
+        assert_eq!(link["dest"], json!({"kind": "page", "value": 3}), "page 4 is index 3");
+        s.execute("hyperlink.delete", &json!({"id": made})).unwrap();
 
         // An anchor's id works as well as its name, and an unknown name is refused.
         s.execute("hyperlink.delete", &json!({"id": links[0]["id"].clone()})).unwrap();
