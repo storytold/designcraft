@@ -2372,3 +2372,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Load Styles", "스타일 불러오기"),
     ("Sort Entries in Alphabetical Order", "항목을 알파벳순으로 정렬"),
 ];
+
+/// Captions that read differently by context (see `tr_context`): a table's or a grid's columns
+/// are 열, a text frame's are 단.
+pub(super) const CONTEXT: &[(&str, &str, &str)] = &[("Columns", "table", "열"), ("Columns:", "grid", "열 수:"), ("Number:", "count", "개수:")];

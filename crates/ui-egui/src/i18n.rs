@@ -196,6 +196,8 @@ pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
         "ja" => ja::CONTEXT,
         "ar" => ar::CONTEXT,
         "sv" => sv::CONTEXT,
+        "zh-hant" => zh_hant::CONTEXT,
+        "ko" => ko::CONTEXT,
         _ => &[],
     };
     let written = |text: &&str| !text.trim().is_empty();

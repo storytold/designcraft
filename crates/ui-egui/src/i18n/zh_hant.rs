@@ -2339,3 +2339,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Load Styles", "載入樣式"),
     ("Sort Entries in Alphabetical Order", "依字母順序排列項目"),
 ];
+
+/// Captions that read differently by context (see `tr_context`). Table columns are already 欄
+/// (rows are 列), so they need no entry.
+pub(super) const CONTEXT: &[(&str, &str, &str)] = &[("Number:", "count", "數量："), ("Name", "contributors", "姓名")];
