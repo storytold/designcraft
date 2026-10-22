@@ -56,6 +56,8 @@ impl CachedView {
     pub(crate) fn stats(&self) -> crate::FrameStats {
         self.stats
     }
+    /// A snapshot of `image`, copied into `spare` (the last snapshot's pixels) when it fits.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         doc: &Document,
         spreads: &[Placed],
@@ -64,17 +66,30 @@ impl CachedView {
         image: &Rendered,
         stats: crate::FrameStats,
         threads: u16,
+        spare: Option<Vec<u8>>,
     ) -> Self {
+        let pixels = match spare {
+            Some(mut buf) if buf.len() == image.pixels.len() => {
+                crate::in_parallel(&mut buf, &image.pixels, |d, s| d.copy_from_slice(s));
+                buf
+            }
+            _ => image.pixels.clone(),
+        };
         Self {
             doc: doc.clone(),
             settings: designcraft_color::cms::active_settings(),
             opts: opts.clone(),
             spreads: spreads.to_vec(),
             view,
-            image: image.clone(),
+            image: Rendered { width: image.width, height: image.height, pixels },
             stats,
             threads,
         }
+    }
+
+    /// The snapshot's pixel buffer, for the next one.
+    pub(crate) fn into_pixels(self) -> Vec<u8> {
+        self.image.pixels
     }
 }
 /// Compare every field, but keep large immutable data on an identity-only path. Exhaustive
@@ -256,27 +271,22 @@ fn srgb_table() -> std::sync::Arc<Vec<[f32; 3]>> {
     }
 }
 
-/// Quadrilinear lookup of `cmyk` in an [`srgb_table`].
+/// Quadrilinear lookup of `cmyk` in an [`srgb_table`]: the 16 surrounding entries interpolated
+/// along K, then Y, M and C.
 fn srgb_in(table: &[[f32; 3]], cmyk: [f32; 4]) -> [f32; 3] {
     const N: usize = RGB_N;
     let f = cmyk.map(|v| v.clamp(0.0, 1.0) * (N - 1) as f32);
     let i = f.map(|v| (v as usize).min(N - 2));
     let d = [f[0] - i[0] as f32, f[1] - i[1] as f32, f[2] - i[2] as f32, f[3] - i[3] as f32];
-    let mut out = [0.0f32; 3];
-    for corner in 0..16usize {
-        let bit = |n: usize| corner >> (3 - n) & 1;
-        let w: f32 = (0..4).map(|n| if bit(n) == 1 { d[n] } else { 1.0 - d[n] }).product();
-        if w == 0.0 {
-            continue;
-        }
-        let idx = (i[0] + bit(0)) * N * N * N + (i[1] + bit(1)) * N * N + (i[2] + bit(2)) * N + i[3] + bit(3);
-        if let Some(rgb) = table.get(idx) {
-            for k in 0..3 {
-                out[k] += rgb[k] * w;
-            }
-        }
-    }
-    out
+    let at =
+        |c: usize, m: usize, y: usize, k: usize| table.get((((i[0] + c) * N + i[1] + m) * N + i[2] + y) * N + i[3] + k).copied().unwrap_or([0.0; 3]);
+    let lerp = |a: [f32; 3], b: [f32; 3], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    // Corner (c, m) = (n >> 1, n & 1) at `y`, along K.
+    let along_k = |n: usize, y: usize| lerp(at(n >> 1, n & 1, y, 0), at(n >> 1, n & 1, y, 1), d[3]);
+    // Along Y, then M, then C.
+    let square: [[f32; 3]; 4] = std::array::from_fn(|n| lerp(along_k(n, 0), along_k(n, 1), d[2]));
+    let line = [lerp(square[0], square[1], d[1]), lerp(square[2], square[3], d[1])];
+    lerp(line[0], line[1], d[0])
 }
 
 impl Renderer {
@@ -387,7 +397,10 @@ impl Renderer {
             }
             off.flush();
             let mut pm = vello_cpu::Pixmap::new(aw, ah);
-            off.render(&mut pm, &mut self.resources);
+            // The effect images the pass placed, drawn first (an image it names must be there).
+            if self.raster_fx() {
+                off.render(&mut pm, &mut self.resources);
+            }
             #[cfg(test)]
             {
                 self.cmyk_passes += 1;
@@ -402,16 +415,34 @@ impl Renderer {
         self.stats.items = (self.stats.items - stats.items) / 2 + stats.items;
         self.stats.glyphs = (self.stats.glyphs - stats.glyphs) / 2 + stats.glyphs;
         let table = srgb_table();
-        for (c, k) in cmy.data_mut().iter_mut().zip(black.data()) {
-            if c.a == 0 {
-                continue;
+        let rich_black = f.opts.rich_black;
+        // Every pixel of the area through the table: on all the cores.
+        crate::in_parallel(cmy.data_mut(), black.data(), |cmy, black| {
+            // Pages repeat colours (paper, flat fills, text): each piece remembers the ones it
+            // converted last, by their ink bytes.
+            let mut memo = vec![(u64::MAX, [0u8; 3]); 4096];
+            for (c, k) in cmy.iter_mut().zip(black) {
+                if c.a == 0 {
+                    continue;
+                }
+                let key = u64::from(c.r) | u64::from(c.g) << 8 | u64::from(c.b) << 16 | u64::from(k.r) << 24 | u64::from(c.a) << 32;
+                let slot = (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 52) as usize;
+                if let Some((seen, rgb)) = memo.get(slot)
+                    && *seen == key
+                {
+                    [c.r, c.g, c.b] = *rgb;
+                    continue;
+                }
+                let a = c.a as f32;
+                let inks = [1.0 - c.r as f32 / a, 1.0 - c.g as f32 / a, 1.0 - c.b as f32 / a, 1.0 - k.r as f32 / a];
+                let rgb = if rich_black && inks[0..3].iter().all(|v| *v <= 1e-3) && inks[3] >= 0.999 { [0.0; 3] } else { srgb_in(&table, inks) };
+                let rgb = rgb.map(|v| (v.clamp(0.0, 1.0) * a).round() as u8);
+                if let Some(m) = memo.get_mut(slot) {
+                    *m = (key, rgb);
+                }
+                [c.r, c.g, c.b] = rgb;
             }
-            let a = c.a as f32;
-            let inks = [1.0 - c.r as f32 / a, 1.0 - c.g as f32 / a, 1.0 - c.b as f32 / a, 1.0 - k.r as f32 / a];
-            let rgb = if f.opts.rich_black && inks[0..3].iter().all(|v| *v <= 1e-3) && inks[3] >= 0.999 { [0.0; 3] } else { srgb_in(&table, inks) };
-            let [r, g, b] = rgb.map(|v| (v.clamp(0.0, 1.0) * a).round() as u8);
-            (c.r, c.g, c.b) = (r, g, b);
-        }
+        });
         ctx.set_transform(Affine::translate((area.x0, area.y0)));
         ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(cmy)), sampler: peniko::ImageSampler::default() });
         ctx.fill_rect(&Rect::new(0.0, 0.0, aw as f64, ah as f64));
@@ -422,6 +453,43 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lookup interpolated along one ink after another is the 16-corner weighted sum.
+    #[test]
+    fn srgb_lookup_is_the_weighted_sum_of_its_16_corners() {
+        const N: usize = RGB_N;
+        let table = srgb_table();
+        let reference = |cmyk: [f32; 4]| {
+            let f = cmyk.map(|v| v.clamp(0.0, 1.0) * (N - 1) as f32);
+            let i = f.map(|v| (v as usize).min(N - 2));
+            let d = [f[0] - i[0] as f32, f[1] - i[1] as f32, f[2] - i[2] as f32, f[3] - i[3] as f32];
+            let mut out = [0.0f32; 3];
+            for corner in 0..16usize {
+                let bit = |n: usize| corner >> (3 - n) & 1;
+                let w: f32 = (0..4).map(|n| if bit(n) == 1 { d[n] } else { 1.0 - d[n] }).product();
+                let idx = (i[0] + bit(0)) * N * N * N + (i[1] + bit(1)) * N * N + (i[2] + bit(2)) * N + i[3] + bit(3);
+                for k in 0..3 {
+                    out[k] += table[idx][k] * w;
+                }
+            }
+            out
+        };
+        let mut seed = 0x5eed_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_001) as f32 / 10_000.0
+        };
+        for _ in 0..20_000 {
+            let cmyk = [next(), next(), next(), next()];
+            let (a, b) = (srgb_in(&table, cmyk), reference(cmyk));
+            assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4), "{cmyk:?}: {a:?} vs {b:?}");
+        }
+        for corner in [[0.0; 4], [1.0; 4], [1.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]] {
+            assert_eq!(srgb_in(&table, corner).map(|v| (v * 255.0).round()), reference(corner).map(|v| (v * 255.0).round()));
+        }
+    }
     use designcraft_compose::Cache;
     use designcraft_doc::{Content, Fill, ItemId, Shape, build::NewDocument};
     use std::sync::Arc;

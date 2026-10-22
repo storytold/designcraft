@@ -242,6 +242,42 @@ fn line_box(l: &Line) -> Option<Rect> {
 }
 
 impl Renderer {
+    /// Spread-space bounds of everything a text frame without fill, stroke or form field draws:
+    /// its lines (glyphs, their strokes, underlines and the marks drawn along them) and paragraph
+    /// shading and rules. `None` when it may draw more (tables, footnotes, anchored objects, text
+    /// on a path) or nothing is composed in it. A shadow of its text need not cover the frame.
+    pub(crate) fn text_ink(&mut self, f: &Frame, it: &designcraft_doc::Item, xf: Affine, page: ShownOn) -> Option<Rect> {
+        let designcraft_doc::Content::Text(tf) = &it.content else { return None };
+        if tf.options.path.is_some() || !it.fill.is_none() || !it.stroke.is_none() || it.form_field.is_some() || it.has_nested_items() {
+            return None;
+        }
+        let cs = self.story(f, tf.story, page);
+        let ft = cs.frame(it.id)?;
+        if !ft.tables.is_empty() || !ft.notes.is_empty() || !ft.objects.is_empty() {
+            return None;
+        }
+        let fg = self.glyphs.get(&cs, ft);
+        let mut ink: Option<Rect> = None;
+        let mut add = |r: Rect| ink = Some(ink.map_or(r, |i| i.union(r)));
+        for (i, l) in ft.lines.iter().enumerate() {
+            if let Some(b) = line_box(l) {
+                add(b);
+            }
+            if let Some(b) = fg.lines.get(i).and_then(|g| g.bounds) {
+                add(b);
+            }
+        }
+        for d in &ft.decos {
+            add(d.rect);
+            if let Some(p) = &d.path {
+                add(p.bounding_box());
+            }
+        }
+        let ink = ink?;
+        // A point of slack: antialiasing and rounding at the edges.
+        Some((xf * f.doc.text_local(it)).transform_rect_bbox(ink.inflate(1.0, 1.0)))
+    }
+
     pub(crate) fn draw_text(&mut self, ctx: &mut RenderContext, f: &Frame, cs: &Arc<ComposedStory>, ft: &FrameText, xf: Affine) {
         let doc = f.doc;
         let m = f.view * xf;
