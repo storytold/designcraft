@@ -60,20 +60,38 @@ fn mods_schema() -> Value {
         "additionalProperties": false
     })
 }
+/// An object schema. It is closed (`additionalProperties: false`): the server refuses keys it
+/// doesn't list, at any depth (see `server::check_arguments`).
 fn obj(props: Value, required: &[&str]) -> Value {
-    let mut o = json!({"type": "object", "properties": props});
+    let mut o = json!({"type": "object", "properties": props, "additionalProperties": false});
     if !required.is_empty() {
         o["required"] = json!(required);
     }
     o
 }
+/// Tools that change state without destroying any: they add a document, switch the tool or change
+/// UI state, or close a dialog without applying it.
+const NON_DESTRUCTIVE: &[&str] = &["new_document", "open_document", "select_tool", "ui_set", "dialog_cancel"];
+/// Tools that change state, but calling them again with the same arguments changes nothing more:
+/// they set a value, or write the same file again.
+const IDEMPOTENT: &[&str] =
+    &["set_story_text", "save_document", "export_png", "render_page", "screenshot", "select_tool", "ui_set", "dialog_set", "dialog_cancel"];
+
 fn tool(name: &str, title: &str, desc: &str, schema: Value, read_only: bool) -> Value {
+    let destructive = !read_only && !NON_DESTRUCTIVE.contains(&name);
+    let idempotent = read_only || IDEMPOTENT.contains(&name);
     json!({
         "name": name,
         "title": title,
         "description": desc,
         "inputSchema": schema,
-        "annotations": {"title": title, "readOnlyHint": read_only, "openWorldHint": false},
+        "annotations": {
+            "title": title,
+            "readOnlyHint": read_only,
+            "destructiveHint": destructive,
+            "idempotentHint": idempotent,
+            "openWorldHint": false,
+        },
     })
 }
 
@@ -650,8 +668,12 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> ToolResult {
         Value::Null => &empty,
         _ => return ToolResult::error("tool arguments must be a JSON object"),
     };
-    match dispatch(b, name, a) {
-        Ok(r) => r,
-        Err(e) => ToolResult::error(format!("{name}: {e}")),
+    // Commands have the engine's own guard; this one also covers what runs outside a command
+    // (rendering, inspection, the connection to the app), so a panic there is a tool error and the
+    // server, with the headless document, keeps running.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(b, name, a))) {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => ToolResult::error(format!("{name}: {e}")),
+        Err(payload) => ToolResult::error(format!("{name}: internal error: {}", designcraft_engine::guard::panic_message(payload.as_ref()))),
     }
 }

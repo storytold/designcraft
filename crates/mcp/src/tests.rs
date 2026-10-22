@@ -677,3 +677,84 @@ fn every_forwarded_key_is_in_the_tool_schema() {
     }
     assert!(missing.is_empty(), "keys missing from tool schemas: {missing:#?}");
 }
+
+/// A misspelt key inside a `batch` step, a `pointer` event or `mods` was ignored: the step ran
+/// with its defaults and the modifier was dropped. It is refused like a top-level one.
+#[test]
+fn unknown_nested_keys_are_invalid_params() {
+    let mut s = server();
+    let before = ok(&mut s, "inspect_document", json!({}));
+    for (id, name, args, key) in [
+        (1, "batch", json!({"commands": [{"command": "file.new", "parms": {"width": 300}}]}), "commands[0].parms"),
+        (2, "pointer", json!({"tool": "rectangle", "events": [{"kind": "down", "x": 10, "y": 10, "mods": {"shfit": true}}]}), "events[0].mods.shfit"),
+        (3, "pointer", json!({"tool": "rectangle", "events": [{"kind": "down", "x": 10, "y": 10, "click": 2}]}), "events[0].click"),
+        (4, "pointer", json!({"tool": "rectangle", "events": [{"kind": "down", "x": 10, "y": 10}], "mods": {"Shift": true}}), "mods.Shift"),
+    ] {
+        let v = rpc(&mut s, id, "tools/call", json!({"name": name, "arguments": args}));
+        assert_eq!(v["error"]["code"], -32602, "{v}");
+        assert_eq!(v["error"]["message"], format!("unknown argument `{key}` for `{name}`"), "{v}");
+    }
+    // The same step as script text is the tool's error, and nothing runs either.
+    let r = call(&mut s, "batch", json!({"script": "{\"command\": \"file.new\", \"parms\": {\"width\": 300}}"}));
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(text_of(&r).contains("unknown key `parms`"), "{r}");
+    assert_eq!(ok(&mut s, "inspect_document", json!({})), before);
+    // The listed keys still work, nested ones included.
+    ok(&mut s, "batch", json!({"commands": [{"command": "frame.create", "params": {"rect": [0, 0, 50, 50]}}]}));
+    let gesture = json!({"tool": "rectangle", "events": [
+        {"kind": "down", "x": 100, "y": 100, "mods": {"shift": true}, "clicks": 1, "space": "doc"},
+        {"kind": "drag", "x": 200, "y": 150},
+        {"kind": "up", "x": 200, "y": 150},
+    ], "mods": {"shift": true}});
+    ok(&mut s, "pointer", gesture);
+}
+
+/// Every tool states all four behaviour hints, and every input schema is closed.
+#[test]
+fn tool_annotations_are_complete() {
+    for t in tool_definitions() {
+        let name = t["name"].as_str().unwrap();
+        let a = &t["annotations"];
+        for hint in ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] {
+            assert!(a[hint].is_boolean(), "{name}: {hint} missing");
+        }
+        if a["readOnlyHint"] == true {
+            assert_eq!((&a["destructiveHint"], &a["idempotentHint"]), (&json!(false), &json!(true)), "{name}");
+        }
+        assert_eq!(t["inputSchema"]["additionalProperties"], false, "{name}");
+    }
+    let hints = |name: &str| {
+        let t = tool_definitions().into_iter().find(|t| t["name"] == name).unwrap();
+        (t["annotations"]["destructiveHint"].as_bool().unwrap(), t["annotations"]["idempotentHint"].as_bool().unwrap())
+    };
+    assert_eq!(hints("execute"), (true, false));
+    assert_eq!(hints("batch"), (true, false));
+    assert_eq!(hints("new_document"), (false, false));
+    assert_eq!(hints("set_story_text"), (true, true));
+    assert_eq!(hints("select_tool"), (false, true));
+}
+
+/// A backend that panics on every call, like a bug outside a command (rendering, inspection).
+struct Panicky;
+
+impl Backend for Panicky {
+    fn call(&mut self, method: &str, _params: Value) -> Result<Value, String> {
+        panic!("boom in {method}")
+    }
+    fn has_ui(&self) -> bool {
+        false
+    }
+    fn describe(&self) -> String {
+        "panicky".into()
+    }
+}
+
+/// A panic that escapes the backend is a tool error; the server keeps answering.
+#[test]
+fn an_escaped_panic_is_a_tool_error() {
+    let mut s = Server::new(Box::new(Panicky));
+    let r = call(&mut s, "inspect_document", json!({}));
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(text_of(&r).contains("internal error: boom in document.inspect"), "{r}");
+    assert_eq!(rpc(&mut s, 2, "ping", json!({}))["result"], json!({}));
+}

@@ -233,6 +233,19 @@ Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
 Tool failures come back as results with `isError: true` and a message the model can act on; protocol errors use
 JSON-RPC error codes. Resources: `designcraft://document` (document.inspect) and `designcraft://commands`.
 
+Every input schema is closed (`additionalProperties: false`), and the server checks keys at every level it lists
+them: a misspelt key in a `batch` step, a `pointer` event or `mods` is a `-32602` error naming its path, e.g.
+``unknown argument `commands[0].parms` for `batch` ``. Command `params` are checked against the command's own
+description, as above. A `script` step written as JSON takes only `command` and `params`.
+
+Every tool carries all four MCP hints. The read-only tools (`list_commands`, `inspect_document`, `get_story`,
+`menu_list`, `ui_inspect`) are idempotent and not destructive. `new_document`, `open_document`, `select_tool`,
+`ui_set` and `dialog_cancel` change state without destroying any; the other tools that edit or write may.
+`set_story_text`, `save_document`, `export_png`, `render_page`, `screenshot`, `select_tool`, `ui_set`,
+`dialog_set` and `dialog_cancel` are idempotent. A panic that escapes outside a command (rendering, inspection,
+the connection to the app) is reported as a tool error and the server keeps running. Exports complete
+synchronously, so there is no progress or cancellation to report.
+
 ## Example
 
 ```text
