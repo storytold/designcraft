@@ -247,11 +247,13 @@ impl ToolContext<'_> {
     }
 
     /// Like [`Self::hit`], with the groups opened: the top-level item under a canvas point down to
-    /// the innermost object (parent spreads: the top-level item only). `None` if nothing is hit.
+    /// the innermost object, on document and parent spreads alike. `None` if nothing is hit.
     pub fn hit_chain(&self, p: Point) -> Option<(SpreadRef, Vec<ItemId>)> {
         let (sr, sp) = self.layout.spread_at(p)?;
         let SpreadRef::Doc(si) = sr else {
-            return self.hit_parent(sr, sp).map(|(sr, id)| (sr, vec![id]));
+            let (sr, id) = self.hit_parent(sr, sp)?;
+            let top = self.doc.spread(sr)?.items.iter().find(|i| i.id == id)?;
+            return Some((sr, self.doc.chain_below(top, sp, self.tol(4.0))));
         };
         let chain = self.doc.hit_chain(si, sp, self.tol(4.0));
         if chain.is_empty() { None } else { Some((sr, chain)) }

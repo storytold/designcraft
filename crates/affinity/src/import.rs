@@ -83,6 +83,8 @@ struct Builder {
     /// The table CMYK pixel layers go through, once made: the document's profile, or the
     /// working CMYK conversion when it has none or one that doesn't read.
     cmyk_lut: Option<Arc<CmykLut>>,
+    /// What winding tests of even-odd outlines may still take ([`MAX_WINDING_WORK`]).
+    winding_work: u64,
     /// Outline effects of the node being mapped that go around its own stroke: (the outline as
     /// a stroke, whether it lies over the node). See [`Builder::with_outlines`].
     outlines: Vec<(Stroke, bool)>,
@@ -121,6 +123,7 @@ impl Builder {
             overlay_work: crate::overlay::MAX_WORK,
             cmyk_profile: src.cmyk_profile.clone(),
             cmyk_lut: None,
+            winding_work: MAX_WINDING_WORK,
             outlines: Vec::new(),
         }
     }
@@ -718,8 +721,8 @@ impl Builder {
             }
             subpaths.push(bp);
         }
-        if even_odd && subpaths.len() > 1 {
-            nonzero_like_even_odd(&mut subpaths);
+        if even_odd && subpaths.len() > 1 && !nonzero_like_even_odd(&mut subpaths, &mut self.winding_work) {
+            self.warn("even-odd outlines too complex to convert to DesignCraft's nonzero filling (their holes may fill)");
         }
         let mut all = BezPath::new();
         for bp in subpaths {
@@ -1713,11 +1716,20 @@ fn shape_kind(p: &PathData) -> Shape {
     Shape::Path
 }
 
+/// Winding tests all even-odd outlines of one import may take together (subpaths times the
+/// path elements each is tested against); past it, outlines keep their stored directions.
+const MAX_WINDING_WORK: u64 = 1 << 26;
+
 /// DesignCraft fills by the nonzero rule. For an even-odd outline whose subpaths don't cross,
-/// alternating the direction of nested subpaths gives the same holes.
-fn nonzero_like_even_odd(subpaths: &mut [BezPath]) {
+/// alternating the direction of nested subpaths gives the same holes. Each subpath's start is
+/// tested against every other subpath, which `work` pays for: false (and nothing changed) when
+/// what is left can't.
+fn nonzero_like_even_odd(subpaths: &mut [BezPath], work: &mut u64) -> bool {
     use designcraft_geom::Shape as _;
     let n = subpaths.len().min(4096);
+    let elements: u64 = subpaths.iter().take(n).map(|bp| bp.elements().len() as u64).sum();
+    let Some(left) = work.checked_sub((n as u64).saturating_mul(elements)) else { return false };
+    *work = left;
     let starts: Vec<Option<Point>> = subpaths.iter().map(|bp| bp.elements().first().and_then(|e| e.end_point())).collect();
     let mut depth = vec![0usize; n];
     for i in 0..n {
@@ -1731,13 +1743,14 @@ fn nonzero_like_even_odd(subpaths: &mut [BezPath]) {
             }
         }
     }
-    let Some(outer) = subpaths.first().map(|bp| bp.area().signum()) else { return };
+    let Some(outer) = subpaths.first().map(|bp| bp.area().signum()) else { return true };
     for (bp, d) in subpaths.iter_mut().zip(depth) {
         let want = if d % 2 == 0 { outer } else { -outer };
         if bp.area().signum() != want {
             *bp = bp.reverse_subpaths();
         }
     }
+    true
 }
 
 /// `Bold Italic`, `Light`, `Regular`…: the style names DesignCraft's font matching understands.
@@ -1954,10 +1967,20 @@ mod tests {
     }
 
     #[test]
+    fn even_odd_conversion_stops_at_its_work_budget() {
+        // 4096 subpaths of 5 elements: 4096 × 20480 tests, more than this budget pays for.
+        let mut subpaths: Vec<BezPath> = (0..4096).map(|i| square(f64::from(i) * 3.0, 2.0, true)).collect();
+        let before = subpaths.clone();
+        let mut work = 1_000_000;
+        assert!(!nonzero_like_even_odd(&mut subpaths, &mut work));
+        assert_eq!((work, subpaths), (1_000_000, before), "nothing changed, nothing charged");
+    }
+
+    #[test]
     fn even_odd_holes_survive_nonzero_filling() {
         // Three nested squares drawn the same way round: even-odd shows a ring and a centre.
         let mut subpaths = vec![square(0.0, 100.0, true), square(20.0, 60.0, true), square(40.0, 20.0, true)];
-        nonzero_like_even_odd(&mut subpaths);
+        assert!(nonzero_like_even_odd(&mut subpaths, &mut { u64::MAX }));
         let mut all = BezPath::new();
         for bp in subpaths {
             all.extend(bp);

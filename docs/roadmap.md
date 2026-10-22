@@ -1,6 +1,6 @@
 # DesignCraft roadmap (detail)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (.indd and .indt open through indd-utils; text threads by hand; the gate waits on the Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (Affinity `.afpub`, `.af`, `.afdesign` and `.afphoto` open read-only (designcraft-affinity); .indd and .indt open through indd-utils; text threads by hand; the gate waits on the Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026 (21.6)
 
 Forward-looking plan. The one-page summary is [ROADMAP.md](../ROADMAP.md); numbers are in
 [target-app-parity.md](target-app-parity.md); the work list is [gaps.md](gaps.md). Hours are
@@ -63,7 +63,7 @@ set exists; depth gaps are in gaps.md.
 | M3 | Styles (nested/GREP, bullets, keeps, span columns) | ✅; style editing reliability (#169) |
 | M4 | Color & effects | ✅ core; colour management depth |
 | M5 | Graphics & links | ✅ core; EPS preview only |
-| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | IDML ✅, PDF ✅ (X-4, A-2b, tagged); INDD read ✅ (via indd-utils); PDF/X-1a/X-3 and presets ✗ |
+| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | IDML ✅, PDF ✅ (X-4, A-2b, tagged); INDD read ✅ (via indd-utils); Affinity read ✅ (read-only); PDF/X-1a/X-3 and presets ✗ |
 | M7 | Long documents (sections, TOC, index, footnotes, books) | ✅ except Books (shallow) |
 | M8 | Tables | ✅ core (table/cell styles, rotation); diagonal lines, anchored objects in cells (#163) |
 | M9 | Performance (MT composition, tiles) | in progress: parallel compose 6.7×, damage regions; incremental composition next |

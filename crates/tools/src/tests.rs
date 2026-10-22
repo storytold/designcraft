@@ -1982,3 +1982,67 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
     assert_eq!(cx2.hit_text_frame(q).map(|(_, i)| i), None, "no text frame in that group");
     assert_eq!(t2.cursor(&cx2, q, Mods::default()), Cursor::NotAllowed);
 }
+
+/// `id` (on the first document spread) wrapped in a new group.
+fn group_alone(d: &mut Document, sr: SpreadRef, id: ItemId) -> ItemId {
+    let gid = ItemId(d.alloc());
+    let lid = d.default_layer();
+    let sp = d.spread_mut(sr).unwrap();
+    let kids: Vec<Arc<Item>> = sp.items.iter().filter(|i| i.id == id).cloned().collect();
+    sp.items.retain(|i| i.id != id);
+    let mut g = Item::new(gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = designcraft_doc::Content::Group { items: kids };
+    sp.items.push(Arc::new(g));
+    gid
+}
+
+#[test]
+fn objects_in_groups_on_hidden_or_locked_layers_are_not_hit() {
+    let (mut d, gid, rid, _) = grouped_rect_and_text();
+    // The rectangle on a layer of its own, locked.
+    let mut locked = d.layers[0].clone();
+    locked.id = designcraft_doc::LayerId(d.alloc());
+    locked.locked = true;
+    let lock_id = locked.id;
+    d.layers.push(locked);
+    d.item_mut(rid).unwrap().layer = lock_id;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    assert_eq!(cx.hit_chain(Point::new(25.0, 25.0)).map(|(_, chain)| chain), Some(vec![gid]), "the group, not the locked rectangle in it");
+    let a = create("directSelection").pointer(&cx, &PointerEvent::new(PointerKind::Down, 25.0, 25.0));
+    assert!(!a.iter().any(|a| matches!(a, Action::Exec(_, p) if p["ids"] == serde_json::json!([rid.0]))), "{a:?}");
+}
+
+#[test]
+fn groups_on_parent_spreads_open_too() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "folio", ParaFormat::default()).unwrap();
+    let gid = group_alone(&mut d, SpreadRef::Parent(0), fid);
+    // Editing the parent spread itself.
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, true));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Parent(0)).translation();
+    let p = Point::new(150.0 + off.x, 150.0 + off.y);
+    assert_eq!(cx.hit_chain(p).map(|(_, chain)| chain), Some(vec![gid, fid]));
+    assert_eq!(cx.hit_leaf(p).map(|(_, id)| id), Some(fid), "the Type tool and a double-click reach the frame");
+}
+
+#[test]
+fn table_borders_inside_groups_can_be_dragged() {
+    let (mut d, id) = table_frame(0.0);
+    group_alone(&mut d, SpreadRef::Doc(0), id);
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let it = d.item(id).unwrap();
+    let cs = c.get(&d, it.text_frame().unwrap().story, None);
+    let cell = cs.frames[0].tables[0].cell(1, 0).unwrap();
+    let xf = cx.item_canvas_xf(id).unwrap() * d.text_xf(it);
+    let on_border = xf * Point::new(cell.rect.x1 + 1.0, (cell.rect.y0 + cell.rect.y1) / 2.0);
+    let dragged = xf * Point::new(cell.rect.x1 + 21.0, (cell.rect.y0 + cell.rect.y1) / 2.0);
+    let mut t = create("type");
+    assert_eq!(t.cursor(&cx, on_border, Mods::default()), Cursor::ResizeH);
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, on_border.x, on_border.y)).is_empty());
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, dragged.x, dragged.y));
+    assert_eq!(a.first(), Some(&Action::Begin("Resize Column".into())), "{a:?}");
+}

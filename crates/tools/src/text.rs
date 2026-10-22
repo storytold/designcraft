@@ -61,7 +61,8 @@ struct BorderDrag {
 
 /// The row or column border of a table near canvas point `pos`, in an unlocked text frame.
 fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
-    let (_, id) = cx.hit(pos)?;
+    // A table frame inside a group too, as the caret reaches it.
+    let (_, id) = cx.hit_leaf(pos)?;
     let it = cx.doc.item(id)?;
     if it.locked {
         return None;
