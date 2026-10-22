@@ -24,7 +24,7 @@ jobs:
     with:
       app-name: designcraft
       app-title: DesignCraft
-      craft-fonts-ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+      craft-fonts-ref: 4fcc4b2672a2a6765052c2f59fa3021485d32269
       version: ${{ inputs.version }}
     secrets:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

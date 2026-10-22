@@ -464,10 +464,12 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
     let mut japanese = pick("Jpan");
     // BIZ UDPGothic (the UI face) first, Regular before Bold; the semibold family prefers Bold.
     japanese.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Regular"));
+    let mut korean = pick("Kore");
+    korean.sort_by_key(|f| (f.family != "Nanum Gothic", f.style != "Regular"));
     let chinese = pick("Hans");
     let arabic = pick("Arab");
     let name = |f: &designcraft_fonts::CraftFont| format!("craft-{}-{}", f.family, f.style);
-    for f in japanese.iter().chain(&chinese) {
+    for f in japanese.iter().chain(&chinese).chain(&korean) {
         // CJK faces sit on the Latin baseline (see `baseline_tweak`).
         fonts.font_data.insert(name(f), Arc::new(FontData { tweak: baseline_tweak(f.bytes, 0), ..FontData::from_static(f.bytes) }));
     }
@@ -476,19 +478,28 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
     }
     // Han characters take the forms of the interface language: Chinese faces first for Chinese.
     let zh = matches!(cjk_script(lang), "Hans" | "Hant");
+    let ko = cjk_script(lang) == "Kore";
     for (family, stack) in fonts.families.iter_mut() {
         let bold = *family == FontFamily::Name("semibold".into());
         let mut ja = japanese.clone();
+        let mut kr = korean.clone();
         if bold {
             ja.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Bold"));
+            kr.sort_by_key(|f| (f.family != "Nanum Gothic", f.style != "Bold"));
         }
         let (first, second) = if zh { (&chinese, &ja) } else { (&ja, &chinese) };
+        if ko {
+            stack.extend(kr.iter().map(|f| name(f)));
+        }
         stack.extend(first.iter().chain(second).chain(&arabic).map(|f| name(f)));
+        if !ko {
+            stack.extend(kr.iter().map(|f| name(f)));
+        }
     }
     // Arabic runs (rtl.rs): the Arabic face first, so letters and spaces shape as one run.
     for family in ["arabic", "arabic-semibold"] {
         let ui = if family == "arabic" { "ui" } else { "ui-semibold" };
-        let stack = arabic.iter().map(|f| name(f)).chain([ui.to_string(), "ui".to_string()]).chain(japanese.iter().chain(&chinese).map(|f| name(f)));
+        let stack = arabic.iter().map(|f| name(f)).chain([ui.to_string(), "ui".to_string()]).chain(japanese.iter().chain(&chinese).chain(&korean).map(|f| name(f)));
         let mut seen = std::collections::HashSet::new();
         fonts.families.insert(FontFamily::Name(family.into()), stack.filter(|n| seen.insert(n.clone())).collect());
     }
@@ -794,6 +805,37 @@ mod russian_font_tests {
             for character in &characters {
                 assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod korean_font_tests {
+
+    #[test]
+    fn bundled_korean_faces_precede_other_cjk_faces_and_prefer_the_right_weight() {
+        let data = |family: &str| -> &'static [u8] {
+            Box::leak(designcraft_fonts::testing::font_with(family, &['한', '글', '日']).unwrap().into_boxed_slice())
+        };
+        let faces: &'static [designcraft_fonts::CraftFont] = Box::leak(Box::new([
+            designcraft_fonts::CraftFont { family: "BIZ UDPGothic", style: "Regular", scripts: &["Jpan"], bytes: data("DC Ja") },
+            designcraft_fonts::CraftFont { family: "Nanum Gothic", style: "Bold", scripts: &["Kore"], bytes: data("DC Ko Bold") },
+            designcraft_fonts::CraftFont { family: "Nanum Gothic", style: "Regular", scripts: &["Kore"], bytes: data("DC Ko") },
+        ]));
+        for (lang, first) in [("ko", "craft-Nanum Gothic-Regular"), ("ja", "craft-BIZ UDPGothic-Regular")] {
+            let defs = super::font_definitions(faces, lang);
+            let stack = &defs.families[&egui::FontFamily::Proportional];
+            assert_eq!(stack.iter().find(|name| name.starts_with("craft-")), Some(&first.to_string()));
+            if lang == "ko" {
+                let stack = &defs.families[&egui::FontFamily::Name("semibold".into())];
+                assert_eq!(stack.iter().find(|name| name.starts_with("craft-")), Some(&"craft-Nanum Gothic-Bold".to_string()));
+            }
+            let ctx = egui::Context::default();
+            ctx.set_fonts(defs);
+            let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+            ctx.fonts_mut(|fonts| {
+                assert!(fonts.has_glyphs(&egui::FontId::proportional(13.0), "한글"));
+            });
         }
     }
 }

@@ -3923,6 +3923,26 @@ mod tests {
     }
 
     #[test]
+    fn korean_language_is_selectable_persisted_and_keeps_document_data() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2, "facingPages": true})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "User content · 한국어"})).unwrap();
+        let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+        run_ui(&mut app, "app.language", &json!({"lang": "ko"})).unwrap().unwrap();
+        assert_eq!(app.ui.language, "ko");
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "ko"})), Some(true));
+        assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+        for (title, _) in menu_tree() {
+            assert_ne!(crate::i18n::tr("ko", title), title, "{title}");
+        }
+        let bytes = serde_json::to_vec(&app.ui).unwrap();
+        let restored: crate::UiState = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.language, "ko");
+        assert_eq!(crate::i18n::tr(&restored.language, "File"), "파일");
+        assert!(crate::i18n::LANGUAGES.contains(&("ko", "한국어")), "Preferences lists Korean by its own name");
+    }
+
+    #[test]
     fn arabic_dialog_and_language_switch_keep_finite_widget_geometry() {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         let ctx = egui::Context::default();

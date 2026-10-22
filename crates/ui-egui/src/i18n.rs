@@ -11,6 +11,7 @@ mod fr;
 mod it;
 mod ja;
 mod ka;
+mod ko;
 mod pl;
 mod pt_br;
 mod ru;
@@ -19,6 +20,7 @@ mod uk;
 /// Supported interface languages: (code, name in that language).
 pub const LANGUAGES: &[(&str, &str)] = &[
     ("", "English"),
+    ("ko", "한국어"),
     ("de", "Deutsch"),
     ("fr", "Français"),
     ("es", "Español"),
@@ -4454,7 +4456,11 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static RUSSIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static CZECH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static FRENCH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static KOREAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    if lang == "ko" {
+        return KOREAN.get_or_init(|| ko::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -4510,6 +4516,7 @@ const CONTEXT: &[(&str, &str, [&str; 5])] = &[
 /// Context-sensitive UI captions; unsupported contexts keep the shared translation.
 pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
     let contexts = match lang {
+        "ko" => ko::CONTEXT,
         "uk" => uk::CONTEXT,
         "ru" => ru::CONTEXT,
         "cs" => cs::CONTEXT,
@@ -4631,11 +4638,14 @@ mod tests {
         for (key, expected) in pl::TABLE {
             assert_eq!(tr("pl", key), *expected, "pl: {key}");
         }
+        for (key, expected) in ko::TABLE {
+            assert_eq!(tr("ko", key), *expected, "ko: {key}");
+        }
         for (key, expected) in ka::TABLE {
             assert_eq!(tr("ka", key), *expected, "ka: {key}");
         }
         let unknown = String::from("A user-defined untranslated label");
-        for lang in ["pl", "cs", "uk", "ru", "ar", "pt-br", "it", "ka", "zh", "ja", "de", "fr", "es", "", "unknown"] {
+        for lang in ["ko", "pl", "cs", "uk", "ru", "ar", "pt-br", "it", "ka", "zh", "ja", "de", "fr", "es", "", "unknown"] {
             assert!(std::ptr::eq(tr(lang, &unknown), unknown.as_str()));
         }
     }
@@ -5140,5 +5150,39 @@ mod tests {
                 assert_ne!(tr(code, key), key, "{code}: {key}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod korean_tests {
+    use super::*;
+
+    #[test]
+    fn korean_catalog_is_selectable_and_preserves_runtime_values() {
+        assert!(LANGUAGES.contains(&("ko", "한국어")));
+        assert!(is_cjk("ko") && !is_rtl("ko"));
+        let catalog: HashMap<_, _> = ko::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), ko::TABLE.len(), "duplicate Korean keys");
+        let placeholders = |s: &str| {
+            let mut names = s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        for (key, text) in ko::TABLE {
+            assert!(!text.trim().is_empty(), "empty {key}");
+            assert_eq!(placeholders(key), placeholders(text), "placeholders: {key}");
+        }
+        for (key, context, text) in ko::CONTEXT {
+            assert_eq!(tr_context("ko", key, context), *text);
+        }
+        assert_eq!(tr("ko", "File"), "파일");
+        assert_eq!(tr("", "File"), "File");
+        let custom = String::from("My layout style");
+        assert!(std::ptr::eq(style_name("ko", &custom), custom.as_str()));
+        assert_eq!(workspace_name("ko", "My workspace"), "My workspace");
+        for n in [0, 1, 2, 5, 12, 21] {
+            assert_eq!(count_label("ko", "pages", n), format!("{n} {}", tr("ko", "pages")));
+        }
+        assert_eq!(tr_context("ko", "Number:", "count"), "개수");
     }
 }
