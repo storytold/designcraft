@@ -4196,13 +4196,14 @@ mod fitting_tests {
         let df = shot(&s);
         assert!(df.pixel(102, 200)[0] > 200, "left edge faded to paper: {:?}", df.pixel(102, 200));
         assert_eq!(df.pixel(298, 200), plain.pixel(298, 200), "right edge untouched");
-        // A knockout group exports as an image too.
+        // A knockout group stays vector, as a knockout transparency group.
         let other = s.execute("frame.create", &json!({"rect": [400, 100, 450, 150]})).unwrap()["id"].clone();
         let other2 = s.execute("frame.create", &json!({"rect": [420, 120, 470, 170]})).unwrap()["id"].clone();
         let g = s.execute("object.group", &json!({"ids": [other, other2]})).unwrap()["id"].clone();
         s.execute("object.transparencyGroup", &json!({"ids": [g], "knockout": true})).unwrap();
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
-        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("2 object(s)")), "{r}");
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("1 object(s)")), "{r}");
+        assert!(String::from_utf8_lossy(&super::super::file::base64_decode(r["base64"].as_str().unwrap())).contains("/K true"));
         // PDF export carries effects (as an image of the object).
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("soft effects")), "{r}");

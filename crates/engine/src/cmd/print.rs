@@ -5,8 +5,6 @@ use serde_json::{Value, json};
 #[cfg(not(target_arch = "wasm32"))]
 use super::str_param;
 use super::{CommandSpec, bad, cmd, has_doc};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::EngineError;
 use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -17,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Print…",
             ["File"],
             Some("Cmd+P"),
-            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, dryRun?: bool (export and preview submission without printing)} → {printer, copies, pages, command, bytes}",
+            "{printer?, copies?: 1, pages?: \"1-3,5\", dryRun?: bool (export and preview submission without printing), …the PDF settings of file.exportPdf (the PDF it writes is what prints)} → {printer, copies, pages, command, bytes, warnings}",
             has_doc,
             print
         ),
@@ -58,12 +56,14 @@ fn print_with(
         ..craft_print::Job::default()
     };
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-    let pdf = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
-    let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
     let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
-    let out = json!({"printer": job.printer, "copies": copies, "pages": pages, "command": command, "bytes": pdf.len()});
+    // The PDF that Export PDF writes with these settings.
+    let pdf = super::export::pdf_export(s, p)?;
+    let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
+    let out =
+        json!({"printer": job.printer, "copies": copies, "pages": pages, "command": command, "bytes": pdf.bytes.len(), "warnings": pdf.warnings});
     if !dry {
-        submit(&pdf, &job).map_err(|e| bad("file.print", e.to_string()))?;
+        submit(&pdf.bytes, &job).map_err(|e| bad("file.print", e.to_string()))?;
     }
     Ok(out)
 }
@@ -96,27 +96,63 @@ mod tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({"pages": 4})).unwrap();
         let params = json!({"printer": "Office (east)", "copies": 2, "pages": "2-3", "marks": true, "bleed": true});
-        let expected = {
-            let d = &s.doc().unwrap().doc;
-            let options = super::super::export::options(&params, d.page_count()).unwrap();
-            designcraft_pdf::export_pdf(&super::super::interchange::with_pdf_boxes(d), &s.cache, &options).unwrap()
-        };
-        let r = print_with(&mut s, &params, |pdf, job| {
-            // The production export options and full bytes reach the shared spooler boundary.
-            assert_eq!(pdf, expected);
-            assert!(pdf.starts_with(b"%PDF-"));
-            assert_eq!(job.printer.as_deref(), Some("Office (east)"));
-            assert_eq!(job.copies, 2);
-            assert_eq!(job.duplex, None);
-            assert_eq!(job.scaling, craft_print::Scaling::ShrinkToFit);
-            assert!(!job.title.is_empty());
-            Ok("request id is Office-1".into())
-        })
-        .unwrap();
-        assert_eq!(r["pages"], 2);
+        // The production export options and full bytes reach the shared spooler boundary. The
+        // creation date is in whole seconds: an attempt can straddle a second boundary.
+        let mut matched = false;
+        for _ in 0..3 {
+            let expected = super::super::export::pdf_export(&s, &params).unwrap().bytes;
+            let mut printed = Vec::new();
+            let r = print_with(&mut s, &params, |pdf, job| {
+                printed = pdf.to_vec();
+                assert!(pdf.starts_with(b"%PDF-"));
+                assert_eq!(job.printer.as_deref(), Some("Office (east)"));
+                assert_eq!(job.copies, 2);
+                assert_eq!(job.duplex, None);
+                assert_eq!(job.scaling, craft_print::Scaling::ShrinkToFit);
+                assert!(!job.title.is_empty());
+                Ok("request id is Office-1".into())
+            })
+            .unwrap();
+            assert_eq!(r["pages"], 2);
+            if printed == expected {
+                matched = true;
+                break;
+            }
+        }
+        assert!(matched, "File › Print spools the selected export's bytes");
         let refusal = print_with(&mut s, &params, |_, _| Err(craft_print::Error::Spool("printer offline".into()))).unwrap_err();
         assert!(refusal.to_string().contains("printer offline"));
         print_with(&mut s, &json!({"dryRun": true}), |_, _| panic!("dry runs must not spool")).unwrap();
         assert!(print_with(&mut s, &json!({"pages": "9"}), |_, _| panic!("invalid ranges must not spool")).is_err());
+    }
+
+    /// File › Print spools the PDF that File › Export PDF writes with the same settings: soft
+    /// effects as images, CMYK print color, the same warnings.
+    #[test]
+    fn print_spools_what_export_pdf_writes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"ids": [id], "swatch": "C=100 M=0 Y=0 K=0"})).unwrap();
+        s.execute("object.dropShadow", &json!({"ids": [id], "on": true, "distance": 8, "size": 6})).unwrap();
+        let params = json!({"standard": "x4"});
+        // The creation date is in whole seconds: an attempt can straddle a second boundary.
+        let mut matched = false;
+        for _ in 0..3 {
+            let exported = s.execute("file.exportPdf", &params).unwrap();
+            let mut printed = Vec::new();
+            let r = print_with(&mut s, &params, |pdf, _| {
+                printed = pdf.to_vec();
+                Ok("request id is Office-1".into())
+            })
+            .unwrap();
+            assert_eq!(r["warnings"], exported["warnings"]);
+            assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("soft effects")), "{r}");
+            if printed == super::super::file::base64_decode(exported["base64"].as_str().unwrap()) {
+                matched = true;
+                break;
+            }
+        }
+        assert!(matched, "File › Print spools Export PDF's bytes");
     }
 }

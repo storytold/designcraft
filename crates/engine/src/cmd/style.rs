@@ -404,7 +404,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Gradient",
             [],
             None,
-            "{kind?: linear|radial, stops?: [{location: 0–100, color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255)|{model: rgb|cmyk|gray, …}(0..1) | swatch: name (its colour, as dropped on the Gradient panel), opacity?: 0–100, midpoint?: 13–87}], reverse?: bool, angle?: degrees, from?: [x,y], to?: [x,y] (spread coords: the Gradient Swatch tool's drag), target?: fill|stroke, ids?} → {swatch, kind, stops} — edits the fill's (or the stroke's) gradient (an unnamed gradient unless it equals a gradient swatch)",
+            "{kind?: linear|radial, stops?: [{location: 0–100, color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255)|{model: rgb|cmyk|gray, …}(0..1) | swatch: a color swatch's name (as dropped on the Gradient panel: its color on screen, its inks in print), opacity?: 0–100, midpoint?: 13–87}], reverse?: bool, angle?: degrees, from?: [x,y], to?: [x,y] (spread coords: the Gradient Swatch tool's drag), target?: fill|stroke, ids?} → {swatch, kind, stops: [{location, color, swatch?, opacity, midpoint}]} — edits the fill's (or the stroke's) gradient (an unnamed gradient unless it equals a gradient swatch)",
             super::has_selection,
             apply_gradient
         ),
@@ -490,6 +490,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("swatch.delete", "special swatches can't be deleted"));
                 }
                 d.swatches.retain(|w| w.name != name);
+                d.forget_gradient_stop_swatch(&name);
                 for g in &mut d.color_groups {
                     g.swatches.retain(|w| *w != name);
                 }
@@ -1295,13 +1296,14 @@ fn create_gradient_swatch(s: &mut Session, p: &Value, g: &Value) -> Result<Value
     let doc = &s.doc()?.doc;
     let mut stops = Vec::new();
     for st in g.get("stops").and_then(Value::as_array).ok_or_else(|| bad(ID, "a gradient needs stops"))? {
-        let color = match (st.get("swatch").and_then(Value::as_str), st.get("color")) {
+        // The stop keeps the swatch, so print export writes it in that swatch's inks.
+        let (color, swatch) = match (st.get("swatch").and_then(Value::as_str), st.get("color")) {
             (Some(n), _) => match doc.swatch(n).map(|w| &w.value) {
                 Some(SwatchValue::Gradient { .. }) => return Err(bad(ID, format!("`{n}` is a gradient; a stop takes a colour"))),
-                Some(_) => doc.resolve_color(n, 1.0).ok_or_else(|| bad(ID, format!("`{n}` has no colour")))?,
+                Some(_) => (doc.resolve_color(n, 1.0).ok_or_else(|| bad(ID, format!("`{n}` has no color")))?, Some(n.to_string())),
                 None => return Err(bad(ID, format!("no swatch named `{n}`"))),
             },
-            (None, Some(c)) => parse_color(c).ok_or_else(|| bad(ID, "a stop has a bad color"))?,
+            (None, Some(c)) => (parse_color(c).ok_or_else(|| bad(ID, "a stop has a bad color"))?, None),
             (None, None) => return Err(bad(ID, "a stop needs a swatch or a color")),
         };
         let pct = |k: &str, d: f64| st.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(d).clamp(0.0, 100.0) as f32 / 100.0;
@@ -1310,6 +1312,7 @@ fn create_gradient_swatch(s: &mut Session, p: &Value, g: &Value) -> Result<Value
             color,
             opacity: pct("opacity", 100.0),
             midpoint: pct("midpoint", 50.0).clamp(0.13, 0.87),
+            swatch,
         });
     }
     if stops.len() < 2 {
@@ -1660,7 +1663,13 @@ fn gradient_json(name: &str, g: &designcraft_color::Gradient) -> Value {
     let stops: Vec<Value> = g
         .stops
         .iter()
-        .map(|s| json!({"location": (s.offset as f64 * 1000.0).round() / 10.0, "color": s.color.to_hex(), "opacity": (s.opacity * 100.0).round(), "midpoint": (s.midpoint * 100.0).round()}))
+        .map(|s| {
+            let mut v = json!({"location": (s.offset as f64 * 1000.0).round() / 10.0, "color": s.color.to_hex(), "opacity": (s.opacity * 100.0).round(), "midpoint": (s.midpoint * 100.0).round()});
+            if let (Some(o), Some(w)) = (v.as_object_mut(), &s.swatch) {
+                o.insert("swatch".into(), json!(w));
+            }
+            v
+        })
         .collect();
     json!({"swatch": name, "kind": if g.kind == designcraft_color::GradientKind::Radial { "radial" } else { "linear" }, "stops": stops})
 }
@@ -1678,13 +1687,18 @@ fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
             let doc = &s.doc()?.doc;
             let mut v = Vec::new();
             for st in a {
-                // A swatch dropped on a stop gives it the swatch's colour (a tint's mixed in).
-                let color = match st.get("swatch").and_then(Value::as_str) {
-                    Some(name) => doc
-                        .resolve_color(name, 1.0)
-                        .filter(|_| designcraft_color::swatch::resolve_gradient(&doc.swatches, name).is_none())
-                        .ok_or_else(|| bad("object.gradient", format!("`{name}` isn't a colour swatch")))?,
-                    None => st.get("color").and_then(parse_color).ok_or_else(|| bad("object.gradient", "a stop needs a color or a swatch"))?,
+                // A swatch dropped on a stop gives it the swatch's color (a tint's mixed in) and
+                // its inks for print.
+                // A stop naming a swatch that's gone keeps the color given with it.
+                let color = st.get("color").and_then(parse_color);
+                let (color, swatch) = match st.get("swatch").and_then(Value::as_str) {
+                    Some(name) => {
+                        match doc.resolve_color(name, 1.0).filter(|_| designcraft_color::swatch::resolve_gradient(&doc.swatches, name).is_none()) {
+                            Some(c) => (c, Some(name.to_string())),
+                            None => (color.ok_or_else(|| bad("object.gradient", format!("`{name}` isn't a color swatch")))?, None),
+                        }
+                    }
+                    None => (color.ok_or_else(|| bad("object.gradient", "a stop needs a color or a swatch"))?, None),
                 };
                 let pct = |k: &str, d: f64| st.get(k).and_then(Value::as_f64).unwrap_or(d).clamp(0.0, 100.0) as f32 / 100.0;
                 v.push(GradientStop {
@@ -1692,6 +1706,7 @@ fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
                     color,
                     opacity: pct("opacity", 100.0),
                     midpoint: pct("midpoint", 50.0).clamp(0.13, 0.87),
+                    swatch,
                 });
             }
             if v.len() < 2 {
@@ -2062,7 +2077,7 @@ fn swatch_options(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                     if let Some(nb) = &base {
                         if !d.swatch(nb).is_some_and(|x| matches!(x.value, SwatchValue::Color { .. })) || *nb == name {
-                            return Err(bad(ID, format!("`{nb}` isn't a colour swatch")));
+                            return Err(bad(ID, format!("`{nb}` isn't a color swatch")));
                         }
                         *b = nb.clone();
                     }
@@ -2107,6 +2122,7 @@ fn swatch_options(s: &mut Session, p: &Value) -> Result<Value> {
         let slot = d.swatches.iter_mut().find(|x| x.name == name).ok_or_else(|| bad(ID, format!("no swatch `{name}`")))?;
         *slot = w2;
         d.rename_swatch_refs(&name, &new);
+        d.refresh_gradient_stops();
         Ok(json!({"name": new}))
     })?;
     if let Some(new) = result.get("name").and_then(Value::as_str) {
@@ -3443,6 +3459,31 @@ mod gradient_swatch_tests {
         ] {
             assert!(s.execute("swatch.create", &json!({"gradient": bad})).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn gradient_stops_follow_their_swatch() {
+        let mut s = doc();
+        s.execute("swatch.create", &json!({"name": "Gold", "color": {"c": 0, "m": 30, "y": 90, "k": 10}, "spot": true})).unwrap();
+        s.execute(
+            "swatch.create",
+            &json!({"name": "G", "gradient": {"stops": [{"location": 0, "swatch": "Gold"}, {"location": 100, "swatch": "[Paper]"}]}}),
+        )
+        .unwrap();
+        let stops = |s: &crate::Session| match &s.doc().unwrap().doc.swatch("G").unwrap().value {
+            SwatchValue::Gradient { gradient } => gradient.stops.clone(),
+            v => panic!("{v:?}"),
+        };
+        assert_eq!(stops(&s)[0].swatch.as_deref(), Some("Gold"));
+        assert_eq!(stops(&s)[1].swatch.as_deref(), Some("[Paper]"));
+        // Renamed and edited: the stop names the new name and shows the new color.
+        s.execute("swatch.options", &json!({"name": "Gold", "to": "Gold 871", "color": {"c": 0, "m": 20, "y": 80, "k": 20}})).unwrap();
+        assert_eq!(stops(&s)[0].swatch.as_deref(), Some("Gold 871"));
+        assert_eq!(stops(&s)[0].color, designcraft_color::Color::cmyk(0.0, 0.2, 0.8, 0.2));
+        // Deleted: the stop keeps its color as a plain one.
+        s.execute("swatch.delete", &json!({"name": "Gold 871"})).unwrap();
+        assert_eq!(stops(&s)[0].swatch, None);
+        assert_eq!(stops(&s)[0].color, designcraft_color::Color::cmyk(0.0, 0.2, 0.8, 0.2));
     }
 
     #[test]

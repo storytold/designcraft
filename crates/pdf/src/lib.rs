@@ -12,8 +12,13 @@
 //! - **Colour:** CMYK as DeviceCMYK, RGB as DeviceRGB, Gray as DeviceGray, spot swatches (and their
 //!   tints) as `/Separation` with the swatch's own values as the alternate space, `[Registration]`
 //!   as `/Separation /All`.
-//!   Gradients with mixed output colour spaces are converted to RGB with an export warning;
-//!   homogeneous gradients keep their existing colour space (subject to PDF/A conversion).
+//!   Gradient stops on swatches shade in their inks: one spot with tints of itself or `[Paper]`
+//!   as a `/Separation` shading, a spot with process inks or a second spot as `/DeviceN`
+//!   (process colorants first; not in PDF/A, which goes to process color with a warning), and in
+//!   print a process gradient to `[Paper]` as DeviceCMYK. Plain-color stops keep their own
+//!   space; gradients mixing RGB with CMYK or Gray are converted to RGB with an export warning.
+//! - **Overprint:** Overprint Fill, Stroke and Gap, overprinting text and 100% [Black] (when
+//!   Appearance of Black says so) as `/op` and `/OP` with `/OPM 1`; left out of PDF/A.
 //! - **Images:** clipped to their frame; JPEG data is passed through, PNG/GIF/WebP are embedded
 //!   losslessly (or re-encoded as JPEG with [`PdfOptions::compress_images`]). PDF/X-4 and PDF/A
 //!   images are written without interpolation. In PDF/X-4 an RGB image without a profile of its own
@@ -25,11 +30,12 @@
 //! - **Standards:** PDF/A-2b through krilla's validator and PDF/X-4 output intent/identification
 //!   with built-in conformance checks. `designcraft-cli validate-pdf` exposes those checks for CI.
 //!
-//! Not yet: tagged PDF, bookmarks, hyperlinks, overprint, layers as optional content.
+//! Not yet: tagged PDF, bookmarks, hyperlinks, layers as optional content.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
 mod export;
+mod gradient_inks;
 mod links;
 mod marks;
 mod text;
@@ -37,8 +43,10 @@ mod text;
 mod forms;
 mod pdfx;
 mod transitions;
-pub use export::{BookletKind, BookletOptions, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, merge_pdfs, sheet_spreads};
-pub use pdfx::{check_pdfx4, cmyk_group_spaces, has_rgb_groups, make_pdfx4};
+pub use export::{
+    BookletKind, BookletOptions, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, merge_pdfs, print_color, sheet_spreads,
+};
+pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4};
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
 
 /// PDF standard to target.
@@ -206,6 +214,8 @@ impl From<craft_pdf::write::WriteError> for PdfError {
     }
 }
 
+#[cfg(test)]
+mod print_tests;
 #[cfg(test)]
 mod rtl_tests;
 #[cfg(test)]

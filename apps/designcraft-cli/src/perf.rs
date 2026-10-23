@@ -164,10 +164,7 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
         value: SwatchValue::Gradient {
             gradient: Gradient {
                 kind: GradientKind::Linear,
-                stops: vec![
-                    GradientStop { offset: 0.0, color: Color::cmyk(0.6, 0.9, 0.3, 0.2), opacity: 1.0, midpoint: 0.5 },
-                    GradientStop { offset: 1.0, color: Color::cmyk(0.0, 0.6, 0.8, 0.0), opacity: 1.0, midpoint: 0.5 },
-                ],
+                stops: vec![GradientStop::new(0.0, Color::cmyk(0.6, 0.9, 0.3, 0.2)), GradientStop::new(1.0, Color::cmyk(0.0, 0.6, 0.8, 0.0))],
             },
         },
         locked: false,

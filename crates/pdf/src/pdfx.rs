@@ -1,6 +1,7 @@
-//! PDF/X-4: the output intent (the working CMYK space's profile), the PDF/X version in the document
-//! information and XMP, written as an incremental update of krilla's PDF 1.6 output; and a
-//! check of the requirements this exporter is responsible for.
+//! CMYK print output: the serialization settings (the working CMYK space's profile as the output
+//! intent, CMYK blending), the XMP dates PDF/X-4 requires, written as an incremental update of
+//! krilla's PDF 1.6 output, and a check of the PDF/X-4 requirements this exporter is responsible
+//! for.
 
 use std::collections::HashSet;
 
@@ -8,201 +9,103 @@ use hayro_syntax::content::UntypedIter;
 use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
 use hayro_syntax::page::Resources;
 
+use craft_pdf::write::WriteError;
+use craft_pdf::write::backend as krilla;
+use craft_pdf::write::print::{self, PrintColor};
+
 use crate::transitions::{find, int_after, object, rfind};
 
-/// Escape a PDF literal string.
-fn lit(s: &str) -> String {
-    let mut o = String::from("(");
-    for c in s.chars() {
-        if matches!(c, '(' | ')' | '\\') {
-            o.push('\\');
-        }
-        o.push(c);
-    }
-    o.push(')');
-    o
+/// The serialization settings for CMYK print output: DeviceCMYK and CMYK blending groups in the
+/// document's CMYK working space (Coated FOGRA39 when it has none or its profile can't be
+/// written). With `intent` (PDF/X), the working space is also the `GTS_PDFX` output intent, with
+/// `/Trapped /False`. The second value is a warning when the working space's profile was replaced.
+pub(crate) fn print_settings(intent: bool) -> crate::Result<(krilla::SerializeSettings, Option<String>)> {
+    print_settings_with(&designcraft_color::cms::active(), intent)
 }
 
-/// Turn krilla's output into PDF/X-4. `date` (Unix seconds, UTC) is the XMP metadata date; `None`
-/// (no clock, as on wasm) writes the epoch, because PDF/X-4 requires the entry. `None` back when
-/// the file isn't the simple kind this understands (a classic cross-reference table and plain
-/// dictionaries).
-pub fn make_pdfx4(pdf: &[u8], title: &str, date: Option<i64>) -> Option<Vec<u8>> {
+/// [`print_settings`] for the working spaces of `cms`.
+pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: bool) -> crate::Result<(krilla::SerializeSettings, Option<String>)> {
+    let write = |color: PrintColor<'_>| if intent { print::settings(color) } else { print::cmyk_blending(color.profile) };
+    let fogra39 = || write(PrintColor::fogra39(craft_cms::builtin::COATED_FOGRA39_ICC));
+    let Ok(space) = cms.output_intent() else { return Ok((fogra39()?, None)) };
+    let registered = space.identifier != "Custom";
+    let color = PrintColor {
+        profile: &space.icc,
+        condition_identifier: space.identifier,
+        condition: Some(&space.condition),
+        registry_name: registered.then_some("http://www.color.org"),
+        info: Some(&space.condition),
+    };
+    match write(color) {
+        Ok(settings) => Ok((settings, None)),
+        Err(WriteError::InvalidProfile) => {
+            Ok((fogra39()?, Some(format!("the CMYK working space `{}` couldn't be written to the PDF; Coated FOGRA39 was used", space.condition))))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Finish krilla's PDF/X-4 output with the XMP entries PDF/X-4 requires and krilla doesn't write:
+/// `xmp:MetadataDate` and `xmpMM:VersionID`, as an incremental update. `date` (Unix seconds, UTC)
+/// is the metadata date; `None` (no clock, as on wasm) writes the epoch. `None` back when the
+/// file isn't the simple kind this understands (a classic cross-reference table, uncompressed
+/// XMP).
+pub fn make_pdfx4(pdf: &[u8], date: Option<i64>) -> Option<Vec<u8>> {
     let t_at = rfind(pdf, b"trailer")?;
-    let trailer = String::from_utf8_lossy(&pdf[t_at..]).to_string();
+    let trailer = String::from_utf8_lossy(pdf.get(t_at..)?).to_string();
     let size = int_after(&trailer, "/Size")?;
     let root = int_after(&trailer, "/Root")?;
     let prev = int_after(&trailer, "startxref")?;
-    let info = int_after(&trailer, "/Info");
-    let id = trailer.find("/ID").and_then(|i| trailer[i..].find(']').map(|j| trailer[i..i + j + 1].to_string()));
-    let cat = String::from_utf8_lossy(&pdf[object(pdf, root)?]).to_string();
+    let info = int_after(&trailer, "/Info").map(|i| format!("/Info {i} 0 R")).unwrap_or_default();
+    let id = trailer.find("/ID").and_then(|i| trailer.get(i..)?.find(']').and_then(|j| trailer.get(i..i + j + 1)).map(str::to_string));
+    let cat = String::from_utf8_lossy(pdf.get(object(pdf, root)?)?).to_string();
+    let meta = int_after(&cat, "/Metadata")?;
+    let body = pdf.get(object(pdf, meta)?)?;
+    let s0 = find(body, b"stream", 0)? + b"stream".len();
+    let s0 = s0 + body.get(s0..)?.iter().take_while(|c| **c == b'\r' || **c == b'\n').count();
+    let s1 = rfind(body, b"endstream")?;
+    let xml = String::from_utf8_lossy(body.get(s0..s1)?).trim_end().to_string();
+    let dict = String::from_utf8_lossy(body.get(..find(body, b"stream", 0)?)?).to_string();
+    if dict.contains("/Filter") || !xml.contains("</rdf:RDF>") {
+        return None;
+    }
+    let (y, mo, d, h, mi, se) = crate::export::civil(date.unwrap_or(0));
+    let stamp = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{se:02}Z");
+    let dates = format!(
+        "<rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:xmpMM=\"http://ns.adobe.com/xap/1.0/mm/\">\
+         <xmp:MetadataDate>{stamp}</xmp:MetadataDate><xmpMM:VersionID>1</xmpMM:VersionID></rdf:Description>"
+    );
+    let xml = xml.replacen("</rdf:RDF>", &format!("{dates}</rdf:RDF>"), 1);
+    let dict = {
+        let i = dict.find("/Length")?;
+        let rest = dict.get(i + 7..)?.trim_start();
+        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        format!("{}/Length {}{}", dict.get(..i)?, xml.len(), rest.get(end..)?)
+    };
     let mut out = pdf.to_vec();
     if !out.ends_with(b"\n") {
         out.push(b'\n');
     }
-    let mut entries: Vec<(usize, usize)> = Vec::new();
-    let mut put = |out: &mut Vec<u8>, id: usize, body: &[u8]| {
-        entries.push((id, out.len()));
-        out.extend_from_slice(format!("{id} 0 obj\n").as_bytes());
-        out.extend_from_slice(body);
-        out.extend_from_slice(b"\nendobj\n");
-    };
-    // The output profile and the output intent.
-    let intent = designcraft_color::cms::active().output_intent().ok()?;
-    let (icc_id, oi_id) = (size, size + 1);
-    let mut s = format!("<</N 4/Length {}>>\nstream\n", intent.icc.len()).into_bytes();
-    s.extend_from_slice(&intent.icc);
-    s.extend_from_slice(b"\nendstream");
-    put(&mut out, icc_id, &s);
-    let cond = &intent.condition;
-    put(
-        &mut out,
-        oi_id,
-        format!(
-            "<</Type/OutputIntent/S/GTS_PDFX/OutputConditionIdentifier{}/OutputCondition{}/Info{}/RegistryName(http://www.color.org)/DestOutputProfile {icc_id} 0 R>>",
-            lit(intent.identifier),
-            lit(cond),
-            lit(cond)
-        )
-        .as_bytes(),
-    );
-    // The catalog with the intent.
-    let close = cat.rfind(">>")?;
-    let cat_new = format!("{}/OutputIntents[{oi_id} 0 R]{}", cat[..close].trim(), &cat[close..]);
-    put(&mut out, root, cat_new.trim().as_bytes());
-    // Document information: the PDF/X version and trapping state.
-    let mut next = size + 2;
-    let info_id = match info {
-        Some(i) => {
-            let body = String::from_utf8_lossy(&pdf[object(pdf, i)?]).to_string();
-            let close = body.rfind(">>")?;
-            put(&mut out, i, format!("{}/GTS_PDFXVersion(PDF/X-4)/Trapped/False{}", body[..close].trim(), &body[close..]).trim().as_bytes());
-            i
-        }
-        None => {
-            let i = next;
-            next += 1;
-            put(&mut out, i, format!("<</Title{}/GTS_PDFXVersion(PDF/X-4)/Trapped/False>>", lit(title)).as_bytes());
-            i
-        }
-    };
-    // XMP: the PDF/X identification schema, the trapping state that Info also states, and the
-    // metadata date and version ID that PDF/X-4 requires.
-    if let Some(meta) = int_after(&cat, "/Metadata") {
-        let r = object(pdf, meta)?;
-        let body = &pdf[r];
-        let s0 = find(body, b"stream", 0)? + b"stream".len();
-        let s0 = s0 + body[s0..].iter().take_while(|c| **c == b'\r' || **c == b'\n').count();
-        let s1 = rfind(body, b"endstream")?;
-        let xml = String::from_utf8_lossy(&body[s0..s1]).trim_end().to_string();
-        let dict = String::from_utf8_lossy(&body[..find(body, b"stream", 0)?]).to_string();
-        if dict.contains("/Filter") {
-            return None;
-        }
-        let (y, mo, d, h, mi, se) = crate::export::civil(date.unwrap_or(0));
-        let stamp = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{se:02}Z");
-        let add = concat!(
-            "<rdf:Description rdf:about=\"\" xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\"><pdfxid:GTS_PDFXVersion>PDF/X-4</pdfxid:GTS_PDFXVersion></rdf:Description>",
-            "<rdf:Description rdf:about=\"\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"><pdf:Trapped>False</pdf:Trapped></rdf:Description>"
-        );
-        let dates = format!(
-            "<rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:xmpMM=\"http://ns.adobe.com/xap/1.0/mm/\">\
-             <xmp:MetadataDate>{stamp}</xmp:MetadataDate><xmpMM:VersionID>1</xmpMM:VersionID></rdf:Description>"
-        );
-        let xml = xml.replacen("</rdf:RDF>", &format!("{add}{dates}</rdf:RDF>"), 1);
-        let dict = {
-            let i = dict.find("/Length")?;
-            let rest = &dict[i + 7..];
-            let rest = rest.trim_start();
-            let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-            format!("{}/Length {}{}", &dict[..i], xml.len(), &rest[end..])
-        };
-        let mut b = dict.trim().as_bytes().to_vec();
-        b.extend_from_slice(b"\nstream\n");
-        b.extend_from_slice(xml.as_bytes());
-        b.extend_from_slice(b"\nendstream");
-        put(&mut out, meta, &b);
-    }
-    // Cross-reference section and trailer.
+    let at = out.len();
+    out.extend_from_slice(format!("{meta} 0 obj\n").as_bytes());
+    out.extend_from_slice(dict.trim().as_bytes());
+    out.extend_from_slice(b"\nstream\n");
+    out.extend_from_slice(xml.as_bytes());
+    out.extend_from_slice(b"\nendstream\nendobj\n");
     let xref_at = out.len();
-    entries.sort();
-    let mut x = String::from("xref\n");
-    for (oid, off) in &entries {
-        x.push_str(&format!("{oid} 1\n{off:010} 00000 n\r\n"));
-    }
     let id = id.unwrap_or_default();
-    x.push_str(&format!("trailer\n<</Size {next}/Root {root} 0 R/Info {info_id} 0 R{id}/Prev {prev}>>\nstartxref\n{xref_at}\n%%EOF\n"));
-    out.extend_from_slice(x.as_bytes());
+    out.extend_from_slice(
+        format!("xref\n{meta} 1\n{at:010} 00000 n\r\ntrailer\n<</Size {size}/Root {root} 0 R{info}{id}/Prev {prev}>>\nstartxref\n{xref_at}\n%%EOF\n")
+            .as_bytes(),
+    );
     Some(out)
 }
 
-/// krilla gives every transparency group it writes (placed PDF pages, opacity, isolated
-/// blending) a DeviceRGB blending space. In a print document that puts DeviceRGB in a CMYK file
-/// (PDF/X-4 forbids it under a CMYK output intent) and blends CMYK art through RGB, which can
-/// turn a K-only black into a four-colour black. This rewrites those group dictionaries to
-/// DeviceCMYK in place and at the same length (the optional `/Type/Group` gives the room), so
-/// every cross-reference offset stays valid. Only object dictionaries are touched, never stream
-/// data. Returns how many groups changed.
 /// Whether a transparency group dictionary still names DeviceRGB as its blending space.
 pub fn has_rgb_groups(pdf: &[u8]) -> bool {
     pdf.windows(b"/CS/DeviceRGB".len()).enumerate().any(|(i, w)| {
         w == b"/CS/DeviceRGB" && pdf.get(i.saturating_sub(64)..i).is_some_and(|before| before.windows(15).any(|b| b == b"/S/Transparency"))
     })
-}
-
-pub fn cmyk_group_spaces(pdf: &mut [u8]) -> usize {
-    const FORMS: [(&[u8], &[u8]); 2] = [
-        (b"/Group<</Type/Group/S/Transparency/I true/CS/DeviceRGB>>", b"/Group<</S/Transparency/I true/CS/DeviceCMYK>>"),
-        (b"/Group<</Type/Group/S/Transparency/CS/DeviceRGB>>", b"/Group<</S/Transparency/CS/DeviceCMYK>>"),
-    ];
-    let Some(dicts) = dictionary_ranges(pdf) else { return 0 };
-    let mut changed = 0;
-    for r in dicts {
-        for (from, to) in FORMS {
-            let mut at = r.start;
-            while let Some(i) = find(pdf.get(..r.end).unwrap_or_default(), from, at) {
-                if let Some(dst) = pdf.get_mut(i..i + from.len()) {
-                    dst.fill(b' ');
-                    if let Some(head) = dst.get_mut(..to.len()) {
-                        head.copy_from_slice(to);
-                        changed += 1;
-                    }
-                }
-                at = i + from.len();
-            }
-        }
-    }
-    changed
-}
-
-/// Byte ranges of the dictionary part of every object in a file with one classic
-/// cross-reference table (krilla's output): from the object's offset to its `stream` keyword or
-/// `endobj`. `None` when the table can't be read.
-fn dictionary_ranges(pdf: &[u8]) -> Option<Vec<std::ops::Range<usize>>> {
-    let tail = String::from_utf8_lossy(pdf.get(rfind(pdf, b"startxref")?..)?).to_string();
-    let xref = int_after(&tail, "startxref")?;
-    let table = pdf.get(xref..)?;
-    if !table.starts_with(b"xref") {
-        return None;
-    }
-    let end = find(table, b"trailer", 0)?;
-    let text = String::from_utf8_lossy(table.get(4..end)?).to_string();
-    let mut words = text.split_ascii_whitespace();
-    let mut out = Vec::new();
-    while let (Some(_first), Some(count)) = (words.next(), words.next()) {
-        let count: usize = count.parse().ok()?;
-        for _ in 0..count {
-            let (off, _gen, kind) = (words.next()?, words.next()?, words.next()?);
-            if kind != "n" {
-                continue;
-            }
-            let start: usize = off.parse().ok()?;
-            let endobj = find(pdf, b"endobj", start)?;
-            let stop = find(pdf.get(..endobj)?, b"stream", start).unwrap_or(endobj);
-            out.push(start..stop);
-        }
-    }
-    Some(out)
 }
 
 /// PDF/X-4 checks on an exported file: what's missing or not allowed, device RGB under the CMYK
@@ -808,7 +711,7 @@ mod tests {
         let catalog = xref.get::<hayro_syntax::object::Dict>(xref.root_id()).unwrap();
         let xmp = catalog.get::<hayro_syntax::object::Stream>(b"Metadata").unwrap().decoded().unwrap().into_owned();
         let xmp = String::from_utf8_lossy(&xmp);
-        assert!(xmp.contains("xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"><pdf:Trapped>False</pdf:Trapped>"), "{xmp}");
+        assert!(xmp.contains("xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"") && xmp.contains("<pdf:Trapped>False</pdf:Trapped>"), "{xmp}");
         assert!(String::from_utf8_lossy(&r.bytes).contains("/Trapped/False"));
         assert!(r.warnings.is_empty(), "{:?}", r.warnings);
     }
