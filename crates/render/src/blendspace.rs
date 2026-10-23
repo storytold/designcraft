@@ -184,6 +184,18 @@ fn pipeline(doc: &Document, sr: SpreadRef, opts: &RenderOptions) -> Pipeline {
         }
         inspect_item(doc, item, opts, 0, &mut transparent)
     };
+    if let Some(id) = opts.isolated_item {
+        let Some(item) = doc.find(id).filter(|loc| loc.spread == sr).and_then(|loc| doc.item_at(&loc)) else { return Pipeline::Rgb };
+        let mut captured = item.clone();
+        captured.blend = DcBlend::Normal;
+        return if !inspect(&captured) {
+            Pipeline::Proof
+        } else if transparent {
+            Pipeline::Cmyk
+        } else {
+            Pipeline::Rgb
+        };
+    }
     for item in &sp.items {
         if !inspect(item) {
             return Pipeline::Proof;
@@ -285,6 +297,10 @@ impl Renderer {
     /// reach. None: the whole view (a transparent parent-page item, placed through the parent
     /// page). Empty: nothing transparent is visible.
     fn transparent_area(&self, f: &Frame, sr: SpreadRef) -> Option<Rect> {
+        if f.opts.isolated_item.is_some() {
+            // The viewport is already the selected item's parent-local effect bounds.
+            return None;
+        }
         let doc = f.doc;
         let sp = doc.spread(sr)?;
         let visible = |item: &Item| doc.layer(item.layer).is_some_and(|l| l.visible && (!f.opts.printing_only || l.printable));
@@ -456,6 +472,34 @@ mod tests {
     }
     fn white(pixel: [u8; 4]) {
         assert!(pixel[..3].iter().all(|v| *v > 235), "{pixel:?}");
+    }
+
+    #[test]
+    fn isolated_capture_keeps_cmyk_ink_passes_and_ignores_sibling_blends() {
+        let mut doc = document();
+        doc.settings.blend_space = designcraft_doc::BlendSpace::Cmyk;
+        dodge(&mut doc, SpreadRef::Doc(0));
+        let children = std::mem::take(&mut Arc::make_mut(&mut doc.spreads[0]).items);
+        let id = ItemId(doc.alloc());
+        let mut group = Item::new(id, doc.default_layer(), Shape::Group, Default::default());
+        group.content = Content::Group { items: children };
+        doc.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        let other = rectangle(&mut doc, SpreadRef::Doc(0), Rect::new(20.0, 20.0, 90.0, 90.0), "Lilac", DcBlend::Hue);
+        let placements = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let opts = RenderOptions { paper: false, blend_space_view: true, hidden: vec![other], ..Default::default() };
+        let expected = Renderer::new().render(&doc, &Cache::new(), &placements, 160, 120, Affine::IDENTITY, &opts);
+        let mut capture = Renderer::new();
+        let actual = capture.render(
+            &doc,
+            &Cache::new(),
+            &placements,
+            160,
+            120,
+            Affine::IDENTITY,
+            &RenderOptions { paper: false, blend_space_view: true, isolated_item: Some(id), ..Default::default() },
+        );
+        assert_eq!(capture.cmyk_passes, 2, "capture must use the existing ink-channel pipeline");
+        assert_eq!(actual.pixels, expected.pixels, "only the selected subtree paints; other document content remains available for layout");
     }
 
     #[test]

@@ -116,6 +116,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 10–20 h. **Doc:** [localization-parity.md](localization-parity.md)
 
 ### 9. PDF output presets and standards (FF)
+- **Print-state limitation:** PDF output does not write overprint; explicitly overprinting fills,
+  text, strokes and painted stroke gaps report a warning. Nested knockout groups and soft
+  effects use the existing warned raster fallback, not native PDF knockout groups.
 - **Missing:** PDF/X-1a and PDF/X-3 (no flattener to PDF 1.3/1.4), Adobe PDF Presets and
   `.joboptions` load/save, output-intent choice beyond the built-in profile, PDF/UA validation;
   #159, #32.

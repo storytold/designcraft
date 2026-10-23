@@ -39,7 +39,7 @@ fn layered_pdf_with_box(second_name: &str, page_box: &str) -> Vec<u8> {
     ])
 }
 
-fn rendered(bytes: &[u8]) -> designcraft_render::Rendered {
+pub(super) fn rendered(bytes: &[u8]) -> designcraft_render::Rendered {
     let pm = designcraft_render::render_pdf_page(bytes, 0, 100).expect("render synthetic PDF");
     designcraft_render::Rendered {
         width: pm.width().into(),
@@ -49,7 +49,7 @@ fn rendered(bytes: &[u8]) -> designcraft_render::Rendered {
 }
 
 // Optional local evidence output; no binary fixtures are checked in.
-fn evidence(name: &str, bytes: &[u8]) {
+pub(super) fn evidence(name: &str, bytes: &[u8]) {
     if let Some(dir) = std::env::var_os("CRAFT_PDF_EVIDENCE_DIR") {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(std::path::Path::new(&dir).join(name), bytes).unwrap();

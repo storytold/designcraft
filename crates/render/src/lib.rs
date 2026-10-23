@@ -124,6 +124,10 @@ pub struct RenderOptions {
     pub paper: bool,
     /// Skip non-printing items and layers (Preview mode, export).
     pub printing_only: bool,
+    /// Capture this item's subtree in parent-local space while retaining the full
+    /// document for text composition. Its own blend mode is applied by the caller
+    /// when compositing the captured image over its backdrop.
+    pub isolated_item: Option<designcraft_doc::ItemId>,
     /// Items not to draw (live drag previews).
     pub hidden: Vec<designcraft_doc::ItemId>,
     /// Draw text smaller than this many pixels as grey bars ("greeking"); 0 = never.
@@ -184,6 +188,7 @@ impl Default for RenderOptions {
             background: None,
             paper: true,
             printing_only: false,
+            isolated_item: None,
             hidden: vec![],
             greek_below_px: 0.0,
             page_shadow: false,
@@ -381,7 +386,7 @@ impl Renderer {
             let visible = pl.xf.inverse().transform_rect_bbox(canvas_visible);
             let bounds = sp.bounds();
             // Cull spreads far outside the viewport (pasteboard items may extend; allow a margin).
-            if !rect_overlaps(bounds.inflate(2000.0, 2000.0), visible) {
+            if opts.isolated_item.is_none() && !rect_overlaps(bounds.inflate(2000.0, 2000.0), visible) {
                 continue;
             }
             let f = Frame { doc, cache, view: sview, visible, px, opts, mt };
@@ -435,6 +440,23 @@ impl Renderer {
     fn draw_spread(&mut self, ctx: &mut RenderContext, f: &Frame, sr: SpreadRef) {
         let doc = f.doc;
         let Some(sp) = doc.spread(sr) else { return };
+        if let Some(id) = f.opts.isolated_item {
+            if blendspace::uses_cmyk(doc, sr, f.opts) {
+                self.draw_cmyk_spread(ctx, f, sr);
+                return;
+            }
+            if let Some(it) = doc
+                .find(id)
+                .filter(|loc| loc.spread == sr)
+                .and_then(|loc| doc.item_at(&loc))
+                .filter(|it| doc.layer(it.layer).is_some_and(|l| l.visible && (!f.opts.printing_only || l.printable)))
+            {
+                let mut captured = it.clone();
+                captured.blend = DcBlend::Normal;
+                self.draw_item(ctx, f, &captured, Affine::IDENTITY, ShownOn::Own);
+            }
+            return;
+        }
         // Paper.
         if f.opts.paper {
             let paper = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE);

@@ -1143,6 +1143,9 @@ impl Exporter<'_> {
             let Some(c) = self.swatch_color(&st.swatch, st.tint) else { return };
             c.into()
         };
+        if st.overprint {
+            self.warn("overprint is not exported yet");
+        }
         let closed = it.path.is_closed();
         let mut cap = match st.cap {
             designcraft_doc::Cap::Butt => krilla::paint::LineCap::Butt,
@@ -1158,6 +1161,9 @@ impl Exporter<'_> {
             if let Some(g) = self.swatch_color(&st.gap_swatch, st.gap_tint)
                 && st.gap_swatch != designcraft_color::swatch::NONE
             {
+                if st.gap_overprint {
+                    self.warn("overprint is not exported yet");
+                }
                 s.set_stroke(Some(Stroke { paint: g.into(), width: st.weight as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
                 s.set_fill(None);
                 s.draw_path(path);
@@ -1213,6 +1219,9 @@ impl Exporter<'_> {
             && let Some(g) = self.swatch_color(&st.gap_swatch, st.gap_tint)
         {
             // Gap colour under dashes and dots.
+            if st.gap_overprint {
+                self.warn("overprint is not exported yet");
+            }
             s.set_stroke(Some(Stroke { paint: g.into(), width: width as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
             s.draw_path(path);
         }
