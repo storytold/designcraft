@@ -3,8 +3,6 @@
 //! goes inside the write root. Paths that leave a root (`..`, another folder, a sibling with the
 //! same prefix, a link) are refused, nothing from a refused file reaches the document, and nothing
 //! is written outside.
-// Integration tests: unwrapping and panicking on failure is fine here, unlike in shipped code (AGENTS.md).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 

@@ -8,7 +8,7 @@ use designcraft_doc::{
     CharAttrs, CharFormat, ColumnsKind, Content, Document, Item, ListType, PageSide, ParaAttrs, ParaFormat, Rule, Shape, SpanColumns, Spread, Story,
     TextFrameOptions, story as st,
 };
-use designcraft_geom::{Affine, PathData, Rect};
+use designcraft_geom::{Affine, PathData};
 
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, escape_id, num, pt};
 use crate::xml::{El, Node, document, document_with_pi};
@@ -769,7 +769,7 @@ impl<'a> Ex<'a> {
                     },
                 )
                 .attr("CreatePrimaryTextFrame", bool_s(s.primary_text_frame))
-                .attr("ColumnGuideLocked", "true")
+                .attr("ColumnGuideLocked", bool_s(s.column_guides_locked))
                 .attr("MasterTextFrame", bool_s(s.primary_text_frame))
                 .attr("SnippetImportUsesOriginalLocation", "false"),
         );
@@ -2901,8 +2901,9 @@ impl Group {
 
 fn margin_el(pg: &designcraft_doc::Page) -> El {
     let m = pg.margin_rect();
-    let cols = designcraft_doc::column_rects(Rect::new(0.0, 0.0, m.width(), m.height()), pg.columns.count.max(1), pg.columns.gutter);
-    let pos: Vec<String> = cols.iter().flat_map(|c| [num(c.x0), num(c.x1)]).collect();
+    // Dragged column guides that still fit the margin box are written as they stand, so they
+    // survive the round trip; otherwise the even split, which InDesign writes for unmoved columns.
+    let pos: Vec<String> = pg.columns.edges(m.width()).into_iter().map(num).collect();
     El::new("MarginPreference")
         .attr("ColumnCount", pg.columns.count.max(1))
         .attr("ColumnGutter", num(pg.columns.gutter))

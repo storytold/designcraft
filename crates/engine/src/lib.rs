@@ -579,6 +579,7 @@ impl Session {
             Ok(r) => r,
             Err(e) => {
                 // What it did before it failed can be undone too.
+                self.keep_guide_selection_valid(before.as_ref(), id);
                 self.record_undo_step(spec, before, nested);
                 return Err(e);
             }
@@ -621,12 +622,22 @@ impl Session {
                 }
             }
         }
+        self.keep_guide_selection_valid(before.as_ref(), id);
         self.record_undo_step(spec, before, nested);
         if spec.journal {
             self.journal.push((id.to_string(), params.clone()));
         }
         self.discard_stale_find_scope();
         Ok(r)
+    }
+
+    /// Drops selected guides the command `id` made stale, against the document as it will be
+    /// recorded: after the passes that run with the command (smart reflow, live captions, autosize).
+    fn keep_guide_selection_valid(&mut self, before: Option<&(u64, Arc<Document>, Selection)>, id: &str) {
+        if let Some(st) = self.active_mut() {
+            let old = before.filter(|(uid, _, _)| *uid == st.uid).map(|(_, d, sel)| (d.as_ref(), sel));
+            cmd::guides::keep_selection_valid(st, old, id);
+        }
     }
 
     /// Record undo if the document changed (and we're not previewing an interaction), with the

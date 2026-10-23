@@ -117,6 +117,49 @@ pub fn sel_tint(app: &DesignApp, stroke: bool) -> f32 {
     st.selection.items.first().and_then(|id| st.doc.item(*id)).map_or(1.0, |it| if stroke { it.stroke.tint } else { it.fill.tint })
 }
 
+/// The one selected ruler guide, as the X field (vertical guide) or Y field (horizontal guide)
+/// of the Control and Properties panels shows it: measured as the rulers measure, from the zero
+/// point (and the page, when rulers restart per page), in that ruler's units.
+#[derive(Clone, Copy, Debug)]
+pub struct GuideField {
+    pub guide: designcraft_doc::GuideSel,
+    pub orientation: designcraft_doc::Orientation,
+    /// Points from the ruler origin.
+    pub value: f64,
+    /// Where `value` 0 is: a spread x for a vertical guide, a y for a horizontal one.
+    pub origin: f64,
+    pub unit: designcraft_geom::Unit,
+}
+
+impl GuideField {
+    /// Which field shows it: 0 for X, 1 for Y.
+    pub fn row(&self) -> usize {
+        match self.orientation {
+            designcraft_doc::Orientation::Vertical => 0,
+            designcraft_doc::Orientation::Horizontal => 1,
+        }
+    }
+    /// The `guide.move` params that put it at `value` (as the field reads).
+    pub fn move_to(&self, value: f64) -> Value {
+        let g = self.guide;
+        json!({"spread": g.spread, "page": g.page, "index": g.index, "position": value + self.origin})
+    }
+}
+
+/// [`GuideField`] when exactly one ruler guide is selected.
+pub fn guide_field(app: &DesignApp) -> Option<GuideField> {
+    let st = app.session.active()?;
+    let [g] = st.selection.guides.as_slice() else { return None };
+    let pg = st.doc.spread(g.spread)?.pages.get(g.page)?;
+    let guide = pg.guides.get(g.index)?;
+    let (origin, unit) = match guide.orientation {
+        designcraft_doc::Orientation::Vertical => (st.doc.ruler_origin(g.spread, guide.position)?.x, st.doc.settings.horizontal_units),
+        designcraft_doc::Orientation::Horizontal => (st.doc.ruler_origin(g.spread, pg.x + pg.width / 2.0)?.y, st.doc.settings.vertical_units),
+    };
+    let value = guide.position - origin;
+    value.is_finite().then_some(GuideField { guide: *g, orientation: guide.orientation, value, origin, unit })
+}
+
 pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
     let st = app.session.active()?;
     if st.selection.items.is_empty() {

@@ -436,20 +436,14 @@ fn date_time(t: i64) -> krilla::metadata::DateTime {
         .utc_offset_minute(0)
 }
 
-/// Unix seconds (UTC) → (year, month, day, hour, minute, second), proleptic Gregorian.
+/// Unix seconds (UTC) → (year, month, day, hour, minute, second), proleptic Gregorian. A time
+/// outside chrono's year range still converts (the calendar repeats every 400 years, so the
+/// instant is moved into range by whole cycles and only the year is carried, matching the old
+/// `civil`), rather than resetting to the epoch. `date_time` applies the PDF `0..=9999` year clamp.
 pub(crate) fn civil(t: i64) -> (i64, u8, u8, u8, u8, u8) {
-    let days = t.div_euclid(86_400);
-    let secs = t.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month as u8, day as u8, (secs / 3600) as u8, (secs / 60 % 60) as u8, (secs % 60) as u8)
+    use chrono::{Datelike, Timelike};
+    let (y, t) = designcraft_doc::time::utc_parts(t, 0);
+    (y, t.month() as u8, t.day() as u8, t.hour() as u8, t.minute() as u8, t.second() as u8)
 }
 
 /// A successful conversion and its name-independent diagnostic. Replayed once for each asset.
@@ -2116,5 +2110,20 @@ mod eps_tests {
                 .collect();
             assert_eq!(images, vec![("DeviceCMYK".to_string(), pixels.clone())], "{standard:?}");
         }
+    }
+
+    #[test]
+    fn civil_dates_match_the_old_cycle_conversion_including_beyond_chrono() {
+        use super::civil;
+        assert_eq!(civil(0), (1970, 1, 1, 0, 0, 0));
+        assert_eq!(civil(951_782_400), (2000, 2, 29, 0, 0, 0));
+        assert_eq!(civil(1_791_504_000 + 3_723), (2026, 10, 9, 1, 2, 3));
+        // Beyond chrono's year range the old `civil` still converted; pin that output, never the
+        // epoch. `date_time` is what clamps the year to the PDF `0..=9999` range afterwards.
+        assert_eq!(civil(253_402_300_800), (10000, 1, 1, 0, 0, 0));
+        assert_eq!(civil(10_000_000_000_000), (318857, 5, 20, 17, 46, 40));
+        assert_eq!(civil(-10_000_000_000_000), (-314918, 8, 13, 6, 13, 20));
+        assert_eq!(civil(i64::MAX), (292277026596, 12, 4, 15, 30, 7));
+        assert_eq!(civil(i64::MIN), (-292277022657, 1, 27, 8, 29, 52));
     }
 }

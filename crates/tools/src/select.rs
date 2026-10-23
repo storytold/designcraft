@@ -2,7 +2,8 @@
 //!
 //! Click selects the frontmost item (Shift toggles), drag moves (Alt duplicates, Shift constrains),
 //! the 8 bounding-box handles resize (Shift keeps proportions, Alt from centre, Cmd scales content),
-//! empty-canvas drags make a marquee, double-clicking a text frame switches to the Type tool and
+//! empty-canvas drags make a marquee (it selects the ruler guides it crosses when it touches no
+//! object), double-clicking a text frame switches to the Type tool and
 //! double-clicking a handle fits the frame to its content (corner: both sides, edge: that one).
 //! A click on a selected text frame's in or out port loads the text cursor (see [`crate::thread`]).
 //!
@@ -177,6 +178,42 @@ fn anchor_spread_point(cx: &ToolContext, id: u64, si: usize, ai: usize) -> Optio
 /// Spread-space correction as a canvas delta. Translation cancels, leaving the linear part of `xf`.
 fn spread_delta_to_canvas(xf: Affine, d: Vec2) -> Vec2 {
     (xf * Point::new(d.x, d.y)) - (xf * Point::ORIGIN)
+}
+
+/// The ruler guides a marquee `r` (canvas) crosses that can be selected, as `guide.select`
+/// takes them: none while guides are hidden or locked.
+fn guides_crossing(cx: &ToolContext, r: Rect) -> Vec<Value> {
+    if !cx.snap.show_guides || cx.snap.guides_locked {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    for slot in &cx.layout.slots {
+        let Some(sp) = cx.doc.spread(slot.spread) else { continue };
+        let pasteboard = slot.xf.inverse().transform_rect_bbox(cx.layout.pasteboard);
+        for (pi, pg) in sp.pages.iter().enumerate() {
+            for (gi, g) in pg.guides.iter().enumerate() {
+                if !g.editable_in(cx.doc) {
+                    continue;
+                }
+                // The line as the canvas draws it: a spread guide crosses the pasteboard (a
+                // vertical one the spread's height and a little), a page guide its page.
+                let span = match (g.spread, g.orientation) {
+                    (false, _) => pg.bounds(),
+                    (true, designcraft_doc::Orientation::Horizontal) => pasteboard,
+                    (true, designcraft_doc::Orientation::Vertical) => sp.bounds().inflate(0.0, 36.0),
+                };
+                let line = match g.orientation {
+                    designcraft_doc::Orientation::Horizontal => Rect::new(span.x0, g.position, span.x1, g.position),
+                    designcraft_doc::Orientation::Vertical => Rect::new(g.position, span.y0, g.position, span.y1),
+                };
+                let b = slot.xf.transform_rect_bbox(line);
+                if b.x0 <= r.x1 && b.x1 >= r.x0 && b.y0 <= r.y1 && b.y1 >= r.y0 {
+                    out.push(json!({"spread": slot.spread, "page": pi, "index": gi}));
+                }
+            }
+        }
+    }
+    out
 }
 
 pub struct SelectionTool {
@@ -892,6 +929,7 @@ impl Tool for SelectionTool {
                                 x_edges,
                                 y_edges,
                                 exclude: &exclude,
+                                exclude_guides: &[],
                                 copying: ev.mods.alt && !content,
                                 lengths: [None, None],
                                 angle: None,
@@ -965,6 +1003,7 @@ impl Tool for SelectionTool {
                                 x_edges,
                                 y_edges,
                                 exclude: &exclude,
+                                exclude_guides: &[],
                                 copying: false,
                                 lengths: [axis_length(x_edges, proposed.width(), pad_x), axis_length(y_edges, proposed.height(), pad_y)],
                                 angle: None,
@@ -1017,6 +1056,7 @@ impl Tool for SelectionTool {
                                     x_edges: [false, false, false],
                                     y_edges: [false, false, false],
                                     exclude: &exclude,
+                                    exclude_guides: &[],
                                     copying: false,
                                     lengths: [None, None],
                                     angle: Some(resulting),
@@ -1055,6 +1095,7 @@ impl Tool for SelectionTool {
                                 x_edges: [true, true, true],
                                 y_edges: [true, true, true],
                                 exclude: &exclude,
+                                exclude_guides: &[],
                                 copying: false,
                                 lengths: [None, None],
                                 angle: None,
@@ -1112,7 +1153,12 @@ impl Tool for SelectionTool {
                                 }
                             }
                         }
-                        vec![Action::Exec("selection.set".into(), json!({"ids": ids, "add": ev.mods.shift}))]
+                        let guides = if ids.is_empty() { guides_crossing(cx, r) } else { vec![] };
+                        if guides.is_empty() {
+                            vec![Action::Exec("selection.set".into(), json!({"ids": ids, "add": ev.mods.shift}))]
+                        } else {
+                            vec![Action::Exec("guide.select".into(), json!({"guides": guides, "add": ev.mods.shift}))]
+                        }
                     }
                     Drag::None | Drag::Place { .. } => vec![],
                 }
@@ -1133,7 +1179,20 @@ impl Tool for SelectionTool {
         }
         let mv = |dx: f64, dy: f64| vec![Action::Exec("transform.move".into(), json!({"dx": dx, "dy": dy, "copy": mods.alt}))];
         if cx.selection.items.is_empty() {
-            return vec![];
+            // Selected ruler guides: the arrows nudge them, Delete deletes them.
+            if cx.selection.guides.is_empty() {
+                return vec![];
+            }
+            let nudge = |dx: f64, dy: f64| vec![Action::Exec("guide.moveBy".into(), json!({"dx": dx, "dy": dy}))];
+            return match key {
+                ToolKey::Left => nudge(-inc, 0.0),
+                ToolKey::Right => nudge(inc, 0.0),
+                ToolKey::Up => nudge(0.0, -inc),
+                ToolKey::Down => nudge(0.0, inc),
+                ToolKey::Delete | ToolKey::Backspace => vec![Action::Exec("edit.clear".into(), json!({}))],
+                ToolKey::Escape => vec![Action::Exec("guide.deselect".into(), json!({}))],
+                _ => vec![],
+            };
         }
         match key {
             ToolKey::Left => mv(-inc, 0.0),

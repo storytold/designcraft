@@ -2,8 +2,8 @@
 //! of every painted path, glyph and image, each cut to the clip in force when it's painted.
 //! Nothing is rasterized, so measuring a page costs a fraction of drawing it.
 
-use hayro::hayro_interpret::font::Glyph;
-use hayro::hayro_interpret::{
+use craft_pdf::interpret::font::Glyph;
+use craft_pdf::interpret::{
     BlendMode, ClipPath, Context, Device, FillRule, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, RectExt,
     SoftMask, TransformExt, interpret_page,
 };
@@ -12,7 +12,7 @@ use vello_cpu::kurbo::{self, Affine, BezPath, Rect, Shape};
 /// The bounds of what PDF page `page` draws, as fractions of the page as rendered (its visible
 /// crop box, rotated as it displays): left, top, right, bottom. `None` when it draws nothing.
 pub(crate) fn page_content_bounds(bytes: &[u8], page: usize) -> Option<[f64; 4]> {
-    let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(bytes.to_vec())).ok()?;
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
     let p = pdf.pages().get(page)?;
     let (w, h) = p.render_dimensions();
     let (w, h) = (f64::from(w), f64::from(h));

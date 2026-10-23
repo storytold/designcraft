@@ -19,6 +19,7 @@ skrifa = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }
 zip = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 designcraft-fonts = { workspace = true, features = ["testing"] }

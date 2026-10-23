@@ -2,8 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::edit::SpreadRef;
 use crate::ids::{ItemId, StoryId};
 use crate::table::CellRange;
+
+/// A selected ruler guide: index `index` in the guides of page `page` of spread `spread`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuideSel {
+    pub spread: SpreadRef,
+    pub page: usize,
+    pub index: usize,
+}
 
 /// A table cell: the table (in the selection's story) and the owning cell's grid position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +93,10 @@ pub struct Selection {
     /// The page selected with the Page tool (absolute index).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<usize>,
+    /// Selected ruler guides. Never together with items, text or cells: selecting one clears
+    /// the other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<GuideSel>,
 }
 
 impl Selection {

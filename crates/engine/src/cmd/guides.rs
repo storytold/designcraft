@@ -1,18 +1,28 @@
-//! Ruler guides: add (dragged from the rulers), move, delete, list; Layout › Create Guides.
+//! Ruler guides: add (dragged from the rulers), select, move, delete, list; Layout › Create
+//! Guides.
 //!
 //! Guides are stored on their page in spread coordinates; a spread guide (dropped on the
 //! pasteboard) lives on the spread's first page with `spread: true` and crosses the pasteboard.
+//! Selected guides are [`Selection::guides`], addressed as (spread, page, index): the commands
+//! that delete guides renumber it, and [`keep_selection_valid`] drops what another command made
+//! stale.
 
-use designcraft_doc::{Document, Guide, Orientation, SpreadRef};
+use std::collections::{HashMap, HashSet};
+
+use designcraft_doc::{Document, Guide, GuideSel, Orientation, Selection, SpreadRef};
 use designcraft_geom::Rect;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_doc, str_param};
-use crate::{Result, Session};
+use super::{CommandSpec, bad, bool_or, cmd, has_doc, str_param};
+use crate::{DocState, Result, Session};
 
 const MAX_GUIDE_DIVISIONS: u64 = 1000;
 const MAX_GUIDES_CREATED: usize = 10_000;
 const MAX_GUIDE_GUTTER: f64 = 1_000_000.0;
+/// The farthest a guide may be from the spread origin, in points, either way.
+const MAX_GUIDE_POSITION: f64 = 1_000_000.0;
+/// The most guides one `guides` list may name.
+const MAX_GUIDES_NAMED: usize = 10_000;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -21,34 +31,96 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Guide",
             [],
             None,
-            "{orientation: horizontal|vertical, position (spread coordinate), spread?, page? (index in the spread; default: the page under `at` or the position), at? (the other coordinate), spreadGuide?: bool, liquid?: bool (a liquid guide, as the Page tool draws from the rulers)} or {orientation: both, point: [x, y], spread?, page?, spreadGuide?: bool, liquid?: bool} → {page, index}; `both` adds a horizontal guide through y and a vertical guide through x as one undo step → {guides: [{page, index}, {page, index}]}",
+            "{orientation: horizontal|vertical, position (spread coordinate, at most 1000000 pt either way), spread?, page? (index in the spread; default: the page under `at` or the position), at? (the other coordinate), spreadGuide?: bool, liquid?: bool (a liquid guide, as the Page tool draws from the rulers)} or {orientation: both, point: [x, y], spread?, page?, spreadGuide?: bool, liquid?: bool} → {page, index}; `both` adds a horizontal guide through y and a vertical guide through x as one undo step → {guides: [{page, index}, {page, index}]}. The new guides become the selection; objects are deselected",
             has_doc,
             add
         ),
-        cmd!("guide.move", "Move Guide", [], None, "{spread?, page, index, position}", has_doc, move_guide),
-        cmd!("guide.delete", "Delete Guide", [], None, "{spread?, page, index}", has_doc, delete),
+        cmd!("guide.move", "Move Guide", [], None, "{spread?, page, index, position (at most 1000000 pt either way)}", has_doc, move_guide),
+        cmd!(
+            "guide.moveBy",
+            "Move Guides",
+            [],
+            None,
+            "{dx?, dy?, guides?: [{spread?, page, index}] (default: the selected guides)} — vertical guides move by dx, horizontal ones by dy, as one undo step",
+            has_doc,
+            move_by
+        ),
+        cmd!(
+            "guide.delete",
+            "Delete Guide",
+            [],
+            None,
+            "{spread?, page, index}, or {} for the selected guides; an address without page or index is an error",
+            has_doc,
+            delete
+        ),
         cmd!("guide.deleteAll", "Delete All Guides on Spread", ["View", "Grids & Guides"], None, "{spread?}", has_doc, |s, p| {
             let r = super::spread_param(p, "guide.deleteAll")?;
-            s.edit(|d, _| {
+            s.edit(|d, sel| {
                 let sp = d.spread_mut(r).ok_or_else(|| bad("guide.deleteAll", "no such spread"))?;
                 let mut n = 0;
                 for pg in &mut sp.pages {
                     n += pg.guides.len();
                     pg.guides.clear();
                 }
+                sel.guides.retain(|g| g.spread != r);
                 Ok(json!({"deleted": n}))
             })
         }),
-        cmd!(query "guide.list", "Guides", [], None, "{spread?} → [{page, index, orientation, position, spread}]", has_doc, |s, p| {
-            let d = &s.doc()?.doc;
-            let sp = d.spread(super::spread_param(p, "guide.list")?).ok_or_else(|| bad("guide.list", "no such spread"))?;
-            let mut out = Vec::new();
-            for (pi, pg) in sp.pages.iter().enumerate() {
-                for (i, g) in pg.guides.iter().enumerate() {
-                    out.push(json!({"page": pi, "index": i, "orientation": g.orientation, "position": g.position, "spread": g.spread}));
+        cmd!(
+            "view.lockColumnGuides",
+            "Lock Column Guides",
+            ["View", "Grids & Guides"],
+            None,
+            "{on?: bool (default: toggle)} → {locked} — locked column guides can't be dragged; saved with the document (IDML ColumnGuideLocked), on in new documents",
+            has_doc,
+            lock_column_guides
+        ),
+        cmd!(
+            query "guide.list",
+            "Guides",
+            [],
+            None,
+            "{spread?} → [{page, index, orientation, position, spread, selected}]",
+            has_doc,
+            |s, p| {
+                let st = s.doc()?;
+                let r = super::spread_param(p, "guide.list")?;
+                let sp = st.doc.spread(r).ok_or_else(|| bad("guide.list", "no such spread"))?;
+                let picked: HashSet<GuideSel> = st.selection.guides.iter().copied().collect();
+                let mut out = Vec::new();
+                for (pi, pg) in sp.pages.iter().enumerate() {
+                    for (i, g) in pg.guides.iter().enumerate() {
+                        let selected = picked.contains(&GuideSel { spread: r, page: pi, index: i });
+                        out.push(json!({"page": pi, "index": i, "orientation": g.orientation, "position": g.position, "spread": g.spread, "selected": selected}));
+                    }
                 }
+                Ok(Value::Array(out))
             }
-            Ok(Value::Array(out))
+        ),
+        cmd!(
+            noundo "guide.select",
+            "Select Guide",
+            [],
+            None,
+            "{spread?, page, index, guides?: [{spread?, page, index}] (several, in place of page and index), add?: bool (keep the guides already selected), toggle?: bool (deselect a selected guide instead: Shift-click)} — selects ruler guides and deselects objects → {selected: n}",
+            has_doc,
+            select
+        ),
+        cmd!(
+            noundo "guide.selectAll",
+            "Select All Guides",
+            ["Edit"],
+            Some("Cmd+Alt+G"),
+            "{spread?} — every guide on the spread that is not locked or on a locked or hidden layer → {selected: n}",
+            has_doc,
+            select_all
+        ),
+        cmd!(noundo "guide.deselect", "Deselect Guides", [], None, "{}", has_doc, |s, _| {
+            let st = s.doc_mut()?;
+            st.selection.guides.clear();
+            st.bump_revision();
+            super::ok()
         }),
         cmd!(
             "layout.createGuides",
@@ -60,6 +132,18 @@ pub fn specs() -> Vec<CommandSpec> {
             create_guides
         ),
     ]
+}
+
+fn lock_column_guides(s: &mut Session, p: &Value) -> Result<Value> {
+    let cur = s.doc()?.doc.settings.column_guides_locked;
+    let on = p.get("on").and_then(Value::as_bool).unwrap_or(!cur);
+    if on == cur {
+        return Ok(json!({"locked": cur}));
+    }
+    s.edit(|d, _| {
+        d.settings.column_guides_locked = on;
+        Ok(json!({"locked": on}))
+    })
 }
 
 fn checked_usize(value: &Value, key: &str, command: &str) -> Result<usize> {
@@ -78,6 +162,14 @@ fn finite_number(p: &Value, key: &str, command: &str) -> Result<Option<f64>> {
         return Err(bad(command, format!("`{key}` must be a finite number")));
     }
     Ok(Some(number))
+}
+
+/// `position` as a guide position: finite and within [`MAX_GUIDE_POSITION`] of the origin.
+fn guide_position(position: f64, command: &str) -> Result<f64> {
+    if !position.is_finite() || position.abs() > MAX_GUIDE_POSITION {
+        return Err(bad(command, format!("a guide position must be between -{MAX_GUIDE_POSITION} and {MAX_GUIDE_POSITION}")));
+    }
+    Ok(position)
 }
 
 fn orientation(p: &Value) -> Result<Orientation> {
@@ -115,6 +207,9 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         };
         vec![(o, pos, x)]
     };
+    for (_, pos, _) in &guides {
+        guide_position(*pos, "guide.add")?;
+    }
     let d = &s.doc()?.doc;
     let placed: Vec<(Orientation, f64, usize)> = guides
         .into_iter()
@@ -128,11 +223,13 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .collect();
     let layer = s.doc()?.active_layer;
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         let sp = d.spread_mut(r).ok_or_else(|| bad("guide.add", "no such spread"))?;
         let mut out = Vec::new();
+        let mut added = Vec::new();
         for (o, pos, pi) in placed {
             let pg = sp.pages.get_mut(pi).ok_or_else(|| bad("guide.add", "no such page"))?;
+            let index = pg.guides.len();
             pg.guides.push(Guide {
                 orientation: o,
                 position: pos,
@@ -141,8 +238,11 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
                 layer: Some(layer),
                 liquid: liquid && !spread_guide,
             });
-            out.push(json!({"page": pi, "index": pg.guides.len() - 1}));
+            out.push(json!({"page": pi, "index": index}));
+            added.push(GuideSel { spread: r, page: pi, index });
         }
+        // A new guide is selected, as in InDesign; nothing else stays selected.
+        *sel = Selection { guides: added, ..Default::default() };
         match <[Value; 1]>::try_from(out) {
             Ok([one]) => Ok(one),
             Err(out) => Ok(json!({"guides": out})),
@@ -168,6 +268,7 @@ fn check_editable(d: &Document, r: SpreadRef, pi: usize, i: usize, command: &str
 fn move_guide(s: &mut Session, p: &Value) -> Result<Value> {
     let (r, pi, i) = guide_ref(p, "guide.move")?;
     let pos = finite_number(p, "position", "guide.move")?.ok_or_else(|| bad("guide.move", "missing position"))?;
+    let pos = guide_position(pos, "guide.move")?;
     s.edit(|d, _| {
         check_editable(d, r, pi, i, "guide.move")?;
         let g = d
@@ -181,16 +282,207 @@ fn move_guide(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
-    let (r, pi, i) = guide_ref(p, "guide.delete")?;
-    s.edit(|d, _| {
-        check_editable(d, r, pi, i, "guide.delete")?;
-        let pg = d.spread_mut(r).and_then(|sp| sp.pages.get_mut(pi)).ok_or_else(|| bad("guide.delete", "no such page"))?;
-        if i >= pg.guides.len() {
-            return Err(bad("guide.delete", "no such guide"));
+    // An address names one guide: a partial one (only `spread`, say) is an error, not the selection.
+    let targets = if ["spread", "page", "index"].iter().all(|k| p.get(k).is_none()) {
+        s.doc()?.selection.guides.clone()
+    } else {
+        let (spread, page, index) = guide_ref(p, "guide.delete")?;
+        vec![GuideSel { spread, page, index }]
+    };
+    if targets.is_empty() {
+        return Err(bad("guide.delete", "no guide selected"));
+    }
+    s.edit(|d, sel| {
+        for g in &targets {
+            check_editable(d, g.spread, g.page, g.index, "guide.delete")?;
         }
-        pg.guides.remove(i);
-        Ok(Value::Null)
+        let deleted = remove_guides(d, sel, &targets, "guide.delete")?;
+        Ok(json!({"deleted": deleted}))
     })
+}
+
+/// Removes `targets` (existing guides; repeats count once) and renumbers the guide selection to
+/// match. Returns how many guides it removed.
+fn remove_guides(d: &mut Document, sel: &mut Selection, targets: &[GuideSel], command: &str) -> Result<usize> {
+    let gone: HashSet<GuideSel> = targets.iter().copied().collect();
+    // Per page, the removed indices in ascending order.
+    let mut by_page: HashMap<(SpreadRef, usize), Vec<usize>> = HashMap::new();
+    for g in &gone {
+        by_page.entry((g.spread, g.page)).or_default().push(g.index);
+    }
+    for ((spread, page), indices) in &mut by_page {
+        indices.sort_unstable();
+        let pg = d.spread_mut(*spread).and_then(|sp| sp.pages.get_mut(*page)).ok_or_else(|| bad(command, "no such page"))?;
+        for &i in indices.iter().rev() {
+            if i >= pg.guides.len() {
+                return Err(bad(command, "no such guide"));
+            }
+            pg.guides.remove(i);
+        }
+    }
+    sel.guides = sel
+        .guides
+        .iter()
+        .filter(|g| !gone.contains(g))
+        .map(|g| {
+            let below = by_page.get(&(g.spread, g.page)).map_or(0, |indices| indices.partition_point(|&i| i < g.index));
+            GuideSel { index: g.index.saturating_sub(below), ..*g }
+        })
+        .collect();
+    Ok(gone.len())
+}
+
+/// The guides a `guides: [{spread?, page, index}]` list names, if the params have one.
+fn guides_param(p: &Value, command: &str) -> Result<Option<Vec<GuideSel>>> {
+    let Some(list) = p.get("guides") else { return Ok(None) };
+    let list = list.as_array().ok_or_else(|| bad(command, "`guides` must be a list of {spread?, page, index}"))?;
+    if list.len() > MAX_GUIDES_NAMED {
+        return Err(bad(command, format!("`guides` may name at most {MAX_GUIDES_NAMED} guides")));
+    }
+    list.iter()
+        .map(|g| {
+            let (spread, page, index) = guide_ref(g, command)?;
+            Ok(GuideSel { spread, page, index })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+/// The guide `g` addresses, if there is one.
+fn guide_of(d: &Document, g: GuideSel) -> Option<&Guide> {
+    d.spread(g.spread)?.pages.get(g.page)?.guides.get(g.index)
+}
+
+/// A guide that can be selected: it exists, and neither it nor its layer is locked or hidden.
+pub(crate) fn selectable(d: &Document, g: GuideSel) -> bool {
+    guide_of(d, g).is_some_and(|guide| guide.editable_in(d))
+}
+
+fn select(s: &mut Session, p: &Value) -> Result<Value> {
+    let named = match guides_param(p, "guide.select")? {
+        Some(list) => list,
+        None => {
+            let (spread, page, index) = guide_ref(p, "guide.select")?;
+            vec![GuideSel { spread, page, index }]
+        }
+    };
+    let (add, toggle) = (bool_or(p, "add", false), bool_or(p, "toggle", false));
+    let st = s.doc_mut()?;
+    for g in &named {
+        check_editable(&st.doc, g.spread, g.page, g.index, "guide.select")?;
+    }
+    let mut guides = if add || toggle { st.selection.guides.clone() } else { Vec::new() };
+    let mut have: HashSet<GuideSel> = guides.iter().copied().collect();
+    let mut seen = HashSet::new();
+    let mut dropped = HashSet::new();
+    for g in named.into_iter().filter(|g| seen.insert(*g)) {
+        if !have.insert(g) {
+            if toggle {
+                dropped.insert(g);
+            }
+        } else {
+            guides.push(g);
+        }
+    }
+    guides.retain(|g| !dropped.contains(g));
+    let n = guides.len();
+    st.selection = Selection { guides, ..Default::default() };
+    st.bump_revision();
+    Ok(json!({"selected": n}))
+}
+
+fn select_all(s: &mut Session, p: &Value) -> Result<Value> {
+    let r = super::spread_param(p, "guide.selectAll")?;
+    let st = s.doc_mut()?;
+    let sp = st.doc.spread(r).ok_or_else(|| bad("guide.selectAll", "no such spread"))?;
+    let guides: Vec<GuideSel> = sp
+        .pages
+        .iter()
+        .enumerate()
+        .flat_map(|(page, pg)| (0..pg.guides.len()).map(move |index| GuideSel { spread: r, page, index }))
+        .filter(|g| selectable(&st.doc, *g))
+        .collect();
+    let n = guides.len();
+    st.selection = Selection { guides, ..Default::default() };
+    st.bump_revision();
+    Ok(json!({"selected": n}))
+}
+
+fn move_by(s: &mut Session, p: &Value) -> Result<Value> {
+    let dx = finite_number(p, "dx", "guide.moveBy")?.unwrap_or(0.0);
+    let dy = finite_number(p, "dy", "guide.moveBy")?.unwrap_or(0.0);
+    let mut targets = match guides_param(p, "guide.moveBy")? {
+        Some(list) => list,
+        None => s.doc()?.selection.guides.clone(),
+    };
+    let mut seen = HashSet::new();
+    targets.retain(|g| seen.insert(*g));
+    if targets.is_empty() {
+        return Err(bad("guide.moveBy", "no guide selected"));
+    }
+    s.edit(|d, _| {
+        for g in &targets {
+            check_editable(d, g.spread, g.page, g.index, "guide.moveBy")?;
+        }
+        for g in &targets {
+            let guide = d
+                .spread_mut(g.spread)
+                .and_then(|sp| sp.pages.get_mut(g.page))
+                .and_then(|pg| pg.guides.get_mut(g.index))
+                .ok_or_else(|| bad("guide.moveBy", "no such guide"))?;
+            let to = guide.position
+                + match guide.orientation {
+                    Orientation::Vertical => dx,
+                    Orientation::Horizontal => dy,
+                };
+            guide.position = guide_position(to, "guide.moveBy").map_err(|_| bad("guide.moveBy", "the guide would move out of range"))?;
+        }
+        Ok(json!({"moved": targets.len()}))
+    })
+}
+
+/// After a command: guides stay selected only while nothing else is (objects, text, cells, a
+/// page), and only those that are still there and can be selected. A command that changed
+/// which guides a page holds without keeping the guide selection up to date clears it, since
+/// its (page, index) addresses may name other guides now. `before` is the document and
+/// selection before the command, when it ran on the same document.
+pub(crate) fn keep_selection_valid(st: &mut DocState, before: Option<(&Document, &Selection)>, id: &str) {
+    let sel = &mut st.selection;
+    if sel.guides.is_empty() {
+        return;
+    }
+    if !sel.items.is_empty() || sel.text.is_some() || sel.cells.is_some() || sel.page.is_some() {
+        sel.guides.clear();
+        return;
+    }
+    let kept_up = id.starts_with("guide.") || matches!(id, "edit.undo" | "edit.redo") || before.is_some_and(|(_, old)| old.guides != sel.guides);
+    if !kept_up
+        && let Some((old, _)) = before
+        && !std::ptr::eq(old, st.doc.as_ref())
+        && !same_guide_addresses(old, &st.doc)
+    {
+        sel.guides.clear();
+        return;
+    }
+    let mut seen = HashSet::new();
+    sel.guides.retain(|g| selectable(&st.doc, *g) && seen.insert(*g));
+}
+
+/// Every (spread, page, index) of `old` still names a guide of the same orientation on the same
+/// page in `new`: guides were only added at the end of their pages, or moved.
+fn same_guide_addresses(old: &Document, new: &Document) -> bool {
+    let same = |a: &[std::sync::Arc<designcraft_doc::Spread>], b: &[std::sync::Arc<designcraft_doc::Spread>]| {
+        a.len() == b.len()
+            && a.iter().zip(b).all(|(a, b)| {
+                a.pages.len() == b.pages.len()
+                    && a.pages.iter().zip(&b.pages).all(|(a, b)| {
+                        a.id == b.id
+                            && a.guides.len() <= b.guides.len()
+                            && a.guides.iter().zip(&b.guides).all(|(a, b)| a.orientation == b.orientation)
+                    })
+            })
+    };
+    same(&old.spreads, &new.spreads) && same(&old.parents, &new.parents)
 }
 
 fn guide_divisions(p: &Value, key: &str) -> Result<u64> {
@@ -273,7 +565,11 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
         .filter(|count| *count <= MAX_GUIDES_CREATED)
         .ok_or_else(|| bad("layout.createGuides", format!("a single command may create at most {MAX_GUIDES_CREATED} guides")))?;
     let layer = s.doc()?.active_layer;
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
+        if remove {
+            // The cleared pages' guide addresses name the new guides now.
+            sel.guides.retain(|g| g.spread != r || only.is_some_and(|o| o != g.page));
+        }
         let sp = d.spread_mut(r).ok_or_else(|| bad("layout.createGuides", "no such spread"))?;
         let mut n = 0usize;
         for (pi, pg) in sp.pages.iter_mut().enumerate() {
@@ -314,6 +610,39 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_column_guides_toggles_sets_and_undoes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let locked = |s: &Session| s.doc().unwrap().doc.settings.column_guides_locked;
+        let undo_steps = |s: &Session| s.doc().unwrap().history.undo.len();
+        assert!(locked(&s), "locked in new documents");
+        let before = undo_steps(&s);
+        assert_eq!(s.execute("view.lockColumnGuides", &json!({})).unwrap()["locked"], false);
+        assert!(!locked(&s));
+        assert_eq!(undo_steps(&s), before + 1, "one undo step per toggle");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(locked(&s), "undo restores the lock");
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert!(!locked(&s), "redo unlocks again");
+        // Setting the current value changes nothing and adds no undo step.
+        let steps = undo_steps(&s);
+        assert_eq!(s.execute("view.lockColumnGuides", &json!({"on": false})).unwrap()["locked"], false);
+        assert_eq!(undo_steps(&s), steps);
+        assert_eq!(s.execute("view.lockColumnGuides", &json!({"on": true})).unwrap()["locked"], true);
+        assert!(locked(&s));
+        assert_eq!(s.execute("view.lockColumnGuides", &json!({})).unwrap()["locked"], false);
+        // Saved with the document; files without the setting read as locked.
+        let json = serde_json::to_string(&*s.doc().unwrap().doc).unwrap();
+        assert!(json.contains("\"columnGuidesLocked\":false"), "{json}");
+        let back: Document = serde_json::from_str(&json).unwrap();
+        assert!(!back.settings.column_guides_locked);
+        let old = json.replace("\"columnGuidesLocked\":false,", "").replace(",\"columnGuidesLocked\":false", "");
+        assert!(!old.contains("columnGuidesLocked"));
+        let back: Document = serde_json::from_str(&old).unwrap();
+        assert!(back.settings.column_guides_locked);
+    }
 
     #[test]
     fn guides_add_move_delete_and_grid() {
@@ -387,6 +716,214 @@ mod tests {
 
         s.execute("guide.add", &json!({"spread": {"kind": "doc", "index": 0}, "page": 0, "orientation": "horizontal", "position": 150})).unwrap();
         assert_eq!(s.execute("guide.list", &json!({})).unwrap().as_array().unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    /// A page with vertical guides at 100, 200, 300 and a horizontal one at 400.
+    fn guides() -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for x in [100.0, 200.0, 300.0] {
+            s.execute("guide.add", &json!({"orientation": "vertical", "position": x})).unwrap();
+        }
+        s.execute("guide.add", &json!({"orientation": "horizontal", "position": 400.0})).unwrap();
+        s
+    }
+
+    fn selected(s: &Session) -> Vec<usize> {
+        s.doc().unwrap().selection.guides.iter().map(|g| g.index).collect()
+    }
+
+    fn positions(s: &mut Session) -> Vec<f64> {
+        let l = s.execute("guide.list", &json!({})).unwrap();
+        l.as_array().unwrap().iter().map(|g| g["position"].as_f64().unwrap()).collect()
+    }
+
+    #[test]
+    fn selecting_guides_clears_objects_and_the_other_way_round() {
+        let mut s = guides();
+        let id = s.execute("frame.create", &json!({"rect": [36, 36, 100, 100]})).unwrap()["id"].clone();
+        s.execute("selection.set", &json!({"ids": [id]})).unwrap();
+        s.execute("guide.select", &json!({"page": 0, "index": 1})).unwrap();
+        assert!(s.doc().unwrap().selection.items.is_empty());
+        assert_eq!(selected(&s), [1]);
+        // Shift-click adds, Shift-click again removes.
+        s.execute("guide.select", &json!({"page": 0, "index": 3, "toggle": true})).unwrap();
+        assert_eq!(selected(&s), [1, 3]);
+        s.execute("guide.select", &json!({"page": 0, "index": 1, "toggle": true})).unwrap();
+        assert_eq!(selected(&s), [3]);
+        let r = s.execute("guide.select", &json!({"guides": [{"page": 0, "index": 0}, {"page": 0, "index": 2}], "add": true})).unwrap();
+        assert_eq!(r["selected"], 3);
+        let l = s.execute("guide.list", &json!({})).unwrap();
+        assert_eq!(l.as_array().unwrap().iter().map(|g| g["selected"] == true).collect::<Vec<_>>(), [true, false, true, true]);
+        // Selecting an object (Shift-click too) deselects the guides.
+        s.execute("selection.toggle", &json!({"id": id})).unwrap();
+        assert!(selected(&s).is_empty());
+        s.execute("guide.select", &json!({"page": 0, "index": 0})).unwrap();
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        assert!(selected(&s).is_empty());
+        s.execute("guide.selectAll", &json!({})).unwrap();
+        s.execute("guide.deselect", &json!({})).unwrap();
+        assert!(selected(&s).is_empty());
+        // No such guide.
+        assert!(s.execute("guide.select", &json!({"page": 0, "index": 9})).is_err());
+        assert!(s.execute("guide.select", &json!({"page": 3, "index": 0})).is_err());
+        assert!(s.execute("guide.select", &json!({"guides": "all"})).is_err());
+    }
+
+    #[test]
+    fn select_all_guides_skips_locked_ones() {
+        let mut s = guides();
+        let layer = s.execute("layer.new", &json!({"name": "Grid"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("layer.activate", &json!({"id": layer})).unwrap();
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 500.0})).unwrap();
+        s.execute("layer.set", &json!({"id": layer, "locked": true})).unwrap();
+        assert_eq!(s.execute("guide.selectAll", &json!({})).unwrap()["selected"], 4);
+        assert_eq!(selected(&s), [0, 1, 2, 3]);
+        assert!(s.execute("guide.select", &json!({"page": 0, "index": 4})).is_err());
+        // Locking the layer of a selected guide deselects it.
+        s.execute("layer.set", &json!({"id": layer, "locked": false})).unwrap();
+        s.execute("guide.selectAll", &json!({})).unwrap();
+        s.execute("layer.set", &json!({"id": layer, "locked": true})).unwrap();
+        assert_eq!(selected(&s), [0, 1, 2, 3]);
+        let spec = crate::cmd::find_command("guide.selectAll").unwrap();
+        assert_eq!((spec.menu, spec.shortcut), (&["Edit"][..], Some("Cmd+Alt+G")));
+    }
+
+    #[test]
+    fn selected_guides_move_and_delete_as_one_undo_step() {
+        let mut s = guides();
+        s.execute("guide.select", &json!({"guides": [{"page": 0, "index": 0}, {"page": 0, "index": 2}, {"page": 0, "index": 3}]})).unwrap();
+        // Vertical guides move by dx, horizontal ones by dy.
+        s.execute("guide.moveBy", &json!({"dx": 10.0, "dy": -5.0})).unwrap();
+        assert_eq!(positions(&mut s), [110.0, 200.0, 310.0, 395.0]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(positions(&mut s), [100.0, 200.0, 300.0, 400.0]);
+        assert_eq!(selected(&s), [0, 2, 3]);
+        // Delete (edit.clear, as the Delete key) takes all three; the guide left is the one at 200.
+        assert_eq!(s.execute("edit.clear", &json!({})).unwrap()["deleted"], 3);
+        assert_eq!(positions(&mut s), [200.0]);
+        assert!(selected(&s).is_empty());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(positions(&mut s), [100.0, 200.0, 300.0, 400.0]);
+        assert_eq!(selected(&s), [0, 2, 3]);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(positions(&mut s), [200.0]);
+        assert!(s.execute("guide.moveBy", &json!({"dx": 1.0})).is_err(), "nothing selected");
+        // A guide stays within 1000000 pt of the origin.
+        assert!(s.execute("guide.moveBy", &json!({"dx": f64::MAX, "guides": [{"page": 0, "index": 0}]})).is_err());
+        assert!(s.execute("guide.moveBy", &json!({"dx": 1e6, "guides": [{"page": 0, "index": 0}]})).is_err());
+        assert_eq!(positions(&mut s), [200.0]);
+        s.execute("guide.moveBy", &json!({"dx": -1e6 - 200.0, "guides": [{"page": 0, "index": 0}]})).unwrap();
+        assert_eq!(positions(&mut s), [-1e6]);
+        assert!(s.execute("guide.move", &json!({"page": 0, "index": 0, "position": 1e6 + 1.0})).is_err());
+        assert!(s.execute("guide.add", &json!({"orientation": "vertical", "position": -2e6})).is_err());
+        assert!(s.execute("guide.add", &json!({"orientation": "both", "point": [0.0, 1e300]})).is_err());
+        assert_eq!(positions(&mut s), [-1e6]);
+    }
+
+    #[test]
+    fn the_guide_selection_follows_deletes_and_drops_stale_guides() {
+        let mut s = guides();
+        s.execute("guide.select", &json!({"guides": [{"page": 0, "index": 2}, {"page": 0, "index": 3}]})).unwrap();
+        // Deleting a guide before them renumbers them.
+        s.execute("guide.delete", &json!({"page": 0, "index": 0})).unwrap();
+        assert_eq!(selected(&s), [1, 2]);
+        assert_eq!(positions(&mut s), [200.0, 300.0, 400.0]);
+        // Deleting a selected one deselects it.
+        s.execute("guide.delete", &json!({"page": 0, "index": 1})).unwrap();
+        assert_eq!(selected(&s), [1]);
+        // Undo puts back the selection that went with the document.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(selected(&s), [1, 2]);
+        // A new guide is the selection.
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 50.0})).unwrap();
+        assert_eq!(selected(&s), [3]);
+        // Undoing the add to before the first delete: those addresses held other guides then.
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(selected(&s), [2, 3]);
+        // Create Guides replacing the page's guides: their addresses name new guides, so the
+        // selection goes.
+        s.execute("layout.createGuides", &json!({"columns": 2, "removeExisting": true})).unwrap();
+        assert!(selected(&s).is_empty());
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("guide.select", &json!({"page": 0, "index": 0})).unwrap();
+        s.execute("layout.createGuides", &json!({"columns": 2, "columnGutter": 0})).unwrap();
+        assert_eq!(selected(&s), [0], "guides only added: the addresses still hold");
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("guide.selectAll", &json!({})).unwrap();
+        s.execute("guide.deleteAll", &json!({})).unwrap();
+        assert!(selected(&s).is_empty());
+        // Deleting the page goes with it.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        s.execute("guide.add", &json!({"spread": 1, "orientation": "vertical", "position": 100.0})).unwrap();
+        s.execute("guide.selectAll", &json!({"spread": 1})).unwrap();
+        assert_eq!(selected(&s), [0]);
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert!(selected(&s).is_empty());
+        let _: Value = s.execute("guide.list", &json!({})).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod new_guide_tests {
+    use designcraft_doc::GuideSel;
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn selected(s: &Session) -> Vec<GuideSel> {
+        s.doc().unwrap().selection.guides.clone()
+    }
+
+    #[test]
+    fn a_new_guide_is_the_selection() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [36, 36, 100, 100]})).unwrap()["id"].clone();
+        s.execute("selection.set", &json!({"ids": [id]})).unwrap();
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 100.0})).unwrap();
+        let spread = s.doc().unwrap().selection.guides[0].spread;
+        assert_eq!(selected(&s), [GuideSel { spread, page: 0, index: 0 }]);
+        assert!(s.doc().unwrap().selection.items.is_empty(), "objects are deselected");
+        // Both ways (Cmd-drag from the ruler corner): the two new guides.
+        s.execute("guide.add", &json!({"orientation": "both", "point": [50.0, 60.0], "spreadGuide": true})).unwrap();
+        assert_eq!(selected(&s), [GuideSel { spread, page: 0, index: 1 }, GuideSel { spread, page: 0, index: 2 }]);
+        // Undo gives back the selection from before.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(selected(&s), [GuideSel { spread, page: 0, index: 0 }]);
+    }
+
+    #[test]
+    fn delete_takes_a_whole_address_or_the_selection() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        for spread in [0, 1] {
+            s.execute("guide.add", &json!({"spread": spread, "orientation": "vertical", "position": 100.0})).unwrap();
+        }
+        s.execute("guide.select", &json!({"spread": 1, "page": 0, "index": 0})).unwrap();
+        // A spread without page and index is not "the selection".
+        assert!(s.execute("guide.delete", &json!({"spread": 0})).is_err());
+        assert!(s.execute("guide.delete", &json!({"spread": 1, "page": 0})).is_err());
+        assert_eq!(selected(&s).len(), 1);
+        // A selection naming a guide twice, apart, deletes it once.
+        s.execute("guide.add", &json!({"spread": 1, "orientation": "vertical", "position": 200.0})).unwrap();
+        s.execute("guide.add", &json!({"spread": 1, "orientation": "vertical", "position": 300.0})).unwrap();
+        let spread = selected(&s)[0].spread;
+        let at = |index| GuideSel { spread, page: 0, index };
+        s.doc_mut().unwrap().selection.guides = vec![at(0), at(2), at(0)];
+        assert_eq!(s.execute("guide.delete", &json!({})).unwrap()["deleted"], 2);
+        let left = s.execute("guide.list", &json!({"spread": 1})).unwrap();
+        assert_eq!(left.as_array().unwrap().iter().map(|g| g["position"].as_f64().unwrap()).collect::<Vec<_>>(), [200.0]);
+        assert_eq!(s.execute("guide.list", &json!({"spread": 0})).unwrap().as_array().unwrap().len(), 1);
     }
 }
 

@@ -59,6 +59,9 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
     if st.selection.text.is_some() {
         return crate::i18n::tr(&app.ui.language, "Characters").into();
     }
+    if info.is_none() && !st.selection.guides.is_empty() {
+        return crate::i18n::tr(&app.ui.language, "Ruler Guide").into();
+    }
     match info {
         None => crate::i18n::tr(&app.ui.language, "No Selection").into(),
         Some(i) if i.count > 1 => crate::i18n::tr(&app.ui.language, "Multiple Objects").into(),
@@ -104,6 +107,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         divider(ui);
         section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
         quick_actions_text(app, ui);
+        return;
+    }
+    if info.is_none() && app.session.active().is_some_and(|st| !st.selection.guides.is_empty()) {
+        section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
+        guide_section(app, ui);
         return;
     }
     // The Page tool with no objects selected: the page's own settings, as InDesign's.
@@ -513,7 +521,9 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if smart != app.ui.smart_guides {
         let _ = app.run("view.smartGuides", json!({}));
     }
-    app.ui.guides_locked = locked;
+    if locked != app.ui.guides_locked {
+        let _ = app.run("view.lockGuides", json!({"on": locked}));
+    }
     rule(ui);
     section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
     let (a, b) = button_pair(ui, crate::i18n::tr(&app.ui.language, "Import File"), crate::i18n::tr(&app.ui.language, "Insert Page"));
@@ -610,6 +620,27 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     transform_angles(app, ui, rp);
     if more_options(ui, &app.ui.language).clicked() {
         show_panel(app, "info");
+    }
+}
+
+/// Properties › Transform for selected ruler guides: X for one vertical guide, Y for one
+/// horizontal guide; with several guides both fields are empty.
+fn guide_section(app: &mut DesignApp, ui: &mut Ui) {
+    let guide = super::guide_field(app);
+    let b = block(ui, 2.0 * FIELD_H + 4.0);
+    for (row, (label, key)) in [("X:", "gx"), ("Y:", "gy")].into_iter().enumerate() {
+        let yy = row as f32 * 25.0;
+        let on = guide.filter(|g| g.row() == row);
+        place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, label, 18.0));
+        let typed = place(ui, sub(b, 59.0, yy, 135.0, FIELD_H), |ui| {
+            if on.is_none() {
+                ui.disable();
+            }
+            measure(ui, key, on.map(|g| g.value), on.map_or_else(|| units(app), |g| g.unit), 135.0)
+        });
+        if let (Some(v), Some(g)) = (typed, on) {
+            let _ = app.run("guide.move", g.move_to(v));
+        }
     }
 }
 
@@ -3117,8 +3148,19 @@ mod tests {
     /// are translated, with a sample of each script's figures.
     #[test]
     fn digits_choices_use_the_reference_names() {
-        let shown: Vec<String> = DIGIT_OPTIONS.iter().map(|o| digit_label("fr", *o)).collect();
-        assert_eq!(shown, ["Par défaut", "Arabe  0123", "Hindi  ٠١٢٣", "Persan  ۰۱۲۳", "Natif"].map(String::from));
+        assert_eq!(DIGIT_OPTIONS.map(|o| o.1), ["Default", "Arabic", "Hindi", "Farsi", "Native"]);
+        for (lang, _) in crate::i18n::LANGUAGES {
+            let tr = |s| crate::i18n::tr(lang, s);
+            let shown: Vec<String> = DIGIT_OPTIONS.iter().map(|o| digit_label(lang, *o)).collect();
+            let expected = [
+                tr("Default").to_string(),
+                format!("{}  0123", tr("Arabic")),
+                format!("{}  ٠١٢٣", tr("Hindi")),
+                format!("{}  ۰۱۲۳", tr("Farsi")),
+                tr("Native").to_string(),
+            ];
+            assert_eq!(shown, expected, "{lang}");
+        }
     }
 
     #[test]

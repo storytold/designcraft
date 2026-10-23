@@ -85,7 +85,7 @@ layer survive interchange; literal XML and round-trip tests are in
 | PDF presets | `.joboptions`, `.pdfs` | read/write | ✗ |
 | Print / flattener / document presets | `.prst`, `.flst`, `.dcst` | read/write | ✗ |
 | Preflight profiles | `.idpp` | read/write | ✗ (own profiles in the document) |
-| Keyboard shortcut sets | `.indk` | read/write | ✗ (own JSON) |
+| Keyboard shortcut sets | `.indk`; Show Set `.txt` | read/write; write | ~ (imports a Show Set `.txt`; own JSON) |
 | User dictionary | `.udc` | read/write | ✗ (own, in the document and prefs) |
 | Fonts | OTF, TTF, TTC, variable | ✓ | ✓ (Type 1 retired by both) |
 

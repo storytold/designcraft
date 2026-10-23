@@ -109,7 +109,7 @@ fn position_param(p: &Value, base: &AnchorPosition) -> Result<AnchorPosition> {
 }
 
 /// Text frames can't be anchored yet (their stories need frames on a spread).
-fn check_item(it: &Item) -> Result<()> {
+pub(crate) fn check_item(it: &Item) -> Result<()> {
     let mut ok = true;
     it.walk(&mut |i| ok &= !matches!(i.content, Content::Text(_)));
     if ok { Ok(()) } else { Err(bad("anchored.insert", "text frames can't be anchored yet")) }

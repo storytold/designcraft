@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use hayro::hayro_syntax::Pdf;
-use hayro::hayro_syntax::object::{Array, Dict, Name, ObjectIdentifier};
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::object::{Array, Dict, Name, ObjectIdentifier};
 
 /// (object number, name, on by default) of each layer.
 fn ocgs(pdf: &Pdf) -> Vec<(i32, String, bool)> {
@@ -28,7 +28,7 @@ fn ocgs(pdf: &Pdf) -> Vec<(i32, String, bool)> {
         .filter_map(|r| {
             let d = xref.get::<Dict<'_>>(ObjectIdentifier::from(r))?;
             let name = d
-                .get::<hayro::hayro_syntax::object::String<'_>>(b"Name")
+                .get::<craft_pdf::syntax::object::String<'_>>(b"Name")
                 .map(|s| String::from_utf8_lossy(s.as_bytes()).to_string())
                 .unwrap_or_default();
             let visible = if base_off { on.contains(&r.obj_number) } else { !off.contains(&r.obj_number) };
@@ -39,13 +39,13 @@ fn ocgs(pdf: &Pdf) -> Vec<(i32, String, bool)> {
 
 /// The layers of a placed PDF: (name, visible by default).
 pub fn pdf_layers(bytes: &[u8]) -> Vec<(String, bool)> {
-    Pdf::new(Arc::new(bytes.to_vec())).map(|p| ocgs(&p).into_iter().map(|(_, n, v)| (n, v)).collect()).unwrap_or_default()
+    craft_pdf::open_slice(bytes, None).map(|p| ocgs(&p).into_iter().map(|(_, n, v)| (n, v)).collect()).unwrap_or_default()
 }
 
 /// `bytes` with exactly the layers named in `hidden` off (the others on). `None` when the file
 /// has no such layers or can't be read.
 pub fn pdf_hide_layers(bytes: &[u8], hidden: &[String]) -> Option<Vec<u8>> {
-    let pdf = Pdf::new(Arc::new(bytes.to_vec())).ok()?;
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
     let layers = ocgs(&pdf);
     if layers.is_empty() {
         return None;
@@ -74,8 +74,8 @@ pub fn pdf_hide_layers(bytes: &[u8], hidden: &[String]) -> Option<Vec<u8>> {
     );
     let xref_at = out.len();
     let prev = {
-        let tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(64)..]).to_string();
-        tail.rsplit("startxref").next().and_then(|t| t.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok())?
+        let tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(1024)..]).to_string();
+        tail.rsplit_once("startxref").and_then(|(_, t)| t.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok())?
     };
     out.extend_from_slice(
         format!("xref\n{root} 1\n{at:010} 00000 n\r\ntrailer\n<</Size {}/Root {root} 0 R/Prev {prev}>>\nstartxref\n{xref_at}\n%%EOF\n", root + 1)

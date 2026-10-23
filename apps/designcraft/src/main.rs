@@ -188,6 +188,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
     match purpose {
         "swatches" => &[OpenFilter { name: "Swatch Exchange (ASE)", extensions: &["ase"] }],
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
+        "shortcuts" => &[OpenFilter { name: "Shortcut set (text)", extensions: &["txt"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],

@@ -1074,7 +1074,8 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
     dst.adopt_asset(src, id).unwrap_or_else(|| AssetId(dst.alloc()))
 }
 
-fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
+/// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses.
+pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
     it.id = ItemId(dst.alloc());
     let my_id = it.id;
     if let Some(m) = it.media.as_mut()

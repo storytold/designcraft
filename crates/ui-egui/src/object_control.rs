@@ -64,6 +64,8 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
     let selected = info.is_some();
     let reference = app.ui.ref_point.min(8);
     let geometry = info.as_ref().map(|i| i.page_rect);
+    // One ruler guide selected: X (vertical guide) or Y (horizontal guide) is where it is.
+    let guide = panels::guide_field(app);
     group(ui, "reference", 26.0, |ui, rect| {
         let proxy = Rect::from_center_size(rect.center(), vec2(26.0, 26.0));
         if let Some(point) = properties::ref_point_proxy(ui, proxy, reference) {
@@ -81,10 +83,17 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
             for (column, (label, id, key, index)) in fields.into_iter().enumerate() {
                 let x = column as f32 * 108.0;
                 cell(ui, rect, x, row, 14.0, true, |ui| widgets::caption_w(ui, label, 14.0));
-                let value = values.map(|v| v[index]);
-                if let Some(v) = cell(ui, rect, x + 15.0, row, 86.0, selected, |ui| {
-                    NumField::measure(id, value, units).width(86.0).spinner().enabled(selected).show(ui)
+                let on_guide = guide.filter(|g| g.row() == index);
+                let value = if guide.is_some() { on_guide.map(|g| g.value) } else { values.map(|v| v[index]) };
+                let enabled = selected || on_guide.is_some();
+                let unit = on_guide.map_or(units, |g| g.unit);
+                if let Some(v) = cell(ui, rect, x + 15.0, row, 86.0, enabled, |ui| {
+                    NumField::measure(id, value, unit).width(86.0).spinner().enabled(enabled).show(ui)
                 }) {
+                    if let Some(g) = on_guide {
+                        let _ = app.run("guide.move", g.move_to(v));
+                        continue;
+                    }
                     set.insert(key.into(), json!(v));
                     if constrain
                         && column == 1

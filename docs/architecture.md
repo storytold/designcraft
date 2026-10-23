@@ -113,3 +113,5 @@ builds (on manifest changes), packaging lint and the release workflow; `xtask ci
 | 2026-10-12 | minor | Documented cancelable Dock Quit through the native event-loop boundary |
 | 2026-10-12 | minor | Documented orderly native exit recovery and the remaining cancelable Dock Quit gap |
 | 2026-10-10 | major | Created from the code on main (92649ff) and `plan/architecture.md` |
+
+PDF parsing and placed-page rasterization use the pinned `craft-pdf` reader. DesignCraft retains document, placement, layer and export policy; dependency checks and bounds are described in [pdf-backend.md](pdf-backend.md).

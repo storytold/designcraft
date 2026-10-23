@@ -3,7 +3,7 @@
 //!
 //! Goldens live in `tests/golden/*.png` and are compared with a tolerance (antialiasing and blur
 //! rounding may differ by a few levels between SIMD levels). Regenerate them after an intended
-//! change with `DESIGNCRAFT_BLESS=1 cargo test -p designcraft-render --test effects`.
+//! change with `DESIGNCRAFT_BLESS=1 cargo test -p designcraft-render --test it effects::`.
 
 use designcraft_compose::Cache;
 use designcraft_doc::build::NewDocument;

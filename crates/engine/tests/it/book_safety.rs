@@ -1,5 +1,3 @@
-#![cfg(not(target_arch = "wasm32"))]
-
 use designcraft_engine::Session;
 use serde_json::json;
 use std::path::Path;

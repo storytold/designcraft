@@ -1,4 +1,4 @@
-//! Placed PDFs are drawn through pdfcraft's patched hayro crates. Calculator functions whose `idiv`
+//! Placed PDFs are drawn through craft-pdf's patched Hayro crates. Calculator functions whose `idiv`
 //! divides by zero or overflows, stitching functions nested a hundred thousand deep, and mesh
 //! shadings with points far off the page, ten thousand overlapping triangles or forty thousand
 //! patches do not panic, overflow the stack or take more than a minute, and the rest of the page is
@@ -9,14 +9,14 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
+use craft_pdf::interpret::Function;
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::object::{Object, ObjectIdentifier};
 use designcraft_compose::Cache;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, PdfCrop, Shape, SpreadRef};
 use designcraft_geom::{Affine, Rect, shapes};
 use designcraft_render::{Rendered, Renderer, pdf_crop_box, pdf_page_size};
-use hayro::hayro_interpret::Function;
-use hayro::hayro_syntax::Pdf;
-use hayro::hayro_syntax::object::{Object, ObjectIdentifier};
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const RED: [u8; 4] = [255, 0, 0, 255];

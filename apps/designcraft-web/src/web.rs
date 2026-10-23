@@ -439,6 +439,8 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             let ctx = ctx.clone();
             let dialog = if request.purpose == "swatches" {
                 rfd::AsyncFileDialog::new().add_filter("Swatch Exchange (ASE)", &["ase"])
+            } else if request.purpose == "shortcuts" {
+                rfd::AsyncFileDialog::new().add_filter("Shortcut set (text)", &["txt"])
             } else if request.purpose == "place" {
                 rfd::AsyncFileDialog::new().add_filter("Graphics", IMAGE_EXTS)
             } else {

@@ -148,7 +148,7 @@ if has appimage; then
     TOOL="$CARGO_TARGET_DIR/appimagetool-$APPIMAGETOOL_VERSION-$ARCH.AppImage"
     if [ ! -x "$TOOL" ]; then
       download="$TOOL.download"
-      curl -fsSL -o "$download" \
+      curl --proto '=https' -fsSL -o "$download" \
         "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-$ARCH.AppImage"
       printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$download" | sha256sum -c -
       chmod 755 "$download"

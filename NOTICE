@@ -81,12 +81,35 @@ list (author, source, license) is in ASSETS.md.
   packages as OFL-<family>.txt. Builds without CRAFT_FONTS_DIR do not include them.
 - All UI icons are drawn in code (crates/ui-egui/src/icons.rs) and are original work, MIT OR Apache-2.0.
 - hayro PDF crates (placed PDFs): hayro, hayro-interpret, hayro-syntax and hayro-jbig2
-  (Apache-2.0 OR MIT) are pdfcraft's patched copies, fetched by git from its vendor/ directory at
-  the commit that Cargo.toml pins (https://github.com/storytold/pdfcraft, MIT OR Apache-2.0).
+  (Apache-2.0 OR MIT) are fetched from the pinned craft-libs source documented below.
   hayro-interpret embeds PDFium's Foxit standard-14 fonts under PDFium's BSD-style license
   (vendor/hayro-interpret/assets/LICENSE_FOXIT) and a CMYK profile under CC0-1.0.
 
 Rust dependencies (vello_cpu, kurbo, skrifa, harfrust, image, egui, eframe, …) are permissively
-licensed (MIT/Apache-2.0/BSD/ISC/Zlib) and fetched through crates.io.
+licensed (MIT/Apache-2.0/BSD/ISC/Zlib), fetched through crates.io or the pinned source below.
 
 No Adobe icons, images or artwork are included.
+
+PDF backend source
+
+The patched hayro 0.7.1, hayro-interpret 0.7.0, hayro-syntax 0.7.2 and hayro-jbig2 0.3.0
+are fetched from https://github.com/storytold/craft-libs at revision
+89dcbb3060377a26c99a6d80caa16084366704c4. The four source snapshots were transferred
+from https://github.com/storytold/pdfcraft at revision
+7437bde378f43856eada40af25b983812e615e8a, then patched in craft-libs. Their upstream project is
+https://github.com/LaurenzV/hayro, licensed MIT OR Apache-2.0. The snapshot retains each
+crate's upstream licence files. The patch ledger is at
+https://github.com/storytold/craft-libs/blob/89dcbb3060377a26c99a6d80caa16084366704c4/vendor/README.craft-reader.md.
+Per-crate vendor/SOURCE.json files record transferred and local source hashes; asset
+origins and unchanged per-file hashes are recorded separately in ASSETS.md.
+
+Assets already bundled through Hayro's default features retain their licences:
+- Foxit standard-14 substitutes: Copyright 2014 PDFium Authors. All rights reserved.
+  Original code copyright 2014 Foxit Software Inc. BSD-3-Clause; see
+  licenses/pdf-backend/hayro-interpret/assets/LICENSE_FOXIT.
+- CGATS001Compat-v2-micro.icc: CC0-1.0, Clinton Ingram; see
+  licenses/pdf-backend/hayro-interpret/assets/CGATS_LICENSE.txt.
+- Predefined CMaps: Copyright 1990-2023 Adobe. All rights reserved. BSD-3-Clause,
+  non-visual character-mapping data; see licenses/pdf-backend/hayro-cmap/LICENSE.txt.
+  Adobe and contributor names do not endorse or promote this product.
+Per-file hashes and sources are recorded in ASSETS.md.

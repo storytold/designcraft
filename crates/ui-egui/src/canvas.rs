@@ -2,7 +2,7 @@
 //! selection, text ports and threads, the text caret, rulers, and pointer/keyboard input.
 
 use designcraft_compose as compose;
-use designcraft_doc::{Content, Document, Item, SpreadRef};
+use designcraft_doc::{Content, Document, GuideSel, Item, SpreadRef};
 use designcraft_engine::doc::Selection;
 use designcraft_geom::{Affine, Point, Rect as DRect, Vec2 as DVec2};
 use designcraft_tools::{CanvasLayout, Cursor, Mods, Overlay, PointerEvent, PointerKind, SpreadSlot, ToolKey};
@@ -531,20 +531,40 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, Color32::from_rgb(0x4a, 0x4a, 0x4a)), StrokeKind::Outside);
     }
     if !preview {
-        draw_guides(app, &painter, &xf, &doc, &layout, &t);
-        if let Some(g) = ui.data(|d| d.get_temp::<GuideDrag>(egui::Id::new(GUIDE_DRAG)))
+        let drag = ui.data(|d| d.get_temp::<GuideDrag>(egui::Id::new(GUIDE_DRAG)));
+        let press = ui.data(|d| d.get_temp::<GuidePress>(egui::Id::new(GUIDE_PRESS)));
+        let moving = drag.as_ref().zip(press).and_then(|(g, press)| moving_guides(app, &xf, rect, g, press));
+        draw_guides(app, &painter, &xf, &doc, &layout, &t, moving.as_ref());
+        if let Some(g) = drag
             && let Some(p) = g.at
         {
             let col = Color32::from_rgb(74, 227, 255);
+            let spot = guide_spot(app, &xf, &g);
+            let line = spot.as_ref().map_or(p, |s| s.screen);
             let (a, b) = match g.orientation {
-                designcraft_doc::Orientation::Horizontal => (pos2(rect.min.x, p.y), pos2(rect.max.x, p.y)),
-                designcraft_doc::Orientation::Vertical => (pos2(p.x, rect.min.y), pos2(p.x, rect.max.y)),
+                designcraft_doc::Orientation::Horizontal => (pos2(rect.min.x, line.y), pos2(rect.max.x, line.y)),
+                designcraft_doc::Orientation::Vertical => (pos2(line.x, rect.min.y), pos2(line.x, rect.max.y)),
             };
+            // What caught it, as for a moved object.
+            for mark in spot.iter().flat_map(|s| &s.marks) {
+                if let Overlay::Guide { a, b } = mark {
+                    painter.line_segment([xf.to_screen(*a), xf.to_screen(*b)], Stroke::new(1.0, t.smart_guide));
+                }
+            }
             // A new guide from the rulers with the Page tool is a liquid guide: dashed.
             if g.from.is_none() && app.session.tool_id() == "page" {
                 dashed(&painter, a, b, Stroke::new(1.0, col), 6.0, 3.0);
             } else {
                 painter.line_segment([a, b], Stroke::new(1.0, col));
+            }
+            // Where it is, beside the pointer (#1282).
+            if let Some(text) = guide_readout(app, &xf, &g) {
+                let galley = painter.layout_no_wrap(text, egui::FontId::proportional(11.0), t.text);
+                let at = readout_at(p, galley.size(), rect);
+                let bg = Rect::from_min_size(at, galley.size()).expand(3.0);
+                painter.rect_filled(bg, 2.0, t.panel);
+                painter.rect_stroke(bg, 2.0, Stroke::new(1.0, t.border), StrokeKind::Inside);
+                painter.galley(at, galley, t.text);
             }
         }
         draw_frames(app, &painter, &xf, &doc, &layout);
@@ -602,6 +622,19 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             Cursor::Hand
         } else {
             app.session.cursor(xf.to_canvas(p), ui.input(|i| mods(i, false)), app.view_info())
+        };
+        // A column guide that a press would drag, or one being dragged: a resize cursor across it.
+        let dragging = ui.data(|d| d.get_temp::<ColumnDrag>(egui::Id::new((COLUMN_DRAG, app.pane)))).map(|g| g.spread);
+        let column = dragging.or_else(|| {
+            let menu_open = context_menu_open(ui.ctx());
+            (!space && !zoom && !middle && !alt_hand && !tool_drag && !menu_open && xf.rot == 0)
+                .then(|| column_guide_at(app, &xf, p).map(|h| h.0))
+                .flatten()
+        });
+        let c = match column {
+            Some(r) if spread_x_across(app, r) => Cursor::ResizeH,
+            Some(_) => Cursor::ResizeV,
+            None => c,
         };
         let icon = crate::cursors::show(ui.ctx(), &mut app.cursors, c, p);
         ui.ctx().set_cursor_icon(icon);
@@ -950,8 +983,11 @@ fn shown_area(app: &DesignApp, doc: &Document, xf: &Xf, slot: &SpreadSlot) -> Re
     boxes.iter().filter_map(|o| sp.outset_rect(*o)).map(|r| xf.rect(slot.xf.transform_rect_bbox(r))).fold(trim, |a, b| a.union(b))
 }
 
-fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout, t: &Tokens) {
+/// `moving`: guides being dragged, drawn where they would be dropped instead of where they are.
+fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout, t: &Tokens, moving: Option<&MovingGuides>) {
     let s = &doc.settings;
+    let selection: std::collections::HashSet<GuideSel> =
+        app.session.active().map(|st| st.selection.guides.iter().copied().collect()).unwrap_or_default();
     for slot in &layout.slots {
         let Some(sp) = doc.spread(slot.spread) else { continue };
         // Everything below is in spread coordinates, placed through the slot (which may be turned).
@@ -1007,8 +1043,21 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
                     }
                 }
             }
-            // The page's own guides, then those it shows from its parent page.
-            for g in p.guides.iter().cloned().chain(doc.parent_guides(p)).filter(|g| g.visible_in(doc)) {
+            // The page's own guides, then those it shows from its parent page. Selected guides are
+            // drawn thicker, in their layer's color.
+            let own = p.guides.len();
+            for (gi, mut g) in p.guides.iter().cloned().chain(doc.parent_guides(p)).enumerate().filter(|(_, g)| g.visible_in(doc)) {
+                let key = GuideSel { spread: slot.spread, page: pi, index: gi };
+                let selected = gi < own && selection.contains(&key);
+                if gi < own
+                    && let Some(m) = moving
+                    && m.guides.contains(&key)
+                {
+                    g.position += match g.orientation {
+                        designcraft_doc::Orientation::Vertical => m.dx,
+                        designcraft_doc::Orientation::Horizontal => m.dy,
+                    };
+                }
                 // Spread guides cross the pasteboard; page guides their page.
                 let span = if g.spread { pasteboard } else { pr };
                 let (a, bb) = match g.orientation {
@@ -1018,7 +1067,12 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
                         (Point::new(g.position, span.y0), Point::new(g.position, span.y1))
                     }
                 };
-                let stroke = Stroke::new(hair(painter), Color32::from_rgb(74, 227, 255));
+                let stroke = if selected {
+                    let color = g.layer.and_then(|l| doc.layer(l)).map_or(Color32::from_rgb(79, 153, 255), |l| c32(l.color));
+                    Stroke::new(2.0, color)
+                } else {
+                    Stroke::new(hair(painter), Color32::from_rgb(74, 227, 255))
+                };
                 if g.liquid {
                     // Liquid guides are dashed.
                     painter.extend(egui::Shape::dashed_line(&[pt(a), pt(bb)], stroke, 6.0, 3.0));
@@ -1529,6 +1583,21 @@ fn field_focused_id(ctx: &egui::Context) -> egui::Id {
 pub fn begin_frame(ctx: &egui::Context) {
     let (id, focused) = (field_focused_id(ctx), ctx.text_edit_focused());
     ctx.data_mut(|d| d.insert_temp(id, focused));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let now = ctx.input(|i| i.modifiers);
+        // The modifiers last frame ended with are the ones this frame's events began with.
+        ctx.data_mut(|d| {
+            let (_, end) = d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id()).unwrap_or((now, now));
+            d.insert_temp(modifiers_id(), (end, now));
+        });
+    }
+}
+
+/// (held when this frame's events began, held after them).
+#[cfg(not(target_arch = "wasm32"))]
+fn modifiers_id() -> egui::Id {
+    egui::Id::new("canvas-frame-modifiers")
 }
 
 /// Caret / text highlight inside a table cell (the cell's lines are offset by the cell origin).
@@ -2013,6 +2082,11 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
 /// coordinates: the ruler origin (one per page for a page origin) moved by zero point `zp`.
 fn ruler_pieces(app: &DesignApp, doc: &Document, layout: &CanvasLayout, zp: [f64; 2]) -> Vec<(f64, f64, Point)> {
     let Some(slot) = current_slot(app, layout).and_then(|i| layout.slots.get(i)) else { return Vec::new() };
+    ruler_pieces_of(doc, slot, zp)
+}
+
+/// [`ruler_pieces`] for the spread in `slot`.
+fn ruler_pieces_of(doc: &Document, slot: &SpreadSlot, zp: [f64; 2]) -> Vec<(f64, f64, Point)> {
     let x = |v: f64, y: f64| if v.is_finite() { slot.to_canvas(Point::new(v, y)).x } else { v };
     doc.ruler_pieces(slot.spread)
         .into_iter()
@@ -2347,6 +2421,11 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     // Space-drag = hand (unless a tool drag is under way: then Space is a modifier, e.g. Live
     // Distribute while resizing). Middle-drag pans too, with any tool; tools only
     // see the primary button.
+    // A column guide drag keeps the pointer until the button is up, whatever Space or a menu does
+    // meanwhile.
+    if ui.data(|d| d.get_temp::<ColumnDrag>(egui::Id::new((COLUMN_DRAG, app.pane)))).is_some() && column_guide_drag(app, ui, resp, rect, &xf) {
+        return;
+    }
     let tool_drag: bool = ui.data(|d| d.get_temp(egui::Id::new(("canvas_pointer_down", app.pane)))).unwrap_or(false);
     let hand = space && !ui.input(|i| i.modifiers.command);
     if !tool_drag && ((hand && resp.dragged()) || resp.dragged_by(egui::PointerButton::Middle)) {
@@ -2375,7 +2454,14 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     if !space && !menu_open && xf.rot == 0 && zero_point_drag(app, ui, resp, rect, &xf) {
         return;
     }
+    // Hidden or locked guides can't stay selected.
+    if (!app.ui.guides || app.ui.guides_locked) && app.session.active().is_some_and(|st| !st.selection.guides.is_empty()) {
+        let _ = app.run("guide.deselect", json!({}));
+    }
     if !space && !menu_open && xf.rot == 0 && guide_drag(app, ui, resp, rect, &xf) {
+        return;
+    }
+    if !space && !menu_open && xf.rot == 0 && column_guide_drag(app, ui, resp, rect, &xf) {
         return;
     }
     let m = ui.input(|i| mods(i, space));
@@ -2475,7 +2561,21 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     // text must not delete the character before it).
     let composing_at_start = app.session.tool_composing();
     let evs = ui.input(|i| i.events.clone());
+    // Native only: egui-winit sends a ⌘+V chord as a paste without its key press, so the modifiers
+    // held at the paste tell Paste in Place from Paste. The web also gets the key press, and the
+    // shortcut table has already run the command. A chord's modifiers may be released in the same
+    // frame, hence the modifiers held at each event.
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut held =
+        ui.data(|d| d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id())).map_or_else(|| ui.input(|i| i.modifiers), |(start, _)| start);
     for e in evs {
+        #[cfg(not(target_arch = "wasm32"))]
+        let chord = {
+            if let egui::Event::ModifiersChanged(m) = &e {
+                held = *m;
+            }
+            if matches!(e, egui::Event::Paste(_)) { crate::menus::paste_chord_command(app, held) } else { None }
+        };
         let composing = composing_at_start || app.session.tool_composing();
         match e {
             egui::Event::Ime(ime) if wants_text => ime_event(app, ime, vi),
@@ -2496,6 +2596,15 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                 // `run` puts the copied text on the system clipboard.
                 let id = if matches!(e, egui::Event::Cut) { "edit.cut" } else { "edit.copy" };
                 let _ = app.run(id, json!({}));
+            }
+            // Paste in Place's chord (⌘⌥⇧V unless rebound) arrives as a paste too.
+            #[cfg(not(target_arch = "wasm32"))]
+            egui::Event::Paste(_) if chord.is_some() => {
+                if let Some(id) = chord
+                    && crate::menus::enabled(app, id)
+                {
+                    crate::menus::activate(app, id, &serde_json::Value::Null);
+                }
             }
             // Without a native menu bar the copy and paste keys arrive only as these events.
             egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) if !app.native_menu => {
@@ -2645,31 +2754,45 @@ fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
             for l in &ft.lines {
                 let size = (l.ascent * 0.75 * xf.zoom).clamp(6.0, 40.0) as f32;
                 let font = egui::FontId::proportional(size);
-                for g in &l.glyphs {
-                    if g.len == 0 {
-                        continue;
-                    }
-                    let ch = story.text[g.byte.min(story.text.len())..].chars().next().unwrap_or(' ');
-                    let mark = match ch {
-                        ' ' => "·",
-                        '\t' => "»",
-                        '\u{2028}' => "¬",
-                        '\u{A0}' => "°",
-                        _ => continue,
-                    };
-                    let p = xf.to_screen(m * Point::new(g.x + if ch == ' ' { g.adv / 2.0 } else { 0.0 }, l.baseline));
-                    let align = if ch == ' ' { egui::Align2::CENTER_BOTTOM } else { egui::Align2::LEFT_BOTTOM };
+                for (x, mark, centered) in hidden_marks(&story.text, l) {
+                    let p = xf.to_screen(m * Point::new(x, l.baseline));
+                    let align = if centered { egui::Align2::CENTER_BOTTOM } else { egui::Align2::LEFT_BOTTOM };
                     painter.text(p, align, mark, font.clone(), col);
-                }
-                if l.last_in_para {
-                    let end = l.range.end;
-                    let mark = if end >= story.text.len() { "#" } else { "¶" };
-                    let p = xf.to_screen(m * Point::new(l.end_x + 1.0, l.baseline));
-                    painter.text(p, egui::Align2::LEFT_BOTTOM, mark, font.clone(), col);
                 }
             }
         }
     }
+}
+
+/// The hidden-character marks on line `l` of a story with text `text`: frame-space x, mark, and
+/// whether the mark is centered on x (spaces) or starts at it.
+fn hidden_marks(text: &str, l: &compose::Line) -> Vec<(f64, &'static str, bool)> {
+    let mut out = Vec::new();
+    for g in &l.glyphs {
+        if g.len == 0 {
+            continue;
+        }
+        let Some(ch) = text.get(g.byte..).and_then(|t| t.chars().next()) else { continue };
+        let mark = match ch {
+            ' ' => "·",
+            '\t' => "»",
+            '\u{2028}' => "¬",
+            '\u{A0}' => "°",
+            _ => continue,
+        };
+        if ch == ' ' {
+            out.push((g.x + g.adv / 2.0, mark, true));
+        } else {
+            out.push((g.x, mark, false));
+        }
+    }
+    if l.last_in_para {
+        // The spaces trimmed off the line's end sit past `end_x`; the paragraph mark follows them.
+        let end = l.glyphs.iter().filter(|g| g.len > 0 && !g.visible && g.x >= l.end_x - 1e-9).map(|g| g.x + g.adv).fold(l.end_x, f64::max);
+        let mark = if l.range.end >= text.len() { "#" } else { "¶" };
+        out.push((end + 1.0, mark, false));
+    }
+    out
 }
 
 /// View › Flattener Preview: red over every object that involves transparency (opacity, blend
@@ -2839,6 +2962,184 @@ struct GuideDrag {
     from: Option<(designcraft_doc::SpreadRef, usize, usize)>,
     /// Pointer position (screen).
     at: Option<Pos2>,
+    /// Modifiers held at the pointer's last move: Shift snaps to the ruler's ticks, Command
+    /// suspends snapping.
+    mods: egui::Modifiers,
+}
+
+const GUIDE_PRESS: &str = "canvas_guide_press";
+
+/// A press on an existing guide: where it was (screen) and whether Shift was down. Released
+/// where it was pressed, it is a click, which selects the guide.
+#[derive(Clone, Copy, Debug)]
+struct GuidePress {
+    origin: Pos2,
+    shift: bool,
+}
+
+/// How far (screen pixels) the pointer may move between press and release for a click.
+const GUIDE_CLICK_SLOP: f32 = 3.0;
+
+/// Where a dragged guide is, as the rulers measure it (#1282): `X: …` for a vertical guide, `Y: …`
+/// for a horizontal one, from the zero point (and the page origin, when rulers restart per page)
+/// in the document's ruler units. `None` with no document or rulers.
+fn guide_readout(app: &DesignApp, xf: &Xf, g: &GuideDrag) -> Option<String> {
+    let (label, value, unit) = guide_measure(app, xf, g)?;
+    Some(format!("{label}: {}", designcraft_geom::units::format_measure(value, unit)))
+}
+
+/// Where a pointer readout of `size` goes for a pointer at `p`: below right of it, on the other
+/// side where that would leave the canvas `area` (near its right or bottom edge), and kept inside
+/// it (with the label's 3-point frame) however small the canvas is.
+fn readout_at(p: Pos2, size: egui::Vec2, area: Rect) -> Pos2 {
+    const GAP: f32 = 12.0;
+    const PAD: f32 = 3.0;
+    let x = if p.x + GAP + size.x + PAD > area.max.x { p.x - GAP - size.x } else { p.x + GAP };
+    let y = if p.y + GAP + size.y + PAD > area.max.y { p.y - GAP - size.y } else { p.y + GAP };
+    let clamp = |v: f32, lo: f32, hi: f32| if hi < lo { lo } else { v.clamp(lo, hi) };
+    pos2(clamp(x, area.min.x + PAD, area.max.x - PAD - size.x), clamp(y, area.min.y + PAD, area.max.y - PAD - size.y))
+}
+
+/// [`guide_readout`]'s parts: the axis label, the value (points) and its unit.
+fn guide_measure(app: &DesignApp, xf: &Xf, g: &GuideDrag) -> Option<(&'static str, f64, designcraft_geom::Unit)> {
+    let p = g.at?;
+    let st = app.session.active()?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    // Measured where the guide is dropped (`guide_drag`): its snapped spot, on the spread under
+    // the pointer, as the rulers measure that spread, not the one in the middle of the view.
+    let (c, slot) = match guide_spot(app, xf, g) {
+        Some(spot) => (layout.to_canvas(spot.spread, spot.sp), layout.slot(spot.spread)?),
+        None => (xf.to_canvas(p), current_slot(app, &layout).and_then(|i| layout.slots.get(i))?),
+    };
+    // An existing guide moves only on its own spread (`guide_drag`): over another, dropping it
+    // leaves it where it was, so there is no place to show.
+    if g.from.is_some_and(|(r, _, _)| r != slot.spread) {
+        return None;
+    }
+    let pieces = ruler_pieces_of(&st.doc, slot, st.doc.zero_point());
+    let first = pieces.first()?;
+    let (label, value, unit) = match g.orientation {
+        designcraft_doc::Orientation::Vertical => {
+            // The horizontal ruler restarts at each page: the piece under the guide measures it.
+            let o = pieces.iter().find(|(from, to, _)| *from <= c.x && c.x < *to).unwrap_or(first).2;
+            ("X", c.x - o.x, st.doc.settings.horizontal_units)
+        }
+        designcraft_doc::Orientation::Horizontal => ("Y", c.y - first.2.y, st.doc.settings.vertical_units),
+    };
+    value.is_finite().then_some((label, value, unit))
+}
+
+/// Where a dragged ruler guide is (#1221).
+struct GuideSpot {
+    /// The spread under the pointer.
+    spread: SpreadRef,
+    /// The pointer in that spread's coordinates.
+    pointer: Point,
+    /// [`Self::pointer`] with the guide's axis snapped.
+    sp: Point,
+    /// [`Self::sp`] on screen, where the preview line goes.
+    screen: Pos2,
+    /// Alignment marks (canvas coordinates) when an object or page edge or center caught it.
+    marks: Vec<Overlay>,
+}
+
+/// Where the guide of drag `g` is: its axis (x for a vertical guide, y for a horizontal one)
+/// snapped as a moved object's is, to ruler guides, margins, columns, bleed, the document grid and
+/// smart-guide targets (not the baseline grid, which would catch a horizontal guide almost
+/// anywhere). Shift snaps to the ruler's ticks instead and Command suspends snapping. The guides
+/// being dragged are not targets. An existing guide over another spread, where it
+/// can't be dropped, stays at the pointer. The preview, the readout and the drop all read it.
+/// `None` with no spread under the pointer.
+fn guide_spot(app: &DesignApp, xf: &Xf, g: &GuideDrag) -> Option<GuideSpot> {
+    let p = g.at?;
+    let st = app.session.active()?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let (r, pointer) = layout.spread_at(xf.to_canvas(p))?;
+    let spot = |sp: Point, marks: Vec<Overlay>| GuideSpot { spread: r, pointer, sp, screen: xf.to_screen(layout.to_canvas(r, sp)), marks };
+    if g.mods.command || g.from.is_some_and(|(from, _, _)| from != r) {
+        return Some(GuideSpot { spread: r, pointer, sp: pointer, screen: p, marks: Vec::new() });
+    }
+    let vertical = matches!(g.orientation, designcraft_doc::Orientation::Vertical);
+    let place = |v: f64| if vertical { Point::new(v, pointer.y) } else { Point::new(pointer.x, v) };
+    if g.mods.shift {
+        let slot = layout.slot(r)?;
+        let at = ruler_tick_of(&st.doc, slot, g.orientation, xf.zoom, pointer).map_or(pointer, place);
+        return Some(spot(at, Vec::new()));
+    }
+    let spread = st.doc.spread(r)?;
+    // Not targets: the dragged guide, and the others of a selected group, which move with it.
+    let exclude: Vec<GuideSel> = match g.from {
+        Some((sr, pi, gi)) if drags_group(app, GuideSel { spread: sr, page: pi, index: gi }) => st.selection.guides.to_vec(),
+        Some((sr, pi, gi)) => vec![GuideSel { spread: sr, page: pi, index: gi }],
+        None => Vec::new(),
+    };
+    // How far the guide reaches across its axis: its page, or the whole spread.
+    let page = match g.from {
+        Some((_, pi, gi)) => spread.pages.get(pi).filter(|pg| pg.guides.get(gi).is_some_and(|guide| !guide.spread)),
+        None => spread.pages.iter().find(|pg| pg.bounds().contains(pointer)),
+    };
+    let reach = page.map_or_else(|| spread.bounds(), |pg| pg.bounds());
+    let (at, rect, x_edges, y_edges) = if vertical {
+        (pointer.x, DRect::new(pointer.x, reach.y0, pointer.x, reach.y1), [true; 3], [false; 3])
+    } else {
+        (pointer.y, DRect::new(reach.x0, pointer.y, reach.x1, pointer.y), [false; 3], [true; 3])
+    };
+    let cx = designcraft_tools::ToolContext {
+        doc: &st.doc,
+        selection: &st.selection,
+        cache: &app.session.cache,
+        layout: &layout,
+        zoom: xf.zoom.max(1e-6),
+        layer: st.active_layer,
+        snap: app.ui.snap_view(),
+        unit: app.ui.units,
+        stroke_in_front: false,
+    };
+    let s = designcraft_tools::snap::snap(
+        &cx,
+        designcraft_tools::SnapRequest {
+            spread: r,
+            gesture: designcraft_tools::Gesture::Guide,
+            rect,
+            x_edges,
+            y_edges,
+            exclude: &[],
+            exclude_guides: &exclude,
+            copying: false,
+            lengths: [None, None],
+            angle: None,
+            radius: 0.0,
+            pointer,
+        },
+    );
+    let snapped = at + if vertical { s.delta.x } else { s.delta.y };
+    Some(if snapped.is_finite() { spot(place(snapped), s.guides) } else { spot(pointer, Vec::new()) })
+}
+
+/// The nearest ruler tick to spread point `sp` along a guide of `orientation`'s axis, in spread
+/// coordinates: the horizontal ruler's (the piece under the point) where that axis runs across the
+/// screen, else the vertical ruler's. `None` when the ruler has no ticks there.
+fn ruler_tick_of(doc: &Document, slot: &SpreadSlot, orientation: designcraft_doc::Orientation, zoom: f64, sp: Point) -> Option<f64> {
+    let vertical = matches!(orientation, designcraft_doc::Orientation::Vertical);
+    // A quarter-turned spread runs its x axis down the screen.
+    let across = vertical == slot.rotation.is_multiple_of(2);
+    let c = slot.to_canvas(sp);
+    let pieces = ruler_pieces_of(doc, slot, doc.zero_point());
+    let step = |unit: designcraft_geom::Unit| {
+        let (major, sub) = unit.ruler_ticks(zoom);
+        let step = major / f64::from(sub.max(1));
+        (step.is_finite() && step > 0.0).then_some(step)
+    };
+    let tick = |v: f64, o: f64, step: f64| o + ((v - o) / step).round() * step;
+    let c = if across {
+        let &(_, _, o) = pieces.iter().find(|(from, to, _)| *from <= c.x && c.x < *to).or(pieces.first())?;
+        Point::new(tick(c.x, o.x, step(doc.settings.horizontal_units)?), c.y)
+    } else {
+        let o = pieces.first()?.2;
+        Point::new(c.x, tick(c.y, o.y, step(doc.settings.vertical_units)?))
+    };
+    let s = slot.to_spread(c);
+    Some(if vertical { s.x } else { s.y }).filter(|v| v.is_finite())
 }
 
 /// The guide under a screen point (within 3 px), as (spread, page, index, orientation).
@@ -2870,8 +3171,10 @@ fn guide_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<(designcraft_doc::Sprea
     None
 }
 
-/// Ruler guides: drag one out of a ruler, drag an existing one (Selection tools, not over an
-/// object) to move it, drop it back on a ruler to delete it. Returns true while it owns the pointer.
+/// Ruler guides: drag one out of a ruler, drag an existing one (Selection tools) to move it, drop
+/// it back on a ruler to delete it. A press near an unlocked guide takes it even over an object:
+/// the guide is selected and the object is not. Returns true from the press to the release, so
+/// the tools never see that press.
 fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
     let id = egui::Id::new(GUIDE_DRAG);
     let (pressed, released, origin, latest) =
@@ -2890,29 +3193,27 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
                 None
             };
             if let Some(orientation) = orientation {
-                drag = Some(GuideDrag { orientation, from: None, at: Some(o) });
+                drag = Some(GuideDrag { orientation, from: None, at: Some(o), mods: egui::Modifiers::NONE });
             }
         } else if rect.contains(o)
             && matches!(app.session.tool_id(), "selection" | "directSelection")
             && let Some((r, pi, gi, orientation)) = guide_at(app, xf, o)
         {
-            // Objects take precedence over the guides behind them.
-            let over_item = app.session.active().is_some_and(|st| {
-                let layout = CanvasLayout::new(&st.doc, st.editing_parents);
-                layout.spread_at(xf.to_canvas(o)).is_some_and(|(sr, p)| match sr {
-                    designcraft_doc::SpreadRef::Doc(si) => st.doc.hit_item(si, p, 3.0 / xf.zoom).is_some(),
-                    _ => false,
-                })
-            });
-            if !over_item {
-                drag = Some(GuideDrag { orientation, from: Some((r, pi, gi)), at: Some(o) });
+            let shift = ui.input(|i| i.modifiers.shift);
+            // A press on a guide selects it (Shift: on release, as a click adds or removes it).
+            let selected = app.session.active().is_some_and(|st| st.selection.guides.contains(&GuideSel { spread: r, page: pi, index: gi }));
+            if !shift && !selected {
+                let _ = app.run("guide.select", json!({"spread": r, "page": pi, "index": gi}));
             }
+            ui.data_mut(|d| d.insert_temp(egui::Id::new(GUIDE_PRESS), GuidePress { origin: o, shift }));
+            drag = Some(GuideDrag { orientation, from: Some((r, pi, gi)), at: Some(o), mods: egui::Modifiers::NONE });
         }
     }
     let Some(mut g) = drag else { return false };
     if let Some(p) = latest {
         g.at = Some(p);
     }
+    g.mods = ui.input(|i| i.modifiers);
     if !released {
         ui.ctx().set_cursor_icon(match g.orientation {
             designcraft_doc::Orientation::Horizontal => egui::CursorIcon::ResizeVertical,
@@ -2922,14 +3223,29 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
         return true;
     }
     ui.data_mut(|d| d.remove::<GuideDrag>(id));
+    let press: Option<GuidePress> = ui.data_mut(|d| {
+        let press = d.get_temp(egui::Id::new(GUIDE_PRESS));
+        d.remove::<GuidePress>(egui::Id::new(GUIDE_PRESS));
+        press
+    });
     let Some(p) = g.at else { return true };
+    if let (Some((r, pi, gi)), Some(press)) = (g.from, press)
+        && (p - press.origin).length() <= GUIDE_CLICK_SLOP
+    {
+        // A click: the guide is selected (at the press); Shift adds it or removes it.
+        if press.shift {
+            let _ = app.run("guide.select", json!({"spread": r, "page": pi, "index": gi, "toggle": true}));
+        }
+        return true;
+    }
+    // Dragging one of several selected guides moves (or deletes) them all.
+    let group = g.from.is_some_and(|(spread, page, index)| drags_group(app, GuideSel { spread, page, index }));
     let on_canvas = rect.contains(p);
-    let target = app.session.active().and_then(|st| {
-        let layout = CanvasLayout::new(&st.doc, st.editing_parents);
-        let (r, sp) = layout.spread_at(xf.to_canvas(p))?;
-        let spread = st.doc.spread(r)?;
-        let on_page = spread.pages.iter().position(|pg| pg.bounds().contains(sp));
-        Some((r, sp, on_page))
+    // Placed where the preview showed it (snapped); the page under the pointer owns a new guide.
+    let target = guide_spot(app, xf, &g).and_then(|spot| {
+        let spread = app.session.active()?.doc.spread(spot.spread)?;
+        let on_page = spread.pages.iter().position(|pg| pg.bounds().contains(spot.pointer));
+        Some((spot.spread, spot.sp, on_page))
     });
     let pos_of = |sp: Point| match g.orientation {
         designcraft_doc::Orientation::Horizontal => sp.y,
@@ -2941,8 +3257,16 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
     };
     match (g.from, on_canvas, target) {
         // Dropped back on a ruler: delete.
+        (Some(_), false, _) if group => {
+            let _ = app.run("guide.delete", json!({}));
+        }
         (Some((r, pi, gi)), false, _) => {
             let _ = app.run("guide.delete", json!({"spread": r, "page": pi, "index": gi}));
+        }
+        (Some((r, _, _)), true, Some((tr, _, _))) if tr == r && group => {
+            if let Some((dx, dy)) = press.and_then(|press| guide_drag_delta(app, xf, &g, press.origin)) {
+                let _ = app.run("guide.moveBy", json!({"dx": dx, "dy": dy}));
+            }
         }
         (Some((r, pi, gi)), true, Some((tr, sp, _))) if tr == r => {
             let _ = app.run("guide.move", json!({"spread": r, "page": pi, "index": gi, "position": pos_of(sp)}));
@@ -2959,6 +3283,272 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
         }
         _ => {}
     }
+    true
+}
+
+/// Whether dragging guide `from` takes the other selected guides along: it is one of several
+/// selected.
+fn drags_group(app: &DesignApp, from: GuideSel) -> bool {
+    app.session.active().is_some_and(|st| st.selection.guides.len() > 1 && st.selection.guides.contains(&from))
+}
+
+/// How far a drag of the existing guide `g.from`, pressed at `origin` (screen), moves guides, in
+/// spread coordinates: the dragged guide goes to its [`guide_spot`], the other selected guides as
+/// far along their own axis as it moved. `None` while the pointer is not over the guide's own
+/// spread, where a drop leaves it in place.
+fn guide_drag_delta(app: &DesignApp, xf: &Xf, g: &GuideDrag, origin: Pos2) -> Option<(f64, f64)> {
+    let (r, pi, gi) = g.from?;
+    let spot = guide_spot(app, xf, g)?;
+    if spot.spread != r {
+        return None;
+    }
+    let sp = spot.sp;
+    let st = app.session.active()?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let start = layout.slot(r)?.to_spread(xf.to_canvas(origin));
+    let at = st.doc.spread(r)?.pages.get(pi)?.guides.get(gi)?.position;
+    let (dx, dy) = match g.orientation {
+        designcraft_doc::Orientation::Vertical => (sp.x - at, sp.y - start.y),
+        designcraft_doc::Orientation::Horizontal => (sp.x - start.x, sp.y - at),
+    };
+    (dx.is_finite() && dy.is_finite()).then_some((dx, dy))
+}
+
+/// Guides being dragged on the canvas and how far they have moved (spread coordinates).
+struct MovingGuides {
+    guides: std::collections::HashSet<GuideSel>,
+    dx: f64,
+    dy: f64,
+}
+
+/// What a drag of an existing guide moves, for the preview: the dragged guide, or every selected
+/// guide when it is one of several selected. `None` before the drag leaves the click distance,
+/// over a ruler (a drop there deletes) and off the guide's spread.
+fn moving_guides(app: &DesignApp, xf: &Xf, rect: Rect, g: &GuideDrag, press: GuidePress) -> Option<MovingGuides> {
+    let (spread, page, index) = g.from?;
+    let p = g.at?;
+    if !rect.contains(p) || (p - press.origin).length() <= GUIDE_CLICK_SLOP {
+        return None;
+    }
+    let (dx, dy) = guide_drag_delta(app, xf, g, press.origin)?;
+    let from = GuideSel { spread, page, index };
+    let guides = if drags_group(app, from) { app.session.active()?.selection.guides.iter().copied().collect() } else { [from].into_iter().collect() };
+    Some(MovingGuides { guides, dx, dy })
+}
+
+/// An object is under screen point `p` where the Selection tool would pick it (a document
+/// spread's, or a parent spread's while editing parents): it takes the press before the guides
+/// behind it.
+fn over_item(app: &DesignApp, xf: &Xf, p: Pos2) -> bool {
+    let Some(st) = app.session.active() else { return false };
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let cx = designcraft_tools::ToolContext {
+        doc: &st.doc,
+        selection: &st.selection,
+        cache: &app.session.cache,
+        layout: &layout,
+        zoom: xf.zoom.max(1e-6),
+        layer: st.active_layer,
+        snap: app.ui.snap_view(),
+        unit: app.ui.units,
+        stroke_in_front: false,
+    };
+    cx.hit(xf.to_canvas(p)).is_some()
+}
+
+const COLUMN_DRAG: &str = "canvas_column_drag";
+
+/// A column guide being dragged with a Selection tool: its gutter follows the pointer.
+#[derive(Clone, Debug)]
+struct ColumnDrag {
+    /// The document the drag's interaction belongs to.
+    doc: u64,
+    spread: SpreadRef,
+    page: usize,
+    gutter: usize,
+    /// The pointer's spread x minus the gutter's left edge at the press: the gutter keeps that
+    /// distance from the pointer.
+    grab: f64,
+    /// The left edge last previewed.
+    last: Option<f64>,
+}
+
+/// The interior column guide under screen point `p` (within 3 px) that a press there would drag,
+/// as (spread, page, gutter, the gutter's left edge in spread x): a Selection tool, guides shown
+/// (not in Preview or Presentation), column guides unlocked, and no object or ruler guide that
+/// takes the press there.
+fn column_guide_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<(SpreadRef, usize, usize, f64)> {
+    let preview = matches!(app.ui.screen_mode, ScreenMode::Preview | ScreenMode::Presentation);
+    if !app.ui.guides || preview || !matches!(app.session.tool_id(), "selection" | "directSelection") {
+        return None;
+    }
+    let st = app.session.active()?;
+    if st.doc.settings.column_guides_locked {
+        return None;
+    }
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let (r, sp) = layout.spread_at(xf.to_canvas(p))?;
+    let tol = 3.0 / xf.zoom.max(1e-9);
+    let hit = st.doc.spread(r)?.pages.iter().enumerate().find_map(|(pi, pg)| {
+        let m = pg.margin_rect();
+        if sp.y < m.y0 - tol || sp.y > m.y1 + tol {
+            return None;
+        }
+        pg.column_rects().windows(2).enumerate().find_map(|(gi, w)| match w {
+            // Columns that cannot move (gutters wider than the margin box) offer no guide.
+            [a, b]
+                if ((sp.x - a.x1).abs() <= tol || (sp.x - b.x0).abs() <= tol)
+                    && pg.columns.with_gutter_moved(m.width(), gi, a.x1 - m.x0).is_some() =>
+            {
+                Some((r, pi, gi, a.x1))
+            }
+            _ => None,
+        })
+    })?;
+    // A ruler guide there takes the press first (see `guide_drag`).
+    let ruler_guide = !app.ui.guides_locked && guide_at(app, xf, p).is_some();
+    (!ruler_guide && !over_item(app, xf, p)).then_some(hit)
+}
+
+/// Whether spread `r`'s x axis runs across the screen (the spread view is not turned a quarter).
+fn spread_x_across(app: &DesignApp, r: SpreadRef) -> bool {
+    app.session.active().is_none_or(|st| {
+        let [a, b, ..] = CanvasLayout::new(&st.doc, st.editing_parents).xf(r).as_coeffs();
+        a.abs() >= b.abs()
+    })
+}
+
+/// Canvas x `x` moved to the nearest tick mark of the horizontal ruler (its finest increment).
+fn ruler_tick_x(app: &DesignApp, doc: &Document, layout: &CanvasLayout, zoom: f64, x: f64) -> Option<f64> {
+    let pieces = ruler_pieces(app, doc, layout, doc.zero_point());
+    let &(_, _, o) = pieces.iter().find(|(from, to, _)| *from <= x && x < *to).or(pieces.first())?;
+    let (major, sub) = doc.settings.horizontal_units.ruler_ticks(zoom);
+    let step = major / f64::from(sub.max(1));
+    (step.is_finite() && step > 0.0).then(|| o.x + ((x - o.x) / step).round() * step).filter(|v| v.is_finite())
+}
+
+/// Where a dragged gutter's left edge goes for spread x `want`: Shift snaps it to the ruler's tick
+/// marks; otherwise its edges snap to the document grid, guides and objects as those snaps are
+/// set. Measured against the document as it was when the drag began.
+fn snap_gutter(app: &DesignApp, g: &ColumnDrag, want: f64, shift: bool, zoom: f64) -> f64 {
+    let Some(st) = app.session.active() else { return want };
+    let doc = st.interaction.as_ref().map_or_else(|| st.doc.clone(), |i| i.doc.clone());
+    let layout = CanvasLayout::new(&doc, st.editing_parents);
+    let Some(slot) = layout.slots.iter().find(|s| s.spread == g.spread) else { return want };
+    let Some(pg) = doc.spread(g.spread).and_then(|sp| sp.pages.get(g.page)) else { return want };
+    let m = pg.margin_rect();
+    if shift {
+        if !spread_x_across(app, g.spread) {
+            return want;
+        }
+        let c = slot.to_canvas(Point::new(want, m.y0));
+        return ruler_tick_x(app, &doc, &layout, zoom, c.x).map_or(want, |x| slot.to_spread(Point::new(x, c.y)).x);
+    }
+    let cols = pg.column_rects();
+    let width = match (cols.get(g.gutter), cols.get(g.gutter + 1)) {
+        (Some(a), Some(b)) => (b.x0 - a.x1).max(0.0),
+        _ => 0.0,
+    };
+    let cx = designcraft_tools::ToolContext {
+        doc: &doc,
+        selection: &st.selection,
+        cache: &app.session.cache,
+        layout: &layout,
+        zoom: zoom.max(1e-6),
+        layer: st.active_layer,
+        // A line has no size or spacing to match.
+        snap: designcraft_tools::SnapView { smart_dimensions: false, smart_spacing: false, ..app.ui.snap_view() },
+        unit: app.ui.units,
+        stroke_in_front: false,
+    };
+    let rect = DRect::new(want, m.y0, want + width, m.y1);
+    let s = designcraft_tools::snap::snap(
+        &cx,
+        designcraft_tools::SnapRequest {
+            spread: g.spread,
+            gesture: designcraft_tools::Gesture::Move,
+            rect,
+            x_edges: [true, false, true],
+            y_edges: [false; 3],
+            exclude: &[],
+            exclude_guides: &[],
+            copying: false,
+            lengths: [None, None],
+            angle: None,
+            radius: 0.0,
+            pointer: Point::new(want, m.center().y),
+        },
+    );
+    let x = want + s.delta.x;
+    if x.is_finite() { x } else { want }
+}
+
+/// Column guides: with a Selection tool, drag an interior column guide (not over an object) to
+/// move its gutter, both guides together; Escape puts it back. One undo step per drag. Returns
+/// true while it owns the pointer.
+fn column_guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
+    let id = egui::Id::new((COLUMN_DRAG, app.pane));
+    let (pressed, released, origin, latest, shift, escape) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            // A release this frame, or one missed while something else had the pointer.
+            i.pointer.primary_released() || !i.pointer.primary_down(),
+            i.pointer.press_origin(),
+            i.pointer.latest_pos(),
+            i.modifiers.shift,
+            i.key_pressed(egui::Key::Escape),
+        )
+    });
+    let mut drag: Option<ColumnDrag> = ui.data(|d| d.get_temp(id));
+    if drag.is_none()
+        && pressed
+        && resp.hovered()
+        && let Some(o) = origin.filter(|o| rect.contains(*o))
+        && let Some((spread, page, gutter, left)) = column_guide_at(app, xf, o)
+        // Another gesture or a dialog's preview owns the document until it ends.
+        && let Some((doc, slot_x)) = app
+            .session
+            .active()
+            .filter(|st| st.interaction.is_none())
+            .map(|st| (st.uid, CanvasLayout::new(&st.doc, st.editing_parents).to_spread(spread, xf.to_canvas(o)).x))
+        && app.session.begin_interaction("Move Column Guide").is_ok()
+    {
+        drag = Some(ColumnDrag { doc, spread, page, gutter, grab: slot_x - left, last: None });
+    }
+    let Some(mut g) = drag else { return false };
+    // Another document became active: the drag ends in its own, as it began.
+    if app.session.active().is_none_or(|st| st.uid != g.doc) {
+        app.session.cancel_interaction_of(g.doc);
+        ui.data_mut(|d| d.remove::<ColumnDrag>(id));
+        return false;
+    }
+    if escape {
+        app.session.cancel_interaction();
+        ui.data_mut(|d| d.remove::<ColumnDrag>(id));
+        return true;
+    }
+    if let Some(p) = latest
+        && let Some(x) = app.session.active().map(|st| CanvasLayout::new(&st.doc, st.editing_parents).to_spread(g.spread, xf.to_canvas(p)).x)
+        && x.is_finite()
+    {
+        let want = snap_gutter(app, &g, x - g.grab, shift, xf.zoom);
+        if g.last != Some(want) && (g.last.is_some() || (p - origin.unwrap_or(p)).length() > 0.0) {
+            let params = json!({"spread": g.spread, "page": g.page, "gutter": g.gutter, "position": want});
+            if let Err(e) = app.session.preview("layout.moveColumnGuide", params) {
+                app.status(e.to_string());
+            }
+            g.last = Some(want);
+        }
+    }
+    if released {
+        ui.data_mut(|d| d.remove::<ColumnDrag>(id));
+        if let Err(e) = app.session.commit_interaction() {
+            app.status(e.to_string());
+        }
+        app.after_engine();
+        return true;
+    }
+    ui.data_mut(|d| d.insert_temp(id, g));
     true
 }
 
@@ -2990,6 +3580,10 @@ fn release_clicks(press: Clicks, pos: Pos2, now: f64, dist: f32) -> Clicks {
 #[cfg(test)]
 #[path = "parent_canvas_tests.rs"]
 mod parent_canvas_tests;
+
+#[cfg(test)]
+#[path = "guide_selection_tests.rs"]
+mod guide_selection_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3191,6 +3785,138 @@ mod tests {
         let g = guides(&h);
         assert_eq!(g.len(), 2);
         assert!(!g[1].liquid);
+    }
+
+    /// Dragging a column guide with the Selection tool moves its gutter (one undo step); with
+    /// column guides locked the same drag leaves the columns alone.
+    #[test]
+    fn the_selection_tool_drags_a_column_guide() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        // Two columns across the 540 pt margin box: the gutter's left edge is at x = 300.
+        app.run("layout.marginsAndColumns", json!({"parent": "A", "columns": 2, "gutter": 12})).unwrap();
+        let mut h = harness(app);
+        let page = |h: &Harness<'_, DesignApp>| h.state().session.doc().unwrap().doc.spreads[0].pages[0].clone();
+        let screen = |h: &Harness<'_, DesignApp>, x: f64| {
+            let app = h.state();
+            let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+            let layout = CanvasLayout::new(&app.session.active().unwrap().doc, false);
+            let slot = layout.slots.iter().find(|s| s.spread == SpreadRef::Doc(0)).unwrap();
+            (xf.to_screen(slot.xf * Point::new(x, 400.0)), xf.zoom as f32)
+        };
+        let (at, zoom) = screen(&h, 300.0);
+        drag(&mut h, at, at + vec2(72.0 * zoom, 0.0));
+        assert_eq!(page(&h).columns.positions, None, "column guides are locked in a new document");
+        h.hover_at(at);
+        h.run_steps(2);
+        assert_ne!(h.output().platform_output.cursor_icon, egui::CursorIcon::ResizeHorizontal);
+
+        h.state_mut().run("view.lockColumnGuides", json!({"on": false})).unwrap();
+        h.run_steps(2);
+        let (at, zoom) = screen(&h, 300.0);
+        drag(&mut h, at, at + vec2(72.0 * zoom, 0.0));
+        let pg = page(&h);
+        let cols = pg.column_rects();
+        assert!((cols[0].x1 - 372.0).abs() < 1.0 && (cols[1].x0 - cols[0].x1 - 12.0).abs() < 1e-9, "{cols:?}");
+        assert!(pg.local_margins, "the dragged page's columns are its own");
+        // Over the moved guide: a resize cursor.
+        h.hover_at(screen(&h, 372.0).0);
+        h.run_steps(2);
+        assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ResizeHorizontal);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(page(&h).columns.positions, None, "one undo step");
+
+        // Escape during the drag puts the gutter back.
+        h.hover_at(at);
+        h.step();
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.step();
+        h.hover_at(at + vec2(40.0, 0.0));
+        h.step();
+        assert!(page(&h).columns.positions.is_some(), "the drag previews");
+        h.event(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: at + vec2(40.0, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        h.run_steps(3);
+        assert_eq!(page(&h).columns.positions, None);
+        assert!(!page(&h).local_margins);
+
+        // Space pressed during the drag and the button released under it: the drag ends with the
+        // release and the gutter stops following the pointer.
+        let key = |pressed| egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed, repeat: false, modifiers: Default::default() };
+        h.hover_at(at);
+        h.step();
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.step();
+        h.hover_at(at + vec2(40.0, 0.0));
+        h.step();
+        h.event(key(true));
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: at + vec2(40.0, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        h.step();
+        h.event(key(false));
+        h.run_steps(2);
+        let moved = page(&h).columns.positions;
+        assert!(moved.is_some());
+        h.hover_at(at + vec2(120.0, 0.0));
+        h.run_steps(3);
+        assert_eq!(page(&h).columns.positions, moved, "the gutter stays where the drag ended");
+        assert!(h.state().session.active().unwrap().interaction.is_none());
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(page(&h).columns.positions, None, "the drag was one undo step");
+    }
+
+    /// A column guide is not picked where the screen mode hides guides, where an object on the
+    /// parent being edited lies over it, or where its columns cannot move.
+    #[test]
+    fn column_guides_are_picked_only_where_a_drag_can_move_them() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 1})).unwrap();
+        app.run("layout.marginsAndColumns", json!({"parent": "A", "columns": 2, "gutter": 12})).unwrap();
+        app.run("view.lockColumnGuides", json!({"on": false})).unwrap();
+        let mut h = harness(app);
+        let hit = |h: &Harness<'_, DesignApp>, r: SpreadRef, x: f64| {
+            let app = h.state();
+            let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+            let st = app.session.active().unwrap();
+            let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+            let slot = layout.slots.iter().find(|s| s.spread == r).unwrap();
+            column_guide_at(app, &xf, xf.to_screen(slot.xf * Point::new(x, 400.0)))
+        };
+        assert!(hit(&h, SpreadRef::Doc(0), 300.0).is_some());
+        h.state_mut().ui.screen_mode = ScreenMode::Preview;
+        assert!(hit(&h, SpreadRef::Doc(0), 300.0).is_none(), "Preview hides the guides");
+        h.state_mut().ui.screen_mode = ScreenMode::Normal;
+
+        // Editing parent A: its right page (the one page 0 follows) and a frame over its gutter.
+        h.state_mut().run("layout.parents.edit", json!({"on": true, "parent": "A-Parent"})).unwrap();
+        h.run_steps(2);
+        let parent = SpreadRef::Parent(0);
+        let x = h.state().session.active().unwrap().doc.parents[0].pages[1].column_rects()[0].x1;
+        assert!(hit(&h, parent, x).is_some());
+        h.state_mut()
+            .run("frame.create", json!({"spread": {"kind": "parent", "index": 0}, "rect": [x - 20.0, 300.0, x + 20.0, 500.0], "content": "text"}))
+            .unwrap();
+        h.run_steps(2);
+        assert!(hit(&h, parent, x).is_none(), "the parent's frame takes the press");
+        h.state_mut().run("layout.parents.edit", json!({"on": false})).unwrap();
+        h.run_steps(2);
+
+        // Gutters wider than the margin box: the even split cannot be moved.
+        h.state_mut().run("layout.marginsAndColumns", json!({"pages": [0], "columns": 2, "gutter": 1000})).unwrap();
+        h.run_steps(2);
+        let x = h.state().session.active().unwrap().doc.spreads[0].pages[0].column_rects()[0].x1;
+        assert!(hit(&h, SpreadRef::Doc(0), x).is_none());
     }
 
     fn right_click(h: &mut Harness<'_, DesignApp>, p: Pos2) {
@@ -3588,6 +4314,39 @@ mod tests {
         // Centred where text from another app would go: the middle of the view.
         let (_, centre) = view_centre(app).unwrap();
         assert!((it.bounds().center() - centre).hypot() < 0.01, "{:?} vs {centre:?}", it.bounds());
+    }
+
+    #[test]
+    fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let original = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds();
+        app.run("edit.copy", json!({})).unwrap();
+        let clip = app.object_clip_text.clone().expect("the copy's placeholder text");
+        let mut h = harness(app);
+        let paste = |h: &mut Harness<'static, DesignApp>, modifiers: egui::Modifiers| {
+            // As egui-winit delivers ⌃⌥⇧V: the chord's paste and the V release, no V press; here the
+            // modifiers are released within the same frame.
+            let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers };
+            let none = egui::Event::ModifiersChanged(egui::Modifiers::NONE);
+            h.input_mut().events.extend([egui::Event::ModifiersChanged(modifiers), egui::Event::Paste(clip.clone()), release, none]);
+            h.run_steps(2);
+            let st = h.state().session.doc().unwrap();
+            let pasted = *st.selection.items.first().expect("the copy is selected");
+            assert_ne!(pasted.0, id);
+            st.doc.item(pasted).unwrap().bounds()
+        };
+        let linux = egui::Modifiers { alt: true, ctrl: true, shift: true, mac_cmd: false, command: true };
+        assert_eq!(paste(&mut h, linux), original, "Paste in Place");
+        let moved = paste(&mut h, egui::Modifiers::COMMAND);
+        assert!((moved.x0 - original.x0 - 12.0).abs() < 1e-9 && (moved.y0 - original.y0 - 12.0).abs() < 1e-9, "{moved:?}");
+        // The modifiers went down in an earlier frame than the paste.
+        h.event_modifiers(egui::Event::Paste(clip.clone()), linux);
+        h.run_steps(2);
+        let st = h.state().session.doc().unwrap();
+        let pasted = *st.selection.items.first().expect("the copy is selected");
+        assert_eq!(st.doc.item(pasted).unwrap().bounds(), original);
     }
 
     #[test]
@@ -4031,6 +4790,115 @@ mod tests {
         assert!((pos(designcraft_doc::Orientation::Vertical) - at.x).abs() < 0.5);
         assert!(guides.iter().all(|g| g.spread));
         assert_eq!(doc.settings.zero_point, [0.0, 0.0], "the zero point stays");
+    }
+
+    /// A guide being dragged out of a ruler says where it is, as the rulers measure it (#1282):
+    /// from the zero point, in the ruler units, and the label follows the pointer while it moves.
+    #[test]
+    fn a_dragged_guide_shows_where_it_is() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("view.zeroPoint", json!({"at": [100, 50]})).unwrap();
+        let mut h = harness(app);
+        let rect = h.state().canvas_rect.unwrap();
+        let dest = rect.min + vec2(160.0, 110.0);
+        let (xf, at) = {
+            let app = h.state();
+            let xf = Xf::new(rect, app.view().unwrap());
+            let st = app.session.active().unwrap();
+            (xf, CanvasLayout::new(&st.doc, false).spread_at(xf.to_canvas(dest)).unwrap().1)
+        };
+        let units = h.state().session.doc().unwrap().doc.settings.horizontal_units;
+        for (orientation, label, want) in
+            [(designcraft_doc::Orientation::Vertical, "X", at.x - 100.0), (designcraft_doc::Orientation::Horizontal, "Y", at.y - 50.0)]
+        {
+            let g = GuideDrag { orientation, from: None, at: Some(dest), mods: egui::Modifiers::NONE };
+            let (l, v, _) = guide_measure(h.state(), &xf, &g).unwrap();
+            assert_eq!(l, label);
+            assert!((v - want).abs() < 1e-6, "{label}: {v} vs {want}");
+            let text = guide_readout(h.state(), &xf, &g).unwrap();
+            assert_eq!(text, format!("{label}: {}", designcraft_geom::units::format_measure(v, units)));
+        }
+        // While a guide is actually being dragged out of the top ruler, the readout is there.
+        let ruler = pos2(rect.min.x + 200.0, rect.min.y - RULER / 2.0);
+        h.hover_at(ruler);
+        h.step();
+        primary(&mut h, ruler, true);
+        h.event(egui::Event::PointerMoved(dest));
+        h.run_steps(2);
+        let g = h.ctx.data(|d| d.get_temp::<GuideDrag>(egui::Id::new(GUIDE_DRAG))).expect("dragging");
+        assert_eq!(g.orientation, designcraft_doc::Orientation::Horizontal);
+        assert!(guide_readout(h.state(), &xf, &g).is_some_and(|t| t.starts_with("Y: ")));
+        primary(&mut h, dest, false);
+    }
+
+    /// Over a spread other than the one in the middle of the view, the readout measures that
+    /// spread, the one the guide is dropped on: it reads the position the guide gets.
+    #[test]
+    fn the_guide_readout_measures_the_spread_under_the_pointer() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 5})).unwrap();
+        app.run("view.zeroPoint", json!({"at": [100, 50]})).unwrap();
+        let h = harness(app);
+        let rect = h.state().canvas_rect.unwrap();
+        let xf = Xf::new(rect, h.state().view().unwrap());
+        let st = h.state().session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let current = current_slot(h.state(), &layout).unwrap();
+        // A point inside the last spread, well away from the one in view.
+        let last = layout.slots.last().unwrap();
+        assert_ne!(layout.slots.iter().position(|s| s.spread == last.spread), Some(current), "the last spread isn't the one in view");
+        let inside = Point::new(last.bounds.center().x, last.bounds.y0 + (last.bounds.y1 - last.bounds.y0) * 0.3);
+        let (r, sp) = layout.spread_at(inside).unwrap();
+        assert_eq!(r, last.spread);
+        let g = GuideDrag {
+            orientation: designcraft_doc::Orientation::Horizontal,
+            from: None,
+            at: Some(xf.to_screen(inside)),
+            mods: egui::Modifiers::NONE,
+        };
+        let (label, v, _) = guide_measure(h.state(), &xf, &g).unwrap();
+        assert_eq!(label, "Y");
+        // The guide would be stored at `sp.y` on that spread, which its ruler reads from the zero point.
+        // (To screen and back in f32: a few hundred-thousandths of a point.)
+        assert!((v - (sp.y - 50.0)).abs() < 1e-3, "{v} vs {}", sp.y - 50.0);
+        // An existing guide of another spread can't be dropped there (it only moves on its own
+        // spread): no readout over this one, a readout over its own.
+        let first = layout.slots[current].spread;
+        let moving = GuideDrag {
+            orientation: designcraft_doc::Orientation::Horizontal,
+            from: Some((first, 0, 0)),
+            at: Some(xf.to_screen(inside)),
+            mods: egui::Modifiers::NONE,
+        };
+        assert!(guide_measure(h.state(), &xf, &moving).is_none(), "an existing guide over another spread");
+        let own = layout.slots[current].bounds;
+        let over_own = Point::new(own.center().x, own.y0 + (own.y1 - own.y0) * 0.3);
+        let moving_here = GuideDrag { at: Some(xf.to_screen(over_own)), ..moving };
+        assert!(guide_measure(h.state(), &xf, &moving_here).is_some(), "over its own spread");
+    }
+
+    /// The guide readout stays on the canvas: below right of the pointer in the open, flipped
+    /// left or up near the right or bottom edge, and inside the canvas in every corner.
+    #[test]
+    fn the_guide_readout_stays_inside_the_canvas() {
+        let area = Rect::from_min_max(pos2(50.0, 40.0), pos2(850.0, 640.0));
+        let size = vec2(80.0, 14.0);
+        let inside = |at: Pos2| {
+            let r = Rect::from_min_size(at, size).expand(3.0);
+            r.min.x >= area.min.x - 1e-3 && r.min.y >= area.min.y - 1e-3 && r.max.x <= area.max.x + 1e-3 && r.max.y <= area.max.y + 1e-3
+        };
+        assert_eq!(readout_at(pos2(400.0, 300.0), size, area), pos2(412.0, 312.0), "in the open: below right");
+        let right = readout_at(pos2(845.0, 300.0), size, area);
+        assert!(right.x + size.x < 845.0 && inside(right), "near the right edge: left of the pointer, {right:?}");
+        let bottom = readout_at(pos2(400.0, 636.0), size, area);
+        assert!(bottom.y + size.y < 636.0 && inside(bottom), "near the bottom: above it, {bottom:?}");
+        for p in [area.min, pos2(area.max.x, area.min.y), area.max, pos2(area.min.x, area.max.y), pos2(-500.0, 2000.0)] {
+            assert!(inside(readout_at(p, size, area)), "{p:?}");
+        }
+        // A canvas narrower than the label: pinned to its top left, not past it.
+        let tiny = Rect::from_min_max(pos2(0.0, 0.0), pos2(40.0, 10.0));
+        assert_eq!(readout_at(pos2(20.0, 5.0), size, tiny), pos2(3.0, 3.0));
     }
 
     #[test]
@@ -4775,6 +5643,29 @@ mod tests {
             assert_eq!(text, "Hello", "{key:?} confirms the field and leaves the story alone");
             let size = crate::panels::text_attrs(h.state_mut()).unwrap()["chars"]["size"].clone();
             assert_eq!(size, 18.0, "{key:?} applies the typed size");
+        }
+    }
+
+    #[test]
+    fn trailing_spaces_show_dots_before_the_paragraph_mark() {
+        let text = "ab  \ncd  ";
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let lid = d.default_layer();
+        let rect = DRect::new(0.0, 0.0, 300.0, 100.0);
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), rect, lid, text, Default::default()).unwrap();
+        let cs = compose::compose_story(&d, sid, &compose::ComposeOptions::default());
+        let lines: Vec<_> = cs.frames.iter().flat_map(|f| &f.lines).collect();
+        assert_eq!(lines.len(), 2);
+        for (l, end_mark) in lines.iter().zip(["¶", "#"]) {
+            let marks = hidden_marks(text, l);
+            let dots: Vec<f64> = marks.iter().filter(|m| m.1 == "·").map(|m| m.0).collect();
+            assert_eq!(dots.len(), 2, "a dot for each trailing space: {marks:?}");
+            let &(para_x, mark, _) = marks.last().unwrap();
+            assert_eq!(mark, end_mark);
+            // The dots sit past the last letter, and the mark comes after both spaces.
+            let space = l.glyphs.iter().rev().find(|g| g.len > 0).unwrap();
+            assert!(dots.iter().all(|&x| x > l.end_x && x < para_x), "{dots:?} then {mark} at {para_x}");
+            assert!(para_x >= space.x + space.adv, "{mark} at {para_x} overlaps the last space");
         }
     }
 }

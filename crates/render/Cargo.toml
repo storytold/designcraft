@@ -17,9 +17,10 @@ designcraft-compose = { workspace = true }
 vello_cpu = { workspace = true }
 vello_common = { workspace = true }
 image = { workspace = true }
-hayro = { workspace = true }
+craft-pdf = { workspace = true, features = ["raster"] }
 designcraft-images = { workspace = true }
 log = { workspace = true }
+thiserror = { workspace = true }
 serde = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

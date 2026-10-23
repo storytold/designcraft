@@ -1,5 +1,4 @@
 //! Own a real native Job across last close. This does not run the asynchronous worker.
-#![cfg(not(target_arch = "wasm32"))]
 
 use std::sync::Arc;
 

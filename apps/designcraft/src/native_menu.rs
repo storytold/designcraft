@@ -27,6 +27,9 @@ pub struct NativeMenu {
     shown_for: (String, bool),
     /// File › Open Recent, rebuilt when the list of recent files changes.
     recent: Option<RecentMenu>,
+    /// The commands with key equivalents and the shortcut each was given: the menu is rebuilt
+    /// when one changes, so a shortcut moved to another command leaves its old item.
+    keys: Vec<(String, Option<String>)>,
 }
 
 struct RecentMenu {
@@ -50,21 +53,28 @@ fn menu_title(app: &DesignApp, label: &str) -> String {
     menus::native_label(designcraft_ui_egui::i18n::tr(&app.ui.language, label))
 }
 
-/// A command's default shortcut, as the in-window menus show it.
-fn shortcut(id: &str) -> Option<&'static str> {
-    menus::ui_label(id).and_then(|(_, sc)| sc).or_else(|| designcraft_engine::find_command(id).and_then(|c| c.shortcut))
+/// A command's shortcut in effect (the user's, else the default), as the in-window menus show it.
+fn shortcut(app: &DesignApp, id: &str) -> Option<String> {
+    menus::shortcut_of(app, id)
 }
 
 impl NativeMenu {
     pub fn install(app: &mut DesignApp, ctx: &egui::Context) -> Self {
         // A click in the menu bar reaches the app with no input over the window, so nothing would
         // draw the frame that runs the command until the pointer or a key comes back: wake egui.
+        // muda keeps the first handler for the life of the process, so this channel serves every
+        // menu bar built later (`build_bar`).
         let (tx, events) = channel();
         let repaint = ctx.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             let _ = tx.send(e);
             repaint.request_repaint();
         }));
+        Self::build_bar(app, events)
+    }
+
+    /// The menu bar for the current language and settings, fed by `events`.
+    fn build_bar(app: &mut DesignApp, events: Receiver<MenuEvent>) -> Self {
         let menu = Menu::new();
         let mut items = HashMap::new();
         let mut counter = 0usize;
@@ -75,11 +85,23 @@ impl NativeMenu {
         for entry in menus::MAC_APP_MENU {
             let _ = match *entry {
                 AppMenuItem::Cmd { id, label, command } => {
-                    let sc = shortcut(command).and_then(accel);
+                    let sc = shortcut(app, command).as_deref().and_then(accel);
                     let item = MenuItem::with_id(id, menu_title(app, label), true, sc);
                     let appended = app_menu.append(&item);
                     items.insert(id.into(), (command.into(), Value::Null, Handle::Plain(item)));
                     appended
+                }
+                AppMenuItem::Language => {
+                    let sub = Submenu::new(menu_title(app, "Language"), true);
+                    for (code, name) in designcraft_ui_egui::i18n::LANGUAGES {
+                        let id = format!("dc-language-{}", if code.is_empty() { "en" } else { code });
+                        let params = serde_json::json!({ "lang": code });
+                        let checked = menus::checked(app, "app.language", &params).unwrap_or(false);
+                        let item = CheckMenuItem::with_id(id.clone(), menus::native_label(name), true, checked, None);
+                        let _ = sub.append(&item);
+                        items.insert(id, ("app.language".into(), params, Handle::Check(item)));
+                    }
+                    app_menu.append(&sub)
                 }
                 AppMenuItem::Sep => app_menu.append(&PredefinedMenuItem::separator()),
                 AppMenuItem::Services => app_menu.append(&PredefinedMenuItem::services(None)),
@@ -96,15 +118,19 @@ impl NativeMenu {
         }
         menu.init_for_nsapp();
         app.native_menu = true;
-        app.native_shortcuts = items
-            .values()
-            .filter_map(|(id, p, _)| {
-                let sc = shortcut(id)?;
-                (p.is_null() && accel(sc).is_some()).then(|| id.clone())
-            })
-            .collect();
+        let keys: Vec<(String, Option<String>)> =
+            items.values().filter(|(_, p, _)| p.is_null()).map(|(id, _, _)| (id.clone(), shortcut(app, id))).collect();
+        app.native_shortcuts = keys.iter().filter(|(_, sc)| sc.as_deref().and_then(accel).is_some()).map(|(id, _)| id.clone()).collect();
         let recent = recent.map(|submenu| RecentMenu { submenu, shown: Vec::new(), ids: Vec::new(), separator: None });
-        Self { _menu: menu, items, events, last_refresh: 0.0, shown_for: (app.ui.language.clone(), designcraft_ui_egui::cjk_features(app)), recent }
+        Self {
+            _menu: menu,
+            items,
+            events,
+            last_refresh: 0.0,
+            shown_for: (app.ui.language.clone(), designcraft_ui_egui::cjk_features(app)),
+            recent,
+            keys,
+        }
     }
 
     /// Put the current recent files at the top of File › Open Recent when they changed.
@@ -153,13 +179,21 @@ impl NativeMenu {
         // back by Cancel): the system menu bar follows at once, like the panels (the new menu
         // replaces the old one as the application's menu before that one is dropped).
         if app.ui.language != self.shown_for.0 || designcraft_ui_egui::cjk_features(app) != self.shown_for.1 {
-            *self = Self::install(app, ctx);
+            let events = std::mem::replace(&mut self.events, channel().1);
+            *self = Self::build_bar(app, events);
         }
         let now = designcraft_ui_egui::now_ms();
         if now - self.last_refresh < 250.0 {
             return;
         }
         self.last_refresh = now;
+        // A shortcut set in the Keyboard Shortcuts dialog: macOS gives key equivalents to the
+        // menu bar before the window sees the key, so the bar must carry the new keys.
+        if self.keys.iter().any(|(id, sc)| shortcut(app, id) != *sc) {
+            let events = std::mem::replace(&mut self.events, channel().1);
+            *self = Self::build_bar(app, events);
+            return;
+        }
         self.refresh_recent(app);
         for (cmd, params, h) in self.items.values() {
             let en = menus::native_menu_enabled(app, ctx, cmd);
@@ -199,10 +233,10 @@ fn build(
             }
             // Hidden CJK commands; `NativeMenu::poll` rebuilds the bar when Show CJK Features changes.
             Item::Cmd { id, .. } if !menus::shown(app, id) => {}
-            Item::Cmd { label, id, params, shortcut } => {
+            Item::Cmd { label, id, params, .. } => {
                 *counter += 1;
                 let mid = format!("dc{counter}");
-                let sc = if params.is_null() { shortcut.and_then(accel) } else { None };
+                let sc = if params.is_null() { shortcut(app, id).as_deref().and_then(accel) } else { None };
                 let label = menu_title(app, label);
                 let handle = if menus::checked(app, id, params).is_some() {
                     let c = CheckMenuItem::with_id(mid.clone(), label, true, false, sc);

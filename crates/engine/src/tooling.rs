@@ -331,4 +331,18 @@ impl Session {
             }
         }
     }
+
+    /// Cancel the interaction of the document with `uid`, active or not: a gesture that began in
+    /// one document and lost it to another tab ends there, leaving the document as it began.
+    pub fn cancel_interaction_of(&mut self, uid: u64) {
+        if self.active().is_some_and(|st| st.uid == uid) {
+            self.cancel_interaction();
+        } else if let Some(st) = self.docs.iter_mut().find(|st| st.uid == uid)
+            && let Some(it) = st.interaction.take()
+        {
+            st.doc = it.doc;
+            st.selection = it.selection;
+            st.revision = it.revision;
+        }
+    }
 }

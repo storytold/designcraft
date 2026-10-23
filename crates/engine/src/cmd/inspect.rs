@@ -85,7 +85,9 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
                     let abs = d.first_page_of_spread(si) + pi;
                     json!({"index": abs, "name": d.page_name(abs), "bounds": [p.x, 0.0, p.x + p.width, p.height], "side": p.side,
                         "parent": p.parent.and_then(|pid| d.parents.iter().find(|x| x.id == pid)).and_then(|x| x.parent.as_ref()).map(|i| i.label()),
-                        "margins": p.margins, "columns": p.columns.count})
+                        "margins": p.margins, "columns": p.columns.count, "gutter": p.columns.gutter,
+                        "customColumns": p.columns.valid_positions(p.margin_rect().width()).is_some(),
+                        "columnRects": p.column_rects().iter().map(|r| [r.x0, r.y0, r.x1, r.y1]).collect::<Vec<_>>()})
                 }).collect::<Vec<_>>(),
                 "items": sp.items.iter().map(|i| item_json(i)).collect::<Vec<_>>(),
             })

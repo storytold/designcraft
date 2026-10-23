@@ -42,7 +42,7 @@ fn mixed_gradient_export_survives_in_subprocess() {
     const CHILD: &str = "DESIGNCRAFT_TEST_MIXED_GRADIENT_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "mixed_gradient_export_survives_in_subprocess", "--nocapture"])
+            .args(["--exact", "gradient_color_spaces::mixed_gradient_export_survives_in_subprocess", "--nocapture"])
             .env(CHILD, "1")
             .output()
             .unwrap();

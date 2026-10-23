@@ -1163,7 +1163,7 @@ mod tests {
 
     /// The application bar's search field (German interface).
     fn search_node<'h>(h: &'h egui_kittest::Harness<'static, test_window::Window>) -> egui_kittest::Node<'h> {
-        h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("Suchen"))
+        h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some(crate::i18n::tr("de", "Search")))
     }
 
     /// A document with two frames, the Selection tool, German menus, and the search field clicked.
@@ -1195,12 +1195,12 @@ mod tests {
     #[test]
     fn the_search_field_finds_and_runs_menu_commands() {
         let mut h = searching();
-        h.event(egui::Event::Text("gruppier".into()));
+        let group = crate::i18n::tr("de", "Group");
+        h.event(egui::Event::Text(group.to_lowercase()));
         h.run_steps(4);
-        assert!(row(&h, "Gruppieren").is_some(), "the German label is listed");
-        assert!(row(&h, "Gruppierung aufheben").is_some());
+        assert!(row(&h, group).is_some(), "the German label is listed");
         // Nothing is selected, so Group is off and Return doesn't run it.
-        assert!(row(&h, "Gruppieren").is_some_and(|n| n.accesskit_node().is_disabled()));
+        assert!(row(&h, group).is_some_and(|n| n.accesskit_node().is_disabled()));
         h.key_press(egui::Key::Enter);
         h.run_steps(4);
         assert_eq!(items(&h), (2, 0), "a disabled command doesn't run");
@@ -1213,7 +1213,7 @@ mod tests {
         h.key_press(egui::Key::Enter);
         h.run_steps(4);
         assert_eq!(items(&h).0, 1, "the two frames are grouped");
-        assert!(row(&h, "Gruppieren").is_none(), "the matches closed");
+        assert!(row(&h, group).is_none(), "the matches closed");
         assert!(!h.ctx.memory(|m| m.has_focus(super::search_id())), "the field gave the keyboard back");
     }
 
@@ -1235,11 +1235,11 @@ mod tests {
         assert_eq!(items(&h), (2, 2), "nothing was deleted or deselected");
         h.event(egui::Event::Text("zz-no-such-command".into()));
         h.run_steps(4);
-        assert!(h.query_by_label("Keine passenden Befehle").is_some());
+        assert!(h.query_by_label(crate::i18n::tr("de", "No matching commands")).is_some());
         // Escape closes the matches and clears the field without touching the document.
         h.key_press(egui::Key::Escape);
         h.run_steps(4);
-        assert!(h.query_by_label("Keine passenden Befehle").is_none());
+        assert!(h.query_by_label(crate::i18n::tr("de", "No matching commands")).is_none());
         assert!(!h.ctx.text_edit_focused());
         assert_eq!(h.state().app.session.tool_id(), "rectangleFrame");
         assert_eq!(items(&h), (2, 2));

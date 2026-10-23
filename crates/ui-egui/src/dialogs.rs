@@ -315,9 +315,16 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     if !msg.is_empty() {
         ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(240, 180, 60)));
     }
-    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Reset All to Defaults"))).clicked() {
-        let _ = app.run("window.resetShortcuts", json!({}));
-    }
+    ui.horizontal(|ui| {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Reset All to Defaults"))).clicked() {
+            let _ = app.run("window.resetShortcuts", json!({}));
+        }
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Import InDesign Set…"))).clicked()
+            && let Some(msg) = crate::shortcut_import::pick_and_import(app)
+        {
+            d.fields.insert("message".into(), json!(msg));
+        }
+    });
 }
 
 /// File › Print, with the printers the system knows.
@@ -8956,7 +8963,7 @@ mod tests {
         assert_eq!(app.ui.language, "de");
         assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
         let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-        let heading = visible_label(&labels, screen, "Sprache der Oberfläche");
+        let heading = visible_label(&labels, screen, crate::i18n::tr("de", "Interface Language"));
         let combo = visible_label(&labels, screen, "Deutsch");
 
         // The names stay endonyms in the German interface.

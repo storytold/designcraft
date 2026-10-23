@@ -140,6 +140,9 @@ pub struct SnapView {
     pub smart_dimensions: bool,
     pub smart_spacing: bool,
     pub zone_px: f64,
+    /// View › Grids & Guides › Lock Guides: ruler guides can't be selected or moved.
+    #[serde(default)]
+    pub guides_locked: bool,
 }
 
 impl SnapView {
@@ -153,6 +156,7 @@ impl SnapView {
         smart_dimensions: true,
         smart_spacing: true,
         zone_px: 4.0,
+        guides_locked: false,
     };
     pub const OFF: Self = Self {
         snap_to_guides: false,
@@ -164,6 +168,7 @@ impl SnapView {
         smart_dimensions: false,
         smart_spacing: false,
         zone_px: 4.0,
+        guides_locked: false,
     };
 
     /// Guides, the document grid, or smart guides are on.
@@ -186,6 +191,9 @@ pub enum Gesture {
     Create,
     Rotate,
     Point,
+    /// A ruler guide being dragged: one line on one axis, with no size or spacing to match and
+    /// no pull from the baseline grid.
+    Guide,
 }
 
 pub struct SnapRequest<'a> {
@@ -197,6 +205,8 @@ pub struct SnapRequest<'a> {
     /// Top, center, bottom.
     pub y_edges: [bool; 3],
     pub exclude: &'a [ItemId],
+    /// Ruler guides that are not targets: the ones being dragged.
+    pub exclude_guides: &'a [designcraft_doc::GuideSel],
     pub copying: bool,
     /// Proposed width and height for the dimensions pass. None when that length is not being set.
     pub lengths: [Option<f64>; 2],

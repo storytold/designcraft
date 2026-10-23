@@ -294,8 +294,9 @@ fn cmd_move_does_not_snap() {
 fn cmd_resize_still_snaps_to_a_guide() {
     use designcraft_tools::{PointerEvent, PointerKind};
     let mut s = session();
-    s.execute("frame.create", &json!({"rect": [100.0, 100.0, 200.0, 180.0], "content": "unassigned"})).unwrap();
+    // The new guide is selected: the frame created after it is the selection.
     s.execute("guide.add", &json!({"orientation": "vertical", "position": 250.0, "page": 0})).unwrap();
+    s.execute("frame.create", &json!({"rect": [100.0, 100.0, 200.0, 180.0], "content": "unassigned"})).unwrap();
     s.set_tool("selection");
     let v = ViewInfo::at_zoom(1.0);
     let b0 = s.doc().unwrap().doc.spreads[0].items[0].bounds();

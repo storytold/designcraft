@@ -436,7 +436,7 @@ fn assign_page(dst: &mut Document, abs: usize, from: &Page) {
     p.guides = from.guides.clone();
     p.parent = from.parent;
     p.margins = from.margins;
-    p.columns = from.columns.clone();
+    p.columns = p.columns_from(from);
     p.local_margins = from.local_margins;
     p.width = from.width;
     p.height = from.height;

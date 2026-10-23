@@ -1,6 +1,6 @@
 //! Renderer caching/culling behaviour, and a render-time regression test (`#[ignore]`: wall-clock
 //! timings are only meaningful on an idle machine — run with
-//! `cargo test --release -p designcraft-render --test perf -- --ignored`).
+//! `cargo test --release -p designcraft-render --test it perf:: -- --ignored`).
 
 use std::time::Instant;
 

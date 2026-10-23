@@ -398,6 +398,9 @@ fn reimport(d: &mut Document, sid: StoryId, path: &str, bytes: &[u8], before: Fi
 fn reload(path: impl AsRef<Path>) -> Result<(Vec<u8>, (u32, u32))> {
     let path = path.as_ref();
     let b = crate::io::read_file(path).map_err(EngineError::Other)?;
+    if designcraft_render::is_pdf(&b) {
+        designcraft_render::check_pdf_input_size(b.len()).map_err(|e| bad("links", format!("{}: {e}", path.display())))?;
+    }
     let px = designcraft_render::image_size(&b).ok_or_else(|| bad("links", format!("{}: unsupported or corrupt image", path.display())))?;
     Ok((b, px))
 }

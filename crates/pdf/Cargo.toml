@@ -20,6 +20,7 @@ designcraft-images = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+chrono = { workspace = true }
 # The placed-PDF version check names hayro's PdfVersion (krilla::pdf::Pdf::version returns it).
 hayro-syntax = "0.7.2"
 

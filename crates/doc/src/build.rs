@@ -343,6 +343,8 @@ impl Document {
         let mut pages: Vec<(Page, Vec<Arc<Item>>)> = Vec::new();
         let mut parity: Vec<bool> = Vec::new();
         let mut kept: Vec<(usize, Arc<Spread>)> = Vec::new();
+        // Whether each shuffled page was a left page, to mirror its dragged columns if it moves.
+        let mut was_left: BTreeMap<PageId, bool> = BTreeMap::new();
         let mut abs = 0;
         for sp in self.spreads.drain(..) {
             if !sp.allow_shuffle && sp.pages.len() > 1 {
@@ -350,8 +352,9 @@ impl Document {
                 kept.push((pages.len(), sp));
                 continue;
             }
-            for _ in &sp.pages {
+            for p in &sp.pages {
                 parity.push(odd.get(abs).copied().unwrap_or(abs % 2 == 0));
+                was_left.insert(p.id, p.side == PageSide::Left);
                 abs += 1;
             }
             let mut sp = Arc::unwrap_or_clone(sp);
@@ -445,6 +448,19 @@ impl Document {
             out.insert(at, sp);
         }
         self.spreads = out;
+        // A page that crosses the spine keeps its inside and outside margins, so its margin box
+        // mirrors; its dragged column guides mirror with it, as in InDesign.
+        let crossed = |p: &Page| was_left.get(&p.id).is_some_and(|&l| l != (p.side == PageSide::Left)) && p.columns.positions.is_some();
+        for sp in &mut self.spreads {
+            if !sp.pages.iter().any(crossed) {
+                continue;
+            }
+            for p in &mut Arc::make_mut(sp).pages {
+                if crossed(&*p) {
+                    p.columns = p.columns.mirrored(p.margin_rect().width());
+                }
+            }
+        }
         // Pages can change sides, and so parent pages.
         self.sync_parent_margins();
     }
@@ -466,6 +482,10 @@ impl Document {
                 if let Some(t) = &template {
                     p.width = t.width;
                     p.height = t.height;
+                    // Dragged column guides too: the same width and margins keep them valid.
+                    // They are taken as for this single page; repaginating mirrors them if the
+                    // page lands on a left page.
+                    p.columns.positions = p.columns_from(t).positions;
                 }
                 ids.push(p.id);
                 p
@@ -675,7 +695,7 @@ impl Document {
                 if page.local_margins {
                     continue;
                 }
-                let Some(src) = self.parent_page(page).filter(|q| !q.same_margins(page)).map(|q| (q.margins, q.columns.clone())) else {
+                let Some(src) = self.parent_page(page).filter(|q| !q.same_margins(page)).map(|q| (q.margins, page.columns_from(q))) else {
                     continue;
                 };
                 if let Some(page) = Arc::make_mut(&mut self.spreads[si]).pages.get_mut(pi) {
@@ -877,6 +897,65 @@ mod tests {
         assert_eq!(d.page_count(), 2);
         assert_eq!(d.spreads.iter().map(|s| s.pages.len()).collect::<Vec<_>>(), vec![1, 1]);
         assert!(d.delete_pages(&[0, 1]).is_err());
+    }
+
+    /// Pages inserted after a page with dragged column guides keep them, as they keep its column
+    /// count and gutter; pages that follow a parent take the parent's.
+    #[test]
+    fn inserted_pages_keep_dragged_columns() {
+        let dragged = Columns { count: 2, gutter: 12.0, positions: Some(vec![0.0, 100.0, 130.0, 540.0]) };
+        let widths = |p: &Page| p.column_rects().iter().map(|r| r.width()).collect::<Vec<_>>();
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+        let pg = &mut Arc::make_mut(&mut d.spreads[0]).pages[0];
+        (pg.columns, pg.local_margins) = (dragged.clone(), true);
+        d.insert_pages(Some(0), 2, None).unwrap();
+        for i in 1..3 {
+            let p = d.page(i).unwrap();
+            assert_eq!(p.columns, dragged, "page {i}");
+            assert_eq!(widths(p), vec![100.0, 410.0], "page {i}");
+        }
+
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+        Arc::make_mut(&mut d.parents[0]).pages[0].columns = dragged.clone();
+        d.sync_parent_margins();
+        d.insert_pages(Some(0), 1, d.parents.first().map(|p| p.id)).unwrap();
+        assert_eq!(d.page(1).map(widths), Some(vec![100.0, 410.0]));
+    }
+
+    /// A right page whose gutter was dragged toward the spine keeps it there when inserting a
+    /// page before it makes it a left page: its dragged columns mirror across the margin box.
+    #[test]
+    fn dragged_columns_mirror_when_a_page_changes_side() {
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: true, ..Default::default() });
+        let pg = &mut Arc::make_mut(&mut d.spreads[0]).pages[0];
+        assert_eq!(pg.side, PageSide::Right);
+        let w = pg.margin_rect().width();
+        (pg.columns, pg.local_margins) = (Columns { count: 2, gutter: 12.0, positions: Some(vec![0.0, 100.0, 112.0, w]) }, true);
+        let id = pg.id;
+        // How far the gutter's spine-side edge is from the margin on the spine side.
+        let from_spine = |p: &Page| {
+            let (m, c) = (p.margin_rect(), p.column_rects());
+            match p.side {
+                PageSide::Left => m.x1 - c[1].x0,
+                _ => c[0].x1 - m.x0,
+            }
+        };
+        assert!((from_spine(d.page(0).unwrap()) - 100.0).abs() < 1e-9);
+
+        d.insert_pages(None, 1, None).unwrap();
+        let moved = d.page(1).unwrap();
+        assert_eq!((moved.id, moved.side), (id, PageSide::Left));
+        assert!((from_spine(moved) - 100.0).abs() < 1e-9, "{:?}", moved.column_rects());
+        let widths: Vec<f64> = moved.column_rects().iter().map(|r| r.width()).collect();
+        assert!((widths[0] - (w - 112.0)).abs() < 1e-9 && (widths[1] - 100.0).abs() < 1e-9, "{widths:?}");
+        // The inserted page is a right page like the one it copies: no mirroring.
+        assert_eq!(d.page(0).unwrap().columns.positions, Some(vec![0.0, 100.0, 112.0, w]));
+
+        // Moving it back to the right undoes the mirror.
+        d.delete_pages(&[0]).unwrap();
+        let back = d.page(0).unwrap();
+        assert_eq!(back.side, PageSide::Right);
+        assert!((from_spine(back) - 100.0).abs() < 1e-9, "{:?}", back.column_rects());
     }
 
     #[test]

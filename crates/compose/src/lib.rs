@@ -1860,11 +1860,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             cur.band = Band { para: pi + 1, line0: ft.lines.len(), above: Some(above), tail: None };
         }
         // Rules and shading for the paragraph.
-        if let Some((fi, bl, asc, _)) = first_line_rect {
+        if let Some((fi, bl, _, _)) = first_line_rect {
             let ft = &mut out.frames[fi];
             if pp.rule_above.on {
                 let r = &pp.rule_above;
-                let y = bl - asc - r.offset;
+                // The offset runs from the first line's baseline up to the rule's bottom edge.
+                let y = bl - r.offset;
                 let col = ft
                     .lines
                     .iter()
