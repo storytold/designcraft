@@ -484,12 +484,20 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
     let lang = app.ui.language.clone();
     let Some(st) = app.session.active() else { return };
     let units = st.doc.settings.horizontal_units;
-    let Some(page) = st.selection.page.or_else(|| crate::canvas::current_page(app)) else { return };
+    let Some((spread, page)) = crate::canvas::page_target(app) else { return };
     let Some(st) = app.session.active() else { return };
     let d = st.doc.clone();
-    let Some((si, pi)) = d.page_loc(page) else { return };
-    let pg = d.spreads[si].pages[pi].clone();
-    let n = page + 1;
+    let Some(sp) = d.spread(spread) else { return };
+    let Some(pg) = sp.pages.get(page).cloned() else { return };
+    let n = match spread {
+        designcraft_doc::SpreadRef::Doc(si) => Some(d.first_page_of_spread(si) + page + 1),
+        _ => None,
+    };
+    let resize = |app: &mut DesignApp, params| {
+        if let Some((cmd, params)) = designcraft_tools::layout::page_size_command(&d, spread, page, params) {
+            let _ = app.run(cmd, params);
+        }
+    };
     // Reference point: W/H edits keep it in place.
     let (r, _) = ui.allocate_exact_size(vec2(30.0, 44.0), Sense::hover());
     if let Some(p) = panels::properties::ref_point_proxy(ui, egui::Rect::from_center_size(r.center(), vec2(27.0, 27.0)), app.ui.ref_point) {
@@ -498,21 +506,21 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
     let anchor = app.ui.ref_point.min(8);
     let (fx, fy) = ((anchor % 3) as f64 / 2.0, (anchor / 3) as f64 / 2.0);
     // The reference point's position: from the spine across, from the top down.
-    let (x, y) = (pg.x - d.spreads[si].spine_x() + fx * pg.width, fy * pg.height);
+    let (x, y) = (pg.x - sp.spine_x() + fx * pg.width, fy * pg.height);
     egui::Grid::new("ctl_page_xywh").num_columns(4).spacing(vec2(4.0, 4.0)).show(ui, |ui| {
         caption(ui, crate::i18n::tr(&lang, "X:"));
         // Pages don't move within their spread yet.
         ui.add_enabled_ui(false, |ui| measure(ui, "cpx", Some(x), units, 64.0));
         caption(ui, crate::i18n::tr(&lang, "W:"));
         if let Some(v) = measure(ui, "cpw", Some(pg.width), units, 64.0) {
-            let _ = app.run("layout.pageSize", json!({"pages": [n], "width": v, "anchor": anchor}));
+            resize(app, json!({"width": v, "anchor": anchor}));
         }
         ui.end_row();
         caption(ui, crate::i18n::tr(&lang, "Y:"));
         ui.add_enabled_ui(false, |ui| measure(ui, "cpy", Some(y), units, 64.0));
         caption(ui, crate::i18n::tr(&lang, "H:"));
         if let Some(v) = measure(ui, "cph", Some(pg.height), units, 64.0) {
-            let _ = app.run("layout.pageSize", json!({"pages": [n], "height": v, "anchor": anchor}));
+            resize(app, json!({"height": v, "anchor": anchor}));
         }
         ui.end_row();
     });
@@ -527,7 +535,7 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
                 for (name, w, h) in panels::properties::PAGE_PRESETS {
                     if ui.selectable_label(cur == *name, crate::rtl::widget(ui, crate::i18n::tr(&lang, name))).clicked() {
                         let (w, h) = if landscape { (h, w) } else { (w, h) };
-                        let _ = app.run("layout.pageSize", json!({"pages": [n], "width": w, "height": h, "anchor": anchor}));
+                        resize(app, json!({"width": w, "height": h, "anchor": anchor}));
                     }
                 }
             },
@@ -535,20 +543,23 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             for (icon, tip, want) in [("orient-portrait", "Portrait", false), ("orient-landscape", "Landscape", true)] {
                 if crate::widgets::icon_toggle(ui, icon, landscape == want, crate::i18n::tr(&lang, tip)).clicked() && landscape != want {
-                    let _ = app.run("layout.pageSize", json!({"pages": [n], "width": pg.height, "height": pg.width, "anchor": anchor}));
+                    resize(app, json!({"width": pg.height, "height": pg.width, "anchor": anchor}));
                 }
             }
         });
     });
     vsep(ui);
-    ui.vertical(|ui| {
+    ui.add_enabled_ui(n.is_some(), |ui| {
         caption(ui, crate::i18n::tr(&lang, "Liquid Page Rule:"));
         let label = panels::interactive::liquid_rule_label(pg.liquid);
         egui::ComboBox::from_id_salt("ctl_page_rule").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).width(150.0).show_ui(
             ui,
             |ui| {
                 for (r, l) in panels::interactive::LIQUID_RULES {
-                    if ui.selectable_label(pg.liquid == r, crate::rtl::widget(ui, crate::i18n::tr(&lang, l))).clicked() && pg.liquid != r {
+                    if ui.selectable_label(pg.liquid == r, crate::rtl::widget(ui, crate::i18n::tr(&lang, l))).clicked()
+                        && pg.liquid != r
+                        && let Some(n) = n
+                    {
                         let _ = app.run("liquid.pageRule", json!({"rule": r, "pages": [n]}));
                     }
                 }
@@ -556,9 +567,11 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
         );
     });
     vsep(ui);
-    ui.vertical(|ui| {
+    ui.add_enabled_ui(n.is_some(), |ui| {
         let mut overlay = pg.show_parent_overlay;
-        if ui.checkbox(&mut overlay, crate::rtl::widget(ui, crate::i18n::tr(&lang, "Show Parent Page Overlay"))).changed() {
+        if ui.checkbox(&mut overlay, crate::rtl::widget(ui, crate::i18n::tr(&lang, "Show Parent Page Overlay"))).changed()
+            && let Some(n) = n
+        {
             let _ = app.run("layout.pageOptions", json!({"pages": [n], "showParentOverlay": overlay}));
         }
     });
@@ -1302,6 +1315,107 @@ mod tests {
         }
         let (first, short) = (rect(&h, &latin), rect(&h, "Short"));
         assert!(short.min.x - first.min.x <= 2.0 * super::DOC_TAB_MAX_W, "the last tab {short:?} starts too far right");
+    }
+
+    #[test]
+    fn parent_resize_properties_changes_the_parent_not_document_page_zero() {
+        parent_resize_panel(true);
+    }
+
+    #[test]
+    fn parent_resize_control_changes_the_parent_not_document_page_zero() {
+        parent_resize_panel(false);
+    }
+
+    fn parent_resize_panel(properties: bool) {
+        use egui_kittest::Harness;
+        {
+            let mut app = app();
+            app.run("file.new", serde_json::json!({"width": 400, "height": 600, "pages": 3, "facingPages": true})).unwrap();
+            app.run("layout.parents.new", serde_json::json!({"prefix": "B"})).unwrap();
+            app.run("layout.pages.applyParent", serde_json::json!({"pages": [0], "parent": "A"})).unwrap();
+            app.run("layout.parents.edit", serde_json::json!({"on": true, "parent": "A"})).unwrap();
+            app.session.set_tool("page");
+            app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0)));
+            *app.view_mut().unwrap() = crate::View { zoom: 1.0, origin: designcraft_geom::Point::new(-600.0, 0.0), fitted: true, rotation: 0 };
+            let before = app.session.doc().unwrap().doc.clone();
+            let mut h = Harness::builder().with_size(vec2(1600.0, 900.0)).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    let id = egui::Id::new("parent_resize_fonts");
+                    if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                        crate::theme::install_fonts(ui.ctx(), "");
+                        ui.data_mut(|d| d.insert_temp(id, true));
+                        return;
+                    }
+                    if properties {
+                        panels::properties::show(app, ui);
+                    } else {
+                        control_page(app, ui);
+                    }
+                },
+                app,
+            );
+            h.run_steps(3);
+            edit_parent_resize_field(&mut h, "33p4", "500 pt");
+            let d = &h.state().session.doc().unwrap().doc;
+            assert_eq!(d.parents[0].pages[0].width, 500.0, "the parent page in view must change");
+            assert_eq!(d.spreads, before.spreads);
+            assert_eq!(d.parents[1], before.parents[1]);
+            let b = before.parents[1].id.0;
+            h.state_mut().run("layout.selectParentPage", json!({"parent": b, "page": 1})).unwrap();
+            h.run_steps(3);
+            assert_eq!(crate::canvas::current_parent_page(h.state()), Some((1, 1)));
+            if properties {
+                h.state_mut().session.set_tool("selection");
+            }
+            h.run_steps(3);
+            edit_parent_resize_field(&mut h, "50p0", "700 pt");
+            edit_parent_resize_field(&mut h, "33p4", "560 pt");
+            let d = &h.state().session.doc().unwrap().doc;
+            assert_eq!((d.parents[1].pages[1].width, d.parents[1].pages[1].height), (560.0, 700.0));
+            assert_eq!(d.parents[1].pages[0].width, 400.0);
+            assert_eq!(d.parents[0].pages[0].width, 500.0);
+            assert_eq!(d.spreads, before.spreads);
+            let parents = d.parents.clone();
+            if properties {
+                let saved = d.clone();
+                h.get_by_label("Back").click();
+                h.run_steps(3);
+                assert!(!h.state().session.doc().unwrap().editing_parents, "Back returns to document properties");
+                assert_eq!(h.state().session.tool_id(), "selection");
+                assert!(h.query_by_label("Back").is_none(), "the next frame must leave the page properties screen");
+                assert!(std::sync::Arc::ptr_eq(&saved, &h.state().session.doc().unwrap().doc));
+            }
+            h.state_mut().run("layout.parents.edit", json!({"on": false})).unwrap();
+            h.state_mut().session.set_tool("page");
+            h.state_mut().run("layout.selectPage", json!({"page": 1})).unwrap();
+            h.run_steps(3);
+            edit_parent_resize_field(&mut h, "33p4", "530 pt");
+            let d = &h.state().session.doc().unwrap().doc;
+            assert_eq!(d.spreads[0].pages[0].width, 530.0);
+            assert_eq!(d.parents, parents);
+            if properties {
+                let saved = d.clone();
+                h.get_by_label("Back").click();
+                h.run_steps(3);
+                assert_eq!(h.state().session.tool_id(), "selection");
+                assert!(h.query_by_label("Back").is_none());
+                assert_eq!(h.state().session.doc().unwrap().selection.page, None);
+                assert!(std::sync::Arc::ptr_eq(&saved, &h.state().session.doc().unwrap().doc));
+            }
+        }
+    }
+
+    fn edit_parent_resize_field(h: &mut egui_kittest::Harness<'_, DesignApp>, value: &str, input: &str) {
+        h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some(value))
+            .next()
+            .expect("page size field")
+            .click();
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text(input.into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
     }
 
     #[test]

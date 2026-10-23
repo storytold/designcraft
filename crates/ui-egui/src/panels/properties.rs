@@ -115,12 +115,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     }
     // The Page tool with no objects selected: the page's own settings, as InDesign's.
-    if info.is_none() && app.session.tool_id() == "page" {
-        let page = app.session.active().and_then(|st| st.selection.page).or_else(|| crate::canvas::current_page(app));
-        if let Some(page) = page {
-            page_sections(app, ui, page);
-            return;
+    if info.is_none() && (app.session.tool_id() == "page" || app.session.active().is_some_and(|st| st.editing_parents)) {
+        if let Some((spread, page)) = crate::canvas::page_target(app) {
+            page_sections(app, ui, spread, page);
         }
+        return;
     }
     let Some(i) = info else {
         document_sections(app, ui);
@@ -213,15 +212,14 @@ pub(crate) fn preset_name(w: f64, h: f64) -> &'static str {
 
 /// Properties with the Page tool (Properties › Edit Page), as InDesign's: a "Page" band with Back,
 /// Page Size for this page alone (which page, preset, orientation, W/H), Margins and Columns and
-/// Quick Actions. Back returns to the Selection tool and the document's properties.
-fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
+/// Quick Actions. Back leaves parent editing and returns to the Selection tool and document properties.
+fn page_sections(app: &mut DesignApp, ui: &mut Ui, spread: designcraft_doc::SpreadRef, page: usize) {
     let u = units(app);
     let lang = app.ui.language.clone();
     let Some(st) = app.session.active() else { return };
     let d = st.doc.clone();
-    let Some((si, pi)) = d.page_loc(page) else { return };
-    let Some(pg) = d.spreads.get(si).and_then(|s| s.pages.get(pi)).cloned() else { return };
-    let n = page + 1;
+    let Some(sp) = d.spread(spread) else { return };
+    let Some(pg) = sp.pages.get(page).cloned() else { return };
     let t = Tokens::get(ui.ctx());
     // The band: "Page", and Back at its end.
     let band = block(ui, 33.0);
@@ -238,6 +236,9 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     });
     rule(ui);
     if back {
+        if matches!(spread, designcraft_doc::SpreadRef::Parent(_)) {
+            let _ = app.run("layout.parents.edit", json!({"on": false}));
+        }
         let _ = app.run("layout.selectPage", json!({"page": null}));
         app.select_tool("selection");
         return;
@@ -245,13 +246,25 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     section(ui, crate::i18n::tr(&lang, "Page Size"), true);
     // Which page.
     let b = block(ui, FIELD_H);
-    let names: Vec<String> = (0..d.page_count()).map(|i| app.session.page_label(i)).collect();
+    let (names, selected): (Vec<String>, usize) = match spread {
+        designcraft_doc::SpreadRef::Doc(si) => ((0..d.page_count()).map(|i| app.session.page_label(i)).collect(), d.first_page_of_spread(si) + page),
+        designcraft_doc::SpreadRef::Parent(_) => {
+            ((0..sp.pages.len()).map(|i| format!("{} · {}", sp.parent.as_ref().map(|p| p.label()).unwrap_or_default(), i + 1)).collect(), page)
+        }
+    };
     let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        widgets::dropdown_list(ui, names.get(page).map_or("", String::as_str), 93.0, &names, Some(page))
+        widgets::dropdown_list(ui, names.get(selected).map_or("", String::as_str), 93.0, &names, Some(selected))
     });
     if let Some(p) = picked {
-        let _ = app.run("layout.selectPage", json!({"page": p + 1}));
-        crate::canvas::go_to_page(app, p);
+        match spread {
+            designcraft_doc::SpreadRef::Doc(_) => {
+                let _ = app.run("layout.selectPage", json!({"page": p + 1}));
+                crate::canvas::go_to_page(app, p);
+            }
+            designcraft_doc::SpreadRef::Parent(_) => {
+                let _ = app.run("layout.selectParentPage", json!({"parent": sp.id.0, "page": p}));
+            }
+        }
         return;
     }
     ui.add_space(3.0);
@@ -293,13 +306,19 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
             size = Some(if key == "width" { (nv, h) } else { (w, nv) });
         }
     }
-    if let Some((nw, nh)) = size {
-        let _ = app.run("layout.pageSize", json!({"pages": [n], "width": nw, "height": nh, "anchor": app.ui.ref_point.min(8)}));
+    if let Some((nw, nh)) = size
+        && let Some((cmd, params)) =
+            designcraft_tools::layout::page_size_command(&d, spread, page, json!({"width": nw, "height": nh, "anchor": app.ui.ref_point.min(8)}))
+    {
+        let _ = app.run(cmd, params);
     }
     ui.add_space(6.0);
     let fw = full_width(ui);
     if outline_button(ui, crate::i18n::tr(&lang, "Margins and Columns"), fw).clicked() {
-        crate::canvas::go_to_page(app, page);
+        match spread {
+            designcraft_doc::SpreadRef::Doc(si) => crate::canvas::go_to_page(app, d.first_page_of_spread(si) + page),
+            designcraft_doc::SpreadRef::Parent(_) => crate::canvas::show_spread(app, spread),
+        }
         crate::menus::activate(app, "layout.marginsAndColumns", &Value::Null);
     }
     divider(ui);

@@ -1335,7 +1335,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.deletePage" | "app.duplicateSpread" => {
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
-            let page = crate::canvas::current_page(app).unwrap_or(0);
+            let Some(page) = crate::canvas::current_page(app) else { return Some(Err("select a document page".into())) };
             let r = if id == "app.deletePage" {
                 crate::dialogs::delete_pages(app, vec![page])
             } else {

@@ -413,7 +413,12 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         }
         "ui.render" => {
             let Some(st) = app.session.active() else { return err("no document") };
-            let page = match page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count()) {
+            let current = match crate::canvas::current_page(app) {
+                Some(page) => page,
+                None if p.get("page").is_some() => 0,
+                None => return err("select a document page or give an explicit page"),
+            };
+            let page = match page_index(p, current, st.doc.page_count()) {
                 Ok(page) => page,
                 Err(e) => return err(e),
             };
@@ -683,6 +688,20 @@ mod automation_contract_tests {
         assert_eq!(app.ui.palette.as_deref(), Some("field"));
         assert_eq!(app.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
     }
+    #[test]
+    fn parent_resize_mode_does_not_default_document_actions_to_page_zero() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        app.run("layout.parents.edit", json!({"on":true,"parent":"A"})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        assert!(app.run("app.deletePage", json!({})).is_err());
+        assert!(app.run("app.duplicateSpread", json!({})).is_err());
+        assert_eq!(call(&mut app, &ctx, "ui.render", json!({"scale":0.1}))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "ui.render", json!({"page":0,"scale":0.1}))["ok"], true);
+        assert_eq!(app.session.doc().unwrap().doc, before);
+    }
+
     #[test]
     fn control_pages_validate_before_writer_and_preserve_omission() {
         let mut app = app();
