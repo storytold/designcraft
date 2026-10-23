@@ -881,23 +881,36 @@ impl Renderer {
         let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
         let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
         let Some(pm) = images::mip(&data, asset.page, page_w, on_screen) else { return };
+        let sx = page_w / pm.width().max(1) as f64;
+        let sy = page_h / pm.height().max(1) as f64;
+        let to_image = Affine::translate((page.x0, page.y0)) * Affine::scale_non_uniform(sx, sy);
         // A coloured image is already in the plate's inks (its colours come from `color_of`).
-        let pm = match (colorize::colorized(f.doc, &g.fill, &asset.data, &pm), PLATE.with(|p| p.get())) {
-            (Some(coloured), _) => coloured,
-            (None, Some(plate)) => plate_pixmap(&pm, plate),
-            (None, None) => pm,
+        let (pm, at) = match (colorize::colorized(f.doc, &g.fill, &asset.data, &pm), PLATE.with(|p| p.get())) {
+            (Some(coloured), _) => (coloured, (0, 0)),
+            (None, Some(plate)) => {
+                // Spread space → the image's pixels.
+                let to_pixels = (xf * g.xf * to_image).inverse();
+                // The document is walked for effects only when a large image needs it.
+                let area = || {
+                    let reach = effect_reach(f.doc);
+                    f.visible.inflate(reach, reach)
+                };
+                match plate_part(&pm, plate, to_pixels, area) {
+                    Some(part) => part,
+                    None => return,
+                }
+            }
+            (None, None) => (pm, (0, 0)),
         };
         // Only where the page is: a box reaching past it (a media box larger than the crop box)
         // shows nothing there.
         let rect = Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page);
         ctx.set_transform(f.view * xf * g.xf);
-        let sx = page_w / pm.width().max(1) as f64;
-        let sy = page_h / pm.height().max(1) as f64;
         ctx.set_paint(vello_cpu::Image {
             image: vello_cpu::ImageSource::Pixmap(pm),
             sampler: peniko::ImageSampler::default().with_quality(peniko::ImageQuality::Medium),
         });
-        ctx.set_paint_transform(Affine::translate((page.x0, page.y0)) * Affine::scale_non_uniform(sx, sy));
+        ctx.set_paint_transform(to_image * Affine::translate((f64::from(at.0), f64::from(at.1))));
         ctx.fill_rect(&rect);
         ctx.reset_paint_transform();
     }
@@ -950,21 +963,111 @@ pub(crate) fn cmyk_in(table: &[[f32; 4]], rgb: [f32; 3]) -> [f32; 4] {
     out
 }
 
+/// How far (points) any effect in `doc` can carry an image's pixels: an image is converted to a
+/// plate only where the view can show it, widened by this so shadows and glows near the edge of
+/// the view still find their pixels. Generous on purpose: it only makes the converted part bigger.
+fn effect_reach(doc: &Document) -> f64 {
+    let mut reach = 0.0;
+    let mut add = |it: &Item| {
+        if it.effects.any() {
+            reach += fx::outset(it) + 144.0;
+        }
+    };
+    for it in doc.spreads.iter().flat_map(|sp| &sp.items).chain(doc.parents.iter().flat_map(|p| &p.items)) {
+        it.walk(&mut add);
+    }
+    reach
+}
+
+/// An image's plate (see [`plate_pixmap`]) where `area` (spread space; `to_pixels` maps it to the
+/// image's pixels) can show it, and where that part starts in the image. Small images are
+/// converted whole and cached. A large one (a 3840 × 5760 photo at full resolution, zoomed in)
+/// would take seconds to convert and crowd the other images out of the cache, so only the part in
+/// view is converted. None: none of it is in view.
+fn plate_part(
+    pm: &std::sync::Arc<vello_cpu::Pixmap>,
+    plate: u8,
+    to_pixels: Affine,
+    area: impl FnOnce() -> Rect,
+) -> Option<(std::sync::Arc<vello_cpu::Pixmap>, (u16, u16))> {
+    let (w, h) = (pm.width(), pm.height());
+    if plate_bytes(w, h) <= PLATE_CACHE_BYTES / 8 {
+        return Some((plate_pixmap(pm, plate), (0, 0)));
+    }
+    // Bilinear and bicubic sampling read a few pixels around each one shown.
+    let r = to_pixels.transform_rect_bbox(area()).inflate(4.0, 4.0);
+    if !(r.x0.is_finite() && r.y0.is_finite() && r.x1.is_finite() && r.y1.is_finite()) {
+        return Some((plate_pixmap(pm, plate), (0, 0)));
+    }
+    let clamp = |v: f64, max: u16| v.clamp(0.0, f64::from(max)) as u16;
+    let (x0, y0, x1, y1) = (clamp(r.x0.floor(), w), clamp(r.y0.floor(), h), clamp(r.x1.ceil(), w), clamp(r.y1.ceil(), h));
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    // All of it in view: the part is the whole plate, so convert it once and keep it, as long as
+    // it fits the cache at all. Converting it in parts would redo it on every render.
+    if (x0, y0, x1, y1) == (0, 0, w, h) && plate_bytes(w, h) <= PLATE_CACHE_BYTES {
+        return Some((plate_pixmap(pm, plate), (0, 0)));
+    }
+    let row = usize::from(w);
+    let data = pm.data();
+    let mut part = Vec::with_capacity(usize::from(x1 - x0) * usize::from(y1 - y0));
+    for y in usize::from(y0)..usize::from(y1) {
+        let start = y * row;
+        part.extend_from_slice(data.get(start + usize::from(x0)..start + usize::from(x1))?);
+    }
+    let table = cmyk_table();
+    let part = plate_pixels(&part, &table, plate);
+    Some((std::sync::Arc::new(vello_cpu::Pixmap::from_parts(part, x1 - x0, y1 - y0)), (x0, y0)))
+}
+
+/// Plate conversions cached per image and plate: at most this much derived raster memory.
+const PLATE_CACHE_BYTES: usize = 192 << 20;
+
+/// What one plate of a `w` × `h` image costs the cache (premultiplied RGBA8).
+fn plate_bytes(w: u16, h: u16) -> usize {
+    usize::from(w).saturating_mul(usize::from(h)).saturating_mul(4)
+}
+
+/// Premultiplied pixels' ink coverage on `plate` (4: C, M and Y complements as R, G and B).
+fn plate_pixels(pixels: &[vello_cpu::color::PremulRgba8], table: &[[f32; 4]], plate: u8) -> Vec<vello_cpu::color::PremulRgba8> {
+    pixels
+        .iter()
+        .map(|p| {
+            if p.a == 0 {
+                return *p;
+            }
+            let k = 255.0 / p.a as f32;
+            let rgb = [p.r, p.g, p.b].map(|v| (v as f32 * k / 255.0).min(1.0));
+            let cmyk = cmyk_in(table, rgb);
+            let ink = |i: usize| ((1.0 - cmyk[i].clamp(0.0, 1.0)) * p.a as f32).round() as u8;
+            if plate == 4 {
+                return vello_cpu::color::PremulRgba8 { r: ink(0), g: ink(1), b: ink(2), a: p.a };
+            }
+            let v = ink(plate.min(3) as usize);
+            vello_cpu::color::PremulRgba8 { r: v, g: v, b: v, a: p.a }
+        })
+        .collect()
+}
+
 /// An image's ink coverage on one process plate, as grey (cached per image and plate).
 fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync::Arc<vello_cpu::Pixmap> {
     // Keep source allocations alive (their addresses are keys), invalidate on colour settings,
-    // and cap derived raster memory rather than merely counting differently sized images.
-    type Entry = (std::sync::Arc<vello_cpu::Pixmap>, std::sync::Arc<vello_cpu::Pixmap>);
-    type Cache = (designcraft_color::cms::ColorSettings, std::collections::HashMap<(usize, u8), Entry>, usize);
-    const BUDGET: usize = 64 << 20;
+    // and cap derived raster memory. A full cache lets go of the plates used longest ago: every
+    // CMYK view render draws each image twice (two ink passes), so dropping the whole cache when
+    // it filled made a few placed images miss on every render and converted them again each time.
+    type Entry = (std::sync::Arc<vello_cpu::Pixmap>, std::sync::Arc<vello_cpu::Pixmap>, u64);
+    type Cache = (designcraft_color::cms::ColorSettings, std::collections::HashMap<(usize, u8), Entry>, usize, u64);
     static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
     let key = (std::sync::Arc::as_ptr(pm) as usize, plate);
     let settings = designcraft_color::cms::active_settings();
     {
         let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((previous, map, _)) = guard.as_ref() {
+        if let Some((previous, map, _, clock)) = guard.as_mut() {
             if *previous == settings {
-                if let Some((_, derived)) = map.get(&key) {
+                *clock += 1;
+                if let Some((_, derived, used_at)) = map.get_mut(&key) {
+                    *used_at = *clock;
                     return derived.clone();
                 }
             } else {
@@ -973,37 +1076,30 @@ fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync:
         }
     }
     let table = cmyk_table();
-    let data: Vec<vello_cpu::color::PremulRgba8> = pm
-        .data()
-        .iter()
-        .map(|p| {
-            if p.a == 0 {
-                return *p;
-            }
-            let k = 255.0 / p.a as f32;
-            let rgb = [p.r, p.g, p.b].map(|v| (v as f32 * k / 255.0).min(1.0));
-            let cmyk = cmyk_in(&table, rgb);
-            let ink = |i: usize| ((1.0 - cmyk[i].clamp(0.0, 1.0)) * p.a as f32).round() as u8;
-            if plate == 4 {
-                return vello_cpu::color::PremulRgba8 { r: ink(0), g: ink(1), b: ink(2), a: p.a };
-            }
-            let v = ink(plate.min(3) as usize);
-            vello_cpu::color::PremulRgba8 { r: v, g: v, b: v, a: p.a }
-        })
-        .collect();
+    #[cfg(test)]
+    PLATE_CONVERSIONS.with(|n| n.set(n.get() + 1));
+    let data = plate_pixels(pm.data(), &table, plate);
     let out = std::sync::Arc::new(vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height()));
-    let bytes = (pm.width() as usize).saturating_mul(pm.height() as usize).saturating_mul(8);
-    if bytes <= BUDGET {
+    let bytes = plate_bytes(pm.width(), pm.height());
+    if bytes <= PLATE_CACHE_BYTES {
         let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let (previous, map, used) = guard.get_or_insert_with(|| (settings.clone(), Default::default(), 0));
-        if *previous != settings || used.saturating_add(bytes) > BUDGET {
+        let (previous, map, used, clock) = guard.get_or_insert_with(|| (settings.clone(), Default::default(), 0, 0));
+        if *previous != settings {
             map.clear();
             *used = 0;
             *previous = settings;
         }
-        if map.insert(key, (pm.clone(), out.clone())).is_none() {
-            *used += bytes;
+        while used.saturating_add(bytes) > PLATE_CACHE_BYTES {
+            let Some(oldest) = map.iter().min_by_key(|(_, e)| e.2).map(|(k, _)| *k) else { break };
+            if let Some((_, gone, _)) = map.remove(&oldest) {
+                *used = used.saturating_sub(plate_bytes(gone.width(), gone.height()));
+            }
         }
+        *clock += 1;
+        if let Some((_, replaced, _)) = map.insert(key, (pm.clone(), out.clone(), *clock)) {
+            *used = used.saturating_sub(plate_bytes(replaced.width(), replaced.height()));
+        }
+        *used = used.saturating_add(bytes);
     }
     out
 }
@@ -1326,6 +1422,12 @@ fn raster_pixmap(raster: &craft_pdf::raster::Raster) -> Pixmap {
 
 #[cfg(test)]
 thread_local! {
+    /// How many whole images [`plate_pixmap`] converted to a plate on this thread.
+    static PLATE_CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
     /// How many PDF pages [`render_pdf_page`] rasterized on this thread.
     static PDF_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -1563,6 +1665,61 @@ mod tests {
     use super::*;
     use designcraft_doc::build::NewDocument;
     use designcraft_doc::{Fill, ParaFormat};
+
+    /// A `w` × `h` image with a different colour in every pixel.
+    fn ramp(w: u16, h: u16) -> std::sync::Arc<vello_cpu::Pixmap> {
+        let data = (0..usize::from(w) * usize::from(h))
+            .map(|i| vello_cpu::color::PremulRgba8 { r: (i % 251) as u8, g: (i / 7 % 241) as u8, b: (i / 13 % 239) as u8, a: 255 })
+            .collect();
+        std::sync::Arc::new(vello_cpu::Pixmap::from_parts(data, w, h))
+    }
+
+    /// A CMYK view draws every image twice per render (two ink passes). The plate cache used to
+    /// count each plate twice and empty itself when full, so three placed photos missed on every
+    /// render and an edit took half a second; now they all stay cached.
+    #[test]
+    fn plates_of_the_images_in_view_stay_cached_across_renders() {
+        let images = [ramp(1600, 1200), ramp(1500, 1300), ramp(1400, 1400)];
+        let before = PLATE_CONVERSIONS.with(std::cell::Cell::get);
+        for _ in 0..3 {
+            for plate in [4, 3] {
+                for pm in &images {
+                    plate_pixmap(pm, plate);
+                }
+            }
+        }
+        assert_eq!(PLATE_CONVERSIONS.with(std::cell::Cell::get) - before, 6, "each image and plate is converted once");
+    }
+
+    /// A large image is converted only where the view shows it, with the same inks as converting
+    /// it whole.
+    #[test]
+    fn a_large_image_converts_only_the_part_in_view() {
+        let pm = ramp(4000, 2500);
+        assert!(plate_bytes(4000, 2500) > PLATE_CACHE_BYTES / 8, "large enough to be converted in parts");
+        let before = PLATE_CONVERSIONS.with(std::cell::Cell::get);
+        let (part, at) = plate_part(&pm, 4, Affine::IDENTITY, || Rect::new(1000.0, 500.0, 1100.0, 560.0)).unwrap();
+        assert_eq!(PLATE_CONVERSIONS.with(std::cell::Cell::get), before, "the whole image was not converted");
+        assert_eq!(at, (996, 496));
+        assert_eq!((part.width(), part.height()), (108, 68));
+        let table = cmyk_table();
+        let row = usize::from(pm.width());
+        for (y, x) in [(0usize, 0usize), (30, 50), (67, 107)] {
+            let source = pm.data()[(usize::from(at.1) + y) * row + usize::from(at.0) + x];
+            assert_eq!(part.data()[y * 108 + x], plate_pixels(&[source], &table, 4)[0]);
+        }
+        assert!(plate_part(&pm, 4, Affine::IDENTITY, || Rect::new(5000.0, 0.0, 5100.0, 50.0)).is_none(), "out of view: nothing");
+        // All of it in view: converted whole once, then taken from the cache.
+        let before = PLATE_CONVERSIONS.with(std::cell::Cell::get);
+        for _ in 0..3 {
+            let (whole, at) = plate_part(&pm, 4, Affine::IDENTITY, || Rect::new(-10.0, -10.0, 4010.0, 2510.0)).unwrap();
+            assert_eq!(((whole.width(), whole.height()), at), ((4000, 2500), (0, 0)));
+        }
+        assert_eq!(PLATE_CONVERSIONS.with(std::cell::Cell::get) - before, 1, "the whole plate is converted once and cached");
+        let small = ramp(64, 64);
+        let (whole, at) = plate_part(&small, 3, Affine::IDENTITY, || Rect::new(0.0, 0.0, 10.0, 10.0)).unwrap();
+        assert_eq!(((whole.width(), whole.height()), at), ((64, 64), (0, 0)), "a small image is converted whole and cached");
+    }
 
     #[test]
     fn eps_source_decodes_like_its_preview() {
