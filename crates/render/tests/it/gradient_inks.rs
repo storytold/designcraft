@@ -10,7 +10,7 @@ use designcraft_render::{Placed, RenderOptions, Renderer};
 #[test]
 fn a_cmyk_gradient_is_c50_m50_halfway() {
     let mut d = Document::new(&NewDocument { width: 100.0, height: 20.0, facing_pages: false, ..Default::default() });
-    let stop = |offset: f32, color: Color| GradientStop { offset, color, opacity: 1.0, midpoint: 0.5 };
+    let stop = |offset: f32, color: Color| GradientStop::new(offset, color);
     let gradient =
         Gradient { kind: GradientKind::Linear, stops: vec![stop(0.0, Color::cmyk(0.0, 1.0, 0.0, 0.0)), stop(1.0, Color::cmyk(1.0, 0.0, 0.0, 0.0))] };
     d.swatches.push(Swatch { name: "Magenta to Cyan".into(), value: SwatchValue::Gradient { gradient }, locked: false, named: true, hidden: false });

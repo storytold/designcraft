@@ -129,6 +129,13 @@ pub(crate) fn mark_start(opts: &PdfOptions, bleed: [f64; 4]) -> f64 {
     bleed.iter().copied().fold(opts.marks.offset.max(0.0), f64::max)
 }
 
+/// Whether an export is CMYK print output: transparency blends in CMYK, in the document's CMYK
+/// working space (which PDF/X also carries as its output intent). True when the document blends
+/// in CMYK, and always in PDF/X; PDF/A exports are RGB.
+pub fn print_color(doc: &Document, opts: &PdfOptions) -> bool {
+    opts.standard != Standard::PdfA2b && (doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk || opts.standard == Standard::PdfX4)
+}
+
 /// Like [`export_pdf`], also returning warnings about approximated or dropped features.
 pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
     write::guard(|| export_pdf_with_report_inner(doc, cache, opts))
@@ -136,14 +143,23 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
 
 fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
     let sheets = sheets(doc, opts)?;
-    let warnings = Vec::new();
     let (version, archival) = match opts.standard {
         Standard::None => (PdfVersion::Pdf17, None),
         Standard::PdfX4 => (PdfVersion::Pdf16, None),
         Standard::PdfA2b => (PdfVersion::Pdf17, Some(Archival::A2_B)),
     };
     let configuration = write::configuration(version, archival)?;
-    let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, configuration, ..Default::default() };
+    let mut warnings = Vec::new();
+    let base = if print_color(doc, opts) {
+        // An output intent only for PDF/X, as in InDesign.
+        let (settings, warning) = crate::pdfx::print_settings(opts.standard == Standard::PdfX4)?;
+        warnings.extend(warning);
+        let pdfx_version = (opts.standard == Standard::PdfX4).then(|| "PDF/X-4".to_string());
+        krilla::SerializeSettings { pdfx_version, ..settings }
+    } else {
+        krilla::SerializeSettings::default()
+    };
+    let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, configuration, ..base };
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let created = opts.created.or_else(now_unix);
     let metadata = Metadata {
@@ -159,6 +175,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
 
     let mut ex = Exporter {
         drawing_items: Vec::new(),
+        inks: crate::inks::ink_set(doc),
         doc,
         cache,
         opts,
@@ -228,13 +245,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     }
     ex.check_placed_versions()?;
     let mut bytes = writer.finish().map_err(PdfError::from)?;
-    // Transparency blends in the document's blend space: CMYK for print (and always in PDF/X).
     let mut warnings = ex.warnings;
-    if !ex.rgb_only && (doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk || opts.standard == Standard::PdfX4) {
-        // The rewrite matches krilla's exact output; in PDF/X-4, `check_pdfx4` reports any
-        // group that got past it, with its page.
-        crate::pdfx::cmyk_group_spaces(&mut bytes);
-    }
     // Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X
     // or PDF/A: this update comes after krilla's validator ran, and its NeedAppearances fields and
     // Screen annotations aren't allowed in PDF/A.
@@ -253,10 +264,10 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         }
     }
     if opts.standard == Standard::PdfX4 {
-        // Output intent and PDF/X identification, then check the result.
-        match crate::pdfx::make_pdfx4(&bytes, &title, created) {
+        // The XMP dates krilla doesn't write, then check the result.
+        match crate::pdfx::make_pdfx4(&bytes, created) {
             Some(b) => bytes = b,
-            None => warnings.push("PDF/X-4: the output intent couldn't be added".into()),
+            None => warnings.push("PDF/X-4: the XMP metadata date couldn't be added".into()),
         }
         for issue in crate::pdfx::check_pdfx4(&bytes) {
             warnings.push(format!("PDF/X-4: {issue}"));
@@ -339,18 +350,27 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         return Err(PdfError::NoPages);
     }
     let pdf_opts = PdfOptions { title: opts.title.clone(), ..PdfOptions::default() };
-    let settings = krilla::SerializeSettings { compress_content_streams: true, ..Default::default() };
+    let mut warnings = Vec::new();
+    let base = if print_color(doc, &pdf_opts) {
+        let (settings, warning) = crate::pdfx::print_settings(false)?;
+        warnings.extend(warning);
+        settings
+    } else {
+        krilla::SerializeSettings::default()
+    };
+    let settings = krilla::SerializeSettings { compress_content_streams: true, ..base };
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let metadata = Metadata { creator: "DesignCraft".into(), producer: "DesignCraft".into(), title: Some(title), ..Default::default() };
     let mut writer = Writer::new(settings, metadata);
     let pdf = writer.document_mut();
     let mut ex = Exporter {
         drawing_items: Vec::new(),
+        inks: crate::inks::ink_set(doc),
         doc,
         cache,
         opts: &pdf_opts,
         clip: Rect::ZERO,
-        warnings: Vec::new(),
+        warnings,
         images: HashMap::new(),
         images_by_content: ImageContentCache::default(),
         #[cfg(test)]
@@ -405,10 +425,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         page.finish();
     }
     ex.check_placed_versions()?;
-    let mut bytes = writer.finish().map_err(PdfError::from)?;
-    if doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk {
-        crate::pdfx::cmyk_group_spaces(&mut bytes);
-    }
+    let bytes = writer.finish().map_err(PdfError::from)?;
     let mut warnings = ex.warnings;
     warnings.dedup();
     Ok(ExportReport { bytes, pages: pairs.len(), warnings })
@@ -474,6 +491,8 @@ impl std::hash::Hasher for ConstantImageHasher {
 
 pub(crate) struct Exporter<'a> {
     pub doc: &'a Document,
+    /// The document's inks with its Ink Manager settings.
+    pub(crate) inks: craft_prepress::InkSet,
     pub cache: &'a Cache,
     pub opts: &'a PdfOptions,
     /// Current sheet's visible area (spread space) for culling.
@@ -539,11 +558,11 @@ pub(crate) fn norm(v: f32) -> NormalizedF32 {
     NormalizedF32::new(if v.is_finite() { v.clamp(0.0, 1.0) } else { 1.0 }).unwrap_or(NormalizedF32::ONE)
 }
 
-fn q(v: f32) -> u8 {
+pub(crate) fn q(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-fn regular(c: &Color, rgb_only: bool) -> krilla::color::RegularColor {
+pub(crate) fn regular(c: &Color, rgb_only: bool) -> krilla::color::RegularColor {
     use krilla::color::RegularColor as R;
     if rgb_only && matches!(c, Color::Cmyk { .. }) {
         let [r, g, b] = c.to_rgb();
@@ -610,6 +629,27 @@ impl Exporter<'_> {
         self.doc.settings.intent == designcraft_doc::Intent::Print || self.opts.standard == Standard::PdfX4
     }
 
+    /// Whether a paint overprints: its own attribute, or 100% [Black] when Preferences ›
+    /// Appearance of Black overprints it (not in PDF/A, whose RGB output has no overprint).
+    pub(crate) fn overprints(&self, swatch: &str, tint: f32, flag: bool) -> bool {
+        flag || (!self.rgb_only && self.doc.settings.overprint_black && swatch == designcraft_color::swatch::BLACK && tint >= 0.999)
+    }
+
+    /// Overprint for what is painted until the matching pop: `/op` for fills, `/OP` for strokes,
+    /// and `/OPM 1`, so a CMYK paint's zero components leave the inks beneath it alone. Returns
+    /// whether it pushed. PDF/A exports are RGB and leave overprint out.
+    pub(crate) fn push_overprint(&mut self, s: &mut Surface, fill: bool, stroke: bool) -> bool {
+        if !fill && !stroke {
+            return false;
+        }
+        if self.rgb_only {
+            self.warn("PDF/A: overprint was left out");
+            return false;
+        }
+        s.push_overprint(krilla::blend::Overprint { fill, stroke, nonzero: true });
+        true
+    }
+
     pub(crate) fn warn(&mut self, w: impl Into<String>) {
         let w = w.into();
         if !self.warnings.contains(&w) {
@@ -638,7 +678,7 @@ impl Exporter<'_> {
                 SwatchValue::Registration => return Some(registration(t, self.rgb_only)),
                 SwatchValue::Color { color: _, color_type: ColorType::Spot } => {
                     // Ink Manager: an alias prints on another ink; converted inks go to process.
-                    let (ink, process) = self.doc.inks.resolve(&sw.name);
+                    let (ink, process) = crate::inks::spot_output(self.doc, &self.inks, &sw.name);
                     let target =
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { break };
@@ -708,11 +748,10 @@ impl Exporter<'_> {
         n
     }
 
-    /// Isolate Blending / Knockout groups: an isolated transparency group (knockout is drawn
-    /// isolated too).
+    /// Isolate Blending / Knockout Group: a transparency group with `/I` and `/K` as set.
     fn push_isolation(s: &mut Surface, it: &Item) -> usize {
         if it.isolate || it.knockout {
-            s.push_isolated();
+            s.push_group(krilla::blend::GroupOptions { isolated: it.isolate, knockout: it.knockout });
             1
         } else {
             0
@@ -879,10 +918,7 @@ impl Exporter<'_> {
                 && let Some(p) = &path
                 && let Some(paint) = self.fill_paint(&it.fill, bp.bounding_box())
             {
-                s.set_stroke(None);
-                s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
-                s.draw_path(p);
-                s.set_fill(None);
+                self.fill_item_path(s, &it.fill, paint, p);
             }
             s.pop();
             // The clip in page space, so the children keep their absolute transforms.
@@ -948,13 +984,7 @@ impl Exporter<'_> {
             && let Some(p) = &path
             && let Some(paint) = self.fill_paint(&it.fill, bp.bounding_box())
         {
-            if it.fill.overprint {
-                self.warn("overprint is not exported yet");
-            }
-            s.set_stroke(None);
-            s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
-            s.draw_path(p);
-            s.set_fill(None);
+            self.fill_item_path(s, &it.fill, paint, p);
         }
         if frame_art {
             s.end_tagged();
@@ -976,11 +1006,21 @@ impl Exporter<'_> {
                     for (si, gp) in designcraft_compose::path_glyphs(&cs, ft, &bp, pt) {
                         let st = &cs.styles[si as usize];
                         // A gradient spans the path's box.
-                        let fill = designcraft_doc::Fill { swatch: st.fill.clone(), tint: st.fill_tint, ..designcraft_doc::Fill::none() };
+                        let fill = designcraft_doc::Fill {
+                            swatch: st.fill.clone(),
+                            tint: st.fill_tint,
+                            overprint: st.overprint_fill,
+                            ..designcraft_doc::Fill::none()
+                        };
                         if let (Some(paint), Some(p)) = (self.fill_paint(&fill, bp.bounding_box()), to_path(&gp)) {
+                            let op = self.overprints(&st.fill, st.fill_tint, st.overprint_fill);
+                            let op = self.push_overprint(s, op, false);
                             s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
                             s.draw_path(&p);
                             s.set_fill(None);
+                            if op {
+                                s.pop();
+                            }
                         }
                     }
                 } else if let Some(ft) = cs.frame(it.id) {
@@ -1044,6 +1084,19 @@ impl Exporter<'_> {
         }
     }
 
+    /// Fill `p` with an item's fill paint, overprinting when the fill does.
+    fn fill_item_path(&mut self, s: &mut Surface, fill: &designcraft_doc::Fill, paint: krilla::paint::Paint, p: &Path) {
+        let op = self.overprints(&fill.swatch, fill.tint, fill.overprint);
+        let pushed = self.push_overprint(s, op, false);
+        s.set_stroke(None);
+        s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
+        s.draw_path(p);
+        s.set_fill(None);
+        if pushed {
+            s.pop();
+        }
+    }
+
     /// A swatch fill (solid or gradient) in the item's inner space. `None` for [None]/unknown.
     pub(crate) fn fill_paint(&mut self, fill: &designcraft_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
         self.fill_paint_in(fill, bounds, Affine::IDENTITY)
@@ -1055,41 +1108,11 @@ impl Exporter<'_> {
         let (swatch, tint) = (fill.swatch.as_str(), fill.tint);
         if let Some(g) = designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
             let kind = g.kind;
-            let mut expanded = g.expanded_stops();
-            // Grey and CMYK stops blend as inks, so a grey stop beside a CMYK one is the K ink.
-            if !self.rgb_only && expanded.iter().any(|(_, c, _)| matches!(c, Color::Cmyk { .. })) {
-                for (_, c, _) in &mut expanded {
-                    if let Color::Gray { k } = *c {
-                        *c = Color::cmyk(0.0, 0.0, 0.0, k);
-                    }
-                }
-            }
-            // A PDF shading needs one colour space. Midpoint expansion can introduce RGB even
-            // when every authored stop is CMYK/Gray; PDF/A can also change the output space.
-            let components = |c: &Color| match c {
-                Color::Cmyk { .. } if !self.rgb_only => 4,
-                Color::Gray { .. } => 1,
-                _ => 3,
+            let overprint = self.overprints(swatch, tint, fill.overprint);
+            let stops = match self.ink_gradient_stops(g, swatch, overprint) {
+                Some(stops) => stops,
+                None => self.device_gradient_stops(g, swatch),
             };
-            let mixed = expanded.first().is_some_and(|(_, first, _)| expanded.iter().any(|(_, c, _)| components(c) != components(first)));
-            if mixed {
-                self.warn(format!("gradient '{swatch}': mixed color spaces converted to RGB (colour appearance and separations may change)"));
-            }
-            let mut stops: Vec<Stop> = Vec::new();
-            let mut last = 0.0f32;
-            for (o, c, a) in expanded {
-                let o = o.clamp(last, 1.0);
-                last = o;
-                let color = if mixed && !matches!(c, Color::Rgb { .. }) {
-                    let [r, g, b] = c.to_rgb();
-                    rgb::Color::new(q(r), q(g), q(b)).into()
-                } else {
-                    // Preserve RGB values, including already-interpolated display RGB, and
-                    // leave every homogeneous gradient on its existing device-space path.
-                    device(&c, self.rgb_only)
-                };
-                stops.push(Stop { offset: norm(o), color, opacity: norm(a) });
-            }
             if stops.is_empty() {
                 return None;
             }
@@ -1133,6 +1156,46 @@ impl Exporter<'_> {
         self.swatch_color(swatch, tint).map(Into::into)
     }
 
+    /// A gradient's stops in device colors: CMYK, RGB or Gray, as one space.
+    fn device_gradient_stops(&mut self, g: &designcraft_color::Gradient, swatch: &str) -> Vec<Stop> {
+        let mut expanded = g.expanded_stops();
+        // Gray and CMYK stops blend as inks, so a gray stop beside a CMYK one is the K ink.
+        if !self.rgb_only && expanded.iter().any(|(_, c, _)| matches!(c, Color::Cmyk { .. })) {
+            for (_, c, _) in &mut expanded {
+                if let Color::Gray { k } = *c {
+                    *c = Color::cmyk(0.0, 0.0, 0.0, k);
+                }
+            }
+        }
+        // A PDF shading needs one color space. Midpoint expansion can introduce RGB even
+        // when every authored stop is CMYK/Gray; PDF/A can also change the output space.
+        let components = |c: &Color| match c {
+            Color::Cmyk { .. } if !self.rgb_only => 4,
+            Color::Gray { .. } => 1,
+            _ => 3,
+        };
+        let mixed = expanded.first().is_some_and(|(_, first, _)| expanded.iter().any(|(_, c, _)| components(c) != components(first)));
+        if mixed {
+            self.warn(format!("gradient '{swatch}': mixed color spaces converted to RGB (color appearance and separations may change)"));
+        }
+        let mut stops: Vec<Stop> = Vec::new();
+        let mut last = 0.0f32;
+        for (o, c, a) in expanded {
+            let o = o.clamp(last, 1.0);
+            last = o;
+            let color = if mixed && !matches!(c, Color::Rgb { .. }) {
+                let [r, g, b] = c.to_rgb();
+                rgb::Color::new(q(r), q(g), q(b)).into()
+            } else {
+                // Preserve RGB values, including already-interpolated display RGB, and
+                // leave every homogeneous gradient on its existing device-space path.
+                device(&c, self.rgb_only)
+            };
+            stops.push(Stop { offset: norm(o), color, opacity: norm(a) });
+        }
+        stops
+    }
+
     fn stroke(&mut self, s: &mut Surface, it: &Item, bp: &BezPath, path: &Path) {
         let st = &it.stroke;
         // A gradient swatch runs across the path's box, as on a fill.
@@ -1144,6 +1207,10 @@ impl Exporter<'_> {
             c.into()
         };
         let closed = it.path.is_closed();
+        // Overprint Stroke covers the stroke and its arrowheads, Overprint Gap the gap color;
+        // each is pushed around what it paints (a filled outline or a stroked path).
+        let stroke_op = self.overprints(&st.swatch, st.tint, st.overprint);
+        let gap_op = self.overprints(&st.gap_swatch, st.gap_tint, st.gap_overprint);
         let mut cap = match st.cap {
             designcraft_doc::Cap::Butt => krilla::paint::LineCap::Butt,
             designcraft_doc::Cap::Round => krilla::paint::LineCap::Round,
@@ -1158,14 +1225,22 @@ impl Exporter<'_> {
             if let Some(g) = self.swatch_color(&st.gap_swatch, st.gap_tint)
                 && st.gap_swatch != designcraft_color::swatch::NONE
             {
+                let pushed = self.push_overprint(s, gap_op, gap_op);
                 s.set_stroke(Some(Stroke { paint: g.into(), width: st.weight as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
                 s.set_fill(None);
                 s.draw_path(path);
                 s.set_stroke(None);
+                if pushed {
+                    s.pop();
+                }
             }
+            let pushed = self.push_overprint(s, stroke_op, stroke_op);
             s.set_fill(Some(Fill { paint: paint.clone(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
             s.draw_path(&op);
             s.set_fill(None);
+            if pushed {
+                s.pop();
+            }
             return;
         }
         // Viewers expand dashes too: a degenerate pattern draws solid, as on screen.
@@ -1213,9 +1288,14 @@ impl Exporter<'_> {
             && let Some(g) = self.swatch_color(&st.gap_swatch, st.gap_tint)
         {
             // Gap colour under dashes and dots.
+            let pushed = self.push_overprint(s, gap_op, gap_op);
             s.set_stroke(Some(Stroke { paint: g.into(), width: width as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
             s.draw_path(path);
+            if pushed {
+                s.pop();
+            }
         }
+        let pushed = self.push_overprint(s, stroke_op, stroke_op);
         s.set_stroke(Some(Stroke {
             paint: paint.clone(),
             width: width as f32,
@@ -1231,9 +1311,13 @@ impl Exporter<'_> {
         }));
         s.draw_path(path);
         s.set_stroke(None);
+        if pushed {
+            s.pop();
+        }
         for _ in 0..pushes {
             s.pop();
         }
+        let pushed = self.push_overprint(s, stroke_op, stroke_op);
         for h in arrows.iter().flat_map(|a| &a.1) {
             let Some(p) = to_path(&h.path) else { continue };
             match h.outline {
@@ -1248,6 +1332,9 @@ impl Exporter<'_> {
                     s.set_fill(None);
                 }
             }
+        }
+        if pushed {
+            s.pop();
         }
     }
 
@@ -1794,6 +1881,7 @@ mod image_content_cache_tests {
     fn exporter<'a>(doc: &'a Document, cache: &'a Cache, opts: &'a PdfOptions) -> Exporter<'a> {
         Exporter {
             drawing_items: Vec::new(),
+            inks: crate::inks::ink_set(doc),
             doc,
             cache,
             opts,

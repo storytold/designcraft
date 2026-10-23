@@ -4137,27 +4137,6 @@ mod fitting_tests {
     use super::*;
 
     #[test]
-    fn separations_come_from_source_colours() {
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        let c = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
-        s.execute("object.fill", &json!({"swatch": "C=100 M=0 Y=0 K=0", "ids": [c]})).unwrap();
-        let k = s.execute("frame.create", &json!({"rect": [300, 100, 400, 200]})).unwrap()["id"].clone();
-        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [k]})).unwrap();
-        let d = s.doc().unwrap().doc.clone();
-        let plate = |p: u8| {
-            let mut rr = designcraft_render::Renderer::new();
-            rr.threads = 0;
-            rr.render_page(&d, &s.cache, 0, 1.0, false, &designcraft_render::RenderOptions { plate: Some(p), ..Default::default() }).unwrap()
-        };
-        let (cyan, black) = (plate(0), plate(3));
-        // Cyan ink only on the cyan frame; black ink only on the black one (no rich-black guess).
-        assert!(cyan.pixel(150, 150)[0] < 10 && cyan.pixel(350, 150)[0] > 245, "{:?} {:?}", cyan.pixel(150, 150), cyan.pixel(350, 150));
-        assert!(black.pixel(350, 150)[0] < 10 && black.pixel(150, 150)[0] > 245);
-        assert!(cyan.pixel(20, 20)[0] > 245, "paper has no ink");
-    }
-
-    #[test]
     fn inner_glow_bevel_and_satin_change_the_inside() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -4196,13 +4175,14 @@ mod fitting_tests {
         let df = shot(&s);
         assert!(df.pixel(102, 200)[0] > 200, "left edge faded to paper: {:?}", df.pixel(102, 200));
         assert_eq!(df.pixel(298, 200), plain.pixel(298, 200), "right edge untouched");
-        // A knockout group exports as an image too.
+        // A knockout group stays vector, as a knockout transparency group.
         let other = s.execute("frame.create", &json!({"rect": [400, 100, 450, 150]})).unwrap()["id"].clone();
         let other2 = s.execute("frame.create", &json!({"rect": [420, 120, 470, 170]})).unwrap()["id"].clone();
         let g = s.execute("object.group", &json!({"ids": [other, other2]})).unwrap()["id"].clone();
         s.execute("object.transparencyGroup", &json!({"ids": [g], "knockout": true})).unwrap();
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
-        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("2 object(s)")), "{r}");
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("1 object(s)")), "{r}");
+        assert!(String::from_utf8_lossy(&super::super::file::base64_decode(r["base64"].as_str().unwrap())).contains("/K true"));
         // PDF export carries effects (as an image of the object).
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("soft effects")), "{r}");

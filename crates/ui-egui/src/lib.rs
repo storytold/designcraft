@@ -27,6 +27,7 @@ mod prefs;
 pub mod render_worker;
 mod rtl;
 mod section_options;
+pub mod separations;
 mod shortcut_import;
 pub mod story_editor;
 pub mod taskbar;
@@ -236,11 +237,9 @@ pub struct UiState {
     pub flattener: String,
     /// File › Export PDF… options (persisted; see `PdfExportSettings`).
     pub pdf_export: PdfExportSettings,
-    /// View › Separations Preview: a process plate (0–3) and/or an ink limit (total, 0–4).
+    /// View › Separations Preview: the plate shown and the ink limit; `None` is off.
     #[serde(skip)]
-    pub separation: Option<u8>,
-    #[serde(skip)]
-    pub ink_limit: Option<f32>,
+    pub separations: Option<separations::Separations>,
     /// View › Display Performance.
     pub display_quality: designcraft_render::DisplayQuality,
     /// Preferences › Interface › UI scaling (1 = 100%).
@@ -389,8 +388,7 @@ impl Default for UiState {
             language: String::new(),
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),
-            separation: None,
-            ink_limit: None,
+            separations: None,
             display_quality: designcraft_render::DisplayQuality::High,
             ui_scale: 1.0,
             rich_black: true,
@@ -513,6 +511,7 @@ impl CanvasCache {
             display_key: None,
             patcher: designcraft_render::Renderer::new(),
             patches: 0,
+            separations: separations::Preview::default(),
         }
     }
 }
@@ -544,6 +543,8 @@ pub struct CanvasCache {
     pub patcher: designcraft_render::Renderer,
     /// Partial repaints / full renders since start (perf readout).
     pub patches: u64,
+    /// View › Separations Preview: the visible spreads' plates.
+    pub separations: separations::Preview,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]

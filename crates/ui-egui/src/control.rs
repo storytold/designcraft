@@ -91,6 +91,7 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
             })
             .collect::<Vec<_>>(),
         "currentPage": crate::canvas::current_page(app),
+        "separations": crate::separations::inspect(app),
         "dialog": app.ui.dialog.as_ref().map(|d| serde_json::to_value(d).unwrap_or_default()),
         "activeDocument": app.session.active_index(),
         "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches},

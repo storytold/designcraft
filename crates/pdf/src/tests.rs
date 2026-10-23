@@ -188,10 +188,9 @@ fn standards() {
     // Output intent, identification and checks all in place; the update still reads.
     assert!(r.warnings.is_empty(), "{:?}", r.warnings);
     assert!(crate::check_pdfx4(&r.bytes).is_empty());
-    let text = String::from_utf8_lossy(&r.bytes).to_string();
     // The default working CMYK space is the built-in Coated FOGRA39.
-    assert!(text.contains("/OutputIntents[") && text.contains("/OutputConditionIdentifier(FOGRA39)"), "output intent");
-    assert!(text.contains(r"/OutputCondition(Coated FOGRA39 \(fitted, craft-cms\))"), "output condition");
+    let intent = crate::print_tests::output_intent(&r.bytes).expect("output intent");
+    assert_eq!((intent.identifier.as_str(), intent.condition.as_str()), ("FOGRA39", "Coated FOGRA39 (fitted, craft-cms)"));
     // A plain export fails the checks; both read with the same pages.
     let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
     assert_eq!(hayro_syntax::Pdf::new(r.bytes.clone()).unwrap().pages().len(), hayro_syntax::Pdf::new(plain.clone()).unwrap().pages().len());
@@ -591,21 +590,6 @@ fn column_rules_are_drawn() {
     assert_eq!(xs.len(), 2, "{xs:?}");
     assert!((xs[0] - 214.0).abs() < 0.01 && (xs[1] - 398.0).abs() < 0.01, "{xs:?}");
     assert!(rules(false).is_empty());
-}
-
-#[test]
-fn ruby_overprint_is_reported_as_not_exported() {
-    use designcraft_doc::cjk_settings::AdornmentOverprint;
-    let mut d = doc_with_text("漢字です");
-    let sid = *d.stories.keys().next().unwrap();
-    let clean = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    assert!(!clean.warnings.iter().any(|w| w.contains("overprint")), "{:?}", clean.warnings);
-    d.story_mut(sid).unwrap().format_chars(0.."漢字".len(), |f| {
-        f.over.ruby = Some("かんじ".into());
-        f.over.ruby_overprint_fill = Some(AdornmentOverprint::On);
-    });
-    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    assert!(r.warnings.iter().any(|w| w.contains("overprint is not exported yet")), "{:?}", r.warnings);
 }
 
 #[test]

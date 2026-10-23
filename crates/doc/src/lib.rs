@@ -226,7 +226,8 @@ impl Document {
     }
 }
 
-/// Ink Manager settings for output.
+/// Ink Manager settings for output, by swatch name. Output applies them through a
+/// `craft_prepress::InkSet` built from the document (`designcraft_pdf::inks`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InkManager {
@@ -241,19 +242,6 @@ pub struct InkManager {
 impl InkManager {
     fn is_default(&self) -> bool {
         *self == Self::default()
-    }
-
-    /// The ink a spot swatch prints on (after aliases; at most a few hops) and whether it's
-    /// converted to process.
-    pub fn resolve<'a>(&'a self, ink: &'a str) -> (&'a str, bool) {
-        let mut n = ink;
-        for _ in 0..8 {
-            match self.aliases.iter().find(|(a, _)| a == n) {
-                Some((_, to)) if to != n => n = to,
-                _ => break,
-            }
-        }
-        (n, self.all_to_process || self.to_process.iter().any(|x| x == n))
     }
 }
 

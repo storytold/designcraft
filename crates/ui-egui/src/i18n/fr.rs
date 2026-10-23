@@ -164,6 +164,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Indent", "Retrait"),
     ("Indent to Here", "Retrait jusqu'à ce point"),
     ("Ink Limit 300%", "Limite d'encre 300 %"),
+    ("All Inks", "Toutes les encres"),
     ("Insert Anchored Object", "Insérer un objet ancré"),
     ("Insert Cross-Reference", "Insérer une référence croisée"),
     ("Insert Field", "Insérer un champ"),

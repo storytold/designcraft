@@ -1664,6 +1664,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("I, II, III, IV...", "I, II, III, IV..."),
     ("Indent to Here", "Wcięcie do tego miejsca"),
     ("Ink Limit 300%", "Limit farby 300%"),
+    ("All Inks", "Wszystkie farby"),
     ("Internet Standard RGB (sRGB)", "Standardowe internetowe RGB (sRGB)"),
     ("Left:", "Lewy:"),
     ("Legacy Macintosh RGB", "Starsze RGB komputerów Macintosh"),

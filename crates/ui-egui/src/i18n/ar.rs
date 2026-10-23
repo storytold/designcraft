@@ -1878,6 +1878,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Import XML", "استيراد XML"),
     ("Indent to Here", "إزاحة بادئة إلى هنا"),
     ("Ink Limit 300%", "حد الحبر 300%"),
+    ("All Inks", "جميع الأحبار"),
     ("Insert Anchored Object", "إدراج كائن مرسّى"),
     ("Insert Cross-Reference", "إدراج مرجع متصالب"),
     ("Insert Math Expression", "إدراج تعبير رياضي"),

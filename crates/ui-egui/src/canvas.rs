@@ -526,6 +526,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             painter.add(egui::Shape::mesh(mesh));
         }
     }
+    crate::separations::paint(app, ui.ctx(), &painter, &xf, &layout, screen);
     let hair = 1.0 / ui.ctx().pixels_per_point();
     for slot in &layout.slots {
         painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, Color32::from_rgb(0x4a, 0x4a, 0x4a)), StrokeKind::Outside);
@@ -682,7 +683,6 @@ fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bool, ppp: f6
         note_indicators: !preview && app.session.prefs.show_note_anchors,
         change_markup: !preview && app.session.prefs.show_added_text,
         tag_markers: !preview && app.ui.tag_markers,
-        plate: app.ui.separation,
         highlight_keeps: !preview && app.session.prefs.highlight_keeps,
         highlight_custom_tracking: !preview && app.session.prefs.highlight_custom_tracking,
         quality: app.ui.display_quality,
@@ -715,7 +715,6 @@ fn grid_areas(layout: &CanvasLayout) -> Vec<(designcraft_doc::SpreadRef, DRect)>
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DisplayKey {
     quality: designcraft_render::DisplayQuality,
-    separation: Option<u8>,
     rich_black: bool,
     overprint_preview: bool,
     proof_colors: bool,
@@ -733,7 +732,6 @@ fn display_key(app: &DesignApp) -> DisplayKey {
     let (ui, prefs) = (&app.ui, &app.session.prefs);
     DisplayKey {
         quality: ui.display_quality,
-        separation: ui.separation,
         rich_black: ui.rich_black,
         overprint_preview: ui.overprint_preview,
         proof_colors: ui.proof_colors,
@@ -941,10 +939,6 @@ fn render_worker_spawn(ctx: &egui::Context) -> Option<crate::render_worker::Work
 fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render::Rendered) {
     if app.ui.proof_colors {
         designcraft_render::proof_view(&mut img, &app.ui.proof_setup);
-    }
-    // Plates render from source colours; the ink limit is estimated from the composite.
-    if app.ui.separation.is_none() && app.ui.ink_limit.is_some() {
-        designcraft_render::separation_view(&mut img, None, app.ui.ink_limit);
     }
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let ci = crate::widgets::fit_texture(ci, ctx.input(|i| i.max_texture_side));

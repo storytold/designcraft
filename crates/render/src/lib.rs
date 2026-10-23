@@ -145,9 +145,9 @@ pub struct RenderOptions {
     pub change_markup: bool,
     /// View › Structure › Show Tag Markers: brackets around inline-tagged text (screen view).
     pub tag_markers: bool,
-    /// Separations Preview: draw one process plate (0 = cyan … 3 = black) as grey ink coverage,
-    /// from each object's own colour (CMYK as authored, others through the colour settings).
-    /// 4 (internal, the CMYK blend space): cyan, magenta and yellow coverage in red, green, blue.
+    /// The CMYK blend space's ink passes (internal): 3 draws black ink coverage as gray, 4 cyan,
+    /// magenta and yellow coverage in red, green and blue, from each object's own color (CMYK as
+    /// authored, others through the color settings); 0–2 draw cyan, magenta or yellow as gray.
     pub plate: Option<u8>,
     /// View › Display Performance.
     pub quality: DisplayQuality,
@@ -1017,7 +1017,7 @@ thread_local! {
     static HIDDEN_LAYERS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Appearance of Black for the render on this thread: 100% K as pure black.
     static RICH_BLACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Separations Preview plate for the render on this thread.
+    /// The CMYK blend space's ink pass for the render on this thread (`RenderOptions::plate`).
     static PLATE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
 }
 
@@ -1482,9 +1482,6 @@ pub fn crop_pixmap(pm: &Pixmap, frac: [f64; 4]) -> Option<Pixmap> {
     Some(out)
 }
 
-/// Separations Preview on a rendered image: `plate` 0–3 shows that process plate (C, M, Y, K) as
-/// ink density in grey; with an `ink_limit` (0–4, total ink) areas over it are shown in red.
-/// Pixels are separated with a plain GCR (black = 1 − max(r, g, b)), so it's a preview.
 /// View › Proof Colors: simulate the proof target (a press, another RGB space, colour-vision
 /// deficiencies) through the active colour settings' proof table.
 pub fn proof_view(img: &mut Rendered, setup: &designcraft_color::cms::ProofSetup) {
@@ -1526,31 +1523,6 @@ fn blend_space_view(img: &mut Rendered, area: Rect) {
                 px[i] = ((out[i] as u32 * a as u32 + 127) / 255) as u8;
             }
         }
-    }
-}
-
-pub fn separation_view(img: &mut Rendered, plate: Option<u8>, ink_limit: Option<f32>) {
-    for px in img.pixels.as_chunks_mut::<4>().0 {
-        let a = px[3] as f32 / 255.0;
-        // Composite over paper white, then separate.
-        let ch = |v: u8| (v as f32 / 255.0) + (1.0 - a);
-        let (r, g, b) = (ch(px[0]).min(1.0), ch(px[1]).min(1.0), ch(px[2]).min(1.0));
-        let k = 1.0 - r.max(g).max(b);
-        let inks =
-            if k >= 0.999 { [0.0, 0.0, 0.0, 1.0] } else { [(1.0 - r - k) / (1.0 - k), (1.0 - g - k) / (1.0 - k), (1.0 - b - k) / (1.0 - k), k] };
-        let mut out = match plate {
-            Some(p) => {
-                let v = ((1.0 - inks[p.min(3) as usize].clamp(0.0, 1.0)) * 255.0).round() as u8;
-                [v, v, v, 255]
-            }
-            None => [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, 255],
-        };
-        if let Some(limit) = ink_limit
-            && inks.iter().sum::<f32>() > limit
-        {
-            out = [230, 40, 40, 255];
-        }
-        px.copy_from_slice(&out);
     }
 }
 
@@ -1884,20 +1856,6 @@ mod tests {
         for c in 0..3 {
             assert!((ko[c] as i32 - magenta_only[c] as i32).abs() <= 3, "the overlap shows magenta alone: {ko:?} vs {magenta_only:?}");
         }
-    }
-
-    #[test]
-    fn separations_split_plates_and_flag_ink_limits() {
-        // Pure cyan (0, 255, 255) and rich black-ish (20, 20, 20).
-        let mut img = Rendered { width: 2, height: 1, pixels: vec![0, 255, 255, 255, 20, 20, 20, 255] };
-        let mut c = img.clone();
-        separation_view(&mut c, Some(0), None);
-        assert_eq!(c.pixel(0, 0)[0], 0, "cyan plate solid under cyan");
-        let mut m = img.clone();
-        separation_view(&mut m, Some(1), None);
-        assert_eq!(m.pixel(0, 0)[0], 255, "no magenta");
-        separation_view(&mut img, None, Some(0.5));
-        assert_eq!(img.pixel(0, 0), [230, 40, 40, 255], "100% over a 50% limit");
     }
 
     #[test]

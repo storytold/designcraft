@@ -1926,6 +1926,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("I, II, III, IV...", "I, II, III, IV..."),
     ("Indent to Here", "ここまでインデント"),
     ("Ink Limit 300%", "インキ量の上限 300%"),
+    ("All Inks", "すべてのインキ"),
     ("Internet Standard RGB (sRGB)", "インターネット標準 RGB (sRGB)"),
     ("Left:", "左:"),
     ("Legacy Macintosh RGB", "旧 Macintosh RGB"),

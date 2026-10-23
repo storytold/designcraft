@@ -20,6 +20,7 @@ pub mod math;
 pub mod recovery;
 pub mod sample;
 pub mod script;
+pub mod separations;
 mod tooling;
 
 use std::sync::Arc;
