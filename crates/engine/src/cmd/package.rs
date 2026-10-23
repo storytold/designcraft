@@ -203,7 +203,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
+            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report, warnings: PDF export warnings}",
             has_doc,
             package
         ),
@@ -434,11 +434,12 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         root.write(&path, &designcraft_idml::export_idml_with(&packed, &opts))?;
         files.push(path);
     }
+    let mut warnings = Vec::new();
     if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
         let path = package_output_path(&dir, &title, "pdf")?;
-        let bytes = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(&packed), &s.cache, &Default::default())
-            .map_err(|e| EngineError::Other(e.to_string()))?;
-        root.write(&path, &bytes)?;
+        let pdf = super::export::pdf_report(&packed, &s.cache, &json!({}))?;
+        root.write(&path, &pdf.bytes)?;
+        warnings = pdf.warnings;
         files.push(path);
     }
     // The report: fonts (missing first), links, preflight, the user's instructions.
@@ -462,10 +463,18 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
             r += &format!("  {}\n", i.get("message").and_then(Value::as_str).unwrap_or(""));
         }
     }
+    if !warnings.is_empty() {
+        r += "\nPDF export warnings\n";
+        for warning in &warnings {
+            r += &format!("  {warning}\n");
+        }
+    }
     let report = dir.join("Instructions.txt");
     root.write(&report, r.as_bytes())?;
     files.push(report);
-    Ok(json!({"dir": dir.to_string_lossy(), "files": files.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>(), "report": r}))
+    Ok(
+        json!({"dir": dir.to_string_lossy(), "files": files.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>(), "report": r, "warnings": warnings}),
+    )
 }
 
 fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
@@ -484,6 +493,37 @@ fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn package_pdf_preserves_soft_effects_and_reports_warnings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "SoftEffects", "width": 144, "height": 144})).unwrap();
+        let shadow = s.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [shadow]})).unwrap();
+        s.execute("object.dropShadow", &json!({"on": true, "size": 6, "distance": 5, "ids": [shadow]})).unwrap();
+        let feather = s.execute("frame.create", &json!({"rect": [80, 80, 120, 120], "shape": "ellipse"})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [feather]})).unwrap();
+        s.execute("object.feather", &json!({"width": 6, "ids": [feather]})).unwrap();
+        let exported = s.execute("file.exportPdf", &json!({})).unwrap();
+        let expected = super::super::base64_decode(exported["base64"].as_str().unwrap());
+
+        let packaged = s.execute("file.package", &json!({"dir": dir.path(), "pdf": true, "idml": false})).unwrap();
+
+        let actual = std::fs::read(dir.path().join("SoftEffects.pdf")).unwrap();
+        let images = |bytes: &[u8]| String::from_utf8_lossy(bytes).matches("/Subtype/Image").count();
+        assert_eq!(images(&expected), 4, "two images and their soft masks");
+        assert_eq!(images(&actual), images(&expected), "package must rasterise the same objects as export");
+        assert_eq!(packaged["warnings"], exported["warnings"]);
+        let warnings = packaged["warnings"].as_array().unwrap();
+        assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("2 object(s) with soft effects")));
+        let report = std::fs::read_to_string(dir.path().join("Instructions.txt")).unwrap();
+        assert_eq!(packaged["report"], report);
+        for warning in warnings {
+            assert!(report.contains(warning.as_str().unwrap()), "{report}");
+        }
+    }
 
     #[test]
     fn relocated_packages_rebind_embedded_image_links_on_open() {
@@ -751,6 +791,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn packaged_fonts_keep_a_font_extension() {
         use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
