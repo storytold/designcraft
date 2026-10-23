@@ -14,6 +14,7 @@ mod ka;
 mod pl;
 mod pt_br;
 mod ru;
+mod sv;
 mod uk;
 
 /// Supported interface languages: (code, name in that language).
@@ -32,6 +33,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("cs", "Čeština"),
     ("pl", "Polski"),
     ("ka", "ქართული"),
+    ("sv", "Svenska"),
 ];
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
@@ -4461,6 +4463,7 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static CZECH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static FRENCH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static SWEDISH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -4494,6 +4497,9 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     if lang == "ka" {
         return GEORGIAN.get_or_init(|| ka::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
+    if lang == "sv" {
+        return SWEDISH.get_or_init(|| sv::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     if lang == "uk" {
         return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -4522,6 +4528,7 @@ pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
         "pl" => pl::CONTEXT,
         "ja" => ja::CONTEXT,
         "ar" => ar::CONTEXT,
+        "sv" => sv::CONTEXT,
         _ => &[],
     };
     if let Some((_, _, text)) = contexts.iter().find(|(key, scope, _)| *key == s && *scope == context) {
@@ -4545,6 +4552,12 @@ pub(crate) fn russian_catalog() -> Vec<&'static str> {
     ru::TABLE.iter().map(|(_, text)| *text).chain(ru::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
 }
 
+/// Whether the Swedish catalog has an entry for `s` (many Swedish labels read like the English ones).
+#[cfg(test)]
+pub(crate) fn swedish_has(s: &str) -> bool {
+    sv::TABLE.iter().any(|(key, _)| *key == s)
+}
+
 /// Ukrainian, Russian, Polish and Georgian put the category before the value in count captions
 /// ("сторінок: 5", "страниц: 5", "Strony: 5", "გვერდი: 5"): every number stays grammatical in the
 /// languages with several plural forms, and Georgian nouns stay singular after numerals. Other
@@ -4553,11 +4566,28 @@ pub fn category_first(lang: &str) -> bool {
     matches!(lang, "uk" | "ru" | "pl" | "ka")
 }
 
+/// Swedish singular for a count of one, where it differs from the catalog's plural ("1 sida",
+/// "5 sidor"); "fel", "objekt" and "lager" read the same either way.
+fn swedish_singular(noun: &str) -> Option<&'static str> {
+    match noun {
+        "pages" => Some("sida"),
+        "stories" => Some("artikel"),
+        "warnings" => Some("varning"),
+        _ => None,
+    }
+}
+
 /// Caption for a counted category, e.g. `count_label("ru", "pages", 5)` is "страниц: 5". Czech
-/// picks the plural form for the count (1, 2–4, other).
+/// picks the plural form for the count (1, 2–4, other); Swedish the singular for one.
 pub fn count_label(lang: &str, noun: &str, count: usize) -> String {
     if category_first(lang) {
         return format!("{}: {count}", tr(lang, noun));
+    }
+    if lang == "sv"
+        && count == 1
+        && let Some(one) = swedish_singular(noun)
+    {
+        return format!("{count} {one}");
     }
     if lang == "cs"
         && let Some((_, [one, few, other])) = cs::PLURALS.iter().find(|(key, _)| *key == noun)
@@ -4613,11 +4643,19 @@ mod tests {
         ("pt-br", pt_br::TABLE),
         ("ru", ru::TABLE),
         ("uk", uk::TABLE),
+        ("sv", sv::TABLE),
     ];
 
     /// Every per-language table `tr_context` looks up.
-    const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] =
-        &[("ar", ar::CONTEXT), ("cs", cs::CONTEXT), ("ja", ja::CONTEXT), ("pl", pl::CONTEXT), ("ru", ru::CONTEXT), ("uk", uk::CONTEXT)];
+    const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] = &[
+        ("ar", ar::CONTEXT),
+        ("cs", cs::CONTEXT),
+        ("ja", ja::CONTEXT),
+        ("pl", pl::CONTEXT),
+        ("ru", ru::CONTEXT),
+        ("uk", uk::CONTEXT),
+        ("sv", sv::CONTEXT),
+    ];
 
     /// The languages of the shared tables' columns, in column order.
     const SHARED_COLUMNS: [&str; 5] = ["de", "fr", "es", "ja", "zh"];
@@ -4796,6 +4834,31 @@ mod tests {
     }
 
     #[test]
+    fn swedish_catalog_preserves_placeholders_and_ellipses() {
+        let catalog: HashMap<_, _> = sv::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), sv::TABLE.len(), "duplicate Swedish keys");
+        let placeholders = |s: &str| {
+            s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<std::collections::BTreeSet<_>>()
+        };
+        for (key, translation) in sv::TABLE {
+            assert!(!translation.trim().is_empty(), "empty {key}");
+            assert_eq!(placeholders(key), placeholders(translation), "placeholders: {key}");
+            assert_eq!(key.ends_with('…'), translation.ends_with('…'), "ellipsis: {key}");
+        }
+        for (key, context, expected) in sv::CONTEXT {
+            assert_eq!(tr_context("sv", key, context), *expected, "sv {context}: {key}");
+        }
+        assert_eq!(tr("sv", "File"), "Arkiv");
+        assert_eq!(tr("sv", "Save As…"), "Spara som…");
+        assert_eq!(tr("sv", "Unknown label"), "Unknown label");
+        assert!(!is_rtl("sv"));
+        assert_eq!(count_label("sv", "pages", 5), "5 sidor");
+        assert_eq!(count_label("sv", "pages", 1), "1 sida");
+        assert_eq!(count_label("sv", "warnings", 1), "1 varning");
+        assert_eq!(count_label("sv", "errors", 1), "1 fel");
+    }
+
+    #[test]
     fn ukrainian_counts_use_category_captions_for_every_number() {
         for n in [0, 1, 2, 4, 5, 11, 21, 22, 25] {
             assert_eq!(count_label("uk", "pages", n), format!("сторінок: {n}"));
@@ -4910,6 +4973,25 @@ mod tests {
             "Story Editor — {count} words",
             "Text Anchor",
             "Use Document Style Definition",
+            // Control panel icons, the Create Guides and Margins and Columns dialogs, and Table of Contents.
+            "Corner Size",
+            "Stroke Weight",
+            "Remove Existing Ruler Guides",
+            "This page",
+            "This page is",
+            "Both pages of the spread",
+            "Both pages of the parent spread",
+            "All pages",
+            "Title:",
+            "Styles in Table of Contents",
+            "Include Paragraph Styles:",
+            "Other Styles:",
+            "« Add",
+            "Remove »",
+            "Entry Style:",
+            "Page Number:",
+            "Between Entry and Number:",
+            "Replace Existing Table of Contents",
             // Status-bar messages.
             "Alternate layout",
             "Couldn't write recovery data: {error}",
