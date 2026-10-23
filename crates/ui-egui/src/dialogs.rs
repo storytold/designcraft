@@ -264,16 +264,27 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         if let Some((key, m)) = pressed {
             let sc = match key {
                 egui::Key::Escape => None,
-                egui::Key::Backspace if !m.any() => Some(String::new()),
-                _ => Some(crate::menus::shortcut_string(m, key)),
+                egui::Key::Backspace if !m.any() => Some(Some(String::new())),
+                _ => Some(crate::keys::chord_text(m, key)),
             };
             if let Some(sc) = sc {
-                let msg = match app.run("window.setShortcut", json!({"id": recording, "shortcut": sc})) {
-                    Ok(v) => match v["conflicts"].as_array().filter(|c| !c.is_empty()) {
-                        Some(c) => format!("Also used by: {}", c.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")),
-                        None => String::new(),
-                    },
-                    Err(e) => e,
+                let msg = match (sc, craft_keymap::CommandRef::parse_key(&recording)) {
+                    (Some(sc), Some(cmd)) => {
+                        // The recorded keys move to this command; the commands that held them lose them.
+                        match app.run("window.setShortcut", json!({"id": cmd.id, "params": cmd.params, "shortcut": sc, "steal": true})) {
+                            Ok(v) => match v["conflicts"].as_array().filter(|c| !c.is_empty()) {
+                                Some(c) => {
+                                    let labels: Vec<String> =
+                                        c.iter().filter_map(|x| x.as_str()).map(|k| crate::keys::label(&app.keymap, k)).collect();
+                                    format!("Taken from: {}", labels.join(", "))
+                                }
+                                None => String::new(),
+                            },
+                            Err(e) => e,
+                        }
+                    }
+                    (None, _) => "That key can't be used in a shortcut".to_string(),
+                    (_, None) => String::new(),
                 };
                 d.fields.insert("message".into(), json!(msg));
             }
@@ -281,11 +292,20 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         }
     }
     let ql = q.to_lowercase();
-    let mut rows: Vec<(String, String, String)> = designcraft_engine::command_specs()
+    // (command key, label, menu path): every command with a menu row or a default shortcut, the
+    // UI commands, the panels and the tools.
+    let mut rows: Vec<(String, String, String)> = app
+        .keymap
+        .catalog()
         .iter()
-        .filter(|c| !c.menu.is_empty() || c.shortcut.is_some())
-        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › ")))
-        .chain(crate::menus::UI_COMMANDS.iter().map(|c| (c.0.to_string(), c.1.to_string(), String::new())))
+        .filter(|b| {
+            let ui_command = crate::menus::UI_COMMANDS.iter().any(|c| c.0 == b.command.id);
+            ui_command || !b.paths.is_empty() || !b.defaults.is_empty() || b.command.id == crate::keys::PANEL_COMMAND
+        })
+        .map(|b| {
+            let menu = b.paths.first().map(|p| p.get(..p.len().saturating_sub(1)).unwrap_or_default().join(" › ")).unwrap_or_default();
+            (b.command.key(), b.label.clone(), menu)
+        })
         .filter(|(id, l, _)| ql.is_empty() || l.to_lowercase().contains(&ql) || id.to_lowercase().contains(&ql))
         .collect();
     rows.sort_by(|a, b| a.1.cmp(&b.1));
@@ -294,15 +314,16 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             for (id, label, menu) in &rows {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label.trim_end_matches('…')))
                     .on_hover_text(format!("{id}{}", if menu.is_empty() { String::new() } else { format!("  ({menu})") }));
-                let cur = crate::menus::shortcut_of(app, id).map(|s| crate::menus::shortcut_text(&s)).unwrap_or_else(|| "—".into());
+                let cmd = craft_keymap::CommandRef::parse_key(id);
+                let cur = cmd.as_ref().and_then(|c| crate::keys::shortcut_display(&app.keymap, c)).unwrap_or_else(|| "—".into());
                 let text = if recording == *id { crate::i18n::tr(&app.ui.language, "Press keys…").to_string() } else { cur };
                 if ui.add(egui::Button::new(text).min_size(egui::vec2(110.0, 0.0))).clicked() {
                     d.fields.insert("recording".into(), json!(id));
                     d.fields.insert("message".into(), json!(""));
                 }
-                if app.ui.shortcuts.contains_key(id) {
+                if let Some(cmd) = cmd.filter(|_| app.keymap.overrides().get(id).is_some()) {
                     if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Default"))).clicked() {
-                        let _ = app.run("window.setShortcut", json!({"id": id, "shortcut": null}));
+                        let _ = app.run("window.setShortcut", json!({"id": cmd.id, "params": cmd.params, "shortcut": null}));
                     }
                 } else {
                     ui.label("");

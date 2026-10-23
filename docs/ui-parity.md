@@ -43,7 +43,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Context menus (canvas, panels, rulers) | ✓ everywhere | 9 context-menu sites, ruler units by right-click | ~ | **not opening for several users** (#238, #187, #160) |
 | IME text input on the canvas | ✓ | ✓ | ~ | not checked by hand with a system IME (#322) |
 | Font menu: search, preview, favourites, type-ahead, filters (class, recently added), styles per family, sample text and size, recently used, similar fonts | ✓ | ✓ | ~ | search field focus on macOS (#335, #86); Adobe Fonts (Find More, activated) out of scope |
-| Keyboard shortcuts: InDesign defaults, editor, sets | ✓ | ✓ editor; defaults from 09-shortcuts.md; imports an InDesign Show Set `.txt` | ✓ | tool keys are fixed, so a set's Tools items are reported, not applied |
+| Keyboard shortcuts: InDesign defaults, editor, sets | ✓ | ✓ editor; defaults from 09-shortcuts.md; panels take keys (InDesign's F5–F12 defaults where free) and tool keys are editable; imports an InDesign Show Set `.txt`, panel and tool items included | ✓ | no Object Styles or Transform panel to give Cmd+F7 or F9; Links (Cmd+Shift+D) keeps DesignCraft's owner of that key |
 | Quick Apply | ✓ | ✓ | ✓ | |
 | Numeric fields: units, arithmetic, scrubbing | ✓ | 21 pt spinner fields with arithmetic | ✓ | |
 | Colour fields: hex, picker from any swatch field | ✓ | ✓ | ~ | hex entry and picker issues (#323, #190) |

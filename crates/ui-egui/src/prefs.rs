@@ -20,6 +20,60 @@ impl UiState {
     }
 }
 
+/// `UiState::shortcuts` in ui.json. `shortcuts` maps each changed command to its first
+/// shortcut (`""` for none): the map of one text per command that earlier DesignCraft versions
+/// read, and fail on with anything else, which drops the whole file. A command's further
+/// shortcuts go in `shortcutsMore` (command → texts), which those versions ignore. Loading
+/// appends them to the command's entry in `shortcuts`; extra shortcuts for a command missing
+/// there are ignored, because an earlier version that saved the file left that command at its
+/// defaults. `shortcuts` also loads in the shared keymap's array form, which the first builds
+/// on it wrote.
+pub(crate) mod saved_shortcuts {
+    use std::collections::BTreeMap;
+
+    use craft_keymap::{MAX_BINDINGS, Overrides};
+    use serde::ser::SerializeMap;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(overrides: &Overrides, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut first = BTreeMap::new();
+        let mut more = BTreeMap::new();
+        for (command, texts) in overrides.iter() {
+            // A blank text is no shortcut, as `""` is in the map.
+            let mut texts = texts.iter().map(String::as_str).filter(|t| !t.trim().is_empty());
+            first.insert(command, texts.next().unwrap_or_default());
+            let rest: Vec<&str> = texts.collect();
+            if !rest.is_empty() {
+                more.insert(command, rest);
+            }
+        }
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("shortcuts", &first)?;
+        if !more.is_empty() {
+            map.serialize_entry("shortcutsMore", &more)?;
+        }
+        map.end()
+    }
+
+    // `Overrides` loads leniently (never fails), so neither field can make ui.json unreadable.
+    #[derive(Default, Deserialize)]
+    #[serde(default, rename_all = "camelCase")]
+    struct Saved {
+        shortcuts: Overrides,
+        shortcuts_more: Overrides,
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Overrides, D::Error> {
+        let Saved { mut shortcuts, shortcuts_more } = Saved::deserialize(deserializer)?;
+        for (command, rest) in shortcuts_more.iter() {
+            let Some(first) = shortcuts.get(command) else { continue };
+            let texts: Vec<String> = first.iter().chain(rest).take(MAX_BINDINGS).cloned().collect();
+            shortcuts.insert(command, texts);
+        }
+        Ok(shortcuts)
+    }
+}
+
 fn recover_docking(saved: &mut Value) {
     let Some(fields) = saved.as_object_mut() else { return };
     if fields.get("docking").is_some_and(|value| serde_json::from_value::<Option<Layout<String>>>(value.clone()).is_err()) {

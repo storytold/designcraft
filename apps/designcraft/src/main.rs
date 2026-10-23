@@ -152,6 +152,7 @@ fn load_prefs(app: &mut DesignApp) {
         && let Ok(ui) = designcraft_ui_egui::UiState::from_preferences_json(&bytes)
     {
         app.ui = ui;
+        app.sync_keymap();
     }
     // Engine preferences (Preferences dialog, favourites…) live beside the UI state.
     if let Some(p) = prefs_path().map(|p| p.with_file_name("prefs.json"))

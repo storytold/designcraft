@@ -84,7 +84,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 let shown = g.iter().find(|tl| tl.id == current).unwrap_or(&g[0]);
                                 let active = g.iter().any(|tl| tl.id == current);
                                 let name = crate::i18n::tr(&app.ui.language, shown.label);
-                                let tip = match shown.shortcut {
+                                let tip = match crate::menus::tool_shortcut_label(app, shown.id) {
                                     Some(s) => format!("{name} ({s})"),
                                     None => name.to_string(),
                                 };
@@ -157,7 +157,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                                             egui::FontId::proportional(12.5),
                                                             t.text,
                                                         );
-                                                        if let Some(sc) = tl.shortcut {
+                                                        if let Some(sc) = crate::menus::tool_shortcut_label(app, tl.id) {
                                                             ui.painter().text(
                                                                 r.right_center() - vec2(6.0, 0.0),
                                                                 egui::Align2::RIGHT_CENTER,
@@ -432,7 +432,7 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
                 }
                 let on = crate::menus::checked(app, id, &Value::Null).unwrap_or(false);
                 let label = VIEW_OPTIONS[k];
-                let sc = crate::menus::ui_label(id).and_then(|c| c.1).unwrap_or("");
+                let sc = crate::menus::shortcut_label(app, id, &Value::Null).unwrap_or_default();
                 let text = format!("{}  {}", if on { "✓" } else { "   " }, crate::i18n::tr(&app.ui.language, label));
                 if ui.add(egui::Button::new(crate::rtl::widget(ui, &text)).shortcut_text(sc)).clicked() {
                     let _ = app.run(id, json!({}));
