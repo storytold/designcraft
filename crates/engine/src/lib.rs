@@ -243,6 +243,9 @@ pub struct Prefs {
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
     pub recent_files_max: u32,
+    /// Preferences › File Handling › Save documents as: the format Save suggests for a new
+    /// document, and, as IDML, an opened `.idml` file is saved back to itself.
+    pub save_format: SaveFormat,
 }
 
 /// The most recent files Preferences lets File › Open Recent keep.
@@ -263,6 +266,33 @@ impl Prefs {
     pub fn trim_recent_files(&mut self) {
         self.recent_files_max = self.recent_files_max.min(MAX_RECENT_FILES);
         self.recent_files.truncate(self.recent_files_max as usize);
+    }
+}
+
+/// The format a document is saved in (Preferences › File Handling).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SaveFormat {
+    /// DesignCraft's own `.designcraft` package.
+    #[default]
+    Designcraft,
+    /// InDesign Markup (`.idml`), with the images embedded.
+    Idml,
+}
+
+impl SaveFormat {
+    /// The file extension, without its dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            SaveFormat::Designcraft => "designcraft",
+            SaveFormat::Idml => "idml",
+        }
+    }
+
+    /// The format a file at `path` is written in: IDML for a `.idml` name, else DesignCraft's own.
+    pub fn of_path(path: &str) -> SaveFormat {
+        let idml = std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("idml"));
+        if idml { SaveFormat::Idml } else { SaveFormat::Designcraft }
     }
 }
 
@@ -317,6 +347,7 @@ impl Default for Prefs {
             link_text_files: false,
             recent_files: Vec::new(),
             recent_files_max: 20,
+            save_format: SaveFormat::Designcraft,
         }
     }
 }
