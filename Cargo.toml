@@ -61,6 +61,7 @@ vello_common = { version = "0.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 # CMYK TIFF samples for PDF export (`image` decodes them to RGB); the version `image` uses.
 tiff = "0.11"
+png = "0.18"
 # SVG (same usvg as krilla-svg).
 resvg = { version = "0.47", default-features = false, features = ["text"] }
 krilla-svg = "=0.8.1"

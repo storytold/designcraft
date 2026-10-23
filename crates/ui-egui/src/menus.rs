@@ -41,7 +41,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("app.packageDialog", "Package…", Some("Cmd+Alt+Shift+P"), "{} — choose the package folder to create (file.package)"),
     ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
-    ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),
+    (
+        "app.exportPng",
+        "Export Page as PNG…",
+        Some("Cmd+E"),
+        "{path?, page?: 0-based, ppi?: 144, scale?: pixels per point (legacy alternative to ppi)} — empty params open resolution options; exports PNG with physical resolution",
+    ),
     ("app.exportIdml", "Export IDML…", None, "{path?} — InDesign Markup (IDML) package"),
     ("app.exportEpub", "Export EPUB…", None, "{path?} — reflowable EPUB 3 (with the first page as its cover)"),
     (
@@ -1087,7 +1092,13 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             }
             Ok(Value::Null)
         }
-        "app.exportPng" => export_png(app, p),
+        "app.exportPng" => {
+            if p.is_null() || p.as_object().is_some_and(|m| m.is_empty()) {
+                crate::dialogs::open_png_export(app)
+            } else {
+                export_png(app, p)
+            }
+        }
         "app.exportIdml" => export_idml(app, p),
         "app.exportEpub" => {
             let mut q = if p.is_object() { p.clone() } else { json!({}) };
@@ -1991,10 +2002,59 @@ fn download_document(app: &mut DesignApp) -> Result<Value, String> {
     app.run("file.saveAs", json!({"path": name}))
 }
 
-fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+pub(crate) struct PngExportOptions {
+    pub page: usize,
+    pub ppi: f64,
+    pub width: u32,
+    pub height: u32,
+    pub width_mm: f64,
+    pub height_mm: f64,
+}
+
+pub(crate) fn png_export_options(app: &DesignApp, p: &Value) -> Result<PngExportOptions, String> {
     let st = app.session.active().ok_or("no document")?;
     let page = crate::control::page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count())?;
-    let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(2.0);
+    let ppi = p.get("ppi").filter(|v| !v.is_null());
+    let scale = p.get("scale").filter(|v| !v.is_null());
+    if ppi.is_some() && scale.is_some() {
+        return Err("Specify ppi or scale, not both".into());
+    }
+    let ppi = match (ppi, scale) {
+        (Some(v), _) => v.as_f64().ok_or("ppi must be a number")?,
+        (_, Some(v)) => v.as_f64().ok_or("scale must be a number")? * 72.0,
+        _ => 144.0,
+    };
+    let ppm = (ppi / 0.0254).round();
+    if !ppi.is_finite() || ppm < 1.0 || ppm > f64::from(u32::MAX) {
+        return Err("Resolution must be positive, finite and representable in pixels per metre".into());
+    }
+    let (si, pi) = st.doc.page_loc(page).ok_or("no such page")?;
+    let pg = st.doc.spreads.get(si).and_then(|s| s.pages.get(pi)).ok_or("no such page")?;
+    let width = (pg.width * ppi / 72.0).round().max(1.0);
+    let height = (pg.height * ppi / 72.0).round().max(1.0);
+    if !width.is_finite()
+        || !height.is_finite()
+        || width > f64::from(designcraft_render::MAX_SIDE)
+        || height > f64::from(designcraft_render::MAX_SIDE)
+        || width * height > designcraft_render::MAX_PAGE_PIXELS as f64
+    {
+        return Err("Resolution would exceed the page renderer's pixel limits; choose a lower resolution".into());
+    }
+    Ok(PngExportOptions {
+        page,
+        ppi,
+        width: width as u32,
+        height: height as u32,
+        width_mm: pg.width * 25.4 / 72.0,
+        height_mm: pg.height * 25.4 / 72.0,
+    })
+}
+
+pub(crate) fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    let options = png_export_options(app, p)?;
+    let PngExportOptions { page, ppi, .. } = options;
+    let st = app.session.active().ok_or("no document")?;
+    let scale = ppi / 72.0;
     let mut r = designcraft_render::Renderer::new();
     let img = r
         .render_page(
@@ -2006,7 +2066,7 @@ fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
             &designcraft_render::RenderOptions { printing_only: true, rich_black: app.session.prefs.rich_black_output, ..Default::default() },
         )
         .ok_or("no such page")?;
-    let png = img.to_png();
+    let png = img.to_png_with_resolution(ppi)?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
         None => {
@@ -2016,7 +2076,7 @@ fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     };
     let Some(path) = path else { return Ok(Value::Null) };
     match app.services.write.as_mut() {
-        Some(w) => w(&path, &png).map(|_| json!({"path": path, "width": img.width, "height": img.height})),
+        Some(w) => w(&path, &png).map(|_| json!({"path": path, "width": img.width, "height": img.height, "ppi": ppi, "widthMm": options.width_mm, "heightMm": options.height_mm})),
         None => Err("no writer".into()),
     }
 }
@@ -3513,6 +3573,26 @@ mod tests {
             let dialog = app.ui.dialog.as_ref().map(|d| d.id.clone());
             assert_eq!(dialog.as_deref(), Some(format!("cmd:{id}").as_str()), "{id} opens its dialog");
         }
+    }
+
+    #[test]
+    fn png_export_options_keep_a3_size_at_144_and_300_ppi() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 420.0 * 72.0 / 25.4, "height": 297.0 * 72.0 / 25.4})).unwrap();
+        let defaults = png_export_options(&app, &json!({})).unwrap();
+        assert_eq!((defaults.width, defaults.height), (2381, 1684));
+        let print = png_export_options(&app, &json!({"ppi":300})).unwrap();
+        assert_eq!((print.width, print.height), (4961, 3508));
+        assert!((print.width_mm - 420.0).abs() < 0.001 && (print.height_mm - 297.0).abs() < 0.001);
+        let legacy = png_export_options(&app, &json!({"scale":2})).unwrap();
+        assert_eq!((legacy.width, legacy.height), (defaults.width, defaults.height));
+        for p in
+            [json!({"ppi":0}), json!({"ppi":-1}), json!({"ppi":"300"}), json!({"ppi":1e30}), json!({"ppi":300,"scale":2}), json!({"scale":false})]
+        {
+            assert!(png_export_options(&app, &p).is_err(), "{p}");
+        }
+        app.run("app.exportPng", json!({})).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "pngExport");
     }
 
     #[test]

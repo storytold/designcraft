@@ -396,7 +396,13 @@ fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), Str
         .render_page(&st.doc, &s.cache, page, scale, true, &designcraft_render::RenderOptions { printing_only: true, ..Default::default() })
         .ok_or("no such page")?;
     let lower = out.to_lowercase();
-    let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
+    let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        img.to_jpeg(90)
+    } else {
+        let ppi = scale * 72.0;
+        let ppm = (ppi / 0.0254).round();
+        if ppi.is_finite() && (1.0..=f64::from(u32::MAX)).contains(&ppm) { img.to_png_with_resolution(ppi)? } else { img.to_png() }
+    };
     designcraft_engine::atomic::write_atomic(std::path::Path::new(out), &bytes).map_err(|e| format!("{out}: {e}"))?;
     eprintln!("wrote {out} ({}×{}, {:.1} ms, {} glyphs)", img.width, img.height, t.elapsed().as_secs_f64() * 1000.0, r.stats.glyphs);
     Ok(())

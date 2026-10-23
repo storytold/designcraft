@@ -8,6 +8,47 @@ fn cli() -> Command {
 }
 
 #[test]
+fn png_export_preserves_tiny_positive_scales() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-png-tiny-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("page.png");
+    for scale in ["0.0001", "1e-100"] {
+        let out = cli().args(["run", "--sample", "--scale", scale, "--export", path.to_str().unwrap()]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(designcraft_render::image_size(&bytes), Some((1, 1)));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn png_export_scale_sets_physical_resolution() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-png-resolution-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("page.png");
+    for (scale, pixels) in [("2", (144, 72)), ("4.166666666666667", (300, 150))] {
+        let out = cli()
+            .args([
+                "run",
+                "--cmd",
+                "layout.documentSetup={\"width\":72,\"height\":36,\"bleed\":0}",
+                "--scale",
+                scale,
+                "--export",
+                path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(designcraft_render::image_size(&bytes), Some(pixels));
+        let (w, h) = designcraft_render::natural_size(&bytes, 0).unwrap();
+        assert!((w - 72.0).abs() < 0.02 && (h - 36.0).abs() < 0.02, "{w}, {h}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn script_from_stdin_with_references_saves_and_exports() {
     let dir = std::env::temp_dir().join(format!("dc-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

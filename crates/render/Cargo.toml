@@ -17,6 +17,7 @@ designcraft-compose = { workspace = true }
 vello_cpu = { workspace = true }
 vello_common = { workspace = true }
 image = { workspace = true }
+png = { workspace = true }
 craft-pdf = { workspace = true, features = ["raster"] }
 designcraft-images = { workspace = true }
 log = { workspace = true }

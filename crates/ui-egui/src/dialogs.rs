@@ -337,6 +337,46 @@ pub fn open_print(app: &mut DesignApp) {
     ));
 }
 
+/// Export the current page, with an explicit print resolution and size preview.
+pub fn open_png_export(app: &mut DesignApp) -> Result<Value, String> {
+    let options = crate::menus::png_export_options(app, &json!({}))?;
+    app.ui.dialog = Some(Dialog::new("pngExport", json!({"page": options.page, "ppi": 144, "documentUid": app.session.active().map(|st| st.uid)})));
+    Ok(Value::Null)
+}
+
+fn png_export(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Resolution (ppi):"));
+        text_field(ui, d, "ppi", 90.0);
+        for ppi in [72, 144, 150, 300, 600] {
+            if ui.button(ppi.to_string()).clicked() {
+                d.fields.insert("ppi".into(), json!(ppi));
+            }
+        }
+    });
+    match png_export_params(app, d).and_then(|p| crate::menus::png_export_options(app, &p)) {
+        Ok(o) => {
+            crate::rtl::label(ui, format!("{} × {} px", o.width, o.height));
+            crate::rtl::label(ui, format!("{:.1} × {:.1} mm", o.width_mm, o.height_mm));
+        }
+        Err(e) => {
+            crate::rtl::label(ui, e);
+        }
+    }
+    if !d.s("error").is_empty() {
+        crate::rtl::label(ui, d.s("error"));
+    }
+}
+
+fn png_export_params(app: &DesignApp, d: &Dialog) -> Result<Value, String> {
+    let uid = d.fields.get("documentUid").and_then(Value::as_u64);
+    if uid.is_none() || uid != app.session.active().map(|st| st.uid) {
+        return Err("The active document changed; reopen PNG export for this document".into());
+    }
+    let ppi = d.n("ppi").filter(|n| n.is_finite()).ok_or("Resolution must be a number")?;
+    Ok(json!({"page": d.fields.get("page"), "ppi": ppi}))
+}
+
 /// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
 /// (`UiState.pdf_export`) and the active document. `pages` is per-job (not persisted); `flatten`
 /// falls back to the global flattener preset when the persisted value is empty.
@@ -2086,6 +2126,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
         "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
+        "pngExport" => crate::i18n::tr(&app.ui.language, "Export Page as PNG"),
         "colorSettings" => crate::i18n::tr(&app.ui.language, "Color Settings"),
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
         "keyboardShortcuts" => crate::i18n::tr(&app.ui.language, "Keyboard Shortcuts"),
@@ -2805,6 +2846,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                     "numberingSection" => crate::section_options::body(app, ui, &mut d),
                     "pdfExport" => pdf_export(app, ui, &mut d),
+                    "pngExport" => png_export(app, ui, &mut d),
                     "alert" => {
                         let file = d.s("file");
                         if !file.is_empty() {
@@ -3047,6 +3089,16 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         app.cancel_pdf_import();
     }
     match d.id.as_str() {
+        "pngExport" => {
+            let result = png_export_params(app, &d).and_then(|p| crate::menus::export_png(app, &p));
+            if let Err(e) = &result {
+                let mut d = d;
+                d.fields.insert("error".into(), json!(e));
+                app.ui.dialog = Some(d);
+            }
+            result
+        }
+
         "colorTheme" => {
             let result = app.run("swatch.addColorTheme", json!({"name": d.s("name"), "colors": d.fields.get("colors")}));
             if let Err(error) = &result {
@@ -9487,6 +9539,55 @@ mod tests {
         let before = d.fields.clone();
         apply_pdf_preset(&mut d, "Custom");
         assert_eq!(d.fields, before);
+    }
+
+    #[test]
+    fn png_export_dialog_rejects_a_different_document() {
+        let mut app = test_app();
+        app.services.pick_save = Some(Box::new(|_| panic!("must reject before picking a file")));
+        open_png_export(&mut app).unwrap();
+        app.session.execute("file.new", &json!({})).unwrap();
+        let error = confirm(&mut app).unwrap_err();
+        assert!(error.contains("active document changed"), "{error}");
+        assert!(app.ui.dialog.is_some());
+    }
+
+    #[test]
+    fn png_export_dialog_validates_and_writes_resolution_metadata() {
+        use std::sync::{Arc, Mutex};
+        let mut app = test_app();
+        app.run("layout.documentSetup", json!({"width":72,"height":36})).unwrap();
+        let writes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sink = writes.clone();
+        app.services.write = Some(Box::new(move |_, bytes| {
+            sink.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }));
+        app.services.pick_save = Some(Box::new(|_| Some("out.png".into())));
+        open_png_export(&mut app).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("ppi".into(), json!("bad"));
+        assert!(confirm(&mut app).is_err());
+        assert!(app.ui.dialog.is_some() && writes.lock().unwrap().is_empty());
+        app.ui.dialog.as_mut().unwrap().fields.insert("ppi".into(), json!("300"));
+        let out = confirm(&mut app).unwrap();
+        assert_eq!((out["width"].as_u64(), out["height"].as_u64()), (Some(300), Some(150)));
+        let bytes = writes.lock().unwrap();
+        assert_eq!(bytes.len(), 1);
+        // Reuse the engine's placement path to check that export and import agree on print size.
+        let mut session = designcraft_engine::Session::new();
+        session.execute("file.new", &json!({"width":1000,"height":1000})).unwrap();
+        let placed = session
+            .execute("file.place", &json!({"name":"export.png","base64":designcraft_engine::cmd::base64_encode(&bytes[0]),"x":0,"y":0}))
+            .unwrap();
+        let id = designcraft_doc::ItemId(placed["id"].as_u64().unwrap());
+        let bounds = session.active().unwrap().doc.item(id).unwrap().bounds();
+        assert!((bounds.width() - 72.0).abs() < 0.02 && (bounds.height() - 36.0).abs() < 0.02, "{bounds:?}");
+        drop(bytes);
+        // Canceling the save picker produces no additional output.
+        app.services.pick_save = Some(Box::new(|_| None));
+        open_png_export(&mut app).unwrap();
+        assert!(confirm(&mut app).unwrap().is_null());
+        assert_eq!(writes.lock().unwrap().len(), 1);
     }
 
     #[test]

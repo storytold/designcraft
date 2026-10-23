@@ -107,3 +107,18 @@ Table panel. `ui.set` with `closePanel` closes the last explicitly opened panel;
 `dockExpanded:false` hides the root dock while floating groups remain visible.
 The icon rail can reopen a collapsed dock through any root panel. Activating a
 floating panel also raises its group. These operations change only UI layout.
+
+### PNG print resolution
+
+`app.export` (or `engine.execute` with `command: "app.exportPng"`) accepts
+`{path, page?, ppi?}`. `page` is 0-based and `ppi` defaults to 144. The legacy
+`scale` argument is pixels per point, so `scale: 2` means 144 ppi. Supply `ppi`
+or `scale`, not both. The response includes `width`, `height`, `ppi`, `widthMm`
+and `heightMm`. PNGs carry absolute pixels-per-metre metadata; its integer
+rounding introduces a small print-size tolerance. Empty parameters open the
+resolution dialog. `ui.render` and screenshots remain unitless preview images.
+
+CLI `run --scale 4.166666666666667 --export page.png` exports at 300 ppi.
+Exported pixels are rounded to whole pixels. A landscape A3 page produces
+4961 × 3508 pixels at 300 ppi and 2381 × 1684 pixels at 144 ppi. No artwork
+fidelity is implied by these size checks.

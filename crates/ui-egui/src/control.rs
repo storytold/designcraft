@@ -384,7 +384,21 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             if id == "findChange" || app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
                 app.session.reset_find_scope();
             }
-            let d = crate::dialogs::Dialog::new(id, p.get("fields").cloned().unwrap_or(Value::Null));
+            let fields = p.get("fields").cloned().unwrap_or(Value::Null);
+            let d = if id == "pngExport" {
+                // Seeded like File › Export › PNG (page, ppi, the document it exports); the
+                // caller's fields go on top, except the document, which is always the active one.
+                if let Err(e) = crate::dialogs::open_png_export(app) {
+                    return err(e);
+                }
+                let Some(mut d) = app.ui.dialog.take() else { return err("PNG export did not open") };
+                if let Value::Object(m) = fields {
+                    d.fields.extend(m.into_iter().filter(|(k, _)| k != "documentUid"));
+                }
+                d
+            } else {
+                crate::dialogs::Dialog::new(id, fields)
+            };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)
@@ -505,6 +519,27 @@ mod automation_contract_tests {
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
         app.run("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
+    }
+    /// `ui.dialog.open` with `pngExport` seeds the dialog like the menu item, so Confirm exports.
+    #[test]
+    fn opening_png_export_by_id_seeds_it_like_the_menu_item() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id":"pngExport","fields":{"ppi":300,"documentUid":12345}}));
+        assert_eq!(response["ok"], true);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.id, "pngExport");
+        assert_eq!(d.fields["ppi"], 300, "the caller's fields go on top");
+        assert_eq!(d.fields["documentUid"], json!(app.session.active().map(|st| st.uid)), "always the active document");
+        assert!(d.fields.contains_key("page"));
+        app.services.write = Some(Box::new(|_, _| Ok(())));
+        app.services.pick_save = Some(Box::new(|_| Some("/tmp/page.png".into())));
+        let confirmed = call(&mut app, &ctx, "ui.dialog.confirm", json!({}));
+        assert_eq!(confirmed["ok"], true, "{confirmed}");
+
+        let mut empty = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        assert_eq!(call(&mut empty, &ctx, "ui.dialog.open", json!({"id":"pngExport"}))["ok"], false, "no document to export");
+        assert!(empty.ui.dialog.is_none());
     }
     fn app() -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

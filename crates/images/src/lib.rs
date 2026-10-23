@@ -212,8 +212,22 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     usvg::Tree::from_data(bytes, svg_options()).ok()
 }
 
-/// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
-/// likewise, SVGs from their width/height (CSS pixels), PDFs are the caller's.
+/// PNG resolution in pixels per metre when both axes have a nonzero absolute unit.
+/// Reads metadata only, with a bounded metadata allocation; no image pixels are decoded.
+pub fn png_pixels_per_metre(bytes: &[u8]) -> Option<(u32, u32)> {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let mut decoder = png::Decoder::new_with_limits(std::io::Cursor::new(bytes), png::Limits { bytes: 1 << 20 });
+    decoder.set_ignore_text_chunk(true);
+    decoder.set_ignore_iccp_chunk(true);
+    let reader = decoder.read_info().ok()?;
+    let dims = reader.info().pixel_dims?;
+    (dims.unit == png::Unit::Meter && dims.xppu > 0 && dims.yppu > 0).then_some((dims.xppu, dims.yppu))
+}
+
+/// Natural size of a placed graphic in points: PNGs with absolute resolution use it;
+/// other rasters default to 72 ppi, SVGs use CSS pixels. PDFs are the caller's.
 pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     if is_svg(bytes) {
         let s = svg_tree(bytes)?.size();
@@ -224,6 +238,9 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
         return Some((bb[2] - bb[0], bb[3] - bb[1])).filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0);
     }
     let (w, h) = pixel_size(bytes)?;
+    if let Some((x, y)) = png_pixels_per_metre(bytes) {
+        return Some((f64::from(w) * 72.0 / (f64::from(x) * 0.0254), f64::from(h) * 72.0 / (f64::from(y) * 0.0254)));
+    }
     Some((w as f64, h as f64))
 }
 
@@ -496,6 +513,40 @@ pub fn render_svg(bytes: &[u8], max_side: u32) -> Option<(Vec<u8>, u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn png_with_density(density: Option<png::PixelDimensions>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut bytes, 144, 72);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.set_pixel_dims(density);
+            enc.write_header().unwrap().write_image_data(&vec![255; 144 * 72 * 4]).unwrap();
+        }
+        bytes
+    }
+
+    #[test]
+    fn png_natural_size_uses_absolute_resolution_and_keeps_pixel_dimensions() {
+        let bytes = png_with_density(Some(png::PixelDimensions { xppu: 5669, yppu: 2835, unit: png::Unit::Meter }));
+        assert_eq!(pixel_size(&bytes), Some((144, 72)));
+        let (w, h) = natural_size(&bytes).unwrap();
+        assert!((w - 72.0).abs() < 0.02 && (h - 72.0).abs() < 0.02, "independent resolution axes: {w}, {h}");
+    }
+
+    #[test]
+    fn png_unknown_zero_or_missing_resolution_keeps_legacy_size() {
+        for density in [
+            None,
+            Some(png::PixelDimensions { xppu: 5669, yppu: 5669, unit: png::Unit::Unspecified }),
+            Some(png::PixelDimensions { xppu: 0, yppu: 5669, unit: png::Unit::Meter }),
+        ] {
+            let bytes = png_with_density(density);
+            assert_eq!(natural_size(&bytes), Some((144.0, 72.0)));
+        }
+        assert_eq!(png_pixels_per_metre(b"not png"), None);
+        assert_eq!(png_pixels_per_metre(b"\x89PNG\r\n\x1a\n"), None);
+    }
 
     const SVG: &str = r##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">

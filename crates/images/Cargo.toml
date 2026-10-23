@@ -12,6 +12,7 @@ workspace = true
 designcraft-color = { workspace = true }
 designcraft-fonts = { workspace = true }
 image = { workspace = true }
+png = { workspace = true }
 tiff = { workspace = true }
 resvg = { workspace = true }
 log = { workspace = true }

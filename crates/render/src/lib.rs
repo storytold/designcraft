@@ -70,20 +70,43 @@ impl Rendered {
         out
     }
     /// PNG bytes (empty, with the error logged, if the image can't be encoded).
+    /// Thumbnails and screen captures have no physical resolution.
     pub fn to_png(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        let mut px = self.to_straight();
-        // `pixels` is public: a mismatched buffer is padded or cut to the stated size.
-        px.resize(self.width as usize * self.height as usize * 4, 0);
-        let Some(img) = image::RgbaImage::from_raw(self.width, self.height, px) else {
-            log::error!("PNG encode: {}×{} image is too large", self.width, self.height);
-            return Vec::new();
-        };
-        if let Err(e) = img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png) {
+        self.encode_png(None).unwrap_or_else(|e| {
             log::error!("PNG encode: {e}");
-            return Vec::new();
+            Vec::new()
+        })
+    }
+
+    /// Export a page with its physical resolution, so consumers can recover its print size.
+    pub fn to_png_with_resolution(&self, ppi: f64) -> Result<Vec<u8>, String> {
+        let ppm = (ppi / 0.0254).round();
+        if !ppi.is_finite() || ppm < 1.0 || ppm > f64::from(u32::MAX) {
+            return Err("PNG resolution must be positive, finite and representable in pixels per metre".into());
         }
-        buf
+        self.encode_png(Some(ppm as u32))
+    }
+
+    fn encode_png(&self, ppm: Option<u32>) -> Result<Vec<u8>, String> {
+        let len = u64::from(self.width) * u64::from(self.height);
+        if self.width == 0 || self.height == 0 || len > MAX_PAGE_PIXELS {
+            return Err("PNG dimensions are empty or too large".into());
+        }
+        let len = usize::try_from(len).ok().and_then(|n| n.checked_mul(4)).ok_or("PNG buffer is too large")?;
+        let mut px = self.to_straight();
+        // Public buffers may be short or long: retain the existing padding/cutting behaviour.
+        px.resize(len, 0);
+        let mut buf = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut buf, self.width, self.height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_pixel_dims(ppm.map(|ppm| png::PixelDimensions { xppu: ppm, yppu: ppm, unit: png::Unit::Meter }));
+            let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+            writer.write_image_data(&px).map_err(|e| e.to_string())?;
+            writer.finish().map_err(|e| e.to_string())?;
+        }
+        Ok(buf)
     }
     pub fn to_jpeg(&self, quality: u8) -> Vec<u8> {
         let rgba = self.to_straight();
@@ -1218,7 +1241,8 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Natural size of a placed graphic, unrounded: a PDF page (crop box) and an SVG in points, a raster
-/// in pixels, an EPS its bounding box independently of preview pixels. Placed graphics are drawn at
+/// in points using PNG absolute resolution when present (otherwise pixels), an EPS its bounding box
+/// independently of preview pixels. Placed graphics are drawn at
 /// this size; `image_size` rounds it to whole pixels for display.
 pub fn natural_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     if is_pdf(bytes) {
@@ -1560,6 +1584,21 @@ pub fn image_mime(bytes: &[u8]) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn png_export_resolution_retains_print_size_and_straight_alpha() {
+        let rendered = Rendered { width: 144, height: 72, pixels: [64, 32, 16, 128].repeat(144 * 72) };
+        let bytes = rendered.to_png_with_resolution(144.0).unwrap();
+        assert_eq!(designcraft_images::png_pixels_per_metre(&bytes), Some((5669, 5669)));
+        let size = designcraft_images::natural_size(&bytes).unwrap();
+        assert!((size.0 - 72.0).abs() < 0.02 && (size.1 - 36.0).abs() < 0.02);
+        let rgba = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(rgba.get_pixel(0, 0).0, [128, 64, 32, 128]);
+        assert_eq!(designcraft_images::png_pixels_per_metre(&rendered.to_png()), None, "screenshots remain unitless");
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MAX, 0.0001] {
+            assert!(rendered.to_png_with_resolution(bad).is_err(), "{bad}");
+        }
+    }
+
     use super::*;
     use designcraft_doc::build::NewDocument;
     use designcraft_doc::{Fill, ParaFormat};
