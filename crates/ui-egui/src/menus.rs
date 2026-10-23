@@ -1094,7 +1094,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(crate::cloud::status(app))
         }
         "app.saveDialogLocal" if app.services.download.is_some() => download_document(app),
-        "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
+        "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.saveDialog" | "app.saveDialogLocal" => {
             let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
