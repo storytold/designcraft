@@ -30,6 +30,8 @@ use serde_json::Value;
 
 pub use cmd::params::{check_keys, check_params};
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
+#[cfg(not(target_arch = "wasm32"))]
+pub use cmd::{PrintDocument, print_document};
 pub use designcraft_compose as compose;
 pub use designcraft_doc as doc;
 pub use designcraft_tools as tools;

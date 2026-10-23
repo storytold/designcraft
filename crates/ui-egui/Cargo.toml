@@ -27,7 +27,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
+# Network printing (WS-Print, IPP): not for the web, there is no socket there.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+designcraft-print = { workspace = true }
+
 [dev-dependencies]
+# The in-memory fake printers (never in a shipped binary).
+craft-print = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }
 designcraft-idml = { workspace = true }
 zip = { workspace = true }
