@@ -8,6 +8,7 @@ mod ar;
 mod cs;
 mod de;
 mod fr;
+mod hu;
 mod it;
 mod ja;
 mod ka;
@@ -32,6 +33,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("cs", "Čeština"),
     ("pl", "Polski"),
     ("ka", "ქართული"),
+    ("hu", "Magyar"),
 ];
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
@@ -4461,6 +4463,10 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static CZECH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static FRENCH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static HUNGARIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    if lang == "hu" {
+        return HUNGARIAN.get_or_init(|| hu::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -4516,6 +4522,7 @@ const CONTEXT: &[(&str, &str, [&str; 5])] = &[
 /// Context-sensitive UI captions; unsupported contexts keep the shared translation.
 pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
     let contexts = match lang {
+        "hu" => hu::CONTEXT,
         "uk" => uk::CONTEXT,
         "ru" => ru::CONTEXT,
         "cs" => cs::CONTEXT,
@@ -4606,6 +4613,7 @@ mod tests {
         ("cs", cs::TABLE),
         ("de", de::TABLE),
         ("fr", fr::TABLE),
+        ("hu", hu::TABLE),
         ("it", it::TABLE),
         ("ja", ja::TABLE),
         ("ka", ka::TABLE),
@@ -4616,14 +4624,63 @@ mod tests {
     ];
 
     /// Every per-language table `tr_context` looks up.
-    const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] =
-        &[("ar", ar::CONTEXT), ("cs", cs::CONTEXT), ("ja", ja::CONTEXT), ("pl", pl::CONTEXT), ("ru", ru::CONTEXT), ("uk", uk::CONTEXT)];
+    const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] = &[
+        ("hu", hu::CONTEXT),
+        ("ar", ar::CONTEXT),
+        ("cs", cs::CONTEXT),
+        ("ja", ja::CONTEXT),
+        ("pl", pl::CONTEXT),
+        ("ru", ru::CONTEXT),
+        ("uk", uk::CONTEXT),
+    ];
 
     /// The languages of the shared tables' columns, in column order.
     const SHARED_COLUMNS: [&str; 5] = ["de", "fr", "es", "ja", "zh"];
 
     /// The German and Japanese tables translate the whole interface and win over the shared columns.
     const WHOLE_INTERFACE: [&str; 2] = ["de", "ja"];
+
+    #[test]
+    fn hungarian_catalog_preserves_placeholders_context_and_counts() {
+        let catalog: HashMap<_, _> = hu::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), hu::TABLE.len(), "duplicate Hungarian keys");
+        let placeholders = |s: &str| {
+            let mut names: Vec<_> = s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect();
+            names.sort();
+            names
+        };
+        for (key, translation) in hu::TABLE {
+            assert!(!translation.trim().is_empty(), "empty {key}");
+            assert_eq!(placeholders(key), placeholders(translation), "placeholders: {key}");
+            assert_eq!(key.ends_with('…'), translation.ends_with('…'), "ellipsis: {key}");
+        }
+        assert!(!is_rtl("hu"));
+        assert_eq!(tr("hu", "File"), "Fájl");
+        assert_eq!(tr("hu", "Bleed"), "Kifutó");
+        assert_eq!(tr("hu", "Unknown label"), "Unknown label");
+        assert_eq!(tr("hu", "Columns"), "Hasábok");
+        assert_eq!(tr_context("hu", "Columns", "table"), "Oszlopok");
+        assert_eq!(tr("hu", "Columns:"), "Hasábok:");
+        assert_eq!(tr_context("hu", "Columns:", "grid"), "Oszlopok:");
+        assert_eq!(tr_context("hu", "Columns:", "unknown"), "Hasábok:");
+        assert_eq!(tr("hu", "Group"), "Csoportosítás");
+        assert_eq!(tr_context("hu", "Group", "selection"), "Csoport");
+        assert_eq!(tr_context("hu", "Columns", "unknown"), "Hasábok");
+        assert_eq!(tr_context("", "Columns", "table"), "Columns");
+        for n in [0, 1, 2, 5, 21] {
+            assert_eq!(count_label("hu", "pages", n), format!("{n} oldal"));
+            assert_eq!(count_label("hu", "objects", n), format!("{n} objektum"));
+            assert_eq!(count_label("hu", "errors", n), format!("{n} hiba"));
+            assert_eq!(
+                tr("hu", "{pages} Pages in {spreads} Spreads").replace("{pages}", &n.to_string()).replace("{spreads}", &n.to_string()),
+                format!("{n} oldal, {n} oldalpáron")
+            );
+        }
+        assert_eq!(style_name("hu", "[Basic Paragraph]"), "[Alapbekezdés]");
+        assert_eq!(style_name("hu", "Saját stílus"), "Saját stílus");
+        assert_eq!(workspace_name("hu", "Essentials"), "Alapok");
+        assert_eq!(workspace_name("hu", "Saját munkaterület"), "Saját munkaterület");
+    }
 
     #[test]
     fn every_interface_language_has_a_catalog() {
@@ -4846,8 +4903,32 @@ mod tests {
         keys.extend(crate::about::SIBLINGS.iter().map(|(_, _, what)| *what));
         keys.extend(crate::credits::NameMode::ALL.iter().map(|mode| mode.label()));
         keys.extend(crate::credits::SortKey::ALL.iter().flat_map(|key| [key.label().0, key.label().1]));
+        // Native language names also reach menus and Preferences.
+        keys.extend(LANGUAGES.iter().map(|(_, name)| *name));
         // UI labels passed to `tr` that no other catalog has yet.
         keys.extend([
+            // Spelling, style, link and typography captions already used by the UI.
+            "180°",
+            "Checking spelling…",
+            "Create Links When Placing Text Files",
+            "Delete Character Style…",
+            "Delete Paragraph Style…",
+            "Delete the character style \"{name}\"?",
+            "Delete the paragraph style \"{name}\"?",
+            "Only text set to English or Hungarian is checked.",
+            "Replace with:",
+            "Show the Typography panel",
+            "Skip",
+            "Spelling check complete.",
+            "Stroke Behind Fill",
+            "Stylistic Set",
+            "The document has changed. Reopen the spelling checker.",
+            "The selected fonts have no OpenType features.",
+            "The text language is set in the Character panel.",
+            "This story was edited in the layout: you'll be asked before those edits are replaced",
+            "This style is in use. Text using it will be reassigned to:",
+            "Y:",
+            "“{}” has been edited in this layout. Updating replaces those edits with the text from the file.",
             "(any)",
             "(unchanged)",
             "[No Language]",

@@ -9,6 +9,8 @@ description = "DesignCraft engine: session, documents, history, selection, comma
 workspace = true
 
 [dependencies]
+unicode-normalization = "0.1"
+spellbook = { path = "../../vendor/spellbook", version = "=0.4.2" }
 craft-print = { workspace = true }
 craft-docpath = { workspace = true }
 designcraft-images = { workspace = true }

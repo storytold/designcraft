@@ -453,6 +453,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -999,6 +1008,7 @@ dependencies = [
  "designcraft-fonts",
  "designcraft-geom",
  "fancy-regex",
+ "hyphenation",
  "hypher",
  "log",
  "miniz_oxide 0.8.9",
@@ -1006,6 +1016,7 @@ dependencies = [
  "regex",
  "unicode-bidi",
  "unicode-bidi-mirroring",
+ "unicode-normalization",
  "unicode-script",
  "unicode-segmentation",
 ]
@@ -1055,8 +1066,10 @@ dependencies = [
  "same-file",
  "serde",
  "serde_json",
+ "spellbook",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-normalization",
  "unicode-segmentation",
  "wasm-bindgen-test",
  "zip",
@@ -1258,6 +1271,7 @@ dependencies = [
  "unicode-bidi",
  "unicode-bidi-mirroring",
  "unicode-segmentation",
+ "web-time",
  "zip",
 ]
 
@@ -1795,6 +1809,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fst"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ab85b9b05e3978cc9a9cf8fea7f01b494e1a09ed3037e16ba39edc7a29eb61a"
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2236,6 +2256,28 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hyphenation"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcf4dd4c44ae85155502a52c48739c8a48185d1449fff1963cffee63c28a50f0"
+dependencies = [
+ "bincode",
+ "fst",
+ "hyphenation_commons",
+ "serde",
+]
+
+[[package]]
+name = "hyphenation_commons"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5febe7a2ade5c7d98eb8b75f946c046b335324b06a14ea0998271504134c05bf"
+dependencies = [
+ "fst",
+ "serde",
+]
 
 [[package]]
 name = "hypher"
@@ -4279,6 +4321,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "spellbook"
+version = "0.4.2"
+dependencies = [
+ "foldhash",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]

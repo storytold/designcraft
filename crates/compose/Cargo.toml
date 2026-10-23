@@ -23,6 +23,9 @@ fancy-regex = { workspace = true }
 miniz_oxide = "0.8"
 hypher = { version = "0.1.8", default-features = false, features = ["alloc", "greek", "portuguese", "spanish", "norwegian"] }
 
+hyphenation = { version = "=0.8.4", default-features = false }
+unicode-normalization = "=0.1.25"
+
 [dev-dependencies]
 designcraft-fonts = { workspace = true, features = ["testing"] }
 proptest = { workspace = true }

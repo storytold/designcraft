@@ -1,0 +1,37 @@
+{
+  "hunspell": {
+    "version": "1.7.5",
+    "source_archive_sha256": "833ee0cb129f7b933def265ea907f9ba4d0cfc5b52d838678eafceeec1adaa53"
+  },
+  "hyphen": {
+    "repository": "https://github.com/hunspell/hyphen",
+    "commit": "c299444629416f90625a2e56fdfc4efdca131ecc"
+  },
+  "dictionary_commit": "67032ee957631908098a72edf48dc81cac27e369",
+  "selected_licenses": [
+    "MPL-2.0 (Magyar Ispell words)",
+    "MPL-1.1 (Huhyphn breaks)"
+  ],
+  "fixtures": {
+    "extended.tsv": {
+      "sha256": "977fbd739304c1f1665ee5be3a35ef4f63df7a8e01962f699bad006cb93969a3",
+      "rows": 94
+    },
+    "focused.tsv": {
+      "sha256": "fcf4779d669744e7657a83bd994cf01afdcf1abf9f139f1ba89817cd71db12de",
+      "rows": 38
+    },
+    "hyphen-native.tsv": {
+      "sha256": "5e3404ba431b13a7e7de1bd778db4011b584e264d52a125457f3dd07a20ad5d6",
+      "rows": 857
+    },
+    "main.tsv": {
+      "sha256": "5645a5b1edc4a8ee0de5ebe4c58a83fa368c2049479868e6da465342b930be9d",
+      "rows": 418
+    },
+    "suggestions.tsv": {
+      "sha256": "0bfbafba110ad2db8eb25b506f31318297ce7b73327a27a7e19a2b2d424b8792",
+      "rows": 10
+    }
+  }
+}

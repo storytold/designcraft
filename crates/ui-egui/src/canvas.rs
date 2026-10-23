@@ -2814,16 +2814,9 @@ fn draw_flattener_preview(painter: &egui::Painter, xf: &Xf, doc: &Document, layo
 /// Edit › Spelling › Dynamic Spelling: red squiggles under misspelled words (checked once per
 /// story version).
 fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
+    let Some(report) = crate::spelling_ui::report(app, ctx) else { return };
     for story in doc.stories.values() {
-        let key = egui::Id::new(("dyn_spell", std::sync::Arc::as_ptr(story) as usize, doc.user_words.len()));
-        let bad: std::sync::Arc<Vec<std::ops::Range<usize>>> = match ctx.data(|d| d.get_temp(key)) {
-            Some(v) => v,
-            None => {
-                let v = std::sync::Arc::new(designcraft_engine::cmd::spelling::misspellings(doc, story, &doc.user_words));
-                ctx.data_mut(|d| d.insert_temp(key, v.clone()));
-                v
-            }
-        };
+        let bad: Vec<_> = report.words.iter().filter(|(sid, _)| *sid == story.id).map(|(_, r)| r.clone()).collect();
         if bad.is_empty() {
             continue;
         }

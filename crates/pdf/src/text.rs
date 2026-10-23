@@ -75,6 +75,7 @@ fn same_run(a: &PlacedGlyph, b: &PlacedGlyph) -> bool {
         && b.gid != 0
         && a.face.id() == b.face.id()
         && a.style == b.style
+        && a.hyphen_inserted == b.hyphen_inserted
         && (a.sx - b.sx).abs() < 1e-9
         && (a.sy - b.sy).abs() < 1e-9
 }
@@ -505,7 +506,7 @@ impl Exporter<'_> {
             stroke
         };
         // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
-        if g0.gid == 0 {
+        if g0.gid == 0 || g0.hyphen_inserted {
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
         } else if let Some(font) = self.font(&face) {
             self.text_run(s, glyphs, story, font, origin, size, hs, tan, fill, stroke, weight);

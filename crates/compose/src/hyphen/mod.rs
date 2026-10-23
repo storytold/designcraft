@@ -15,9 +15,12 @@
 //!    set, trained from the same list by [`patgen`] (`examples/hyphgen.rs` regenerates both files);
 //! 3. a small syllable **heuristic** for words outside the pattern alphabet.
 //!
+//! Hungarian uses extended Huhyphn patterns with display-letter insertions at selected breaks.
+//!
 //! Then the paragraph's limits ([`Limits`]) are applied.
 
 pub mod dict;
+mod hungarian;
 pub mod patgen;
 pub mod patterns;
 
@@ -72,6 +75,7 @@ impl Default for Limits {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     English,
+    Hungarian,
     Patterns(hypher::Lang),
 }
 
@@ -87,12 +91,29 @@ impl Lang {
         if sub == "en" {
             return Some(Lang::English);
         }
+        if sub == "hu" {
+            return Some(Lang::Hungarian);
+        }
         let b = sub.as_bytes();
         if b.len() != 2 {
             return None;
         }
         hypher::Lang::from_iso([b[0], b[1]]).map(Lang::Patterns)
     }
+}
+
+/// A source-character boundary and letters added only when this break is selected.
+#[derive(Clone, Debug)]
+pub(crate) struct Opportunity {
+    pub at: usize,
+    pub suffix: Box<str>,
+}
+
+pub(crate) fn opportunities_in(word: &str, lim: &Limits, lang: Lang) -> Vec<Opportunity> {
+    if lang == Lang::Hungarian {
+        return hungarian::opportunities(word, lim);
+    }
+    hyphen_points_in(word, lim, lang).into_iter().map(|at| Opportunity { at, suffix: "".into() }).collect()
 }
 
 /// Where a word's break points came from.
@@ -117,6 +138,11 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let n = core.len();
     if n < 2 {
         return (vec![], Source::None);
+    }
+    if lang == Lang::Hungarian {
+        let s: String = core.iter().collect();
+        let lim = Limits { min_word: 2, after_first: 1, before_last: 1, capitalized: true };
+        return (hungarian::opportunities(&s, &lim).into_iter().map(|p| p.at).collect(), Source::Patterns);
     }
     if let Lang::Patterns(l) = lang {
         if core.contains(&'\'') {
@@ -204,6 +230,9 @@ pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
 
 /// [`hyphen_points`] for a language.
 pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
+    if lang == Lang::Hungarian {
+        return hungarian::opportunities(word, lim).into_iter().map(|p| p.at).collect();
+    }
     let chars: Vec<char> = word.chars().collect();
     let (pts, _) = word_breaks_in(word, lang);
     if pts.is_empty() {
@@ -377,6 +406,59 @@ mod tests {
         assert!(hyphen_points("Paragraph", &lim).is_empty());
         let lim = Limits { min_word: 12, ..Limits::default() };
         assert!(hyphen_points("typography", &lim).is_empty());
+    }
+
+    #[test]
+    fn hungarian_size_limit_is_per_word_in_long_input() {
+        let lim = Limits::default();
+        let text = "asszony — ".repeat(160);
+        assert!(text.len() > 1024);
+        let expected: Vec<_> = (0..160).map(|i| i * "asszony — ".chars().count() + 2).collect();
+        assert_eq!(hyphen_points_in(&text, &lim, Lang::Hungarian), expected);
+        let ops = opportunities_in(&text, &lim, Lang::Hungarian);
+        assert_eq!(ops.iter().map(|p| p.at).collect::<Vec<_>>(), expected);
+        assert!(ops.iter().all(|p| &*p.suffix == "z"));
+        let oversized = "á".repeat(600);
+        assert!(hyphen_points_in(&oversized, &lim, Lang::Hungarian).is_empty());
+        let mixed = format!("asszony {oversized} könnyen");
+        assert_eq!(hyphen_points_in(&mixed, &lim, Lang::Hungarian), vec![2, 8 + 600 + 1 + 3]);
+        assert!(hyphen_points_in(&text, &Limits { min_word: 8, ..lim }, Lang::Hungarian).is_empty());
+    }
+
+    #[test]
+    fn hungarian_limits_apply_to_each_separator_separated_run() {
+        for separator in [" ", "-", "—", "/", "123"] {
+            let word = format!("asszony{separator}asszony");
+            assert_eq!(hyphen_points_in(&word, &Limits::default(), Lang::Hungarian), vec![2, 9 + separator.chars().count()]);
+            for lim in [
+                Limits { min_word: 8, ..Limits::default() },
+                Limits { after_first: 3, ..Limits::default() },
+                Limits { before_last: 6, ..Limits::default() },
+            ] {
+                assert!(hyphen_points_in(&word, &lim, Lang::Hungarian).is_empty(), "{word}: {lim:?}");
+                assert!(opportunities_in(&word, &lim, Lang::Hungarian).is_empty(), "{word}: {lim:?}");
+            }
+        }
+        let lim = Limits { capitalized: false, ..Limits::default() };
+        assert_eq!(hyphen_points_in("asszony-ASSZONY", &lim, Lang::Hungarian), vec![2]);
+        assert_eq!(hyphen_points_in("ASSZONY-asszony", &lim, Lang::Hungarian), vec![10]);
+    }
+
+    #[test]
+    fn hungarian_run_offsets_preserve_insertions_and_combining_marks() {
+        let lim = Limits::default();
+        for separator in [" ", "-", "—", "/", "123"] {
+            let first = "ko\u{308}nnyen";
+            let word = format!("({first}){separator}asszony!");
+            let second = 1 + first.chars().count() + 1 + separator.chars().count();
+            let expected = vec![(5, "y"), (second + 2, "z")];
+            let ops = opportunities_in(&word, &lim, Lang::Hungarian);
+            assert_eq!(ops.iter().map(|p| (p.at, p.suffix.as_ref())).collect::<Vec<_>>(), expected, "{word}");
+            assert_eq!(hyphen_points_in(&word, &lim, Lang::Hungarian), vec![5, second + 2], "{word}");
+        }
+        assert_eq!(hyphen_points_in("'asszony'", &lim, Lang::Hungarian), vec![3]);
+        assert!(hyphen_points_in("'ASSZONY'", &Limits { capitalized: false, ..lim }, Lang::Hungarian).is_empty());
+        assert!(hyphen_points_in("as\u{ad}szony", &lim, Lang::Hungarian).is_empty());
     }
 
     #[test]

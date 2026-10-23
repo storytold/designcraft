@@ -1,0 +1,31 @@
+Spellbook 0.4.2 – DesignCraft Hungarian compatibility changes, 2026-10-22.
+Copyright and MPL-2.0 notices of the original authors are retained in LICENSE and source.
+Provenance and per-source checksums: sources.json.
+
+Runtime changes:
+- Signed compound syllable accounting avoids overflow/underflow for negative modifiers.
+- Licensed suffix chains and final COMPOUNDRULE suffixes, including numeric compounds.
+- Terminal suffix forbidden-flag behavior, homonyms and full-word bans.
+- Compound-aware correction candidates, bounded by the existing word/suggestion limits.
+- Ngram prefix/suffix expansion retains the suffix and applies prefix stripping to the
+  same derived stem that passed its strip and condition checks (including a panic regression).
+- Alternating three-affix chains check the middle affix condition on its restored stem.
+  Positive and negative synthetic cases for both directions agree with native Hunspell 1.7.5.
+- SIMPLIFIEDTRIPLE compares the two preceding codepoints before restoring a third.
+  ASCII and multibyte positive/negative synthetic cases protect the guard.
+Some upstream source formatting differs due to the parent project's rustfmt settings.
+
+Vendoring:
+Only src/, LICENSE, README.md, Cargo.toml, Cargo.lock, this notice, sources.json and our
+tests/hungarian_compatibility.rs are distributed. This revision includes the reviewed
+ngram fix after the manually tested application. Upstream standalone examples, benchmarks,
+legacy fixtures and full English/French dictionaries are omitted.
+The upstream English unit-test fixture has a separate GPL license and is not
+part of this distribution. Upstream fixture-dependent lib/doctests are disabled
+in this minimal manifest, rather than silently replacing their data. Upstream
+test modules remain in the preserved source but are not the default test target.
+The independent integration suite includes eight synthetic regressions, 550
+recorded Hunspell verdicts and ten expected Hungarian suggestions.
+Run: cargo test --manifest-path vendor/spellbook/Cargo.toml --test hungarian_compatibility
+This target is explicitly invoked by cargo xtask ci.
+No C/C++ spellchecking library is linked into DesignCraft.

@@ -1,0 +1,8 @@
+Hungarian spelling integration, 2026-10-20.
+Selected license: MPL-2.0 (original alternative licensing notices retained).
+Németh László and Godó Ferenc: Magyar Ispell 1.9.
+Byte flags converted to numeric flag IDs and AF aliases expanded; words and rules unchanged.
+Reproduction: tools/hu-dictionary/rebuild.py --source-dir PATH --check.
+Original inputs are pinned by URL and SHA256 in sources.json.
+Original source commit and SHA256: sources.json.
+Experimental derivative, verified against the recorded corpus, not a claim of exhaustive compatibility.

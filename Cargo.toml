@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["vendor/spellbook"]
 members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/designcraft", "apps/designcraft-cli", "xtask"]
 

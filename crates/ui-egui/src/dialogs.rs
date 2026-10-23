@@ -2032,6 +2032,10 @@ fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
 }
 
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
+    if app.ui.dialog.as_ref().is_some_and(|d| d.id == "spelling") {
+        crate::spelling_ui::show(app, ctx);
+        return;
+    }
     let Some(mut d) = app.ui.dialog.clone() else { return };
     // Enter and Escape belong to an open popup (a menu, a name field) rather than the dialog.
     // Read before the dialog draws: a popup closed by this frame's Escape is still open here.
@@ -8397,6 +8401,30 @@ mod tests {
             let changed = scope_control(&mut app, &ctx, "engine.execute", json!({"command": "find.change", "params": p}));
             assert_eq!(changed, json!({"count": 1}));
             assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, "blue red | red");
+        }
+    }
+
+    #[test]
+    fn find_scope_spelling_replacement_releases_bounds() {
+        for through_menu in [false, true] {
+            let (mut app, ctx, screen, sid) = scope_dialog();
+            scope_click(&mut app, &ctx, screen, "Count");
+            assert_eq!(app.ui.dialog.as_ref().unwrap().s("status"), "2 match(es)");
+            scope_click(&mut app, &ctx, screen, "Find Next");
+            scope_selected(&app, sid, 0, 3);
+            let before = app.session.doc().unwrap().clone();
+            if through_menu {
+                crate::menus::activate(&mut app, "spelling.check", &Value::Null);
+            } else {
+                crate::menus::run_ui(&mut app, "spelling.check", &Value::Null).unwrap().unwrap();
+            }
+            assert_eq!(app.ui.dialog.as_ref().unwrap().id, "spelling");
+            scope_state_unchanged(&app, &before);
+            // The next selection-scoped search must use the current selection,
+            // not the wider selection retained by the replaced Find/Change dialog.
+            let matches =
+                scope_control(&mut app, &ctx, "engine.execute", json!({"command": "find.find", "params": {"find": "red", "scope": "selection"}}));
+            assert_eq!(matches, json!([{"story": sid.0, "start": 0, "end": 3, "text": "red"}]));
         }
     }
 

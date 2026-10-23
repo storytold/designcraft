@@ -1,0 +1,31 @@
+{
+  "repository": "LibreOffice/dictionaries",
+  "commit": "67032ee957631908098a72edf48dc81cac27e369",
+  "files": {
+    "hu_HU.aff": {
+      "url": "https://raw.githubusercontent.com/LibreOffice/dictionaries/67032ee957631908098a72edf48dc81cac27e369/hu_HU/hu_HU.aff",
+      "sha256": "f3a2748dd535cfde2142ab17d0f7f8e4787b03fb25a60829c69ac8d493db4802",
+      "bytes": 2316267
+    },
+    "hu_HU.dic": {
+      "url": "https://raw.githubusercontent.com/LibreOffice/dictionaries/67032ee957631908098a72edf48dc81cac27e369/hu_HU/hu_HU.dic",
+      "sha256": "97293d670ad4a3b8e7eebef7e25c6e8e939b914c64b6b4672b2bf416b768f990",
+      "bytes": 1786144
+    },
+    "README_hu_HU.txt": {
+      "url": "https://raw.githubusercontent.com/LibreOffice/dictionaries/67032ee957631908098a72edf48dc81cac27e369/hu_HU/README_hu_HU.txt",
+      "sha256": "52b17fc3d53b6935eab747a71894507d702f7f0fde379c819c16cc803005fc84",
+      "bytes": 1190
+    },
+    "hyph_hu_HU.dic": {
+      "url": "https://raw.githubusercontent.com/LibreOffice/dictionaries/67032ee957631908098a72edf48dc81cac27e369/hu_HU/hyph_hu_HU.dic",
+      "sha256": "d253b8c6188cd0f1b2340c31c8202bf1978611385cf69b211b56991321ccbee0",
+      "bytes": 987385
+    }
+  },
+  "transformation": "tools/hu-dictionary/rebuild.py",
+  "generated_files": {
+    "hu_HU.aff": "1505dd90cef8b416669a132aaa703dda4eb0fda7c31168e579c2d36fa3605da7",
+    "hu_HU.dic": "bd0e01ab935147d79b7c8945b4ad025522f3960d3f2a65da2cf18758c06da2c5"
+  }
+}

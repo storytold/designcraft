@@ -1,0 +1,13 @@
+{
+  "upstream": "LibreOffice/dictionaries",
+  "commit": "67032ee957631908098a72edf48dc81cac27e369",
+  "path": "hu_HU/hyph_hu_HU.dic",
+  "original_sha256": "d253b8c6188cd0f1b2340c31c8202bf1978611385cf69b211b56991321ccbee0",
+  "modified_sha256": "ca60a14633cb658b9008e2979ac644ee227ff9333a66feaedfef0151683b43bb",
+  "license": "MPL-1.1 (selected alternative)",
+  "fixes": {
+    ".mas5sz\u00e1z8s3zok1ni/sz=3,1,1,14": ".mas5sz\u00e1z8s3zok1ni/sz=,3,1",
+    "gic5csetek/cs=,3,1 ,1,9": "gic5csetek/cs=,3,1"
+  },
+  "binary_sha256": "a6519e424fb86a0b449b204e86a07b298e6963e881d5ff67adef05f1cdd0a101"
+}

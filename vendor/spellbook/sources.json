@@ -1,0 +1,41 @@
+{
+  "package": "spellbook",
+  "version": "0.4.2",
+  "url": "https://crates.io/api/v1/crates/spellbook/0.4.2/download",
+  "crate_sha256": "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a",
+  "license": "MPL-2.0",
+  "files": {
+    "src/aff/parser.rs": {
+      "upstream_sha256": "11bc5c6e4e2ff57dc12cfbc262d323c9b4ea52ddefc9c64e053717f79b45ada4",
+      "local_sha256": "151f864e3010314e9b2cb56ba147f5da1decaf7cac3b0a1bc9faec379b8ac717"
+    },
+    "src/aff.rs": {
+      "upstream_sha256": "71bb404632272e306ef02b2dc6891d1c1a2b15dc1ae5496917cdc6b027516327",
+      "local_sha256": "2b09ed7adda8f403baa54d2a10f36e9b95b30c419417a63ed2cb754d2ef651fd"
+    },
+    "src/checker.rs": {
+      "upstream_sha256": "161f12144e9cb92bf2da12ed0cb5f0f511237666dba95030d40c7c5efe754cd0",
+      "local_sha256": "3d8746854c549a6e927f2838c7899aa51d485e8f921522e02abacea08e29727b"
+    },
+    "src/hash_bag.rs": {
+      "upstream_sha256": "354fb1240c4a3b25b26dfc81ff10d4765dd215fb18d7384ec04bc9423d08c0f7",
+      "local_sha256": "405bb2a23ee8d20f57a45015bec568c0ef6bbab217b2ce49a1e43fed05910aa4"
+    },
+    "src/lib.rs": {
+      "upstream_sha256": "acef5a306193e7c952f7eb4aca1755bf8d8cff64dd0a87fa80ed99f22757fe8c",
+      "local_sha256": "bf34c617f2cc16ab4a6ff690dc7a93e3e77c50b12b70c07d4809eabbbcaf4e1f"
+    },
+    "src/suggester/ngram.rs": {
+      "upstream_sha256": "6dd40efdc52c0653f397288bca9c890282aa8664338c51daac3b8a9f78427ac6",
+      "local_sha256": "7e5ce35fea31f09b4fb82bcd9633a3d5c244b2f5bac19bb9f0230c4f84732aac"
+    },
+    "src/suggester.rs": {
+      "upstream_sha256": "26bd1c2ead5a93cd35dd868963e53e62d7386717bd8bafd6cb3014f105990caf",
+      "local_sha256": "89f99da552e3cf6cecf18824fd35d4e6f5b9948eba7c71ef29e19db4f3896cbb"
+    },
+    "src/umbra_slice.rs": {
+      "upstream_sha256": "eec9db60c9c83bd9ec8757f6ba19c483b15a6ad8982fa25a66ef3ffa409ff0a9",
+      "local_sha256": "2327cadbb27a66d2c00f249a5ad2d88d58425b52cbe28ac6f27318911bce90d8"
+    }
+  }
+}

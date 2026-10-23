@@ -642,6 +642,7 @@ pub(crate) fn annotate(
         let style = ruby_style(styles, &st, &spec, shaped.size, missing);
         for (r, off) in shaped.glyphs.iter().zip(offsets) {
             extra.push(PlacedGlyph {
+                hyphen_inserted: false,
                 rendered_char: r.ch,
                 face: shaped.face,
                 gid: r.gid,

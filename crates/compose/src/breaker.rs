@@ -425,7 +425,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         }
         if g.ch == SOFT_HYPHEN {
             let hw = glyphs[..i].iter().rev().find(|g| g.ch != SOFT_HYPHEN).map_or(g.size * 0.33, |p| hyphen_width(p, &mut hy_cache));
-            let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
+            let mut p = Item::penalty(hw + crate::shape::hyphen_suffix_width(g), sp.hyphen_penalty, true);
             p.auto = true;
             p.zone_from = last_space;
             if sp.optical {
@@ -454,7 +454,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if hyph_after[i] {
                 let hw = hyphen_width(g, &mut hy_cache);
-                let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
+                let mut p = Item::penalty(hw + crate::shape::hyphen_suffix_width(g), sp.hyphen_penalty, true);
                 p.auto = true;
                 p.zone_from = last_space;
                 if sp.optical {
@@ -939,7 +939,7 @@ pub fn greedy(
                         last_natural = last_ok;
                     }
                 } else if hyph_after[i] && may_hyphenate(hyphens) {
-                    let hy = hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
+                    let hy = crate::shape::hyphen_suffix_width(g) + hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
                     if x + hy <= w + shrink + FIT_EPS {
                         last_ok = Some((i + 1, true));
                     }

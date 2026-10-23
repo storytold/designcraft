@@ -7291,6 +7291,164 @@ fn greek_text_gets_greek_hyphenation() {
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
 }
 
+#[test]
+fn hungarian_layout_breaks_and_unbroken_text_preserve_source() {
+    for composer in [Composer::SingleLine, Composer::Paragraph] {
+        for (word, parts) in [
+            ("asszony", ["asz-", "szony"]),
+            ("könnyen", ["köny-", "nyen"]),
+            ("hosszú", ["hosz-", "szú"]),
+            ("ASSZONY", ["ASZ-", "SZONY"]),
+            ("HOSSZÚ", ["HOSZ-", "SZÚ"]),
+            ("ko\u{308}nnyen", ["köny-", "nyen"]),
+        ] {
+            let mut found = false;
+            for width in (25..180).step_by(2) {
+                let para = ParaAttrs { composer: Some(composer), hyph_min_word: Some(2), hyph_zone: Some(0.0), ..Default::default() };
+                let (mut d, sid, _) = doc_with(word, Rect::new(0.0, 0.0, width as f64, 500.0), para);
+                d.story_mut(sid).unwrap().format_chars(0..word.len(), |f| {
+                    f.over.language = Some("Hungarian".into());
+                    f.over.size = Some(20.0);
+                });
+                let cs = compose_story(&d, sid, &ComposeOptions::default());
+                let lines = all_lines(&cs);
+                // Test fitting breaks only where both requested fragments can fit.
+                // Below this width even the shortest legal fragment must overflow.
+                let first = lines[0].glyphs.iter().find(|g| g.visible).unwrap();
+                let minimum = parts
+                    .iter()
+                    .map(|part| part.chars().map(|c| first.face.advance(first.face.glyph_for(c)) * first.sx).sum::<f64>())
+                    .fold(0.0, f64::max)
+                    + 4.0;
+                if (width as f64) < minimum {
+                    continue;
+                }
+                let shown: Vec<String> = lines
+                    .iter()
+                    .map(|l| {
+                        l.glyphs
+                            .iter()
+                            .filter(|g| g.visible)
+                            .map(|g| if g.gid != 0 && g.gid == g.face.glyph_for('ö') { 'ö' } else { g.rendered_char })
+                            .collect()
+                    })
+                    .collect();
+                for l in &lines {
+                    if l.hyphenated {
+                        assert!(l.end_x <= l.x1 + 0.6, "{word} {composer:?} width={width}: overflow {}>{}", l.end_x, l.x1);
+                    }
+                    assert!(word.is_char_boundary(l.range.start) && word.is_char_boundary(l.range.end));
+                    for g in l.glyphs.iter().filter(|g| g.len > 0) {
+                        assert!(word.get(g.byte..g.byte + g.len).is_some());
+                    }
+                }
+                assert_eq!(d.stories[&sid].text, word);
+                if shown == parts {
+                    assert_eq!(hit(&cs, 0, Point::new(lines[0].end_x - 0.1, lines[0].baseline)), Some(lines[0].range.end));
+                    assert!(!highlight_quads(lines[0], 0, word.len(), true).is_empty());
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found, "{word} {composer:?}: never found the correct two-line form");
+            let (mut d, sid, _) = doc_with(word, Rect::new(0.0, 0.0, 1000.0, 500.0), ParaAttrs::default());
+            d.story_mut(sid).unwrap().format_chars(0..word.len(), |f| f.over.language = Some("hu-HU".into()));
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(all_lines(&cs).iter().all(|l| !l.hyphenated));
+            assert!(all_lines(&cs).iter().flat_map(|l| &l.glyphs).all(|g| g.generated_text.is_none()));
+            assert_eq!(d.stories[&sid].text, word);
+        }
+    }
+}
+#[test]
+fn hungarian_manual_no_break_and_language_boundaries() {
+    let word = "asszony";
+    let mut positive_control = false;
+    for width in (25..120).step_by(2) {
+        for mode in 0..4 {
+            let (mut d, sid, _) = doc_with(word, Rect::new(0.0, 0.0, width as f64, 500.0), ParaAttrs { hyph_zone: Some(0.0), ..Default::default() });
+            d.story_mut(sid).unwrap().format_chars(0..word.len(), |f| {
+                f.over.language = Some("Hungarian".into());
+                f.over.no_break = Some(mode == 0);
+            });
+            if mode == 1 {
+                d.story_mut(sid).unwrap().format_chars(2..word.len(), |f| f.over.language = Some("English".into()));
+            }
+            if mode == 2 {
+                d.story_mut(sid).unwrap().format_chars(0..word.len(), |f| f.over.language = Some("French".into()));
+            }
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let inserted = all_lines(&cs).iter().flat_map(|l| &l.glyphs).any(|g| g.generated_text.is_some());
+            if mode == 3 {
+                positive_control |= inserted;
+            } else {
+                assert!(!inserted, "mode={mode}, width={width}");
+            }
+        }
+    }
+    assert!(positive_control, "unrestricted Hungarian must exercise the inserted-letter path");
+    let text = "as\u{ad}szony";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 25.0, 500.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some("Hungarian".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(d.stories[&sid].text, text);
+    assert!(all_lines(&cs).iter().flat_map(|l| &l.glyphs).all(|g| g.generated_text.is_none()));
+}
+
+#[test]
+fn hungarian_all_caps_formatting_applies_to_inserted_letters() {
+    let word = "asszony";
+    let mut found = false;
+    for width in 25..120 {
+        let (mut d, sid, _) = doc_with(
+            word,
+            Rect::new(0.0, 0.0, width as f64, 500.0),
+            ParaAttrs { composer: Some(Composer::SingleLine), hyph_zone: Some(0.0), ..Default::default() },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..word.len(), |f| {
+            f.over.language = Some("Hungarian".into());
+            f.over.capitalization = Some(designcraft_doc::Capitalization::AllCaps);
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        for g in all_lines(&cs).iter().flat_map(|l| &l.glyphs).filter(|g| g.hyphen_inserted && g.rendered_char != '-') {
+            assert_eq!(g.rendered_char, 'Z');
+            assert_eq!(g.gid, g.face.glyph_for('Z'));
+            found = true;
+        }
+    }
+    assert!(found);
+}
+
+#[test]
+fn hungarian_small_caps_insertions_use_shaped_glyphs() {
+    let word = "asszony";
+    let face = designcraft_fonts::FontDb::global().face("Noto Sans", "Regular");
+    let feature: Vec<_> = designcraft_fonts::feature("smcp").into_iter().collect();
+    let shaped = designcraft_fonts::shape(&face, "z", &feature, |c| c);
+    let expected = shaped.first().unwrap();
+    assert_ne!(expected.gid, face.glyph_for('z'), "fixture must have real small caps");
+    let mut found = false;
+    for width in 25..120 {
+        let (mut d, sid, _) = doc_with(
+            word,
+            Rect::new(0.0, 0.0, width as f64, 500.0),
+            ParaAttrs { composer: Some(Composer::SingleLine), hyph_zone: Some(0.0), ..Default::default() },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..word.len(), |f| {
+            f.over.language = Some("Hungarian".into());
+            f.over.font_family = Some("Noto Sans".into());
+            f.over.capitalization = Some(designcraft_doc::Capitalization::SmallCaps);
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        for g in all_lines(&cs).iter().flat_map(|l| &l.glyphs).filter(|g| g.hyphen_inserted && g.rendered_char != '-') {
+            assert_eq!(g.gid, expected.gid);
+            assert!((g.adv - expected.x_advance as f64 * g.sx).abs() < 0.01);
+            found = true;
+        }
+    }
+    assert!(found);
+}
+
 /// Rule Above's offset runs from the first line's baseline up to the rule's bottom edge, as in
 /// InDesign: a rule set clear of the cap height sits between the rows, not across the row above
 /// (an INDD project list whose rules crossed the previous paragraph's text).

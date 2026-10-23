@@ -65,7 +65,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "app.language",
         "Interface Language",
         None,
-        "{lang?: \"\"|de|fr|es|ja|zh|ar|pt-br|it|uk|ru|cs|pl|ka} — menus and panel names (the macOS menu bar follows at once); without lang, opens Preferences, where it is the first setting",
+        "{lang?: \"\"|de|fr|es|ja|zh|ar|pt-br|it|uk|ru|cs|pl|ka|hu} — menus and panel names (the macOS menu bar follows at once); without lang, opens Preferences, where it is the first setting",
     ),
     (
         "app.flattener",
@@ -977,7 +977,7 @@ fn toggle_tabs_panel(app: &mut DesignApp) {
 /// Run a UI command; `None` if `id` isn't one.
 pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     let was_find = app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange");
-    let result = run_ui_inner(app, id, p);
+    let result = if id == "spelling.check" && !app.in_control { Some(crate::spelling_ui::open(app)) } else { run_ui_inner(app, id, p) };
     if was_find && app.ui.dialog.as_ref().is_none_or(|d| d.id != "findChange") {
         app.session.reset_find_scope();
     }
@@ -2488,11 +2488,17 @@ pub fn close_document(app: &mut DesignApp, index: Option<usize>) {
 /// A menu item was chosen. An engine command whose label ends in "…" and that takes parameters
 /// opens a dialog built from its parameter documentation (see [`crate::dialogs::command_fields`]).
 pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
-    if waits_for_ime(app, id) {
-        return;
-    }
     let was_find = app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange");
-    activate_inner(app, id, params);
+    if id == "spelling.check" {
+        if let Err(e) = crate::spelling_ui::open(app) {
+            app.status(e);
+        }
+    } else {
+        if waits_for_ime(app, id) {
+            return;
+        }
+        activate_inner(app, id, params);
+    }
     if was_find && app.ui.dialog.as_ref().is_none_or(|d| d.id != "findChange") {
         app.session.reset_find_scope();
     }
@@ -3375,6 +3381,22 @@ mod tests {
         assert_eq!((mode(&app, "normal"), mode(&app, "preview")), (Some(false), Some(true)));
     }
 
+    #[test]
+    fn hungarian_menu_paths_match_the_visible_submenu_labels() {
+        // These paths are displayed by menu customization; they must use the same
+        // captions as the actual menu tree, including nested special characters.
+        for title in ["Edit", "Type", "View", "Window"] {
+            for path in submenu_paths(title) {
+                let translated = crate::i18n::tr("hu", &path);
+                if translated == path {
+                    continue; // New, uncatalogued paths still fall back to English.
+                }
+                let visible = path.split('/').map(|part| crate::i18n::tr("hu", part)).collect::<Vec<_>>().join("/");
+                assert_eq!(translated, visible, "{path}");
+            }
+        }
+    }
+
     fn walk(items: &[Item], out: &mut Vec<(String, String, Value)>) {
         for it in items {
             match it {
@@ -3800,6 +3822,26 @@ mod tests {
         run_ui(&mut app, "app.language", &json!({})).unwrap().unwrap();
         assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
         assert_eq!(app.ui.language, "de");
+    }
+
+    #[test]
+    fn hungarian_language_is_selectable_persisted_and_keeps_document_data() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "My words · Árvíztűrő tükörfúrógép"})).unwrap();
+        let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+        run_ui(&mut app, "app.language", &json!({"lang": "hu"})).unwrap().unwrap();
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "hu"})), Some(true));
+        assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+        for (title, _) in menu_tree() {
+            assert_ne!(crate::i18n::tr("hu", title), title, "{title}");
+        }
+        let bytes = serde_json::to_vec(&app.ui).unwrap();
+        let restored: crate::UiState = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.language, "hu");
+        assert_eq!(crate::i18n::tr(&restored.language, "File"), "Fájl");
+        assert_eq!(crate::i18n::tr(&restored.language, "A custom name"), "A custom name");
+        assert!(crate::i18n::LANGUAGES.contains(&("hu", "Magyar")), "Preferences lists Hungarian by its own name");
     }
 
     #[test]

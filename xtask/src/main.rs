@@ -204,7 +204,18 @@ fn cmd_ci() -> Result<(), String> {
                 run(c, "cargo clippy --workspace --all-targets -- -D warnings")
             }),
         ),
-        ("test", Box::new(cmd_test)),
+        (
+            "test",
+            Box::new(|| {
+                cmd_test()?;
+                let mut c = cargo();
+                c.args(["test", "--manifest-path", "vendor/spellbook/Cargo.toml", "--test", "hungarian_compatibility"]);
+                run(c, "Hungarian Spellbook compatibility")?;
+                let mut c = cargo();
+                c.args(["test", "--manifest-path", "tools/hu-hyphenation/Cargo.toml"]);
+                run(c, "Hungarian hyphenation generator")
+            }),
+        ),
         ("doctest", Box::new(cmd_doctest)),
         ("assets", Box::new(|| assets::run(&root()))),
         ("layers", Box::new(cmd_layers)),

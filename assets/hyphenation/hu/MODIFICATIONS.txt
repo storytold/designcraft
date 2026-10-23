@@ -1,0 +1,25 @@
+Hungarian hyphenation data – local modifications, 2026-10-21
+
+Source: LibreOffice/dictionaries commit 67032ee957631908098a72edf48dc81cac27e369,
+hu_HU/hyph_hu_HU.dic, Huhyphn v20110815 with László Németh's 2025-12-13 patch.
+Authors: Nagy Bence / Bence Nagy and Németh László / László Németh.
+License selected: MPL-1.1. The original header and COPYING.MPL-1.1 are retained.
+
+Two malformed replacement declarations are corrected:
+.mas5száz8s3zok1ni/sz=3,1,1,14 -> .mas5száz8s3zok1ni/sz=,3,1
+gic5csetek/cs=,3,1 ,1,9 -> gic5csetek/cs=,3,1
+The replacements affect the third source character, consistent with the
+ordinary masszázs and giccs patterns. The remaining pattern weights are retained.
+
+hu.extended.bincode is regenerated, not hand-edited:
+cargo run --offline --manifest-path tools/hu-hyphenation/Cargo.toml
+The generator checks replacement positions and rejects malformed declarations.
+The app embeds only this Hungarian dictionary, not other language dictionaries
+distributed with the hyphenation crate.
+
+Paragraph limits are applied to source letters. NFC/case normalization is for
+lookup only; original document byte boundaries are preserved.
+Hungarian ssz, nny, ggy, ccs, tty, ddzs etc. insert display letters only at selected
+breaks; underlying source text stays unchanged. Unrepresentable replacement
+patterns involving legacy compatibility ligatures are left unbroken.
+Hand-inserted soft hyphens and user exceptions retain their explicit behavior.

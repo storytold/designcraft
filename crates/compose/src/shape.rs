@@ -22,6 +22,12 @@ pub struct Glyph {
     /// `byte..byte + len` holds a marker or nothing: the cluster's text on its first glyph, empty
     /// on the others. `None` for story text, which reads as its source bytes.
     pub generated_text: Option<Box<str>>,
+    /// Letters added before a selected automatic hyphen (Hungarian ssz -> sz-sz).
+    pub hyphen_suffix: Option<Arc<HyphenSuffix>>,
+    pub hyphen_features: Option<Arc<[Feature]>>,
+    pub hyphen_tracking: f64,
+    pub hyphen_all_caps: bool,
+    pub hyphen_inserted: bool,
     /// Advance in points (tracking and horizontal scale applied).
     pub adv: f64,
     pub dx: f64,
@@ -1058,6 +1064,11 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         len: ch.len_utf8(),
         ch,
         generated_text: None,
+        hyphen_suffix: None,
+        hyphen_features: None,
+        hyphen_tracking: 0.0,
+        hyphen_inserted: false,
+        hyphen_all_caps: p.capitalization == Capitalization::AllCaps,
         adv: 0.0,
         dx: 0.0,
         dy: 0.0,
@@ -1144,6 +1155,8 @@ fn shape_segment(
     let src = replacement.unwrap_or(&text[range.clone()]);
     let caps = p.capitalization == Capitalization::AllCaps;
     let feats = features_for(p);
+    let hyphen_features: Option<Arc<[Feature]>> =
+        designcraft_doc::language_tag(&p.language).filter(|t| designcraft_doc::language_subtag(t) == "hu").map(|_| feats.clone().into());
     // Upright in vertical text, Horizontal Kana takes the vertical kana alternates instead.
     let mut upright_feats = feats.clone();
     if vertical && designcraft_doc::otf::is_on(&p.otf_features, "hkna") {
@@ -1215,6 +1228,11 @@ fn shape_segment(
             len: if first_in_cluster || replacement.is_some() { len } else { 0 },
             ch,
             generated_text,
+            hyphen_suffix: None,
+            hyphen_features: hyphen_features.clone(),
+            hyphen_tracking: tracking + manual,
+            hyphen_inserted: false,
+            hyphen_all_caps: p.capitalization == Capitalization::AllCaps,
             adv,
             dx: dx + mark_x,
             dy: dy - mark_y,
@@ -1379,6 +1397,7 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.rendered_char = '-';
     h.moji = Default::default();
     h.generated_text = None;
+    h.hyphen_suffix = None;
     h
 }
 
@@ -1394,4 +1413,53 @@ fn digit_mode(p: &designcraft_doc::CharProps, arabic_context: Option<bool>) -> d
         Some(true) if Digits::Native.map('0', &p.language) == '0' => Digits::Hindi,
         _ => Digits::Native,
     }
+}
+
+/// Shaped once per candidate break, then shared while fitting candidate lines.
+#[derive(Clone, Debug)]
+pub struct HyphenSuffix {
+    text: Box<str>,
+    glyphs: Vec<ShapedGlyph>,
+}
+
+/// Keep the same OpenType features as the source run (small caps, superior forms, etc.).
+pub(crate) fn set_hyphen_suffix(g: &mut Glyph, text: String) -> bool {
+    if text.is_empty() {
+        g.hyphen_suffix = None;
+        return true;
+    }
+    let shaped = shape_cached(&g.face, &text, g.hyphen_features.as_deref().unwrap_or(&[]), g.lang, false, g.upright, ("", ""));
+    if shaped.is_empty() || shaped.iter().any(|s| s.gid == 0) {
+        return false;
+    }
+    g.hyphen_suffix = Some(Arc::new(HyphenSuffix { text: text.into_boxed_str(), glyphs: shaped }));
+    true
+}
+
+/// Width of only the extra display letters; the hyphen is measured separately.
+pub(crate) fn hyphen_suffix_width(g: &Glyph) -> f64 {
+    g.hyphen_suffix.as_ref().map_or(0.0, |s| s.glyphs.iter().map(|sg| sg.x_advance as f64 * g.sx + g.hyphen_tracking).sum())
+}
+/// Display-only glyphs; exported as outlines so they do not alter copied text.
+pub(crate) fn hyphen_suffix_glyphs(g: &Glyph) -> Vec<Glyph> {
+    let Some(suffix) = &g.hyphen_suffix else { return Vec::new() };
+    suffix
+        .glyphs
+        .iter()
+        .map(|sg| {
+            let mut h = hyphen_after(g);
+            let c = suffix.text.get(sg.cluster..).and_then(|s| s.chars().next()).unwrap_or(' ');
+            h.gid = sg.gid;
+            h.ch = c;
+            h.display_char = c;
+            h.rendered_char = c;
+            h.adv = sg.x_advance as f64 * g.sx + g.hyphen_tracking;
+            h.dx = sg.x_offset as f64 * g.sx;
+            h.dy = -(sg.y_offset as f64) * g.sy;
+            h.byte = g.byte;
+            h.generated_text = Some("".into());
+            h.hyphen_inserted = true;
+            h
+        })
+        .collect()
 }

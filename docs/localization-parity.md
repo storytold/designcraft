@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-14 · **Change:** minor (Polish and Georgian interfaces; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-22 · **Change:** minor (Hungarian guide labels and review corrections; older catalog counts retain their dated measurement) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -11,7 +11,7 @@ Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-ty
 ## How it was measured
 
 Interface strings live in `crates/ui-egui/src/i18n.rs` (a shared table with German, French,
-Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,it,ja,ka,pt_br,uk}.rs`.
+Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,fr,hu,it,ja,ka,pl,pt_br,ru,uk}.rs`.
 Untranslated strings fall back to English. A script (2026-10-10) built the set of English
 interface strings as the union of every catalog's keys, every engine command label and every
 literal passed to `tr`/`t` in the UI crate: **1,724 strings**. A further ~145 capitalized literals
@@ -48,23 +48,37 @@ caption, table row/column movement and row-height distribution now use the exist
 catalog. Print, import options and an active table were rendered in Japanese and English with
 craft-fonts. The language totals above retain their dated measurement; this is a targeted fix.
 
+Hungarian follow-up (2026-10-17, updated 2026-10-22): `hu.rs` has **1,925 entries and four
+context-specific captions**, including the 37 tool names. This is a partial interface catalog based on an earlier
+source snapshot, not a new coverage measurement against current main. It was prepared with AI
+assistance and initially reviewed by a native Hungarian contributor with over 30 years of DTP
+experience; further terminology and in-context review is welcome. Preferences lists `Magyar`;
+untranslated/new strings fall back to English. Hungarian spelling and hyphenation are now implemented separately from the interface;
+they follow the text language, not the selected interface language. See
+[hungarian-language-support.md](hungarian-language-support.md).
+Review corrections (2026-10-20) distinguish numbers from counts and text columns from grid
+columns, use formal Hungarian address consistently, and align translated menu paths with
+their visible labels. These corrections do not add new catalog keys or change coverage.
+
 ## Other shipped languages
 
 | Language | Code | UI strings translated | Status |
 |---|---|---|---|
+| Russian | ru | Shipped catalog; current coverage not measured | partial |
+| Hungarian | hu | 1,925 entries + 4 context captions (2026-10-22); native review | partial |
 | Czech | cs | 1,722 (99%), plural categories handled | partial |
 | Italian | it | 1,464 (85%) | partial |
 | Ukrainian | uk | 1,432 (83%), plural categories handled | partial |
 | Polish | pl | 1,717 (99%), count captions category-first; AI-drafted, awaiting native review | partial |
 | Georgian | ka | 1,724 (~100%: every catalog key plus the command labels the others lack), count captions as `noun: n` | partial (reviewed by a native speaker) |
 
-DesignCraft ships **5** interface languages beyond the twelve; InDesign ships 17 beyond its
+DesignCraft ships **7** interface languages beyond the twelve; InDesign ships 17 beyond its
 eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, tr, uk, zh_TW).
 
 ## Document languages
 
 InDesign 2026 hyphenates and spell-checks ~40 languages (Hunspell and Duden dictionaries).
-DesignCraft hyphenates **English, Spanish, Portuguese and Norwegian** and spell-checks **English** only. Text language
+DesignCraft hyphenates **English, Spanish, Portuguese, Norwegian, Greek and Hungarian** and spell-checks **English and Hungarian**. Text language
 can be set per paragraph and character (Properties, Character panel) and drives quotes and
 locale shaping. See [typography-parity.md](typography-parity.md).
 
@@ -83,8 +97,14 @@ locale shaping. See [typography-parity.md](typography-parity.md).
 
 ## Revision history
 
+The 2026-10-22 integration retains all live Hungarian captions, registers their UI keys in the shared catalog test, and removes four unused icon/property-key entries (`IT`, `VA`, `firstTint`, `nextTint`).
+
+
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Hungarian spelling/hyphenation support; eight additional interface entries; see the language-support document |
+| 2026-10-20 | minor | Hungarian review: four context captions, formal address, consistent menu paths; corrected other-language count to six |
+| 2026-10-17 | minor | Hungarian (`hu`) interface added: 1,917 entries and two context captions; initial native-speaker review |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
 | 2026-10-14 | minor | Georgian (`ka`) interface added |
 | 2026-10-10 | major | Created: catalogs measured (1,724 strings), the twelve key languages plus Italian and Ukrainian |

@@ -26,6 +26,8 @@ egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# Already used by egui; monotonic browser-safe deadlines for spelling scans.
+web-time = "1.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

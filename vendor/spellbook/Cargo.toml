@@ -1,0 +1,38 @@
+# Spellbook 0.4.2, MPL-2.0. See MODIFICATIONS.txt and sources.json.
+[package]
+name = "spellbook"
+version = "0.4.2"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Michael Davis <mcarsondavis@gmail.com>"]
+license = "MPL-2.0"
+repository = "https://github.com/helix-editor/spellbook"
+description = "A spellchecking library compatible with Hunspell dictionaries"
+publish = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+# Full upstream unit/doctests depend on dictionaries not distributed here.
+# The independent regression target below uses synthetic and MPL Hungarian data.
+test = false
+doctest = false
+
+[[test]]
+name = "hungarian_compatibility"
+path = "tests/hungarian_compatibility.rs"
+
+[features]
+default = ["default-hasher"]
+default-hasher = ["dep:foldhash"]
+
+[dependencies.foldhash]
+version = ">=0.1"
+optional = true
+default-features = false
+
+[dependencies.hashbrown]
+version = ">=0.15"
+default-features = false

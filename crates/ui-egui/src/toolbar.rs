@@ -135,9 +135,27 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                         ui.ctx(),
                                         |ui| {
                                             egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                                let row_width = g.iter().fold(210.0_f32, |width, tl| {
+                                                    let label = crate::i18n::tr(&app.ui.language, tl.label);
+                                                    let label_width = ui
+                                                        .painter()
+                                                        .layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.5), t.text)
+                                                        .size()
+                                                        .x;
+                                                    let shortcut_width = ui
+                                                        .painter()
+                                                        .layout_no_wrap(
+                                                            tl.shortcut.unwrap_or("").to_owned(),
+                                                            egui::FontId::proportional(11.5),
+                                                            t.text_dim,
+                                                        )
+                                                        .size()
+                                                        .x;
+                                                    width.max(label_width + shortcut_width + 46.0)
+                                                });
                                                 for tl in g {
                                                     ui.horizontal(|ui| {
-                                                        let (r, row) = ui.allocate_exact_size(vec2(210.0, 24.0), Sense::click());
+                                                        let (r, row) = ui.allocate_exact_size(vec2(row_width, 24.0), Sense::click());
                                                         if row.hovered() {
                                                             ui.painter().rect_filled(r, 2.0, t.hover);
                                                         }
@@ -166,7 +184,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                                                 t.text_dim,
                                                             );
                                                         }
-                                                        row.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl.label));
+                                                        row.widget_info(|| {
+                                                            egui::WidgetInfo::labeled(
+                                                                egui::WidgetType::Button,
+                                                                true,
+                                                                crate::i18n::tr(&app.ui.language, tl.label),
+                                                            )
+                                                        });
                                                         if row.clicked() {
                                                             chosen = Some(tl.id);
                                                         }
@@ -640,6 +664,27 @@ mod tests {
 
     fn rect(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> egui::Rect {
         h.get_by_label(label).rect()
+    }
+
+    #[test]
+    fn hungarian_tool_buttons_translate_every_tool_and_keep_shortcuts() {
+        for double in [false, true] {
+            let mut app = app(double);
+            app.ui.language = "hu".into();
+            let mut h = test_window::open(app, vec2(1400.0, 1000.0));
+            for tool in designcraft_tools::TOOL_GROUPS.iter().flat_map(|group| group.iter()) {
+                h.state_mut().app.run("tool.select", serde_json::json!({"tool": tool.id})).unwrap();
+                h.run_steps(3);
+                let label = crate::i18n::tr("hu", tool.label);
+                assert_ne!(label, tool.label, "untranslated tool: {}", tool.id);
+                let tip = match tool.shortcut {
+                    Some(shortcut) => format!("{label} ({shortcut})"),
+                    None => label.to_owned(),
+                };
+                assert!(rect(&h, &tip).is_finite(), "{tip}");
+            }
+            assert_eq!(crate::i18n::tr("hu", "Direct Selection Tool"), "Közvetlen kijelölő eszköz");
+        }
     }
 
     /// As InDesign's: a tool group's flyout closes on Esc and on a click outside it (the fill
