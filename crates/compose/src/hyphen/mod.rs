@@ -5,7 +5,8 @@
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
 //! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
-//! polytonic text hyphenates by them as well.
+//! polytonic text hyphenates by them as well. Russian is `hyph-ru.tex` (2003/03/10) from hyph-utf8
+//! (Alexander I. Lebedev), LPPL 1.2 or later (see NOTICE).
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -433,6 +434,23 @@ mod tests {
         assert_eq!(h("sjøfugl"), "sjø-fugl");
         assert_eq!(h("sirkulasjonen"), "sir-ku-la-sjo-nen");
         assert_eq!(h("beveger"), "be-ve-ger");
+    }
+
+    #[test]
+    fn russian_uses_the_hyph_ru_patterns() {
+        let ru = Lang::for_language("Russian").unwrap();
+        assert_eq!(ru, Lang::for_language("ru_RU").unwrap());
+        assert_eq!(ru, Lang::for_language("ru").unwrap());
+        assert_ne!(ru, Lang::for_language("Spanish").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), ru);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("переносы"), "пе-ре-но-сы");
+        assert_eq!(h("Типография"), "Ти-по-гра-фия");
+        assert_eq!(h("трактование"), "трак-то-ва-ние");
+        assert_eq!(h("пассажиры"), "пас-са-жи-ры");
+        assert_eq!(h("объединение"), "объ-еди-не-ние", "the hard sign stays with its syllable");
     }
 
     #[test]

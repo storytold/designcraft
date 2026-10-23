@@ -74,6 +74,11 @@ list (author, source, license) is in ASSETS.md.
   with or without modification, is permitted in any medium without royalty provided the copyright
   notice and this notice are preserved (additionally distributed under the LaTeX Project Public
   License in CTAN distributions).
+- Russian hyphenation patterns, embedded through the hypher crate (feature "russian"):
+  hyph-ru.tex (2003/03/10) from hyph-utf8, https://github.com/hyphenation/tex-hyphen.
+  Copyright (C) 1999-2003 Alexander I. Lebedev. LaTeX Project Public License 1.2 or later,
+  https://latex-project.org/lppl/ (patterns generated with patgen from a 990,000-word list and
+  manually corrected; distributed unmodified, compiled into hypher's tries).
 - Japanese fonts (craft-fonts): builds made with craft-fonts (CRAFT_FONTS_DIR; all official
   releases) embed the fonts listed in
   https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, BIZ UDMincho,
