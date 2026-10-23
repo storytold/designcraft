@@ -13,6 +13,8 @@ repository = "https://github.com/storytold/designcraft"
 [workspace.dependencies]
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "89dcbb3060377a26c99a6d80caa16084366704c4", version = "=0.1.0", default-features = false }
+# Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.
+craft-keymap = { git = "https://github.com/aiongg/craft-libs", rev = "f9a65e813f5cb7986fc80b11bc0abfd410f1e224", version = "=0.1.0", features = ["egui", "ui"] }
 # internal
 designcraft-geom = { path = "crates/geom" }
 designcraft-color = { path = "crates/color" }

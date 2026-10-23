@@ -15,6 +15,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Document…", "Новий документ…"),
     ("Open…", "Відкрити…"),
     ("Close", "Закрити"),
+    ("Dismiss", "Приховати"),
     ("Save", "Зберегти"),
     ("Save As…", "Зберегти як…"),
     ("Save a Copy…", "Зберегти копію…"),

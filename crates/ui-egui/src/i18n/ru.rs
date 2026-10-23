@@ -18,6 +18,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Document…", "Новый документ…"),
     ("Open…", "Открыть…"),
     ("Close", "Закрыть"),
+    ("Dismiss", "Скрыть"),
     ("Quit DesignCraft", "Выйти из DesignCraft"),
     ("Save", "Сохранить"),
     ("Save As…", "Сохранить как…"),

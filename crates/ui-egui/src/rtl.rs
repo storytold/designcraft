@@ -90,6 +90,31 @@ pub fn paint(p: &egui::Painter, pos: Pos2, anchor: Align2, text: &str, font: Fon
     p.galley(rect.min, galley, color);
 }
 
+/// `text` in display order for widgets that draw a plain string (craft-keymap's Keyboard
+/// Shortcuts dialog): directional runs reordered as [`visual_line`] does, Arabic runs left
+/// logical for the shaper, neutral right-to-left runs reversed and mirrored.
+pub fn visual_text(text: &str) -> String {
+    if !has_rtl(text) {
+        return text.to_owned();
+    }
+    let single = text.replace(['\n', '\r'], " ");
+    let bidi = BidiInfo::new(&single, None);
+    let mut out = String::with_capacity(single.len());
+    for para in &bidi.paragraphs {
+        let (levels, runs) = bidi.visual_runs(para, para.range.clone());
+        for run in runs {
+            let rtl = levels.get(run.start).is_some_and(|l| l.is_rtl());
+            let Some(part) = single.get(run) else { continue };
+            if rtl && !part.chars().any(designcraft_fonts::is_rtl) {
+                out.extend(part.chars().rev().map(|c| unicode_bidi_mirroring::get_mirrored(c).unwrap_or(c)));
+            } else {
+                out.push_str(part);
+            }
+        }
+    }
+    out
+}
+
 /// Reorder directional runs, not characters: the shaper needs logical Arabic to join letters.
 fn visual_line(job: &LayoutJob, bidi: &BidiInfo<'_>, line: Range<usize>) -> LayoutJob {
     let mut visual = LayoutJob { break_on_newline: false, ..Default::default() };
@@ -486,6 +511,14 @@ mod tests {
             assert!(galley.rect.is_finite());
             assert!(galley.mesh_bounds.is_finite());
         });
+    }
+
+    /// Plain strings for the Keyboard Shortcuts dialog: runs in display order, Arabic left logical
+    /// for the shaper.
+    #[test]
+    fn visual_text_orders_runs_and_keeps_arabic_logical() {
+        assert_eq!(visual_text("Save (Ctrl+S)"), "Save (Ctrl+S)");
+        assert_eq!(visual_text("حفظ Save"), "Saveحفظ ");
     }
 
     #[test]

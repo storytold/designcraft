@@ -17,6 +17,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Document…", "ახალი დოკუმენტი…"),
     ("Open…", "გახსნა…"),
     ("Close", "დახურვა"),
+    ("Dismiss", "დამალვა"),
     ("Save", "შენახვა"),
     ("Save As…", "შენახვა როგორც…"),
     ("Save a Copy…", "ასლის შენახვა…"),

@@ -152,6 +152,7 @@ fn load_prefs(app: &mut DesignApp) {
         && let Ok(ui) = designcraft_ui_egui::UiState::from_preferences_json(&bytes)
     {
         app.ui = ui;
+        app.sync_keymap();
     }
     // Engine preferences (Preferences dialog, favourites…) live beside the UI state.
     if let Some(p) = prefs_path().map(|p| p.with_file_name("prefs.json"))
@@ -187,7 +188,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
     match purpose {
         "swatches" => &[OpenFilter { name: "Swatch Exchange (ASE)", extensions: &["ase"] }],
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
-        "shortcuts" => &[OpenFilter { name: "Shortcut set (text)", extensions: &["txt"] }],
+        "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text)", extensions: &["json", "txt"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],
