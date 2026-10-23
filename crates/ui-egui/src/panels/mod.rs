@@ -660,6 +660,23 @@ mod font_menu_ui_tests {
             click_at(&mut h, at);
         }
         settle(&mut h);
+        // Offscreen font rows are omitted from the accessibility tree.
+        let font_names: Vec<_> = super::font_menu(&h.state().app).iter().map(|f| f.family.clone()).collect();
+        for _ in 0..32 {
+            if h.query_by_label("JetBrains Mono").is_some() {
+                break;
+            }
+            let mut rows: Vec<_> = h
+                .query_all_by(|n| {
+                    n.role() == egui::accesskit::Role::Button
+                        && n.label().as_deref().is_some_and(|label| font_names.iter().any(|family| family.as_str() == label))
+                })
+                .map(|n| n.rect())
+                .collect();
+            rows.sort_by(|a, b| a.min.y.total_cmp(&b.min.y));
+            let at = rows.get(rows.len() / 2).expect("a visible font-family row").center();
+            test_window::wheel(&mut h, at, vec2(0.0, -100.0));
+        }
         assert!(h.query_by_label("JetBrains Mono").is_some(), "a monospaced family is listed");
         assert!(h.query_by_label(designcraft_fonts::DEFAULT_FAMILY).is_none(), "a serif isn't");
         // Back to all classes, then fonts like the serif: it leads, other serifs follow, no sans.

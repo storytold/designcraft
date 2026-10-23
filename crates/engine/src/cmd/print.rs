@@ -42,13 +42,28 @@ fn print(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn print_options(s: &Session, p: &Value) -> Result<designcraft_pdf::PdfOptions> {
+    super::export::options(p, s.doc()?.doc.page_count())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn print_with(
     s: &mut Session,
     p: &Value,
     submit: impl FnOnce(&[u8], &craft_print::Job) -> std::result::Result<String, craft_print::Error>,
 ) -> Result<Value> {
+    let opts = print_options(s, p)?;
+    print_with_options(s, p, &opts, submit)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn print_with_options(
+    s: &mut Session,
+    p: &Value,
+    opts: &designcraft_pdf::PdfOptions,
+    submit: impl FnOnce(&[u8], &craft_print::Job) -> std::result::Result<String, craft_print::Error>,
+) -> Result<Value> {
     let d = &s.doc()?.doc;
-    let opts = super::export::options(p, d.page_count())?;
     let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
     let job = craft_print::Job {
         printer: str_param(p, "printer").map(str::to_string),
@@ -58,7 +73,7 @@ fn print_with(
         ..craft_print::Job::default()
     };
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-    let pdf = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let pdf = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), &s.cache, opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
     let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
     let out = json!({"printer": job.printer, "copies": copies, "pages": pages, "command": command, "bytes": pdf.len()});
@@ -96,12 +111,14 @@ mod tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({"pages": 4})).unwrap();
         let params = json!({"printer": "Office (east)", "copies": 2, "pages": "2-3", "marks": true, "bleed": true});
+        let mut options = print_options(&s, &params).unwrap();
+        // Both exports use the production options, with only the metadata clock pinned.
+        options.created = Some(1_700_000_000);
         let expected = {
             let d = &s.doc().unwrap().doc;
-            let options = super::super::export::options(&params, d.page_count()).unwrap();
             designcraft_pdf::export_pdf(&super::super::interchange::with_pdf_boxes(d), &s.cache, &options).unwrap()
         };
-        let r = print_with(&mut s, &params, |pdf, job| {
+        let r = print_with_options(&mut s, &params, &options, |pdf, job| {
             // The production export options and full bytes reach the shared spooler boundary.
             assert_eq!(pdf, expected);
             assert!(pdf.starts_with(b"%PDF-"));
