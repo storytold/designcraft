@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** minor (pt-BR interface ~100%, Localization unchanged at 45%; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -64,7 +64,7 @@ they receive, setting type exactly, and basic editing that never fails.
 | UI/UX fidelity | 15% | 45% | 120–180 | Measured InDesign 2026 look; but users report object copy/paste (#351, #348, #185, #164), right-click menus (#238, #187, #160), out-port threading (#352, #194, #165) failing | [ui-parity.md](ui-parity.md) |
 | Stability | 10% | 45% | 60–100 | Never-crash rules and last-resort guards; startup failures on some GPUs and machines (#334, #273, #220, #192, #167, #166); no CI runs the tests on pull requests | [gaps.md](gaps.md) |
 | Performance | 5% | 65% | 40–80 | 300k characters compose in ~38 ms warm; typing repaints in < 1 ms (damage regions); no incremental composition; nothing benchmarked against InDesign; no large real documents | [gaps.md](gaps.md) |
-| Localization | 3% | 45% | 120–180 | 9 translations beyond English; Japanese 95%, most others 83–85%, pt-BR 61%; Hindi, Indonesian, Korean, Vietnamese none | [localization-parity.md](localization-parity.md) |
+| Localization | 3% | 45% | 120–180 | 13 translations beyond English; Japanese 95%, most others 83–85% (2026-10-10), pt-BR ~100% (2026-10-21); Hindi, Indonesian, Korean, Vietnamese none | [localization-parity.md](localization-parity.md) |
 | Platforms | 3% | 55% | 40–80 | macOS is where it's tested; Windows and Linux users hit basic failures; web and FreeBSD builds exist | [hardware-parity.md](hardware-parity.md) |
 | Hardware | 2% | 45% | 20–40 | Canvas rasterizes on the CPU (vello_cpu, multithreaded); GPU only presents; printing uses shared CUPS/Windows PDF spoolers (no PostScript; physical output needs validation) | [hardware-parity.md](hardware-parity.md) |
 | Ecosystem (scripting, plug-ins) | 2% | 15% | 150–250 | Own command/script/MCP API is strong; no ExtendScript/UXP DOM, so InDesign scripts don't run; no plug-ins | [gaps.md](gaps.md) |
@@ -463,6 +463,7 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Localization evidence: 13 translations beyond English, pt-BR ~100% (re-measured); readiness and hours unchanged |
 | 2026-10-13 | minor | `.indd` and `.indt` open through storytold/indd-utils; INDD remaining work 10–30 h (real-file corpus); readiness unchanged until it is measured |
 | 2026-10-12 | minor | Text threads by hand; stage note and distance to alpha follow the gate (5–7 h, #165); percentages unchanged |
 | 2026-10-11 | minor | Spring-loaded Zoom navigation added to the working feature inventory (DC-1); readiness estimates unchanged |

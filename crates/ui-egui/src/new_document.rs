@@ -15,7 +15,7 @@ use crate::dialogs::Dialog;
 use crate::theme::{Tokens, semibold};
 
 /// The Units list, as InDesign's New Document window has it.
-const NEW_DOCUMENT_UNITS: [Unit; 8] =
+pub(crate) const NEW_DOCUMENT_UNITS: [Unit; 8] =
     [Unit::Points, Unit::Picas, Unit::Inches, Unit::Millimeters, Unit::Centimeters, Unit::Ciceros, Unit::Agates, Unit::Pixels];
 /// Tab key and English label.
 const TABS: [(&str, &str); 5] = [("recent", "Recent"), ("saved", "Saved"), ("print", "Print"), ("web", "Web"), ("mobile", "Mobile")];

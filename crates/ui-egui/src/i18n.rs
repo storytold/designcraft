@@ -4846,6 +4846,8 @@ mod tests {
         keys.extend(crate::about::SIBLINGS.iter().map(|(_, _, what)| *what));
         keys.extend(crate::credits::NameMode::ALL.iter().map(|mode| mode.label()));
         keys.extend(crate::credits::SortKey::ALL.iter().flat_map(|key| [key.label().0, key.label().1]));
+        // File › New's Units list passes each unit's name to `tr`.
+        keys.extend(crate::new_document::NEW_DOCUMENT_UNITS.map(|unit| unit.label()));
         // UI labels passed to `tr` that no other catalog has yet.
         keys.extend([
             "(any)",
@@ -4910,6 +4912,54 @@ mod tests {
             "Story Editor — {count} words",
             "Text Anchor",
             "Use Document Style Definition",
+            // Dialog, panel and Control panel labels.
+            "  Save  ",
+            "  Update  ",
+            "/1000 em",
+            "All pages",
+            "Apply to:",
+            "Auto-Size",
+            "Auto-Sizing",
+            "Between Entry and Number:",
+            "Both pages of the parent spread",
+            "Both pages of the spread",
+            "Color Theme",
+            "Corner Size",
+            "Create Links When Placing Text Files",
+            "Currently Rendered With",
+            "Delete Character Style…",
+            "Delete Paragraph Style…",
+            "Delete the character style \"{name}\"?",
+            "Delete the paragraph style \"{name}\"?",
+            "Entry Style:",
+            "Include Paragraph Styles:",
+            "Kerning/Tracking:",
+            "Minimum Height",
+            "Minimum Width",
+            "No Line Breaks",
+            "Other Styles:",
+            "Page Number:",
+            "Reference Point",
+            "Remove Existing Ruler Guides",
+            "Remove »",
+            "Replace All",
+            "Replace All updates this font throughout text and styles. Done keeps remaining fallback fonts.",
+            "Replace Existing Table of Contents",
+            "Replace with:",
+            "Show the Typography panel",
+            "Stroke Behind Fill",
+            "Stroke Weight",
+            "Styles in Table of Contents",
+            "Stylistic Set",
+            "The selected fonts have no OpenType features.",
+            "This document uses unavailable fonts. Choose replacements, or select Done to continue with fallback fonts.",
+            "This page",
+            "This page is",
+            "This story was edited in the layout: you'll be asked before those edits are replaced",
+            "This style is in use. Text using it will be reassigned to:",
+            "Title:",
+            "« Add",
+            "“{}” has been edited in this layout. Updating replaces those edits with the text from the file.",
             // Status-bar messages.
             "Alternate layout",
             "Couldn't write recovery data: {error}",
@@ -4923,6 +4973,9 @@ mod tests {
             "the default printer",
             "{name}: import cancelled while a dialog is open; choose the file again",
             "{name}: {count} step(s) done",
+            // Edit › Keyboard Shortcuts imports a set saved by InDesign.
+            "Import InDesign Set…",
+            "Imported {count} shortcuts from “{set}”; {unmatched} items not matched, {unreadable} unreadable.",
         ]);
         keys
     }
