@@ -215,6 +215,65 @@ mod tests {
         assert_eq!(s.execute("xref.list", &json!({})).unwrap()[0]["text"], "(p. 3)");
     }
 
+    /// Every `/Rect` in an exported PDF, as `[x0, y0, x1, y1]`: the link annotations of a
+    /// document with nothing else annotated.
+    fn link_rects(s: &mut Session) -> Vec<[f64; 4]> {
+        let r = s.execute("file.exportPdf", &json!({})).unwrap();
+        let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut out = Vec::new();
+        for part in text.split("/Rect[").skip(1) {
+            let Some(end) = part.find(']') else { continue };
+            let v: Vec<f64> = part[..end].split_whitespace().filter_map(|n| n.parse().ok()).collect();
+            if let [x0, y0, x1, y1] = v[..] {
+                out.push([x0, y0, x1, y1]);
+            }
+        }
+        out
+    }
+
+    /// A cross-reference's link covered its first letter only: the source range is the one marker
+    /// character, and the glyphs of the text it generates all point at that character while only
+    /// the first of them owns it, so measuring the glyphs that own their bytes measured one glyph
+    /// — a ~7 pt link under ~40 pt of text (#1446).
+    #[test]
+    fn a_cross_references_link_covers_the_text_it_generated() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let sp = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 200], "content": "text", "text": "Photo 1"})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "See  for details."})).unwrap();
+        let src = r["story"].clone();
+        s.execute("text.select", &json!({"story": src, "anchor": 4, "focus": 4})).unwrap();
+        s.execute("xref.defineFormat", &json!({"name": "Bare", "definition": "<paraText />"})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Photo 1", "format": "Bare"})).unwrap();
+        let generated = s.execute("xref.list", &json!({})).unwrap()[0]["text"].as_str().unwrap().to_string();
+        assert_eq!(generated, "Photo 1");
+        let xref_rects = link_rects(&mut s);
+        assert_eq!(xref_rects.len(), 1, "one link, for the cross-reference: {xref_rects:?}");
+        let xref_width = xref_rects[0][2] - xref_rects[0][0];
+
+        // The same text, written out and linked as text: the same letters in the same font at the
+        // same size, so the two links cover the same width.
+        let mut t = Session::new();
+        t.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let r = t
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": format!("See {generated} for details.")}))
+            .unwrap();
+        let story = r["story"].clone();
+        let (start, end) = (4, 4 + generated.len());
+        t.execute("text.select", &json!({"story": story, "anchor": start, "focus": end})).unwrap();
+        t.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+        let plain = link_rects(&mut t);
+        assert_eq!(plain.len(), 1, "{plain:?}");
+        let plain_width = plain[0][2] - plain[0][0];
+
+        assert!(plain_width > 20.0, "the text is wider than one glyph: {plain_width}");
+        assert!((xref_width - plain_width).abs() < 1.0, "the cross-reference covers its text: {xref_width} vs {plain_width}");
+        // And it starts where the text starts.
+        assert!((xref_rects[0][0] - plain[0][0]).abs() < 1.0, "{:?} vs {:?}", xref_rects[0], plain[0]);
+    }
+
     #[test]
     fn cross_reference_into_a_story_with_a_running_header_composes() {
         let mut s = Session::new();

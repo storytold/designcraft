@@ -38,7 +38,11 @@ fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &Hyperl
                     if l.range.end <= *start || l.range.start >= *end {
                         continue;
                     }
-                    let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= *start && g.byte < *end).collect();
+                    // Every glyph the source's characters produced, not only the ones that own
+                    // their bytes: the glyphs of generated text — a cross-reference's — all point
+                    // at the one marker character, and only the first of them owns it, so asking
+                    // for owned bytes measured the first letter and nothing else (#1446).
+                    let gs: Vec<_> = l.glyphs.iter().filter(|g| g.byte >= *start && g.byte < *end).collect();
                     let (Some(a), Some(b)) = (gs.first(), gs.last()) else { continue };
                     let r = Rect::new(a.x, l.baseline - l.ascent, b.x + b.adv, l.baseline + l.descent);
                     out.push(m.transform_rect_bbox(r));
