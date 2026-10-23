@@ -1030,7 +1030,9 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.newDocumentDialog" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", json!({})));
+            let mut d = crate::dialogs::Dialog::new("newDocument", json!({}));
+            crate::new_document::use_print_units(app, &mut d);
+            app.ui.dialog = Some(d);
             Ok(Value::Null)
         }
         "app.openDialog" => app.pick_and_open("open"),

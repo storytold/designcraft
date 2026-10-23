@@ -67,6 +67,14 @@ pub(crate) fn defaults() -> Value {
     Value::Object(f)
 }
 
+/// Show a print dialog's measures in the units of the last print document made, if any.
+pub(crate) fn use_print_units(app: &DesignApp, d: &mut Dialog) {
+    let print = d.fields.get("intent").and_then(|v| serde_json::from_value::<Intent>(v.clone()).ok()) == Some(Intent::Print);
+    if let Some(u) = app.ui.new_document_units.filter(|_| print) {
+        set_units(d, u);
+    }
+}
+
 fn units(d: &Dialog) -> Unit {
     d.fields.get("units").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(Unit::Picas)
 }
@@ -136,6 +144,9 @@ fn as_preset(p: &Value) -> Option<NewDocument> {
 /// Remember a document just made with `p` for the Recent tab.
 pub(crate) fn remember(app: &mut DesignApp, p: &Value) {
     let Some(nd) = as_preset(p) else { return };
+    if nd.intent == Intent::Print {
+        app.ui.new_document_units = Some(nd.units);
+    }
     let recent = &mut app.ui.recent_new_documents;
     recent.retain(|r| *r != nd);
     recent.insert(0, nd);
@@ -452,7 +463,7 @@ fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                 d.fields.insert("tab".into(), json!(key));
                 // As in InDesign, a tab shows its first preset's details (Web and Mobile in pixels).
                 if let Some(c) = cards(app, key).into_iter().next() {
-                    select(d, &c);
+                    select(app, d, &c);
                 }
             }
             resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, text));
@@ -463,10 +474,14 @@ fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     ui.painter().line_segment([pos2(ui.min_rect().left(), y), pos2(ui.max_rect().right(), y)], Stroke::new(1.0, t.divider));
 }
 
-/// Fill the details from card `c`, keeping the typed document name.
-fn select(d: &mut Dialog, c: &Card) {
+/// Fill the details from card `c`, keeping the typed document name. A built-in print card shows
+/// in the units of the last print document made; recent and saved ones keep their own.
+fn select(app: &DesignApp, d: &mut Dialog, c: &Card) {
     let name = d.s("name");
     d.fields.extend(fields_for(&c.nd));
+    if !c.key.starts_with("recent:") && !c.key.starts_with("saved:") {
+        use_print_units(app, d);
+    }
     d.fields.insert("name".into(), json!(name));
     d.fields.insert("preset".into(), json!(c.key));
 }
@@ -502,7 +517,7 @@ fn presets(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         for c in &list {
             let resp = card(ui, c, card_units, current == c.key);
             if resp.clicked() || resp.double_clicked() {
-                select(d, c);
+                select(app, d, c);
             }
             if resp.double_clicked() {
                 create = true;
@@ -1029,6 +1044,31 @@ mod tests {
         let doc = &app.session.active().unwrap().doc;
         assert_eq!((doc.settings.page_width, doc.settings.intent), (1366.0, Intent::Web));
         assert!(!doc.settings.facing_pages);
+    }
+
+    #[test]
+    fn the_chosen_print_units_are_remembered_for_the_next_document() {
+        let mut app = app();
+        let ctx = context();
+        app.ui.dialog.as_mut().unwrap().fields.insert("tab".into(), json!("print"));
+        let texts = settle(&mut app, &ctx);
+        click(&mut app, &ctx, card_at(&texts, "Letter"), 1);
+        set_units(app.ui.dialog.as_mut().unwrap(), Unit::Millimeters);
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.active().unwrap().doc.settings.horizontal_units, Unit::Millimeters);
+        // Saved with the preferences and read back, as at the next launch.
+        let saved = serde_json::to_vec(&app.ui).unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui = crate::UiState::from_preferences_json(&saved).unwrap();
+        app.run("app.newDocumentDialog", json!({})).unwrap();
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!((units(d), d.s("width")), (Unit::Millimeters, "215.9 mm".into()), "the dialog opens in the last units");
+        // A built-in print preset shows in them too.
+        app.ui.dialog.as_mut().unwrap().fields.insert("tab".into(), json!("print"));
+        let texts = settle(&mut app, &ctx);
+        click(&mut app, &ctx, card_at(&texts, "Legal"), 1);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!((d.s("preset"), units(d), d.s("width")), ("Legal".into(), Unit::Millimeters, "215.9 mm".into()));
     }
 
     #[test]
