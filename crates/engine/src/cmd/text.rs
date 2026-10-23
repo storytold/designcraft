@@ -149,12 +149,17 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!(query "story.get", "Get Story", [], None, "{story? | frame?} → text, frames, paragraphs, vertical, overset", has_doc, |s, p| {
+        cmd!(query "story.get", "Get Story", [], None, "{story? | frame?} → text, frames, paragraphs, vertical, lines, overset (the index in `text` where it stops fitting its frames, null when it all fits) and oversetChars (how many characters that leaves, as preflight reports them)", has_doc, |s, p| {
             let st = s.doc()?;
             let sid = story_of(s, p).ok_or_else(|| bad("story.get", "no story"))?;
             let mut v = st.doc.story_summary(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             let cs = s.cache.get(&st.doc, sid, None);
+            // `overset` is where the text stops fitting, not how much is left over: the two were
+            // read as the same number and disagreed with preflight's count (#1465).
             v["overset"] = json!(cs.overset_at);
+            v["oversetChars"] = json!(cs
+                .overset_at
+                .map(|at| st.doc.stories.get(&sid).and_then(|story| story.text.get(at..)).unwrap_or("").chars().count()));
             v["lines"] = json!(cs.line_count());
             Ok(v)
         }),

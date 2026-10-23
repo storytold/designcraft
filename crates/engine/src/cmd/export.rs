@@ -135,6 +135,8 @@ fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
     if rasterized > 0 {
         r.warnings.push(format!("{rasterized} object(s) went in as images"));
     }
+    // A slide has no room for the overset text either (#1465).
+    r.warnings.extend(super::preflight::overset_warnings(s, opts.pages.as_deref()));
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -810,6 +812,8 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     {
         r.warnings.push(format!("transparency flattened: {n} region(s) rasterised"));
     }
+    // Text the pages have no room for is not in the file: say so, as preflight does (#1465).
+    r.warnings.extend(super::preflight::overset_warnings(s, opts.pages.as_deref()));
     match str_param(p, "path") {
         Some(path) => {
             write_file(path, &r.bytes)?;
@@ -1329,5 +1333,66 @@ mod pptx_tests {
         s.execute("object.exportOptions", &json!({"ids": [r["id"]], "rasterize": true})).unwrap();
         let x = shapes(&mut s);
         assert!(x.contains("<p:pic>") && !x.contains("prst=\"ellipse\""), "{x}");
+    }
+}
+
+#[cfg(test)]
+mod overset_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A page-based export leaves out the text its frames have no room for, and said nothing
+    /// about it: an imported 58-page form lost whole sentences — a data-consent clause, a
+    /// statutory rule, the last row of two tables — with `warnings` empty while preflight
+    /// reported 19 overset stories (#1465).
+    #[test]
+    fn an_export_warns_about_the_text_the_pages_had_no_room_for() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 2, "facingPages": false, "margins": 0})).unwrap();
+        let text = "First line is visible.\nSecond paragraph does not fit: this sentence carries the legal notice and must not vanish from the PDF without a warning.";
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 280, 60], "content": "text", "text": text})).unwrap();
+        let (id, sid) = (frame["id"].as_u64().unwrap(), frame["story"].clone());
+
+        // What preflight says about the same frame, for the warning to agree with.
+        let issues = s.execute("preflight.run", &json!({})).unwrap();
+        let overset = issues["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "overset").expect("preflight reports it").clone();
+        assert_eq!(overset["message"], "Overset text: 76 characters");
+
+        for command in ["file.exportPdf", "file.exportPptx"] {
+            let r = s.execute(command, &json!({})).unwrap();
+            let warnings = r["warnings"].as_array().expect("warnings").clone();
+            let about: Vec<&str> = warnings.iter().filter_map(|w| w.as_str()).filter(|w| w.contains("not in the export")).collect();
+            assert_eq!(about.len(), 1, "{command}: {warnings:?}");
+            let w = about[0];
+            assert!(w.contains("page 1"), "{command}: the page it is on: {w}");
+            assert!(w.contains("76 character"), "{command}: the count preflight gives: {w}");
+            assert!(w.contains(&format!("frame {id}")), "{command}: the frame: {w}");
+        }
+
+        // The pages being exported are the ones reported on: page 2 has no overset frame.
+        let r = s.execute("file.exportPdf", &json!({"pages": [2]})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+
+        // A reflowable export carries the whole story, so it has nothing to report.
+        let r = s.execute("file.exportHtml", &json!({})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+        assert!(r["text"].as_str().unwrap().contains("must not vanish"), "the HTML has the text the PDF left out");
+
+        // `overset` is the index where the text stops fitting; `oversetChars` is how much is left,
+        // which is the number preflight reports. The two were read as the same thing.
+        let story = s.execute("story.get", &json!({"story": sid})).unwrap();
+        assert_eq!(story["overset"], json!(68), "{story}");
+        assert_eq!(story["oversetChars"], json!(76), "{story}");
+
+        // A frame the text fits: nothing is reported anywhere.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 1, "facingPages": false, "margins": 0})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 280, 180], "content": "text", "text": "Short."})).unwrap();
+        for command in ["file.exportPdf", "file.exportPptx"] {
+            assert_eq!(s.execute(command, &json!({})).unwrap()["warnings"], json!([]), "{command}");
+        }
+        let story = s.execute("story.get", &json!({"story": frame["story"].clone()})).unwrap();
+        assert!(story["overset"].is_null() && story["oversetChars"].is_null(), "{story}");
     }
 }

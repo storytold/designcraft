@@ -113,6 +113,51 @@ fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<(des
     None
 }
 
+/// Text that is in the document but not in a page-based export (PDF, PowerPoint): the overset
+/// part of a story, and a story with no frame at all. The export used to write the file and
+/// report nothing, so whole sentences left an imported document without a hint anywhere (#1465).
+///
+/// One line per story, naming the page and the frame as the preflight issue does. `pages` are the
+/// 0-based pages being exported; a story whose overset is on a page that is not being exported is
+/// not reported, and one with no page of its own always is. A reflowable export (EPUB, HTML) or a
+/// text export carries the whole story, so neither calls this.
+pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
+    let Some(st) = s.active() else { return vec![] };
+    let d = &st.doc;
+    let mut out = Vec::new();
+    for story in d.stories.values() {
+        let cs = s.cache.get(d, story.id, None);
+        if !cs.is_overset() {
+            continue;
+        }
+        let n = story.text.get(cs.overset_at.unwrap_or(0)..).unwrap_or("").chars().count();
+        if n == 0 {
+            continue;
+        }
+        if story.frames.is_empty() {
+            out.push(format!("a story with no text frame: {n} character(s) of it are not in the export"));
+            continue;
+        }
+        let last = story.frames.last().copied();
+        let location = last.and_then(|f| overset_location(s, f));
+        let page = location.and_then(|(_, page)| page);
+        if let (Some(page), Some(pages)) = (page, pages)
+            && !pages.contains(&page)
+        {
+            continue;
+        }
+        let item = location.map(|(item, _)| item).or(last);
+        out.push(match (page, item) {
+            (Some(page), Some(item)) => {
+                format!("page {}: {n} character(s) of the story in frame {} do not fit it and are not in the export", page + 1, item.0)
+            }
+            (None, Some(item)) => format!("the story in frame {}: {n} character(s) do not fit and are not in the export", item.0),
+            _ => format!("{n} character(s) of a story do not fit their frame and are not in the export"),
+        });
+    }
+    out
+}
+
 pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let Some(st) = s.active() else { return vec![] };
     let d = &st.doc;
