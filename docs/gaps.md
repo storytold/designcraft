@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (private corpus evidence and PDF/EPS preview reopen fix; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -49,6 +49,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   DesignCraft draws from those files is unmeasured, and it inherits the IDML importer's open bugs
   (gap 3).
 - **Impact:** a client's `.indd` opens, but nobody knows how close it comes to the original.
+- **Local evidence (2026-10-22):** 205 private INDDs pass direct open, PDF/IDML export and reopen; 90 further inputs are cloud-only. This is pipeline evidence, not reference fidelity or a redistributable corpus. A PDF/EPS preview type-loss regression found in 36 documents is fixed with synthetic coverage; the patched reopen check has zero such changes. See [private-corpus-testing.md](private-corpus-testing.md). The committed corpus/reference requirement stays open.
 - **Estimate:** 10–30 h (corpus pinned in a sibling of `storytold/photocraft-corpus`, metric,
   fixes in indd-utils or the IDML importer).
 - **Doc:** [file-format-parity.md](file-format-parity.md)
@@ -62,6 +63,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   verified in InDesign 2026 with synthetic files), but nothing is measured on real documents.
 - **Impact:** IDML is the main interchange format until INDD lands, and the only one that goes
   back to InDesign.
+- **Local evidence (2026-10-22):** generated IDML from 205 private INDDs is measured through DesignCraft export/reopen. Original same-save IDML and reference renderings are still absent, so this does not satisfy the independent round-trip requirement. See [private-corpus-testing.md](private-corpus-testing.md).
 - **Estimate:** 60–100 h (corpus, metric, fixes).
 - **Doc:** [file-format-parity.md](file-format-parity.md)
 

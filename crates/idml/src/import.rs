@@ -3066,6 +3066,7 @@ impl<'r> Importer<'r> {
             })
         };
         let mut data = g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default();
+        let embedded = !data.is_empty();
         let page = pdf_page_in(g);
         // Where the box sits on the page needs the PDF parsed: the engine finds it after import.
         let pdf_crop = pdf_attribute(g).and_then(|a| a.get("PDFCrop")).map_or(designcraft_doc::PdfCrop::Crop, names::pdf_crop_in);
@@ -3092,6 +3093,21 @@ impl<'r> Importer<'r> {
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
         let size = svg_viewbox_size(&data).unwrap_or(size);
         let (mime, px) = if preview.is_some() { (None, None) } else { sniff_image(&data) };
+        // INDD previews can be embedded on IDML export while the graphic keeps
+        // its original PDF/EPS link. Reopening must retain that type, page and
+        // crop rather than silently converting the placement into an Image.
+        // Bytes read from a relinked file still determine its actual format.
+        let vector_preview = embedded && matches!(g.local(), "PDF" | "EPS") && mime.is_some_and(|m| m.starts_with("image/") && m != "image/svg+xml");
+        let (mime, px) = if vector_preview {
+            self.warnings.push(format!(
+                "graphic {}: embedded raster stand-in for {}; original graphic type and placement retained",
+                g.get("Self").unwrap_or("(unnamed)"),
+                g.local()
+            ));
+            (None, None)
+        } else {
+            (mime, px)
+        };
         let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {
             f if f.contains("EPS") || g.local() == "EPS" => "application/postscript".into(),
             f if f.contains("JPEG") => "image/jpeg".into(),

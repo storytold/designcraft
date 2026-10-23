@@ -70,6 +70,44 @@ fn package(frames: &[String]) -> Vec<u8> {
     ])
 }
 
+#[test]
+fn embedded_vector_previews_keep_format_page_and_crop_on_reopen() {
+    // Synthetic raster preview; no PDF/EPS source file is available. INDD import
+    // supplies such previews while retaining the original link's format.
+    let png = std::sync::Arc::new([b"\x89PNG\r\n\x1a\n".as_slice(), &[0, 0, 0, 13], b"IHDR", &4u32.to_be_bytes(), &3u32.to_be_bytes()].concat());
+    let pdf = pdf_frame(1, 0.0, 3, "CropTrim");
+    let eps = pdf_frame(2, 100.0, 1, "CropPDF")
+        .replace("<PDF ", "<EPS ")
+        .replace("</PDF>", "</EPS>")
+        .replace("insert.pdf", "insert.eps")
+        .replace("$ID/PDF", "$ID/EPS");
+    let previews = std::collections::HashMap::from([("im1".into(), png.clone()), ("im2".into(), png.clone())]);
+    let d = crate::import_idml_report_with_previews(&package(&[pdf, eps]), &|_| None, &previews).unwrap().document;
+    let out = export_idml(&d);
+    let imported = crate::import_idml_report_with_previews(&out, &|_| None, &Default::default()).unwrap();
+    assert_eq!(imported.warnings.iter().filter(|w| w.contains("embedded raster stand-in")).count(), 2);
+    let reopened = imported.document;
+    let pdf = reopened.assets.values().find(|a| a.name == "insert.pdf").unwrap();
+    let eps = reopened.assets.values().find(|a| a.name == "insert.eps").unwrap();
+    assert_eq!(pdf.mime, "application/pdf", "a raster stand-in must not turn a placed PDF into an Image");
+    assert_eq!(eps.mime, "application/postscript");
+    assert_eq!(pdf.page, 2);
+    assert_eq!(pdf.pdf_crop, PdfCrop::Trim);
+    assert_eq!(pdf.data.as_slice(), png.as_slice());
+    assert_eq!(eps.data.as_slice(), png.as_slice());
+    let second = export_idml(&reopened);
+    let spreads = zip_text(&second, "Spreads/");
+    assert!(spreads.contains("<PDF ") && spreads.contains("<EPS "));
+    assert!(spreads.contains("PageNumber=\"3\"") && spreads.contains("PDFCrop=\"CropTrim\""));
+}
+
+#[test]
+fn linked_raster_replacement_keeps_its_actual_format() {
+    let png = [b"\x89PNG\r\n\x1a\n".as_slice(), &[0, 0, 0, 13], b"IHDR", &4u32.to_be_bytes(), &3u32.to_be_bytes()].concat();
+    let d = import_idml_with(&package(&[pdf_frame(1, 0.0, 3, "CropTrim")]), &|_| Some(png.clone())).unwrap();
+    assert_eq!(d.assets.values().next().unwrap().mime, "image/png", "a linked replacement is actual artwork, not an embedded stand-in");
+}
+
 /// (asset, crop, transform) of each graphic, left to right.
 fn placements(d: &Document) -> Vec<(AssetId, [f64; 4], designcraft_geom::Affine)> {
     let mut out: Vec<(f64, AssetId, [f64; 4], designcraft_geom::Affine)> = d.spreads[0]

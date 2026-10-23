@@ -1,11 +1,17 @@
 # DesignCraft roadmap (detail)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (.indd and .indt open through indd-utils; text threads by hand; the gate waits on the Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (private corpus evidence and PDF/EPS preview reopen fix; .indd and .indt open through indd-utils; text threads by hand; the gate waits on the Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026 (21.6)
 
 Forward-looking plan. The one-page summary is [ROADMAP.md](../ROADMAP.md); numbers are in
 [target-app-parity.md](target-app-parity.md); the work list is [gaps.md](gaps.md). Hours are
 Opus 5.5 agent-hours (calibration in target-app-parity.md). Driving the app from agents:
 [agents.md](agents.md).
+
+Local development evidence, 2026-10-22: [205 private INDD documents](private-corpus-testing.md)
+now have separated and direct-opening checks, structural comparisons and reopen
+tests. A preview-backed PDF/EPS type-loss bug is fixed and verified across that
+set. Gaps 2–4 remain open for a reproducible reference corpus and fidelity
+measurement; the alpha gate and readiness estimates are unchanged.
 
 ## Alpha gate
 
