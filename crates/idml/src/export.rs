@@ -594,9 +594,16 @@ impl<'a> Ex<'a> {
                 .attr("Visible", "true")
                 .attr("SwatchCreatorID", "7937");
             for (i, stop) in gradient.stops.iter().enumerate() {
-                let cid = match by_value.iter().find(|(c, _)| *c == stop.color) {
-                    Some((_, id)) => id.clone(),
-                    None => {
+                // A stop on a swatch names it; a plain color names an equal color swatch or
+                // an unnamed color.
+                let named = stop
+                    .swatch
+                    .as_deref()
+                    .filter(|n| d.swatch(n).is_some_and(|w| !matches!(w.value, SwatchValue::Gradient { .. } | SwatchValue::None)));
+                let cid = match (named, by_value.iter().find(|(c, _)| *c == stop.color)) {
+                    (Some(n), _) => self.sw(n),
+                    (None, Some((_, id))) => id.clone(),
+                    (None, None) => {
                         let cid = format!("Color/{}", self.fresh());
                         colors.push(color_el(&cid, "$ID/", "Process", &stop.color, "Normal", true, true, false));
                         by_value.push((stop.color, cid.clone()));

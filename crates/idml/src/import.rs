@@ -979,12 +979,17 @@ impl<'r> Importer<'r> {
             let Some(id) = e.get("Self") else { continue };
             let mut stops: Vec<GradientStop> = Vec::new();
             for s in e.find_all("GradientStop") {
-                let c = s.get("StopColor").map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
+                let r = s.get("StopColor");
+                let c = r.map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
+                // A stop on a named swatch (a spot, a tint, [Paper]) keeps it for its inks;
+                // unnamed colors stay plain. The id becomes the swatch's name below, once
+                // repeated names are numbered.
+                let swatch = r.filter(|r| self.swatch_names.get(*r).is_some_and(|n| n != swatch::NONE)).map(str::to_string);
                 let loc = s.num("Location").unwrap_or(0.0) / 100.0;
                 if let (Some(prev), Some(m)) = (stops.last_mut(), s.num("Midpoint")) {
                     prev.midpoint = (m / 100.0) as f32;
                 }
-                stops.push(GradientStop { offset: loc as f32, color: c, opacity: 1.0, midpoint: 0.5 });
+                stops.push(GradientStop { swatch, ..GradientStop::new(loc as f32, c) });
             }
             let kind = if e.get("Type") == Some("Radial") { GradientKind::Radial } else { GradientKind::Linear };
             let unnamed = e.get("Visible") == Some("false") || e.get("Name").is_none_or(|n| n.is_empty() || n == "$ID/");
@@ -1009,6 +1014,7 @@ impl<'r> Importer<'r> {
             order.sort_by_key(|(id, _)| group_order.iter().position(|g| g == id).unwrap_or(usize::MAX));
         }
         let mut names: HashSet<String> = self.swatches.iter().map(|s| s.name.clone()).collect();
+        let first_new = self.swatches.len();
         for (id, mut s) in order {
             if names.contains(&s.name) {
                 let base = s.name.clone();
@@ -1017,6 +1023,16 @@ impl<'r> Importer<'r> {
             }
             names.insert(s.name.clone());
             self.swatches.push(s);
+        }
+        let stop_names = |stops: &mut Vec<GradientStop>, ids: &HashMap<String, String>| {
+            for stop in stops {
+                stop.swatch = stop.swatch.take().and_then(|id| ids.get(&id).cloned());
+            }
+        };
+        for s in self.swatches.iter_mut().skip(first_new).chain(self.hidden_swatches.values_mut()) {
+            if let SwatchValue::Gradient { gradient } = &mut s.value {
+                stop_names(&mut gradient.stops, &self.swatch_names);
+            }
         }
         // Colour groups other than the root one become Swatches panel folders.
         for g in top.iter().filter(|e| e.local() == "ColorGroup" && e.get("IsRootColorGroup") != Some("true")) {

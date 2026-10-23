@@ -41,7 +41,7 @@ layer survive interchange; literal XML and round-trip tests are in
 
 | Format | Ext | InDesign | DesignCraft | Fidelity / tests | Weight |
 |---|---|---|---|---|---|
-| PDF (print) | `.pdf` | ✓ all presets, PDF/X-1a/3/4, PDF/A, PDF/UA | ✓ krilla: real text with subset fonts, DeviceCMYK/RGB, spot Separations, bleed/slug, marks, spreads, compression options, remembered settings (#196); **PDF/X-4** with output intent and a validator (#223, #200); **PDF/A-2b**; tagged PDF | 53 tests in `crates/pdf`; no PDF/X-1a or X-3 (needs flattening to PDF 1.3/1.4); no presets / `.joboptions`; no external validator (veraPDF / callas) in CI | 18% |
+| PDF (print) | `.pdf` | ✓ all presets, PDF/X-1a/3/4, PDF/A, PDF/UA | ✓ krilla: real text with subset fonts, DeviceCMYK/RGB, spot Separations, bleed/slug, marks, spreads, compression options, remembered settings (#196); **PDF/X-4** with output intent and a validator (#223, #200); **PDF/A-2b**; tagged PDF; **PDF/X-1a:2003** flattened in its inks by craft-prepress | 53 tests in `crates/pdf`; no PDF/X-3; no presets / `.joboptions`; no external validator (veraPDF / callas) in CI | 18% |
 | PDF (interactive) | `.pdf` | ✓ | ✓ links, bookmarks, buttons, AcroForm fields, page transitions, object states | | 2% |
 | JPEG / PNG | `.jpg`, `.png` | ✓ | PNG from the UI; JPEG from the CLI only | no resolution / colour space options dialog for JPEG | 3% |
 | EPUB reflowable | `.epub` | ✓ | ✓ stories in article order, tables, footnotes and endnotes, CSS from styles, images, nav | | 2% |
@@ -103,7 +103,7 @@ up to 30 points.
 |---|---|
 | INDD real-file corpus, metric, fixes (#21, #114) | 10–30 |
 | IDML real-file corpus, metric, fixes (#193, #338, #339, #340) | 60–100 |
-| PDF/X-1a and X-3 (transparency flattener), PDF presets and `.joboptions`, external validator | 40–70 |
+| PDF/X-3, PDF presets and `.joboptions`, external validator | 30–60 |
 | Print fidelity, PostScript level 3 output and print presets | 25–45 |
 | ICML story import, IDMS snippets | 15–25 |
 | HTML / fixed-layout EPUB with live text | 20–35 |

@@ -404,15 +404,17 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 
 /// The presets offered by the Export PDF dialog, in display order. The stored value is the
 /// English name; the caption is translated.
-const PDF_EXPORT_PRESETS: &[&str] = &["Desktop Printing", "Commercial Printing", "Screen and Email", "PDF/X-4", "PDF/A-2b", "Custom"];
+const PDF_EXPORT_PRESETS: &[&str] =
+    &["Desktop Printing", "Commercial Printing", "Screen and Email", "PDF/X-1a:2003", "PDF/X-4", "PDF/A-2b", "Custom"];
 
-/// Apply a preset's dependent fields. Flatten is only touched by "Screen and Email"; "Custom"
-/// (and any unknown value) changes nothing.
+/// Apply a preset's dependent fields. Flatten is only touched by "Screen and Email" and
+/// "PDF/X-1a:2003" (High Resolution); "Custom" (and any unknown value) changes nothing.
 fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
     let (standard, compress, crop, bleed, page_info, flatten) = match preset {
         "Desktop Printing" => ("none", false, false, false, false, None),
         "Commercial Printing" => ("none", true, true, true, false, None),
         "Screen and Email" => ("none", true, false, false, false, Some("low")),
+        "PDF/X-1a:2003" => ("x1a", false, true, true, false, Some("high")),
         "PDF/X-4" => ("x4", false, true, true, false, None),
         "PDF/A-2b" => ("a2b", false, false, false, false, None),
         _ => return,
@@ -485,7 +487,20 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     head(ui, "Advanced");
     ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Standard:"));
-        translated_combo(lang, ui, d, "standard", &[("none", "None"), ("x4", "PDF/X-4"), ("a2b", "PDF/A-2b")]);
+        translated_combo(lang, ui, d, "standard", &[("none", "None"), ("x1a", "PDF/X-1a:2003"), ("x4", "PDF/X-4"), ("a2b", "PDF/A-2b")]);
+    });
+    // Spreads with transparency are rasterized at the preset's resolution; in PDF/X-1a it is the
+    // resolution craft-prepress rasterizes complex transparent regions at.
+    head(ui, "Transparency Flattener");
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Preset:"));
+        translated_combo(
+            lang,
+            ui,
+            d,
+            "flatten",
+            &[("", "None"), ("high", "High Resolution"), ("medium", "Medium Resolution"), ("low", "Low Resolution")],
+        );
     });
     check(ui, d, "tagged", crate::i18n::tr(lang, "Tagged PDF"));
 
@@ -9421,6 +9436,17 @@ mod tests {
         assert!(!d.b("marksBleed"));
         assert!(!d.b("marksPageInfo"));
         assert_eq!(d.s("flatten"), "low");
+    }
+
+    /// The PDF/X-1a preset exports X-1a with the High Resolution flattener and printer's marks.
+    #[test]
+    fn pdf_export_preset_pdf_x1a_flattens_at_high_resolution() {
+        let mut d = Dialog::new("pdfExport", json!({}));
+        apply_pdf_preset(&mut d, "PDF/X-1a:2003");
+        assert_eq!(d.s("standard"), "x1a");
+        assert_eq!(d.s("flatten"), "high");
+        assert!(d.b("marksCrop") && d.b("marksBleed"));
+        assert!(PDF_EXPORT_PRESETS.contains(&"PDF/X-1a:2003"));
     }
 
     #[test]

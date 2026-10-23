@@ -707,6 +707,8 @@ fn imports_hand_written_fixture() {
     assert_eq!(gradient.kind, designcraft_color::GradientKind::Radial);
     assert_eq!(gradient.stops[1].color, Color::cmyk(0.1, 0.2, 0.3, 0.4));
     assert!((gradient.stops[0].midpoint - 0.3).abs() < 1e-6);
+    assert_eq!(gradient.stops[0].swatch.as_deref(), Some("Brand"), "a stop on a swatch keeps it");
+    assert_eq!(gradient.stops[1].swatch, None, "an unnamed color stays plain");
     // The parent rectangle used an unnamed colour → value-named swatch.
     let mr = &d.parents[0].items[0];
     assert_eq!(mr.fill.swatch, "C=10 M=20 Y=30 K=40");
@@ -986,6 +988,29 @@ fn round_trips_small_document() {
     assert_eq!(oval.fill.swatch, "Brand 30");
     assert!((oval.opacity - 0.5).abs() < 1e-6);
     assert!(back.swatch("Brand 30").is_some());
+}
+
+#[test]
+fn gradient_stops_keep_their_swatches_through_a_round_trip() {
+    use designcraft_color::{ColorType, Gradient, GradientKind, GradientStop};
+    let mut d = Document::new(&NewDocument::default());
+    let gold = Color::cmyk(0.0, 0.3, 0.9, 0.1);
+    d.swatches.push(Swatch { value: SwatchValue::Color { color: gold, color_type: ColorType::Spot }, ..Swatch::color("Gold", gold) });
+    d.swatches.push(Swatch { value: SwatchValue::Tint { base: "Gold".into(), tint: 0.4 }, ..Swatch::color("Gold 40%", gold) });
+    let on = |offset: f32, name: &str| GradientStop {
+        swatch: Some(name.into()),
+        ..GradientStop::new(offset, designcraft_color::swatch::resolve(&d.swatches, name, 1.0).unwrap())
+    };
+    let stops = vec![on(0.0, "Gold"), on(0.3, "Gold 40%"), GradientStop::new(0.6, Color::cmyk(0.5, 0.0, 0.0, 0.0)), on(1.0, "[Paper]")];
+    d.swatches.push(Swatch {
+        value: SwatchValue::Gradient { gradient: Gradient { kind: GradientKind::Linear, stops } },
+        ..Swatch::color("Gold fade", gold)
+    });
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let SwatchValue::Gradient { gradient } = &back.swatch("Gold fade").unwrap().value else { panic!("gradient") };
+    let names: Vec<Option<&str>> = gradient.stops.iter().map(|s| s.swatch.as_deref()).collect();
+    assert_eq!(names, [Some("Gold"), Some("Gold 40%"), None, Some("[Paper]")]);
+    assert_eq!(gradient.stops[2].color, Color::cmyk(0.5, 0.0, 0.0, 0.0));
 }
 
 #[test]

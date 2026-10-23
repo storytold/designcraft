@@ -12,7 +12,9 @@ repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
 # Shared reader and writer; publish the immutable revision before this consumer.
-craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "89dcbb3060377a26c99a6d80caa16084366704c4", version = "=0.1.0", default-features = false }
+craft-pdf = { git = "https://github.com/aiongg/craft-libs", rev = "d30598dcb4b389561c485b97d4a97a0c86bc36e4", version = "=0.1.0", default-features = false }
+# Separations, ink coverage and the ink manager; same revision as craft-pdf and the krilla patch.
+craft-prepress = { git = "https://github.com/aiongg/craft-libs", rev = "d30598dcb4b389561c485b97d4a97a0c86bc36e4", version = "=0.1.0", features = ["flatten"] }
 # internal
 designcraft-geom = { path = "crates/geom" }
 designcraft-color = { path = "crates/color" }
@@ -122,9 +124,11 @@ debug = 0
 
 # Opt-in cancelable macOS termination on the pinned winit 0.30 line.
 [patch.crates-io]
-krilla = { git = "https://github.com/storytold/craft-libs", rev = "89dcbb3060377a26c99a6d80caa16084366704c4", version = "=0.8.2" }
+krilla = { git = "https://github.com/aiongg/craft-libs", rev = "d30598dcb4b389561c485b97d4a97a0c86bc36e4", version = "=0.8.2" }
 winit = { git = "https://github.com/storytold/winit.git", rev = "3d51077fd1a966f84df9ef287839dc84fd5b4ca7" }
-hayro = { git = "https://github.com/storytold/craft-libs", rev = "89dcbb3060377a26c99a6d80caa16084366704c4", version = "=0.7.1" }
-hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "89dcbb3060377a26c99a6d80caa16084366704c4", version = "=0.7.0" }
-hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "89dcbb3060377a26c99a6d80caa16084366704c4", version = "=0.7.2" }
-hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "89dcbb3060377a26c99a6d80caa16084366704c4", version = "=0.3.0" }
+# The hayro crates from craft-libs' vendor/ directory (pdfcraft's patches plus craft-libs'; see its
+# vendor/README.craft-reader.md), at the craft-pdf revision.
+hayro = { git = "https://github.com/aiongg/craft-libs", rev = "d30598dcb4b389561c485b97d4a97a0c86bc36e4", version = "=0.7.1" }
+hayro-interpret = { git = "https://github.com/aiongg/craft-libs", rev = "d30598dcb4b389561c485b97d4a97a0c86bc36e4", version = "=0.7.0" }
+hayro-syntax = { git = "https://github.com/aiongg/craft-libs", rev = "d30598dcb4b389561c485b97d4a97a0c86bc36e4", version = "=0.7.2" }
+hayro-jbig2 = { git = "https://github.com/aiongg/craft-libs", rev = "d30598dcb4b389561c485b97d4a97a0c86bc36e4", version = "=0.3.0" }

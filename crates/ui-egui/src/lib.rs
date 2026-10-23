@@ -146,7 +146,7 @@ fn default_zone() -> f64 {
 pub struct PdfExportSettings {
     /// Preset (one of the five presets, or "Custom" after a manual edit).
     pub preset: String,
-    /// PDF standard (`none`, `x4`, `a2b`).
+    /// PDF standard (`none`, `x1a`, `x4`, `a2b`).
     pub standard: String,
     /// Compression › Compress images (JPEG).
     pub compress_images: bool,

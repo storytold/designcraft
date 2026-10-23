@@ -116,12 +116,13 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 10–20 h. **Doc:** [localization-parity.md](localization-parity.md)
 
 ### 9. PDF output presets and standards (FF)
-- **Missing:** PDF/X-1a and PDF/X-3 (no flattener to PDF 1.3/1.4), Adobe PDF Presets and
-  `.joboptions` load/save, output-intent choice beyond the built-in profile, PDF/UA validation;
-  #159, #32.
-- **Have:** PDF/X-4 with output intent and a validator (`#200`), PDF/A-2b, tagged PDF, CMYK and
-  spot, marks and bleed, the options dialog with remembered settings (#196).
-- **Estimate:** 40–70 h. **Doc:** [file-format-parity.md](file-format-parity.md)
+- **Missing:** PDF/X-3, Adobe PDF Presets and `.joboptions` load/save, output-intent choice
+  beyond the built-in profile, PDF/UA validation; soft effects other than the drop shadow reach
+  the PDF/X-1a flattener as RGB images; #159, #32.
+- **Have:** PDF/X-4 with output intent and a validator (`#200`), PDF/X-1a:2003 through
+  craft-prepress's flattener with its own checks, PDF/A-2b, tagged PDF, CMYK and spot, marks and
+  bleed, the options dialog with remembered settings (#196).
+- **Estimate:** 30–60 h. **Doc:** [file-format-parity.md](file-format-parity.md)
 
 ### 10. Printing (H, F)
 - **Missing:** PostScript, a printer-driver options UI, separations to device, print presets, or trapping.

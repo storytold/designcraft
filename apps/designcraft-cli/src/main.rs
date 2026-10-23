@@ -14,7 +14,8 @@
 //!                                      # MCP server over stdio (docs/mcp.md); the roots confine the files it reads and writes
 //! designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]  # budgets on a synthetic stress document
 //! designcraft-cli bench FILE [--runs N]  # the same measurements on one document
-//! designcraft-cli validate-pdf FILE.pdf    # run the built-in PDF/X-4 conformance checks
+//! designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]   # the built-in PDF/X-4 or PDF/X-1a checks (default: the
+//!                                      # file's own GTS_PDFXVersion)
 //! designcraft-cli links                   # Discord, website, app page and GitHub links
 //! designcraft-cli --version               # print the version
 //! ```
@@ -122,7 +123,7 @@ fn main() -> ExitCode {
         Some("mcp") => report(mcp(&args[1..])),
         Some("perf") => report(perf::perf(&args[1..])),
         Some("bench") => report(perf::bench(&args[1..])),
-        Some("validate-pdf") => report(validate_pdf(args.get(1).map(String::as_str))),
+        Some("validate-pdf") => report(validate_pdf(args.get(1..).unwrap_or_default())),
         Some("links") => {
             use designcraft_engine::links::*;
             outln!("Discord   {DISCORD}\nWebsite   {WEBSITE}\nApp page  {APP_PAGE}\nGitHub    {GITHUB}\nIssues    {ISSUES}");
@@ -153,14 +154,38 @@ fn report(r: Result<(), String>) -> ExitCode {
     }
 }
 
-fn validate_pdf(path: Option<&str>) -> Result<(), String> {
-    let path = path.ok_or("usage: designcraft-cli validate-pdf FILE.pdf")?;
+fn validate_pdf(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]";
+    const X1A: &[u8] = b"/GTS_PDFXVersion(PDF/X-1:";
+    let mut path = None;
+    let mut standard = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--standard" => standard = Some(it.next().ok_or(USAGE)?.as_str()),
+            p if path.is_none() => path = Some(p),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let path = path.ok_or(USAGE)?;
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let issues = designcraft_pdf::check_pdfx4(&bytes);
+    let standard = match standard.map(designcraft_pdf::Standard::parse) {
+        Some(Some(s)) => s,
+        Some(None) => return Err(USAGE.into()),
+        None if bytes.windows(X1A.len()).any(|w| w == X1A) => designcraft_pdf::Standard::PdfX1a,
+        None => designcraft_pdf::Standard::PdfX4,
+    };
+    let (name, issues) = match standard {
+        designcraft_pdf::Standard::PdfX1a => ("PDF/X-1a:2003", designcraft_pdf::check_pdfx1a(&bytes)),
+        designcraft_pdf::Standard::PdfX4 => ("PDF/X-4", designcraft_pdf::check_pdfx4(&bytes)),
+        _ => return Err(USAGE.into()),
+    };
+    let (warnings, issues): (Vec<String>, Vec<String>) = issues.into_iter().partition(|i| i.starts_with("warning: "));
+    let warnings: Vec<&str> = warnings.iter().map(|w| w.trim_start_matches("warning: ")).collect();
     let valid = issues.is_empty();
-    let report = json!({"path": path, "standard": "PDF/X-4", "valid": valid, "issues": issues});
+    let report = json!({"path": path, "standard": name, "valid": valid, "issues": issues, "warnings": warnings});
     outln!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
-    if valid { Ok(()) } else { Err(format!("{path} failed PDF/X-4 validation")) }
+    if valid { Ok(()) } else { Err(format!("{path} failed {name} validation")) }
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
