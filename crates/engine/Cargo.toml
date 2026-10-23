@@ -25,6 +25,7 @@ designcraft-textimport = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }
+designcraft-sla = { workspace = true }
 indd = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

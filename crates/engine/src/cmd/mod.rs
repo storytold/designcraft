@@ -50,6 +50,7 @@ mod prefs;
 mod print;
 mod qr;
 mod rulers;
+mod scribus;
 mod scripts;
 mod select;
 pub mod spelling;
@@ -170,6 +171,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         let mut v = Vec::new();
         v.extend(file::specs());
         v.extend(interchange::specs());
+        v.extend(scribus::specs());
         v.extend(export::specs());
         v.extend(edit::specs());
         v.extend(paste_svg::specs());
