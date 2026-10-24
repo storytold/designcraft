@@ -441,11 +441,13 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         root.write(&path, &bytes)?;
         files.push(path);
     }
-    // The report: fonts (missing first), links, preflight, the user's instructions.
-    let mut r = format!("Package report: {display_title}\n\n");
+    // The printing instructions first, as the form gave them; then the report: fonts (missing
+    // first), links, preflight.
+    let mut r = String::new();
     if let Some(t) = str_param(p, "instructions").filter(|t| !t.trim().is_empty()) {
         r += &format!("Instructions\n{t}\n\n");
     }
+    r += &format!("Package report: {display_title}\n\n");
     r += "Fonts\n";
     r += &font_lines.concat();
     if !fallback_lines.is_empty() {
@@ -629,6 +631,7 @@ mod tests {
         assert!(out.join("Links").join("logo.svg").exists());
         let report = std::fs::read_to_string(out.join("Instructions.txt")).unwrap();
         assert!(report.contains("Print on matte.") && report.contains("logo.svg"), "{report}");
+        assert!(report.find("Print on matte.") < report.find("Package report:"), "the instructions come first: {report}");
         assert!(report.contains("Preflight:"), "{report}");
         // The packaged document links to its Links folder.
         let doc_file = files.iter().find(|f| f.ends_with(".designcraft")).unwrap();

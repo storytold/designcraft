@@ -105,7 +105,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Em Dash", "Tiret cadratin"),
     ("Em Space", "Espace cadratin"),
     ("Email Address:", "Adresse e-mail :"),
-    ("Email:", "E-mail :"),
     ("En Dash", "Tiret demi-cadratin"),
     ("En Space", "Espace demi-cadratin"),
     (
@@ -254,7 +253,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("PDF import cancelled: the originating document has closed", "Importation PDF annulée : le document d'origine a été fermé"),
     ("PRs", "PR"),
     ("Package", "Assemblage"),
-    ("Packaged {count} files into {dir}", "{count} fichiers assemblés dans {dir}"),
     ("Page Break", "Saut de page"),
     ("Page Options", "Options de page"),
     ("Page Tool", "Outil Page"),
@@ -265,7 +263,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Parent Options…", "Options de gabarit…"),
     ("Pen Tool", "Outil Plume"),
     ("Pencil Tool", "Outil Crayon"),
-    ("Phone:", "Téléphone :"),
     ("Picas", "Picas"),
     ("Pin Bar Position", "Épingler la position de la barre"),
     ("Place with Import Options", "Importer avec les options d'importation"),
