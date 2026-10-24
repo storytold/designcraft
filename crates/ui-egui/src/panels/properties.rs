@@ -2893,9 +2893,12 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let _ = app.run("object.dropShadow", json!({"on": on}));
     }
     if ds.on {
+        // Distance and Size in the document's units, as the Effects dialog shows them: a bare
+        // number typed in either means the same.
+        let u = units(app);
         egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
             caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
-            if let Some(v) = number(ui, "dsd", Some(ds.distance), " pt", 56.0, 1) {
+            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, 56.0) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Angle"));
@@ -2922,7 +2925,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-            if let Some(v) = number(ui, "dss", Some(ds.size), " pt", 50.0, 1) {
+            if let Some(v) = measure(ui, "dss", Some(ds.size), u, 50.0) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
             }
             ui.end_row();
@@ -4042,6 +4045,57 @@ mod effects_panel_tests {
         assert!(texts.iter().any(|t| t == "Object:"), "{texts:?}");
         click(&mut app, &ctx, "Knockout Group");
         assert!(!item(&app, a).knockout);
+    }
+
+    #[test]
+    fn the_effects_panel_shows_and_reads_the_drop_shadow_in_the_document_units() {
+        // As the Effects dialog does: a bare number typed in either means the same distance.
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits": "millimeters", "verticalUnits": "millimeters"})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app.run("object.dropShadow", json!({"on": true, "distance": 7.0, "size": 5.0})).unwrap();
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut h = Harness::builder().with_size(vec2(320.0, 600.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                // Fonts first, as the other panel harnesses: they take effect from the next frame.
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "en");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                effects_panel(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        // Replace the text of the field showing `pt` (in mm) with `typed`.
+        fn retype(h: &mut Harness<'static, DesignApp>, pt: f64, typed: &str) {
+            let v = designcraft_geom::format_measure(pt, Unit::Millimeters);
+            let at = h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some(v.as_str())).rect().center();
+            h.hover_at(at);
+            h.drag_at(at);
+            h.drop_at(at);
+            h.run_steps(2);
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.event(egui::Event::Text(typed.into()));
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+        }
+        let shadow = |h: &Harness<'static, DesignApp>| {
+            h.state().session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().effects.drop_shadow.clone()
+        };
+        // Distance and Size show in mm, not as "7 pt" and "5 pt"; a bare number typed is mm.
+        retype(&mut h, 7.0, "3");
+        let ds = shadow(&h);
+        assert!((ds.distance - Unit::Millimeters.to_pt(3.0)).abs() < 1e-6, "Distance 3 is 3 mm: {}", ds.distance);
+        assert_eq!(ds.size, 5.0, "Size is left alone");
+        retype(&mut h, 5.0, "2");
+        let ds = shadow(&h);
+        assert!((ds.size - Unit::Millimeters.to_pt(2.0)).abs() < 1e-6, "Size 2 is 2 mm: {}", ds.size);
+        assert!((ds.distance - Unit::Millimeters.to_pt(3.0)).abs() < 1e-6, "Distance is left alone: {}", ds.distance);
     }
 
     #[test]
