@@ -779,6 +779,59 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.rect(2.5, 3.5, 12.0, 16.5);
             pen.frect(14.0, 3.0, 18.0, 17.0);
         }
+        // Links panel: the status and page column headers, the footer buttons, the embedded mark.
+        "link-status" => {
+            pen.closed(&[(10.0, 3.0), (17.5, 16.5), (2.5, 16.5)]);
+            pen.line(&[(10.0, 8.0), (10.0, 12.0)]);
+            pen.fcircle(10.0, 14.3, 0.9);
+        }
+        "link-page" => {
+            pen.closed(&[(5.0, 3.0), (12.0, 3.0), (15.5, 6.5), (15.5, 17.0), (5.0, 17.0)]);
+            pen.line(&[(12.0, 3.0), (12.0, 6.5), (15.5, 6.5)]);
+        }
+        "link-text" => {
+            pen.closed(&[(5.0, 3.0), (12.0, 3.0), (15.5, 6.5), (15.5, 17.0), (5.0, 17.0)]);
+            for y in [9.0, 11.5, 14.0] {
+                pen.line(&[(7.0, y), (13.5, y)]);
+            }
+        }
+        "link-embedded" => {
+            pen.rect(3.5, 4.5, 16.5, 15.5);
+            pen.fill(&[(5.0, 14.0), (9.0, 9.0), (12.0, 12.0), (13.5, 10.5), (15.0, 14.0)]);
+            pen.fcircle(13.0, 7.5, 1.2);
+        }
+        "link-relink" | "link-goto" => {
+            // Two links of a chain, and an arrow: into the chain (relink) or out to the page.
+            pen.closed(&[(3.0, 8.0), (9.0, 8.0), (9.0, 12.0), (3.0, 12.0)]);
+            pen.closed(&[(7.0, 6.5), (13.0, 6.5), (13.0, 13.5), (7.0, 13.5)]);
+            if name == "link-goto" {
+                pen.line(&[(13.5, 10.0), (18.0, 10.0)]);
+                pen.line(&[(15.5, 7.5), (18.0, 10.0), (15.5, 12.5)]);
+            } else {
+                pen.line(&[(17.5, 4.0), (17.5, 9.0), (14.0, 9.0)]);
+                pen.line(&[(15.5, 7.0), (14.0, 9.0), (15.5, 11.0)]);
+            }
+        }
+        "link-update" => {
+            // Two arrows round a circle.
+            let arc = |a0: f32, a1: f32| -> Vec<(f32, f32)> {
+                (0..=10)
+                    .map(|k| {
+                        let a = a0 + (a1 - a0) * k as f32 / 10.0;
+                        (10.0 + 6.0 * a.cos(), 10.0 + 6.0 * a.sin())
+                    })
+                    .collect()
+            };
+            pen.line(&arc(3.6, 5.9));
+            pen.line(&arc(0.5, 2.8));
+            pen.fill(&[(15.6, 6.0), (17.8, 9.8), (13.6, 9.0)]);
+            pen.fill(&[(4.4, 14.0), (2.2, 10.2), (6.4, 11.0)]);
+        }
+        "link-more" => {
+            for x in [5.0, 10.0, 15.0] {
+                pen.fcircle(x, 10.0, 1.4);
+            }
+        }
         "link" | "link-broken" => {
             let broken = name == "link-broken";
             let (a, b) = if broken { (7.5, 12.5) } else { (9.0, 11.0) };
