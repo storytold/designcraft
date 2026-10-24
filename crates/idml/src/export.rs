@@ -431,6 +431,45 @@ impl<'a> Ex<'a> {
         )
     }
 
+    /// A `Gradient` element; stop colours missing from the swatches become anonymous colours.
+    fn gradient_el(
+        &mut self,
+        s: &designcraft_color::Swatch,
+        gradient: &designcraft_color::Gradient,
+        colors: &mut Vec<El>,
+        by_value: &mut Vec<(Color, String)>,
+    ) -> El {
+        let id = self.sw(&s.name);
+        let mut g = El::new("Gradient")
+            .attr("Self", &id)
+            .attr("Type", if gradient.kind == GradientKind::Radial { "Radial" } else { "Linear" })
+            .attr("Name", &s.name)
+            .attr("ColorEditable", "true")
+            .attr("ColorRemovable", "true")
+            .attr("Visible", "true")
+            .attr("SwatchCreatorID", "7937");
+        for (i, stop) in gradient.stops.iter().enumerate() {
+            let cid = match by_value.iter().find(|(c, _)| *c == stop.color) {
+                Some((_, id)) => id.clone(),
+                None => {
+                    let cid = format!("Color/{}", self.fresh());
+                    colors.push(color_el(&cid, "$ID/", "Process", &stop.color, "Normal", (true, true, false)));
+                    by_value.push((stop.color, cid.clone()));
+                    cid
+                }
+            };
+            let mut e = El::new("GradientStop")
+                .attr("Self", format!("{}GradientStop{i}", id.replace(['/', ' '], "_")))
+                .attr("StopColor", cid)
+                .attr("Location", pct(stop.offset as f64));
+            if i > 0 {
+                e.set("Midpoint", pct(gradient.stops[i - 1].midpoint as f64));
+            }
+            g.push(e);
+        }
+        g
+    }
+
     // ---------- Graphic.xml ----------
 
     fn graphic_part(&mut self) -> Vec<u8> {
@@ -440,39 +479,21 @@ impl<'a> Ex<'a> {
         let mut tints: Vec<El> = Vec::new();
         let mut gradients: Vec<El> = Vec::new();
         let mut inks: Vec<El> = Vec::new();
-        let color_el = |self_id: &str, name: &str, model: &str, c: &Color, over: &str, editable: bool, removable: bool, visible: bool| {
-            let (space, val) = color_value(c);
-            El::new("Color")
-                .attr("Self", self_id)
-                .attr("Model", model)
-                .attr("Space", space)
-                .attr("ColorValue", val)
-                .attr("ColorOverride", over)
-                .attr("AlternateSpace", "NoAlternateColor")
-                .attr("AlternateColorValue", "")
-                .attr("Name", name)
-                .attr("ColorEditable", bool_s(editable))
-                .attr("ColorRemovable", bool_s(removable))
-                .attr("Visible", bool_s(visible))
-                .attr("SwatchCreatorID", "7937")
-        };
         // Specials (always present).
-        colors.push(color_el("Color/Black", "Black", "Process", &Color::cmyk(0.0, 0.0, 0.0, 1.0), "Specialblack", false, false, true));
+        colors.push(color_el("Color/Black", "Black", "Process", &Color::cmyk(0.0, 0.0, 0.0, 1.0), "Specialblack", (false, false, true)));
         let paper = match d.swatch(swatch::PAPER).map(|s| &s.value) {
             Some(SwatchValue::Paper { color }) => *color,
             _ => Color::cmyk(0.0, 0.0, 0.0, 0.0),
         };
         let paper = if paper == Color::WHITE { Color::cmyk(0.0, 0.0, 0.0, 0.0) } else { paper };
-        colors.push(color_el("Color/Paper", "Paper", "Process", &paper, "Specialpaper", true, false, true));
+        colors.push(color_el("Color/Paper", "Paper", "Process", &paper, "Specialpaper", (true, false, true)));
         colors.push(color_el(
             "Color/Registration",
             "Registration",
             "Registration",
             &Color::cmyk(1.0, 1.0, 1.0, 1.0),
             "Specialregistration",
-            false,
-            false,
-            true,
+            (false, false, true),
         ));
         for (i, ink) in
             [("Process Cyan", 75, 0.61), ("Process Magenta", 15, 0.76), ("Process Yellow", 0, 0.16), ("Process Black", 45, 1.7)].iter().enumerate()
@@ -500,7 +521,7 @@ impl<'a> Ex<'a> {
             match &s.value {
                 SwatchValue::Color { color, color_type } => {
                     let model = if *color_type == ColorType::Spot { "Spot" } else { "Process" };
-                    colors.push(color_el(&id, &s.name, model, color, "Normal", true, true, true));
+                    colors.push(color_el(&id, &s.name, model, color, "Normal", (true, true, true)));
                     by_value.push((*color, id.clone()));
                     if *color_type == ColorType::Spot {
                         let mut ink = El::new("Ink");
@@ -542,35 +563,7 @@ impl<'a> Ex<'a> {
         }
         for s in &d.swatches {
             let SwatchValue::Gradient { gradient } = &s.value else { continue };
-            let id = self.sw(&s.name);
-            let mut g = El::new("Gradient")
-                .attr("Self", &id)
-                .attr("Type", if gradient.kind == GradientKind::Radial { "Radial" } else { "Linear" })
-                .attr("Name", &s.name)
-                .attr("ColorEditable", "true")
-                .attr("ColorRemovable", "true")
-                .attr("Visible", "true")
-                .attr("SwatchCreatorID", "7937");
-            for (i, stop) in gradient.stops.iter().enumerate() {
-                let cid = match by_value.iter().find(|(c, _)| *c == stop.color) {
-                    Some((_, id)) => id.clone(),
-                    None => {
-                        let cid = format!("Color/{}", self.fresh());
-                        colors.push(color_el(&cid, "$ID/", "Process", &stop.color, "Normal", true, true, false));
-                        by_value.push((stop.color, cid.clone()));
-                        cid
-                    }
-                };
-                let mut e = El::new("GradientStop")
-                    .attr("Self", format!("{}GradientStop{i}", id.replace(['/', ' '], "_")))
-                    .attr("StopColor", cid)
-                    .attr("Location", pct(stop.offset as f64));
-                if i > 0 {
-                    e.set("Midpoint", pct(gradient.stops[i - 1].midpoint as f64));
-                }
-                g.push(e);
-            }
-            gradients.push(g);
+            gradients.push(self.gradient_el(s, gradient, &mut colors, &mut by_value));
         }
         for c in colors {
             root.push(c);
@@ -3224,6 +3217,24 @@ fn layer_el(l: &designcraft_doc::Layer) -> El {
         .attr("Expendable", "true")
         .attr("Printable", bool_s(l.printable));
     with_props(el, vec![color])
+}
+
+/// A `Color` element. `flags` is (editable, removable, visible).
+fn color_el(self_id: &str, name: &str, model: &str, c: &Color, over: &str, (editable, removable, visible): (bool, bool, bool)) -> El {
+    let (space, val) = color_value(c);
+    El::new("Color")
+        .attr("Self", self_id)
+        .attr("Model", model)
+        .attr("Space", space)
+        .attr("ColorValue", val)
+        .attr("ColorOverride", over)
+        .attr("AlternateSpace", "NoAlternateColor")
+        .attr("AlternateColorValue", "")
+        .attr("Name", name)
+        .attr("ColorEditable", bool_s(editable))
+        .attr("ColorRemovable", bool_s(removable))
+        .attr("Visible", bool_s(visible))
+        .attr("SwatchCreatorID", "7937")
 }
 
 /// A text variable definition with its type's settings element.

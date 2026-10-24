@@ -2504,10 +2504,9 @@ impl<'r> Importer<'r> {
             .collect()
     }
 
-    fn spread(&mut self, e: &El, id: SpreadId, master: bool) -> Spread {
-        let facing = self.settings.facing_pages;
-        // Page rectangles in IDML spread coordinates.
-        let mut pages: Vec<(Rect, &El)> = Vec::new();
+    /// The page rectangles of a spread element, in IDML spread coordinates.
+    fn page_rects<'a>(&self, e: &'a El) -> Vec<(Rect, &'a El)> {
+        let mut pages: Vec<(Rect, &'a El)> = Vec::new();
         for p in e.find_all("Page") {
             let gb = nums(p.get("GeometricBounds").unwrap_or(""));
             let (t, l, bt, r) =
@@ -2517,6 +2516,40 @@ impl<'r> Importer<'r> {
             let c = xf * Point::new(r, bt);
             pages.push((Rect::from_points(a, c), p));
         }
+        pages
+    }
+
+    /// A page's margins and columns, and whether they are local (differ from its parent page's).
+    fn page_margins(&self, p: &El, r: &Rect, master: bool, parent: Option<SpreadId>, side: PageSide) -> (Margins, Columns, bool) {
+        // A document page's margins are local when they differ from its parent page's; a
+        // page without its own takes the parent page's.
+        let from_parent = if master {
+            None
+        } else {
+            parent
+                .and_then(|id| self.parents.iter().find(|sp| sp.id == id))
+                .and_then(|sp| sp.pages.get(sp.parent_page_for_side(side)?))
+                .map(|q| (q.margins, q.columns.clone()))
+        };
+        let (margins, columns) = match (p.find("MarginPreference"), &from_parent) {
+            (Some(m), _) => {
+                let (margins, columns) = margins_of(m);
+                (margins, fit_columns(columns, &margins, r.width()))
+            }
+            (None, Some(own)) => own.clone(),
+            (None, None) => {
+                let (margins, columns) = self.default_margins.clone().unwrap_or((Margins::uniform(36.0), Columns::default()));
+                (margins, fit_columns(columns, &margins, r.width()))
+            }
+        };
+        let local_margins = from_parent.is_some_and(|(m, c)| m != margins || c != columns);
+        (margins, columns, local_margins)
+    }
+
+    fn spread(&mut self, e: &El, id: SpreadId, master: bool) -> Spread {
+        let facing = self.settings.facing_pages;
+        // Page rectangles in IDML spread coordinates.
+        let pages = self.page_rects(e);
         let min_x = pages.iter().map(|(r, _)| r.x0).fold(f64::INFINITY, f64::min);
         let min_y = pages.iter().map(|(r, _)| r.y0).fold(f64::INFINITY, f64::min);
         let (min_x, min_y) = if min_x.is_finite() { (min_x, min_y) } else { (0.0, 0.0) };
@@ -2543,28 +2576,7 @@ impl<'r> Importer<'r> {
                 PageSide::Right
             };
             let parent = p.get("AppliedMaster").and_then(|m| self.parent_ids.get(m)).copied();
-            // A document page's margins are local when they differ from its parent page's; a
-            // page without its own takes the parent page's.
-            let from_parent = if master {
-                None
-            } else {
-                parent
-                    .and_then(|id| self.parents.iter().find(|sp| sp.id == id))
-                    .and_then(|sp| sp.pages.get(sp.parent_page_for_side(side)?))
-                    .map(|q| (q.margins, q.columns.clone()))
-            };
-            let (margins, columns) = match (p.find("MarginPreference"), &from_parent) {
-                (Some(m), _) => {
-                    let (margins, columns) = margins_of(m);
-                    (margins, fit_columns(columns, &margins, r.width()))
-                }
-                (None, Some(own)) => own.clone(),
-                (None, None) => {
-                    let (margins, columns) = self.default_margins.clone().unwrap_or((Margins::uniform(36.0), Columns::default()));
-                    (margins, fit_columns(columns, &margins, r.width()))
-                }
-            };
-            let local_margins = from_parent.is_some_and(|(m, c)| m != margins || c != columns);
+            let (margins, columns, local_margins) = self.page_margins(p, r, master, parent, side);
             out_pages.push(Page {
                 id: pid,
                 width: r.width(),
