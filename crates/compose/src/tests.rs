@@ -1667,6 +1667,65 @@ fn table_rows_fit_their_content() {
 }
 
 #[test]
+fn spanning_table_uses_all_columns_and_body_resumes_below() {
+    let (mut d, sid, fid) = table_doc(Rect::new(0.0, 0.0, 400.0, 700.0), filled(3, 2, 1, 400.0));
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = 2;
+    o.gutter = 20.0;
+    let st = d.story_mut(sid).unwrap();
+    st.insert(0, &format!("{LOREM}\n{LOREM}\n"));
+    let pi = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[pi].para.span_columns = Some(SpanColumns::Span(0));
+    let end = st.len();
+    st.insert(end, &format!("\n{}", [LOREM; 6].join("\n")));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    let t = &ft.tables[0];
+    assert!((t.rect.width() - 400.0).abs() < 1e-6, "span width: {}", t.rect.width());
+    assert!(ft.lines.iter().filter(|l| l.para < pi).all(|l| l.baseline + l.descent <= t.rect.y0 + 0.01));
+    let following: Vec<_> = ft.lines.iter().filter(|l| l.para > pi).collect();
+    assert!(following.iter().any(|l| l.column == 1), "exercise both columns below the table");
+    assert!(following.iter().all(|l| l.baseline > t.rect.y1), "every column must resume below the table");
+}
+
+#[test]
+fn spanning_table_continues_in_next_frame_with_repeated_header() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, "", ParaFormat::default()).unwrap();
+    let mut previous = first;
+    for i in 0..4 {
+        let y = 160.0 * (i + 1) as f64;
+        let (next, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, y, 400.0, y + 130.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(previous, next).unwrap();
+        previous = next;
+    }
+    for id in d.story(sid).unwrap().frames.clone() {
+        d.item_mut(id).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    }
+    let mut t = filled(8, 2, 1, 400.0);
+    for row in &mut t.rows {
+        row.height = 30.0;
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
+    }
+    let st = d.story_mut(sid).unwrap();
+    st.insert_table(0, t);
+    st.paras.iter_mut().find(|p| p.table.is_some()).unwrap().para.span_columns = Some(SpanColumns::Span(2));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let fragments: Vec<_> = cs.frames.iter().flat_map(|f| &f.tables).collect();
+    assert!(fragments.len() > 1);
+    for frag in &fragments {
+        assert!((frag.rect.width() - 400.0).abs() < 1e-6, "span width: {}", frag.rect.width());
+        assert_eq!(frag.column, 0, "a spanning fragment must not continue in column two");
+        assert!(frag.cell(0, 0).is_some(), "repeat the header in each frame");
+    }
+    let rows: Vec<_> = fragments.iter().flat_map(|f| &f.cells).filter(|c| c.col == 0 && c.row > 0).map(|c| c.row).collect();
+    assert_eq!(rows, (1..9).collect::<Vec<_>>());
+}
+
+#[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
@@ -6079,6 +6138,25 @@ fn a_line_that_exactly_fills_the_measure_fits() {
 }
 
 // ---------- split columns ----------
+
+#[test]
+fn a_table_in_a_split_block_ends_it_and_the_text_after_stays_below() {
+    // A short frame: the second paragraph after the table moves on to the next sub-column, which
+    // must start below the table, not at the top of the block before it.
+    let cfg = (2, 12.0, 0.0);
+    let (mut d, sid, _, first) = split_doc(3, 0, Rect::new(0.0, 0.0, 400.0, 260.0), cfg);
+    let st = d.story_mut(sid).unwrap();
+    let at = st.para_ranges()[first + 1].start;
+    st.insert_table(at, filled(3, 2, 1, 300.0));
+    let ti = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[ti].para.span_columns = Some(SpanColumns::Split(cfg.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let t = &ft.tables[0];
+    let after: Vec<_> = ft.lines.iter().filter(|l| l.para > ti).collect();
+    assert!(after.len() > 1);
+    assert!(after.iter().all(|l| l.baseline > t.rect.y1), "text after the table must stay below it");
+}
 
 /// A story of a body paragraph, `split` paragraphs in split columns and `after` body paragraphs.
 /// Returns the index of the first split paragraph.
