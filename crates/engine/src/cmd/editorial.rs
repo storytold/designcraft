@@ -65,9 +65,10 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("note.delete", "Delete Note", ["Type", "Notes"], None, "{story, id}", has_doc, |s, p| {
             let (sid, id) = target(p)?;
-            s.edit(|d, _| {
+            s.edit(|d, sel| {
                 let st = d.story_mut(sid).ok_or_else(|| bad("note.delete", "no such story"))?;
                 let at = anchor(st, id).ok_or_else(|| bad("note.delete", format!("no note {id}")))?;
+                follow_replace(sel, sid, at..at + NOTE_MARK.len_utf8(), 0);
                 st.delete(at..at + NOTE_MARK.len_utf8());
                 ok()
             })
@@ -81,10 +82,11 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             |s, p| {
                 let (sid, id) = target(p)?;
-                s.edit(|d, _| {
+                s.edit(|d, sel| {
                     let st = d.story_mut(sid).ok_or_else(|| bad("note.convertToText", "no such story"))?;
                     let at = anchor(st, id).ok_or_else(|| bad("note.convertToText", format!("no note {id}")))?;
                     let text = st.editorial.iter().find(|n| n.id == id).map(|n| n.text.clone()).unwrap_or_default();
+                    follow_replace(sel, sid, at..at + NOTE_MARK.len_utf8(), text.len());
                     st.replace(at..at + NOTE_MARK.len_utf8(), &text);
                     ok()
                 })
@@ -182,6 +184,16 @@ fn target(p: &Value) -> Result<(StoryId, u64)> {
 fn anchor(st: &designcraft_doc::Story, id: u64) -> Option<usize> {
     let k = st.editorial.iter().position(|n: &Arc<EditorialNote>| n.id == id)?;
     st.text.match_indices(NOTE_MARK).nth(k).map(|(i, _)| i)
+}
+
+/// Keeps a caret or selection in story `sid`'s own text (not a cell) on the same characters when `range` is replaced
+/// by `len` bytes: an end after the range moves by the change in length, and an end inside it moves to its start.
+fn follow_replace(sel: &mut designcraft_doc::Selection, sid: StoryId, range: std::ops::Range<usize>, len: usize) {
+    if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none()) {
+        let follow = |i: usize| if i >= range.end { i - range.len() + len } else { i.min(range.start) };
+        t.anchor = follow(t.anchor);
+        t.focus = follow(t.focus);
+    }
 }
 
 /// The anchor offset and id of the note before or after the selection `t` in its story. Going
@@ -376,5 +388,33 @@ mod tests {
         s.execute("text.move", &json!({"dir": "left", "extend": true})).unwrap();
         assert!(s.doc().unwrap().selection.text.is_some_and(|t| t.cell.is_some() && !t.is_caret()));
         assert!(disabled(s.execute("note.convertFromText", &json!({}))), "notes go in story text");
+    }
+
+    #[test]
+    fn deleting_or_converting_a_note_keeps_the_caret_on_its_character() {
+        let m = designcraft_doc::NOTE_MARK.len_utf8();
+        // (anchor, focus) in "Draft{note} copy." before the command, then (anchor, focus) and the selected text after
+        // Delete Note and after Convert Note to Text with the note's text "ab".
+        let cases = [
+            ((6 + m, 10 + m), ((6, 10), "copy"), ((8, 12), "copy")),
+            ((0, 10 + m), ((0, 10), "Draft copy"), ((0, 12), "Draftab copy")),
+            ((2, 4), ((2, 4), "af"), ((2, 4), "af")),
+            ((5 + m, 5 + m), ((5, 5), ""), ((7, 7), "")),
+        ];
+        for (before, deleted, converted) in cases {
+            for (cmd, (after, selected)) in [("note.delete", deleted), ("note.convertToText", converted)] {
+                let mut s = Session::new();
+                s.execute("file.new", &json!({})).unwrap();
+                let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Draft copy."})).unwrap();
+                let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+                s.execute("text.select", &json!({"story": r["story"], "anchor": 5, "focus": 5})).unwrap();
+                let n = s.execute("note.new", &json!({"text": "ab"})).unwrap();
+                s.execute("text.select", &json!({"story": r["story"], "anchor": before.0, "focus": before.1})).unwrap();
+                s.execute(cmd, &json!({"story": n["story"], "id": n["id"]})).unwrap();
+                let t = s.doc().unwrap().selection.text.unwrap();
+                assert_eq!((t.anchor, t.focus), after, "{cmd} with {before:?} selected");
+                assert_eq!(&s.doc().unwrap().doc.stories[&sid].text[t.anchor..t.focus], selected, "{cmd} with {before:?} selected");
+            }
+        }
     }
 }
