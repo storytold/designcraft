@@ -5186,6 +5186,57 @@ pub fn open_new_style(app: &mut DesignApp, para: bool) {
     app.ui.dialog = Some(Dialog::new(id, json!({"new": true, "rename": name})));
 }
 
+/// The General section of the Character Style Options dialog: name, Based On, and a summary of
+/// the style's settings.
+fn character_style_general(
+    lang: &str,
+    ui: &mut egui::Ui,
+    d: &mut Dialog,
+    styles: &designcraft_doc::Styles,
+    style: &designcraft_doc::CharacterStyle,
+    based: &str,
+) {
+    let (name, new) = (d.s("name"), d.b("new"));
+    egui::Grid::new("csg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Style Name:"));
+        text_field(ui, d, "rename", 220.0);
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Based On:"));
+        egui::ComboBox::from_id_salt("csbased").selected_text(crate::rtl::widget(ui, crate::i18n::style_name(lang, based))).width(220.0).show_ui(
+            ui,
+            |ui| {
+                // Not itself, nor a style based on it.
+                for s in styles.character.iter().filter(|s| new || !styles.char_based_on_cycles(&name, &s.name)) {
+                    if ui.selectable_label(s.name == based, crate::rtl::widget(ui, crate::i18n::style_name(lang, &s.name))).clicked() {
+                        d.fields.insert("basedOn".into(), json!(s.name));
+                    }
+                }
+            },
+        );
+        ui.end_row();
+    });
+    let status = d.s("status");
+    if !status.is_empty() {
+        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+    }
+    ui.add_space(8.0);
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Style Settings:")).font(semibold(12.0)));
+    // What OK would leave the style setting, after its Based On.
+    let mut own = serde_json::to_value(&style.chars).unwrap_or_default();
+    if let Some(o) = own.as_object_mut() {
+        for (k, v) in d.fields.iter().filter_map(|(k, v)| Some((k.strip_prefix("c.")?, v))) {
+            if v.is_null() {
+                o.remove(k);
+            } else {
+                o.insert(k.to_string(), v.clone());
+            }
+        }
+    }
+    let mut parts = vec![crate::i18n::style_name(lang, based).to_string()];
+    parts.extend(own.as_object().into_iter().flatten().map(|(k, v)| format!("{}: {}", setting_label(lang, k), setting_text(v))));
+    ui.add(egui::Label::new(egui::RichText::new(parts.join(" + ")).color(crate::theme::Tokens::get(ui.ctx()).text_dim)).wrap());
+}
+
 /// Character Style Options: General, then the character sections it shares with Paragraph Style
 /// Options. A character style sets only some attributes: the fields show those it and its Based
 /// On set and leave the rest blank. Edits are `c.<attr>` fields (`null` = no longer set), applied
@@ -5248,46 +5299,7 @@ fn character_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             "underline" => line_options(&lang, ui, d, &cf, &doc, "underline"),
             "strikethrough" => line_options(&lang, ui, d, &cf, &doc, "strikethrough"),
             s if style_cjk::is_section(s) => style_cjk::section_ui(app, ui, d, s, &cf, None, &doc),
-            _ => {
-                egui::Grid::new("csg").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&lang, "Style Name:"));
-                    text_field(ui, d, "rename", 220.0);
-                    ui.end_row();
-                    crate::rtl::label(ui, crate::i18n::tr(&lang, "Based On:"));
-                    egui::ComboBox::from_id_salt("csbased")
-                        .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&lang, &based)))
-                        .width(220.0)
-                        .show_ui(ui, |ui| {
-                            // Not itself, nor a style based on it.
-                            for s in styles.character.iter().filter(|s| new || !styles.char_based_on_cycles(&name, &s.name)) {
-                                if ui.selectable_label(s.name == based, crate::rtl::widget(ui, crate::i18n::style_name(&lang, &s.name))).clicked() {
-                                    d.fields.insert("basedOn".into(), json!(s.name));
-                                }
-                            }
-                        });
-                    ui.end_row();
-                });
-                let status = d.s("status");
-                if !status.is_empty() {
-                    crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
-                }
-                ui.add_space(8.0);
-                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Style Settings:")).font(semibold(12.0)));
-                // What OK would leave the style setting, after its Based On.
-                let mut own = serde_json::to_value(&style.chars).unwrap_or_default();
-                if let Some(o) = own.as_object_mut() {
-                    for (k, v) in d.fields.iter().filter_map(|(k, v)| Some((k.strip_prefix("c.")?, v))) {
-                        if v.is_null() {
-                            o.remove(k);
-                        } else {
-                            o.insert(k.to_string(), v.clone());
-                        }
-                    }
-                }
-                let mut parts = vec![crate::i18n::style_name(&lang, &based).to_string()];
-                parts.extend(own.as_object().into_iter().flatten().map(|(k, v)| format!("{}: {}", setting_label(&lang, k), setting_text(v))));
-                ui.add(egui::Label::new(egui::RichText::new(parts.join(" + ")).color(crate::theme::Tokens::get(ui.ctx()).text_dim)).wrap());
-            }
+            _ => character_style_general(&lang, ui, d, styles, &style, &based),
         });
     });
 }
