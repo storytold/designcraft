@@ -1298,6 +1298,222 @@ fn cross_reference_source_nesting_keeps_formatting() {
     assert_eq!(ga, gb);
 }
 
+/// IDML carries a hyperlink as a source element, a destination element and a `Hyperlink` that
+/// joins them. Only `CrossReferenceSource` was mapped, so an image frame linked to a photo and a
+/// run of text linked to a page were dropped on import, although both are native here
+/// (`hyperlink.create`) and both export to PDF (#1446).
+#[test]
+fn page_item_and_text_hyperlinks_survive_import() {
+    // `img` is the Rectangle of the spread fixture; `p2` its second page.
+    const LINKS: &str = r#"
+  <HyperlinkURLDestination Self="hud1" Name="Photo" DestinationURL="https://example.com/photo.jpg" Hidden="false"/>
+  <HyperlinkURLDestination Self="hud2" Name="Mail" DestinationURL="mailto:studio@example.com" Hidden="false"/>
+  <HyperlinkPageDestination Self="hpd1" Name="Plate" DestinationPage="p2" ViewSetting="FitPage"/>
+  <HyperlinkPageItemSource Self="hpis1" Name="img" SourcePageItem="img" Hidden="false"/>
+  <HyperlinkPageItemSource Self="hpis2" Name="o" SourcePageItem="o" Hidden="false"/>
+  <Hyperlink Self="h1" Name="Photo link" Source="hpis1" Visible="true" DestinationUniqueKey="1">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h2" Name="Write to us" Source="hpis2" Visible="true" DestinationUniqueKey="2">
+    <Properties><Destination type="object">hud2</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h3" Name="To the plate" Source="hts1" Visible="true" DestinationUniqueKey="3">
+    <Properties><Destination type="object">hpd1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h4" Name="Nothing" Source="hpis9" Visible="true" DestinationUniqueKey="4">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+  <HyperlinkExternalPageDestination Self="hepd1" Name="Another file" DestinationPath="elsewhere.indd" DestinationPageIndex="2"/>
+  <HyperlinkPageItemSource Self="hpis4" Name="g" SourcePageItem="g" Hidden="false"/>
+  <Hyperlink Self="h6" Name="Out of the file" Source="hpis4" Visible="true" DestinationUniqueKey="6">
+    <Properties><Destination type="object">hepd1</Destination></Properties>
+  </Hyperlink>
+  <HyperlinkPageItemSource Self="hpis3" Name="t1" SourcePageItem="t1" Hidden="false"/>
+  <Hyperlink Self="h5" Name="To the caption" Source="hpis3" Visible="true" DestinationUniqueKey="5">
+    <Properties><Destination type="object">htd1</Destination></Properties>
+  </Hyperlink>
+"#;
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content>See </Content>
+      </CharacterStyleRange>
+      <HyperlinkTextSource Self="hts1" Name="To the plate" Hidden="false">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+          <Content>the plate</Content>
+        </CharacterStyleRange>
+      </HyperlinkTextSource>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content> overleaf, </Content>
+        <HyperlinkTextDestination Self="htd1" Name="Plate caption"/>
+        <Content>here.</Content>
+      </CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let map = DESIGNMAP.replace("</Document>", &format!("{LINKS}</Document>"));
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    let r = import_idml_report(&bytes, &|_| None).unwrap();
+    let d = r.document;
+    d.check().unwrap();
+
+    use designcraft_doc::{HyperlinkDest as D, HyperlinkSource as S};
+    assert_eq!(d.hyperlinks.len(), 4, "three page items and one text run: {:?}", d.hyperlinks);
+
+    // The image frame links to a URL. Its source is the item the IDML named, not any item.
+    let photo = d.hyperlinks.iter().find(|h| h.name == "Photo link").expect("the page-item link");
+    let S::Item { id } = photo.source else { panic!("a page item source: {:?}", photo.source) };
+    assert_eq!(d.item(id).map(|i| i.id), Some(id), "the source item is in the document");
+    assert_eq!(photo.dest, D::Url("https://example.com/photo.jpg".into()));
+
+    // A `mailto:` URL destination is an email link, as `hyperlink.create` makes one.
+    let mail = d.hyperlinks.iter().find(|h| h.name == "Write to us").expect("the mail link");
+    assert_eq!(mail.dest, D::Email("studio@example.com".into()));
+
+    // The text source covers the text it wrapped, and the page destination is that page's index.
+    let plate = d.hyperlinks.iter().find(|h| h.name == "To the plate").expect("the text link");
+    let S::Text { story: sid, start, end } = plate.source else { panic!("a text source: {:?}", plate.source) };
+    let text = &d.story(sid).unwrap().text;
+    assert_eq!(&text[start..end], "the plate", "the source is the text the element wrapped");
+    assert_eq!(plate.dest, D::Page(1), "`p2` is the second page");
+
+    // A text destination is a text anchor, which a link can point at since #1555: the page it
+    // leads to is wherever that text has landed, so the link follows its target as text reflows.
+    let caption = d.hyperlinks.iter().find(|h| h.name == "To the caption").expect("the anchor link");
+    let D::Anchor(aid) = caption.dest else { panic!("an anchor destination: {:?}", caption.dest) };
+    let (asid, apos) = d.find_anchor(aid).expect("the anchor resolves");
+    assert_eq!(&d.story(asid).unwrap().text[..apos], "See the plate overleaf, ", "the anchor is where the element stood");
+
+    // A `Hyperlink` whose source is not in the file is dropped, not guessed at, and the import
+    // report says so rather than letting it go missing silently.
+    assert!(!d.hyperlinks.iter().any(|h| h.name == "Nothing"), "a link with no source is not imported");
+    assert!(
+        r.warnings.iter().any(|w| w.contains("hyperlink Nothing") && w.contains("hpis9") && w.contains("dropped")),
+        "the report names the link it dropped: {:?}",
+        r.warnings
+    );
+
+    // A destination kind this importer does not read is reported as that, not as missing: a link
+    // into another document is something InDesign writes and we have nowhere to put yet.
+    assert!(!d.hyperlinks.iter().any(|h| h.name == "Out of the file"), "an external-page link is not imported");
+    assert!(
+        r.warnings.iter().any(|w| w.contains("hyperlink Out of the file") && w.contains("HyperlinkExternalPageDestination")),
+        "the report says which kind it could not read: {:?}",
+        r.warnings
+    );
+}
+
+/// The other direction of #1446: a document's own hyperlinks are written to IDML and read back.
+/// Export wrote none of them, so a link made here (or imported from an InDesign file) was lost
+/// the moment the document went out as IDML.
+#[test]
+fn round_trips_page_item_and_text_hyperlinks() {
+    use designcraft_doc::{Hyperlink, HyperlinkDest as D, HyperlinkSource as S};
+
+    let mut d = Document::new(&NewDocument { pages: 2, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "See the plate overleaf.", ParaFormat::default()).unwrap();
+    let photo = designcraft_doc::ItemId(d.alloc());
+    let frame = designcraft_doc::Item::new(photo, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 420.0, 200.0, 500.0)));
+    d.insert_item(SpreadRef::Doc(0), frame, None).unwrap();
+    let caption = d.paragraph_anchor(sid, 0).unwrap();
+
+    // One of each kind a link can have: a frame to a URL, a frame to an email address, a frame to
+    // a text anchor, and a run of text to a page.
+    let at = d.story(sid).unwrap().text.find("the plate").unwrap();
+    for (name, source, dest) in [
+        ("Photo", S::Item { id: photo }, D::Url("https://example.com/photo.jpg".into())),
+        ("Studio", S::Item { id: photo }, D::Email("studio@example.com".into())),
+        ("Caption", S::Item { id: photo }, D::Anchor(caption)),
+        ("Plate", S::Text { story: sid, start: at, end: at + "the plate".len() }, D::Page(1)),
+    ] {
+        let id = d.alloc();
+        d.hyperlinks.push(Hyperlink { id, name: name.into(), source, dest });
+    }
+    d.check().unwrap();
+
+    let idml = export_idml(&d);
+    let back = import_idml(&idml).unwrap();
+    back.check().unwrap();
+
+    let named = |n: &str| back.hyperlinks.iter().find(|h| h.name == n).unwrap_or_else(|| panic!("{n} came back: {:?}", back.hyperlinks));
+    assert_eq!(back.hyperlinks.len(), 4, "every link came back: {:?}", back.hyperlinks);
+    assert_eq!(named("Photo").dest, D::Url("https://example.com/photo.jpg".into()));
+    assert_eq!(named("Studio").dest, D::Email("studio@example.com".into()), "an email link is not written as a bare URL");
+    assert_eq!(named("Plate").dest, D::Page(1), "the page destination is the same page");
+
+    // The frame links point at the frame, which has a new id on the way through.
+    let S::Item { id } = named("Photo").source else { panic!("a page item source: {:?}", named("Photo").source) };
+    assert!(back.item(id).is_some(), "the source frame is in the document");
+    assert_eq!(back.item(id).map(|i| i.shape), Some(Shape::Rectangle), "and it is the frame the link was on");
+
+    // The text link covers the same words, and the anchor link resolves to the same paragraph.
+    let S::Text { story, start, end } = named("Plate").source else { panic!("a text source: {:?}", named("Plate").source) };
+    assert_eq!(&back.story(story).unwrap().text[start..end], "the plate");
+    let D::Anchor(a) = named("Caption").dest else { panic!("an anchor destination: {:?}", named("Caption").dest) };
+    assert_eq!(back.find_anchor(a).map(|(_, pos)| pos), Some(0), "the anchor is the paragraph it was on");
+
+    // One destination element per URL, however many links lead to it.
+    let text = zip_text(&idml, "designmap.xml");
+    assert_eq!(text.matches("<HyperlinkURLDestination").count(), 2, "one for the photo and one for the mailto: {text}");
+    assert_eq!(text.matches("mailto:studio@example.com").count(), 1);
+}
+
+/// A `HyperlinkTextSource` nests inside a `ParagraphStyleRange`, so a link whose text crosses a
+/// paragraph cannot be one element: it is written as one source per paragraph, and each piece
+/// comes back as a link of its own. Pinned so the behaviour is a decision and not a surprise, and
+/// so it is clear what has to change if IDML ever lets one source span paragraphs (#1446).
+#[test]
+fn a_hyperlink_across_a_paragraph_is_written_as_one_source_per_paragraph() {
+    use designcraft_doc::{Hyperlink, HyperlinkDest as D, HyperlinkSource as S};
+
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "first line\nsecond line", ParaFormat::default()).unwrap();
+    let text = d.story(sid).unwrap().text.clone();
+    let (start, end) = (text.find("line").unwrap(), text.find("second").unwrap() + "second".len());
+    let id = d.alloc();
+    d.hyperlinks.push(Hyperlink {
+        id,
+        name: "Across".into(),
+        source: S::Text { story: sid, start, end },
+        dest: D::Url("https://example.com/".into()),
+    });
+    d.check().unwrap();
+
+    let idml = export_idml(&d);
+    assert_eq!(zip_text(&idml, "Stories/").matches("<HyperlinkTextSource").count(), 2, "one source in each paragraph");
+
+    let back = import_idml(&idml).unwrap();
+    back.check().unwrap();
+    let across: Vec<_> = back.hyperlinks.iter().filter(|h| h.name == "Across").collect();
+    assert_eq!(across.len(), 2, "each piece is a link of its own: {:?}", back.hyperlinks);
+    let piece = |h: &Hyperlink| {
+        let S::Text { story, start, end } = h.source else { panic!("a text source: {:?}", h.source) };
+        back.story(story).unwrap().text[start..end].to_string()
+    };
+    let mut pieces: Vec<String> = across.iter().map(|h| piece(h)).collect();
+    pieces.sort();
+    // The first piece keeps the paragraph break, because the link's range covered it: the break
+    // is the last character of its paragraph, so the source that wraps that paragraph's text
+    // wraps the break with it. Between them the pieces cover exactly what the link covered.
+    assert_eq!(pieces, vec!["line\n".to_string(), "second".to_string()], "between them they cover the text the link was on");
+    assert_eq!(pieces.concat(), d.story(sid).unwrap().text[start..end], "and nothing of it is lost or added");
+    assert!(across.iter().all(|h| h.dest == D::Url("https://example.com/".into())), "both pieces lead where the link led");
+}
+
 #[test]
 fn round_trips_index_references() {
     use designcraft_doc::index::IndexRange;

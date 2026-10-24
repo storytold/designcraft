@@ -142,6 +142,10 @@ struct Ex<'a> {
     threads: HashMap<u64, (Option<u64>, Option<u64>)>,
     /// Cross-reference sources written so far: (Self, target anchor).
     xref_sources: Vec<(String, u64)>,
+    /// `HyperlinkTextSource`s written into the stories: (Self, index in `Document::hyperlinks`).
+    /// A link whose text crosses a paragraph gets one source per paragraph, since the element
+    /// nests inside a `ParagraphStyleRange` (#1446).
+    link_text_sources: Vec<(String, usize)>,
     /// Index topic path → first serialized sort key; See / See also cross-references.
     index_topics: BTreeMap<Vec<String>, String>,
     index_xrefs: Vec<(Vec<String>, &'static str, String)>,
@@ -157,6 +161,7 @@ impl<'a> Ex<'a> {
             fonts: BTreeMap::new(),
             threads: HashMap::new(),
             xref_sources: Vec::new(),
+            link_text_sources: Vec::new(),
             index_topics: BTreeMap::new(),
             index_xrefs: Vec::new(),
         };
@@ -395,6 +400,65 @@ impl<'a> Ex<'a> {
         }
         for (name, _) in stories {
             root.push(El::new("idPkg:Story").attr("src", name));
+        }
+        // The document's own hyperlinks (#1446): a destination element, a source element for a
+        // page item (a text source is already in its story) and a `Hyperlink` joining them.
+        // Stories are written before this, so `link_text_sources` is complete.
+        let text_sources: Vec<(String, usize)> = std::mem::take(&mut self.link_text_sources);
+        for (i, h) in d.hyperlinks.iter().enumerate() {
+            use designcraft_doc::{HyperlinkDest as De, HyperlinkSource as So};
+            // A text destination is already written where its anchor sits.
+            let dest = match &h.dest {
+                De::Anchor(a) => Some(anchor_self(*a)),
+                De::Url(u) => Some(self.url_dest_el(&mut root, u, &h.name)),
+                De::Email(e) => Some(self.url_dest_el(&mut root, &format!("mailto:{e}"), &h.name)),
+                De::Page(p) => d.page(*p).map(|pg| {
+                    let me = format!("HyperlinkPageDestination/p{}", pg.id.0);
+                    root.push(
+                        El::new("HyperlinkPageDestination")
+                            .attr("Self", &me)
+                            .attr("Name", &h.name)
+                            .attr("DestinationPage", uid(pg.id.0))
+                            .attr("ViewSetting", "FitPage")
+                            .attr("Hidden", "false"),
+                    );
+                    me
+                }),
+            };
+            let Some(dest) = dest else { continue };
+            // One `Hyperlink` per source element: a link whose text crosses a paragraph has one
+            // source per paragraph, so each piece stays clickable.
+            let sources: Vec<String> = match &h.source {
+                So::Item { id } if d.item(*id).is_some() => {
+                    let me = format!("HyperlinkPageItemSource/i{}", id.0);
+                    root.push(
+                        El::new("HyperlinkPageItemSource")
+                            .attr("Self", &me)
+                            .attr("Name", &h.name)
+                            .attr("SourcePageItem", uid(id.0))
+                            .attr("Hidden", "false"),
+                    );
+                    vec![me]
+                }
+                So::Item { .. } => vec![],
+                So::Text { .. } => text_sources.iter().filter(|(_, k)| *k == i).map(|(me, _)| me.clone()).collect(),
+            };
+            for src in sources {
+                let mut el = El::new("Hyperlink")
+                    .attr("Self", self.fresh())
+                    .attr("Name", &h.name)
+                    .attr("Source", src)
+                    .attr("Visible", "true")
+                    .attr("Highlight", "None")
+                    .attr("Width", "Thin")
+                    .attr("BorderStyle", "Solid")
+                    .attr("Hidden", "false")
+                    .attr("DestinationUniqueKey", h.id & 0xFFFF_FFFF);
+                let mut props = El::new("Properties");
+                props.push(p("Destination", "object", &dest));
+                el.push(props);
+                root.push(el);
+            }
         }
         for (src, target) in self.xref_sources.clone() {
             let mut h = El::new("Hyperlink")
@@ -2268,7 +2332,37 @@ impl<'a> Ex<'a> {
                 let f = s.char_format_at(r.start).clone();
                 segs.push((r.start..r.start, f));
             }
+            // A hyperlink on a run of text is written as a `HyperlinkTextSource` around the
+            // ranges it covers, so the runs are cut at its edges first (#1446).
+            let links: Vec<(usize, std::ops::Range<usize>)> = self
+                .d
+                .hyperlinks
+                .iter()
+                .enumerate()
+                .filter_map(|(i, h)| match &h.source {
+                    designcraft_doc::HyperlinkSource::Text { story, start, end } if *story == s.id => {
+                        let (a, b) = ((*start).max(r.start), (*end).min(r.end));
+                        (a < b).then_some((i, a..b))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let mut cuts: Vec<usize> = links.iter().flat_map(|(_, l)| [l.start, l.end]).collect();
+            cuts.sort_unstable();
+            cuts.dedup();
+            let segs = segs.into_iter().fold(Vec::new(), |mut out: Vec<(std::ops::Range<usize>, CharFormat)>, (rr, f)| {
+                let mut at = rr.start;
+                for c in cuts.iter().copied().filter(|c| rr.start < *c && *c < rr.end) {
+                    out.push((at..c, f.clone()));
+                    at = c;
+                }
+                out.push((at..rr.end, f));
+                out
+            });
             let nseg = segs.len();
+            // Each segment's ranges, with the link they belong to; wrapped once the paragraph is
+            // built so that consecutive ranges of one link share a single source element.
+            let mut psr_csrs: Vec<(Option<usize>, El)> = Vec::new();
             for (k, (rr, f)) in segs.into_iter().enumerate() {
                 let seg_start = rr.start;
                 let text = &s.text[rr];
@@ -2527,8 +2621,35 @@ impl<'a> Ex<'a> {
                         },
                     }
                 }
+                let link = links.iter().find(|(_, l)| l.contains(&seg_start) || (l.start == seg_start && l.start == l.end)).map(|(i, _)| *i);
                 for c in csrs {
-                    psr.push(c);
+                    psr_csrs.push((link, c));
+                }
+            }
+            // Consecutive ranges of one link go inside one `HyperlinkTextSource`.
+            let mut groups: Vec<(Option<usize>, Vec<El>)> = Vec::new();
+            for (link, c) in psr_csrs {
+                match groups.last_mut() {
+                    Some((l, v)) if *l == link => v.push(c),
+                    _ => groups.push((link, vec![c])),
+                }
+            }
+            for (link, cs) in groups {
+                match link.and_then(|i| self.d.hyperlinks.get(i).map(|h| (i, h.name.clone()))) {
+                    None => {
+                        for c in cs {
+                            psr.push(c);
+                        }
+                    }
+                    Some((i, name)) => {
+                        let me = self.fresh();
+                        let mut src = El::new("HyperlinkTextSource").attr("Self", &me).attr("Name", name).attr("Hidden", "false");
+                        for c in cs {
+                            src.push(c);
+                        }
+                        psr.push(src);
+                        self.link_text_sources.push((me, i));
+                    }
                 }
             }
             paras.push(psr);
@@ -3068,6 +3189,28 @@ const STROKE_STYLES: &[&str] = &[
     "Dashed",
     "Solid",
 ];
+
+impl Ex<'_> {
+    /// A `HyperlinkURLDestination` for `url`, written once however many links lead to it.
+    fn url_dest_el(&mut self, root: &mut El, url: &str, name: &str) -> String {
+        let me = format!("HyperlinkURLDestination/u{:x}", fnv(url));
+        if !root.children.iter().any(|n| matches!(n, Node::El(e) if e.name == "HyperlinkURLDestination" && e.get("Self") == Some(me.as_str()))) {
+            root.push(
+                El::new("HyperlinkURLDestination")
+                    .attr("Self", &me)
+                    .attr("Name", if name.is_empty() { url } else { name })
+                    .attr("DestinationURL", url)
+                    .attr("Hidden", "false"),
+            );
+        }
+        me
+    }
+}
+
+/// A short stable name for a string, so one URL gives one destination element.
+fn fnv(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
+}
 
 fn anchor_self(id: u64) -> String {
     format!("HyperlinkTextDestination/a{id}")
