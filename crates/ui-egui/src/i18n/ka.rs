@@ -777,6 +777,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sort", "სორტირება"),
     ("Split Cell Horizontally", "უჯრის ჰორიზონტალურად გაყოფა"),
     ("Split Cell Vertically", "უჯრის ვერტიკალურად გაყოფა"),
+    ("Split Note", "შენიშვნის გაყოფა"),
     ("Split Path", "ტრაექტორიის გაყოფა"),
     ("Step and Repeat…", "ბიჯით გამეორება…"),
     ("Stroke Styles", "კონტურის სტილები"),

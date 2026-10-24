@@ -853,6 +853,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sort", "Сортувати"),
     ("Split Cell Horizontally", "Розділити клітинку горизонтально"),
     ("Split Cell Vertically", "Розділити клітинку вертикально"),
+    ("Split Note", "Розділити примітку"),
     ("Split Path", "Розділити контур"),
     ("Step and Repeat…", "Крок і повторення…"),
     ("Stroke Styles", "Стилі обведення"),

@@ -721,6 +721,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sort", "Seřadit"),
     ("Split Cell Horizontally", "Rozdělit buňku vodorovně"),
     ("Split Cell Vertically", "Rozdělit buňku svisle"),
+    ("Split Note", "Rozdělit poznámku"),
     ("Split Path", "Rozdělit cestu"),
     ("Step and Repeat…", "Krokovat a opakovat…"),
     ("Stroke Styles", "Styly tahu"),

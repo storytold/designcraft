@@ -728,6 +728,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sort", "Sortuj"),
     ("Split Cell Horizontally", "Podziel komórkę w poziomie"),
     ("Split Cell Vertically", "Podziel komórkę w pionie"),
+    ("Split Note", "Podziel notatkę"),
     ("Split Path", "Podziel ścieżkę"),
     ("Step and Repeat…", "Krok i powtórzenie…"),
     ("Stroke Styles", "Style obrysu"),

@@ -1693,6 +1693,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Tagged Frames", "Mostrar/ocultar quadros marcados"),
     ("Show/Hide Text Threads", "Mostrar/ocultar encadeamentos de texto"),
     ("Sort", "Ordenar"),
+    ("Split Note", "Dividir nota"),
     ("Split Path", "Dividir traçado"),
     ("Step and Repeat…", "Passo e repetição…"),
     ("Stroke Styles", "Estilos de traço"),

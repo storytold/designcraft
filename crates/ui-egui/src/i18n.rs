@@ -2308,6 +2308,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
         "Split Cell Vertically",
         ["Split Cell Vertically", "Scinder la cellule verticalement", "Split Cell Vertically", "Split Cell Vertically", "垂直拆分单元格"],
     ),
+    ("Split Note", ["Split Note", "Scinder la note", "Split Note", "Split Note", "拆分注释"]),
     ("Split Path", ["Split Path", "Fractionner le tracé", "Split Path", "Split Path", "拆分路径"]),
     ("Step and Repeat…", ["Step and Repeat…", "Exécuter et répéter…", "Step and Repeat…", "Step and Repeat…", "步进和重复…"]),
     ("Stroke Styles", ["Stroke Styles", "Styles de contour", "Stroke Styles", "Stroke Styles", "描边样式"]),

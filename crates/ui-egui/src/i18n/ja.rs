@@ -951,6 +951,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sort", "並べ替え"),
     ("Split Cell Horizontally", "セルを横方向に分割"),
     ("Split Cell Vertically", "セルを縦方向に分割"),
+    ("Split Note", "注釈を分割"),
     ("Split Path", "パスを分割"),
     ("Step and Repeat…", "間隔を指定して複製…"),
     ("Stroke Styles", "線スタイル"),

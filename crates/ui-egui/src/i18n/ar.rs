@@ -1564,6 +1564,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Text Threads", "إظهار/إخفاء روابط الإطارات النصية"),
     ("Smooth", "تنعيم"),
     ("Sort", "فرز"),
+    ("Split Note", "تقسيم الملاحظة"),
     ("Split Path", "تقسيم المسار"),
     ("Step and Repeat…", "خطوة وتكرار…"),
     ("Stroke Styles", "أنماط الحدود"),
