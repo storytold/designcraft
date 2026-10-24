@@ -2862,6 +2862,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 app.ui.style_preview = d.b("preview");
                 style_options_preview(app, &mut d);
             }
+            if d.id == "paragraphLocal" {
+                check(ui, &mut d, "preview", crate::i18n::tr(&app.ui.language, "Preview"));
+                paragraph_local_preview(app, &mut d);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
@@ -3063,7 +3067,7 @@ fn find_change_params(d: &Dialog) -> Value {
 /// Apply the open dialog.
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
-    if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions") && d.fields.contains_key(PREVIEWED) {
+    if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions" | "paragraphLocal") && d.fields.contains_key(PREVIEWED) {
         // Restore the original before the ordinary command commits one undoable edit.
         app.session.cancel_interaction();
     }
@@ -4869,14 +4873,54 @@ const NUMBER_STYLES: [(&str, &str); 9] = [
     ("symbols", "*, †, ‡, §..."),
 ];
 
+/// The white space a list label's text can be (Text After's ▾, which replaces the text), as
+/// InDesign lists it: label and metacharacter.
+const LIST_SPACES: [(&str, &str); 9] = [
+    ("Tab", "^t"),
+    ("Em Space", "^m"),
+    ("En Space", "^>"),
+    ("Nonbreaking Space", "^s"),
+    ("Hair Space", "^|"),
+    ("Thin Space", "^<"),
+    ("Figure Space", "^/"),
+    ("Punctuation Space", "^."),
+    ("Flush Space", "^f"),
+];
+
+/// Special characters a list label's text can take (the ▸ beside it, which adds one).
+const LIST_SPECIALS: [(&str, &str); 6] =
+    [("Tab", "^t"), ("Right Indent Tab", "^y"), ("Indent to Here", "^i"), ("Em Dash", "^_"), ("En Dash", "^="), ("Forced Line Break", "^n")];
+
 /// A list label text (Text After, Number), shown with its tab as `^t`; labels expand
-/// metacharacters, so the typed text is stored as it is.
+/// metacharacters, so the typed text is stored as it is. As InDesign's: ▾ chooses a white space
+/// for the whole text, ▸ adds a special character to it.
 fn list_text(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, label: &str, key: &str) {
     crate::rtl::label(ui, crate::i18n::tr(lang, label));
     let mut s = para_value(d, pv, key).as_str().unwrap_or("").replace('\t', "^t");
-    if ui.add(egui::TextEdit::singleline(&mut s).desired_width(160.0)).changed() {
-        para_set(d, key, json!(s));
-    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if ui.add(egui::TextEdit::singleline(&mut s).desired_width(160.0)).changed() {
+            para_set(d, key, json!(s));
+        }
+        let spaces = crate::icons::button(ui, "chevron-down", 20.0, false, crate::i18n::tr(lang, "Insert White Space"));
+        egui::Popup::menu(&spaces).show(|ui| {
+            for (name, meta) in LIST_SPACES {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(lang, name))).clicked() {
+                    para_set(d, key, json!(meta));
+                    ui.close();
+                }
+            }
+        });
+        let specials = crate::icons::button(ui, "chevron-right", 18.0, false, crate::i18n::tr(lang, "Insert Special Character"));
+        egui::Popup::menu(&specials).show(|ui| {
+            for (name, meta) in LIST_SPECIALS {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(lang, name))).clicked() {
+                    para_set(d, key, json!(format!("{s}{meta}")));
+                    ui.close();
+                }
+            }
+        });
+    });
     ui.end_row();
 }
 
@@ -4917,90 +4961,237 @@ fn list_char_style(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, ke
     );
 }
 
-/// The bullet character: common bullets, a field, and the font's glyphs in a grid to pick from.
+/// InDesign's bullet characters, as its Bullet Character grid starts (bullet, asterisk, lozenge,
+/// guillemet), then the dashes; all in the paragraph's font.
+const BULLETS: [&str; 6] = ["\u{2022}", "*", "\u{25CA}", "\u{00BB}", "\u{2013}", "\u{2014}"];
+
+/// The grid's cell size, in points.
+const BULLET_CELL: f32 = 26.0;
+
+/// One cell of the Bullet Character grid: the character and the font it remembers ("" = the
+/// paragraph's, marked with a red "u" as InDesign does).
+#[derive(Clone, Debug, PartialEq)]
+struct BulletCell {
+    char: String,
+    font: String,
+    style: String,
+}
+
+/// The cells: InDesign's bullets, those added in this dialog (Add…, `bulletAdded`), and the
+/// paragraph's own bullet when it is none of them.
+fn bullet_cells(d: &Dialog, pv: &Value) -> Vec<BulletCell> {
+    let mut cells: Vec<BulletCell> = BULLETS.iter().map(|c| BulletCell { char: c.to_string(), font: String::new(), style: String::new() }).collect();
+    let added = d.fields.get("bulletAdded").and_then(Value::as_array).cloned().unwrap_or_default();
+    for a in added {
+        let field = |k: &str| a[k].as_str().unwrap_or("").to_string();
+        let cell = BulletCell { char: field("char"), font: field("font"), style: field("style") };
+        if !cell.char.is_empty() && !cells.contains(&cell) {
+            cells.push(cell);
+        }
+    }
+    let current = current_bullet(d, pv);
+    if !current.char.is_empty() && !cells.contains(&current) {
+        cells.push(current);
+    }
+    cells
+}
+
+/// The paragraph's bullet as a cell.
+fn current_bullet(d: &Dialog, pv: &Value) -> BulletCell {
+    let field = |k: &str| para_value(d, pv, k).as_str().unwrap_or("").to_string();
+    let font = field("bulletFont");
+    BulletCell { char: field("bulletChar"), style: if font.is_empty() { String::new() } else { field("bulletFontStyle") }, font }
+}
+
+fn choose_bullet(d: &mut Dialog, cell: &BulletCell) {
+    para_set(d, "bulletChar", json!(cell.char));
+    para_set(d, "bulletFont", json!(cell.font));
+    para_set(d, "bulletFontStyle", json!(cell.style));
+}
+
+/// A bullet drawn in its font (the paragraph's for a "u" cell), as a texture kept between frames.
+fn bullet_texture(ui: &egui::Ui, lu: &ListUi<'_>, cell: &BulletCell, px: u32, ink: egui::Color32) -> Option<egui::TextureHandle> {
+    let c = cell.char.chars().next()?;
+    let (family, style) = if cell.font.is_empty() { (lu.family, lu.style) } else { (cell.font.as_str(), cell.style.as_str()) };
+    let key = egui::Id::new(("bullet_cell", c, family, style, lu.scope, px, ink.to_array()));
+    if let Some(t) = ui.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
+        return Some(t);
+    }
+    let img = designcraft_render::glyphs::glyph_grid(lu.fonts, family, style, &[c], 1, px, ink.to_array());
+    let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
+    let t = crate::widgets::load_texture(ui.ctx(), "bullet_cell", ci, egui::TextureOptions::LINEAR);
+    ui.data_mut(|d| d.insert_temp(key, t.clone()));
+    Some(t)
+}
+
+/// Bullet Character, as InDesign's: the bullets in a grid of cells (the paragraph's selected, a
+/// red "u" on those without a font of their own), Add… to pick another from a font's glyphs and
+/// Delete for one added.
 fn bullet_char(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, lu: &ListUi<'_>) {
-    crate::rtl::label(ui, crate::i18n::tr(lang, "Bullet Character:"));
-    ui.horizontal(|ui| {
-        let cur = para_value(d, pv, "bulletChar").as_str().unwrap_or("").to_string();
-        for b in ["\u{2022}", "\u{2013}", "\u{2014}", "\u{00BB}", "*"] {
-            if ui.add_sized([24.0, 20.0], egui::Button::selectable(cur == b, b)).clicked() {
-                para_set(d, "bulletChar", json!(b));
+    let cells = bullet_cells(d, pv);
+    let current = current_bullet(d, pv);
+    let selected = cells.iter().position(|c| *c == current).or_else(|| cells.iter().position(|c| c.char == current.char));
+    ui.horizontal_top(|ui| {
+        const COLS: usize = 10;
+        let rows = cells.len().div_ceil(COLS).max(2);
+        let (grid, _) = ui.allocate_exact_size(egui::vec2(BULLET_CELL * COLS as f32, BULLET_CELL * rows as f32), egui::Sense::hover());
+        let px = (BULLET_CELL * ui.ctx().pixels_per_point()).round().max(1.0) as u32;
+        let ink = egui::Color32::from_gray(24);
+        let mut picked = None;
+        for k in 0..rows * COLS {
+            let r = egui::Rect::from_min_size(
+                grid.min + egui::vec2((k % COLS) as f32, (k / COLS) as f32) * BULLET_CELL,
+                egui::vec2(BULLET_CELL, BULLET_CELL),
+            );
+            let sel = selected == Some(k);
+            ui.painter().rect_filled(r.shrink(0.5), 0.0, if sel { egui::Color32::from_rgb(160, 196, 240) } else { egui::Color32::from_gray(226) });
+            ui.painter().rect_stroke(r, 0.0, egui::Stroke::new(1.0, egui::Color32::from_gray(150)), egui::StrokeKind::Inside);
+            let Some(cell) = cells.get(k) else { continue };
+            if let Some(t) = bullet_texture(ui, lu, cell, px, ink) {
+                ui.painter().image(t.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+            }
+            if cell.font.is_empty() {
+                ui.painter().text(
+                    r.right_bottom() + egui::vec2(-3.0, -1.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    "u",
+                    egui::FontId::proportional(9.0),
+                    egui::Color32::from_rgb(210, 30, 30),
+                );
+            }
+            let resp = ui.interact(r, ui.id().with(("bullet_cell", k)), egui::Sense::click());
+            let name = format!("U+{:04X}", cell.char.chars().next().map_or(0, |c| c as u32));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, sel, &name));
+            if resp.clicked() {
+                picked = Some(cell.clone());
             }
         }
-        let mut s = cur;
-        if ui.add(egui::TextEdit::singleline(&mut s).desired_width(36.0)).changed() {
-            para_set(d, "bulletChar", json!(s));
+        if let Some(c) = picked {
+            choose_bullet(d, &c);
         }
-        let open = d.b("bulletGlyphs");
-        if ui.selectable_label(open, crate::rtl::widget(ui, crate::i18n::tr(lang, "Glyphs…"))).clicked() {
-            d.fields.insert("bulletGlyphs".into(), json!(!open));
-        }
-    });
-    ui.end_row();
-    if d.b("bulletGlyphs") {
-        ui.label("");
+        ui.add_space(16.0);
         ui.vertical(|ui| {
-            ui.set_width(300.0);
-            let font = para_value(d, pv, "bulletFont").as_str().unwrap_or("").to_string();
-            let (family, style) = if font.is_empty() {
-                (lu.family.to_string(), lu.style.to_string())
-            } else {
-                let st = para_value(d, pv, "bulletFontStyle").as_str().unwrap_or("").to_string();
-                let st = if st.is_empty() { lu.fonts.styles(&font).into_iter().next().unwrap_or_else(|| "Regular".into()) } else { st };
-                (font, st)
-            };
-            let mut q = d.s("bulletGlyphQuery");
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut q)
-                        .hint_text(crate::rtl::widget(ui, crate::i18n::tr(lang, "Search: character or U+code")))
-                        .desired_width(300.0),
-                )
-                .changed()
-            {
-                d.fields.insert("bulletGlyphQuery".into(), json!(q));
+            if ui.add_sized([86.0, 22.0], egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(lang, "Add…")))).clicked() {
+                d.fields.insert("addBullets".into(), json!(true));
             }
-            if let (Some(c), _) = crate::panels::glyphs::grid(ui, lu.fonts, lu.scope, &family, &style, &q, 160.0) {
-                para_set(d, "bulletChar", json!(c.to_string()));
+            // Only a bullet that isn't one of InDesign's can go.
+            let added = selected.is_some_and(|k| k >= BULLETS.len());
+            if ui
+                .add_enabled(added, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(lang, "Delete"))).min_size(egui::vec2(86.0, 22.0)))
+                .clicked()
+                && let Some(gone) = selected.and_then(|k| cells.get(k))
+            {
+                let kept: Vec<Value> = d
+                    .fields
+                    .get("bulletAdded")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter(|v| v["char"] != gone.char.as_str() || v["font"] != gone.font.as_str()).cloned().collect())
+                    .unwrap_or_default();
+                d.fields.insert("bulletAdded".into(), json!(kept));
+                choose_bullet(d, &BulletCell { char: BULLETS[0].into(), font: String::new(), style: String::new() });
             }
         });
-        ui.end_row();
+    });
+    if d.b("addBullets") {
+        add_bullets(lang, ui, d, lu);
     }
 }
 
-/// The bullet's font family and style ("" = the paragraph's).
-fn bullet_font(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, lu: &ListUi<'_>) {
-    let font = para_value(d, pv, "bulletFont").as_str().unwrap_or("").to_string();
-    let inherit = crate::i18n::tr(lang, "(Paragraph Font)");
-    crate::rtl::label(ui, crate::i18n::tr(lang, "Font Family:"));
-    egui::ComboBox::from_id_salt("psbulletfont").selected_text(if font.is_empty() { inherit } else { font.as_str() }).width(200.0).show_ui(
-        ui,
-        |ui| {
-            if ui.selectable_label(font.is_empty(), inherit).clicked() {
-                para_set(d, "bulletFont", json!(""));
-                para_set(d, "bulletFontStyle", json!(""));
+/// Add Bullets, as InDesign's: a font's glyphs to pick from, its family and style, and Remember
+/// Font with Bullet (the bullet keeps that font, else it takes the paragraph's). OK adds the
+/// glyph to the grid and chooses it; Add adds it and leaves the window open.
+fn add_bullets(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, lu: &ListUi<'_>) {
+    let field = |d: &Dialog, k: &str, default: &str| d.fields.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or(default).to_string();
+    let family = field(d, "addBulletFont", lu.family);
+    let style = field(d, "addBulletStyle", lu.style);
+    let mut open = true;
+    let mut action = None;
+    egui::Window::new(crate::i18n::tr(lang, "Add Bullets"))
+        .id(egui::Id::new("add_bullets"))
+        .collapsible(false)
+        .resizable(false)
+        .order(egui::Order::Foreground)
+        .default_pos(ui.min_rect().left_top() + egui::vec2(20.0, 20.0))
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            ui.set_width(380.0);
+            let chosen = d.s("addBulletChar");
+            if let (Some(c), _) = crate::panels::glyphs::grid(ui, lu.fonts, lu.scope, &family, &style, "", 220.0) {
+                d.fields.insert("addBulletChar".into(), json!(c.to_string()));
             }
-            for f in lu.families {
-                if ui.selectable_label(*f == font, f).clicked() {
-                    para_set(d, "bulletFont", json!(f));
-                    para_set(d, "bulletFontStyle", json!(lu.fonts.styles(f).into_iter().next().unwrap_or_default()));
-                }
+            egui::Grid::new("add_bullets_fields").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Font Family:"));
+                egui::ComboBox::from_id_salt("addbulletfont").selected_text(family.as_str()).width(220.0).show_ui(ui, |ui| {
+                    for f in lu.families {
+                        if ui.selectable_label(*f == family, f).clicked() {
+                            d.fields.insert("addBulletFont".into(), json!(f));
+                            d.fields.insert("addBulletStyle".into(), json!(lu.fonts.styles(f).into_iter().next().unwrap_or_default()));
+                        }
+                    }
+                });
+                ui.end_row();
+                crate::rtl::label(ui, crate::i18n::tr(lang, "Font Style:"));
+                egui::ComboBox::from_id_salt("addbulletstyle").selected_text(style.as_str()).width(220.0).show_ui(ui, |ui| {
+                    for st in lu.fonts.styles(&family) {
+                        if ui.selectable_label(st == style, &st).clicked() {
+                            d.fields.insert("addBulletStyle".into(), json!(st));
+                        }
+                    }
+                });
+                ui.end_row();
+            });
+            let mut remember = d.fields.get("addBulletRemember").and_then(Value::as_bool).unwrap_or(true);
+            if ui.checkbox(&mut remember, crate::rtl::widget(ui, crate::i18n::tr(lang, "Remember Font with Bullet"))).changed() {
+                d.fields.insert("addBulletRemember".into(), json!(remember));
             }
-        },
-    );
-    ui.end_row();
-    crate::rtl::label(ui, crate::i18n::tr(lang, "Font Style:"));
-    let style = para_value(d, pv, "bulletFontStyle").as_str().unwrap_or("").to_string();
-    ui.add_enabled_ui(!font.is_empty(), |ui| {
-        egui::ComboBox::from_id_salt("psbulletstyle").selected_text(style.as_str()).width(200.0).show_ui(ui, |ui| {
-            for st in lu.fonts.styles(&font) {
-                if ui.selectable_label(st == style, &st).clicked() {
-                    para_set(d, "bulletFontStyle", json!(st));
-                }
-            }
+            ui.horizontal(|ui| {
+                crate::rtl::label(ui, egui::RichText::new(if chosen.is_empty() { "—" } else { chosen.as_str() }).size(22.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(!chosen.is_empty(), egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(lang, "Add")))).clicked() {
+                        action = Some(false);
+                    }
+                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(lang, "Cancel"))).clicked() {
+                        d.fields.insert("addBullets".into(), json!(false));
+                    }
+                    if ui.add_enabled(!chosen.is_empty(), egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(lang, "OK")))).clicked() {
+                        action = Some(true);
+                    }
+                });
+            });
         });
+    if !open {
+        d.fields.insert("addBullets".into(), json!(false));
+    }
+    if let Some(close) = action {
+        let remember = d.fields.get("addBulletRemember").and_then(Value::as_bool).unwrap_or(true);
+        let cell = BulletCell {
+            char: d.s("addBulletChar"),
+            font: if remember { family.clone() } else { String::new() },
+            style: if remember { style.clone() } else { String::new() },
+        };
+        let mut added = d.fields.get("bulletAdded").and_then(Value::as_array).cloned().unwrap_or_default();
+        let entry = json!({"char": cell.char, "font": cell.font, "style": cell.style});
+        if !added.contains(&entry) {
+            added.push(entry);
+        }
+        d.fields.insert("bulletAdded".into(), json!(added));
+        choose_bullet(d, &cell);
+        if close {
+            d.fields.insert("addBullets".into(), json!(false));
+        }
+    }
+}
+
+/// A group of the dialog under its title, as InDesign's sections (Bullet Character, Bullet or
+/// Number Position).
+fn titled_group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(6.0);
+    crate::rtl::label(ui, egui::RichText::new(title).font(semibold(12.0)));
+    ui.add_space(4.0);
+    ui.horizontal_top(|ui| {
+        ui.add_space(12.0);
+        ui.vertical(|ui| add(ui));
     });
-    ui.end_row();
 }
 
 /// Paragraph Style Options › Bullets and Numbering (and the Bullets and Numbering dialog): the
@@ -5011,38 +5202,42 @@ fn bullets_and_numbering(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Val
     let units = doc.settings.horizontal_units;
     let kind = para_value(d, pv, "listType").as_str().unwrap_or("none").to_string();
     let level = para_value(d, pv, "listLevel").as_u64().unwrap_or(1).clamp(1, designcraft_doc::LIST_LEVELS as u64) as u32;
-    egui::ScrollArea::vertical().id_salt("psbnscroll").max_height(340.0).show(ui, |ui| {
-        egui::Grid::new("psbn").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("psbnscroll").max_height(400.0).show(ui, |ui| {
+        // List Type; then List (numbered lists) and Level on one row, as InDesign's.
+        egui::Grid::new("psbn").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
             crate::rtl::label(ui, crate::i18n::tr(lang, "List Type:"));
             para_choice(lang, ui, d, pv, "listType", &[("none", "None"), ("bullets", "Bullets"), ("numbers", "Numbers")]);
             ui.end_row();
-            if kind != "none" {
-                crate::rtl::label(ui, crate::i18n::tr(lang, "Level:"));
-                para_count(ui, d, pv, "listLevel", (1, designcraft_doc::LIST_LEVELS as u32));
-                ui.end_row();
-            }
-            match kind.as_str() {
-                "bullets" => {
-                    bullet_char(lang, ui, d, pv, lu);
-                    bullet_font(lang, ui, d, pv, lu);
+            ui.add_enabled_ui(kind == "numbers", |ui| crate::rtl::label(ui, crate::i18n::tr(lang, "List:")));
+            ui.add_enabled_ui(kind == "numbers", |ui| {
+                let list = para_value(d, pv, "listName").as_str().unwrap_or("").to_string();
+                // "" is the story's own list.
+                let name = |n: &str| if n.is_empty() { crate::i18n::tr(lang, "[Default]").to_string() } else { n.to_string() };
+                egui::ComboBox::from_id_salt("pslist").selected_text(name(&list)).width(200.0).show_ui(ui, |ui| {
+                    for n in std::iter::once("").chain(doc.settings.lists.iter().map(|l| l.name.as_str())) {
+                        if ui.selectable_label(n == list, name(n)).clicked() {
+                            para_set(d, "listName", json!(n));
+                        }
+                    }
+                });
+            });
+            ui.add_enabled_ui(kind != "none", |ui| crate::rtl::label(ui, crate::i18n::tr(lang, "Level:")));
+            ui.add_enabled_ui(kind != "none", |ui| para_count(ui, d, pv, "listLevel", (1, designcraft_doc::LIST_LEVELS as u32)));
+            ui.end_row();
+        });
+        match kind.as_str() {
+            "bullets" => titled_group(ui, crate::i18n::tr(lang, "Bullet Character"), |ui| {
+                bullet_char(lang, ui, d, pv, lu);
+                ui.add_space(6.0);
+                egui::Grid::new("psbnbullet").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     list_text(lang, ui, d, pv, "Text After:", "listSeparator");
                     crate::rtl::label(ui, crate::i18n::tr(lang, "Character Style:"));
                     list_char_style(lang, ui, d, pv, "bulletCharStyle", lu.char_styles);
                     ui.end_row();
-                }
-                "numbers" => {
-                    crate::rtl::label(ui, crate::i18n::tr(lang, "List:"));
-                    let list = para_value(d, pv, "listName").as_str().unwrap_or("").to_string();
-                    // "" is the story's own list.
-                    let name = |n: &str| if n.is_empty() { crate::i18n::tr(lang, "[Default]").to_string() } else { n.to_string() };
-                    egui::ComboBox::from_id_salt("pslist").selected_text(name(&list)).width(200.0).show_ui(ui, |ui| {
-                        for n in std::iter::once("").chain(doc.settings.lists.iter().map(|l| l.name.as_str())) {
-                            if ui.selectable_label(n == list, name(n)).clicked() {
-                                para_set(d, "listName", json!(n));
-                            }
-                        }
-                    });
-                    ui.end_row();
+                });
+            }),
+            "numbers" => titled_group(ui, crate::i18n::tr(lang, "Numbering Style"), |ui| {
+                egui::Grid::new("psbnnumber").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(lang, "Format:"));
                     para_choice(lang, ui, d, pv, "numberStyle", &NUMBER_STYLES);
                     ui.end_row();
@@ -5094,38 +5289,65 @@ fn bullets_and_numbering(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Val
                         });
                     });
                     ui.end_row();
-                }
-                _ => {}
-            }
-            if kind != "none" {
-                crate::rtl::label(ui, crate::i18n::tr(lang, "Alignment:"));
-                let key = if kind == "bullets" { "bulletAlign" } else { "numberAlign" };
-                para_choice(lang, ui, d, pv, key, &[("left", "Left"), ("center", "Center"), ("right", "Right")]);
-                ui.end_row();
-                for (label, key) in [("Left Indent:", "leftIndent"), ("First Line Indent:", "firstLineIndent")] {
-                    crate::rtl::label(ui, crate::i18n::tr(lang, label));
-                    para_measure(ui, d, pv, key, units);
-                    ui.end_row();
-                }
-                // Tab Position: none, or a stop for the text after the label.
-                crate::rtl::label(ui, crate::i18n::tr(lang, "Tab Position:"));
-                ui.horizontal(|ui| {
-                    let tab = para_value(d, pv, "listTab").as_f64();
-                    let mut on = tab.is_some();
-                    if ui.checkbox(&mut on, "").changed() {
-                        let left = para_value(d, pv, "leftIndent").as_f64().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(18.0);
-                        para_set(d, "listTab", if on { json!(left) } else { Value::Null });
-                    }
-                    if let Some(t) = tab
-                        && let Some(v) = crate::widgets::measure(ui, "pslisttab", Some(t), units, 80.0)
-                    {
-                        para_set(d, "listTab", json!(if v.is_finite() { v.max(0.0) } else { 0.0 }));
-                    }
                 });
-                ui.end_row();
-            }
-        });
+            }),
+            _ => {}
+        }
+        if kind != "none" {
+            titled_group(ui, crate::i18n::tr(lang, "Bullet or Number Position"), |ui| {
+                egui::Grid::new("psbnposition").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Alignment:"));
+                    let key = if kind == "bullets" { "bulletAlign" } else { "numberAlign" };
+                    para_choice(lang, ui, d, pv, key, &[("left", "Left"), ("center", "Center"), ("right", "Right")]);
+                    ui.end_row();
+                    for (label, key) in [("Left Indent:", "leftIndent"), ("First Line Indent:", "firstLineIndent")] {
+                        crate::rtl::label(ui, crate::i18n::tr(lang, label));
+                        para_measure(ui, d, pv, key, units);
+                        ui.end_row();
+                    }
+                    // Tab Position: none, or a stop for the text after the label.
+                    crate::rtl::label(ui, crate::i18n::tr(lang, "Tab Position:"));
+                    ui.horizontal(|ui| {
+                        let tab = para_value(d, pv, "listTab").as_f64();
+                        let mut on = tab.is_some();
+                        if ui.checkbox(&mut on, "").changed() {
+                            let left = para_value(d, pv, "leftIndent").as_f64().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(18.0);
+                            para_set(d, "listTab", if on { json!(left) } else { Value::Null });
+                        }
+                        if let Some(t) = tab
+                            && let Some(v) = crate::widgets::measure(ui, "pslisttab", Some(t), units, 80.0)
+                        {
+                            para_set(d, "listTab", json!(if v.is_finite() { v.max(0.0) } else { 0.0 }));
+                        }
+                    });
+                    ui.end_row();
+                });
+            });
+        }
     });
+}
+
+/// Preview on: the selected paragraphs show the dialog's edits (redone when a field changes)
+/// without an undo step; off, they go back. OK then makes the change once, as one undo step.
+fn paragraph_local_preview(app: &mut DesignApp, d: &mut Dialog) {
+    let shown = d.fields.get(PREVIEWED).cloned();
+    let attrs: Map<String, Value> = d.fields.iter().filter_map(|(k, v)| k.strip_prefix("p.").map(|a| (a.to_string(), v.clone()))).collect();
+    if !d.b("preview") || attrs.is_empty() {
+        if shown.is_some() {
+            app.session.cancel_interaction();
+            d.fields.remove(PREVIEWED);
+        }
+        return;
+    }
+    let params = json!({ "attrs": attrs });
+    if shown.as_ref() == Some(&params) {
+        return;
+    }
+    if shown.is_none() && app.session.begin_interaction("Paragraph Formatting").is_err() {
+        return;
+    }
+    let _ = app.session.preview("type.para", params.clone());
+    d.fields.insert(PREVIEWED.into(), params);
 }
 
 /// Paragraph Borders and Shading, Span Columns, and Bullets and Numbering for the selected
@@ -8116,6 +8338,89 @@ mod tests {
         let dialog = app.ui.dialog.as_ref().unwrap();
         assert_eq!(dialog.fields["width"], 0);
         assert!(dialog.fields["status"].as_str().unwrap().contains("page size out of range"));
+    }
+
+    /// The course's chapter 21: Bullets and Numbering as InDesign's. The Bullet Character grid
+    /// picks a bullet (the paragraph's font: a red "u"); Add… opens Add Bullets, whose OK adds the
+    /// glyph with its font remembered and chooses it, and Delete takes an added one out; Text
+    /// After's ▾ gives a white space; Preview shows the edits on the page, Cancel takes them back
+    /// and OK makes them one undo step.
+    #[test]
+    fn bullets_dialog_has_the_grid_add_bullets_and_preview() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "4 eggs\n1 cup milk"})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 15})).unwrap();
+        app.run("type.para", json!({"attrs": {"listType": "bullets"}})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        let undo = app.session.doc().unwrap().history.undo.len();
+        app.run("app.bulletsNumberingDialog", json!({})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::new("bullets_dialog_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(4);
+        for l in ["Bullet Character", "Add…", "Delete", "Text After:", "Bullet or Number Position", "Left Indent:", "Preview"] {
+            assert!(h.query_by_label(l).is_some(), "{l}");
+        }
+        let field = |h: &Harness<'_, DesignApp>, k: &str| h.state().ui.dialog.as_ref().unwrap().fields.get(k).cloned();
+        // The lozenge, InDesign's third bullet, in the paragraph's font.
+        h.get_by_label("U+25CA").click();
+        h.run_steps(3);
+        assert_eq!((field(&h, "p.bulletChar"), field(&h, "p.bulletFont")), (Some(json!("\u{25CA}")), Some(json!(""))));
+        // Add Bullets: a glyph from a font, remembered with it.
+        h.get_by_label("Add…").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Add Bullets").is_some() && h.query_by_label("Remember Font with Bullet").is_some());
+        let d = h.state_mut().ui.dialog.as_mut().unwrap();
+        d.fields.insert("addBulletChar".into(), json!("\u{2192}"));
+        d.fields.insert("addBulletFont".into(), json!("Source Serif 4"));
+        d.fields.insert("addBulletStyle".into(), json!("Regular"));
+        h.run_steps(3);
+        h.get_by_label("OK").click();
+        h.run_steps(3);
+        assert_eq!(
+            (field(&h, "p.bulletChar"), field(&h, "p.bulletFont"), field(&h, "addBullets")),
+            (Some(json!("\u{2192}")), Some(json!("Source Serif 4")), Some(json!(false)))
+        );
+        assert!(h.query_by_label("U+2192").is_some(), "the added bullet has a cell");
+        // Delete: the added bullet goes, and the bullet goes back to InDesign's first.
+        h.get_by_label("Delete").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("U+2192").is_none());
+        assert_eq!(field(&h, "p.bulletChar"), Some(json!("\u{2022}")));
+        // Text After's ▾: an em space instead of the tab.
+        h.get_by_label("Insert White Space").click();
+        h.run_steps(3);
+        h.get_by_label("Em Space").click();
+        h.run_steps(3);
+        assert_eq!(field(&h, "p.listSeparator"), Some(json!("^m")));
+        // Preview: on the page, with no undo step; Cancel puts the page back.
+        h.get_by_label("Preview").click();
+        h.run_steps(3);
+        let sep = |h: &mut Harness<'_, DesignApp>| h.state_mut().run("type.selectionAttrs", json!({})).unwrap()["para"]["listSeparator"].clone();
+        assert_eq!(sep(&mut h), json!("^m"), "previewed");
+        assert_eq!(h.state().session.doc().unwrap().history.undo.len(), undo);
+        cancel(h.state_mut());
+        assert_eq!(h.state().session.doc().unwrap().doc, before);
+        // OK after a preview: one undo step.
+        h.state_mut().run("app.bulletsNumberingDialog", json!({})).unwrap();
+        let d = h.state_mut().ui.dialog.as_mut().unwrap();
+        d.fields.insert("preview".into(), json!(true));
+        d.fields.insert("p.listSeparator".into(), json!("^>"));
+        h.run_steps(3);
+        confirm(h.state_mut()).unwrap();
+        assert_eq!(sep(&mut h), json!("^>"));
+        assert_eq!(h.state().session.doc().unwrap().history.undo.len(), undo + 1);
     }
 
     #[test]
