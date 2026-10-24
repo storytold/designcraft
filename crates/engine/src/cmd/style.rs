@@ -763,43 +763,48 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     let targets = super::text::format_targets_pub(s);
     s.edit(|d, _| {
         let styles = d.styles.clone();
-        let (style_para, style_chars) = styles.resolve_para_style(&name);
         for t in &targets {
-            let r = &t.range;
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                // Text selections are half-open: a selection ending at the next paragraph's
-                // start must not apply a style to that paragraph too.
-                let end = if r.is_empty() { r.start } else { r.end.saturating_sub(1) };
-                let (first, last) = (st.para_at(r.start), st.para_at(end));
-                st.format_paras(r.start..end, |f| {
-                    f.style = name.clone();
-                    if clear {
-                        f.para = ParaAttrs::default();
-                        f.chars = CharAttrs::default();
-                    } else {
-                        f.para.retain_differences(&style_para);
-                        f.chars.retain_differences(&style_chars);
-                    }
-                });
-                for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
-                    let Some(pf) = st.paras.get(pi) else { continue };
-                    let (_, base) = styles.resolve_para(pf);
-                    let end = range.end.saturating_add(1).min(st.len());
-                    let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
-                    st.format_chars(range, |f| {
-                        if clear {
-                            f.over = CharAttrs::default();
-                        } else {
-                            let mut inherited = base.clone();
-                            inherited.apply(&styles.char_style_attrs(&f.style));
-                            f.over.retain_differences(&inherited);
-                        }
-                    });
-                }
+                apply_para_style(st, &styles, &name, &t.range, clear);
             }
         }
         ok()
     })
+}
+
+/// Paragraph style `name` applied to the paragraphs of `r` in `st`: the paragraphs' and their
+/// text's overrides that the style now gives go (all of them with `clear`).
+pub(super) fn apply_para_style(st: &mut designcraft_doc::Story, styles: &Styles, name: &str, r: &std::ops::Range<usize>, clear: bool) {
+    let (style_para, style_chars) = styles.resolve_para_style(name);
+    // Text selections are half-open: a selection ending at the next paragraph's
+    // start must not apply a style to that paragraph too.
+    let end = if r.is_empty() { r.start } else { r.end.saturating_sub(1) };
+    let (first, last) = (st.para_at(r.start), st.para_at(end));
+    st.format_paras(r.start..end, |f| {
+        f.style = name.to_string();
+        if clear {
+            f.para = ParaAttrs::default();
+            f.chars = CharAttrs::default();
+        } else {
+            f.para.retain_differences(&style_para);
+            f.chars.retain_differences(&style_chars);
+        }
+    });
+    for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
+        let Some(pf) = st.paras.get(pi) else { continue };
+        let (_, base) = styles.resolve_para(pf);
+        let end = range.end.saturating_add(1).min(st.len());
+        let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
+        st.format_chars(range, |f| {
+            if clear {
+                f.over = CharAttrs::default();
+            } else {
+                let mut inherited = base.clone();
+                inherited.apply(&styles.char_style_attrs(&f.style));
+                f.over.retain_differences(&inherited);
+            }
+        });
+    }
 }
 
 fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
@@ -812,23 +817,29 @@ fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
         let styles = d.styles.clone();
         for t in &targets {
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                for (pi, range) in st.para_ranges().into_iter().enumerate() {
-                    let range = range.start.max(t.range.start)..range.end.saturating_add(1).min(st.len()).min(t.range.end);
-                    if range.is_empty() {
-                        continue;
-                    }
-                    let Some(pf) = st.paras.get(pi) else { continue };
-                    let (_, mut inherited) = styles.resolve_para(pf);
-                    inherited.apply(&styles.char_style_attrs(&name));
-                    st.format_chars(range, |f| {
-                        f.style = name.clone();
-                        f.over.retain_differences(&inherited);
-                    });
-                }
+                apply_char_style(st, &styles, &name, &t.range);
             }
         }
         ok()
     })
+}
+
+/// Character style `name` applied to `r` in `st`: the text's overrides that the style (over its
+/// paragraph) now gives go.
+pub(super) fn apply_char_style(st: &mut designcraft_doc::Story, styles: &Styles, name: &str, r: &std::ops::Range<usize>) {
+    for (pi, range) in st.para_ranges().into_iter().enumerate() {
+        let range = range.start.max(r.start)..range.end.saturating_add(1).min(st.len()).min(r.end);
+        if range.is_empty() {
+            continue;
+        }
+        let Some(pf) = st.paras.get(pi) else { continue };
+        let (_, mut inherited) = styles.resolve_para(pf);
+        inherited.apply(&styles.char_style_attrs(name));
+        st.format_chars(range, |f| {
+            f.style = name.to_string();
+            f.over.retain_differences(&inherited);
+        });
+    }
 }
 
 /// In a style, `startAt: null` is Continue from Previous Number: it is stored as an explicit
