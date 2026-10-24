@@ -8,6 +8,7 @@ Generated-in-code art is original and has no file to list: the UI icon set (`cra
 
 | Asset | Author | Source | Licence | Notes |
 |---|---|---|---|---|
+| German hyphenation patterns (embedded by `hypher` 0.1.8, feature `german`) | Deutschsprachige Trennmustermannschaft: Stephan Hennig, Werner Lemberg, Günter Milde, Sander van Geloven, Georg Pfeiffer, Gisbert W. Selke, Tobias Wendorf, Keno Wehr | https://github.com/typst/hypher/blob/d81cc506416bffef2a75ee2dc969d4b41bc36613/patterns/hyph-de-1996.tex | MIT (copyright 2013–2024; full text in NOTICE) | Version 2024-02-28; reformed German spelling (2006), despite the `de-1996` filename; no separate old-spelling or Swiss patterns |
 | `crates/ui-egui/src/i18n/uk.rs` (332 common phrases) | VectorCraft contributors | https://github.com/storytold/vectorcraft/blob/01f329aa99fa0c9517311c7b6cf7233ffc207742/crates/ui-egui/src/i18n/uk.tsv | MIT OR Apache-2.0 | Adapted for DesignCraft context; remaining Ukrainian phrases are original or credited below |
 | `crates/ui-egui/src/i18n/uk.rs` (68 common phrases) | PhotoCraft contributors | https://github.com/storytold/photocraft/blob/ed057bdc6fd89a858c5e0ea4eab158a2a7052dde/crates/ui-egui/src/i18n/uk.tsv | MIT OR Apache-2.0 | Adapted interface vocabulary |
 | `crates/ui-egui/src/i18n/uk.rs` (37 common phrases) | WordCraft contributors | https://github.com/storytold/wordcraft/blob/7fb7b013591e2593fbd038f90bbc535be318e5a3/crates/ui-egui/src/i18n/uk.tsv | MIT OR Apache-2.0 | Adapted interface vocabulary |

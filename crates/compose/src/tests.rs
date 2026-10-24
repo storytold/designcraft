@@ -3969,6 +3969,36 @@ fn empty_paragraph_uses_its_own_mark_not_the_previous_one() {
 }
 
 #[test]
+fn german_2006_text_gets_german_hyphenation() {
+    let text = "Silbentrennung Fußgänger Bäcker Fenster Donaudampfschifffahrt Silbentrennung";
+    let de = hyphen::Lang::for_language("German: 2006 Reform").unwrap();
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for language in ["German: 2006 Reform", "de_DE_2006"] {
+            let para = ParaAttrs { composer: Some(composer), ..Default::default() };
+            let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 96.0, 700.0), para);
+            d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some(language.into()));
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(!cs.is_overset(), "{composer:?}, {language}");
+            let lines = all_lines(&cs);
+            assert!(lines.iter().any(|l| l.hyphenated), "{composer:?}, {language}: German text hyphenates");
+            for line in lines.iter().filter(|l| l.hyphenated) {
+                // Check the actual character offset in the original word, including when the
+                // word spans more than two lines; UTF-8 byte offsets must not become char counts.
+                let end = line.range.end;
+                let start = text[..end].rfind(' ').map_or(0, |at| at + 1);
+                let word = text[start..].split_whitespace().next().unwrap();
+                let point = text[start..end].chars().count();
+                assert!(hyphen::hyphen_points_in(word, &hyphen::Limits::default(), de).contains(&point), "{word} at {point}");
+            }
+            // The existing paragraph switch must still disable automatic German hyphenation.
+            d.story_mut(sid).unwrap().format_paras(0..text.len(), |f| f.para.hyphenate = Some(false));
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(all_lines(&cs).iter().all(|l| !l.hyphenated));
+        }
+    }
+}
+
+#[test]
 fn spanish_text_gets_spanish_hyphenation() {
     let text = "La transición democrática fue una construcción colectiva extraordinariamente compleja y desesperadamente necesaria.";
     let narrow = Rect::new(36.0, 36.0, 120.0, 700.0);

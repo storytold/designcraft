@@ -40,7 +40,7 @@ come as Middle East editions with an English or French interface and right-to-le
 | Portuguese (Brazil) | pt-br | ✓ (pt) | 1,057 (61%) | menus, panels, some dialogs; no help | Latin ✓; Portuguese hyphenation ✓ | no | partial | 8–12 |
 | Indonesian | id | ✗ | 0 (0%) | none | Latin ✓ | no | none | 12–18 |
 | Japanese | ja | ✓ | 1,644 (95%) | whole interface (#272), vertical-type commands; no help | vertical text, kinsoku, aki, ruby, warichu ✓ (partial depth, cjk.md); canvas IME ✓, not checked by hand (#322); Japanese UI and Mincho fonts from craft-fonts | no | partial | 6–10 (+ IME checks, shared with zh) |
-| German | de | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; no German hyphenation (InDesign ships 2006 reform patterns) | no | partial | 6–10 |
+| German | de | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; German 2006 hyphenation ✓ (hyph-de-1996, MIT) | no | partial | 6–10 |
 | Korean | ko | ✓ | 0 (0%) | none | Korean line breaking at spaces ✓; canvas IME ✓, not checked by hand (#322) | no | none | 15–25 |
 | Vietnamese | vi | ✗ | 0 (0%) | none | Latin with stacked diacritics via harfrust, untested | no | none | 12–18 |
 
@@ -68,9 +68,12 @@ eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, 
 ## Document languages
 
 InDesign 2026 hyphenates and spell-checks ~40 languages (Hunspell and Duden dictionaries).
-DesignCraft hyphenates **English, Spanish, Portuguese and Norwegian** and spell-checks **English** only. Text language
+DesignCraft hyphenates **English, Spanish, Portuguese, Norwegian, Greek and German (2006 reform)** and spell-checks **English** only. Text language
 can be set per paragraph and character (Properties, Character panel) and drives quotes and
 locale shaping. See [typography-parity.md](typography-parity.md).
+German hyphenation accepts `German: 2006 Reform`, `German: Swiss 2006 Reform` and `de` locale
+codes without a spelling year or with `2006`. Traditional names, `de_DE_1901` and unknown
+German variants have no automatic hyphenation; their German shaping and quotes are unchanged.
 
 ## Remaining effort
 
