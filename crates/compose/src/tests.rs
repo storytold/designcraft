@@ -5578,6 +5578,28 @@ fn mojikumi_one_em_line_end_set_sets_closing_punctuation_full_width_at_line_end(
     assert!((open - one.0 - em * 0.5).abs() < 0.01 && (stop - one.1).abs() < 0.01, "one-em set: {one:?} of {open}/{stop}");
 }
 
+/// Consecutive punctuation touches (JLREQ 3.1.4): in 漢」。漢（「漢 the closing bracket and
+/// the full stop, and the two opening brackets, close up by half an em each.
+#[test]
+fn mojikumi_closes_up_consecutive_punctuation() {
+    let family = "Mojikumi Consecutive";
+    let font = designcraft_fonts::testing::font_mapping(family, &[('漢', '‰'), ('」', '‰'), ('。', '‰'), ('（', '‰'), ('「', '‰')]).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let text = "漢」。漢（「漢";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(family.into()));
+    let mut width = |set: &str| {
+        d.story_mut(sid).unwrap().paras[0].para.mojikumi = Some(set.into());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = all_lines(&cs)[0];
+        let g = &line.glyphs[0];
+        (line.end_x - line.x0, g.face.units_per_em() * g.sx)
+    };
+    let (natural, em) = width("Nothing");
+    let (set, _) = width("LineEndAllOneHalfEmEnum");
+    assert!((natural - set - em).abs() < 0.01, "{natural} - {set} should be one em ({em})");
+}
+
 fn ruled(text: &str, rect: Rect, columns: u32, edit: impl FnOnce(&mut Document, StoryId)) -> (Document, ItemId, Vec<Rect>) {
     let (mut d, sid, fid) = doc_with(text, rect, ParaAttrs::default());
     {
