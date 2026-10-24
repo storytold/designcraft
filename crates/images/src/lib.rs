@@ -738,8 +738,8 @@ mod tests {
     impl<const BITS: u16> tiff::encoder::colortype::ColorType for Palette<BITS> {
         type Inner = u8;
         const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::RGBPalette;
-        const BITS_PER_SAMPLE: &'static [u16] = &[BITS];
-        const SAMPLE_FORMAT: &'static [tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint];
+        const BITS_PER_SAMPLE: &[u16] = &[BITS];
+        const SAMPLE_FORMAT: &[tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint];
         fn horizontal_predict(row: &[u8], result: &mut Vec<u8>) {
             result.extend_from_slice(row);
         }

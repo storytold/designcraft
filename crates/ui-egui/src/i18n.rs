@@ -4465,18 +4465,18 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
 }
 
 fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
-    static GERMAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static JAPANESE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static TRANSLATIONS: OnceLock<HashMap<&'static str, [&'static str; 5]>> = OnceLock::new();
-    static ARABIC: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static UKRAINIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static PORTUGUESE_BR: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static ITALIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static POLISH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static RUSSIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static CZECH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static FRENCH: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static GEORGIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static GERMAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static JAPANESE: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static TRANSLATIONS: OnceLock<HashMap<&str, [&str; 5]>> = OnceLock::new();
+    static ARABIC: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static UKRAINIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static PORTUGUESE_BR: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static ITALIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static POLISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static RUSSIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static CZECH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static FRENCH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static GEORGIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }

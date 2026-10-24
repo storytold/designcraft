@@ -148,7 +148,7 @@ pub struct FaceRef(&'static FontFace);
 impl FaceRef {
     /// The handle for a loaded face (memoised per face).
     pub fn of(face: &Arc<FontFace>) -> FaceRef {
-        static LEAKED: RwLock<Vec<Option<&'static FontFace>>> = RwLock::new(Vec::new());
+        static LEAKED: RwLock<Vec<Option<&FontFace>>> = RwLock::new(Vec::new());
         let id = face.id as usize;
         if let Some(Some(f)) = LEAKED.read().unwrap_or_else(PoisonError::into_inner).get(id) {
             return FaceRef(f);
@@ -579,7 +579,7 @@ fn script_chain(c: char) -> Option<&'static [&'static str]> {
 /// The Japanese fallback chain: the craft-fonts Japanese faces' families in document order
 /// (Mincho first; none without craft-fonts), then [`JAPANESE_FALLBACKS`].
 fn japanese_chain() -> &'static [&'static str] {
-    static CHAIN: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    static CHAIN: std::sync::OnceLock<Vec<&str>> = std::sync::OnceLock::new();
     CHAIN.get_or_init(|| {
         let mut chain: Vec<&'static str> = Vec::new();
         for f in crate::japanese_document_fonts() {
