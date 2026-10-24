@@ -5,7 +5,10 @@
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
 //! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
-//! polytonic text hyphenates by them as well.
+//! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
+//! Flipo, Bernard Gaulle, Arthur Reutenauer), MIT; Italian is `hyph-it.tex` 4.9 from hyph-utf8
+//! (Claudio Beccari), LPPL or MIT, taken under MIT. A word with an elision (`l'imprimerie`)
+//! hyphenates after its apostrophe.
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -119,8 +122,11 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
         return (vec![], Source::None);
     }
     if let Lang::Patterns(l) = lang {
-        if core.contains(&'\'') {
-            return (vec![], Source::None);
+        // An elision (French "l'", Italian "dell'"): the word after the apostrophe hyphenates,
+        // with no break up to it.
+        if let Some(ap) = core.iter().rposition(|&c| c == '\'') {
+            let (pts, src) = if ap + 1 < n { core_breaks(&core[ap + 1..], lang) } else { (vec![], Source::None) };
+            return (pts.into_iter().map(|p| p + ap + 1).collect(), src);
         }
         let s: String = core.iter().collect();
         let mut out = Vec::new();
@@ -393,7 +399,7 @@ mod tests {
         assert_eq!(h("desesperación"), "de-ses-pe-ra-ción");
         assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
         assert_eq!(h("calle"), "ca-lle", "ll stays whole");
-        assert!(Lang::for_language("French").is_none(), "only languages built in");
+        assert!(Lang::for_language("Swedish").is_none(), "only languages built in");
     }
 
     #[test]
@@ -433,6 +439,41 @@ mod tests {
         assert_eq!(h("sjøfugl"), "sjø-fugl");
         assert_eq!(h("sirkulasjonen"), "sir-ku-la-sjo-nen");
         assert_eq!(h("beveger"), "be-ve-ger");
+    }
+
+    /// A word with an elision ("l'", "dell'") hyphenates as the word after it.
+    fn marked(w: &str, l: Lang) -> String {
+        let pts = hyphen_points_in(w, &Limits::default(), l);
+        w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect()
+    }
+
+    #[test]
+    fn french_uses_the_hyph_fr_patterns() {
+        let fr = Lang::for_language("French").unwrap();
+        for name in ["fr", "fr_FR", "French: Canadian", "French: Swiss"] {
+            assert_eq!(Lang::for_language(name), Some(fr), "{name}");
+        }
+        assert_eq!(marked("hyphénation", fr), "hy-phé-na-tion");
+        assert_eq!(marked("typographie", fr), "ty-po-gra-phie");
+        assert_eq!(marked("Développement", fr), "Dé-ve-lop-pe-ment");
+        assert_eq!(marked("anticonstitutionnellement", fr), "an-ti-cons-ti-tu-tion-nel-le-ment");
+        assert_eq!(marked("paragraphe", fr), "pa-ra-graphe", "no break before a final mute syllable of two letters");
+        assert_eq!(marked("l'imprimerie", fr), "l'im-pri-me-rie", "after an elision");
+        assert_eq!(marked("l’imprimerie", fr), "l’im-pri-me-rie", "a typographer's apostrophe too");
+    }
+
+    #[test]
+    fn italian_uses_the_hyph_it_patterns() {
+        let it = Lang::for_language("Italian").unwrap();
+        for name in ["it", "it_IT"] {
+            assert_eq!(Lang::for_language(name), Some(it), "{name}");
+        }
+        assert_ne!(it, Lang::for_language("French").unwrap());
+        assert_eq!(marked("sillabazione", it), "sil-la-ba-zio-ne");
+        assert_eq!(marked("tipografia", it), "ti-po-gra-fia");
+        assert_eq!(marked("Repubblica", it), "Re-pub-bli-ca");
+        assert_eq!(marked("impaginazione", it), "im-pa-gi-na-zio-ne");
+        assert_eq!(marked("dell'impaginazione", it), "dell'im-pa-gi-na-zio-ne", "after an elision");
     }
 
     #[test]

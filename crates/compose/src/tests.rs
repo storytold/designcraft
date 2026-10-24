@@ -2728,11 +2728,18 @@ fn only_english_text_gets_english_hyphenation() {
     let hyphenated = |d: &Document, sid| all_lines(&compose_story(d, sid, &ComposeOptions::default())).iter().filter(|l| l.hyphenated).count();
     let (d, sid, _) = doc_with(text, narrow, ParaAttrs::default());
     assert!(hyphenated(&d, sid) > 0, "English hyphenates");
-    let mut d2 = d.clone();
-    let st = d2.story_mut(sid).unwrap();
-    let n = st.len();
-    st.format_chars(0..n, |f| f.over.language = Some("French".into()));
-    assert_eq!(hyphenated(&d2, sid), 0, "French isn't hyphenated with English rules");
+    // A language without bundled patterns isn't hyphenated with English rules.
+    let in_language = |lang: &str| {
+        let mut d2 = d.clone();
+        let st = d2.story_mut(sid).unwrap();
+        let n = st.len();
+        st.format_chars(0..n, |f| f.over.language = Some(lang.into()));
+        hyphenated(&d2, sid)
+    };
+    assert_eq!(in_language("Swedish"), 0, "Swedish isn't hyphenated with English rules");
+    // French and Italian hyphenate with their own patterns.
+    assert!(in_language("French") > 0, "French hyphenates (hyph-fr)");
+    assert!(in_language("Italian") > 0, "Italian hyphenates (hyph-it)");
 }
 
 // A text frame's bottom inset constrains its last baseline. The full font descent
