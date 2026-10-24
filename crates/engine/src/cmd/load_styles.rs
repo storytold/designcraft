@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 /// What happens to a loaded style when the document defines its name differently.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Conflict {
+pub(super) enum Conflict {
     /// The loaded definition replaces the document's.
     Redefine,
     /// The document's style stays.
@@ -53,10 +53,11 @@ enum Action {
 
 /// The loaded styles of one kind (paragraph or character), by their name in the file.
 #[derive(Default)]
-struct Kind {
+pub(super) struct Kind {
     actions: HashMap<String, Action>,
     renames: HashMap<String, String>,
-    added: Vec<String>,
+    /// The file's names of the styles added and replaced.
+    pub(super) added: Vec<String>,
     replaced: Vec<String>,
 }
 
@@ -78,15 +79,17 @@ impl Kind {
     }
 }
 
-/// The document a command reads styles from.
-fn source(p: &Value, id: &str) -> Result<Document> {
+/// The document a command reads styles (or parents) from. With `links`, an IDML file's linked
+/// images are read from beside it.
+pub(super) fn source(p: &Value, id: &str, links: bool) -> Result<Document> {
     let (bytes, name) = match (str_param(p, "path"), str_param(p, "base64")) {
         (_, Some(b)) => (super::file::base64_decode(b), str_param(p, "name").unwrap_or("").to_string()),
         (Some(path), None) => (crate::io::read_file(path).map_err(|e| bad(id, e))?, path.to_string()),
         _ => return Err(bad(id, "give `path` or `base64`")),
     };
     if name.to_lowercase().ends_with(".idml") {
-        designcraft_idml::import_idml(&bytes).map_err(|e| bad(id, e.to_string()))
+        let package = str_param(p, "path").filter(|_| links && str_param(p, "base64").is_none()).map(std::path::Path::new);
+        super::interchange::import_idml_confined(&bytes, package).map_err(|e| bad(id, e.to_string()))
     } else {
         super::file::from_bytes(&bytes).map_err(|e| bad(id, e.to_string()))
     }
@@ -240,12 +243,47 @@ fn check_based_on_cycles(styles: &Styles, loaded: &[(bool, String)]) -> Result<(
 }
 
 fn load(s: &mut Session, p: &Value) -> Result<Value> {
-    let src = source(p, ID)?;
+    let src = source(p, ID, false)?;
     let conflict = conflict_param(p)?;
     let (paragraph, character) = (names(p, "paragraph")?, names(p, "character")?);
     let doc = s.doc()?.doc.clone();
-    let (mut para, mut chars) = plan(&doc, &src, paragraph.as_deref(), character.as_deref(), conflict)?;
+    let m = merge(&doc, &src, paragraph.as_deref(), character.as_deref(), conflict)?;
+    let swatches = missing_swatches(&doc, &src, m.swatches);
+    let lists = missing_lists(&doc, &src, &m.lists);
+    let report =
+        json!({"paragraph": m.para.report(), "character": m.chars.report(), "swatches": swatches.iter().map(|w| &w.name).collect::<Vec<_>>()});
+    // Nothing to load leaves no undo step.
+    if m.para.changes() || m.chars.changes() {
+        s.edit(|d, _| {
+            *d.styles_mut() = m.styles;
+            d.swatches.extend(swatches);
+            d.settings.lists.extend(lists);
+            Ok(())
+        })?;
+    }
+    Ok(report)
+}
 
+/// `doc`'s styles with the asked-for styles of `src` loaded (see [`plan`]).
+pub(super) struct Merged {
+    pub(super) styles: Styles,
+    /// The swatches and lists the loaded styles name.
+    pub(super) swatches: HashSet<String>,
+    pub(super) lists: HashSet<String>,
+    pub(super) para: Kind,
+    pub(super) chars: Kind,
+}
+
+/// Load the paragraph and character styles of `src` that are asked for (all of a kind for
+/// `None`) into a copy of `doc`'s styles.
+pub(super) fn merge(
+    doc: &Document,
+    src: &Document,
+    paragraph: Option<&[String]>,
+    character: Option<&[String]>,
+    conflict: Conflict,
+) -> Result<Merged> {
+    let (mut para, mut chars) = plan(doc, src, paragraph, character, conflict)?;
     let mut styles = (*doc.styles).clone();
     let (mut swatches, mut lists): (HashSet<String>, HashSet<String>) = Default::default();
     // (kind, name here) of every style that came in, for the based-on check.
@@ -299,28 +337,19 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
     }
     check_based_on_cycles(&styles, &loaded)?;
 
-    let swatches = missing_swatches(&doc, &src, swatches);
-    let lists: Vec<NumberedList> = {
-        let mut seen = HashSet::new();
-        let has = |n: &str| doc.settings.lists.iter().any(|l| l.name == n);
-        src.settings.lists.iter().filter(|l| lists.contains(&l.name) && !has(&l.name) && seen.insert(l.name.as_str())).cloned().collect()
-    };
-    let report = json!({"paragraph": para.report(), "character": chars.report(), "swatches": swatches.iter().map(|w| &w.name).collect::<Vec<_>>()});
-    // Nothing to load leaves no undo step.
-    if para.changes() || chars.changes() {
-        s.edit(|d, _| {
-            *d.styles_mut() = styles;
-            d.swatches.extend(swatches);
-            d.settings.lists.extend(lists);
-            Ok(())
-        })?;
-    }
-    Ok(report)
+    Ok(Merged { styles, swatches, lists, para, chars })
 }
 
-/// The swatches of the file that the loaded styles name and the document lacks, in the file's
-/// order; a tint brings its base colour.
-fn missing_swatches(doc: &Document, src: &Document, mut used: HashSet<String>) -> Vec<Swatch> {
+/// The numbered lists of the file named in `used` that the document lacks, in the file's order.
+pub(super) fn missing_lists(doc: &Document, src: &Document, used: &HashSet<String>) -> Vec<NumberedList> {
+    let mut seen = HashSet::new();
+    let has = |n: &str| doc.settings.lists.iter().any(|l| l.name == n);
+    src.settings.lists.iter().filter(|l| used.contains(&l.name) && !has(&l.name) && seen.insert(l.name.as_str())).cloned().collect()
+}
+
+/// The swatches of the file named in `used` that the document lacks, in the file's order; a tint
+/// brings its base colour.
+pub(super) fn missing_swatches(doc: &Document, src: &Document, mut used: HashSet<String>) -> Vec<Swatch> {
     let mut todo: Vec<String> = used.iter().cloned().collect();
     while let Some(name) = todo.pop() {
         if let Some(Swatch { value: SwatchValue::Tint { base, .. }, .. }) = src.swatch(&name)
@@ -334,7 +363,7 @@ fn missing_swatches(doc: &Document, src: &Document, mut used: HashSet<String>) -
 }
 
 fn list(s: &mut Session, p: &Value) -> Result<Value> {
-    let src = source(p, "style.load.list")?;
+    let src = source(p, "style.load.list", false)?;
     let mine = &s.doc()?.doc.styles;
     let row = |name: &str, conflict: bool| json!({"name": name, "conflict": conflict});
     let paragraph: Vec<Value> =

@@ -727,6 +727,11 @@ fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Docu
         ui.close();
     }
     crate::menus::menu_button(ui, crate::rtl::widget(ui, tr("Parent Pages")), |ui| {
+        if ui.button(crate::rtl::widget(ui, tr("Load Parent Pages…"))).clicked() {
+            crate::menus::activate(app, "layout.parents.load", &serde_json::Value::Null);
+            ui.close();
+        }
+        ui.separator();
         for (id, label) in [("layout.removeOverrides", "Remove All Local Overrides"), ("layout.detachAll", "Detach All Objects from Parent")] {
             if ui.button(crate::rtl::widget(ui, tr(label))).clicked() {
                 let _ = app.run(id, json!({"page": abs}));
@@ -1124,6 +1129,32 @@ mod tests {
         h.get_by_label("Insert Pages…").click();
         h.run_steps(3);
         assert!(h.state().ui.dialog.as_ref().is_some_and(|d| d.id == "cmd:layout.pages.insert"));
+    }
+
+    /// The course's chapter 36: the panel menu's Parent Pages › Load Parent Pages… picks a
+    /// document; as A-Parent is in both, it asks how to load that one.
+    #[test]
+    fn parent_pages_load_parent_pages_picks_a_document() {
+        let mut t = designcraft_engine::Session::new();
+        t.execute("file.new", &json!({"facingPages": false})).unwrap();
+        t.execute("layout.parents.new", &json!({"prefix": "T", "name": "Template"})).unwrap();
+        let bytes = designcraft_engine::cmd::base64_decode(t.execute("file.serialize", &json!({})).unwrap()["base64"].as_str().unwrap());
+        let path = std::env::temp_dir().join(format!("designcraft-pages-load-parents-{}.designcraft", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let picked = path.to_string_lossy().to_string();
+        let services =
+            crate::Services { pick_open: Some(Box::new(move |purpose| (purpose == "parents").then(|| picked.clone()))), ..Default::default() };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+        app.run("file.new", json!({"facingPages": false})).unwrap();
+        let mut h = menu_harness(app, 0, 0);
+        h.get_by_label("Parent Pages").click();
+        h.run_steps(3);
+        h.get_by_label("Load Parent Pages…").click();
+        h.run_steps(3);
+        std::fs::remove_file(&path).unwrap();
+        let d = h.state().ui.dialog.as_ref().expect("A-Parent is in both: the dialog asks");
+        assert_eq!(d.id, "loadParents");
+        assert_eq!(d.fields["same"], json!(["A-Parent"]));
     }
 
     #[test]
