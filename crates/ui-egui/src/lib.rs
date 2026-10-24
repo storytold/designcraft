@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use control::{ControlRequest, ControlResponse};
+pub use prefs::ReadPreferences;
 
 pub type ReadFn = Box<dyn Fn(&str) -> Result<Vec<u8>, String>>;
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
@@ -90,6 +91,59 @@ pub struct Services {
     pub clipboard_text: Option<ClipboardFn>,
 }
 
+/// Closed panels, each with where it goes back, in craft-ui's `Workspace::hidden` shape
+/// (`[[panel, location], …]`). A floating panel's entry is where Dock Panel returns it.
+/// Files from before this shape hold an object keyed by panel; it still loads.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct HiddenPanels(pub Vec<(String, craft_ui::docking::Location<String>)>);
+
+impl<'de> Deserialize<'de> for HiddenPanels {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Shape {
+            List(Vec<(String, craft_ui::docking::Location<String>)>),
+            Keyed(std::collections::BTreeMap<String, craft_ui::docking::Location<String>>),
+        }
+        let entries = match Shape::deserialize(deserializer)? {
+            Shape::List(entries) => entries,
+            Shape::Keyed(entries) => entries.into_iter().collect(),
+        };
+        let mut hidden = Self::default();
+        for (panel, location) in entries {
+            hidden.insert(panel, location);
+        }
+        Ok(hidden)
+    }
+}
+
+impl HiddenPanels {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn contains_key(&self, panel: &str) -> bool {
+        self.0.iter().any(|(p, _)| p == panel)
+    }
+    pub fn get(&self, panel: &str) -> Option<&craft_ui::docking::Location<String>> {
+        self.0.iter().find(|(p, _)| p == panel).map(|(_, location)| location)
+    }
+    /// Record where `panel` goes back, replacing an earlier entry.
+    pub fn insert(&mut self, panel: String, location: craft_ui::docking::Location<String>) {
+        self.remove(&panel);
+        self.0.push((panel, location));
+    }
+    pub fn remove(&mut self, panel: &str) {
+        self.0.retain(|(p, _)| p != panel);
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.0.iter().map(|(p, _)| p)
+    }
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScreenMode {
@@ -117,9 +171,9 @@ pub struct SavedWorkspace {
     /// Custom panel membership and placement; absent in older workspace files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docking: Option<craft_ui::docking::Layout<String>>,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub docking_hidden: std::collections::BTreeMap<String, craft_ui::docking::Location<String>>,
-    /// The workspace's own icon column (see [`UiState::icon_groups`]).
+    #[serde(default, skip_serializing_if = "HiddenPanels::is_empty")]
+    pub docking_hidden: HiddenPanels,
+    /// The workspace's own iconic column (see [`UiState::icon_groups`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_groups: Option<Vec<Vec<String>>>,
     /// Saved with New Workspace › Capture › Panel Locations off: choosing the workspace leaves the
@@ -182,6 +236,11 @@ impl Default for PdfExportSettings {
             tagged: true,
         }
     }
+}
+
+/// The viewport of New Window's OS window, which shows pane 1.
+pub(crate) fn second_window_viewport() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("designcraft_second_window")
 }
 
 /// Persisted UI state.
@@ -267,29 +326,44 @@ pub struct UiState {
     pub shortcuts: std::collections::BTreeMap<String, String>,
     pub control_bar: bool,
     pub tools_double_column: bool,
-    /// Expanded right-dock panel group tab.
+    /// The front tab of the default layout's Properties · Pages · Layers group. `dock_tab`,
+    /// `open_panel`, `floating`, `dock_expanded` and `icon_groups` describe a workspace's
+    /// default layout (`panel_docking::default_layout`).
     pub dock_tab: String,
-    /// Panel opened from the collapsed icon column (flyout).
+    /// The panel it opens below that group (Printing and Proofing: Swatches).
     pub open_panel: Option<String>,
-    /// Panels torn off the dock into their own floating windows: (panel id, top-left position).
+    /// Its floating panels, and the float-only panels' windows (Type › Tabs): (panel id,
+    /// top-left position). A customized layout holds its own floating panels.
     pub floating: Vec<(String, [f32; 2])>,
-    /// Shared panel layout after the user customizes the legacy dock.
+    /// The panel layout once the user customizes it; `None` is the workspace's default layout
+    /// (`panel_docking::default_layout`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docking: Option<craft_ui::docking::Layout<String>>,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub docking_hidden: std::collections::BTreeMap<String, craft_ui::docking::Location<String>>,
+    #[serde(default, skip_serializing_if = "HiddenPanels::is_empty")]
+    pub docking_hidden: HiddenPanels,
+    /// The panel (or the canvas) last clicked or selected in the docking layout, while the panel
+    /// stays where the user left it.
+    #[serde(skip)]
+    pub docking_focused: Option<String>,
     /// Invalidates in-flight gestures when a workspace is replaced.
     #[serde(skip)]
     pub docking_generation: u64,
     /// One-frame reveal request; z-order is never persisted.
     #[serde(skip)]
     pub docking_raise: Option<String>,
-    /// Last explicitly revealed customized panel, for the legacy closePanel control.
+    /// The panel last revealed explicitly, which `ui.set closePanel` closes.
     #[serde(skip)]
     pub docking_opened: Option<String>,
+    /// The panel whose iconic-column flyout is open, as of the last frame or a command that
+    /// opened it.
+    #[serde(skip)]
+    pub docking_flyout: Option<String>,
+    /// Auto-Collapse Iconic Panels: a flyout closes on Escape or a click outside it.
+    pub dock_auto_collapse: bool,
+    /// Whether the default layout's outer column is expanded (false: collapsed to icons).
     pub dock_expanded: bool,
-    /// A workspace's iconic panel groups (Essentials Classic), shown with their names in the icon
-    /// column instead of every panel; `None` is the full icon column.
+    /// A workspace's iconic panel groups (Essentials Classic), shown with their names in the
+    /// iconic column instead of every panel; `None` is one icon per panel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_groups: Option<Vec<Vec<String>>>,
     pub units: Unit,
@@ -427,6 +501,9 @@ impl Default for UiState {
             docking_generation: 0,
             docking_raise: None,
             docking_opened: None,
+            docking_flyout: None,
+            dock_auto_collapse: true,
+            docking_focused: None,
             dock_expanded: true,
             icon_groups: None,
             units: Unit::Picas,
@@ -1540,6 +1617,63 @@ impl DesignApp {
         raw.events.extend(events.drain(..n));
     }
 
+    /// The document area: the start screen, or the document tabs over one or two canvas panes.
+    pub(crate) fn canvas_area(&mut self, ui: &mut egui::Ui, presenting: bool) {
+        let t = theme::Tokens::get(ui.ctx());
+        if self.session.active().is_none() {
+            chrome::start_screen(self, ui);
+            return;
+        }
+        if !presenting {
+            chrome::doc_tabs(self, ui);
+        }
+        let split_layout = (self.split && !presenting)
+            .then(|| {
+                craft_ui::layout::split_rect(
+                    ui.available_rect_before_wrap(),
+                    craft_ui::layout::SplitAxis::Horizontal,
+                    craft_ui::layout::SplitSize::Ratio(0.5),
+                    2.0,
+                    0.0,
+                )
+            })
+            .flatten();
+        if let Some(layout) = split_layout {
+            // Two panes with a divider; each has its own view (zoom, scroll) and render cache.
+            ui.painter().rect_filled(layout.divider, 0.0, t.border);
+            // Resolve the clicked pane before either canvas handles this frame's keys.
+            if let Some(p) = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()) {
+                if layout.first.contains(p) {
+                    self.focus_pane = 0;
+                } else if layout.second.contains(p) {
+                    self.focus_pane = 1;
+                }
+            }
+            for (k, half) in [layout.first, layout.second].into_iter().enumerate() {
+                self.switch_pane(k as u8);
+                // A new pane starts at the other pane's view.
+                if k == 1 && self.view().is_none() {
+                    self.switch_pane(0);
+                    let v = self.view().copied();
+                    self.switch_pane(1);
+                    if let (Some(mut v), Some(m)) = (v, self.view_mut()) {
+                        v.fitted = false;
+                        *m = v;
+                    }
+                }
+                ui.scope_builder(egui::UiBuilder::new().max_rect(half), |ui| canvas::show(self, ui));
+            }
+            self.switch_pane(self.focus_pane);
+        } else {
+            self.switch_pane(0);
+            // With a second window, the main one takes the focus back when clicked.
+            if !self.second_window || (ui.input(|i| i.pointer.any_pressed()) && ui.ui_contains_pointer()) {
+                self.focus_pane = 0;
+            }
+            canvas::show(self, ui);
+        }
+    }
+
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -1553,7 +1687,7 @@ impl DesignApp {
         let t = theme::Tokens::get(&ctx);
         let presenting = self.ui.screen_mode == ScreenMode::Presentation;
         if presenting || self.ui.hidden_panels != 0 {
-            panel_docking::cancel_gesture(self, &ctx);
+            panel_docking::cancel_gesture(&ctx);
         }
         canvas::begin_frame(&ctx);
         let dbg = std::env::var_os("DESIGNCRAFT_DEBUG_LAYOUT").is_some();
@@ -1575,62 +1709,13 @@ impl DesignApp {
             if self.ui.hidden_panels != 1 {
                 toolbar::show(self, ui);
             }
-            if self.ui.hidden_panels == 0 {
-                dock::show(self, ui);
-            }
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show(ui, |ui| {
-            if self.session.active().is_none() {
-                chrome::start_screen(self, ui);
-                return;
-            }
-            if !presenting {
-                chrome::doc_tabs(self, ui);
-            }
-            let split_layout = (self.split && !presenting)
-                .then(|| {
-                    craft_ui::layout::split_rect(
-                        ui.available_rect_before_wrap(),
-                        craft_ui::layout::SplitAxis::Horizontal,
-                        craft_ui::layout::SplitSize::Ratio(0.5),
-                        2.0,
-                        0.0,
-                    )
-                })
-                .flatten();
-            if let Some(layout) = split_layout {
-                // Two panes with a divider; each has its own view (zoom, scroll) and render cache.
-                ui.painter().rect_filled(layout.divider, 0.0, t.border);
-                // Resolve the clicked pane before either canvas handles this frame's keys.
-                if let Some(p) = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()) {
-                    if layout.first.contains(p) {
-                        self.focus_pane = 0;
-                    } else if layout.second.contains(p) {
-                        self.focus_pane = 1;
-                    }
-                }
-                for (k, half) in [layout.first, layout.second].into_iter().enumerate() {
-                    self.switch_pane(k as u8);
-                    // A new pane starts at the other pane's view.
-                    if k == 1 && self.view().is_none() {
-                        self.switch_pane(0);
-                        let v = self.view().copied();
-                        self.switch_pane(1);
-                        if let (Some(mut v), Some(m)) = (v, self.view_mut()) {
-                            v.fitted = false;
-                            *m = v;
-                        }
-                    }
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(half), |ui| canvas::show(self, ui));
-                }
-                self.switch_pane(self.focus_pane);
+            // The panel layout holds the canvas as its protected `canvas` panel.
+            if presenting || self.ui.hidden_panels != 0 {
+                self.canvas_area(ui, presenting);
             } else {
-                self.switch_pane(0);
-                // With a second window, the main one takes the focus back when clicked.
-                if !self.second_window || (ui.input(|i| i.pointer.any_pressed()) && ui.ui_contains_pointer()) {
-                    self.focus_pane = 0;
-                }
-                canvas::show(self, ui);
+                panel_docking::show(self, ui);
             }
         });
         // New Window: pane 1 in a window of its own.
@@ -1641,7 +1726,7 @@ impl DesignApp {
             let fill = t.pasteboard;
             let ctx = ui.ctx().clone();
             ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of("designcraft_second_window"),
+                second_window_viewport(),
                 egui::ViewportBuilder::default().with_title(title).with_inner_size([960.0, 720.0]),
                 |ui, _class| {
                     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(fill)).show(ui, |ui| {
@@ -1670,8 +1755,7 @@ impl DesignApp {
         }
         // Tab, Shift+Tab and Presentation hide the floating panels with the docked ones.
         if !presenting && self.ui.hidden_panels == 0 {
-            dock::flyout(self, &ctx);
-            dock::floating(self, &ctx);
+            dock::float_only_windows(self, &ctx);
         }
         story_editor::show(self, &ctx);
         dialogs::show(self, &ctx);

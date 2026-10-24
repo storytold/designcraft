@@ -666,9 +666,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     }
     let sel_rect = draw_selection(app, &painter, &xf, &doc, &layout);
+    // Where the pointer moved on to another of the app's windows, this window's last pointer
+    // position is stale: no hover feedback or tool cursor there.
+    let elsewhere = pointer_elsewhere(app, ui.ctx());
     if !preview {
         // Content grabbers: the selected frame's and the hovered one's (Selection tool).
-        let hover = ui.ctx().pointer_hover_pos().filter(|p| screen.contains(*p)).map(|p| xf.to_canvas(p));
+        let hover = ui.ctx().pointer_hover_pos().filter(|p| screen.contains(*p) && !elsewhere).map(|p| xf.to_canvas(p));
         let vi = app.view_info();
         for c in app.session.content_grabbers(hover, vi) {
             let c = xf.to_screen(c);
@@ -690,7 +693,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::taskbar::show(app, &ui.ctx().clone(), r, screen);
     }
     // Cursor.
-    if let Some(p) = resp.hover_pos().filter(|p| screen.contains(*p)) {
+    if let Some(p) = resp.hover_pos().filter(|p| screen.contains(*p) && !elsewhere) {
         let wants_text = app.session.wants_text();
         let space = navigation_space(app, ui.ctx());
         let zoom = spring_zoom_mode(app, ui.ctx(), space);
@@ -724,6 +727,16 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.ctx().set_cursor_icon(icon);
         draw_cursor_badge(&painter, p, c, &t);
     }
+}
+
+/// Whether the pointer this canvas's window last saw is in another of the app's windows: a
+/// floating panel's OS window, or the other window of New Window.
+fn pointer_elsewhere(app: &DesignApp, ctx: &egui::Context) -> bool {
+    let mut others = crate::panel_docking::native_viewports(app, ctx);
+    if app.second_window && !ctx.embed_viewports() {
+        others.extend([egui::ViewportId::ROOT, crate::second_window_viewport()]);
+    }
+    crate::cursors::pointer_elsewhere(ctx, &others)
 }
 
 /// The loaded text cursor's badge beside the system cursor: lines of text, a closed chain
@@ -2159,7 +2172,7 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
         k += 1;
     }
     // Pointer position markers.
-    if let Some(p) = ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p)) {
+    if let Some(p) = ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p) && !pointer_elsewhere(app, ui.ctx())) {
         let m = Stroke::new(1.0, t.text_dim);
         dashed(&painter, pos2(p.x, top.min.y), pos2(p.x, top.max.y), m, 1.5, 1.5);
         dashed(&painter, pos2(left.min.x, p.y), pos2(left.max.x, p.y), m, 1.5, 1.5);
@@ -2706,34 +2719,71 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                     crate::menus::activate(app, id, &params);
                 }
             }
-            egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                let k = match key {
-                    egui::Key::ArrowLeft => Some(ToolKey::Left),
-                    egui::Key::ArrowRight => Some(ToolKey::Right),
-                    egui::Key::ArrowUp => Some(ToolKey::Up),
-                    egui::Key::ArrowDown => Some(ToolKey::Down),
-                    egui::Key::Enter => Some(ToolKey::Enter),
-                    egui::Key::Escape => Some(ToolKey::Escape),
-                    egui::Key::Backspace => Some(ToolKey::Backspace),
-                    egui::Key::Delete => Some(ToolKey::Delete),
-                    egui::Key::Tab => Some(ToolKey::Tab),
-                    egui::Key::Home => Some(ToolKey::Home),
-                    egui::Key::End => Some(ToolKey::End),
-                    _ => None,
-                };
-                if let Some(k) = k {
-                    let m = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command, ctrl: modifiers.ctrl, space: false };
-                    let handled = app.session.tool_key(k, m, vi).unwrap_or(false);
-                    if !handled && k == ToolKey::Escape {
-                        let _ = app.run("edit.deselectAll", json!({}));
-                    }
-                    app.after_engine();
-                }
-            }
+            egui::Event::Key { key, pressed: true, modifiers, .. } => tool_key(app, key, modifiers, vi),
             _ => {}
         }
     }
     let _ = DVec2::ZERO;
+}
+
+/// A key for the active tool (caret movement, nudging, Backspace); Escape it leaves alone
+/// deselects.
+fn tool_key(app: &mut DesignApp, key: egui::Key, modifiers: egui::Modifiers, vi: designcraft_engine::ViewInfo) {
+    let k = match key {
+        egui::Key::ArrowLeft => ToolKey::Left,
+        egui::Key::ArrowRight => ToolKey::Right,
+        egui::Key::ArrowUp => ToolKey::Up,
+        egui::Key::ArrowDown => ToolKey::Down,
+        egui::Key::Enter => ToolKey::Enter,
+        egui::Key::Escape => ToolKey::Escape,
+        egui::Key::Backspace => ToolKey::Backspace,
+        egui::Key::Delete => ToolKey::Delete,
+        egui::Key::Tab => ToolKey::Tab,
+        egui::Key::Home => ToolKey::Home,
+        egui::Key::End => ToolKey::End,
+        _ => return,
+    };
+    let m = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command, ctrl: modifiers.ctrl, space: false };
+    let handled = app.session.tool_key(k, m, vi).unwrap_or(false);
+    if !handled && k == ToolKey::Escape {
+        let _ = app.run("edit.deselectAll", json!({}));
+    }
+    app.after_engine();
+}
+
+/// The keys a floating panel's own OS window left over once the shortcuts took theirs: the
+/// clipboard and the active tool's keys, as the canvas handles them while no text is edited.
+/// `modifiers` are those held in that window; egui-winit sends ⌘C, ⌘X and ⌘V as `Copy`, `Cut`
+/// and `Paste` without their key press.
+pub(crate) fn forwarded_keys(app: &mut DesignApp, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+    if !keyboard_pane(app) || modal_open(app) || app.session.wants_text() || app.session.tool_composing() {
+        return;
+    }
+    let vi = app.view_info();
+    for e in events {
+        #[cfg(not(target_arch = "wasm32"))]
+        let chord = if matches!(e, egui::Event::Paste(_)) { crate::menus::paste_chord_command(app, modifiers) } else { None };
+        // The web keeps floating panels in the page, so nothing is forwarded there.
+        #[cfg(target_arch = "wasm32")]
+        let chord: Option<&str> = {
+            let _ = modifiers;
+            None
+        };
+        let (id, params) = match (e, chord) {
+            (egui::Event::Paste(_), Some(id)) => (id, serde_json::Value::Null),
+            (egui::Event::Copy, _) if !app.native_menu => ("edit.copy", serde_json::Value::Null),
+            (egui::Event::Cut, _) if !app.native_menu => ("edit.cut", serde_json::Value::Null),
+            (egui::Event::Paste(t), _) if !app.native_menu => ("edit.paste", json!({"text": t})),
+            (egui::Event::Key { key, pressed: true, modifiers, .. }, _) => {
+                tool_key(app, key, modifiers, vi);
+                continue;
+            }
+            _ => continue,
+        };
+        if crate::menus::enabled(app, id) {
+            crate::menus::activate(app, id, &params);
+        }
+    }
 }
 
 /// A dialog or Quick Apply has the keyboard. The canvas keeps egui's focus behind a modal, and it
@@ -5402,16 +5452,19 @@ mod tests {
             let out = &h.output().platform_output;
             (out.cursor_icon, out.cursor_image.clone())
         };
-        let (pen, direct, text) = (shown("pen"), shown("directSelection"), shown("type"));
+        let (pen, direct, text, selection) = (shown("pen"), shown("directSelection"), shown("type"), shown("selection"));
         let ppp = h.ctx.pixels_per_point();
         let images = &mut h.state_mut().cursors;
         match crate::cursors::mode() {
             crate::cursors::Mode::Os => {
                 assert_eq!(pen.1, images.get(Cursor::Pen, ppp), "Pen");
                 assert_eq!(direct.1, images.get(Cursor::ArrowHollow, ppp), "Direct Selection");
+                assert_eq!(selection.1, images.get(Cursor::Arrow, ppp), "Selection");
                 assert_eq!(text, (egui::CursorIcon::Text, None), "the I-beam stays a system cursor");
             }
-            crate::cursors::Mode::Painted => assert_eq!((pen.0, direct.0), (egui::CursorIcon::None, egui::CursorIcon::None)),
+            crate::cursors::Mode::Painted => {
+                assert_eq!((pen.0, direct.0, selection.0), (egui::CursorIcon::None, egui::CursorIcon::None, egui::CursorIcon::None));
+            }
             crate::cursors::Mode::System => assert_eq!(pen, (egui::CursorIcon::Crosshair, None)),
         }
     }

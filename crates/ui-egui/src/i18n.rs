@@ -208,6 +208,96 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Minimize", ["Minimieren", "Réduire", "Minimizar", "最小化", "最小化"]),
     ("Collapse to Icons", ["Auf Symbole minimieren", "Réduire en icônes", "Contraer a iconos", "アイコンパネルに折りたたむ", "折叠为图标"]),
+    // Docking chrome (craft-ui labels in DesignCraft's wording, `panel_docking::DOCK_LABELS`).
+    ("Group with", ["Gruppieren mit", "Grouper avec", "Agrupar con", "次とグループ化", "编组到"]),
+    ("Panels", ["Bedienfelder", "Panneaux", "Paneles", "パネル", "面板"]),
+    (
+        "Resize panels",
+        ["Größe der Bedienfelder ändern", "Redimensionner les panneaux", "Cambiar tamaño de los paneles", "パネルのサイズを変更", "调整面板大小"],
+    ),
+    (
+        "Resize panel window",
+        [
+            "Größe des Bedienfeldfensters ändern",
+            "Redimensionner la fenêtre de panneau",
+            "Cambiar tamaño de la ventana de panel",
+            "パネルウィンドウのサイズを変更",
+            "调整面板窗口大小",
+        ],
+    ),
+    (
+        "Move tab group",
+        ["Registerkartengruppe verschieben", "Déplacer le groupe d'onglets", "Mover grupo de fichas", "タブグループを移動", "移动选项卡组"],
+    ),
+    ("Expand", ["Erweitern", "Développer", "Expandir", "展開", "展开"]),
+    (
+        "Float Tab Group",
+        [
+            "Registerkartengruppe lösen",
+            "Détacher le groupe d'onglets",
+            "Hacer flotante el grupo de fichas",
+            "タブグループをフローティング表示",
+            "浮动选项卡组",
+        ],
+    ),
+    (
+        "Group Tab Group with",
+        [
+            "Registerkartengruppe gruppieren mit",
+            "Grouper le groupe d'onglets avec",
+            "Agrupar grupo de fichas con",
+            "タブグループを次とグループ化",
+            "将选项卡组编组到",
+        ],
+    ),
+    (
+        "Move panel column",
+        ["Bedienfeldspalte verschieben", "Déplacer la colonne de panneaux", "Mover columna de paneles", "パネル列を移動", "移动面板列"],
+    ),
+    ("Expand Panels", ["Bedienfelder erweitern", "Développer les panneaux", "Expandir paneles", "パネルを展開", "展开面板"]),
+    (
+        "Move panel window",
+        ["Bedienfeldfenster verschieben", "Déplacer la fenêtre de panneau", "Mover ventana de panel", "パネルウィンドウを移動", "移动面板窗口"],
+    ),
+    (
+        "Close panel window",
+        ["Bedienfeldfenster schließen", "Fermer la fenêtre de panneau", "Cerrar ventana de panel", "パネルウィンドウを閉じる", "关闭面板窗口"],
+    ),
+    (
+        "Close Other Panels in Group",
+        [
+            "Andere Bedienfelder der Gruppe schließen",
+            "Fermer les autres panneaux du groupe",
+            "Cerrar los demás paneles del grupo",
+            "グループ内の他のパネルを閉じる",
+            "关闭组中的其他面板",
+        ],
+    ),
+    ("Maximize Frame", ["Bereich maximieren", "Agrandir la zone", "Maximizar área", "領域を最大化", "最大化区域"]),
+    (
+        "Restore Frame Size",
+        ["Bereichsgröße wiederherstellen", "Restaurer la taille de la zone", "Restaurar tamaño del área", "領域のサイズを元に戻す", "恢复区域大小"],
+    ),
+    (
+        "Move Panel to New Window",
+        [
+            "Bedienfeld in neues Fenster verschieben",
+            "Déplacer le panneau dans une nouvelle fenêtre",
+            "Mover panel a una ventana nueva",
+            "パネルを新規ウィンドウに移動",
+            "将面板移到新窗口",
+        ],
+    ),
+    (
+        "Auto-Collapse Iconic Panels",
+        [
+            "Symbolbedienfelder automatisch minimieren",
+            "Réduire automatiquement les panneaux d’icônes",
+            "Contraer automáticamente los paneles de iconos",
+            "アイコンパネルを自動的に折りたたむ",
+            "自动折叠图标面板",
+        ],
+    ),
     ("Panel Options", ["Bedienfeldoptionen", "Options du panneau", "Opciones de panel", "パネルオプション", "面板选项"]),
     ("Panel Options…", ["Bedienfeldoptionen…", "Options du panneau…", "Opciones de panel…", "パネルオプション…", "面板选项…"]),
     ("Show Thumbnails", ["Miniaturen anzeigen", "Afficher les vignettes", "Mostrar miniaturas", "サムネールを表示", "显示缩览图"]),
@@ -1960,7 +2050,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Flattener Preview", ["Flattener Preview", "Aperçu de l'aplatissement", "Flattener Preview", "Flattener Preview", "拼合器预览"]),
-    ("Float Panel", ["Float Panel", "Détacher le panneau", "Float Panel", "Float Panel", "浮动面板"]),
+    ("Float Panel", ["Bedienfeld lösen", "Détacher le panneau", "Hacer flotante el panel", "パネルをフローティング表示", "浮动面板"]),
     ("Fonts in Document", ["Fonts in Document", "Polices du document", "Fonts in Document", "Fonts in Document", "文档中的字体"]),
     ("Footnotes", ["Footnotes", "Notes de bas de page", "Footnotes", "Footnotes", "脚注"]),
     ("Form Fields", ["Form Fields", "Champs de formulaire", "Form Fields", "Form Fields", "表单域"]),
@@ -5040,6 +5130,8 @@ mod tests {
         keys.extend(crate::about::SIBLINGS.iter().map(|(_, _, what)| *what));
         keys.extend(crate::credits::NameMode::ALL.iter().map(|mode| mode.label()));
         keys.extend(crate::credits::SortKey::ALL.iter().flat_map(|key| [key.label().0, key.label().1]));
+        // Docking chrome labels reach `tr` through craft-ui's localizer.
+        keys.extend(crate::panel_docking::DOCK_LABELS.iter().map(|(_, english)| *english));
         // UI labels passed to `tr` that no other catalog has yet.
         keys.extend([
             "(any)",
@@ -5055,14 +5147,11 @@ mod tests {
             "Email Address:",
             "Email:",
             "Find fill:",
-            "Group with",
             "H:",
             "Message:",
             "Organization:",
             "Phone:",
             "W:",
-            "Resize panel window",
-            "Resize panels",
             "Subject:",
             "Text:",
             "Unsaved Changes",

@@ -1095,10 +1095,9 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// Show the Preflight panel. `window.panel` toggles a panel that is already open, so it runs
-/// only when Preflight isn't showing.
+/// Show the Preflight panel. An open Preflight flyout stays: `window.panel` would close it.
 fn show_preflight(app: &mut DesignApp) {
-    if app.ui.open_panel.as_deref() != Some("preflight")
+    if app.ui.docking_flyout.as_deref() != Some("preflight")
         && let Err(e) = app.run("window.panel", json!({"panel": "preflight"}))
     {
         app.status(e);
@@ -1646,15 +1645,15 @@ mod tests {
         h.run_steps(3);
         h.get_by_label("Preflight Panel…").click();
         h.run_steps(3);
-        // Preflight is not a dock tab: `window.panel` shows it as its own panel.
-        assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
-        h.get_by_label("Preflight");
+        // Preflight is in the iconic column: `window.panel` shows it.
+        assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
+        assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
         // With the panel already showing, the entry keeps it open.
         h.get_by_label("No errors ▾").click();
         h.run_steps(3);
         h.get_by_label("Preflight Panel…").click();
         h.run_steps(3);
-        assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
+        assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     }
 
     /// As in InDesign, double-clicking the preflight count (or its light) shows the panel.
@@ -1668,15 +1667,18 @@ mod tests {
         count.click();
         count.click();
         h.run_steps(3);
-        assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
-        h.get_by_label("Preflight");
+        assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
+        assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
         assert!(h.query_by_label("Preflight Panel…").is_none(), "the menu isn't left open");
-        // A double-click with the panel already showing keeps it open.
+        // A double-click with the panel already showing keeps it open (the first click closes
+        // its flyout, the double-click opens it again). Past the double-click time, so the
+        // clicks are not counted with the ones before.
+        h.run_steps(30);
         let count = h.get_by_label("No errors ▾");
         count.click();
         count.click();
         h.run_steps(3);
-        assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
+        assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     }
 
     /// A very long document name made its tab grow past the window, hiding the close button

@@ -16,10 +16,10 @@ use crate::widgets::{
 };
 use crate::{DesignApp, icons};
 
-/// A link to another panel. `window.panel` shows it in the docked layout or as a flyout; it
-/// toggles the flyout, so a flyout that is already open is left as it is.
+/// A link to another panel: `window.panel` shows it in the docking layout. An open flyout of
+/// that panel stays: `window.panel` would close it.
 fn show_panel(app: &mut DesignApp, panel: &str) {
-    if app.ui.open_panel.as_deref() != Some(panel) {
+    if app.ui.docking_flyout.as_deref() != Some(panel) {
         let _ = app.run("window.panel", json!({"panel": panel}));
     }
 }
@@ -1209,7 +1209,7 @@ fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
         )
         .clicked()
         {
-            app.ui.open_panel = Some(if tab == 0 { "paragraphStyles" } else { "characterStyles" }.into());
+            show_panel(app, if tab == 0 { "paragraphStyles" } else { "characterStyles" });
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
@@ -1227,7 +1227,7 @@ fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
                 let _ = app.run("style.paragraph.apply", json!({"name": cur, "clearOverrides": true}));
             }
             if icon_toggle(ui, "style-load", false, crate::i18n::tr(&app.ui.language, "Styles panel")).clicked() {
-                app.ui.open_panel = Some(if tab == 0 { "paragraphStyles" } else { "characterStyles" }.into());
+                show_panel(app, if tab == 0 { "paragraphStyles" } else { "characterStyles" });
             }
         });
     });
@@ -1909,12 +1909,8 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// Opens the Typography panel, or focuses it when it is already showing. `window.panel` toggles a
-/// flyout, so it is skipped while the Typography flyout is open.
+/// Opens the Typography panel, or brings it to the front when it is already open.
 pub fn show_typography_panel(app: &mut DesignApp) {
-    if app.ui.open_panel.as_deref() == Some("typography") {
-        return;
-    }
     let _ = app.run("window.panel", json!({"panel": "typography"}));
 }
 
@@ -3175,6 +3171,16 @@ mod tests {
     };
 
     use super::*;
+
+    /// A link to a panel whose flyout is open leaves the flyout open.
+    #[test]
+    fn a_panel_link_keeps_its_open_flyout() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        show_panel(&mut app, "stroke");
+        assert_eq!(app.ui.docking_flyout.as_deref(), Some("stroke"));
+        show_panel(&mut app, "stroke");
+        assert!(crate::panel_docking::showing(&app, "stroke"));
+    }
 
     fn language(app: &mut DesignApp) -> Value {
         text_attrs(app).unwrap()["chars"]["language"].clone()

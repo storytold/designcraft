@@ -259,7 +259,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{panel: properties|pages|layers|swatches|paragraphStyles|characterStyles|stroke|character|paragraph|textWrap|links|table|preflight}",
     ),
-    ("window.floatPanel", "Float Panel", None, "{panel, x?, y?} — the panel in its own movable window"),
+    ("window.floatPanel", "Float Panel", None, "{panel, x?, y?, width?, height?} — the panel in its own floating window (window.panel.float)"),
     (
         "window.panel.layout",
         "Change Panel Layout",
@@ -270,15 +270,45 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "window.panel.move",
         "Move Panel",
         None,
-        "{panel, anchor, zone?: tab|center|left|right|top|bottom, before?: panel} — group, split or reorder a panel",
+        "{panel, anchor, zone?: tab|center|left|right|top|bottom|above|below, before?: panel|null, group?, placement?} — group, split or reorder a panel (group: its whole tab group)",
     ),
-    ("window.panel.float", "Float Panel", None, "{panel, x?, y?, width?, height?} — detach a panel inside the application window"),
-    ("window.panel.dock", "Dock Panel", None, "{panel, anchor?, zone?, before?} — return a floating panel to a dock group"),
+    (
+        "window.panel.float",
+        "Float Panel",
+        None,
+        "{panel, x?, y?, width?, height?, group?, column?} — detach a panel (or its group, or its dock column) into a floating window",
+    ),
+    (
+        "window.panel.dock",
+        "Dock Panel",
+        None,
+        "{panel, anchor?, zone?, before?, group?, column?, side?: Start|End} — dock a floating panel: beside anchor, in a new column at side, or back where it floated from",
+    ),
     ("window.panel.activate", "Activate Panel", None, "{panel} — show and select a panel in its current group"),
     ("window.panel.close", "Close Panel", None, "{panel} — hide a panel"),
     ("window.panel.closeGroup", "Close Tab Group", None, "{panel} — hide the panel and the panels tabbed with it"),
+    ("window.panel.closeOthers", "Close Other Panels in Group", None, "{panel} — hide the panels tabbed with it"),
+    ("window.panel.minimize", "Minimize", None, "{panel, minimized?} — minimize the panel's group to its tab strip (toggles without minimized)"),
+    ("window.panel.iconic", "Collapse to Icons", None, "{panel, iconic?} — collapse the panel's dock column to icons (toggles without iconic)"),
+    (
+        "window.panel.window",
+        "Move Panel to New Window",
+        None,
+        "{panel, native?} — not available: a floating panel has its own window on the desktop and stays in the page on the web",
+    ),
+    ("window.workspace.new", "New Workspace", None, "{name} — save the current workspace (window.newWorkspace)"),
+    ("window.workspace.delete", "Delete Workspace", None, "{name} — delete a saved workspace (window.deleteWorkspace)"),
+    ("window.workspace.reset", "Reset Workspace", None, "{} — back to the current workspace as saved (window.resetWorkspace)"),
+    ("window.workspace.lock", "Lock Workspace", None, "{locked?} — not available in DesignCraft"),
+    (
+        "ui.dock",
+        "Change Panel Layout",
+        None,
+        "{action} | {operation: open|close|activate|float|moveFloating|move|setStackOpen|resizeStack|resizeSplit, …} — craft-ui's shared ui.dock shape",
+    ),
+    ("ui.dock.reset", "Reset Workspace", None, "{} — window.workspace.reset"),
     ("window.collapseToIcons", "Collapse to Icons", None, "{} — the panel dock shrinks to its column of icons"),
-    ("window.dockPanel", "Dock Panel", None, "{panel} — back into the dock's icon column"),
+    ("window.dockPanel", "Dock Panel", None, "{panel} — back to its place in the dock (window.panel.dock)"),
     ("window.controlBar", "Control", Some("Cmd+Alt+6"), "{}"),
     // Object › Fitting with InDesign's shortcuts (one `object.fit` mode each).
     ("fit.fillFrameProportionally", "Fill Frame Proportionally", Some("Cmd+Alt+Shift+C"), "{} — object.fit {mode: fillProportionally}"),
@@ -963,7 +993,16 @@ pub const MENUS: &[(&str, &[&str])] = &[
 pub const WORKSPACES: &[&str] =
     &["Advanced", "Book", "Digital Publishing", "Essentials", "Essentials Classic", "Interactive for PDF", "Printing and Proofing", "Typography"];
 
-/// Essentials Classic's icon column: InDesign's iconic panel groups, top to bottom.
+/// The built-in workspaces that open a panel below the Properties · Pages · Layers group.
+pub const WORKSPACE_OPEN_PANELS: &[(&str, &str)] =
+    &[("Printing and Proofing", "swatches"), ("Interactive for PDF", "buttons"), ("Digital Publishing", "liquid")];
+
+/// The panel the built-in workspace `name` opens below the Properties · Pages · Layers group.
+pub fn workspace_open_panel(name: &str) -> Option<&'static str> {
+    WORKSPACE_OPEN_PANELS.iter().find(|(workspace, _)| *workspace == name).map(|(_, panel)| *panel)
+}
+
+/// Essentials Classic's iconic column: InDesign's iconic panel groups, top to bottom.
 pub const CLASSIC_GROUPS: &[&[&str]] = &[
     &["pages", "layers", "links"],
     &["stroke", "color"],
@@ -994,10 +1033,10 @@ pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
 /// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
 fn toggle_tabs_panel(app: &mut DesignApp) {
     if app.ui.floating.iter().any(|(p, _)| p == "tabs") {
-        crate::dock::dock_panel(app, "tabs");
+        app.ui.floating.retain(|(p, _)| p != "tabs");
     } else {
         let at = app.canvas_rect.map_or(egui::pos2(300.0, 140.0), |r| r.min + egui::vec2(80.0, 60.0));
-        crate::dock::float_panel(app, "tabs", at);
+        app.ui.floating.push(("tabs".into(), [at.x, at.y]));
         app.ui.tabs_panel.snap_request = 2;
     }
 }
@@ -1392,10 +1431,6 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             };
             return Some(r);
         }
-        "app.tablePanel" => {
-            app.ui.open_panel = if app.ui.open_panel.as_deref() == Some("table") { None } else { Some("table".into()) };
-            Ok(Value::Null)
-        }
         "app.tabsPanel" => {
             toggle_tabs_panel(app);
             Ok(Value::Null)
@@ -1705,19 +1740,13 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
         }
         "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
+        // `panel_docking::command` takes the dock panels (and the Window › Styles group) first.
         "window.panel" => {
-            let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties").to_string();
-            // A panel in the workspace's icon groups opens from there (Essentials Classic's Pages).
-            let iconic = app.ui.icon_groups.as_ref().is_some_and(|g| g.iter().flatten().any(|p| *p == panel));
-            if panel == "tabs" {
-                toggle_tabs_panel(app);
-            } else if !iconic && crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
-                app.ui.dock_tab = panel;
-                app.ui.dock_expanded = true;
-                app.ui.open_panel = None;
-            } else if !app.ui.floating.iter().any(|(p, _)| *p == panel) {
-                app.ui.open_panel = if app.ui.open_panel.as_deref() == Some(panel.as_str()) { None } else { Some(panel) };
+            let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties");
+            if panel != "tabs" {
+                return crate::panel_docking::command(app, "window.panel.activate", &json!({"panel": panel}));
             }
+            toggle_tabs_panel(app);
             Ok(Value::Null)
         }
         "fit.fillFrameProportionally" | "fit.contentProportionally" | "fit.frameToContent" | "fit.contentToFrame" | "fit.centerContent" => {
@@ -1806,22 +1835,6 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.ui_scale = v.clamp(0.5, 3.0);
             Ok(json!({"scale": app.ui.ui_scale}))
         }
-        "window.floatPanel" | "window.dockPanel" => {
-            let panel = p.get("panel").and_then(Value::as_str).unwrap_or("");
-            if !crate::dock::ICON_PANELS.iter().any(|(id, _, _)| *id == panel) && !crate::dock::FLOATING_PANELS.iter().any(|(id, _)| *id == panel) {
-                return Some(Err(format!("{id}: unknown panel `{panel}`")));
-            }
-            if id == "window.floatPanel" {
-                let at = egui::pos2(
-                    p.get("x").and_then(Value::as_f64).unwrap_or(400.0) as f32,
-                    p.get("y").and_then(Value::as_f64).unwrap_or(160.0) as f32,
-                );
-                crate::dock::float_panel(app, panel, at);
-            } else {
-                crate::dock::dock_panel(app, panel);
-            }
-            Ok(json!({"floating": app.ui.floating.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>()}))
-        }
         "window.controlBar" => flag(&mut app.ui.control_bar),
         "view.flattenerPreview" => flag(&mut app.ui.flattener_preview),
         "view.tagMarkers" => {
@@ -1895,11 +1908,6 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(json!({"url": url}))
         }
         "window.toolsDoubleColumn" => flag(&mut app.ui.tools_double_column),
-        "window.collapseToIcons" => {
-            app.ui.dock_expanded = false;
-            app.ui.open_panel = None;
-            Ok(Value::Null)
-        }
         "window.newWorkspace" => {
             let Some(name) = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) else {
                 app.ui.dialog =
@@ -1946,8 +1954,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "window.workspace" => {
             app.ui.docking_generation = app.ui.docking_generation.wrapping_add(1);
-            app.ui.docking_raise = None;
-            app.ui.docking_opened = None;
+            crate::panel_docking::forget_panels(app);
             let name = p.get("name").and_then(Value::as_str).unwrap_or("Essentials");
             if let Some(w) = app.ui.custom_workspaces.iter().find(|w| w.name == name).cloned() {
                 if let Some(hidden) = w.hidden_menu_items {
@@ -1978,7 +1985,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.docking = None;
             app.ui.docking_hidden.clear();
             app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book" | "Essentials Classic");
-            // Essentials Classic: the Control panel and an icon column of grouped panels, no
+            // Essentials Classic: the Control panel and an iconic column of grouped panels, no
             // Properties stack.
             let groups = match name {
                 "Essentials Classic" => Some(CLASSIC_GROUPS),
@@ -1995,12 +2002,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 app.ui.dock_tab = tab.into();
                 app.ui.dock_expanded = true;
             }
-            app.ui.open_panel = match name {
-                "Printing and Proofing" => Some("swatches".into()),
-                "Interactive for PDF" => Some("buttons".into()),
-                "Digital Publishing" => Some("liquid".into()),
-                _ => None,
-            };
+            app.ui.open_panel = workspace_open_panel(name).map(str::to_string);
             app.ui.workspace = name.to_string();
             Ok(Value::Null)
         }
@@ -2194,6 +2196,10 @@ pub fn enabled(app: &DesignApp, id: &str) -> bool {
     }
     if is_window_control(id) {
         return window_control_available(app, id);
+    }
+    // Shared docking commands DesignCraft does not provide (native panel windows, Lock Workspace).
+    if matches!(id, "window.panel.window" | "window.workspace.lock") {
+        return false;
     }
     match designcraft_engine::find_command(id) {
         Some(c) => (c.enabled)(&app.session).is_ok(),
@@ -3160,92 +3166,148 @@ pub fn paste_chord_command(app: &DesignApp, modifiers: egui::Modifiers) -> Optio
 pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
     // Only a focused text field takes the keys: the canvas (or a button) having focus after a click
     // must not swallow tool shortcuts until Esc clears it.
-    // While an IME composes at the text caret, the keyboard is its own. An open canvas context menu
-    // takes the keys (Escape closes it), as a native menu would.
-    if ctx.text_edit_focused()
-        || app.ui.dialog.is_some()
-        || app.ui.palette.is_some()
-        || app.session.tool_composing()
-        || crate::canvas::context_menu_open(ctx)
-        || crate::chrome::search_had_focus(ctx)
-    {
+    if ctx.text_edit_focused() || keys_taken(app, ctx) {
         return;
     }
     let typing = app.session.wants_text();
     let events = ctx.input(|i| i.events.clone());
     for e in events {
         let egui::Event::Key { key, pressed: true, modifiers, repeat: false, .. } = e else { continue };
-        // Presentation hides every control, so Esc always leaves it, and only that: the canvas must
-        // not also see the press and switch tools or deselect.
-        if key == egui::Key::Escape && app.ui.screen_mode == ScreenMode::Presentation {
+        if !shortcut_key(app, key, modifiers, typing, &mut || {
             ctx.input_mut(|i| i.consume_key(modifiers, key));
-            let _ = app.run("view.togglePresentation", json!({}));
-            continue;
+        }) {
+            escape_to_selection(app, key, modifiers, typing);
         }
-        // Presentation goes through the spreads with the arrow keys, Page Up/Down, Home and End.
-        if app.ui.screen_mode == ScreenMode::Presentation && !modifiers.command && !modifiers.alt {
-            let step = match key {
-                egui::Key::ArrowRight | egui::Key::ArrowDown | egui::Key::PageDown => Some(1),
-                egui::Key::ArrowLeft | egui::Key::ArrowUp | egui::Key::PageUp => Some(-1),
-                egui::Key::Home => Some(isize::MIN),
-                egui::Key::End => Some(isize::MAX),
-                _ => None,
-            };
-            if let Some(step) = step {
-                ctx.input_mut(|i| i.consume_key(modifiers, key));
-                crate::canvas::step_spread(app, step);
+    }
+}
+
+/// Keys that a floating panel in its own OS window left over (craft-ui's
+/// `DockOutput::forwarded_events`, with the modifiers held in that window): they run the main
+/// window's shortcuts, clipboard and tool keys in the frame they arrive, so the keyboard works
+/// while a floating window has focus. craft-ui forwards nothing while one of that window's
+/// widgets has keyboard focus.
+pub fn forwarded_shortcuts(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+    if events.is_empty() || keys_taken(app, ctx) {
+        return;
+    }
+    let typing = app.session.wants_text();
+    let mut rest = Vec::with_capacity(events.len());
+    let mut escape = None;
+    for e in events {
+        if let egui::Event::Key { key, pressed: true, modifiers, repeat: false, .. } = e {
+            if shortcut_key(app, key, modifiers, typing, &mut || {}) {
                 continue;
             }
-        }
-        // Command shortcuts.
-        let mut fired: Option<(String, bool)> = None;
-        let all = effective_shortcuts(app);
-        for (id, sc) in &all {
-            let id = id.as_str();
-            if let Some((m, k)) = parse_shortcut(sc)
-                && let Some(exact) = key_matches(m, k, key, modifiers)
-                && (m.command || m.alt || !typing)
-                && !(id == "edit.clear" && typing)
-            {
-                // Single-key shortcuts (W) only when not typing.
-                if !m.command && !m.alt && !m.shift && typing {
-                    continue;
-                }
-                if id == "edit.clear" || (typing && matches!(id, "edit.copy" | "edit.cut" | "edit.paste" | "edit.pasteInPlace")) {
-                    continue; // Handled by the active tool / text clipboard events.
-                }
-                fired = Some((id.to_string(), exact));
-                break;
+            if key == egui::Key::Escape {
+                escape = Some(modifiers);
             }
         }
-        if let Some((id, exact)) = fired {
-            // The native menu bar carries the shortcuts in effect, the user's included, and its
-            // accelerator fires only for the shortcut's own key and modifiers; the Plus key standing
-            // in for = never reaches it.
-            if exact && app.native_shortcuts.contains(&id) {
-                continue; // The native menu handles it.
-            }
-            // The key press belongs to the shortcut: what it opens (Quick Apply's list, a dialog's
-            // default button) must not see the same press as Enter or Space this frame.
-            ctx.input_mut(|i| i.consume_key(modifiers, key));
-            // Like choosing the menu item: "…" commands open their dialog.
-            activate(app, &id, &Value::Null);
-            continue;
+        rest.push(e);
+    }
+    crate::canvas::forwarded_keys(app, rest, modifiers);
+    if let Some(m) = escape {
+        escape_to_selection(app, egui::Key::Escape, m, typing);
+    }
+}
+
+/// Whether something other than the shortcuts has the keyboard: a dialog or Quick Apply, an input
+/// method composing at the text caret, an open canvas context menu (Escape closes it, as a
+/// native menu would) or the menu search.
+fn keys_taken(app: &DesignApp, ctx: &egui::Context) -> bool {
+    app.ui.dialog.is_some()
+        || app.ui.palette.is_some()
+        || app.session.tool_composing()
+        || crate::canvas::context_menu_open(ctx)
+        || crate::chrome::search_had_focus(ctx)
+}
+
+/// Runs the presentation key, command shortcut or tool shortcut a key press stands for. `consume`
+/// takes the press from the input where nothing else may see it. Returns whether the press was used.
+fn shortcut_key(app: &mut DesignApp, key: egui::Key, modifiers: egui::Modifiers, typing: bool, consume: &mut dyn FnMut()) -> bool {
+    // Presentation hides every control, so Esc always leaves it, and only that: the canvas must
+    // not also see the press and switch tools or deselect.
+    if key == egui::Key::Escape && app.ui.screen_mode == ScreenMode::Presentation {
+        consume();
+        let _ = app.run("view.togglePresentation", json!({}));
+        return true;
+    }
+    // Presentation goes through the spreads with the arrow keys, Page Up/Down, Home and End.
+    if app.ui.screen_mode == ScreenMode::Presentation && !modifiers.command && !modifiers.alt {
+        let step = match key {
+            egui::Key::ArrowRight | egui::Key::ArrowDown | egui::Key::PageDown => Some(1),
+            egui::Key::ArrowLeft | egui::Key::ArrowUp | egui::Key::PageUp => Some(-1),
+            egui::Key::Home => Some(isize::MIN),
+            egui::Key::End => Some(isize::MAX),
+            _ => None,
+        };
+        if let Some(step) = step {
+            consume();
+            crate::canvas::step_spread(app, step);
+            return true;
         }
-        // Tool shortcuts (single keys, Shift+key).
-        if !typing && !modifiers.command && !modifiers.alt {
-            let name = key.name();
-            let sc = if modifiers.shift { format!("Shift+{name}") } else { name.to_string() };
-            if let Some(tool) = designcraft_tools::tool_for_shortcut(&sc) {
-                log::debug!("tool shortcut {sc} -> {tool}");
-                if std::env::var_os("DESIGNCRAFT_DEBUG_KEYS").is_some() {
-                    eprintln!("tool shortcut {sc} ({key:?}, {modifiers:?}) -> {tool}");
-                }
-                app.select_tool(tool);
-            } else if key == egui::Key::Escape && app.session.tool_id() != "selection" && !app.session.tool_busy() && app.ui.flyout.is_none() {
-                app.select_tool("selection");
+    }
+    // Command shortcuts.
+    let mut fired: Option<(String, bool)> = None;
+    let all = effective_shortcuts(app);
+    for (id, sc) in &all {
+        let id = id.as_str();
+        if let Some((m, k)) = parse_shortcut(sc)
+            && let Some(exact) = key_matches(m, k, key, modifiers)
+            && (m.command || m.alt || !typing)
+            && !(id == "edit.clear" && typing)
+        {
+            // Single-key shortcuts (W) only when not typing.
+            if !m.command && !m.alt && !m.shift && typing {
+                continue;
             }
+            if id == "edit.clear" || (typing && matches!(id, "edit.copy" | "edit.cut" | "edit.paste" | "edit.pasteInPlace")) {
+                continue; // Handled by the active tool / text clipboard events.
+            }
+            fired = Some((id.to_string(), exact));
+            break;
         }
+    }
+    if let Some((id, exact)) = fired {
+        // The native menu bar carries the shortcuts in effect, the user's included, and its
+        // accelerator fires only for the shortcut's own key and modifiers; the Plus key standing
+        // in for = never reaches it.
+        if exact && app.native_shortcuts.contains(&id) {
+            return true; // The native menu handles it.
+        }
+        // The key press belongs to the shortcut: what it opens (Quick Apply's list, a dialog's
+        // default button) must not see the same press as Enter or Space this frame.
+        consume();
+        // Like choosing the menu item: "…" commands open their dialog.
+        activate(app, &id, &Value::Null);
+        return true;
+    }
+    // Tool shortcuts (single keys, Shift+key).
+    if !typing && !modifiers.command && !modifiers.alt {
+        let name = key.name();
+        let sc = if modifiers.shift { format!("Shift+{name}") } else { name.to_string() };
+        if let Some(tool) = designcraft_tools::tool_for_shortcut(&sc) {
+            log::debug!("tool shortcut {sc} -> {tool}");
+            if std::env::var_os("DESIGNCRAFT_DEBUG_KEYS").is_some() {
+                eprintln!("tool shortcut {sc} ({key:?}, {modifiers:?}) -> {tool}");
+            }
+            app.select_tool(tool);
+            return true;
+        }
+    }
+    false
+}
+
+/// Esc with no shortcut of its own goes back to the Selection tool.
+fn escape_to_selection(app: &mut DesignApp, key: egui::Key, modifiers: egui::Modifiers, typing: bool) {
+    if key == egui::Key::Escape
+        && !typing
+        && !modifiers.command
+        && !modifiers.alt
+        && app.session.tool_id() != "selection"
+        && !app.session.tool_busy()
+        && app.ui.flyout.is_none()
+    {
+        app.select_tool("selection");
     }
 }
 
@@ -3355,8 +3417,34 @@ fn quick_commands() -> impl Iterator<Item = (&'static str, &'static str, Option<
         .iter()
         .filter(|c| !c.menu.is_empty() || c.shortcut.is_some())
         .map(|c| (c.id, c.label, c.shortcut))
-        .chain(UI_COMMANDS.iter().map(|c| (c.0, c.1, c.2)))
+        .chain(UI_COMMANDS.iter().filter(|c| !NOT_SEARCHED.contains(&c.0)).map(|c| (c.0, c.1, c.2)))
 }
+
+/// UI commands Quick Apply and the menu search leave out. They run an entry with `{}`, so this
+/// lists the shared docking commands DesignCraft does not provide, those that need a `panel` or
+/// `name`, and the ids that share a label with another searched docking command.
+const NOT_SEARCHED: &[&str] = &[
+    "window.panel.window",
+    "window.workspace.lock",
+    "window.panel.layout",
+    "window.panel.move",
+    "window.panel.float",
+    "window.panel.dock",
+    "window.panel.activate",
+    "window.panel.close",
+    "window.panel.closeGroup",
+    "window.panel.closeOthers",
+    "window.panel.minimize",
+    "window.panel.iconic",
+    "window.workspace",
+    "window.workspace.new",
+    "window.workspace.delete",
+    "window.floatPanel",
+    "window.dockPanel",
+    "ui.dock",
+    "ui.dock.reset",
+    "window.resetWorkspace",
+];
 
 /// Whether any of `texts` contains the lowercased query (an empty query matches everything).
 fn quick_match(query_lower: &str, texts: &[&str]) -> bool {
@@ -4029,9 +4117,10 @@ mod tests {
                 out.textures_delta.clear();
             }
         };
-        // The icon column's flyout (the classic dock) and a floating panel group (the docking layout).
-        let flyout = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("panel_flyout"));
-        let group = egui::LayerId::new(egui::Order::Middle, egui::Id::new("designcraft-panel-docking").with(("floating", "preflight")));
+        // The docked panel's tab and a floating panel group.
+        let tab = crate::panel_docking::tab_id("preflight");
+        let docked = || ctx.read_response(tab).is_some();
+        let group = crate::panel_docking::floating_layer("preflight");
         let shown = |layer: egui::LayerId| ctx.memory(|m| m.areas().is_visible(&layer));
         let toggles = [
             ("window.hidePanels", json!({}), json!({})),
@@ -4040,14 +4129,14 @@ mod tests {
         ];
         app.run("window.panel", json!({"panel": "preflight"})).unwrap();
         frame(&mut app);
-        assert!(app.ui.docking.is_none() && shown(flyout));
+        assert!(docked());
         for (id, hide, show) in &toggles {
             app.run(id, hide.clone()).unwrap();
             frame(&mut app);
-            assert!(!shown(flyout), "{id} hides the flyout");
+            assert!(!docked(), "{id} hides the dock");
             app.run(id, show.clone()).unwrap();
             frame(&mut app);
-            assert!(shown(flyout), "{id} again brings it back");
+            assert!(docked(), "{id} again brings it back");
         }
         app.run("window.floatPanel", json!({"panel": "preflight", "x": 400, "y": 200})).unwrap();
         frame(&mut app);
@@ -5039,13 +5128,21 @@ mod tests {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         let r = run_ui(&mut app, "window.floatPanel", &json!({"panel": "swatches", "x": 50, "y": 60})).unwrap().unwrap();
         assert_eq!(r["floating"], json!(["swatches"]));
-        assert_eq!(app.ui.floating[0].1, [50.0, 60.0]);
-        // Showing a floating panel doesn't also open its flyout.
+        let window = &app.ui.docking.as_ref().unwrap().floating[0];
+        assert_eq!([window.rect[0], window.rect[1]], [50.0, 60.0]);
+        // Showing a floating panel leaves it where it is.
         run_ui(&mut app, "window.panel", &json!({"panel": "swatches"})).unwrap().unwrap();
         assert_eq!(app.ui.open_panel, None);
-        run_ui(&mut app, "window.dockPanel", &json!({"panel": "swatches"})).unwrap().unwrap();
-        assert!(app.ui.floating.is_empty());
+        let r = run_ui(&mut app, "window.dockPanel", &json!({"panel": "swatches"})).unwrap().unwrap();
+        assert_eq!(r["floating"], json!([]));
+        assert!(app.ui.docking.as_ref().unwrap().floating.is_empty());
         assert!(run_ui(&mut app, "window.floatPanel", &json!({"panel": "nope"})).unwrap().is_err());
+        // Float-only panels (Type › Tabs) have their own windows outside the layout.
+        let r = run_ui(&mut app, "window.floatPanel", &json!({"panel": "tabs", "x": 10, "y": 20})).unwrap().unwrap();
+        assert_eq!(r["floating"], json!(["tabs"]));
+        assert_eq!(app.ui.floating, [("tabs".to_string(), [10.0, 20.0])]);
+        run_ui(&mut app, "window.dockPanel", &json!({"panel": "tabs"})).unwrap().unwrap();
+        assert!(app.ui.floating.is_empty());
     }
 
     /// One frame as the desktop app runs it: queued synthetic input, then the native menu item
@@ -5362,11 +5459,17 @@ mod tests {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         activate(&mut app, "app.characterPanel", &Value::Null);
-        assert_eq!(app.ui.open_panel.as_deref(), Some("character"));
+        assert!(crate::panel_docking::showing(&app, "character"));
         // Paragraph Styles opens floating, grouped with Character Styles, as in InDesign.
         activate(&mut app, "app.paragraphStylesPanel", &Value::Null);
         let layout = app.ui.docking.as_ref().unwrap();
-        assert!(layout.floating.iter().any(|g| g.panels == ["characterStyles", "paragraphStyles"] && g.active == 1));
+        assert!(
+            layout
+                .floating
+                .iter()
+                .flat_map(crate::panel_docking::window_groups)
+                .any(|g| g.panels == ["characterStyles", "paragraphStyles"] && g.active == 1)
+        );
         let story = app.run("frame.create", json!({"rect": [36, 36, 200, 100], "content": "text", "text": "Page "})).unwrap()["story"].clone();
         app.run("text.select", json!({"story": story, "anchor": 5, "focus": 5})).unwrap();
         activate(&mut app, "app.insertCurrentPageNumber", &Value::Null);
@@ -5439,7 +5542,10 @@ mod tests {
         assert_eq!(checked(&app, "window.workspace", &json!({"name": "Essentials"})), Some(false));
         // Window › Pages opens Pages from its icon group, not the Properties stack.
         run_ui(&mut app, "window.panel", &json!({"panel": "pages"})).unwrap().unwrap();
-        assert_eq!((app.ui.open_panel.as_deref(), app.ui.dock_expanded), (Some("pages"), false));
+        assert!(crate::panel_docking::showing(&app, "pages"));
+        let layout = app.ui.docking.clone().unwrap();
+        assert!(!layout.contains(&"properties".to_string()));
+        assert_eq!(crate::panel_docking::tab_group(&layout, "pages"), ["pages", "layers", "links"]);
         // A workspace saved from it keeps the groups.
         run_ui(&mut app, "window.newWorkspace", &json!({"name": "Mine"})).unwrap().unwrap();
         run_ui(&mut app, "window.workspace", &json!({"name": "Essentials"})).unwrap().unwrap();
@@ -5461,8 +5567,8 @@ mod tests {
         assert_eq!(groups[5], ["character", "characterStyles"]);
         for panel in ["pages", "paragraphStyles", "characterStyles"] {
             run_ui(&mut app, "window.panel", &json!({"panel":panel})).unwrap().unwrap();
-            assert_eq!(app.ui.open_panel.as_deref(), Some(panel));
-            assert!(!app.ui.dock_expanded);
+            assert!(crate::panel_docking::showing(&app, panel), "{panel}");
+            assert!(app.ui.docking.as_ref().unwrap().floating.is_empty(), "{panel} opens from its icon group");
         }
         run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
         assert_eq!(app.ui.icon_groups, Some(groups));
@@ -6089,5 +6195,62 @@ mod tests {
             );
         }
         assert!(app.ui.dialog.is_some(), "clicking the empty end of the Preferences… row must choose it");
+    }
+
+    /// Quick Apply and the menu search list no unavailable docking command and no label twice
+    /// among the UI commands.
+    #[test]
+    fn searched_ui_commands_are_available_and_named_once() {
+        let ui_ids: Vec<&str> = UI_COMMANDS.iter().map(|c| c.0).collect();
+        let searched: Vec<(&str, &str)> = quick_commands().filter(|c| ui_ids.contains(&c.0)).map(|c| (c.0, c.1)).collect();
+        assert!(!searched.iter().any(|c| matches!(c.0, "window.panel.window" | "window.workspace.lock" | "window.workspace")), "{searched:?}");
+        assert!(searched.iter().any(|c| c.0 == "window.collapseToIcons"), "Collapse to Icons is searched");
+        // Quick Apply runs an entry as `app.run(id, {})`, so each docking command it lists must
+        // work without params.
+        let docking = |id: &str| {
+            id.starts_with("window.panel")
+                || id.starts_with("window.workspace")
+                || id.starts_with("ui.dock")
+                || matches!(id, "window.floatPanel" | "window.dockPanel" | "window.collapseToIcons" | "window.resetWorkspace")
+        };
+        let failing: Vec<(&str, String)> = searched
+            .iter()
+            .filter(|c| docking(c.0))
+            .filter_map(|c| {
+                let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+                app.run(c.0, json!({})).err().map(|e| (c.0, e))
+            })
+            .collect();
+        assert!(failing.is_empty(), "searched docking commands that fail with {{}}: {failing:?}");
+        let mut labels: Vec<&str> = searched.iter().map(|c| c.1).collect();
+        labels.sort_unstable();
+        let before = labels.len();
+        labels.dedup();
+        assert_eq!(labels.len(), before, "a label twice: {searched:?}");
+    }
+
+    /// Keys a floating panel's own OS window left over run the main window's tool shortcuts,
+    /// Escape and the active tool's keys.
+    #[test]
+    fn forwarded_keys_run_shortcuts() {
+        use egui::{Event, Key, Modifiers};
+        fn press(key: Key) -> Vec<Event> {
+            [true, false].map(|pressed| Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers: Modifiers::NONE }).to_vec()
+        }
+        let ctx = egui::Context::default();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let frame = app.session.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
+        app.session.execute("selection.set", &json!({"ids": [frame["id"]]})).unwrap();
+        forwarded_shortcuts(&mut app, &ctx, press(Key::P), Modifiers::NONE);
+        assert_ne!(app.session.tool_id(), "selection", "P picks a tool");
+        forwarded_shortcuts(&mut app, &ctx, press(Key::Escape), Modifiers::NONE);
+        assert_eq!(app.session.tool_id(), "selection", "Escape goes back to the Selection tool");
+        app.session.execute("selection.set", &json!({"ids": [frame["id"]]})).unwrap();
+        forwarded_shortcuts(&mut app, &ctx, press(Key::Delete), Modifiers::NONE);
+        assert!(
+            app.session.active().unwrap().doc.item(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).is_none(),
+            "Delete clears the selection"
+        );
     }
 }

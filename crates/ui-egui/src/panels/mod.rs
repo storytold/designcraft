@@ -785,6 +785,15 @@ mod font_menu_ui_tests {
             for k in 0..count {
                 h.state_mut().app.run("type.char", json!({"attrs": {"fontFamily": designcraft_fonts::DEFAULT_FAMILY}})).unwrap();
                 h.run_steps(4);
+                // A short Properties group (below it, the workspace's open panel) scrolls to the field.
+                let mut nodes: Vec<_> = h
+                    .query_all_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.value().as_deref() == Some(designcraft_fonts::DEFAULT_FAMILY))
+                    .collect();
+                nodes.sort_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y).then(a.rect().min.x.total_cmp(&b.rect().min.x)));
+                if let Some(node) = nodes.get(k) {
+                    node.scroll_to_me();
+                }
+                h.run_steps(4);
                 let at = fields(&h, designcraft_fonts::DEFAULT_FAMILY)[k];
                 search_in_menu(&mut h, at, &format!("{name}, field {k}"));
                 assert_eq!(family(&mut h), "Source Sans 3", "{name}, field {k}");

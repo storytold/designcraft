@@ -143,15 +143,47 @@ fn prefs_path() -> Option<std::path::PathBuf> {
     profile::config_dir().map(|b| b.join("ui.json"))
 }
 
+/// Set when `ui.json` could not be read in full and no copy of it could be kept: the file is
+/// then left as it is rather than overwritten.
+static KEEP_UI_PREFS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Copy an unreadable (or partly unreadable) `ui.json` beside it, as `ui.unreadable.json` or the
+/// first free `ui.unreadable-N.json`, before the next save replaces it. A newer DesignCraft may
+/// have written it.
+fn keep_unreadable_prefs(path: &std::path::Path, bytes: &[u8]) {
+    use std::io::Write as _;
+    for n in 1..100u32 {
+        let name = if n == 1 { "ui.unreadable.json".to_string() } else { format!("ui.unreadable-{n}.json") };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(path.with_file_name(name)) {
+            Ok(mut file) => {
+                if file.write_all(bytes).is_ok() {
+                    return;
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => break,
+        }
+    }
+    KEEP_UI_PREFS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn load_prefs(app: &mut DesignApp) {
     if no_prefs() {
         return;
     }
     if let Some(p) = prefs_path()
         && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(ui) = designcraft_ui_egui::UiState::from_preferences_json(&bytes)
     {
-        app.ui = ui;
+        match designcraft_ui_egui::UiState::read_preferences(&bytes) {
+            Ok(read) => {
+                app.ui = read.ui;
+                if !read.intact {
+                    keep_unreadable_prefs(&p, &bytes);
+                }
+            }
+            Err(_) => keep_unreadable_prefs(&p, &bytes),
+        }
     }
     // Engine preferences (Preferences dialog, favourites…) live beside the UI state.
     if let Some(p) = prefs_path().map(|p| p.with_file_name("prefs.json"))
@@ -168,7 +200,9 @@ fn save_prefs(app: &DesignApp) {
     }
     if let Some(p) = prefs_path() {
         let _ = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new(".")));
-        if let Ok(bytes) = serde_json::to_vec_pretty(&app.ui) {
+        if !KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed)
+            && let Ok(bytes) = serde_json::to_vec_pretty(&app.ui)
+        {
             let _ = std::fs::write(&p, bytes);
         }
         if let Ok(bytes) = serde_json::to_vec_pretty(&app.session.prefs) {
@@ -572,6 +606,22 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unreadable_ui_json_is_kept_beside_it() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("designcraft-ui-prefs-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("ui.json");
+        super::keep_unreadable_prefs(&path, b"{\"docking\": {\"root\": {\"FutureLayout\": {}}}}");
+        super::keep_unreadable_prefs(&path, b"not json");
+        let first = std::fs::read(dir.join("ui.unreadable.json")).unwrap();
+        let second = std::fs::read(dir.join("ui.unreadable-2.json")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(first.starts_with(b"{\"docking\""), "the first copy is not replaced");
+        assert_eq!(second, b"not json");
+        assert!(!super::KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed), "ui.json can be saved once a copy is kept");
+    }
+
     #[test]
     fn relink_open_dialog_lists_graphics() {
         let filters = super::open_filters("relink");

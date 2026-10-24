@@ -1,8 +1,8 @@
 # Shared PDF backend
 
 DesignCraft pins `craft-pdf`, patched Krilla 0.8.2 and the five Hayro reader crates (with
-`hayro-cmap`) to craft-libs revision `9f75d3dc19b4b514c4f3d4847ed1ec1b0e86b4ef`. Existing `craft-ui` and `craft-print` revisions
-remain unchanged. The reader migration is reviewed on top of the separate writer change.
+`hayro-cmap`) to craft-libs revision `9f75d3dc19b4b514c4f3d4847ed1ec1b0e86b4ef`. `craft-ui` and `craft-print` have their own
+revisions. The reader migration is reviewed on top of the separate writer change.
 
 ## Writing
 
@@ -62,8 +62,8 @@ report known backend warnings; they do not certify all PDF fidelity.
 DesignCraft uses a 512 MiB reader input bound, checked before parsing or copying.
 Raster output has shared geometry/allocation bounds. Native unwind guards turn escaped
 backend panics into errors; WASM aborts and process-wide allocation failures are not recoverable.
-Application fonts, image assets, editing and export presets remain app-owned. Existing
-craft-ui/craft-print versions are preserved. The reader migration builds on the independently qualified writer change.
+Application fonts, image assets, editing and export presets remain app-owned. craft-ui and
+craft-print are pinned separately. The reader migration builds on the independently qualified writer change.
 
 The shared commit must be published before a fresh public checkout can resolve these pins.
 No sibling checkout is required. Licences and existing backend asset notices are recorded in

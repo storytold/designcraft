@@ -4,6 +4,7 @@
 //! - `engine.execute {command, params}` / `ui.menu.invoke {command|id, params}`: run any command
 //! - `engine.commands`: engine + UI commands with enablement
 //! - `document.inspect`: document summary; `ui.inspect`: UI state
+//! - `ui.docking`: the panel layout in use and the focused panel
 //! - `ui.menu.list`: flattened menu tree
 //! - `ui.tool.select {tool}`, `ui.tool.list`
 //! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick, x, y, space?: "doc"|"screen"}], mods?}`:
@@ -77,6 +78,7 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
         "ui": serde_json::to_value(&app.ui).unwrap_or_default(),
         "view": app.view().map(|v| serde_json::to_value(v).unwrap_or_default()),
         "canvasRect": app.canvas_rect.map(|c| json!([c.left(), c.top(), c.width(), c.height()])),
+        "docking": crate::panel_docking::inspect(app, ctx),
         "window": [r.width(), r.height()],
         "documents": app
             .session
@@ -169,6 +171,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         "engine.commands" => ok(all_commands(app)),
         "document.inspect" => wrap(app.run("document.inspect", json!({}))),
         "ui.inspect" => ok(inspect(app, ctx)),
+        "ui.docking" => ok(crate::panel_docking::inspect(app, ctx)),
         "ui.menu.list" => ok(serde_json::to_value(menus::MENUS).unwrap_or_default()),
         "ui.tool.select" => wrap(app.run("tool.select", json!({"tool": s("tool").unwrap_or("")}))),
         "ui.tool.list" => ok(serde_json::to_value(designcraft_tools::TOOL_GROUPS).unwrap_or_default()),
@@ -361,7 +364,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                 r = crate::panel_docking::close_visible(app).map(|_| Value::Null);
             }
             if let Some(v) = p.get("dockExpanded").and_then(Value::as_bool) {
-                app.ui.dock_expanded = v;
+                r = crate::panel_docking::set_iconic(app, !v);
             }
             wrap(r)
         }
