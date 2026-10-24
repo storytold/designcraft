@@ -12,6 +12,9 @@ use serde_json::{Value, json};
 use crate::{DesignApp, ScreenMode, View, theme::Tokens};
 
 pub const RULER: f32 = 15.0;
+/// The longest an edit may take to render on the UI thread (ms) before edits render on the
+/// worker: about three frames.
+pub const SYNC_BUDGET_MS: f64 = 50.0;
 /// Width of the view's scrollbars.
 pub const SCROLLBAR: f32 = 10.0;
 /// Shortest scrollbar thumb.
@@ -799,6 +802,9 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
         app.canvas.shown_doc = app.canvas.pending_doc.take();
         app.canvas.pending = None;
         app.perf.render_ms = done.ms;
+        // A full render this fast lets edits render on the UI thread again (and its regions).
+        app.canvas.sync_ms = done.ms;
+        app.canvas.patch_ms = app.canvas.patch_ms.min(done.ms);
     }
     if app.canvas.shown.is_some_and(|s| covers(&s)) {
         return;
@@ -827,12 +833,18 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
     #[cfg(target_arch = "wasm32")]
     let has_worker = false;
     // An edit with the view unchanged: repaint just the regions it changed.
-    if doc_changed && zoom_same && patch_texture(app, layout, ppp, doc_key, preview) {
+    // While rendering is quick, edits render here so the canvas never lags behind them. Past the
+    // budget the UI thread would stall: clicks and drags pile up and arrive at once, and panels
+    // stop answering. Edits then render on the worker, as zooms do, and the canvas keeps showing
+    // the previous image until the new one is ready.
+    let sync_ok = !has_worker || app.canvas.sync_ms <= SYNC_BUDGET_MS;
+    let patch_ok = !has_worker || app.canvas.patch_ms <= SYNC_BUDGET_MS;
+    if doc_changed && zoom_same && patch_ok && patch_texture(app, layout, ppp, doc_key, preview) {
         return;
     }
     // A mode switch changes every spread's meaning, even if the document has no damage.
     // Show the new canvas immediately, including when fitting it changes the zoom.
-    if !has_worker || app.canvas.shown.is_none() || mode_changed || (doc_changed && zoom_same) {
+    if !has_worker || app.canvas.shown.is_none() || mode_changed || (doc_changed && zoom_same && sync_ok) {
         let t0 = crate::now_ms();
         let Some((doc, placed, w, h, view, opts)) = job(app) else { return };
         let img = app.canvas.renderer.render(&doc, &app.session.cache, &placed, w, h, view, &opts);
@@ -842,6 +854,7 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
         app.canvas.pending = None;
         app.canvas.pending_doc = None;
         app.perf.render_ms = crate::now_ms() - t0;
+        app.canvas.sync_ms = app.perf.render_ms;
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -927,6 +940,7 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     done(app);
     app.canvas.patches += 1;
     app.perf.render_ms = crate::now_ms() - t0;
+    app.canvas.patch_ms = app.perf.render_ms;
     true
 }
 
@@ -3587,6 +3601,10 @@ mod parent_canvas_tests;
 #[cfg(test)]
 #[path = "guide_selection_tests.rs"]
 mod guide_selection_tests;
+
+#[cfg(test)]
+#[path = "slow_render_tests.rs"]
+mod slow_render_tests;
 
 #[cfg(test)]
 mod tests {

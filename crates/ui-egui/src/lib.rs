@@ -526,6 +526,8 @@ impl CanvasCache {
             display_key: None,
             patcher: designcraft_render::Renderer::new(),
             patches: 0,
+            sync_ms: 0.0,
+            patch_ms: 0.0,
         }
     }
 }
@@ -557,6 +559,10 @@ pub struct CanvasCache {
     pub patcher: designcraft_render::Renderer,
     /// Partial repaints / full renders since start (perf readout).
     pub patches: u64,
+    /// How long the canvas last took to render whole, and to repaint an edit's regions (ms): past
+    /// [`canvas::SYNC_BUDGET_MS`], edits render on the worker instead of the UI thread.
+    pub sync_ms: f64,
+    pub patch_ms: f64,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]
@@ -590,6 +596,8 @@ pub struct DesignApp {
     pub color_applied: bool,
     pub perf: Perf,
     pub synthetic: Vec<egui::Event>,
+    /// Input held back for the next frame (see [`DesignApp::pace_pointer_buttons`]).
+    held_input: Vec<egui::Event>,
     /// Control input stays separate from native-menu input until its frame is processed.
     pub(crate) control_synthetic: Vec<egui::Event>,
     control_input_frame: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -686,6 +694,7 @@ impl DesignApp {
             color_applied: false,
             perf: Perf::default(),
             synthetic: vec![],
+            held_input: vec![],
             control_synthetic: vec![],
             control_input_frame: Default::default(),
             clipboard_guard_installed: false,
@@ -1139,6 +1148,10 @@ impl DesignApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        // Input held back for the next frame (`pace_pointer_buttons`) needs that frame.
+        if !self.held_input.is_empty() {
+            ctx.request_repaint();
+        }
         if self.egui_ctx.is_none() {
             self.egui_ctx = Some(ctx.clone());
         }
@@ -1507,6 +1520,7 @@ impl DesignApp {
 
     /// Inject synthetic events (one pointer event per frame), retaining control provenance.
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+        self.pace_pointer_buttons(raw);
         let private = !self.control_synthetic.is_empty();
         self.control_input_frame.store(private, std::sync::atomic::Ordering::Relaxed);
         let events = if private { &mut self.control_synthetic } else { &mut self.synthetic };
@@ -1519,6 +1533,24 @@ impl DesignApp {
             raw.events.push(egui::Event::PointerMoved(*p));
         }
         raw.events.extend(events.drain(..n));
+    }
+
+    /// One press or release of a mouse button per frame. While a frame is slow (a big render, a
+    /// save), everything the user does meanwhile arrives in the next frame at once: a press, the
+    /// moves and the release of a whole drag. egui then sees the button go down and up within one
+    /// frame, so a drag never starts (a guide pulled out of a ruler, a slider, an object moved)
+    /// and two clicks become one. The events from the second button change on wait for the next
+    /// frame, in order, so each frame holds at most one press or release.
+    fn pace_pointer_buttons(&mut self, raw: &mut egui::RawInput) {
+        if !self.held_input.is_empty() {
+            let mut held = std::mem::take(&mut self.held_input);
+            held.append(&mut raw.events);
+            raw.events = held;
+        }
+        let mut buttons = raw.events.iter().enumerate().filter(|(_, e)| matches!(e, egui::Event::PointerButton { .. }));
+        if let (Some(_), Some((second, _))) = (buttons.next(), buttons.next()) {
+            self.held_input = raw.events.split_off(second);
+        }
     }
 
     /// Lay out the whole window.
