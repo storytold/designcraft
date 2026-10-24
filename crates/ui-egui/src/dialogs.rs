@@ -2051,6 +2051,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
         "colorTheme" => crate::i18n::tr(&app.ui.language, "Color Theme"),
         "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
+        // On a page that doesn't start a section yet, InDesign titles it New Section.
+        "numberingSection" if d.b("newSection") => crate::i18n::tr(&app.ui.language, "New Section"),
         "numberingSection" => crate::i18n::tr(&app.ui.language, "Numbering & Section Options…").trim_end_matches('…'),
         "findChange" => crate::i18n::tr(&app.ui.language, "Find/Change"),
         "paragraphStyleOptions" => crate::i18n::tr(&app.ui.language, "Paragraph Style Options"),
@@ -9370,6 +9372,55 @@ mod tests {
         app.run("app.language", json!({"lang": "uk"})).unwrap();
         cancel(&mut app);
         assert_eq!(app.ui.language, "it");
+    }
+
+    #[test]
+    fn on_a_page_without_a_section_the_window_is_new_section() {
+        // Chris Nielsen's "Numbering Page Sections" (4:43): page 3 selected, the Pages panel menu's
+        // Numbering & Section Options opens New Section with Start Section on and 1 offered.
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 6, "facingPages": true})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+        crate::canvas::go_to_page(&mut app, 2);
+        crate::menus::activate(&mut app, "layout.section", &Value::Null);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(
+            (d.n("page"), d.b("newSection"), d.b("startSection"), d.b("automatic"), d.s("startNumber")),
+            (Some(3.0), true, true, true, "1".into())
+        );
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        visible_label(&labels, screen, "New Section");
+        // Typing a number in the field chooses Start Page Numbering at; OK: page 3 is page 5 (odd,
+        // so a facing page stays on the right).
+        let field = visible_label(&labels, screen, "1");
+        click_dialog(&mut app, &ctx, screen, field.center());
+        dialog_frame(
+            &mut app,
+            &ctx,
+            screen,
+            vec![
+                egui::Event::Key { key: egui::Key::End, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+                egui::Event::Key { key: egui::Key::Backspace, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+                egui::Event::Text("5".into()),
+            ],
+        );
+        assert!(!app.ui.dialog.as_ref().unwrap().b("automatic"), "typing chose Start Page Numbering at");
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "OK").center());
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(app.session.active().unwrap().doc.page_name(2), "5");
+        // Opened again on that page, it is Numbering & Section Options, showing the section.
+        crate::menus::activate(&mut app, "layout.section", &Value::Null);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!((d.b("newSection"), d.b("startSection"), d.b("automatic"), d.s("startNumber")), (false, true, false, "5".into()));
+        let labels = (0..4).map(|_| dialog_frame(&mut app, &ctx, screen, vec![])).last().unwrap();
+        visible_label(&labels, screen, "Numbering & Section Options");
+        assert!(!labels.iter().any(|(t, _, _)| t == "New Section"));
     }
 
     #[test]
