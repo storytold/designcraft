@@ -244,6 +244,24 @@ impl Story {
     }
 
     /// Index of the paragraph containing byte `pos`.
+    /// The paragraphs `r` touches (at least the one at `r.start`), as (index, byte range without
+    /// its return), found from `r` itself rather than by listing every paragraph of the story.
+    pub fn paras_touching(&self, r: std::ops::Range<usize>) -> Vec<(usize, std::ops::Range<usize>)> {
+        let start = floor_char_boundary(&self.text, r.start.min(self.text.len()));
+        let mut pi = self.para_at(start);
+        let mut a = self.text[..start].rfind('\n').map_or(0, |i| i + 1);
+        let mut out = Vec::new();
+        loop {
+            let b = self.text[a..].find('\n').map_or(self.text.len(), |i| a + i);
+            out.push((pi, a..b));
+            // The next paragraph starts after this one's return: is it still inside `r`?
+            if b >= self.text.len() || b + 1 >= r.end {
+                return out;
+            }
+            (a, pi) = (b + 1, pi + 1);
+        }
+    }
+
     pub fn para_at(&self, pos: usize) -> usize {
         self.text[..floor_char_boundary(&self.text, pos)].bytes().filter(|b| *b == b'\n').count()
     }
@@ -594,6 +612,27 @@ mod tests {
 
     fn st(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
+    }
+
+    /// `paras_touching` gives the paragraphs a range reaches into (returns included), as listing
+    /// every paragraph would, for every range of a story with empty and multi-byte paragraphs.
+    #[test]
+    fn paras_touching_matches_the_full_listing() {
+        let s = st("ab
+
+çé
+last");
+        let all = s.para_ranges();
+        for a in 0..=s.len() {
+            for b in a..=s.len() {
+                if !s.text.is_char_boundary(a) || !s.text.is_char_boundary(b) {
+                    continue;
+                }
+                let want: Vec<(usize, std::ops::Range<usize>)> =
+                    all.iter().cloned().enumerate().filter(|(i, p)| *i == s.para_at(a) || (a < b && p.start < b && a <= p.end)).collect();
+                assert_eq!(s.paras_touching(a..b), want, "{a}..{b}");
+            }
+        }
     }
 
     #[test]

@@ -900,6 +900,43 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Center Content", ["Center Content", "Centrer le contenu", "Center Content", "Center Content", "内容居中"]),
     ("Change All", ["Change All", "Tout remplacer", "Change All", "Change All", "全部更改"]),
     ("Change to:", ["Change to:", "Remplacer par :", "Change to:", "Change to:", "更改为："]),
+    ("Change Format:", ["Format ersetzen:", "Remplacer le format :", "Cambiar formato:", "置換形式 :", "更改格式："]),
+    (
+        "Change Format Settings",
+        [
+            "Einstellungen für Format ersetzen",
+            "Paramètres de remplacement du format",
+            "Ajustes de cambio de formato",
+            "置換形式の設定",
+            "更改格式设置",
+        ],
+    ),
+    ("Style Options", ["Formatoptionen", "Options de style", "Opciones de estilo", "スタイルオプション", "样式选项"]),
+    ("[Any Style]", ["[Beliebiges Format]", "[Tout style]", "[Cualquier estilo]", "[任意のスタイル]", "[任意样式]"]),
+    (
+        "Specify attributes to change",
+        [
+            "Zu ersetzende Attribute festlegen",
+            "Indiquer les attributs à remplacer",
+            "Especificar atributos que cambiar",
+            "置換する属性を指定",
+            "指定要更改的属性",
+        ],
+    ),
+    (
+        "Clear specified attributes",
+        ["Festgelegte Attribute löschen", "Effacer les attributs indiqués", "Borrar atributos especificados", "指定した属性を消去", "清除指定的属性"],
+    ),
+    (
+        "With a Change Format and nothing in Change to, the found text stays and is only formatted",
+        [
+            "Mit einem Ersetzungsformat und leerem Feld „Ersetzen durch“ bleibt der gefundene Text erhalten und wird nur formatiert",
+            "Avec un format de remplacement et « Remplacer par » vide, le texte trouvé reste et seule sa mise en forme change",
+            "Con un formato de cambio y «Cambiar a» vacío, el texto encontrado se conserva y solo cambia su formato",
+            "置換形式があり置換文字列が空のときは、検索したテキストはそのままで書式だけが変わります",
+            "设置了更改格式且“更改为”为空时，找到的文本保持不变，只更改其格式",
+        ],
+    ),
     ("Character Style:", ["Character Style:", "Style de caractère :", "Character Style:", "Character Style:", "字符样式："]),
     ("Checked by default", ["Checked by default", "Cochée par défaut", "Checked by default", "Checked by default", "默认选中"]),
     ("Choices", ["Choices", "Choix", "Choices", "Choices", "选项"]),
