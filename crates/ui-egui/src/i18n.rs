@@ -1527,7 +1527,8 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "适合框架高度到文本",
         ],
     ),
-    ("More Options", ["More Options", "Plus d'options", "More Options", "More Options", "更多选项"]),
+    ("More Options", ["Weitere Optionen", "Plus d'options", "Más opciones", "その他のオプション", "更多选项"]),
+    ("Fewer Options", ["Weniger Optionen", "Moins d'options", "Menos opciones", "オプションを減らす", "较少选项"]),
     ("Flip Horizontal", ["Flip Horizontal", "Retourner horizontalement", "Flip Horizontal", "Flip Horizontal", "水平翻转"]),
     (
         "Rotate 90° Clockwise",

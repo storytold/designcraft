@@ -2,6 +2,7 @@
 //! Common phrases are adapted from the MIT OR Apache-2.0 ArtCraft sibling catalogs
 //! (VectorCraft, PhotoCraft, WordCraft and DeckCraft); see ASSETS.md for pinned sources.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Fewer Options", "Менше параметрів"),
     ("File", "Файл"),
     ("Edit", "Редагування"),
     ("Layout", "Макет"),

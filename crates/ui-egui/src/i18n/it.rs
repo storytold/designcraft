@@ -1,6 +1,7 @@
 //! Original Italian interface translations, written from the English source
 //! using ordinary Italian desktop-publishing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Fewer Options", "Meno opzioni"),
     ("File", "File"),
     ("Edit", "Modifica"),
     ("Layout", "Layout"),

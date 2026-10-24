@@ -3,6 +3,7 @@
 //! Brazilian Portuguese, Italian and Ukrainian tables has a row here; the German column of the shared
 //! table is carried over and stays the fallback for keys added there after this table.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Fewer Options", "Weniger Optionen"),
     ("File", "Datei"),
     ("Edit", "Bearbeiten"),
     ("Layout", "Layout"),

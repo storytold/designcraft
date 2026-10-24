@@ -6545,6 +6545,7 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
     let styles: Vec<String> = d.fields.get("styles").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     let char_styles: Vec<String> = d.fields.get("charStyles").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let mut expanded = d.fields.get("moreOptions").and_then(Value::as_bool).unwrap_or(true);
     let mut rows = toc_rows(d);
     let mut sel = d.n("selected").map_or(0, |n| n.max(0.0) as usize);
     let mut other = d.s("other");
@@ -6557,7 +6558,12 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.end_row();
     });
     ui.add_space(8.0);
-    crate::rtl::label(ui, egui::RichText::new(tr("Styles in Table of Contents")).font(semibold(12.0)));
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, egui::RichText::new(tr("Styles in Table of Contents")).font(semibold(12.0)));
+        if ui.button(tr(if expanded { "Fewer Options" } else { "More Options" })).clicked() {
+            expanded = !expanded;
+        }
+    });
     let others: Vec<&String> = styles.iter().filter(|n| !rows.iter().any(|r| &r.style == *n)).collect();
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
@@ -6610,6 +6616,9 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             let auto = format!("TOC Level {}", r.level.clamp(1, 9));
             toc_style_combo(ui, "entry", &styles, &auto, &mut r.entry_style);
             ui.end_row();
+            if !expanded {
+                return;
+            }
             crate::rtl::label(ui, tr("Page Number:"));
             let choices = [("after", "After Entry"), ("before", "Before Entry"), ("none", "No Page Number")];
             let cur = choices.iter().find(|(v, _)| *v == r.page_number).map_or("After Entry", |(_, l)| l);
@@ -6650,6 +6659,7 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.add_space(6.0);
         crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
+    d.fields.insert("moreOptions".into(), json!(expanded));
     d.fields.insert("included".into(), json!(rows));
     d.fields.insert("selected".into(), json!(sel));
     d.fields.insert("other".into(), json!(other));
@@ -8350,6 +8360,43 @@ mod tests {
             app.run("edit.undo", json!({})).unwrap();
         }
         assert_eq!(opts(&app), before);
+    }
+
+    /// Collapsing advanced TOC controls changes visibility without discarding their values.
+    #[test]
+    fn toc_more_options_preserves_hidden_settings() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.newSample", json!({})).unwrap();
+        open_toc(&mut app);
+        app.ui.dialog.as_mut().unwrap().fields.insert(
+            "included".into(),
+            json!([{
+                "style": "Headline", "level": 3, "separator": " ^t", "pageNumber": "before",
+                "pageNumberStyle": "Accent", "separatorStyle": "Emphasis", "sort": true
+            }]),
+        );
+        let before = toc_params(&app, app.ui.dialog.as_ref().unwrap());
+        let revision = app.session.doc().unwrap().revision;
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        visible_label(&labels, screen, "Between Entry and Number:");
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Fewer Options").center());
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        assert!(!labels.iter().any(|(text, _, _)| text == "Between Entry and Number:"));
+        visible_label(&labels, screen, "Entry Style:");
+        assert_eq!(toc_params(&app, app.ui.dialog.as_ref().unwrap()), before);
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "More Options").center());
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        visible_label(&labels, screen, "Between Entry and Number:");
+        assert_eq!(toc_params(&app, app.ui.dialog.as_ref().unwrap()), before);
+        assert_eq!(app.session.doc().unwrap().revision, revision);
     }
 
     #[test]
