@@ -93,6 +93,21 @@ fn line_count(len: usize, want: usize, before: usize, after: usize) -> usize {
     1
 }
 
+/// The per-line counts recovered from the split table, or `None` when they don't cover all `m`.
+fn trace_counts(take: &[Vec<usize>], n: usize, m: usize) -> Option<Vec<usize>> {
+    let mut counts = Vec::with_capacity(n);
+    let mut s = 0_usize;
+    for lines in (1..=n).rev() {
+        let t = take[lines][s];
+        if t == 0 || s + t > m {
+            return None;
+        }
+        counts.push(t);
+        s += t;
+    }
+    (s == m).then_some(counts)
+}
+
 /// Glyph counts for `n` lines. Minimises the widest line, and the first and last lines keep their
 /// break minimums. One line when no split satisfies them.
 fn split_even(advs: &[f64], n: usize, before: usize, after: usize) -> Vec<usize> {
@@ -142,17 +157,7 @@ fn split_even(advs: &[f64], n: usize, before: usize, after: usize) -> Vec<usize>
     if !best[n][0].is_finite() {
         return vec![m];
     }
-    let mut counts = Vec::with_capacity(n);
-    let mut s = 0_usize;
-    for lines in (1..=n).rev() {
-        let t = take[lines][s];
-        if t == 0 || s + t > m {
-            return vec![m];
-        }
-        counts.push(t);
-        s += t;
-    }
-    if s != m { vec![m] } else { counts }
+    trace_counts(&take, n, m).unwrap_or_else(|| vec![m])
 }
 
 fn restore(line: &mut [PlacedGlyph], members: &[usize], saved: &[(f64, f64, f64, f64)]) {

@@ -303,6 +303,25 @@ impl Exporter<'_> {
         });
     }
 
+    /// One table cell's graphic, or its text composed in the cell's own area.
+    fn table_cell(&mut self, s: &mut Surface, c: &designcraft_compose::PlacedCell) {
+        if let Some(g) = &c.graphic {
+            if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
+                s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
+                s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
+                self.graphic(s, g);
+                s.pop();
+                s.pop();
+            }
+        } else if let Some(cft) = c.text.frames.first() {
+            s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
+            let area = std::mem::replace(&mut self.text_area, lines_area(cft));
+            self.frame_text(s, &c.text, cft, &c.source);
+            self.text_area = area;
+            s.pop();
+        }
+    }
+
     /// Table fragments: cell fills, cell text (real text), edges and the border.
     fn tables(&mut self, s: &mut Surface, ft: &FrameText) {
         for t in &ft.tables {
@@ -314,21 +333,7 @@ impl Exporter<'_> {
                 }
             }
             for c in &t.cells {
-                if let Some(g) = &c.graphic {
-                    if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
-                        s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
-                        s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
-                        self.graphic(s, g);
-                        s.pop();
-                        s.pop();
-                    }
-                } else if let Some(cft) = c.text.frames.first() {
-                    s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
-                    let area = std::mem::replace(&mut self.text_area, lines_area(cft));
-                    self.frame_text(s, &c.text, cft, &c.source);
-                    self.text_area = area;
-                    s.pop();
-                }
+                self.table_cell(s, c);
             }
             for seg in &t.strokes {
                 let st = &seg.stroke;
