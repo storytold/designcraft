@@ -405,6 +405,9 @@ impl Tool for FrameTool {
                             snap_free_line(cx, sr, sa, b, &mut self.guides)
                         };
                     }
+                    // The readout measures the line as drawn (Shift and snapping included), in
+                    // spread space.
+                    self.last = Some((spread_json(sr), Rect::from_points(sa, b)));
                     out.push(Action::Preview("line.create".into(), json!({"spread": spread_json(sr), "a": [sa.x, sa.y], "b": [b.x, b.y]})));
                 } else {
                     let end = cx.layout.to_spread(sr, ev.pos);
@@ -458,11 +461,18 @@ impl Tool for FrameTool {
     }
 
     fn overlays(&self, cx: &ToolContext) -> Vec<Overlay> {
-        if let (true, Some(a)) = (self.active, self.start) {
-            let r = Rect::from_points(a, self.cur);
-            let _ = cx;
+        // The frame or line being drawn (Shift, Alt and snapping included, in spread space), in the
+        // document's units to two decimals, on two lines: InDesign's readout ("W: 3.13 cm",
+        // "H: 3.13 cm"). Nothing before the first drag step.
+        if self.active
+            && self.start.is_some()
+            && let Some((_, r)) = self.last.as_ref()
+        {
+            let units = &cx.doc.settings;
+            let w = designcraft_geom::units::format_measure_prec(r.width().abs(), units.horizontal_units, 2);
+            let h = designcraft_geom::units::format_measure_prec(r.height().abs(), units.vertical_units, 2);
             let mut v = self.guides.clone();
-            v.push(Overlay::Measure { p: self.cur, text: format!("W: {:.0} pt  H: {:.0} pt", r.width(), r.height()) });
+            v.push(Overlay::Measure { p: self.cur, text: format!("W: {w}\nH: {h}") });
             return v;
         }
         vec![]
