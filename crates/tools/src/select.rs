@@ -570,8 +570,7 @@ fn finish_snapped_resize(
     proposed: Rect,
     mods: Mods,
     driver_x: bool,
-    x_edges: [bool; 3],
-    y_edges: [bool; 3],
+    (x_edges, y_edges): ([bool; 3], [bool; 3]),
     hit: &crate::Snap,
 ) -> Rect {
     if !mods.alt {
@@ -1021,7 +1020,7 @@ impl Tool for SelectionTool {
                                 pointer,
                             },
                         );
-                        to = finish_snapped_resize(from, handle, proposed, ev.mods, driver_x, x_edges, y_edges, &hit);
+                        to = finish_snapped_resize(from, handle, proposed, ev.mods, driver_x, (x_edges, y_edges), &hit);
                         crate::snap::lay_dimension_guides(&mut hit.guides, cx.layout.xf(spread), proposed, to, x_edges, y_edges, hit.length_delta);
                         self.guides = hit.guides;
                     }

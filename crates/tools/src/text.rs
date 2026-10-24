@@ -212,6 +212,123 @@ fn underlines(cx: &ToolContext, ts: TextSel, r: Range<usize>) -> Vec<(Point, Poi
     out
 }
 
+impl TypeTool {
+    fn pointer_down(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        self.start = Some(ev.pos);
+        self.drawing = false;
+        self.selecting = None;
+        self.cell_drag = None;
+        self.unit = None;
+        self.border = None;
+        if ev.kind == PointerKind::Down
+            && let Some(b) = border_at(cx, ev.pos)
+        {
+            self.border = Some(b);
+            return vec![];
+        }
+        // Text frames take the caret (locked ones too, as in InDesign); an empty frame
+        // becomes one, unless it's locked: then the press draws a new text frame over it.
+        if let Some((_, id)) = cx.hit(ev.pos)
+            && let Some(it) = cx.doc.item(id)
+            && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
+            && (it.is_text_frame() || !it.locked)
+        {
+            let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+            let clicks = ev.click_count();
+            // Whole rows/columns selected: wait to see whether this is a drag.
+            if clicks == 1 && !ev.mods.shift && whole_rows_or_cols(cx) {
+                self.cell_drag = Some((id.0, sp));
+                return vec![];
+            }
+            self.selecting = Some(id.0);
+            // Two presses select a word (or a run of spaces), three a line, four a
+            // paragraph, five the story.
+            if clicks >= 2 {
+                let unit = match clicks {
+                    2 => "word",
+                    3 => "line",
+                    4 => "paragraph",
+                    _ => "story",
+                };
+                self.unit = Some(unit);
+                return vec![Action::Exec("text.selectAt".into(), json!({"frame": id.0, "point": [sp.x, sp.y], "unit": unit}))];
+            }
+            let cmd = if ev.mods.shift { "text.extendTo" } else { "text.placeCaret" };
+            return vec![Action::Exec(cmd.into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))];
+        }
+        vec![]
+    }
+
+    fn pointer_drag(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        let Some(a) = self.start else { return vec![] };
+        if let Some(b) = self.border.as_mut() {
+            // A click with a little wobble must not resize.
+            if !b.begun && (ev.pos - a).hypot() < cx.tol(3.0) {
+                return vec![];
+            }
+            return b.drag(ev.pos, ev.mods.shift);
+        }
+        if self.cell_drag.is_some() {
+            return vec![];
+        }
+        if let Some(fid) = self.selecting {
+            let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+            let mut p = json!({"frame": fid, "point": [sp.x, sp.y]});
+            // After several clicks the drag grows the selection by whole units.
+            if let Some(unit) = self.unit {
+                p["unit"] = json!(unit);
+            }
+            return vec![Action::Exec("text.extendTo".into(), p)];
+        }
+        if (ev.pos - a).hypot() < cx.tol(3.0) && !self.drawing {
+            return vec![];
+        }
+        let Some((sr, sa)) = cx.layout.spread_at(a) else { return vec![] };
+        // Drawn like the frame tools: the press point and the moving edges snap.
+        let sa = if cx.snap.any() { crate::snap::snap_point(cx, sr, sa).0 } else { sa };
+        let (r, guides) = snapped_drag_rect(cx, sr, sa, cx.layout.to_spread(sr, ev.pos), ev.mods);
+        self.guides = guides;
+        let mut out = vec![];
+        if !self.drawing {
+            self.drawing = true;
+            out.push(Action::Begin("Create Text Frame".into()));
+        }
+        out.push(Action::Preview(
+            "frame.create".into(),
+            json!({"spread": spread_json(sr), "shape": "rectangle", "content": "text", "rect": rect_json(r), "caret": true, "vertical": self.vertical}),
+        ));
+        out
+    }
+
+    fn pointer_up(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        self.guides.clear();
+        let start = self.start.take();
+        if let Some(b) = self.border.take() {
+            return if b.begun { vec![Action::Commit] } else { vec![] };
+        }
+        if let Some((fid, from)) = self.cell_drag.take() {
+            let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+            let moved = start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0));
+            return if moved {
+                vec![Action::Exec("table.dropCells".into(), json!({"frame": fid, "from": [from.x, from.y], "to": [sp.x, sp.y]}))]
+            } else {
+                vec![Action::Exec("text.placeCaret".into(), json!({"frame": fid, "point": [from.x, from.y]}))]
+            };
+        }
+        if std::mem::take(&mut self.drawing) {
+            self.selecting = None;
+            return vec![Action::Commit];
+        }
+        // Ends a press in text: drops dragged text, or is ignored by the engine.
+        if let Some(fid) = self.selecting.take() {
+            let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+            let moved = start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0));
+            return vec![Action::Exec("text.release".into(), json!({"frame": fid, "point": [sp.x, sp.y], "moved": moved, "copy": ev.mods.alt}))];
+        }
+        vec![]
+    }
+}
+
 impl Tool for TypeTool {
     fn id(&self) -> &'static str {
         if self.vertical { "verticalType" } else { "type" }
@@ -219,121 +336,9 @@ impl Tool for TypeTool {
 
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
-            PointerKind::Down | PointerKind::DoubleClick => {
-                self.start = Some(ev.pos);
-                self.drawing = false;
-                self.selecting = None;
-                self.cell_drag = None;
-                self.unit = None;
-                self.border = None;
-                if ev.kind == PointerKind::Down
-                    && let Some(b) = border_at(cx, ev.pos)
-                {
-                    self.border = Some(b);
-                    return vec![];
-                }
-                // Text frames take the caret (locked ones too, as in InDesign); an empty frame
-                // becomes one, unless it's locked: then the press draws a new text frame over it.
-                if let Some((_, id)) = cx.hit(ev.pos)
-                    && let Some(it) = cx.doc.item(id)
-                    && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
-                    && (it.is_text_frame() || !it.locked)
-                {
-                    let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
-                    let clicks = ev.click_count();
-                    // Whole rows/columns selected: wait to see whether this is a drag.
-                    if clicks == 1 && !ev.mods.shift && whole_rows_or_cols(cx) {
-                        self.cell_drag = Some((id.0, sp));
-                        return vec![];
-                    }
-                    self.selecting = Some(id.0);
-                    // Two presses select a word (or a run of spaces), three a line, four a
-                    // paragraph, five the story.
-                    if clicks >= 2 {
-                        let unit = match clicks {
-                            2 => "word",
-                            3 => "line",
-                            4 => "paragraph",
-                            _ => "story",
-                        };
-                        self.unit = Some(unit);
-                        return vec![Action::Exec("text.selectAt".into(), json!({"frame": id.0, "point": [sp.x, sp.y], "unit": unit}))];
-                    }
-                    let cmd = if ev.mods.shift { "text.extendTo" } else { "text.placeCaret" };
-                    return vec![Action::Exec(cmd.into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))];
-                }
-                vec![]
-            }
-            PointerKind::Drag => {
-                let Some(a) = self.start else { return vec![] };
-                if let Some(b) = self.border.as_mut() {
-                    // A click with a little wobble must not resize.
-                    if !b.begun && (ev.pos - a).hypot() < cx.tol(3.0) {
-                        return vec![];
-                    }
-                    return b.drag(ev.pos, ev.mods.shift);
-                }
-                if self.cell_drag.is_some() {
-                    return vec![];
-                }
-                if let Some(fid) = self.selecting {
-                    let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
-                    let mut p = json!({"frame": fid, "point": [sp.x, sp.y]});
-                    // After several clicks the drag grows the selection by whole units.
-                    if let Some(unit) = self.unit {
-                        p["unit"] = json!(unit);
-                    }
-                    return vec![Action::Exec("text.extendTo".into(), p)];
-                }
-                if (ev.pos - a).hypot() < cx.tol(3.0) && !self.drawing {
-                    return vec![];
-                }
-                let Some((sr, sa)) = cx.layout.spread_at(a) else { return vec![] };
-                // Drawn like the frame tools: the press point and the moving edges snap.
-                let sa = if cx.snap.any() { crate::snap::snap_point(cx, sr, sa).0 } else { sa };
-                let (r, guides) = snapped_drag_rect(cx, sr, sa, cx.layout.to_spread(sr, ev.pos), ev.mods);
-                self.guides = guides;
-                let mut out = vec![];
-                if !self.drawing {
-                    self.drawing = true;
-                    out.push(Action::Begin("Create Text Frame".into()));
-                }
-                out.push(Action::Preview(
-                    "frame.create".into(),
-                    json!({"spread": spread_json(sr), "shape": "rectangle", "content": "text", "rect": rect_json(r), "caret": true, "vertical": self.vertical}),
-                ));
-                out
-            }
-            PointerKind::Up => {
-                self.guides.clear();
-                let start = self.start.take();
-                if let Some(b) = self.border.take() {
-                    return if b.begun { vec![Action::Commit] } else { vec![] };
-                }
-                if let Some((fid, from)) = self.cell_drag.take() {
-                    let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
-                    let moved = start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0));
-                    return if moved {
-                        vec![Action::Exec("table.dropCells".into(), json!({"frame": fid, "from": [from.x, from.y], "to": [sp.x, sp.y]}))]
-                    } else {
-                        vec![Action::Exec("text.placeCaret".into(), json!({"frame": fid, "point": [from.x, from.y]}))]
-                    };
-                }
-                if std::mem::take(&mut self.drawing) {
-                    self.selecting = None;
-                    return vec![Action::Commit];
-                }
-                // Ends a press in text: drops dragged text, or is ignored by the engine.
-                if let Some(fid) = self.selecting.take() {
-                    let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
-                    let moved = start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0));
-                    return vec![Action::Exec(
-                        "text.release".into(),
-                        json!({"frame": fid, "point": [sp.x, sp.y], "moved": moved, "copy": ev.mods.alt}),
-                    )];
-                }
-                vec![]
-            }
+            PointerKind::Down | PointerKind::DoubleClick => self.pointer_down(cx, ev),
+            PointerKind::Drag => self.pointer_drag(cx, ev),
+            PointerKind::Up => self.pointer_up(cx, ev),
             PointerKind::Move => vec![],
         }
     }
