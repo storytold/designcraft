@@ -286,7 +286,6 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     ui.add_space(3.0);
     // Preset and orientation: this page alone.
     let (w, h) = (pg.width, pg.height);
-    let landscape = w > h;
     let mut size = page_preset_row(ui, &lang, w, h);
     ui.add_space(3.0);
     let b = block(ui, 2.0 * FIELD_H + 5.0);
