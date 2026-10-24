@@ -59,7 +59,7 @@ fn in_note(s: &Session) -> std::result::Result<(), String> {
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
-    s.edit(|d, sel| {
+    let r = s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("footnote.insert", "no insertion point"))?;
         let para = ParaFormat { style: d.footnote_options.para_style.clone(), ..Default::default() };
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
@@ -69,7 +69,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
         Ok(json!({"story": t.story.0, "id": id}))
-    })
+    })?;
+    s.typing_format = None;
+    Ok(r)
 }
 
 /// Overlay `p` onto `base` (objects merge key by key).
@@ -143,15 +145,20 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.delete")?;
     let id = note_id(p, "footnote.delete")?;
-    s.edit(|d, sel| {
+    let moved = s.edit(|d, sel| {
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let at = st.note_anchor(id).ok_or_else(|| bad("footnote.delete", format!("no footnote {id}")))?;
         st.delete(at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
-        if sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
+        let moved = sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id)));
+        if moved {
             sel.text = Some(TextSel::caret(sid, at));
         }
-        Ok(Value::Null)
-    })
+        Ok(moved)
+    })?;
+    if moved {
+        s.typing_format = None;
+    }
+    Ok(Value::Null)
 }
 
 fn go_to_reference(s: &mut Session, _: &Value) -> Result<Value> {
@@ -162,6 +169,7 @@ fn go_to_reference(s: &mut Session, _: &Value) -> Result<Value> {
     let pos = at + designcraft_doc::FOOTNOTE_REF.len_utf8();
     st.selection.text = Some(TextSel { anchor: pos, focus: pos, cell: None, ..t });
     st.bump_revision();
+    s.typing_format = None;
     Ok(json!({"story": t.story.0, "pos": pos}))
 }
 
@@ -211,6 +219,36 @@ mod tests {
         assert!(s.doc().unwrap().doc.story(sid).unwrap().notes.is_empty());
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes.len(), 1);
+    }
+
+    #[test]
+    fn footnote_caret_moves_drop_the_pending_typing_format() {
+        let (mut s, sid) = session_with_text();
+        let pending = |s: &mut Session| {
+            s.execute("type.char", &json!({"attrs": {"size": 30}})).unwrap();
+            assert!(s.typing_format.is_some());
+        };
+        // Formatting chosen in footnote text, then away to the reference and back to the same caret (a new
+        // footnote takes the deleted one's id): typing there is in the footnote text's own format.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 16, "focus": 16})).unwrap();
+        let id = s.execute("footnote.insert", &json!({"text": "A source."})).unwrap()["id"].as_u64().unwrap();
+        pending(&mut s);
+        s.execute("footnote.goToReference", &json!({})).unwrap();
+        s.execute("footnote.delete", &json!({"story": sid.0, "id": id})).unwrap();
+        let again = s.execute("footnote.insert", &json!({"text": "A source."})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(again, id);
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].text.char_format_at(10).over.size, None);
+        // Each command that moves the caret drops it.
+        pending(&mut s);
+        s.execute("footnote.goToReference", &json!({})).unwrap();
+        assert!(s.typing_format.is_none(), "footnote.goToReference");
+        pending(&mut s);
+        let id = s.execute("footnote.insert", &json!({"text": "y"})).unwrap()["id"].as_u64().unwrap();
+        assert!(s.typing_format.is_none(), "footnote.insert");
+        pending(&mut s);
+        s.execute("footnote.delete", &json!({"story": sid.0, "id": id})).unwrap();
+        assert!(s.typing_format.is_none(), "footnote.delete");
     }
 
     #[test]
