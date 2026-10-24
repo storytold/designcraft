@@ -175,7 +175,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let _ = app.run("object.fit", json!({"mode": mode}));
                     }
                 }
+                // Frame Fitting Options…, as InDesign's Options button beside the fitting buttons.
+                if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 64.0).clicked() {
+                    crate::menus::activate(app, "app.fittingOptions", &Value::Null);
+                }
             });
+            // Auto-Fit: the graphic is refitted whenever its frame is resized.
+            let mut auto = app
+                .session
+                .active()
+                .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
+                .and_then(|it| it.graphic())
+                .is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None);
+            if widgets::checkbox(ui, &mut auto, crate::i18n::tr(&app.ui.language, "Auto-Fit")).changed() {
+                let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
+            }
             divider(ui);
         }
         section(ui, crate::i18n::tr(&app.ui.language, "Text Wrap"), true);
@@ -3856,6 +3870,36 @@ mod tests {
         assert_eq!(items.len(), 1, "one shape left");
         let r = items[0].bounds();
         assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
+    }
+
+    /// Properties › Frame Fitting has Auto-Fit and an Options button, as InDesign's: ticking
+    /// Auto-Fit makes the picture refit when its frame is resized.
+    #[test]
+    fn properties_frame_fitting_sets_auto_fit_and_opens_its_options() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        app.run("file.place", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "p.png", "frame": id})).unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let graphic = |app: &DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().graphic().unwrap().clone();
+        assert_eq!(graphic(&app).auto_fit, designcraft_doc::Fitting::None);
+        let mut h = panel(app);
+        // A checkbox its section disables says so: Invert, with no text wrap.
+        use egui_kittest::kittest::NodeT;
+        assert!(h.get_by_label("Invert").accesskit_node().is_disabled());
+        assert!(!h.get_by_label("Auto-Fit").accesskit_node().is_disabled());
+        h.get_by_label("Auto-Fit").click();
+        h.run_steps(3);
+        assert_ne!(graphic(h.state()).auto_fit, designcraft_doc::Fitting::None, "Auto-Fit is on");
+        // The frame resized: the picture follows it.
+        h.state_mut().run("transform.resize", json!({"from": [72, 72, 272, 172], "to": [72, 72, 372, 272]})).unwrap();
+        let g = graphic(h.state());
+        let r = g.xf.transform_rect_bbox(designcraft_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1));
+        assert!(r.width() > 250.0, "refitted to the larger frame: {r:?}");
+        h.get_by_label("Options").click();
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_some(), "Frame Fitting Options opens");
     }
 
     const CYAN: &str = "C=100 M=0 Y=0 K=0";
