@@ -1178,27 +1178,37 @@ impl Exporter<'_> {
         }
         // Viewers expand dashes too: a degenerate pattern draws solid, as on screen.
         let length = designcraft_doc::path_length_bound(bp);
-        let dash = match &kind {
-            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
+        let dash = match kind.dashes(st.weight) {
+            Some((pattern, dots)) if StrokeType::expandable_dashes(&pattern, length) => {
                 let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
                 if pat.len() % 2 == 1 {
                     pat.extend(pat.clone());
                 }
+                if dots {
+                    cap = krilla::paint::LineCap::Round;
+                }
                 Some(StrokeDash { array: pat, offset: 0.0 })
-            }
-            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
-                cap = krilla::paint::LineCap::Round;
-                Some(StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 })
             }
             _ => None,
         };
         let arrows = designcraft_doc::arrow::apply(bp, st, closed);
         let trimmed = arrows.as_ref().and_then(|a| to_path(&a.0));
         let path = trimmed.as_ref().unwrap_or(path);
-        let aligned = closed && st.align != StrokeAlign::Center;
+        // Round dots aligned inside or outside stay whole: along the path moved half the weight
+        // that way, at the stroke's own width and unclipped, as on screen.
+        let dots = kind.draws_dots(st.weight, length);
+        let moved = (closed && dots && st.align != StrokeAlign::Center)
+            .then(|| {
+                let d = st.weight / 2.0 * if st.align == StrokeAlign::Outside { 1.0 } else { -1.0 };
+                to_path(&designcraft_geom::stroke_style::offset_outward(bp, d, 0.05))
+            })
+            .flatten();
+        let path = moved.as_ref().unwrap_or(path);
+        let aligned = closed && st.align != StrokeAlign::Center && moved.is_none();
         let width = if aligned { st.weight * 2.0 } else { st.weight };
         let mut pushes = 0;
         match st.align {
+            _ if moved.is_some() => {}
             StrokeAlign::Inside if closed => {
                 s.push_clip_path(path, &FillRule::NonZero);
                 pushes += 1;

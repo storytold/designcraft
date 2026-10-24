@@ -4439,6 +4439,40 @@ fn cell_first_baseline_comes_from_cell_styles_table_regions_and_cells_and_round_
     assert_eq!(s2.first_baseline, Some(FirstBaseline::CapHeight));
 }
 
+/// Every built-in stroke type exports under InDesign's id and imports as itself.
+#[test]
+fn stroke_types_round_trip() {
+    use StrokeType::*;
+    use designcraft_doc::StrokeType;
+    let all = [
+        Solid,
+        ThickThick,
+        ThickThin,
+        ThickThinThick,
+        ThinThick,
+        ThinThickThin,
+        ThinThin,
+        Triple,
+        Dashed3x2,
+        Dashed4x4,
+        LeftSlantHash,
+        RightSlantHash,
+        Hashed,
+        Dotted,
+        Wavy,
+        WhiteDiamond,
+        JapaneseDots,
+        Dashed { pattern: vec![] },
+    ];
+    assert_eq!(all.len(), StrokeType::BUILT_IN.len());
+    for t in all {
+        let id = names::stroke_type_out(&t);
+        assert_eq!(names::stroke_type_in(&id), t, "{id}");
+    }
+    assert_eq!(names::stroke_type_in("StrokeStyle/$ID/Japanese Dots"), StrokeType::JapaneseDots);
+    assert_eq!(names::stroke_type_in("StrokeStyle/$ID/Triple_Stroke"), StrokeType::Triple);
+}
+
 /// A graphic placed in a table cell is written into the cell, not dropped.
 #[test]
 fn exports_graphic_in_table_cell() {

@@ -859,9 +859,8 @@ fn swatch_in(doc: &Document, v: &Value, keys: &[&str], cmd: &str) -> Result<Opti
     Ok(Some(name.to_string()))
 }
 
-/// The cell stroke type names of `type`.
-const CELL_STROKE_TYPES: &[&str] =
-    &["solid", "dashed", "dotted", "thickThin", "thinThick", "thinThin", "thickThick", "thinThickThin", "thickThinThick", "wavy", "hashed"];
+/// The cell stroke type names of `type`: every built-in type.
+const CELL_STROKE_TYPES: &[&str] = &StrokeType::BUILT_IN;
 
 /// The attributes a stroke edit sets. A plain `"dashed"` gets a pattern scaled to the
 /// resulting weight of each edge.
