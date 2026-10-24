@@ -834,6 +834,33 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 _ => {}
             }
         }
+        // Properties › Align To, one glyph per target, with the drop-down mark: a page with its
+        // margins, a page, a spread of two pages, a key object drawn bold.
+        "align-to-margins" | "align-to-page" | "align-to-spread" | "align-to-key" => {
+            match name {
+                "align-to-margins" => {
+                    pen.closed(&[(4.0, 2.5), (11.5, 2.5), (14.5, 5.5), (14.5, 16.0), (4.0, 16.0)]);
+                    pen.w = 1.0;
+                    pen.rect(6.5, 6.0, 12.0, 13.5);
+                }
+                "align-to-page" => {
+                    pen.closed(&[(4.0, 2.5), (11.5, 2.5), (14.5, 5.5), (14.5, 16.0), (4.0, 16.0)]);
+                    pen.line(&[(11.5, 2.5), (11.5, 5.5), (14.5, 5.5)]);
+                }
+                "align-to-spread" => {
+                    pen.rect(1.5, 4.0, 8.5, 15.0);
+                    pen.rect(8.5, 4.0, 15.5, 15.0);
+                }
+                _ => {
+                    pen.rect(3.0, 4.0, 15.0, 14.0);
+                    pen.frect(3.0, 4.0, 15.0, 6.0);
+                    pen.frect(3.0, 12.0, 15.0, 14.0);
+                    pen.frect(3.0, 4.0, 5.0, 14.0);
+                    pen.frect(13.0, 4.0, 15.0, 14.0);
+                }
+            }
+            pen.fill(&[(16.0, 17.0), (19.5, 17.0), (17.75, 19.0)]);
+        }
         "align-to" | "frame-dashed" => {
             pen.w = 1.0;
             for (a, b) in [((3.0, 3.0), (15.0, 3.0)), ((15.0, 3.0), (15.0, 15.0)), ((15.0, 15.0), (3.0, 15.0)), ((3.0, 15.0), (3.0, 3.0))] {
@@ -1250,6 +1277,20 @@ mod tests {
     fn selection_arrow_is_filled_and_direct_selection_hollow() {
         assert!(arrow_filled("tool-selection"), "Selection draws a hollow arrow");
         assert!(!arrow_filled("tool-direct"), "Direct Selection draws a filled arrow");
+    }
+
+    /// Each Align To target has its own glyph, none the placeholder.
+    #[test]
+    fn align_to_glyphs_are_distinct() {
+        let names = ["align-to", "align-to-key", "align-to-margins", "align-to-page", "align-to-spread"];
+        let unknown = drawing("no-such-icon");
+        let glyphs: Vec<String> = names.iter().map(|n| drawing(n)).collect();
+        for (k, g) in glyphs.iter().enumerate() {
+            assert_ne!(*g, unknown, "{} falls back to the placeholder", names[k]);
+            for (j, other) in glyphs.iter().enumerate().skip(k + 1) {
+                assert_ne!(g, other, "{} and {} draw alike", names[k], names[j]);
+            }
+        }
     }
 
     #[test]

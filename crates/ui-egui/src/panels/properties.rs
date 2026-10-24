@@ -978,6 +978,17 @@ fn swatch_menu(
     }
 }
 
+/// The Align To button's glyph shows what the objects align to, as InDesign's.
+fn align_to_icon(to: &str) -> &'static str {
+    match to {
+        "keyObject" => "align-to-key",
+        "margins" => "align-to-margins",
+        "page" => "align-to-page",
+        "spread" => "align-to-spread",
+        _ => "align-to",
+    }
+}
+
 fn align_row(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
@@ -994,7 +1005,7 @@ fn align_row(app: &mut DesignApp, ui: &mut Ui) {
             other => other,
         };
         let tip = format!("{}: {}", crate::i18n::tr(&app.ui.language, "Align To"), crate::i18n::tr(&app.ui.language, to_label));
-        let resp = icon_toggle(ui, "align-to", false, &tip);
+        let resp = icon_toggle(ui, align_to_icon(&to), false, &tip);
         egui::Popup::menu(&resp).show(|ui| {
             for (label, id) in [
                 ("Align to Selection", "selection"),
@@ -3932,6 +3943,16 @@ mod tests {
         let doc = &h.state().session.active().unwrap().doc;
         assert_eq!(doc.story(story).unwrap().char_format_at(0).over.fill.as_deref(), Some(CYAN), "the text is cyan");
         assert_eq!(doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]", "the frame isn't");
+    }
+
+    /// The Align To button shows the target picked in its menu.
+    #[test]
+    fn the_align_to_button_shows_its_target() {
+        assert_eq!(align_to_icon("selection"), "align-to");
+        assert_eq!(align_to_icon("keyObject"), "align-to-key");
+        assert_eq!(align_to_icon("margins"), "align-to-margins");
+        assert_eq!(align_to_icon("page"), "align-to-page");
+        assert_eq!(align_to_icon("spread"), "align-to-spread");
     }
 
     #[test]
