@@ -2892,9 +2892,12 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let _ = app.run("object.dropShadow", json!({"on": on}));
     }
     if ds.on {
+        // Distance and Size in the document's unit, as in the Effects dialog: a bare `7` means the
+        // same in both.
+        let u = units(app);
         egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
             caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
-            if let Some(v) = number(ui, "dsd", Some(ds.distance), " pt", 56.0, 1) {
+            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, 56.0) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Angle"));
@@ -2921,7 +2924,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-            if let Some(v) = number(ui, "dss", Some(ds.size), " pt", 50.0, 1) {
+            if let Some(v) = measure(ui, "dss", Some(ds.size), u, 56.0) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
             }
             ui.end_row();
@@ -3378,6 +3381,40 @@ mod tests {
         h.get_by_label("French").click();
         h.run_steps(2);
         assert_eq!(language(h.state_mut()), "French");
+    }
+
+    /// Drop shadow Distance and Size in the Effects panel read and show the document's unit, as
+    /// the Effects dialog does (#1523): in picas a typed `7` is 7 picas in both.
+    #[test]
+    fn effects_panel_shadow_fields_use_the_document_unit() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].clone();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app.run("object.dropShadow", json!({"on": true, "distance": 7.0, "size": 5.0})).unwrap();
+        let shadow = |app: &DesignApp| {
+            let d = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id.as_u64().unwrap())).unwrap().effects.drop_shadow.clone();
+            (d.distance, d.size)
+        };
+        let mut h = panel_harness(app, effects_panel);
+        h.run_steps(3);
+        let values = |h: &Harness<'static, DesignApp>| -> Vec<String> {
+            h.get_all_by_role(egui::accesskit::Role::TextInput).filter_map(|n| n.value()).collect()
+        };
+        let shown = values(&h);
+        assert!(shown.contains(&"0p7".to_string()) && shown.contains(&"0p5".to_string()), "{shown:?}");
+        for (old, typed, want) in [("0p7", "7", (84.0, 5.0)), ("0p5", "3mm", (84.0, 3.0 * designcraft_geom::units::PT_PER_MM))] {
+            let field = h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.value().as_deref() == Some(old)).unwrap();
+            field.focus();
+            h.run_steps(1);
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(typed);
+            h.run_steps(1);
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+            let got = shadow(h.state_mut());
+            assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "{typed}: {got:?}, want {want:?}");
+        }
     }
 
     /// Properties › Character and Paragraph •••, as in InDesign: the sections expand in place,
