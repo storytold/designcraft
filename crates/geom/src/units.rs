@@ -183,17 +183,20 @@ pub fn parse_measure_rel(input: &str, default: Unit, percent_base: Option<f64>) 
 }
 
 /// A comma between two digits read as a decimal point (`0,5 cm`, `12,75`), as typed in most
-/// European languages, when the text has no dot of its own (so `1.000,5` isn't guessed at).
+/// European languages, when the text has no dot of its own (so `1.000,5` isn't guessed at). A
+/// comma before exactly three digits (`1,000`, `2,500 mm`) could be English thousands and stays,
+/// so the field refuses it rather than reading a thousand as one.
 pub fn decimal_comma(s: &str) -> String {
     if s.contains('.') {
         return s.to_string();
     }
     let c: Vec<char> = s.chars().collect();
+    let digit = |j: Option<usize>| j.and_then(|j| c.get(j)).is_some_and(|d| d.is_ascii_digit());
     c.iter()
         .enumerate()
         .map(|(i, &ch)| {
-            let digit = |j: Option<usize>| j.and_then(|j| c.get(j)).is_some_and(|d| d.is_ascii_digit());
-            if ch == ',' && digit(i.checked_sub(1)) && digit(Some(i + 1)) { '.' } else { ch }
+            let after = c.iter().skip(i + 1).take_while(|d| d.is_ascii_digit()).count();
+            if ch == ',' && digit(i.checked_sub(1)) && digit(Some(i + 1)) && after != 3 { '.' } else { ch }
         })
         .collect()
 }
@@ -321,7 +324,6 @@ mod tests {
         (a - b).abs() < 1e-6
     }
 
-    /// Inches show four decimals, as InDesign's fields do; other units three.
     /// A decimal comma, as German, French or Spanish keyboards type it, reads as a decimal point
     /// (it was rejected, so the field quietly kept its old value).
     #[test]
@@ -336,8 +338,13 @@ mod tests {
         assert!(parse_measure("1.000,5", Unit::Points).is_err());
         assert!(parse_measure(",5", Unit::Points).is_err());
         assert!(parse_measure("5,", Unit::Points).is_err());
+        // Before exactly three digits a comma may be English thousands: refused, not guessed.
+        assert!(parse_measure("1,000", Unit::Points).is_err());
+        assert!(parse_measure("2,500 mm", Unit::Points).is_err());
+        assert!((parse_measure("48,25", Unit::Points).unwrap() - 48.25).abs() < 1e-9);
     }
 
+    /// Inches show four decimals, as InDesign's fields do; other units three.
     #[test]
     fn inches_show_four_decimals() {
         assert_eq!(format_measure(12.0, Unit::Inches), "0.1667 in");

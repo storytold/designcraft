@@ -51,6 +51,11 @@ impl NumKind<'_> {
                 // Numbers accept the same arithmetic as measures (`12+3`, `50%*2`): evaluate as points.
                 // A decimal comma is a decimal point (`48,5°` is 48.5, not 485).
                 let s = designcraft_geom::decimal_comma(s.trim());
+                // A comma it couldn't read (`1.000,5`, `,5`, `1,000`) refuses the input rather
+                // than being dropped into another number.
+                if s.contains(',') {
+                    return None;
+                }
                 let cleaned: String =
                     s.chars().filter(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | '*' | '/' | '(' | ')' | ' ')).collect();
                 parse_measure(cleaned.trim(), Unit::Points).ok().or_else(|| cleaned.trim().parse().ok())
@@ -663,6 +668,10 @@ mod tests {
         assert_eq!(deg.parse("48.5"), Some(48.5));
         let cm = NumKind::Measure(Unit::Centimeters);
         assert_eq!(cm.parse("0,1"), Some(Unit::Centimeters.to_pt(0.1)));
+        // A comma that can't be read refuses the input instead of vanishing.
+        for typed in ["1.000,5", ",5", "5,", "1,000"] {
+            assert_eq!(deg.parse(typed), None, "{typed}");
+        }
     }
 
     #[test]
