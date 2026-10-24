@@ -50,8 +50,12 @@ pub struct Spacing {
     pub optical: bool,
     /// Korean text breaks between syllables instead of at spaces.
     pub korean_char_breaks: bool,
-    /// 0: minimum adjustment; 1: push in; 2: push out first; 3: push out only.
+    /// JIS X 4051 禁則処理 type: 0: minimum adjustment (調整量優先); 1: push in first (追い込み
+    /// 優先, the default); 2: push out first (追い出し優先); 3: push out only (追い出しのみ).
     pub kinsoku_priority: u8,
+    /// The paragraph has CJK text, so the 禁則 priority biases its breaks. A Latin paragraph's
+    /// breaks are left alone by the (default) push-in-first policy.
+    pub kinsoku_cjk: bool,
 }
 
 impl Default for Spacing {
@@ -73,19 +77,25 @@ impl Default for Spacing {
             hyph_zone: 0.0,
             optical: false,
             korean_char_breaks: false,
-            kinsoku_priority: 0,
+            kinsoku_priority: 1,
+            kinsoku_cjk: false,
         }
     }
 }
 
 impl Spacing {
+    /// Push out only: the 追い込み (compression that would pull the next character in) is
+    /// unavailable, so every line end is pushed out (and no line is compressed at its end).
+    pub(crate) fn push_out_only(&self) -> bool {
+        self.kinsoku_cjk && self.kinsoku_priority == 3
+    }
     /// Per-tier (word, letter, glyph) stretch and shrink of glyph `g` as a box.
     fn box_elastic(&self, g: &Glyph) -> ([f64; 3], [f64; 3]) {
         if g.locked_advance {
             return ([0.0; 3], [0.0; 3]);
         }
         let moji_stretch = if self.justify { g.moji.stretch } else { 0.0 };
-        let moji_shrink = if self.kinsoku_priority == 3 { 0.0 } else { g.moji.shrink };
+        let moji_shrink = if self.push_out_only() { 0.0 } else { g.moji.shrink };
         if !self.justify {
             return ([0.0; 3], [moji_shrink, 0.0, 0.0]);
         }
@@ -386,7 +396,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             let mut p = Item::penalty(0.0, -INF, false);
             p.hang = prev_hang;
             if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
-                p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, !sp.push_out_only());
             }
             it.push(p);
             ig.push(i + 1);
@@ -400,7 +410,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 let mut gl = Item::glue(w, st, sh);
                 gl.hang = prev_hang;
                 if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
-                    gl.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                    gl.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, !sp.push_out_only());
                 }
                 gl.over = sp.space_overflow(g);
                 last_space = it.len();
@@ -413,7 +423,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = prev_hang;
                 if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
-                    p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
+                    p.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, !sp.push_out_only());
                 }
                 last_space = it.len();
                 it.push(p);
@@ -437,7 +447,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         let (st, sh) = sp.box_elastic(g);
         let mut bx = Item::boxed(g.adv, st, sh);
         bx.hang = (if sp.optical { hang_left(g) } else { 0.0 }) - g.moji.start;
-        bx.start_elastic = crate::mojikumi::start_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+        bx.start_elastic = crate::mojikumi::start_elastic(g, sp.justify, !sp.push_out_only());
         it.push(bx);
         ig.push(i);
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
@@ -445,12 +455,12 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             if matches!(g.ch, '-' | '\u{2010}') {
                 let mut p = Item::penalty(0.0, 50.0, true);
                 p.hang = right_hang(g, sp);
-                p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+                p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only());
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp)) {
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = right_hang(g, sp);
-                p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+                p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only());
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if hyph_after[i] {
                 let hw = hyphen_width(g, &mut hy_cache);
@@ -474,7 +484,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
     let mut p = Item::penalty(0.0, -INF, false);
     p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
     if let Some(g) = glyphs.last() {
-        p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+        p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only());
     }
     it.push(p);
     ig.push(n);
@@ -693,10 +703,18 @@ fn kp_pass(
                     }
                 }
             }
-            let preference = match sp.kinsoku_priority {
-                1 if r > 0.0 => 4.0,
-                2 if r < 0.0 => 4.0,
-                _ => 1.0,
+            // 禁則 priority (JIS X 4051): push-in-first rates breaks whose line would have to be
+            // stretched (r > 0: the next character is pushed out) worse than ones it can reach by
+            // compressing (追い込み); push-out-first the other way. Adjustment-amount mode and a
+            // paragraph without CJK text rate every candidate by its adjustment alone.
+            let preference = if !sp.kinsoku_cjk {
+                1.0
+            } else {
+                match sp.kinsoku_priority {
+                    1 if r > 0.0 => 4.0,
+                    2 if r < 0.0 => 4.0,
+                    _ => 1.0,
+                }
             };
             let bad = preference * 100.0 * r.abs().powi(3);
             let lp = 10.0 + bad;
@@ -877,7 +895,7 @@ pub fn greedy(
     while start < n {
         let w = width(line).max(1.0);
         let mut x = (if sp.optical { -hang_left(&glyphs[start]) } else { 0.0 }) + glyphs[start].moji.start;
-        let mut shrink = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, sp.kinsoku_priority != 3)[1];
+        let mut shrink = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, !sp.push_out_only())[1];
         let mut last_natural: Option<(usize, bool)> = None;
         let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
         let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
@@ -904,9 +922,10 @@ pub fn greedy(
             }
             let hang_r = right_hang(g, sp);
             let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
-            let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
+            let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only())[1];
             let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
-            if sp.kinsoku_priority == 2
+            if sp.kinsoku_cjk
+                && sp.kinsoku_priority == 2
                 && x + adv - hang_r > w + FIT_EPS
                 && let Some((end, hyphen)) = last_natural
             {
