@@ -329,6 +329,10 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "RuleBelow": "false" => false, "true" => true, |r| r.0.rule_below.on;
         "RuleBelowColor": "Text Color" => designcraft_doc::TEXT_COLOR, "Color/Black" => "[Black]", |r| r.0.rule_below.color;
         "RuleBelowTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.rule_below.tint;
+        "RuleBelowType": "StrokeStyle/$ID/Solid" => designcraft_doc::StrokeType::Solid, "StrokeStyle/$ID/Wavy" => designcraft_doc::StrokeType::Wavy, |r| r.0.rule_below.kind;
+        "RuleBelowGapColor": "Swatch/None" => "[None]", "Color/Black" => "[Black]", |r| r.0.rule_below.gap_color;
+        "RuleBelowGapTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.rule_below.gap_tint;
+        "KeepRuleAboveInFrame": "false" => false, "true" => true, |r| r.0.rule_above.keep_in_frame;
         "ParagraphShadingOn": "false" => false, "true" => true, |r| r.0.shading_on;
         "ParagraphShadingColor": "Color/Black" => "[Black]", "Swatch/None" => "[None]", |r| r.0.shading_color;
         "ParagraphShadingTint": "20" => 0.2f32, "50" => 0.5f32, |r| r.0.shading_tint;
@@ -3781,6 +3785,45 @@ fn style_names_ending_in_a_space_and_partial_rule_overrides_import() {
     assert!(black.on, "the rule stays on");
     assert_eq!((black.weight, black.offset), (16.0, -3.0), "weight and offset come from the base style");
     assert_ne!(black.color, white.color, "only the colour is overridden");
+}
+
+#[test]
+fn a_style_setting_only_a_rules_type_gap_or_keep_in_frame_overrides_it() {
+    let styles = STYLES.replace(
+        r#"  </RootParagraphStyleGroup>"#,
+        r#"    <ParagraphStyle Self="ParagraphStyle/Base" Name="Base" RuleBelow="true" RuleBelowLineWeight="3">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Wavy" Name="Wavy" RuleBelowType="StrokeStyle/$ID/Wavy">
+      <Properties><BasedOn type="object">ParagraphStyle/Base</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Gap" Name="Gap" RuleBelowGapColor="Color/Black">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Kept" Name="Kept" KeepRuleAboveInFrame="true">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/TextGap" Name="TextGap" RuleBelowGapColor="$ID/Text Color" RuleAboveColor="$ID/Text Color">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn><RuleAboveGapColor type="string">Text Color</RuleAboveGapColor></Properties>
+    </ParagraphStyle>
+  </RootParagraphStyleGroup>"#,
+    );
+    let d = import_idml(&fixture_with_table_styles(&styles, STORY)).unwrap();
+    let style = |n: &str| d.styles.paragraph.iter().find(|s| s.name == n).unwrap().para.clone();
+    let wavy = style("Wavy").rule_below.expect("the type alone overrides the rule");
+    assert_eq!((wavy.on, wavy.weight, wavy.kind), (true, 3.0, designcraft_doc::StrokeType::Wavy), "the rest from the based-on style");
+    let gap = style("Gap").rule_below.expect("the gap colour alone, with no on or weight in the chain");
+    assert!(!gap.on && gap.gap_color != designcraft_color::swatch::NONE, "{gap:?}");
+    assert!(style("Kept").rule_above.expect("Keep In Frame alone").keep_in_frame);
+    // Text Color, in either spelling, for a gap and a rule colour.
+    let text = style("TextGap");
+    let (below, above) = (text.rule_below.expect("rule below"), text.rule_above.expect("rule above"));
+    assert_eq!(below.gap_color, designcraft_doc::TEXT_COLOR);
+    assert_eq!((above.gap_color.as_str(), above.color.as_str()), (designcraft_doc::TEXT_COLOR, designcraft_doc::TEXT_COLOR));
+    // And it is written back as Text Color, not as no swatch.
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let below = back.styles.paragraph.iter().find(|s| s.name == "TextGap").unwrap().para.rule_below.clone().unwrap();
+    assert_eq!(below.gap_color, designcraft_doc::TEXT_COLOR, "round-trips");
 }
 
 #[test]

@@ -776,11 +776,46 @@ pub struct Rule {
     pub offset: f64,
     pub left_indent: f64,
     pub right_indent: f64,
+    /// Type: the rule's stroke type (solid, dashed, wavy…, or a stroke style of the document).
+    #[serde(rename = "type", skip_serializing_if = "rule_solid")]
+    pub kind: crate::item::StrokeType,
+    /// Gap Color (a swatch; [None]: none) and Gap Tint: under the gaps of a type that has them.
+    #[serde(skip_serializing_if = "rule_no_gap")]
+    pub gap_color: String,
+    #[serde(skip_serializing_if = "rule_full_tint")]
+    pub gap_tint: f32,
+    /// Keep In Frame: a rule above the first line of a frame stays inside the frame.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub keep_in_frame: bool,
+}
+
+// A rule's settings at their defaults are left out of the document (and of the attributes).
+fn rule_solid(k: &crate::item::StrokeType) -> bool {
+    *k == crate::item::StrokeType::Solid
+}
+fn rule_no_gap(c: &str) -> bool {
+    c == designcraft_color::swatch::NONE
+}
+fn rule_full_tint(t: &f32) -> bool {
+    *t == 1.0
 }
 
 impl Default for Rule {
     fn default() -> Self {
-        Rule { on: false, weight: 1.0, color: TEXT_COLOR.into(), tint: 1.0, column_width: true, offset: 0.0, left_indent: 0.0, right_indent: 0.0 }
+        Rule {
+            on: false,
+            weight: 1.0,
+            color: TEXT_COLOR.into(),
+            tint: 1.0,
+            column_width: true,
+            offset: 0.0,
+            left_indent: 0.0,
+            right_indent: 0.0,
+            kind: crate::item::StrokeType::Solid,
+            gap_color: designcraft_color::swatch::NONE.into(),
+            gap_tint: 1.0,
+            keep_in_frame: false,
+        }
     }
 }
 
@@ -1388,8 +1423,11 @@ impl ParaAttrs {
         let serde_json::Value::Object(patch) = value else { return self.set_json(key, value) };
         let mut merged = serde_json::to_value(rule).map_err(|e| format!("{key}: {e}"))?;
         let serde_json::Value::Object(fields) = &mut merged else { return Err(format!("{key}: not an object")) };
+        // Every field, those at their defaults (left out of the JSON) included.
+        const RULE_FIELDS: [&str; 12] =
+            ["on", "weight", "color", "tint", "columnWidth", "offset", "leftIndent", "rightIndent", "type", "gapColor", "gapTint", "keepInFrame"];
         for (k, v) in patch {
-            if !fields.contains_key(k) {
+            if !RULE_FIELDS.contains(&k.as_str()) {
                 return Err(format!("{key}: unknown rule field `{k}`"));
             }
             fields.insert(k.clone(), v.clone());

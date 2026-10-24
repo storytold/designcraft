@@ -1965,12 +1965,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     .map(|l| if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) })
                     .unwrap_or((0.0, 0.0));
                 let (color, tint) = rule_color(r, &above);
-                ft.decos.push(Deco {
-                    rect: Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y),
-                    color,
-                    tint,
-                    ..Deco::default()
-                });
+                // Keep In Frame: not above the frame, as InDesign's (its top, not the text area's
+                // below the top inset).
+                let top = frames.get(fi).map_or(f64::NEG_INFINITY, |f| f.area.y0 - if f.vertical { 0.0 } else { f.opts.inset[0] });
+                let y = if r.keep_in_frame && y - r.weight < top { top + r.weight } else { y };
+                let rect = Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y);
+                ft.decos.extend(rule_decos(doc, r, rect, (color, tint), &above));
             }
         }
         if pp.rule_below.on
@@ -1981,7 +1981,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let y = l.baseline + r.offset;
             let (x0, x1) = if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) };
             let (color, tint) = rule_color(r, &below);
-            ft.decos.push(Deco { rect: Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), color, tint, ..Deco::default() });
+            ft.decos.extend(rule_decos(doc, r, Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), (color, tint), &below));
         }
         // The end of a split block: text after it continues below its deepest sub-column, which
         // are balanced first. A block that ends the story fills its sub-columns in turn.
@@ -4184,6 +4184,55 @@ fn hyphenation_points(
         }
         i = j.max(i + 1);
     }
+    out
+}
+
+/// A paragraph rule drawn in `rect` (its length and weight) with its Type: the gap colour under
+/// it, then the line, as dashes, dots, stripes, waves or hash marks. A pattern that can't be laid
+/// out along the rule draws solid.
+/// `(color, tint)` is the rule's (Text Color already resolved); `text`, the colour of the text
+/// the rule goes with, for a gap in Text Color.
+fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tint): (String, f32), text: &(String, f32)) -> Vec<Deco> {
+    use designcraft_doc::StrokeType;
+    let kind = doc.stroke_kind(&r.kind);
+    let (w, len) = (rect.height(), rect.width());
+    let mut out = Vec::new();
+    if !matches!(kind, StrokeType::Solid) && r.gap_color != designcraft_color::swatch::NONE && w > 0.0 && len > 0.0 {
+        let gap = if r.gap_color == designcraft_doc::TEXT_COLOR { text.0.clone() } else { r.gap_color.clone() };
+        out.push(Deco { rect, color: gap, tint: r.gap_tint, ..Deco::default() });
+    }
+    let y = rect.center().y;
+    let mut line = designcraft_geom::BezPath::new();
+    line.move_to((rect.x0, y));
+    line.line_to((rect.x1, y));
+    let path = match &kind {
+        StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, len) => {
+            let mut p = designcraft_geom::BezPath::new();
+            let (mut x, mut k, mut on) = (rect.x0, 0, true);
+            while x < rect.x1 {
+                let step = pattern[k % pattern.len()];
+                if on && step > 0.0 {
+                    let r = Rect::new(x, rect.y0, (x + step).min(rect.x1), rect.y1);
+                    p.extend(designcraft_geom::Shape::path_elements(&r, 0.1));
+                }
+                x += step;
+                k += 1;
+                on = !on;
+            }
+            Some(p)
+        }
+        StrokeType::Dotted if StrokeType::expandable_dashes(&[w, w], len) => {
+            let mut p = designcraft_geom::BezPath::new();
+            let mut x = rect.x0 + w / 2.0;
+            while x <= rect.x1 - w / 2.0 + 1e-9 {
+                p.extend(designcraft_geom::Shape::path_elements(&designcraft_geom::kurbo::Circle::new((x, y), w / 2.0), 0.1));
+                x += 2.0 * w;
+            }
+            Some(p)
+        }
+        k => k.outline(&line, w, 0.05),
+    };
+    out.push(Deco { rect, color, tint, path, ..Deco::default() });
     out
 }
 

@@ -4294,8 +4294,30 @@ fn para_sides(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &s
 /// A swatch menu with a colour chip per swatch (hidden swatches left out); returns the swatch
 /// picked.
 fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
+    swatch_menu_with(ui, doc, id, current, width, None)
+}
+
+/// [`swatch_menu`] with, given its translated label, Text Color first (a paragraph rule's
+/// colour: the text's own), as InDesign's Paragraph Rules › Color.
+fn swatch_menu_with(
+    ui: &mut egui::Ui,
+    doc: &designcraft_doc::Document,
+    id: impl egui::AsIdSalt,
+    current: &str,
+    width: f32,
+    text_color: Option<&str>,
+) -> Option<String> {
     let mut picked = None;
-    egui::ComboBox::from_id_salt(id).selected_text(current).width(width).show_ui(ui, |ui| {
+    let shown = match text_color {
+        Some(label) if current == designcraft_doc::TEXT_COLOR => label,
+        _ => current,
+    };
+    egui::ComboBox::from_id_salt(id).selected_text(shown).width(width).show_ui(ui, |ui| {
+        if let Some(label) = text_color
+            && ui.selectable_label(current == designcraft_doc::TEXT_COLOR, label).clicked()
+        {
+            picked = Some(designcraft_doc::TEXT_COLOR.to_string());
+        }
         for w in doc.swatches.iter().filter(|w| !w.hidden) {
             let (c, g) = crate::widgets::swatch_colors(doc, &w.name, 1.0);
             ui.horizontal(|ui| {
@@ -6097,22 +6119,65 @@ fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &
     });
     ui.add_space(6.0);
     let on = rule["on"].as_bool().unwrap_or(false);
+    let kind: designcraft_doc::StrokeType = serde_json::from_value(rule["type"].clone()).unwrap_or_default();
+    let doc = app.session.active().map(|st| &st.doc);
+    // As InDesign's: Weight and Type, Color and Tint, Gap Color and Gap Tint, Width and Offset,
+    // Left and Right Indent, then Keep In Frame (rule above).
     ui.add_enabled_ui(on, |ui| {
         egui::Grid::new(("rules", which)).num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
             crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
-            if let Some(v) = sized(ui, &mut |ui| crate::widgets::number(ui, &key("weight"), rule["weight"].as_f64(), " pt", 80.0, 2)) {
+            if let Some(v) = sized(ui, &mut |ui| {
+                crate::widgets::NumField::number(&key("weight"), rule["weight"].as_f64(), " pt", 2).width(80.0).spinner().range(0.0, 1000.0).show(ui)
+            }) {
                 d.fields.insert(key("weight"), json!(v.clamp(0.0, 1000.0)));
             }
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Type:"));
+            let custom: Vec<String> = doc.map_or_else(Vec::new, |doc| doc.stroke_styles.iter().map(|s| s.name.clone()).collect());
+            let shown = match &kind {
+                designcraft_doc::StrokeType::Style { name } => name.clone(),
+                k => crate::i18n::tr(lang, k.label()).to_string(),
+            };
+            egui::ComboBox::from_id_salt(("rule_type", which)).selected_text(crate::rtl::widget(ui, shown)).width(130.0).show_ui(ui, |ui| {
+                for k in rule_types().into_iter().chain(custom.into_iter().map(|name| designcraft_doc::StrokeType::Style { name })) {
+                    let label = match &k {
+                        designcraft_doc::StrokeType::Style { name } => name.clone(),
+                        k => crate::i18n::tr(lang, k.label()).to_string(),
+                    };
+                    if ui.selectable_label(k == kind, crate::rtl::widget(ui, label)).clicked() {
+                        d.fields.insert(key("type"), serde_json::to_value(&k).unwrap_or_default());
+                    }
+                }
+            });
+            ui.end_row();
             crate::rtl::label(ui, crate::i18n::tr(lang, "Color:"));
             let color = rule["color"].as_str().unwrap_or("").to_string();
-            if let Some(w) = app.session.active().and_then(|st| swatch_menu(ui, &st.doc, ("rule_color", which), &color, 130.0)) {
+            let text_color = crate::i18n::tr(lang, "Text Color");
+            if let Some(w) = doc.and_then(|doc| swatch_menu_with(ui, doc, ("rule_color", which), &color, 130.0, Some(text_color))) {
                 d.fields.insert(key("color"), json!(w));
             }
-            ui.end_row();
             crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
             if let Some(v) = sized(ui, &mut |ui| crate::widgets::number(ui, &key("tint"), rule["tint"].as_f64().map(|t| t * 100.0), "%", 80.0, 0)) {
                 d.fields.insert(key("tint"), json!((v / 100.0).clamp(0.0, 1.0)));
             }
+            ui.end_row();
+            // A solid rule has no gaps.
+            let gaps = !matches!(kind, designcraft_doc::StrokeType::Solid);
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Gap Color:"));
+            let gap = rule["gapColor"].as_str().unwrap_or(designcraft_color::swatch::NONE).to_string();
+            ui.add_enabled_ui(gaps, |ui| {
+                if let Some(w) = doc.and_then(|doc| swatch_menu(ui, doc, ("rule_gap", which), &gap, 130.0)) {
+                    d.fields.insert(key("gapColor"), json!(w));
+                }
+            });
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Gap Tint:"));
+            ui.add_enabled_ui(gaps && gap != designcraft_color::swatch::NONE, |ui| {
+                // A full gap tint is left out of the rule's JSON: it reads 100%.
+                let gap_tint = rule["gapTint"].as_f64().unwrap_or(1.0) * 100.0;
+                if let Some(v) = sized(ui, &mut |ui| crate::widgets::number(ui, &key("gapTint"), Some(gap_tint), "%", 80.0, 0)) {
+                    d.fields.insert(key("gapTint"), json!((v / 100.0).clamp(0.0, 1.0)));
+                }
+            });
+            ui.end_row();
             crate::rtl::label(ui, crate::i18n::tr(lang, "Width:"));
             let column = rule["columnWidth"].as_bool().unwrap_or(true);
             egui::ComboBox::from_id_salt(("rule_width", which))
@@ -6125,21 +6190,48 @@ fn paragraph_rules(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, prefix: &
                         }
                     }
                 });
-            ui.end_row();
             crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
-            if let Some(v) = sized(ui, &mut |ui| crate::widgets::measure(ui, &key("offset"), rule["offset"].as_f64(), v_units, 80.0)) {
+            if let Some(v) = sized(ui, &mut |ui| {
+                crate::widgets::NumField::measure(&key("offset"), rule["offset"].as_f64(), v_units).width(80.0).spinner().show(ui)
+            }) {
                 d.fields.insert(key("offset"), json!(v));
             }
             ui.end_row();
             for (label, field) in [("Left Indent:", "leftIndent"), ("Right Indent:", "rightIndent")] {
                 crate::rtl::label(ui, crate::i18n::tr(lang, label));
-                if let Some(v) = sized(ui, &mut |ui| crate::widgets::measure(ui, &key(field), rule[field].as_f64(), h_units, 80.0)) {
+                if let Some(v) =
+                    sized(ui, &mut |ui| crate::widgets::NumField::measure(&key(field), rule[field].as_f64(), h_units).width(80.0).spinner().show(ui))
+                {
                     d.fields.insert(key(field), json!(v));
                 }
             }
             ui.end_row();
         });
+        if which == "ruleAbove" {
+            let mut keep = rule["keepInFrame"].as_bool().unwrap_or(false);
+            if ui.checkbox(&mut keep, crate::rtl::widget(ui, crate::i18n::tr(lang, "Keep In Frame"))).changed() {
+                d.fields.insert(key("keepInFrame"), json!(keep));
+            }
+        }
     });
+}
+
+/// The built-in stroke types a paragraph rule can have (Paragraph Rules › Type).
+fn rule_types() -> Vec<designcraft_doc::StrokeType> {
+    use designcraft_doc::StrokeType as T;
+    vec![
+        T::Solid,
+        T::ThickThick,
+        T::ThickThin,
+        T::ThickThinThick,
+        T::ThinThick,
+        T::ThinThickThin,
+        T::ThinThin,
+        T::Dashed { pattern: vec![12.0, 4.0] },
+        T::Dotted,
+        T::Hashed,
+        T::Wavy,
+    ]
 }
 
 /// Document Footnote Options: Numbering and Formatting / Layout tabs.
@@ -7706,6 +7798,95 @@ mod tests {
         assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], want);
         app.run("edit.undo", json!({})).unwrap();
         assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], rule);
+    }
+
+    /// Paragraph Rules › Color offers Text Color above the swatches, so a rule set to a swatch can
+    /// go back to it; Gap Color lists only swatches.
+    #[test]
+    fn the_rule_colour_menu_offers_text_color() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let doc = app.session.doc().unwrap().doc.clone();
+        let menu = |ctx: &egui::Context, text: Option<&str>, click: Option<egui::Pos2>| {
+            let mut picked = None;
+            let mut labels = Vec::new();
+            let mut events = Vec::new();
+            if let Some(pos) = click {
+                events.push(egui::Event::PointerMoved(pos));
+                events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+                events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                picked = swatch_menu_with(ui, &doc, "m", "[Black]", 130.0, text);
+            });
+            out.textures_delta.clear();
+            for s in out.shapes {
+                if let egui::Shape::Text(t) = s.shape {
+                    labels.push((t.galley.job.text.clone(), t.visual_bounding_rect().center()));
+                }
+            }
+            (picked, labels)
+        };
+        for text in [Some("Text Color"), None] {
+            let ctx = egui::Context::default();
+            let (_, labels) = menu(&ctx, text, None);
+            let combo = labels.iter().find(|(t, _)| t == "[Black]").unwrap().1;
+            menu(&ctx, text, Some(combo));
+            let (_, labels) = menu(&ctx, text, None);
+            let item = labels.iter().find(|(t, _)| t == "Text Color").map(|l| l.1);
+            assert_eq!(item.is_some(), text.is_some(), "{labels:?}");
+            if let Some(pos) = item {
+                let (picked, _) = menu(&ctx, text, Some(pos));
+                assert_eq!(picked.as_deref(), Some(designcraft_doc::TEXT_COLOR));
+            }
+        }
+    }
+
+    /// The course's chapter 20: a paragraph style's rule below becomes wavy, 3 pt, with a gap
+    /// colour, from Paragraph Rules › Type and Gap Color.
+    #[test]
+    fn paragraph_style_rules_take_a_type_and_a_gap_colour() {
+        let (mut app, _) = ruled_paragraph();
+        let ctx = egui::Context::default();
+        app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
+        draw(&mut app, &ctx);
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("p.ruleBelow.type".into(), json!({"kind": "wavy"}));
+            d.fields.insert("p.ruleBelow.weight".into(), json!(3.0));
+            d.fields.insert("p.ruleBelow.gapColor".into(), json!("[Paper]"));
+        }
+        draw(&mut app, &ctx);
+        confirm(&mut app).unwrap();
+        let r = app.session.doc().unwrap().doc.styles.resolve_para_style("Ruled Child").0.rule_below;
+        assert_eq!((r.kind, r.weight, r.gap_color.as_str()), (designcraft_doc::StrokeType::Wavy, 3.0, "[Paper]"));
+    }
+
+    /// A rule's Gap Tint shows 100% at its default (the rule's JSON leaves a full gap tint out).
+    #[test]
+    fn a_rules_default_gap_tint_shows_100() {
+        use egui_kittest::kittest::Queryable;
+        let (mut app, _) = ruled_paragraph();
+        app.run(
+            "style.paragraph.edit",
+            json!({"name": "Ruled Child", "para": {"ruleBelow": {"type": {"kind": "dashed", "pattern": [4.0, 2.0]}, "gapColor": "[Paper]"}}}),
+        )
+        .unwrap();
+        let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+        h.state_mut().app.ui.dialog =
+            Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
+        h.run_steps(4);
+        let label = h.get_by_label("Gap Tint:").rect();
+        let field = h
+            .get_all_by(|n| n.role() == egui::accesskit::Role::TextInput)
+            .filter(|n| n.rect().center().x > label.max.x && (n.rect().center().y - label.center().y).abs() < 8.0)
+            .min_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x))
+            .and_then(|n| n.value());
+        assert_eq!(field.as_deref(), Some("100%"));
     }
 
     #[test]
