@@ -3679,18 +3679,13 @@ fn check_paragraph_style_justification(app: &DesignApp, d: &Dialog) -> Result<()
     check_justification(d, "p.", &base)
 }
 
-fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
-    let name = d.s("name");
-    if let Err(e) = check_paragraph_style_justification(app, d) {
-        // The caller shows the reason in the dialog's status line.
-        d.fields.insert("section".into(), json!("justify"));
-        return Err(e);
-    }
+/// The `p.*` and `c.*` dialog fields as the paragraph and character attribute maps a style
+/// command takes. `p.ruleAbove.weight` is one field of a rule (the command keeps the others).
+fn style_option_maps(d: &Dialog) -> (serde_json::Map<String, Value>, serde_json::Map<String, Value>) {
     let mut para = serde_json::Map::new();
     let mut chars = serde_json::Map::new();
     for (k, v) in &d.fields {
         if let Some(a) = k.strip_prefix("p.") {
-            // `p.ruleAbove.weight`: one field of a rule (the command keeps the others).
             match a.split_once('.') {
                 Some((attr, field)) => {
                     if let Value::Object(m) = para.entry(attr).or_insert_with(|| json!({})) {
@@ -3705,6 +3700,17 @@ fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Resul
             chars.insert(a.into(), v.clone());
         }
     }
+    (para, chars)
+}
+
+fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
+    let name = d.s("name");
+    if let Err(e) = check_paragraph_style_justification(app, d) {
+        // The caller shows the reason in the dialog's status line.
+        d.fields.insert("section".into(), json!("justify"));
+        return Err(e);
+    }
+    let (para, chars) = style_option_maps(d);
     let based = d.s("basedOn");
     let rename = d.s("rename");
     let (r, style) = if d.b("new") {
@@ -3739,6 +3745,26 @@ fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Resul
     Ok(r)
 }
 
+/// Copies the dialog's `c.*` (and, for a paragraph style, `p.*`) fields into the preview params.
+fn fill_style_preview_fields(params: &mut Value, d: &Dialog, paragraph: bool) {
+    for (key, value) in &d.fields {
+        if let Some(attr) = key.strip_prefix("c.") {
+            params["chars"][attr] = value.clone();
+        } else if paragraph && let Some(attr) = key.strip_prefix("p.") {
+            if let Some((attr, field)) = attr.split_once('.') {
+                if params["para"][attr].is_null() {
+                    params["para"][attr] = json!({});
+                }
+                if let Some(fields) = params["para"][attr].as_object_mut() {
+                    fields.insert(field.into(), value.clone());
+                }
+            } else {
+                params["para"][attr] = value.clone();
+            }
+        }
+    }
+}
+
 /// Preview the changed style attributes through the same engine commands as OK. Renaming and
 /// export tagging have no visual effect and wait for OK, so the dialog can keep looking up the
 /// original style while the preview is visible. The interaction restores its starting document
@@ -3768,22 +3794,7 @@ fn style_options_preview(app: &mut DesignApp, d: &mut Dialog) {
     if paragraph {
         params["para"] = json!({});
     }
-    for (key, value) in &d.fields {
-        if let Some(attr) = key.strip_prefix("c.") {
-            params["chars"][attr] = value.clone();
-        } else if paragraph && let Some(attr) = key.strip_prefix("p.") {
-            if let Some((attr, field)) = attr.split_once('.') {
-                if params["para"][attr].is_null() {
-                    params["para"][attr] = json!({});
-                }
-                if let Some(fields) = params["para"][attr].as_object_mut() {
-                    fields.insert(field.into(), value.clone());
-                }
-            } else {
-                params["para"][attr] = value.clone();
-            }
-        }
-    }
+    fill_style_preview_fields(&mut params, d, paragraph);
     if let Some(based) = d.fields.get("basedOn") {
         params["basedOn"] = match based.as_str() {
             Some(designcraft_doc::NO_PARA_STYLE | designcraft_doc::NO_CHAR_STYLE) => Value::Null,
