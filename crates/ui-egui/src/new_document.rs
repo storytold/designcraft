@@ -59,7 +59,13 @@ fn fields_for(nd: &NewDocument) -> Map<String, Value> {
 
 /// The fields a new New Document dialog starts with: the factory settings on the Recent tab.
 pub(crate) fn defaults() -> Value {
-    let mut f = fields_for(&NewDocument::default());
+    defaults_for(&NewDocument::default())
+}
+
+/// The fields New Document starts with for `nd` (the session's default new document, in the
+/// default units), on the Recent tab.
+pub(crate) fn defaults_for(nd: &NewDocument) -> Value {
+    let mut f = fields_for(nd);
     f.insert("tab".into(), json!("recent"));
     f.insert("preset".into(), json!(DEFAULT_CARD));
     f.insert("name".into(), json!(""));
@@ -325,7 +331,8 @@ fn cards(app: &DesignApp, tab: &str) -> Vec<Card> {
         Card { key, label, nd, custom }
     };
     // Recent and Saved both start with the factory settings, as in InDesign.
-    let default = Card { key: DEFAULT_CARD.into(), label: crate::i18n::tr(lang, DEFAULT_CARD).into(), nd: NewDocument::default(), custom: false };
+    let default =
+        Card { key: DEFAULT_CARD.into(), label: crate::i18n::tr(lang, DEFAULT_CARD).into(), nd: app.session.default_new_document(), custom: false };
     match tab {
         "recent" => std::iter::once(default)
             .chain(app.ui.recent_new_documents.iter().enumerate().map(|(i, nd)| named(format!("recent:{i}"), nd.clone())))
