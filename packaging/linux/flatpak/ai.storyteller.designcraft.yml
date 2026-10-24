@@ -46,6 +46,7 @@ modules:
     build-commands:
       - cargo --offline build --release --locked -p designcraft
       - install -Dm755 target/release/designcraft /app/bin/designcraft
+      - install -Dm644 NOTICE /app/share/doc/designcraft/NOTICE
       - install -Dm644 packaging/linux/ai.storyteller.designcraft.desktop /app/share/applications/ai.storyteller.designcraft.desktop
       - install -Dm644 packaging/linux/ai.storyteller.designcraft.mime.xml /app/share/mime/packages/ai.storyteller.designcraft.xml
       - mkdir -p /app/share/icons && cp -R assets/app-icon/hicolor /app/share/icons/
