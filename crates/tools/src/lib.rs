@@ -496,6 +496,7 @@ pub trait Tool: Send {
     }
 }
 
+/// Construct an editing tool, including transient graphic and TOC placement cursors.
 pub fn create(id: &str) -> Box<dyn Tool> {
     match id {
         "selection" => Box::new(select::SelectionTool::new(false)),
@@ -520,6 +521,7 @@ pub fn create(id: &str) -> Box<dyn Tool> {
         "colorTheme" => Box::new(xform::ColorThemeTool),
         "hand" => Box::new(nav::HandTool::default()),
         "placeGun" => Box::new(nav::PlaceGun::default()),
+        "tocPlace" => Box::new(nav::PlaceGun::toc()),
         "zoom" => Box::new(nav::ZoomTool::default()),
         "page" => Box::new(nav::PageTool::default()),
         "typeOnPath" => Box::new(nav::PathTypeTool),

@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, always, cmd, has_doc};
 use crate::{Result, Session};
 
+/// Register inspection and tool-selection commands.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "document.inspect", "Inspect Document", [], None, "{} → pages, spreads, items, stories (with overset), styles, swatches, selection", has_doc, inspect),
@@ -29,7 +30,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "tool.select", "Select Tool", [], None, "{tool: selection|directSelection|type|rectangleFrame|…}", always, |s, p| {
             let t = p.get("tool").and_then(Value::as_str).unwrap_or("selection");
-            if designcraft_tools::tool_info(t).is_none() && t != "placeGun" {
+            if designcraft_tools::tool_info(t).is_none() && !matches!(t, "placeGun" | "tocPlace") {
                 return Err(super::bad("tool.select", format!("unknown tool `{t}`")));
             }
             s.set_tool(t);

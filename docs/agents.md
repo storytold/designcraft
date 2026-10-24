@@ -54,6 +54,13 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `.epub`, `.html`, and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
 is a PNG of the page; another extension is an error, and nothing runs.
 
+## Placing a table of contents
+
+`toc.load` takes the same options as `toc.generate` and loads a text cursor without editing
+the document. Click or drag on a document page to place it; Escape cancels. `toc.place` accepts
+`spread`, `x`, `y` and an optional `rect`, and commits one undo step. A load is bound to its
+source document. `toc.generate` remains available for immediate scripted generation.
+
 ## Color themes
 
 `color.extractTheme {id?}` previews up to five RGB colours from a placed raster image (or the selected image).

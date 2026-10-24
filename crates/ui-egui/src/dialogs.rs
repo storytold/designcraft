@@ -3659,7 +3659,8 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             r
         }
         TOC => {
-            let r = app.run("toc.generate", toc_params(app, &d));
+            let command = if d.b("replace") && d.b("hasToc") { "toc.generate" } else { "toc.load" };
+            let r = app.run(command, toc_params(app, &d));
             if let Err(e) = &r {
                 let mut d = d.clone();
                 d.fields.insert("status".into(), json!(e));
@@ -8377,6 +8378,10 @@ mod tests {
         let undo = app.session.doc().unwrap().history.undo.len();
         click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "OK").center());
         assert!(app.ui.dialog.is_none());
+        assert_eq!(app.session.tool_id(), "tocPlace");
+        assert!(app.session.doc().unwrap().doc.toc.is_none());
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), undo);
+        app.run("toc.place", json!({"x": 36, "y": 36})).unwrap();
         let d = &app.session.doc().unwrap().doc;
         let toc = d.toc.clone().unwrap();
         assert_eq!(toc.entries, vec![designcraft_doc::TocEntry::new("Headline", 1)]);
