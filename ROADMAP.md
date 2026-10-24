@@ -700,3 +700,5 @@ The shared craft-installer UI preserves this revision's install options and prov
 - **2026-10-15** · Windows recovery folders validate the identity of the live locked file without reading it through a second handle. Missing or replaced locks disable writes and cleanup; regression tests cover retained exclusive locking and replacement-file protection. No readiness percentage change.
 
 - PDF reader infrastructure: pinned shared parsing/rasterization, transformed page-box geometry and explicit failures for known incomplete layered-PDF exports. Application ownership and parity targets are unchanged.
+
+- 2026-10-19: macOS shortcut consistency: Settings ⌘,, Hide ⌘H, Minimize ⌘M; conflicting creative defaults use Control–Command variants. Details and public references: [macOS shortcuts](docs/macos-shortcuts.md). Suite tracker: storytold/designcraft#1317.

@@ -1,5 +1,8 @@
 //! The menu bar tree (InDesign order), UI-only commands, keyboard shortcuts and Quick Apply.
 
+pub(crate) const SETTINGS_SHORTCUT: &str = if cfg!(target_os = "macos") { "Cmd+," } else { "Cmd+K" };
+pub(crate) const EDGES_SHORTCUT: &str = if cfg!(target_os = "macos") { "Ctrl+Cmd+H" } else { "Cmd+H" };
+
 use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode};
@@ -79,7 +82,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
     ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
-    ("app.preferences", "Preferences…", Some("Cmd+K"), "{}"),
+    ("app.preferences", "Preferences…", Some(SETTINGS_SHORTCUT), "{}"),
     ("window.uiScale", "UI Scaling", None, "{scale: 0.5–3 (1 = 100%)} — the size of the whole interface"),
     ("app.keyboardShortcuts", "Keyboard Shortcuts…", None, "{} — view and change the shortcut of any command"),
     ("window.richBlack", "Appearance of Black", None, "{on: bool} — show 100% black as rich black on screen (off: accurately)"),
@@ -197,7 +200,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         Some("."),
         "{} — the gradient applied last (else the document's first, else white to black) to the fill or stroke in front of the proxy",
     ),
-    ("view.frameEdges", "Show/Hide Frame Edges", Some("Cmd+H"), "{}"),
+    ("view.frameEdges", "Show/Hide Frame Edges", Some(EDGES_SHORTCUT), "{}"),
     ("view.rulers", "Show/Hide Rulers", Some("Cmd+R"), "{}"),
     ("view.guides", "Show/Hide Guides", Some("Cmd+;"), "{}"),
     ("view.lockGuides", "Lock Guides", Some("Cmd+Alt+;"), "{on?: bool} — ruler guides can't be dragged; toggles without `on`"),
@@ -243,7 +246,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.overprintPreview", "Overprint Preview", Some("Cmd+Alt+Shift+Y"), "{} — show how overprinting inks mix"),
     ("view.fastDisplay", "Fast Display", Some("Cmd+Alt+Shift+Z"), "{} — placed graphics as grey boxes, no effects"),
     ("view.typicalDisplay", "Typical Display", Some("Cmd+Alt+Z"), "{} — low-resolution image proxies"),
-    ("view.highQualityDisplay", "High Quality Display", Some("Cmd+Alt+H"), "{} — full-resolution images"),
+    (
+        "view.highQualityDisplay",
+        "High Quality Display",
+        Some(if cfg!(target_os = "macos") { "Ctrl+Cmd+Alt+H" } else { "Cmd+Alt+H" }),
+        "{} — full-resolution images",
+    ),
     ("view.firstPage", "First Page", Some("Cmd+Shift+PageUp"), "{} — scroll to the document's first page (zoom kept)"),
     ("view.previousPage", "Previous Page", Some("Shift+PageUp"), "{} — scroll to the page before the one in view"),
     ("view.nextPage", "Next Page", Some("Shift+PageDown"), "{} — scroll to the page after the one in view"),
@@ -3615,9 +3623,28 @@ mod tests {
     }
 
     #[test]
+    fn platform_shortcuts_leave_mac_system_keys_free() {
+        let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let keys = effective_shortcuts(&app);
+        if cfg!(target_os = "macos") {
+            assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+,"));
+            assert_eq!(shortcut_of(&app, "view.frameEdges").as_deref(), Some("Ctrl+Cmd+H"));
+            assert_eq!(shortcut_of(&app, "view.highQualityDisplay").as_deref(), Some("Ctrl+Cmd+Alt+H"));
+            assert!(!keys.iter().any(|(_, sc)| sc == "Cmd+H" || sc == "Cmd+K" || sc == "Cmd+M" || sc == "Cmd+Alt+H"));
+        } else {
+            assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+K"));
+            assert_eq!(shortcut_of(&app, "view.frameEdges").as_deref(), Some("Cmd+H"));
+            assert_eq!(shortcut_of(&app, "view.highQualityDisplay").as_deref(), Some("Cmd+Alt+H"));
+        }
+        assert!(shortcut_of(&app, "view.highQualityDisplay").as_deref().and_then(parse_shortcut).is_some());
+        assert!(parse_shortcut(SETTINGS_SHORTCUT).is_some());
+        assert!(parse_shortcut(EDGES_SHORTCUT).is_some());
+    }
+
+    #[test]
     fn custom_shortcuts_override_defaults() {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+K"));
+        assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some(SETTINGS_SHORTCUT));
         let r = run_ui(&mut app, "window.setShortcut", &json!({"id": "app.preferences", "shortcut": "Cmd+Alt+Shift+9"})).unwrap().unwrap();
         assert_eq!(r["shortcut"], "Cmd+Alt+Shift+9");
         assert!(effective_shortcuts(&app).contains(&("app.preferences".into(), "Cmd+Alt+Shift+9".into())));
