@@ -6549,9 +6549,17 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let mut sel = d.n("selected").map_or(0, |n| n.max(0.0) as usize);
     let mut other = d.s("other");
     let mut title_style = d.s("titleStyle");
+    // The dialog body's width, less the two labels and the style selector (200 pt) beside the title.
+    let title_room = ui.available_width() - 300.0;
     egui::Grid::new("toc_title").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, tr("Title:"));
-        text_field(ui, d, "title", 200.0);
+        let mut title = d.s("title");
+        // 200 pt, reserved: a desired width alone is squeezed by the grid to a few characters.
+        // Narrower when the dialog is, so the style selector beside it stays in view.
+        let w = 200.0_f32.min(title_room.max(80.0));
+        if ui.add_sized([w, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut title).horizontal_align(egui::Align::Min)).changed() {
+            d.fields.insert("title".into(), json!(title));
+        }
         crate::rtl::label(ui, tr("Style:"));
         toc_style_combo(ui, "title", &styles, "TOC Title", &mut title_style);
         ui.end_row();
@@ -8352,6 +8360,40 @@ mod tests {
         assert_eq!(opts(&app), before);
     }
 
+    /// The title stays readable beside the style selector after the grid settles.
+    #[test]
+    fn toc_title_field_shows_the_whole_default_title() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.newSample", json!({})).unwrap();
+        open_toc(&mut app);
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        let title_row = |labels: &[(String, egui::Rect, egui::Rect)]| {
+            let y = visible_label(labels, screen, "Title:").center().y;
+            labels.iter().filter(|(_, rect, _)| (rect.center().y - y).abs() < 2.0).cloned().collect::<Vec<_>>()
+        };
+        visible_label(&title_row(&labels), screen, "Contents");
+        app.ui.dialog.as_mut().unwrap().fields.insert("title".into(), json!("Table of Contents"));
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        visible_label(&title_row(&labels), screen, "Table of Contents");
+        // A small window: the title narrows and the style selector beside it stays in view.
+        let small = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(450.0, 280.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, small, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, small, vec![]);
+        let y = visible_label(&labels, small, "Title:").center().y;
+        let row: Vec<_> = labels.iter().filter(|(_, rect, _)| (rect.center().y - y).abs() < 2.0).cloned().collect();
+        let style = visible_label(&row, small, "TOC Title");
+        // The selector is 200 pt wide from just before its text: all of it is in the dialog body.
+        let (_, _, body) = row.iter().find(|(text, _, _)| text == "Style:").unwrap();
+        assert!(style.min.x - 4.0 + 200.0 <= body.max.x, "the style selector fits the dialog: {style:?} in {body:?}");
+    }
+
     #[test]
     fn toc_dialog_adds_a_style_and_ok_makes_the_table_of_contents() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -9288,7 +9330,7 @@ mod tests {
     #[test]
     fn dialog_title_and_actions_fit_scaled_viewports() {
         for language in ["en", "ar"] {
-            for size in [egui::vec2(1178.0, 814.0), egui::vec2(589.0, 407.0), egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0)] {
+            for size in [egui::vec2(1178.0, 814.0), egui::vec2(589.0, 407.0), egui::vec2(392.0, 271.0), egui::vec2(360.0, 280.0)] {
                 for (command, title, ok, cancel) in
                     [("app.preferences", "Preferences", "OK", "Cancel"), ("app.newDocumentDialog", "New Document", "Create", "Close")]
                 {
@@ -9404,7 +9446,7 @@ mod tests {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("app.preferences", json!({})).unwrap();
         let ctx = dialog_context("en");
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(450.0, 280.0));
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 280.0));
         for _ in 0..3 {
             dialog_frame(&mut app, &ctx, screen, vec![]);
         }
@@ -9464,7 +9506,7 @@ mod tests {
 
     #[test]
     fn arabic_new_document_fields_remain_reachable_and_editable() {
-        for size in [egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0), egui::vec2(1178.0, 814.0)] {
+        for size in [egui::vec2(392.0, 271.0), egui::vec2(360.0, 280.0), egui::vec2(1178.0, 814.0)] {
             let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
             app.ui.language = "ar".into();
             app.run("app.newDocumentDialog", json!({})).unwrap();

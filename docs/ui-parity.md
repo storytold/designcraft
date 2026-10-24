@@ -70,6 +70,9 @@ history (DC-1).
 
 ## Remaining effort
 
+The Table of Contents title field reserves its edit width inside the title/style row. The
+default Contents title is fully visible instead of being clipped to its first few characters.
+
 Applying a paragraph or character style now removes local values equal to the applied style,
 so text used to capture a style follows later edits to that style. Different local formatting
 and named character styles stay intact. Paragraph-style application treats selection endpoints
