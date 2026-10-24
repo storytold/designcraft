@@ -754,6 +754,48 @@ fn redefine(s: &mut Session, p: &Value, paragraph: bool) -> Result<Value> {
     result
 }
 
+/// Apply paragraph style `name` over `r` in one story; `clear` drops overrides instead of keeping
+/// only those that differ from the style (`resolved` is the style's paragraph and character attributes).
+fn apply_para_in_story(
+    st: &mut designcraft_doc::Story,
+    r: &std::ops::Range<usize>,
+    name: &str,
+    clear: bool,
+    resolved: (&designcraft_doc::ParaProps, &designcraft_doc::CharProps),
+    styles: &designcraft_doc::Styles,
+) {
+    let (style_para, style_chars) = resolved;
+    // Text selections are half-open: a selection ending at the next paragraph's
+    // start must not apply a style to that paragraph too.
+    let end = if r.is_empty() { r.start } else { r.end.saturating_sub(1) };
+    let (first, last) = (st.para_at(r.start), st.para_at(end));
+    st.format_paras(r.start..end, |f| {
+        f.style = name.to_string();
+        if clear {
+            f.para = ParaAttrs::default();
+            f.chars = CharAttrs::default();
+        } else {
+            f.para.retain_differences(style_para);
+            f.chars.retain_differences(style_chars);
+        }
+    });
+    for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
+        let Some(pf) = st.paras.get(pi) else { continue };
+        let (_, base) = styles.resolve_para(pf);
+        let end = range.end.saturating_add(1).min(st.len());
+        let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
+        st.format_chars(range, |f| {
+            if clear {
+                f.over = CharAttrs::default();
+            } else {
+                let mut inherited = base.clone();
+                inherited.apply(&styles.char_style_attrs(&f.style));
+                f.over.retain_differences(&inherited);
+            }
+        });
+    }
+}
+
 fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.apply", "missing name"))?.to_string();
     let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
@@ -767,35 +809,7 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
         for t in &targets {
             let r = &t.range;
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                // Text selections are half-open: a selection ending at the next paragraph's
-                // start must not apply a style to that paragraph too.
-                let end = if r.is_empty() { r.start } else { r.end.saturating_sub(1) };
-                let (first, last) = (st.para_at(r.start), st.para_at(end));
-                st.format_paras(r.start..end, |f| {
-                    f.style = name.clone();
-                    if clear {
-                        f.para = ParaAttrs::default();
-                        f.chars = CharAttrs::default();
-                    } else {
-                        f.para.retain_differences(&style_para);
-                        f.chars.retain_differences(&style_chars);
-                    }
-                });
-                for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
-                    let Some(pf) = st.paras.get(pi) else { continue };
-                    let (_, base) = styles.resolve_para(pf);
-                    let end = range.end.saturating_add(1).min(st.len());
-                    let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
-                    st.format_chars(range, |f| {
-                        if clear {
-                            f.over = CharAttrs::default();
-                        } else {
-                            let mut inherited = base.clone();
-                            inherited.apply(&styles.char_style_attrs(&f.style));
-                            f.over.retain_differences(&inherited);
-                        }
-                    });
-                }
+                apply_para_in_story(st, &t.range, &name, clear, (style_para, style_chars), &styles);
             }
         }
         ok()
