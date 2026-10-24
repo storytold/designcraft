@@ -2024,6 +2024,13 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ["Insert Math Expression…", "Insérer une expression mathématique…", "Insert Math Expression…", "Insert Math Expression…", "插入数学公式…"],
     ),
     ("Insert Pages…", ["Insert Pages…", "Insérer des pages…", "Insert Pages…", "Insert Pages…", "插入页面…"]),
+    ("Insert Pages", ["Seiten einfügen", "Insérer des pages", "Insertar páginas", "ページを挿入", "插入页面"]),
+    ("Insert:", ["Einfügen:", "Insérer :", "Insertar:", "挿入:", "插入："]),
+    ("Parent:", ["Vorlagenseite:", "Gabarit :", "Página principal:", "親ページ:", "主页："]),
+    ("After Page", ["Nach Seite", "Après la page", "Después de la página", "ページの後", "页面后"]),
+    ("Before Page", ["Vor Seite", "Avant la page", "Antes de la página", "ページの前", "页面前"]),
+    ("At Start of Document", ["Am Dokumentanfang", "Au début du document", "Al principio del documento", "ドキュメントの先頭", "文档开头"]),
+    ("At End of Document", ["Am Dokumentende", "À la fin du document", "Al final del documento", "ドキュメントの末尾", "文档末尾"]),
     ("Insert Variable", ["Insert Variable", "Insérer une variable", "Insert Variable", "Insert Variable", "插入变量"]),
     ("Inspect Document", ["Inspect Document", "Inspecter le document", "Inspect Document", "Inspect Document", "检查文档"]),
     (

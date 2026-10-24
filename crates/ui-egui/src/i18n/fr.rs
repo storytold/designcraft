@@ -168,7 +168,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Insert Cross-Reference", "Insérer une référence croisée"),
     ("Insert Field", "Insérer un champ"),
     ("Insert Math Expression", "Insérer une expression mathématique"),
-    ("Insert Pages", "Insérer des pages"),
     ("Internet Standard RGB (sRGB)", "RVB standard Internet (sRGB)"),
     ("Invalid panel layout; restored the default dock", "Disposition des panneaux non valide ; disposition par défaut restaurée"),
     ("Join", "Joindre"),

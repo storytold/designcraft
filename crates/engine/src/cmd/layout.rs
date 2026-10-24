@@ -161,7 +161,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Pages…",
             ["Layout", "Pages"],
             Some("Cmd+Shift+P"),
-            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page), parent?: id|\"A-Parent\"|\"A\"|null}",
+            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page; past it: at the end), before?: 0-based page index (instead of `after`; 0: at the start), parent?: id|\"A-Parent\"|\"A\"|null}",
             has_doc,
             |s, p| {
                 const ID: &str = "layout.pages.insert";
@@ -176,12 +176,30 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let st = s.doc()?;
                 let n = st.doc.page_count();
-                // An `after` past the last page appends, which `insert_after_u64_max_appends_at_the_end`
-                // pins deliberately.
-                let after = p.get("after").and_then(Value::as_u64).map(|v| usize::try_from(v).unwrap_or(usize::MAX)).unwrap_or(n.saturating_sub(1));
+                // A placement given (null included) must be a page index; only when neither is
+                // given do the pages go after the last.
+                if p.get("after").is_some() && p.get("before").is_some() {
+                    return Err(bad("layout.pages.insert", "give `after` or `before`, not both"));
+                }
+                // `before` names a page of the document; an `after` past the last page appends
+                // (`insert_pages_bounds.rs` pins that).
+                let index = |k: &str| match p.get(k) {
+                    None => Ok(None),
+                    Some(v) => v
+                        .as_u64()
+                        .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+                        .filter(|&i| k == "after" || i < n)
+                        .map(|i| Some(i.min(n.saturating_sub(1))))
+                        .ok_or_else(|| bad(ID, format!("`{k}` must be the index of one of the {n} pages, not {v}"))),
+                };
+                // The page the new ones follow; none: they go first.
+                let after = match (index("after")?, index("before")?) {
+                    (_, Some(b)) => b.checked_sub(1),
+                    (a, None) => Some(a.unwrap_or(n.saturating_sub(1))),
+                };
                 let parent = parent_ref(ID, &st.doc, p.get("parent"))?.unwrap_or_else(|| st.doc.parents.first().map(|x| x.id));
                 s.edit(|d, _| {
-                    let ids = d.insert_pages(Some(after), count, parent)?;
+                    let ids = d.insert_pages(after, count, parent)?;
                     Ok(json!({"pages": ids.len(), "total": d.page_count()}))
                 })
             }
@@ -2163,6 +2181,52 @@ mod parent_margin_tests {
         assert_eq!(m[2], (Margins::uniform(50.0), 1, false), "old page 2, now a right page");
         assert_eq!(m[3], (Margins::uniform(100.0), 1, true));
         assert!(s.execute("layout.marginsAndColumns", &json!({"parent": "Z", "margins": 10})).is_err());
+    }
+
+    /// Insert Pages before a page, or at the start of the document (`before: 0`), as InDesign's
+    /// dialog offers; `after` and `before` together are refused without an undo step.
+    #[test]
+    fn pages_go_in_before_a_page_or_at_the_start() {
+        let mut s = Session::new();
+        // Facing: [1] [2 3].
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        let b = s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap()["id"].as_u64().unwrap();
+        let ids = |s: &Session| -> Vec<u64> {
+            let d = &s.doc().unwrap().doc;
+            (0..d.page_count()).map(|i| d.page(i).unwrap().id.0).collect()
+        };
+        let parent = |s: &Session, i: usize| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0);
+        let old = ids(&s);
+        s.execute("layout.pages.insert", &json!({"before": 0, "parent": "B"})).unwrap();
+        let now = ids(&s);
+        assert_eq!(now.len(), 4);
+        assert_eq!(now[1..], old[..], "the old pages follow the new first page");
+        assert_eq!(parent(&s, 0), Some(b));
+        // Before page 4 (index 3, the old page 3): two pages without a parent.
+        s.execute("layout.pages.insert", &json!({"before": 3, "count": 2, "parent": null})).unwrap();
+        let then = ids(&s);
+        assert_eq!(then.len(), 6);
+        assert_eq!(then[..3], now[..3]);
+        assert_eq!(then[5], old[2]);
+        assert_eq!((parent(&s, 3), parent(&s, 4)), (None, None));
+        // Refused without a change or an undo step: both placements, even one of them null, and a
+        // placement that isn't a page index.
+        let undo = s.doc().unwrap().history.undo.len();
+        for bad in [
+            json!({"after": 0, "before": 1}),
+            json!({"after": 0, "before": null}),
+            json!({"after": null, "before": 1}),
+            json!({"before": -1}),
+            json!({"before": "0"}),
+            json!({"before": null}),
+            json!({"after": 1.5}),
+            json!({"before": 6}),
+            json!({"before": 99}),
+        ] {
+            assert!(s.execute("layout.pages.insert", &bad).is_err(), "{bad}");
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo, "{bad}");
+            assert_eq!(ids(&s), then, "{bad}");
+        }
     }
 
     #[test]

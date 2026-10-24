@@ -137,6 +137,56 @@ fn text_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32) {
     }
 }
 
+/// Insert Pages…, after page `abs` and with that page's parent, as InDesign's.
+pub(crate) fn open_insert_pages(app: &mut DesignApp, abs: usize) {
+    let Some(st) = app.session.active() else { return };
+    let abs = abs.min(st.doc.page_count().saturating_sub(1));
+    let parent = st.doc.page(abs).and_then(|p| p.parent).map_or_else(String::new, |id| id.0.to_string());
+    app.ui.dialog = Some(Dialog::new("insertPages", json!({"count": 1, "insert": "after", "page": abs, "parent": parent})));
+}
+
+/// Insert Pages, as InDesign's: how many, where (after or before a page, at the start or the end
+/// of the document) and with which parent.
+fn insert_pages_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.clone();
+    let Some(st) = app.session.active() else { return };
+    let pages: Vec<String> = (0..st.doc.page_count()).map(|i| app.session.page_label(i)).collect();
+    let mut parents = vec![(String::new(), crate::i18n::tr(&lang, "[None]").to_string())];
+    parents.extend(st.doc.parents.iter().map(|p| (p.id.0.to_string(), p.parent.as_ref().map(|i| i.label()).unwrap_or_default())));
+    egui::Grid::new("insert_pages").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Pages:"));
+        let mut n = d.n("count").unwrap_or(1.0).clamp(1.0, 9999.0) as u32;
+        if ui.add(egui::DragValue::new(&mut n).range(1..=9999)).changed() {
+            d.fields.insert("count".into(), json!(n));
+        }
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Insert:"));
+        ui.horizontal(|ui| {
+            let wheres = [("after", "After Page"), ("before", "Before Page"), ("start", "At Start of Document"), ("end", "At End of Document")];
+            translated_combo(&lang, ui, d, "insert", &wheres);
+            // The page, by name: At Start and At End need none.
+            ui.add_enabled_ui(matches!(d.s("insert").as_str(), "after" | "before"), |ui| {
+                let cur = (d.n("page").unwrap_or(0.0).max(0.0) as usize).min(pages.len().saturating_sub(1));
+                egui::ComboBox::from_id_salt("insert_page").selected_text(pages.get(cur).cloned().unwrap_or_default()).width(64.0).show_ui(
+                    ui,
+                    |ui| {
+                        for (i, name) in pages.iter().enumerate() {
+                            if ui.selectable_label(i == cur, name).clicked() {
+                                d.fields.insert("page".into(), json!(i));
+                            }
+                        }
+                    },
+                );
+            });
+        });
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Parent:"));
+        let opts: Vec<(&str, &str)> = parents.iter().map(|(v, l)| (v.as_str(), l.as_str())).collect();
+        combo(ui, d, "parent", &opts);
+        ui.end_row();
+    });
+}
+
 /// Extract once when opened. Cancel is read-only; confirmation adds exactly these colours.
 pub(crate) fn open_color_theme(app: &mut DesignApp, params: Value) {
     match app.run("color.extractTheme", params) {
@@ -2044,6 +2094,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
+        "insertPages" => crate::i18n::tr(&app.ui.language, "Insert Pages"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Create Table"),
         "cellOptions" => crate::i18n::tr(&app.ui.language, "Cell Options"),
         "createGuides" => crate::i18n::tr(&app.ui.language, "Create Guides"),
@@ -2112,6 +2163,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
             "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" => 380.0,
+            "insertPages" => 440.0,
             "newDocument" => 960.0,
             "hyphenation" => 560.0,
             "numberingSection" => 560.0,
@@ -2789,6 +2841,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     STEP_AND_REPEAT => step_and_repeat_dialog(app, ui, &mut d),
                     TOC => toc_dialog(app, ui, &mut d),
                     id if id.starts_with("cmd:") => command_form(app, ui, &mut d),
+                    "insertPages" => insert_pages_dialog(app, ui, &mut d),
                     "goToPage" => {
                         ui.horizontal(|ui| {
                             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Page"));
@@ -3108,6 +3161,21 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             )
         }
         "ruby" => app.run("type.ruby", style_cjk::ruby_params(&d)),
+        "insertPages" => {
+            let n = app.session.active().map_or(1, |st| st.doc.page_count());
+            // The page the menu shows: a page past the end is the last.
+            let page = (d.n("page").unwrap_or(0.0).max(0.0) as usize).min(n.saturating_sub(1));
+            let mut p = json!({"count": d.n("count").unwrap_or(1.0).clamp(1.0, 9999.0) as u64});
+            match d.s("insert").as_str() {
+                "before" => p["before"] = json!(page),
+                "start" => p["before"] = json!(0),
+                "end" => p["after"] = json!(n.saturating_sub(1)),
+                _ => p["after"] = json!(page),
+            }
+            // A parent's id, or [None].
+            p["parent"] = d.s("parent").parse::<u64>().map_or(Value::Null, |id| json!(id));
+            app.run("layout.pages.insert", p)
+        }
         "goToPage" => {
             // A page name ("iv", "A-3"), a number, or "+n" for an absolute position.
             let typed = match d.fields.get("page") {
@@ -7631,6 +7699,90 @@ mod tests {
         type_slowly(&mut app, &ctx, screen, "10");
         confirm(&mut app).unwrap();
         assert!(matches!(fill(&app, id), designcraft_color::Color::Rgb { .. }), "{:?}", fill(&app, id));
+    }
+
+    /// A page past the end shows as the last page in the dialog, and Before Page puts the new
+    /// page before that one rather than at the end.
+    #[test]
+    fn insert_pages_before_a_page_past_the_end_goes_before_the_last() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 4, "facingPages": false})).unwrap();
+        let ids = |app: &DesignApp| {
+            let d = &app.session.doc().unwrap().doc;
+            (0..d.page_count()).map(|i| d.page(i).unwrap().id).collect::<Vec<_>>()
+        };
+        let old = ids(&app);
+        app.ui.dialog = Some(Dialog::new("insertPages", json!({"count": 1, "insert": "before", "page": 100, "parent": ""})));
+        confirm(&mut app).unwrap();
+        let now = ids(&app);
+        assert_eq!(now.len(), 5);
+        assert_eq!((now[..3].to_vec(), now[4]), (old[..3].to_vec(), old[3]), "the new page is fourth, before the old last page");
+    }
+
+    /// The course's chapter 25: Insert Pages as InDesign's. It opens after the page in view with
+    /// that page's parent; At Start of Document with B-Cover puts a B page first, and Before Page
+    /// with [None] puts a page without a parent before the page chosen.
+    #[test]
+    fn insert_pages_goes_before_a_page_or_at_the_start_with_the_chosen_parent() {
+        use egui::accesskit::Role;
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        // Facing: [1] [2 3] [4].
+        app.run("file.new", json!({"pages": 4})).unwrap();
+        let b = app.run("layout.parents.new", json!({"prefix": "B", "name": "Cover"})).unwrap()["id"].as_u64().unwrap();
+        let ids = |app: &DesignApp| -> Vec<u64> {
+            let d = &app.session.doc().unwrap().doc;
+            (0..d.page_count()).map(|i| d.page(i).unwrap().id.0).collect()
+        };
+        let old = ids(&app);
+        crate::menus::activate(&mut app, "layout.pages.insert", &Value::Null);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "insertPages");
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::new("insert_pages_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        for l in ["Pages:", "Insert:", "Parent:"] {
+            assert!(h.query_by_label(l).is_some(), "{l}");
+        }
+        // The dropdown showing `shown`, then its item `choice`.
+        let pick = |h: &mut Harness<'_, DesignApp>, shown: &str, choice: &str| {
+            h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some(shown)).click();
+            h.run_steps(2);
+            h.get_by_label(choice).click();
+            h.run_steps(2);
+        };
+        // After page 1 with A, at first; then At Start of Document, with B-Cover.
+        pick(&mut h, "After Page", "At Start of Document");
+        pick(&mut h, "A-Parent", "B-Cover");
+        h.get_by_label("  OK  ").click();
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_none());
+        let now = ids(h.state());
+        assert_eq!(now[1..], old[..], "the new page is first");
+        let parent = |app: &DesignApp, i: usize| app.session.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0);
+        assert_eq!(parent(h.state(), 0), Some(b));
+        // Before page 4, with [None].
+        crate::dialogs::open_insert_pages(h.state_mut(), 0);
+        h.run_steps(3);
+        pick(&mut h, "After Page", "Before Page");
+        pick(&mut h, "1", "4");
+        pick(&mut h, "B-Cover", "[None]");
+        h.get_by_label("  OK  ").click();
+        h.run_steps(3);
+        let then = ids(h.state());
+        assert_eq!(then.len(), 6);
+        assert_eq!(then[..3], now[..3], "the pages before it stay");
+        assert_eq!(then[4..], now[3..], "page 4 and those after it follow the new page");
+        assert_eq!(parent(h.state(), 3), None);
     }
 
     #[test]
