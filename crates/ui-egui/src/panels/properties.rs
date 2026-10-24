@@ -452,12 +452,13 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     // Page.
     section(ui, crate::i18n::tr(&app.ui.language, "Page"), true);
     let b = block(ui, FIELD_H);
-    let names: Vec<String> = (0..d.page_count()).map(|i| app.session.page_label(i)).collect();
-    let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        widgets::dropdown_list(ui, &names[cur.min(names.len().saturating_sub(1))], 93.0, &names, Some(cur))
-    });
-    if let Some(pg) = picked {
-        crate::canvas::go_to_page(app, pg);
+    // As the status bar's page box: the page, or the parent shown ("A-Parent"); then the parents.
+    if let Some(pb) = crate::canvas::page_box(app) {
+        let picked =
+            place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| widgets::dropdown_list(ui, pb.current_name(), 93.0, &pb.names, Some(pb.current)));
+        if let Some(i) = picked {
+            crate::canvas::page_box_go(app, &pb, i);
+        }
     }
     let (add, del) = place(ui, sub(b, 172.0, 0.0, 50.0, FIELD_H), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;

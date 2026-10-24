@@ -1136,22 +1136,45 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 if icons::button(ui, "prev", 14.0, false, crate::i18n::tr(&app.ui.language, "Previous Spread")).clicked() {
                     crate::canvas::go_to_page(app, cur.saturating_sub(1));
                 }
-                let name = app.session.page_label(cur);
+                // The page box, as InDesign's: the page in view, or the parent while one is shown
+                // ("A-Parent"); its menu lists the pages, then the parents.
+                let pb = crate::canvas::page_box(app);
+                let name = pb.as_ref().map_or_else(String::new, |b| b.current_name().to_string());
                 let (fr, fresp) = ui.allocate_exact_size(vec2(80.0, 14.0), Sense::click());
                 ui.painter().rect(fr, 0.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                ui.painter().text(fr.left_center() + vec2(5.0, 0.0), egui::Align2::LEFT_CENTER, &name, small.clone(), t.text);
+                // A long parent name is cut at the arrow.
+                ui.painter().with_clip_rect(egui::Rect::from_min_max(fr.min, egui::pos2(fr.max.x - 14.0, fr.max.y))).text(
+                    fr.left_center() + vec2(5.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    &name,
+                    small.clone(),
+                    t.text,
+                );
                 ui.painter().text(fr.right_center() - vec2(5.0, 0.0), egui::Align2::RIGHT_CENTER, "▾", small.clone(), t.text);
-                egui::Popup::menu(&fresp).show(|ui| {
-                    let names: Vec<String> = (0..n).map(|i| app.session.page_label(i)).collect();
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                        for (i, nm) in names.iter().enumerate() {
-                            if ui.button(nm).clicked() {
-                                crate::canvas::go_to_page(app, i);
-                                ui.close();
-                            }
-                        }
-                    });
+                fresp.widget_info(|| {
+                    let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Page");
+                    info.current_text_value = Some(name.clone());
+                    info
                 });
+                let mut picked = None;
+                if let Some(b) = &pb {
+                    egui::Popup::menu(&fresp).show(|ui| {
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                            for (i, nm) in b.names.iter().enumerate() {
+                                if i == b.pages && i > 0 {
+                                    ui.separator();
+                                }
+                                if ui.selectable_label(i == b.current, nm).clicked() {
+                                    picked = Some(i);
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                }
+                if let (Some(b), Some(i)) = (&pb, picked) {
+                    crate::canvas::page_box_go(app, b, i);
+                }
                 if icons::button(ui, "next", 14.0, false, crate::i18n::tr(&app.ui.language, "Next Spread")).clicked() {
                     crate::canvas::go_to_page(app, (cur + 1).min(n - 1));
                 }
@@ -1655,6 +1678,45 @@ mod tests {
         h.get_by_label("Preflight Panel…").click();
         h.run_steps(3);
         assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
+    }
+
+    /// The course's chapter 25: while a parent is shown, the status bar's page box names it
+    /// ("A-Parent"), as InDesign's. Its menu lists the pages, then the parents: a parent shows
+    /// that parent, a page leaves the parents for that page.
+    #[test]
+    fn the_page_box_names_the_parent_in_view_and_lists_the_parents() {
+        use egui::accesskit::Role;
+        let mut app = app();
+        app.run("file.new", serde_json::json!({"pages": 4, "facingPages": true})).unwrap();
+        app.run("layout.parents.new", serde_json::json!({"prefix": "B", "name": "Cover"})).unwrap();
+        app.ui.dock_tab = "properties".into();
+        let mut h = test_window::open(app, vec2(1200.0, 700.0));
+        let shown = |h: &egui_kittest::Harness<'static, test_window::Window>| {
+            let b = h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page"));
+            b.value().unwrap_or_default()
+        };
+        assert_eq!(shown(&h), "1");
+        h.state_mut().app.run("layout.parents.edit", serde_json::json!({"on": true})).unwrap();
+        h.run_steps(6);
+        assert_eq!(shown(&h), "A-Parent");
+        // The menu: a parent.
+        h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page")).click();
+        h.run_steps(3);
+        for name in ["1", "2", "3", "4", "A-Parent"] {
+            assert!(h.query_by_label(name).is_some(), "{name} is listed");
+        }
+        h.get_by_label("B-Cover").click();
+        h.run_steps(6);
+        assert_eq!(shown(&h), "B-Cover");
+        assert_eq!(crate::canvas::current_parent_page(&h.state().app).map(|(i, _)| i), Some(1));
+        // A page: the parents are left.
+        h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page")).click();
+        h.run_steps(3);
+        h.get_by_label("3").click();
+        h.run_steps(6);
+        assert!(!h.state().app.session.active().unwrap().editing_parents);
+        assert_eq!(crate::canvas::current_page(&h.state().app), Some(2));
+        assert_eq!(shown(&h), "3");
     }
 
     /// As in InDesign, double-clicking the preflight count (or its light) shows the panel.
