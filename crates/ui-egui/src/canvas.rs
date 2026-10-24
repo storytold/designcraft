@@ -2585,7 +2585,13 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
             egui::Event::Ime(ime) if wants_text => ime_event(app, ime, vi),
             // Keys the IME passes through come as text only while nothing is marked.
             egui::Event::Text(t) if wants_text && !composing => {
-                let _ = app.run("text.insert", json!({"text": t}));
+                let shift = ui.input(|i| i.modifiers.shift);
+                let typed = typed_text(&t, app.ime_japanese_typing, shift, cfg!(target_os = "macos"));
+                // Letters straight from the keys: the input method is in its Roman mode.
+                if !t.trim().is_empty() {
+                    app.ime_japanese_typing = false;
+                }
+                let _ = app.run("text.insert", json!({"text": typed}));
             }
             // The IME owns the keyboard until it commits: no typing, clipboard or editing keys.
             egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Key { .. } if composing => {}
@@ -2664,21 +2670,43 @@ fn keyboard_pane(app: &DesignApp) -> bool {
     app.pane == app.focus_pane
 }
 
+/// The text a key typed, given `text` as the window system reports it.
+///
+/// On macOS the Space key in a Japanese input mode types an ideographic space, but the window
+/// layer drops what the input method inserts when nothing is being composed and reports the key's
+/// own character, a plain space. While the text before it was Japanese the input method committed
+/// (`japanese_typing`), a plain space is therefore the ideographic one; with Shift it is the plain
+/// space, as the input methods have it. Letters typed straight from the keys (the Roman mode) end
+/// that. Chinese and Korean input methods type plain spaces (Korean separates words with them),
+/// and accents a Latin input method composes are no input mode at all: none of them start it.
+pub(crate) fn typed_text(text: &str, japanese_typing: bool, shift: bool, macos: bool) -> &str {
+    if macos && japanese_typing && !shift && text == " " { "\u{3000}" } else { text }
+}
+
+/// Kana: what a Japanese input method shows while composing (hiragana, katakana, half-width
+/// katakana). Chinese ones show pinyin, zhuyin or radicals, Korean ones jamo and syllables.
+pub(crate) fn has_kana(text: &str) -> bool {
+    text.chars().any(|c| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}' | '\u{ff66}'..='\u{ff9f}'))
+}
+
 /// One input method event for the text caret: marked text previews in the story, a commit types.
 fn ime_event(app: &mut DesignApp, e: egui::ImeEvent, vi: designcraft_engine::ViewInfo) {
     let r = match e {
         egui::ImeEvent::Preedit { text, active_range_chars } => {
             app.ime_marked = Some(text.clone()).filter(|t| !t.is_empty());
+            app.ime_kana_seen |= has_kana(&text);
             app.session.tool_preedit(&text, active_range_chars, vi).map_err(|e| e.to_string())
         }
         // A bare line break confirms the composition (Enter with some IMEs): the marked text, not
         // a new paragraph.
         egui::ImeEvent::Commit(t) if t == "\n" || t == "\r" => {
+            app.ime_japanese_typing = std::mem::take(&mut app.ime_kana_seen);
             keep_marked_text(app);
             Ok(())
         }
         egui::ImeEvent::Commit(t) => {
             app.ime_marked = None;
+            app.ime_japanese_typing = std::mem::take(&mut app.ime_kana_seen) || has_kana(&t);
             app.session.tool_ime_commit(&t, vi).map_err(|e| e.to_string())
         }
         // The web text agent's corrections and mobile Backspace: characters around the caret go.
@@ -2708,6 +2736,7 @@ fn delete_surrounding(app: &mut DesignApp, before: usize, after: usize) -> Resul
 /// End a composition outside the IME (a click away, the canvas losing the keyboard): the marked
 /// text stays as typed, and the system IME is told to drop its copy.
 pub(crate) fn keep_marked_text(app: &mut DesignApp) {
+    app.ime_kana_seen = false;
     if app.ime_marked.take().is_some() {
         app.ime_discard = true;
     }
@@ -2732,8 +2761,16 @@ fn ime_output(app: &mut DesignApp, ctx: &egui::Context, xf: &Xf) {
     let Some((a, b)) = caret else {
         // The IME goes away with its marked text: keep that text as typed, like a click away.
         keep_marked_text(app);
+        app.ime_japanese_typing = false;
+        app.ime_caret_story = None;
         return;
     };
+    // In another story (or document) the input mode may have changed unseen: start plain.
+    let here = app.session.active_index().zip(app.session.active().and_then(|st| st.selection.text).map(|t| t.story));
+    if here != app.ime_caret_story {
+        app.ime_japanese_typing = false;
+        app.ime_caret_story = here;
+    }
     let r = Rect::from_two_pos(xf.to_screen(a), xf.to_screen(b)).expand(1.0);
     // The composition ended outside the IME (a click, a command): the IME drops what it has marked.
     let interrupt = app.ime_marked.is_some() && !app.session.tool_composing();
@@ -3595,6 +3632,19 @@ mod tests {
     use egui_kittest::{Harness, kittest::Queryable};
 
     use super::*;
+
+    /// The Space key after Japanese the input method committed is the ideographic space on
+    /// macOS (the window layer reports a plain one); Shift, the Roman mode and other systems keep
+    /// it.
+    #[test]
+    fn space_after_japanese_input_method_text_is_the_ideographic_space() {
+        assert_eq!(typed_text(" ", true, false, true), "\u{3000}");
+        assert_eq!(typed_text(" ", true, true, true), " ", "Shift+Space");
+        assert_eq!(typed_text(" ", false, false, true), " ", "Roman mode, Chinese or Korean");
+        assert_eq!(typed_text(" ", true, false, false), " ", "other systems report what the input method typed");
+        assert_eq!(typed_text("a", true, false, true), "a");
+        assert_eq!(typed_text("  ", true, false, true), "  ");
+    }
 
     #[test]
     fn a_press_after_a_drag_is_not_a_double_click() {
@@ -5499,6 +5549,76 @@ mod tests {
 
     fn preedit(t: &str, c: usize) -> egui::Event {
         egui::Event::Ime(egui::ImeEvent::Preedit { text: t.into(), active_range_chars: Some(c..c) })
+    }
+
+    /// Space after Japanese the input method committed is the ideographic space on macOS, where
+    /// the window layer reports it as a plain one; after letters typed straight from the keys it
+    /// stays plain, and so does it after an accent a Latin input method composed.
+    #[test]
+    fn space_after_committed_japanese_types_an_ideographic_space() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let sid = typing_app(&mut app, &ctx, "");
+        let space = if cfg!(target_os = "macos") { "\u{3000}" } else { " " };
+        ime_frame(&mut app, &ctx, vec![preedit("にほんご", 4), egui::Event::Ime(egui::ImeEvent::Commit("日本語".into()))]);
+        ime_frame(&mut app, &ctx, vec![egui::Event::Text(" ".into())]);
+        assert_eq!(story_text(&mut app, &sid), format!("日本語{space}"));
+        ime_frame(&mut app, &ctx, vec![egui::Event::Text("ab".into())]);
+        ime_frame(&mut app, &ctx, vec![egui::Event::Text(" ".into())]);
+        assert_eq!(story_text(&mut app, &sid), format!("日本語{space}ab "));
+        ime_frame(&mut app, &ctx, vec![preedit("´", 1), egui::Event::Ime(egui::ImeEvent::Commit("é".into()))]);
+        ime_frame(&mut app, &ctx, vec![egui::Event::Text(" ".into())]);
+        assert_eq!(story_text(&mut app, &sid), format!("日本語{space}ab é "));
+    }
+
+    /// The caret moving to another story, or leaving the text, ends Japanese typing: the input
+    /// mode may have changed without an event the app sees (the Eisu key, say).
+    #[test]
+    fn japanese_typing_ends_with_the_story_or_the_text_caret() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let first = typing_app(&mut app, &ctx, "");
+        let commit = |app: &mut DesignApp| {
+            ime_frame(app, &ctx, vec![preedit("にほんご", 4), egui::Event::Ime(egui::ImeEvent::Commit("日本語".into()))]);
+            assert!(app.ime_japanese_typing);
+        };
+        commit(&mut app);
+        let f = app.session.execute("frame.create", &json!({"rect": [36, 260, 300, 400], "content": "text", "text": ""})).unwrap();
+        let second = f["story"].clone();
+        app.session.execute("text.select", &json!({"story": second, "anchor": 0, "focus": 0})).unwrap();
+        ime_frame(&mut app, &ctx, vec![]);
+        ime_frame(&mut app, &ctx, vec![egui::Event::Text(" ".into())]);
+        assert_eq!(story_text(&mut app, &second), " ");
+        assert_eq!(story_text(&mut app, &first), "日本語");
+        commit(&mut app);
+        app.select_tool("rectangleFrame");
+        ime_frame(&mut app, &ctx, vec![]);
+        assert!(!app.ime_japanese_typing);
+    }
+
+    /// Chinese and Korean input methods type plain spaces (Korean separates words with them), so
+    /// a space after their text stays plain. Japanese converted as it is typed (live conversion)
+    /// shows kana first and still gets the ideographic space.
+    #[test]
+    fn space_after_chinese_or_korean_input_stays_plain() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let sid = typing_app(&mut app, &ctx, "");
+        let ideographic = if cfg!(target_os = "macos") { "\u{3000}" } else { " " };
+        let mut want = String::new();
+        for (preedits, commit, space) in [
+            (vec!["ni", "nihao"], "你好", " "),
+            (vec!["ㄋ", "ㄋㄧˇ"], "你", " "),
+            (vec!["ㅎ", "하", "한"], "한국어", " "),
+            (vec!["に", "日本"], "日本", ideographic),
+        ] {
+            let mut events: Vec<egui::Event> = preedits.iter().map(|p| preedit(p, p.chars().count())).collect();
+            events.push(egui::Event::Ime(egui::ImeEvent::Commit(commit.into())));
+            ime_frame(&mut app, &ctx, events);
+            ime_frame(&mut app, &ctx, vec![egui::Event::Text(" ".into())]);
+            want += &format!("{commit}{space}");
+            assert_eq!(story_text(&mut app, &sid), want, "{commit}");
+        }
     }
 
     #[test]
