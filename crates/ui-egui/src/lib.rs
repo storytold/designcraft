@@ -1156,36 +1156,33 @@ impl DesignApp {
         self.ui.flyout = None;
     }
 
-    /// Per-frame logic before layout.
-    pub fn logic(&mut self, ctx: &egui::Context) {
-        if self.egui_ctx.is_none() {
-            self.egui_ctx = Some(ctx.clone());
+    /// First frame only: load the saved colour profiles and make the saved Color Settings active.
+    fn apply_saved_color_settings(&mut self) {
+        if self.color_applied {
+            return;
         }
-        self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-        if !self.color_applied {
-            self.color_applied = true;
-            for path in self.ui.color_profiles.clone() {
-                if let Err(e) = self.session.execute("color.loadProfile", &json!({"path": path})) {
+        self.color_applied = true;
+        for path in self.ui.color_profiles.clone() {
+            if let Err(e) = self.session.execute("color.loadProfile", &json!({"path": path})) {
+                log::warn!("Color Settings: {e}");
+                self.status_error("Color Settings", e);
+            }
+        }
+        if let Some(cs) = self.ui.color_settings.clone() {
+            let known = cs.with_known_profiles();
+            for (saved, used) in [(&cs.rgb, &known.rgb), (&cs.cmyk, &known.cmyk)] {
+                if saved != used {
+                    let e = format!("saved profile {saved} is not available; using {used}");
                     log::warn!("Color Settings: {e}");
                     self.status_error("Color Settings", e);
                 }
             }
-            if let Some(cs) = self.ui.color_settings.clone() {
-                let known = cs.with_known_profiles();
-                for (saved, used) in [(&cs.rgb, &known.rgb), (&cs.cmyk, &known.cmyk)] {
-                    if saved != used {
-                        let e = format!("saved profile {saved} is not available; using {used}");
-                        log::warn!("Color Settings: {e}");
-                        self.status_error("Color Settings", e);
-                    }
-                }
-                let _ = designcraft_color::cms::set_active(&known);
-            }
+            let _ = designcraft_color::cms::set_active(&known);
         }
-        let scale = self.ui.ui_scale.clamp(0.5, 3.0);
-        if (ctx.zoom_factor() - scale).abs() > 1e-3 {
-            ctx.set_zoom_factor(scale);
-        }
+    }
+
+    /// Install the UI fonts on the first frame, and again when the language or the system fonts change.
+    fn update_fonts(&mut self, ctx: &egui::Context) {
         if !self.styled {
             // The UI scale is a preference (applied above); egui's own Cmd+Plus/Minus/0 would rescale the
             // whole window instead of the canvas, only to be reset next frame.
@@ -1201,6 +1198,20 @@ impl DesignApp {
             }
             self.fonts_ready = true;
         }
+    }
+
+    /// Per-frame logic before layout.
+    pub fn logic(&mut self, ctx: &egui::Context) {
+        if self.egui_ctx.is_none() {
+            self.egui_ctx = Some(ctx.clone());
+        }
+        self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        self.apply_saved_color_settings();
+        let scale = self.ui.ui_scale.clamp(0.5, 3.0);
+        if (ctx.zoom_factor() - scale).abs() > 1e-3 {
+            ctx.set_zoom_factor(scale);
+        }
+        self.update_fonts(ctx);
         if !self.fonts_system {
             // The font scan runs in the background: look again shortly.
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
