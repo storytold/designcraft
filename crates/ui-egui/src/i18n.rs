@@ -163,6 +163,11 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Parents Fixed", ["Übergeordnete fixiert", "Gabarits fixes", "Páginas principales fijas", "親ページを固定", "父页面固定"]),
     ("Parents", ["Übergeordnete Seiten", "Gabarits", "Páginas principales", "親ページ", "父页面"]),
     (
+        "Include Inside Edges",
+        ["Innenkanten einschließen", "Inclure les bords intérieurs", "Incluir bordes interiores", "内側エッジを含める", "包含内边缘"],
+    ),
+    ("Alpha Channel", ["Alphakanal", "Couche alpha", "Canal alfa", "アルファチャンネル", "Alpha 通道"]),
+    (
         "Bulleted & Numbered Lists",
         [
             "Aufzählungszeichen und nummerierte Listen",
@@ -4904,6 +4909,7 @@ mod tests {
             "Equal fixed heights for the selected rows; cell text may become overset.",
             "Found",
             "Grab bag",
+            "Include Inside Edges",
             "Key Object",
             "Load Styles",
             "layer",

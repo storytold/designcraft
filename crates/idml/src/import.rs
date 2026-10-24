@@ -3259,6 +3259,7 @@ impl<'r> Importer<'r> {
             modified: self.modified.unwrap_or(0),
             next_id: self.next_id,
             font_scope: 0,
+            alpha_outlines: Vec::new(),
         };
         if let [x, y] = root.get("ZeroPoint").map(nums).unwrap_or_default()[..]
             && let Some(zp) = d.clamp_zero_point([x, y])
@@ -3384,6 +3385,7 @@ fn text_wrap(w: &El) -> TextWrap {
         invert: w.get("Inverse") == Some("true"),
         side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
         contour: names::contour_type_in(w.find("ContourOption").and_then(|c| c.get("ContourType")).unwrap_or("SameAsClipping")),
+        inside_edges: w.find("ContourOption").and_then(|c| c.get("IncludeInsideEdges")) == Some("true"),
         ..TextWrap::default()
     };
     if let Some(o) = w.prop_el("TextWrapOffset") {
