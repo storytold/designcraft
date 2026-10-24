@@ -477,6 +477,63 @@ fn place_gun_click_drag_and_into_frame() {
     assert_eq!(graphic_xf(&s), placed);
 }
 
+/// A place-cursor drag draws the frame at the graphic's proportions from where it started, as
+/// InDesign does, shows its scale, and places exactly that frame, in any direction.
+#[test]
+fn place_gun_drag_previews_and_places_a_proportional_frame() {
+    use designcraft_tools::{Cursor, Mods, Overlay, PointerEvent, PointerKind};
+    let mut s = session();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png), "name": "a.png"})).unwrap();
+    let v = ViewInfo::at_zoom(1.0);
+    let p = designcraft_geom::Point::new;
+    assert_eq!(s.cursor(p(300.0, 300.0), Mods::default(), v), Cursor::LoadedGraphic);
+    // Up and to the left: 80 × 200 holds the 40 × 20 graphic at 200 %, 80 × 40, hanging from the press.
+    s.pointer(&PointerEvent::new(PointerKind::Down, 300.0, 300.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 220.0, 100.0), v).unwrap();
+    assert_eq!(s.cursor(p(220.0, 100.0), Mods::default(), v), Cursor::Crosshair, "the crosshair while drawing");
+    let o = s.overlays(v);
+    assert!(o.iter().any(|o| matches!(o, Overlay::Marquee(r) if *r == designcraft_geom::Rect::new(220.0, 260.0, 300.0, 300.0))), "{o:?}");
+    assert!(
+        o.iter().any(|o| matches!(o, Overlay::Measure { text, .. } if text == "X: 200.00%
+Y: 200.00%")),
+        "{o:?}"
+    );
+    s.pointer(&PointerEvent::new(PointerKind::Up, 220.0, 100.0), v).unwrap();
+    let it = s.doc().unwrap().doc.spreads[0].items.last().unwrap().clone();
+    assert_eq!(it.bounds(), designcraft_geom::Rect::new(220.0, 260.0, 300.0, 300.0), "the frame previewed");
+    // 80 × 1 is past the drag tolerance, but its 2 × 1 proportional frame is too small for
+    // `place.drop`, which places at natural size: the preview shows that frame and 100 %.
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png), "name": "a.png"})).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 400.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 180.0, 401.0), v).unwrap();
+    let natural = designcraft_geom::Rect::new(100.0, 400.0, 140.0, 420.0);
+    let o = s.overlays(v);
+    assert!(o.iter().any(|o| matches!(o, Overlay::Marquee(r) if *r == natural)), "{o:?}");
+    assert!(
+        o.iter().any(|o| matches!(o, Overlay::Measure { text, .. } if text == "X: 100.00%
+Y: 100.00%")),
+        "{o:?}"
+    );
+    s.pointer(&PointerEvent::new(PointerKind::Up, 180.0, 401.0), v).unwrap();
+    let it = s.doc().unwrap().doc.spreads[0].items.last().unwrap().clone();
+    assert_eq!(it.bounds(), natural, "the frame previewed");
+    // A drag under the threshold is a click: no frame drawn, the graphic at actual size where
+    // the press was.
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png), "name": "a.png"})).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 500.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 102.5, 501.25), v).unwrap();
+    assert!(!s.overlays(v).iter().any(|o| matches!(o, Overlay::Marquee(_))), "no frame yet");
+    assert_eq!(s.cursor(p(102.5, 501.25), Mods::default(), v), Cursor::LoadedGraphic, "the thumbnail stays");
+    s.pointer(&PointerEvent::new(PointerKind::Up, 102.5, 501.25), v).unwrap();
+    let it = s.doc().unwrap().doc.spreads[0].items.last().unwrap().clone();
+    assert_eq!(it.bounds(), designcraft_geom::Rect::new(100.0, 500.0, 140.0, 520.0), "actual size at the press");
+    // With no graphic loaded there's no thumbnail to show: the crosshair, before any press too.
+    s.loaded = None;
+    s.set_tool("placeGun");
+    assert_eq!(s.cursor(p(300.0, 300.0), Mods::default(), v), Cursor::Crosshair);
+}
+
 #[test]
 fn preflight_reports_overset_and_missing_fonts() {
     let mut s = session();

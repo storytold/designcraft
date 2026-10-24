@@ -108,6 +108,7 @@ impl Session {
             snap: view.snap,
             unit: view.unit,
             stroke_in_front: view.stroke_in_front,
+            loaded: self.loaded.map(|l| l.size),
         };
         Some(f(self, &cx))
     }
