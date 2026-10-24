@@ -36,6 +36,11 @@ pub enum FormatError {
     /// The document holds something the file can't represent; nothing is written.
     #[error("{0}")]
     Unsaveable(String),
+    /// An entry is in the archive and cannot be read (a bad CRC, a truncated file). Distinct from
+    /// [`Self::Io`] so a caller can carry on without it -- an asset -- while a refusal such as an
+    /// oversized entry still stops the load (#1592).
+    #[error("{0}")]
+    Unreadable(String),
 }
 
 fn ext_for(mime: &str) -> &'static str {
@@ -98,6 +103,15 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
         for (id, a) in &doc.assets {
+            if a.unreadable {
+                // Saving here would write the document without this image, losing it for good.
+                // The file it came from is still intact, so refusing leaves the user something to
+                // recover from (#1592).
+                return Err(FormatError::Io(format!(
+                    "`{}` could not be read when this document was opened; saving would lose it. Relink or replace it first.",
+                    a.name
+                )));
+            }
             if a.data.is_empty() {
                 continue;
             }
@@ -180,8 +194,11 @@ fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, le
         return Err(too_big());
     }
     let mut v = Vec::new();
-    if f.take(limit.saturating_add(1)).read_to_end(&mut v).is_err() {
-        return Ok(None);
+    if let Err(e) = f.take(limit.saturating_add(1)).read_to_end(&mut v) {
+        // The entry is there and cannot be read: a bad CRC, a truncated archive. Reporting it as
+        // absent made the caller carry on with nothing, which for an asset meant the image opened
+        // empty and the next save dropped it (#1592).
+        return Err(FormatError::Unreadable(format!("{name} is in the file but could not be read: {e}")));
     }
     let n = v.len() as u64;
     if n > limit {
@@ -220,7 +237,21 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
         if !doc.assets.contains_key(&AssetId(id)) {
             continue;
         }
-        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, MAX_ASSET_BYTES, &mut left)?, doc.assets.get_mut(&AssetId(id))) {
+        // An asset that cannot be read must not stop the document opening -- the rest of the
+        // layout is still there -- but it is marked so that saving does not quietly drop it
+        // (#1592).
+        let entry = match read_entry(&mut z, &name, MAX_ASSET_BYTES, &mut left) {
+            Ok(e) => e,
+            Err(FormatError::Unreadable(message)) => {
+                log::warn!("{message}");
+                if let Some(a) = doc.assets.get_mut(&AssetId(id)) {
+                    Arc::make_mut(a).unreadable = true;
+                }
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        if let (Some(data), Some(a)) = (entry, doc.assets.get_mut(&AssetId(id))) {
             let same = loaded.entry(fingerprint.hash_one(data.as_slice())).or_default();
             let data = match same.iter().find(|d| ***d == data) {
                 Some(d) => d.clone(),
@@ -383,6 +414,38 @@ mod tests {
     use designcraft_doc::build::NewDocument;
     use designcraft_doc::geom::Rect;
     use designcraft_doc::{Asset, ParaFormat, SpreadRef};
+
+    /// An asset entry that is present but unreadable (a bad CRC) was reported as absent: the
+    /// image opened empty and the next save skipped it, so it was gone for good. The document
+    /// still opens, the asset is marked, and saving refuses instead of writing the loss (#1592).
+    #[test]
+    fn a_corrupt_asset_is_not_silently_lost() {
+        let mut d = Document::new(&NewDocument::default());
+        let aid = png_asset(&mut d, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        place(&mut d, aid, 0.0);
+        let good = save(&d).unwrap();
+
+        // Corrupt the asset entry's bytes, leaving the archive's structure intact, so the entry
+        // is found and its CRC fails.
+        let at = good.windows(8).position(|w| w == [1, 2, 3, 4, 5, 6, 7, 8]).expect("the stored PNG bytes are in the file");
+        let mut broken = good.clone();
+        broken[at..at + 8].copy_from_slice(&[9, 9, 9, 9, 9, 9, 9, 9]);
+
+        let d2 = load(&broken).expect("the document still opens: the layout is all there");
+        let a = d2.assets.get(&aid).expect("the asset is still listed");
+        assert!(a.unreadable, "the asset is marked unreadable, not treated as absent");
+        assert!(a.data.is_empty(), "and it has no bytes");
+
+        // Saving would write the document without the image. It refuses, and says what to do.
+        let err = save(&d2).expect_err("saving a document with an unreadable asset is refused");
+        let msg = err.to_string();
+        assert!(msg.contains("x.png") && msg.contains("Relink"), "the error names the asset and the way out: {msg}");
+
+        // The intact file is unaffected: it opens with its bytes and saves again.
+        let d3 = load(&good).unwrap();
+        assert!(!d3.assets[&aid].unreadable && !d3.assets[&aid].data.is_empty());
+        assert!(save(&d3).is_ok());
+    }
 
     fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
         let aid = AssetId(d.alloc());
