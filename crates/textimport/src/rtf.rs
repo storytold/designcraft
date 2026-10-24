@@ -1,8 +1,9 @@
 //! RTF → story: text, paragraphs, line breaks, tabs, bold/italic/underline/strikethrough, size,
-//! Unicode (`\uN`) and hex (`\'hh`) characters. Destinations that aren't body text (font and
-//! colour tables, stylesheet, info, pictures, `\*` groups) are skipped.
+//! Unicode (`\uN`) and hex (`\'hh`) characters, footnotes and endnotes (`\footnote`, with
+//! `\ftnalt` for an endnote). Destinations that aren't body text (font and colour tables,
+//! stylesheet, info, pictures, `\*` groups) are skipped.
 
-use designcraft_doc::{CharAttrs, CharFormat, Story, StoryId};
+use designcraft_doc::{CharAttrs, CharFormat, ParaFormat, Story, StoryId};
 
 use crate::{ImportError, Imported};
 
@@ -48,7 +49,6 @@ const SKIP: &[&str] = &[
     "pict",
     "header",
     "footer",
-    "footnote",
     "listtable",
     "listoverridetable",
     "rsidtbl",
@@ -62,7 +62,15 @@ const SKIP: &[&str] = &[
     "object",
 ];
 
+/// [`import_with`] with the default options (the tests' shorthand).
+#[cfg(test)]
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
+    import_with(bytes, &designcraft_doc::TextImportOptions::default())
+}
+
+/// [`import`] with the import options that apply while reading: Include Footnotes and Endnotes,
+/// and Manual Page Breaks.
+pub fn import_with(bytes: &[u8], opts: &designcraft_doc::TextImportOptions) -> Result<Imported, ImportError> {
     let src = String::from_utf8_lossy(bytes);
     if !src.trim_start().starts_with("{\\rtf") {
         return Err(ImportError::Corrupt("not an RTF file".into()));
@@ -74,6 +82,9 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let mut buf = String::new();
     let mut fmt = stack[0].format();
     let mut warnings = Vec::new();
+    // Notes being read: the group depth of each `{\footnote …}`, the story it interrupted (the
+    // note's text is read into `st` meanwhile), and whether it's an endnote (`\ftnalt`).
+    let mut notes: Vec<(usize, Story, bool)> = Vec::new();
     let flush = |st: &mut Story, buf: &mut String, fmt: &CharFormat| {
         if !buf.is_empty() {
             let len = st.len();
@@ -110,6 +121,15 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 flush(&mut st, &mut buf, &fmt);
                 if stack.len() > 1 {
                     stack.pop();
+                }
+                // The note's group closed: back to the text it interrupted, with the note there.
+                if notes.last().is_some_and(|n| stack.len() < n.0)
+                    && let Some((_, outer, endnote)) = notes.pop()
+                {
+                    let note = std::mem::replace(&mut st, outer);
+                    if if endnote { opts.endnotes } else { opts.footnotes } {
+                        add_note(&mut st, note, endnote, &mut warnings);
+                    }
                 }
                 // The `\uN` fallback skip ends with the group.
                 pending = 0;
@@ -184,6 +204,21 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     continue;
                 }
                 let skip = stack.last().is_some_and(|s| s.skip);
+                if word == "footnote" && !skip {
+                    flush(&mut st, &mut buf, &fmt);
+                    if opts.footnotes || opts.endnotes {
+                        notes.push((stack.len(), std::mem::replace(&mut st, Story::new(StoryId(0))), false));
+                    } else if let Some(s) = stack.last_mut() {
+                        s.skip = true;
+                    }
+                    continue;
+                }
+                if word == "ftnalt" && !skip {
+                    if let Some(n) = notes.last_mut().filter(|n| n.0 == stack.len()) {
+                        n.2 = true;
+                    }
+                    continue;
+                }
                 if SKIP.contains(&word.as_str()) {
                     flush(&mut st, &mut buf, &fmt);
                     if let Some(s) = stack.last_mut() {
@@ -273,14 +308,44 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         }
     }
     flush(&mut st, &mut buf, &fmt);
+    // A file that ends inside a note: the note ends there.
+    while let Some((_, outer, endnote)) = notes.pop() {
+        let note = std::mem::replace(&mut st, outer);
+        if if endnote { opts.endnotes } else { opts.footnotes } {
+            add_note(&mut st, note, endnote, &mut warnings);
+        }
+    }
     // A trailing \par leaves an empty last paragraph.
     if st.text.ends_with('\n') {
         let n = st.len();
         st.delete(n - 1..n);
     }
+    crate::page_breaks(&mut st, opts.page_breaks);
     // A page or column break ends its paragraph.
     st.end_paragraphs_at_breaks();
     Ok(Imported { story: st, para_styles: vec![], char_styles: vec![], warnings })
+}
+
+/// A footnote (or endnote) with `text` at the end of `st`. Its reference mark is generated, so
+/// the space RTF puts after its own (`\chftn`) and the last paragraph end are dropped.
+fn add_note(st: &mut Story, mut text: Story, endnote: bool, warnings: &mut Vec<String>) {
+    while text.text.ends_with('\n') {
+        let n = text.len();
+        text.delete(n - 1..n);
+    }
+    let lead = text.text.len() - text.text.trim_start_matches(' ').len();
+    if lead > 0 {
+        text.delete(0..lead);
+    }
+    let len = st.len();
+    let added = if endnote {
+        st.insert_endnote(len, "", ParaFormat::default()).and_then(|id| st.endnote_mut(id)).map(|n| n.text = text).is_some()
+    } else {
+        st.insert_note(len, "", ParaFormat::default()).and_then(|id| st.note_mut(id)).map(|n| n.text = text).is_some()
+    };
+    if !added {
+        warnings.push(format!("{} in the RTF file could not be imported.", if endnote { "An endnote" } else { "A footnote" }));
+    }
 }
 
 /// Windows-1252 byte → char.
@@ -295,6 +360,27 @@ fn cp1252(b: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `{\footnote …}` is a footnote at its reference (`\ftnalt`: an endnote) unless the import
+    /// options leave notes out; a page break inside a paragraph goes with No Breaks.
+    #[test]
+    fn rtf_footnotes_endnotes_and_page_breaks_follow_the_options() {
+        let rtf = br#"{\rtf1\ansi Text{\super\chftn}{\footnote\pard\plain{\super\chftn} The {\b note}.\par} more{\footnote\ftnalt\pard An end.} and\page after.\par}"#;
+        let st = import(rtf).unwrap().story;
+        st.check().unwrap();
+        assert_eq!(st.notes.len(), 1);
+        assert_eq!(st.notes[0].text.text, "The note.");
+        let bold = st.notes[0].text.text.find("note").unwrap();
+        assert_eq!(st.notes[0].text.format_after(bold).over.font_style.as_deref(), Some("Bold"));
+        assert_eq!(st.endnotes.len(), 1);
+        assert_eq!(st.endnotes[0].text.text, "An end.");
+        assert!(st.text.starts_with("Text") && st.text.contains(" more") && !st.text.contains("note"), "{:?}", st.text);
+        let opts = designcraft_doc::TextImportOptions { footnotes: false, page_breaks: designcraft_doc::PageBreakImport::None, ..Default::default() };
+        let st = import_with(rtf, &opts).unwrap().story;
+        assert!(st.notes.is_empty() && st.endnotes.len() == 1, "footnotes left out, endnotes kept");
+        assert!(st.text.ends_with(" andafter."), "{:?}", st.text);
+        assert_eq!(st.paras.len(), 1, "one paragraph without the break");
+    }
 
     #[test]
     fn out_of_range_unicode_escape_is_dropped() {

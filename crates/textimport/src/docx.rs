@@ -231,10 +231,26 @@ fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
     a
 }
 
+/// A Word field (`w:fldChar` begin … separate … end) the runs are in.
+struct Field {
+    /// Its instruction (`w:instrText`), as far as read.
+    instr: String,
+    /// Past `separate`: the runs are the field's result.
+    result: bool,
+    /// The result is left out (a Table of Contents or Index not included).
+    skip: bool,
+}
+
 struct Ctx {
     para_names: HashMap<String, String>,
     char_names: HashMap<String, String>,
     footnotes: HashMap<String, El>,
+    endnotes: HashMap<String, El>,
+    opts: designcraft_doc::TextImportOptions,
+    /// The fields the runs are in, outermost first.
+    fields: Vec<Field>,
+    /// Runs left out (as a left-out field's result) since the paragraph began.
+    skipped: usize,
     warnings: Vec<String>,
     next_table: u64,
     numbering: Numbering,
@@ -249,6 +265,17 @@ struct Ctx {
 }
 
 impl Ctx {
+    /// Whether the runs now are the result of a field that is left out.
+    fn skipping(&self) -> bool {
+        self.fields.iter().any(|f| f.result && f.skip)
+    }
+
+    /// Whether a field with instruction `instr` is left out (TOC or INDEX not included).
+    fn skips(&self, instr: &str) -> bool {
+        let kind = instr.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+        (kind == "TOC" && !self.opts.toc) || (kind == "INDEX" && !self.opts.index)
+    }
+
     fn para_style(&self, ppr: Option<&El>) -> String {
         ppr.and_then(|p| p.val("pStyle")).and_then(|id| self.para_names.get(&id).cloned()).unwrap_or_else(|| self.default_para.clone())
     }
@@ -259,6 +286,8 @@ impl Ctx {
         for e in body.els() {
             match e.name.as_str() {
                 "p" => {
+                    let (before, was_first, skipping) = (st.len(), first, self.skipping());
+                    self.skipped = 0;
                     if !first {
                         let len = st.len();
                         st.insert(len, "\n");
@@ -284,6 +313,11 @@ impl Ctx {
                     if let Some(e) = expression {
                         st.format_paras(at..at, |f| f.para.number_expression = Some(e.clone()));
                     }
+                    // A paragraph of a Table of Contents or Index left out: nothing of it stays.
+                    if st.len() == at && (skipping || self.skipping() || self.skipped > 0) {
+                        st.delete(before..st.len());
+                        first = was_first;
+                    }
                 }
                 "tbl" => {
                     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -306,6 +340,11 @@ impl Ctx {
                     first = false;
                 }
                 "sdt" => {
+                    // Word's Table of Contents block, left out when not included.
+                    let gallery = e.child("sdtPr").and_then(|p| p.child("docPartObj")).and_then(|o| o.val("docPartGallery")).unwrap_or_default();
+                    if gallery.starts_with("Table of Contents") && !self.opts.toc {
+                        continue;
+                    }
                     if let Some(c) = e.child("sdtContent") {
                         self.blocks(c, st, allow_notes);
                     }
@@ -383,6 +422,7 @@ impl Ctx {
                 "r" => self.run(e, st, allow_notes),
                 // Tracked changes import as accepted: insertions and move destinations are kept,
                 // deletions (`del`) and move sources (`moveFrom`) are dropped.
+                "fldSimple" if self.skips(e.attr("instr").unwrap_or("")) => self.skipped += 1,
                 "hyperlink" | "smartTag" | "ins" | "moveTo" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes),
                 // A content control (date picker, drop-down, plain text) keeps its runs in `sdtContent`.
                 "sdt" => {
@@ -400,6 +440,37 @@ impl Ctx {
         let style = rpr.and_then(|p| p.val("rStyle")).and_then(|id| self.char_names.get(&id).cloned()).unwrap_or_else(|| NO_CHAR_STYLE.into());
         let fmt = CharFormat { style, over: run_attrs(rpr) };
         for e in r.els() {
+            // Complex fields: a TOC or INDEX result that isn't included is skipped.
+            match e.name.as_str() {
+                "fldChar" => {
+                    match e.attr("fldCharType") {
+                        Some("begin") => self.fields.push(Field { instr: String::new(), result: false, skip: false }),
+                        Some("separate") => {
+                            let skip = self.fields.last().is_some_and(|f| self.skips(&f.instr));
+                            if let Some(f) = self.fields.last_mut() {
+                                f.result = true;
+                                f.skip = skip;
+                            }
+                        }
+                        Some("end") => {
+                            self.fields.pop();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                "instrText" => {
+                    if let Some(f) = self.fields.last_mut().filter(|f| !f.result) {
+                        f.instr.push_str(&e.text());
+                    }
+                    continue;
+                }
+                _ if self.skipping() => {
+                    self.skipped += 1;
+                    continue;
+                }
+                _ => {}
+            }
             let text = match e.name.as_str() {
                 "t" => e.text(),
                 "tab" => "\t".into(),
@@ -410,7 +481,28 @@ impl Ctx {
                 },
                 "noBreakHyphen" => "\u{2011}".into(),
                 "softHyphen" => "\u{AD}".into(),
-                "footnoteReference" if allow_notes => {
+                "footnoteReference" | "endnoteReference" if !allow_notes => continue,
+                "footnoteReference" if !self.opts.footnotes => continue,
+                "endnoteReference" if !self.opts.endnotes => continue,
+                "endnoteReference" => {
+                    if let Some(note) = e.attr("id").and_then(|id| self.endnotes.get(id).cloned()) {
+                        let mut ns = Story::new(StoryId(0));
+                        let counter = std::mem::take(&mut self.model_counter);
+                        self.blocks(&note, &mut ns, false);
+                        self.model_counter = counter;
+                        let len = st.len();
+                        match st.insert_endnote(len, "", ParaFormat::default()) {
+                            Some(id) => {
+                                if let Some(n) = st.endnote_mut(id) {
+                                    n.text = ns;
+                                }
+                            }
+                            None => self.warnings.push("An endnote in the Word file could not be imported.".into()),
+                        }
+                    }
+                    continue;
+                }
+                "footnoteReference" => {
                     if let Some(note) = e.attr("id").and_then(|id| self.footnotes.get(id).cloned()) {
                         let mut ns = Story::new(StoryId(0));
                         let counter = std::mem::take(&mut self.model_counter);
@@ -475,7 +567,12 @@ fn style_lists(styles: &El) -> HashMap<String, (Option<String>, Option<String>)>
     out
 }
 
+#[cfg(test)]
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
+    import_with(bytes, &designcraft_doc::TextImportOptions::default())
+}
+
+pub fn import_with(bytes: &[u8], opts: &designcraft_doc::TextImportOptions) -> Result<Imported, ImportError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
     let doc = part(&mut zip, "word/document.xml")?.ok_or_else(|| ImportError::Corrupt("no word/document.xml (not a Word document)".into()))?;
     let doc = parse(&doc)?;
@@ -484,6 +581,10 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         para_names: HashMap::new(),
         char_names: HashMap::new(),
         footnotes: HashMap::new(),
+        endnotes: HashMap::new(),
+        opts: opts.clone(),
+        fields: Vec::new(),
+        skipped: 0,
         warnings: vec![],
         next_table: 0,
         numbering: Numbering::default(),
@@ -556,16 +657,30 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
             }
         }
     }
+    // Endnotes (ids -1 / 0 are the separators).
+    if let Some(f) = part(&mut zip, "word/endnotes.xml")?.map(|s| parse(&s)).transpose()? {
+        for n in f.els().filter(|n| n.name == "endnote") {
+            if let Some(id) = n.attr("id").filter(|id| id.parse::<i64>().is_ok_and(|v| v > 0)) {
+                ctx.endnotes.insert(id.to_string(), n.clone());
+            }
+        }
+    }
     let body = doc.child("body").ok_or_else(|| ImportError::Corrupt("no document body".into()))?;
     let mut st = Story::new(StoryId(0));
     ctx.blocks(body, &mut st, true);
+    crate::page_breaks(&mut st, opts.page_breaks);
     // A page or column break ends its paragraph.
     st.end_paragraphs_at_breaks();
     // Only styles that are used, plus what they are based on.
-    let stories = || std::iter::once(&st).chain(st.notes.iter().map(|n| &n.text));
+    let stories = || std::iter::once(&st).chain(st.notes.iter().chain(&st.endnotes).map(|n| &n.text));
     let used_p: std::collections::HashSet<String> = stories().flat_map(|s| s.paras.iter().map(|p| p.style.clone())).collect();
     let used_c: std::collections::HashSet<String> = stories().flat_map(|s| s.runs().map(|(_, f)| f.style.clone())).collect();
+    let all = opts.unused_styles;
     let keep = |list: Vec<ImportedStyle>, used: &std::collections::HashSet<String>| {
+        // Import Unused Styles: every style.
+        if all {
+            return list;
+        }
         let mut want: std::collections::HashSet<String> = used.clone();
         loop {
             let more: Vec<String> =
@@ -631,6 +746,54 @@ mod tests {
         // At or under the cap reads fine; a missing part is `None`.
         assert_eq!(part_capped(&mut zip, "word/document.xml", 64 * 1024).unwrap().map(|s| s.len()), Some(64 * 1024));
         assert_eq!(part_capped(&mut zip, "word/missing.xml", 4096).unwrap(), None);
+    }
+
+    /// A Word file with a Table of Contents (a TOC field in its block), body text with a footnote
+    /// and an endnote, an Index (an INDEX field), and an unused style.
+    fn word_with_extras() -> Vec<u8> {
+        let doc = format!(
+            r#"<w:document {W}><w:body>
+              <w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr><w:sdtContent>
+                <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Eggs 1</w:t></w:r></w:p>
+                <w:p><w:r><w:t>Omelets 2</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+              </w:sdtContent></w:sdt>
+              <w:p><w:r><w:t>Boil the eggs.</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r><w:r><w:endnoteReference w:id="1"/></w:r></w:p>
+              <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> INDEX </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Eggs, 1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let styles = format!(r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="Unused"><w:name w:val="Unused"/></w:style></w:styles>"#);
+        let foot = format!(r#"<w:footnotes {W}><w:footnote w:id="1"><w:p><w:r><w:t>A foot.</w:t></w:r></w:p></w:footnote></w:footnotes>"#);
+        let end = format!(r#"<w:endnotes {W}><w:endnote w:id="1"><w:p><w:r><w:t>An end.</w:t></w:r></w:p></w:endnote></w:endnotes>"#);
+        docx_parts(&[("word/document.xml", &doc), ("word/styles.xml", &styles), ("word/footnotes.xml", &foot), ("word/endnotes.xml", &end)])
+    }
+
+    /// Microsoft Word Import Options › Include: the Table of Contents and Index text, footnotes
+    /// and endnotes come in or stay out; Import Unused Styles brings every style.
+    #[test]
+    fn word_import_options_include_or_leave_out() {
+        let bytes = word_with_extras();
+        let all = import(&bytes).unwrap();
+        assert!(
+            all.story.text.contains("Eggs 1") && all.story.text.contains("Omelets 2") && all.story.text.contains("Eggs, 1"),
+            "{:?}",
+            all.story.text
+        );
+        assert_eq!((all.story.notes.len(), all.story.endnotes.len()), (1, 1));
+        assert_eq!(all.story.endnotes[0].text.text, "An end.");
+        assert!(all.para_styles.iter().all(|s| s.name != "Unused"), "unused styles stay out by default");
+        let opts = designcraft_doc::TextImportOptions {
+            toc: false,
+            index: false,
+            footnotes: false,
+            endnotes: false,
+            unused_styles: true,
+            ..Default::default()
+        };
+        let some = import_with(&bytes, &opts).unwrap();
+        assert_eq!(some.story.text, "Boil the eggs.", "only the body: no TOC, index or note markers");
+        assert_eq!(some.story.paras.len(), 1);
+        assert!(some.story.notes.is_empty() && some.story.endnotes.is_empty());
+        assert!(some.para_styles.iter().any(|s| s.name == "Unused"));
     }
 
     #[test]
@@ -761,8 +924,17 @@ mod tests {
         st.check().unwrap();
         let (pb, cb) = (designcraft_doc::PAGE_BREAK, designcraft_doc::COLUMN_BREAK);
         assert_eq!(st.text, format!("End of one{pb}\n{pb}\nTwo{cb}\n"));
-        let styles: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
-        assert_eq!(styles, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
+        let names: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
+        assert_eq!(names, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
+        // No Breaks: the breaks go before they end paragraphs, so a paragraph that started with
+        // one stays a single paragraph; Column Break: column breaks, ending their paragraphs.
+        let with = |page_breaks| {
+            import_with(&docx(&document, &styles, ""), &designcraft_doc::TextImportOptions { page_breaks, ..Default::default() }).unwrap().story
+        };
+        let st = with(designcraft_doc::PageBreakImport::None);
+        st.check().unwrap();
+        assert_eq!(st.text, format!("End of one\nTwo{cb}\n"));
+        assert_eq!(with(designcraft_doc::PageBreakImport::Column).text, format!("End of one{cb}\n{cb}\nTwo{cb}\n"));
     }
 
     /// A paragraph in a Word list: `w:numPr` with `numId` and, unless `None`, `ilvl`.
