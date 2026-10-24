@@ -7827,3 +7827,131 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     Arc::make_mut(&mut d.spreads[1]).pages[1].side = designcraft_doc::PageSide::Left;
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
 }
+
+#[test]
+fn kept_table_skips_a_column_too_narrow_for_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let filler = (0..8).map(|k| format!("Filler {k}")).collect::<Vec<_>>().join("\n");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, &filler, ParaFormat::default()).unwrap();
+    let (narrow, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 160.0, 150.0, 460.0), lid, "", ParaFormat::default()).unwrap();
+    let (wide, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 480.0, 400.0, 780.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, narrow).unwrap();
+    d.thread(narrow, wide).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    let mut table = designcraft_doc::Table::new(77, 4, 2, 0, 0, 300.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(end, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let frames: Vec<_> = cs.frames.iter().filter(|f| !f.tables.is_empty()).map(|f| f.frame).collect();
+    assert_eq!(frames, vec![wide], "a kept table moves only to a column wide enough for it");
+}
+
+#[test]
+fn kept_heading_and_table_skip_a_column_that_holds_only_the_table() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let text = [(0..6).map(|k| format!("Filler {k}")).collect::<Vec<_>>().join("\n"), "Synthetic heading".into()].join("\n");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, &text, ParaFormat::default()).unwrap();
+    let (short, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 160.0, 400.0, 210.0), lid, "", ParaFormat::default()).unwrap();
+    // Holds the 96 pt table alone, not with the heading above it.
+    let (snug, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 240.0, 400.0, 340.0), lid, "", ParaFormat::default()).unwrap();
+    let (tall, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 370.0, 400.0, 670.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, short).unwrap();
+    d.thread(short, snug).unwrap();
+    d.thread(snug, tall).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    let mut table = designcraft_doc::Table::new(77, 4, 2, 0, 0, 200.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(end, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    st.paras[i - 1].para.keep_with_next = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let table_frames: Vec<_> = cs.frames.iter().filter(|f| !f.tables.is_empty()).map(|f| f.frame).collect();
+    let heading_frames: Vec<_> = cs.frames.iter().filter(|f| f.lines.iter().any(|l| l.para == i - 1)).map(|f| f.frame).collect();
+    assert_eq!(table_frames, vec![tall]);
+    assert_eq!(heading_frames, vec![tall], "heading and table go on together to the first column that holds both");
+}
+
+#[test]
+fn kept_heading_follows_its_table_past_a_short_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let text = [(0..6).map(|k| format!("Filler {k}")).collect::<Vec<_>>().join("\n"), "Synthetic heading".into()].join("\n");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, &text, ParaFormat::default()).unwrap();
+    let (short, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 160.0, 400.0, 210.0), lid, "", ParaFormat::default()).unwrap();
+    let (tall, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 240.0, 400.0, 540.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, short).unwrap();
+    d.thread(short, tall).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    let mut table = designcraft_doc::Table::new(77, 4, 2, 0, 0, 200.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(end, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    st.paras[i - 1].para.keep_with_next = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let table_frames: Vec<_> = cs.frames.iter().filter(|f| !f.tables.is_empty()).map(|f| f.frame).collect();
+    let heading_frames: Vec<_> = cs.frames.iter().filter(|f| f.lines.iter().any(|l| l.para == i - 1)).map(|f| f.frame).collect();
+    assert_eq!(table_frames, vec![tall]);
+    assert_eq!(heading_frames, vec![tall], "the kept heading goes where its table went");
+    let _ = short;
+}
+
+#[test]
+fn kept_table_skips_a_frame_too_short_for_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let filler = (0..8).map(|k| format!("Filler {k}")).collect::<Vec<_>>().join("\n");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, &filler, ParaFormat::default()).unwrap();
+    let (short, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 160.0, 400.0, 210.0), lid, "", ParaFormat::default()).unwrap();
+    let (tall, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 240.0, 400.0, 540.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, short).unwrap();
+    d.thread(short, tall).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    let mut table = designcraft_doc::Table::new(77, 4, 2, 0, 0, 200.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(end, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let frames: Vec<_> = cs.frames.iter().filter(|f| !f.tables.is_empty()).map(|f| f.frame).collect();
+    assert_eq!(frames, vec![tall], "the whole table goes to the first frame that holds it");
+    assert!(cs.frames.iter().flat_map(|f| &f.tables).all(|t| t.first && t.last));
+}
+
+#[test]
+fn kept_table_moves_whole_with_its_heading() {
+    let (mut d, sid, _) = keep_doc(6, &["Synthetic heading"], 160.0);
+    let st = d.story_mut(sid).unwrap();
+    let anchor = st.text.len();
+    let mut table = designcraft_doc::Table::new(77, 4, 2, 0, 0, 100.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(anchor, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    st.paras[i - 1].para.keep_with_next = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let fragments: Vec<_> = cs.frames.iter().flat_map(|f| &f.tables).collect();
+    assert_eq!(fragments.len(), 1);
+    assert!(fragments[0].first && fragments[0].last);
+    let cols = column_of_para(&cs, i - 1);
+    assert_eq!(cols, vec![fragments[0].column]);
+}

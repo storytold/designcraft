@@ -281,6 +281,31 @@ pub(crate) fn place_table(
         Some(b) => b + cur.last_descent + cur.pending + o.space_before,
         None => col.y0,
     };
+    // A keep-all anchor makes a table atomic: it moves to the first following column (in any
+    // frame) that holds it whole, at the widths composed for this column (a narrower column
+    // would need the table recomposed). When none does, it splits from here, as other tables do.
+    let whole_height: f64 = heights.iter().sum();
+    if pp.keep_all_lines && y + whole_height > col.y1 + 0.01 {
+        let here = cur.clone();
+        let mut found = None;
+        while found.is_none() {
+            cur.next_column(cols);
+            if cur.fi >= frames.len() {
+                break;
+            }
+            let c = col_rect(cur);
+            if c.y0 + whole_height <= c.y1 + 0.01 && pp.left_indent + total_w + pp.right_indent <= c.width() + 0.01 {
+                found = Some(c);
+            }
+        }
+        match found {
+            Some(c) => {
+                col = c;
+                y = c.y0;
+            }
+            None => *cur = here,
+        }
+    }
     let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
     let mut first_frag = true;
     let mut body_placed = 0usize;
