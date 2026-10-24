@@ -1648,6 +1648,8 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Define Lists…", ["Define Lists…", "Définir des listes…", "Define Lists…", "Define Lists…", "定义列表…"]),
+    ("Apply Bullets", ["Aufzählungszeichen anwenden", "Appliquer des puces", "Aplicar viñetas", "箇条書きを適用", "应用项目符号"]),
+    ("Apply Numbers", ["Nummerierung anwenden", "Appliquer la numérotation", "Aplicar números", "段落番号を適用", "应用编号"]),
     (
         "Define Text Variable…",
         ["Define Text Variable…", "Définir une variable de texte…", "Define Text Variable…", "Define Text Variable…", "定义文本变量…"],

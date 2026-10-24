@@ -1398,14 +1398,20 @@ fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
 }
 
 fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
-    let Some(a) = text_attrs(app) else { return };
-    let lt = a["para"]["listType"].as_str().unwrap_or("none").to_string();
+    if text_attrs(app).is_none() {
+        return;
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        for (icon, kind, tip) in [("bullets", "bullets", "Bulleted List"), ("numbering", "numbers", "Numbered List")] {
-            let on = lt == kind;
+        // As InDesign's: a list with the default hanging indent, or (pressed: every selected
+        // paragraph has it, as Type › Apply Bullets shows) no list.
+        use designcraft_doc::ListType;
+        for (icon, kind, cmd, tip) in
+            [("bullets", ListType::Bullets, "list.bullets", "Bulleted List"), ("numbering", ListType::Numbers, "list.numbers", "Numbered List")]
+        {
+            let on = app.session.selection_has_list(kind);
             if icon_toggle(ui, icon, on, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("type.para", json!({"attrs": {"listType": if on { "none" } else { kind }}}));
+                let _ = app.run(cmd, json!({"on": !on}));
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3362,6 +3368,35 @@ mod tests {
         );
         h.run_steps(3);
         h
+    }
+
+    /// The course's chapter 21: Properties' Bulleted List button gives the selected paragraphs
+    /// bullets with InDesign's hanging indent; pressed again, both go.
+    #[test]
+    fn the_bulleted_list_button_applies_a_hanging_indent() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app
+            .run(
+                "frame.create",
+                json!({"rect": [72, 72, 300, 200], "content": "text", "text": "4 eggs
+1 cup milk"}),
+            )
+            .unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 15})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Bulleted List").click();
+        h.run_steps(3);
+        let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+        assert_eq!(
+            (a["para"]["listType"].as_str(), a["para"]["leftIndent"].as_f64(), a["para"]["firstLineIndent"].as_f64()),
+            (Some("bullets"), Some(18.0), Some(-18.0))
+        );
+        assert_eq!(crate::menus::checked(h.state(), "list.bullets", &json!({})), Some(true), "Type › Apply Bullets shows it");
+        h.get_by_label("Bulleted List").click();
+        h.run_steps(3);
+        let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+        assert_eq!((a["para"]["listType"].as_str(), a["para"]["leftIndent"].as_f64()), (Some("none"), Some(0.0)));
     }
 
     #[test]
