@@ -2748,6 +2748,8 @@ fn ime_output(app: &mut DesignApp, ctx: &egui::Context, xf: &Xf) {
 }
 
 /// View → Show Hidden Characters: ¶ paragraph ends, » tabs, · spaces, ¬ forced line breaks, # end of story.
+/// As InDesign, every table cell shows its own marks (an empty cell its #), and a table's
+/// paragraph return sits after the table's bottom right corner.
 fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
     for story in doc.stories.values() {
         let cs = app.session.cache.get(doc, story.id, None);
@@ -2755,17 +2757,39 @@ fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
             let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
             let m = a * doc.text_xf(it);
             let col = layer_color(doc, it);
-            for l in &ft.lines {
-                let size = (l.ascent * 0.75 * xf.zoom).clamp(6.0, 40.0) as f32;
-                let font = egui::FontId::proportional(size);
-                for (x, mark, centered) in hidden_marks(&story.text, l) {
-                    let p = xf.to_screen(m * Point::new(x, l.baseline));
-                    let align = if centered { egui::Align2::CENTER_BOTTOM } else { egui::Align2::LEFT_BOTTOM };
-                    painter.text(p, align, mark, font.clone(), col);
-                }
+            for (p, mark, centered, ascent) in frame_hidden_marks(&story.text, ft) {
+                let size = (ascent * 0.75 * xf.zoom).clamp(6.0, 40.0) as f32;
+                let align = if centered { egui::Align2::CENTER_BOTTOM } else { egui::Align2::LEFT_BOTTOM };
+                painter.text(xf.to_screen(m * p), align, mark, egui::FontId::proportional(size), col);
             }
         }
     }
+}
+
+/// A frame's hidden-character marks in frame space (position at the baseline, mark, centered,
+/// the line's ascent): its lines' marks, then its tables' — each text cell's own marks (nested
+/// tables included) with its # where its text ends, and a table paragraph's ¶ after the last
+/// row's bottom right corner. A table's own glyph-less line has no marks: its ¶ is that one.
+fn frame_hidden_marks(text: &str, ft: &compose::FrameText) -> Vec<(Point, &'static str, bool, f64)> {
+    let table_lines: Vec<usize> = ft.tables.iter().map(|t| t.line).collect();
+    let mut out: Vec<_> = ft
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !table_lines.contains(i))
+        .flat_map(|(_, l)| hidden_marks(text, l).into_iter().map(move |(x, mark, c)| (Point::new(x, l.baseline), mark, c, l.ascent)))
+        .collect();
+    for t in &ft.tables {
+        for c in t.cells.iter().filter(|c| c.graphic.is_none()) {
+            if let Some(cf) = c.text.frames.first() {
+                out.extend(frame_hidden_marks(&c.source, cf).into_iter().map(|(p, mark, centered, a)| (p + c.origin.to_vec2(), mark, centered, a)));
+            }
+        }
+        if t.last {
+            out.push((Point::new(t.rect.x1 + 1.0, t.rect.y1), "¶", false, 12.0));
+        }
+    }
+    out
 }
 
 /// The hidden-character marks on line `l` of a story with text `text`: frame-space x, mark, and
@@ -5671,6 +5695,38 @@ mod tests {
             assert!(dots.iter().all(|&x| x > l.end_x && x < para_x), "{dots:?} then {mark} at {para_x}");
             assert!(para_x >= space.x + space.adv, "{mark} at {para_x} overlaps the last space");
         }
+    }
+
+    /// As InDesign: an end-of-story # in every cell (after its text), a ¶ where a cell paragraph
+    /// ends, and the table paragraph's ¶ just after the table's bottom right corner.
+    #[test]
+    fn table_cells_show_their_hidden_characters() {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), DRect::new(0.0, 0.0, 300.0, 300.0), lid, "", Default::default()).unwrap();
+        let data = vec![vec!["Name:".to_string(), "".into()], vec!["a\nb".into(), "".into()]];
+        let t = designcraft_doc::Table::from_strings(d.alloc(), &data, 200.0, &Default::default(), &Default::default());
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cs = compose::compose_story(&d, sid, &compose::ComposeOptions::default());
+        let frag = &cs.frames[0].tables[0];
+        // The whole frame: the table's own line adds no second ¶; the story's last paragraph
+        // (after the table) has its #.
+        let story = d.story(sid).unwrap().text.clone();
+        let all = frame_hidden_marks(&story, &cs.frames[0]);
+        let marks: Vec<_> = all.iter().filter(|m| frag.rect.inflate(2.0, 2.0).contains(m.0)).cloned().collect();
+        let ends = |m: &str| marks.iter().filter(|x| x.1 == m).count();
+        assert_eq!(ends("#"), 4, "one per cell: {marks:?}");
+        assert_eq!(ends("¶"), 2, "the cell's first paragraph and the table's, once: {marks:?}");
+        assert_eq!(all.iter().filter(|m| m.1 == "¶" && m.3 > 20.0).count(), 0, "no ¶ the size of the table: {all:?}");
+        // Each # is inside its cell, after the cell's text.
+        for c in &frag.cells {
+            let inside = marks.iter().filter(|m| m.1 == "#" && c.rect.contains(m.0)).count();
+            assert_eq!(inside, 1, "cell {},{}: {marks:?}", c.row, c.col);
+        }
+        let name = frag.cell(0, 0).unwrap();
+        assert!(marks.iter().any(|m| m.1 == "#" && name.rect.contains(m.0) && m.0.x > name.origin.x + 20.0), "after Name:");
+        let last = marks.last().unwrap();
+        assert_eq!((last.0, last.1), (designcraft_geom::Point::new(frag.rect.x1 + 1.0, frag.rect.y1), "¶"));
     }
 }
 
