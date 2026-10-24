@@ -349,10 +349,7 @@ fn stroke_outline(path: &BezPath, w: f64, kind: &StrokeType, cap: Cap, join: Joi
             Join::Bevel => kurbo::Join::Bevel,
         });
     let dashes: Option<Vec<f64>> = match kind {
-        StrokeType::Dashed { pattern } => {
-            let p: Vec<f64> = pattern.iter().copied().filter(|v| v.is_finite() && *v >= 0.0).collect();
-            Some(if p.iter().sum::<f64>() > 1e-3 { p } else { vec![3.0 * w, 2.0 * w] })
-        }
+        StrokeType::Dashed { .. } => kind.dashes(w),
         StrokeType::Dotted => {
             st = st.with_caps(kurbo::Cap::Round);
             Some(vec![0.0, 2.0 * w])
