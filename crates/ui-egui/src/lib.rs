@@ -1227,6 +1227,11 @@ impl DesignApp {
                     }
                 }
             }
+            // An idle app draws no frame on its own: ask for one, so a finished save is recorded
+            // (and a document saved meanwhile loses its checkpoint) without waiting for input.
+            if self.recovery_job.is_some() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            }
         }
         let dt = now - self.last_time;
         if dt > 0.0 {
@@ -1325,6 +1330,10 @@ impl DesignApp {
     /// terminate before egui receives its queued Close; an unfinished/stale plan leaves every
     /// document live so the host can preserve its recovery data instead.
     pub fn finish_confirmed_quit(&mut self) -> Result<(), String> {
+        // A recovery save still being written finishes first: closing a document discards its
+        // checkpoint, which the writer must not publish again afterwards.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.finish_recovery();
         let approved =
             self.quitting.as_ref().is_some_and(|q| q.pending.is_none()) && self.ui.dialog.is_none() && self.next_unapproved_document().is_none();
         if !approved {
@@ -2019,6 +2028,9 @@ mod tests {
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
         out.textures_delta.clear();
         assert!(app.recovery_job.is_some(), "the save runs on a thread");
+        // An idle app asks for a frame while the save runs, so it is recorded without input.
+        let repaint = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay);
+        assert!(repaint.is_some_and(|d| d <= std::time::Duration::from_millis(250)), "{repaint:?}");
         app.finish_recovery();
         assert!(app.recovery_job.is_none());
         assert_eq!(designcraft_engine::recovery::list(directory.path()).len(), 1, "the checkpoint is written and recorded");
