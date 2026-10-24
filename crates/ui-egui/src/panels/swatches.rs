@@ -154,6 +154,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// Temp-data key of the swatch last clicked (Delete Swatch removes it).
 const PICKED: &str = "swatches_picked";
+/// Temp-data key of the swatch renamed in place and its name being typed.
+const RENAMING: &str = "swatches_renaming";
+/// Temp-data key of a click on the picked swatch's name: (swatch, time). Unless it turns into a
+/// double-click (Swatch Options), it starts renaming.
+const RENAME_CLICK: &str = "swatches_rename_click";
 
 /// The Swatches panel's top row, as InDesign's: a Fill/Stroke proxy (click: the other in front),
 /// Formatting Affects Container / Text, and the tint of the colour in front. `target` is
@@ -242,6 +247,47 @@ fn folder_button(ui: &mut egui::Ui, tip: &str) -> egui::Response {
     })
 }
 
+/// The name field of a swatch being renamed in place, over `rect`; false when `sw` isn't. Enter or
+/// a click elsewhere renames it (`swatch.options`), Escape leaves it as it was.
+fn rename_field(app: &mut DesignApp, ui: &mut egui::Ui, sw: &designcraft_color::swatch::Swatch, rect: egui::Rect) -> bool {
+    let key = egui::Id::new(RENAMING);
+    let Some((name, mut text)) = ui.data(|d| d.get_temp::<(String, String)>(key)).filter(|(n, _)| *n == sw.name) else { return false };
+    let id = egui::Id::new(("swatch_rename", &sw.name));
+    let edit = egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(12.5)).margin(vec2(2.0, 1.0));
+    let resp = ui.put(rect, edit);
+    if !resp.has_focus() && !resp.lost_focus() {
+        // The field opens with the name selected.
+        resp.request_focus();
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+            state.store(ui.ctx(), id);
+        }
+    }
+    if resp.lost_focus() {
+        ui.data_mut(|d| d.remove_temp::<(String, String)>(key));
+        let to = text.trim();
+        if !ui.input(|i| i.key_pressed(egui::Key::Escape)) && !to.is_empty() && to != name {
+            match app.run("swatch.options", json!({"name": name, "to": to})) {
+                // Still picked under its new name, unless the click that ended the rename picked
+                // another swatch.
+                Ok(_) => ui.data_mut(|d| {
+                    if d.get_temp::<String>(egui::Id::new(PICKED)).is_none_or(|p| p == name) {
+                        d.insert_temp(egui::Id::new(PICKED), to.to_string());
+                    }
+                }),
+                Err(e) => {
+                    app.status_error("Swatch Options", e);
+                }
+            }
+        }
+    } else {
+        ui.data_mut(|d| d.insert_temp(key, (name, text)));
+    }
+    true
+}
+
 /// One Swatches panel row: chip, name, type; click applies it to the fill or stroke in front of
 /// the proxy (of the frames or their text, see [`super::colors_affect_text`]), the context menu
 /// to the stroke, colour groups and delete.
@@ -276,7 +322,10 @@ fn swatch_row(
     let (c, g) = crate::widgets::swatch_colors(doc, &sw.name, 1.0);
     let chip = egui::Rect::from_min_size(row.min + vec2(4.0 + indent, 3.0), vec2(16.0, 16.0));
     crate::widgets::paint_chip(ui.painter(), chip, c, g);
-    ui.painter().text(row.min + vec2(28.0 + indent, 11.0), egui::Align2::LEFT_CENTER, &sw.name, egui::FontId::proportional(12.5), t.text);
+    let name_rect = egui::Rect::from_min_max(row.min + vec2(26.0 + indent, 1.0), egui::pos2(row.max.x - 72.0, row.max.y - 1.0));
+    if !rename_field(app, ui, sw, name_rect) {
+        ui.painter().text(row.min + vec2(28.0 + indent, 11.0), egui::Align2::LEFT_CENTER, &sw.name, egui::FontId::proportional(12.5), t.text);
+    }
     // Type indicators: spot dot / process square, colour mode.
     let kind = match &sw.value {
         SwatchValue::Color { color, color_type } => {
@@ -296,12 +345,36 @@ fn swatch_row(
     }
     ui.painter().text(row.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, kind, egui::FontId::proportional(10.5), t.text_dim);
     if resp.clicked() && !resp.double_clicked() {
+        // A click on the name of the swatch picked already renames it in place, as InDesign's
+        // (a slow double-click), unless it turns into a double-click.
+        let picked = ui.data(|d| d.get_temp::<String>(egui::Id::new(PICKED))).is_some_and(|p| p == sw.name);
+        // A click on another swatch cancels a rename still waiting.
+        ui.data_mut(|d| d.remove_temp::<(String, f64)>(egui::Id::new(RENAME_CLICK)));
+        if picked && !sw.locked && resp.interact_pointer_pos().is_some_and(|p| name_rect.contains(p)) {
+            let now = ui.input(|i| i.time);
+            ui.data_mut(|d| d.insert_temp(egui::Id::new(RENAME_CLICK), (sw.name.clone(), now)));
+        }
         ui.data_mut(|d| d.insert_temp(egui::Id::new(PICKED), sw.name.clone()));
         let _ = super::apply_swatch(app, app.ui.stroke_front, &sw.name, None);
     }
     // Double-click: Swatch Options (the first click has applied the swatch).
     if resp.double_clicked() {
+        ui.data_mut(|d| d.remove_temp::<(String, f64)>(egui::Id::new(RENAME_CLICK)));
         let _ = app.run("app.swatchOptionsDialog", json!({"name": sw.name}));
+    }
+    if let Some((name, at)) = ui.data(|d| d.get_temp::<(String, f64)>(egui::Id::new(RENAME_CLICK))).filter(|(n, _)| *n == sw.name) {
+        let wait = ui.ctx().options(|o| o.input_options.max_double_click_delay);
+        if ui.data(|d| d.get_temp::<String>(egui::Id::new(PICKED))).is_none_or(|p| p != name) {
+            // Another swatch picked since: no rename.
+            ui.data_mut(|d| d.remove_temp::<(String, f64)>(egui::Id::new(RENAME_CLICK)));
+        } else if ui.input(|i| i.time) - at > wait {
+            ui.data_mut(|d| {
+                d.remove_temp::<(String, f64)>(egui::Id::new(RENAME_CLICK));
+                d.insert_temp(egui::Id::new(RENAMING), (name.clone(), name));
+            });
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(wait));
+        }
     }
     resp.context_menu(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Swatch Options…"))).clicked() {
@@ -1216,6 +1289,112 @@ mod swatches_header_tests {
         h.get_by_label("Delete Swatch").click();
         h.run_steps(2);
         assert!(h.state().session.doc().unwrap().doc.swatch("Brand").is_none());
+    }
+
+    /// The course's chapter 23: a swatch added as "C=14 M=8 Y=95 K=0" is renamed in the panel by
+    /// clicking it, then clicking its name again: the name becomes a field, and Enter renames the
+    /// swatch (and what uses it). A double-click still opens Swatch Options, Escape keeps the name,
+    /// and [Black] can't be renamed.
+    #[test]
+    fn a_second_click_on_the_picked_swatch_renames_it_in_place() {
+        use egui::accesskit::Role;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "unassigned"})).unwrap();
+        let added = app.run("swatch.create", json!({"color": {"c": 14, "m": 8, "y": 95, "k": 0}})).unwrap()["name"].as_str().unwrap().to_string();
+        assert_eq!(added, "C=14 M=8 Y=95 K=0");
+        // Frames 50 ms apart: the double-click time is six of them.
+        let mut h = Harness::builder().with_size(vec2(300.0, 520.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        // The panel's own fields (Tint); renaming adds one.
+        let fields = h.query_all_by_role(Role::TextInput).count();
+        let field = |h: &Harness<'_, DesignApp>| h.query_all_by_role(Role::TextInput).count() > fields;
+        let has = |h: &Harness<'_, DesignApp>, n: &str| h.state().session.doc().unwrap().doc.swatch(n).is_some();
+        let name_at = |h: &Harness<'_, DesignApp>, label: &str| h.get_by_label(label).rect().left_center() + vec2(40.0, 0.0);
+        let click = |h: &mut Harness<'_, DesignApp>, at: egui::Pos2| {
+            h.hover_at(at);
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.step();
+        };
+        // A click on the name: applied, and picked.
+        let at = name_at(&h, &added);
+        click(&mut h, at);
+        h.run_steps(10);
+        assert_eq!(items(h.state())[0].fill.swatch, added);
+        assert!(!field(&h));
+        // Again, after the double-click time: the name is a field, with the name selected.
+        click(&mut h, at);
+        h.run_steps(10);
+        assert!(field(&h), "the name is a field");
+        h.event(egui::Event::Text("Lemon Yellow Sun".into()));
+        h.step();
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(has(&h, "Lemon Yellow Sun") && !has(&h, &added));
+        assert_eq!(items(h.state())[0].fill.swatch, "Lemon Yellow Sun", "what uses it follows");
+        // Escape keeps the name.
+        let at = name_at(&h, "Lemon Yellow Sun");
+        h.run_steps(10);
+        click(&mut h, at);
+        h.run_steps(10);
+        assert!(field(&h));
+        h.event(egui::Event::Text("Sour".into()));
+        h.step();
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(has(&h, "Lemon Yellow Sun") && !field(&h));
+        // A double-click on it opens Swatch Options, and doesn't rename.
+        h.run_steps(20);
+        click(&mut h, at);
+        click(&mut h, at);
+        h.run_steps(10);
+        assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("swatchOptions"));
+        assert!(!field(&h), "no rename");
+        // [Black] keeps its name.
+        h.state_mut().ui.dialog = None;
+        h.run_steps(20);
+        let at = name_at(&h, "[Black]");
+        click(&mut h, at);
+        h.run_steps(10);
+        click(&mut h, at);
+        h.run_steps(10);
+        assert!(!field(&h));
+        // A click on another swatch while the rename waits: that one is picked, and nothing
+        // renames.
+        let picked = |h: &Harness<'_, DesignApp>| h.ctx.data(|d| d.get_temp::<String>(egui::Id::new(super::PICKED)));
+        let (lemon, paper) = (name_at(&h, "Lemon Yellow Sun"), name_at(&h, "[Paper]"));
+        h.run_steps(20);
+        click(&mut h, lemon);
+        h.run_steps(10);
+        click(&mut h, lemon);
+        click(&mut h, paper);
+        h.run_steps(10);
+        assert!(!field(&h), "the waiting rename is cancelled");
+        assert_eq!(picked(&h).as_deref(), Some("[Paper]"));
+        // Renaming, a click on another swatch renames, and picks that one (for Delete Swatch).
+        click(&mut h, lemon);
+        h.run_steps(10);
+        click(&mut h, lemon);
+        h.run_steps(10);
+        assert!(field(&h));
+        h.event(egui::Event::Text("Lemon".into()));
+        h.step();
+        click(&mut h, paper);
+        h.run_steps(5);
+        assert!(has(&h, "Lemon") && !field(&h));
+        assert_eq!(picked(&h).as_deref(), Some("[Paper]"), "the swatch clicked stays picked");
     }
 
     #[test]
