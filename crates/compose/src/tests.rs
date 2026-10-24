@@ -5555,6 +5555,42 @@ fn mojikumi_does_not_restore_fullwidth_blanks_to_narrow_tracked_punctuation() {
     }
 }
 
+/// Taking a closing bracket into a line (push-in) closes up the middle dot's quarter ems first,
+/// then the comma's half em, and never the full stop's (JLREQ 3.8.3).
+#[test]
+fn mojikumi_push_in_reduces_middle_dots_first_and_never_a_full_stop() {
+    let family = "Mojikumi Reduction";
+    let font = designcraft_fonts::testing::font_mapping(family, &[('漢', '‰'), ('・', '‰'), ('、', '‰'), ('。', '‰'), ('」', '‰')]).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let first = "漢・漢、漢。漢漢」";
+    let para = ParaAttrs { mojikumi: Some("LineEndAllOneHalfEmEnum".into()), kinsoku_type: Some("KinsokuPushInFirst".into()), ..Default::default() };
+    let compose = |text: &str, width: f64| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 300.0), para.clone());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(family.into()));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = all_lines(&cs)[0].clone();
+        let em = line.glyphs[0].face.units_per_em() * line.glyphs[0].sx;
+        (line, em)
+    };
+    let (natural, em) = compose(first, 500.0);
+    let width = natural.end_x - natural.x0;
+    let quarter = em / 4.0;
+    // How far each glyph of the first line moved, for a line `less` points short.
+    let moved = |less: f64| {
+        let (line, _) = compose(&format!("{first}漢漢漢"), width - less);
+        assert_eq!(line.range.end, first.len(), "the bracket is taken in");
+        line.glyphs.iter().zip(&natural.glyphs).map(|(a, b)| a.x - b.x).collect::<Vec<f64>>()
+    };
+    let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+    // Less than the middle dot's two quarter ems: all of it comes from around the dot.
+    let d = moved(quarter);
+    assert!(near(d[2], -quarter) && d[2..].iter().all(|&x| near(x, -quarter)), "{d:?}");
+    // More: the dot's half em, then the comma's; the full stop's half em stays.
+    let d = moved(2.0 * quarter + 3.0);
+    assert!(near(d[2], -2.0 * quarter) && near(d[4], -2.0 * quarter - 3.0), "{d:?}");
+    assert!(d[4..].iter().all(|&x| near(x, -2.0 * quarter - 3.0)), "{d:?}");
+}
+
 #[test]
 fn mojikumi_one_em_line_end_set_sets_closing_punctuation_full_width_at_line_end() {
     let family = "Mojikumi Full Stop";
