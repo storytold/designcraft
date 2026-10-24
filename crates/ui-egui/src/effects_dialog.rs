@@ -29,6 +29,23 @@ pub const PAGES: [(&str, &str); 10] = [
     ("gradientFeather", "Gradient Feather"),
 ];
 
+/// The first effect an object has, in the dialog's order: the page the Effects panel's fx badge
+/// opens. None without effects.
+pub fn first_page(e: &designcraft_doc::Effects) -> Option<&'static str> {
+    let on = [
+        ("dropShadow", e.drop_shadow.on),
+        ("innerShadow", e.inner_shadow.on),
+        ("outerGlow", e.outer_glow.on),
+        ("innerGlow", e.inner_glow.on),
+        ("bevel", e.bevel.on),
+        ("satin", e.satin.on),
+        ("feather", e.feather > 0.0),
+        ("directionalFeather", e.directional_feather.on),
+        ("gradientFeather", e.gradient_feather.on),
+    ];
+    on.iter().find(|p| p.1).map(|p| p.0)
+}
+
 /// The page an effect command opens (Object › Effects › Drop Shadow…, its shortcut).
 pub fn page_of_command(id: &str) -> Option<&'static str> {
     Some(match id {
