@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes, warnings} (no path: {text, bytes, warnings})",
         has_doc, export_html),
         cmd!(noundo "file.exportPptx", "Export PowerPoint…", ["File"], None,
-        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: DesignCraft's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
+        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: DesignCraft's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default false, as PowerPoint's own save does; true embeds the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
         has_doc, export_pptx),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
         "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
@@ -122,7 +122,7 @@ fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
         title: str_param(p, "title").map(str::to_string),
         author: str_param(p, "author").map(str::to_string),
         created: None,
-        embed_fonts: p.get("embedFonts").and_then(Value::as_bool).unwrap_or(true),
+        embed_fonts: p.get("embedFonts").and_then(Value::as_bool).unwrap_or(false),
     };
     // Object Export Options › Rasterize, and what PowerPoint has no objects for (a threaded frame
     // stays text: a picture of it would drop the rest of its story).
@@ -1311,11 +1311,20 @@ mod pptx_tests {
         assert!(read(&mut z, "ppt/slides/slide1.xml").contains("<p:pic>"));
         let text: String = read(&mut z, "ppt/slides/slide2.xml").split("<a:t>").skip(1).filter_map(|t| t.split("</a:t>").next()).collect();
         assert!(text.contains("Notes on the Grid"), "{text}");
-        assert!(read(&mut z, "ppt/presentation.xml").contains("<p:embeddedFontLst>"));
-
-        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "embedFonts": false, "lineBreaks": "reflow"})).unwrap();
-        assert_eq!(r["slides"], 2);
+        // Fonts are not embedded unless asked (PowerPoint's own default), and the export says so.
+        let pres = read(&mut z, "ppt/presentation.xml");
+        assert!(!pres.contains("<p:embeddedFontLst>") && !pres.contains("embedTrueTypeFonts=\"1\""), "{pres}");
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("fonts are not embedded")));
+
+        // Asking for embedding is what writes the faces.
+        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "embedFonts": true, "lineBreaks": "reflow"})).unwrap();
+        assert_eq!(r["slides"], 2);
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        let pres = read(&mut z, "ppt/presentation.xml");
+        assert!(pres.contains("embedTrueTypeFonts=\"1\"") && pres.contains("<p:embeddedFontLst>"), "{pres}");
+
+        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "lineBreaks": "reflow"})).unwrap();
+        assert_eq!(r["slides"], 2);
         assert!(s.execute("file.exportPptx", &json!({"lineBreaks": "wrap"})).is_err());
         assert!(s.execute("file.exportPptx", &json!({"pages": [9]})).is_err());
     }

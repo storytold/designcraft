@@ -52,7 +52,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("app.exportFixedEpub", "Export EPUB (Fixed Layout)…", None, "{path?} — pre-paginated EPUB 3"),
     ("app.exportHtml", "Export HTML…", None, "{path?} — one self-contained web page"),
-    ("app.exportPptx", "Export PowerPoint…", None, "{path?} — every page as a slide of editable shapes, pictures and text"),
+    (
+        "app.exportPptx",
+        "Export PowerPoint…",
+        None,
+        "{path?, embedFonts?} — every page as a slide of editable shapes, pictures and text; fonts are embedded only when embedFonts is true (PowerPoint's own save leaves them out)",
+    ),
     ("app.exportXml", "Export XML…", None, "{path?} — the tagged content"),
     ("app.printBooklet", "Print Booklet…", None, "{path?} — saddle-stitched printer spreads as PDF"),
     ("app.qrCode", "Generate QR Code…", None, "{} — the QR Code dialog (object.qrCode does the work)"),
@@ -2041,6 +2046,23 @@ fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     }
 }
 
+/// The options an export command takes from the UI command's params (the path is resolved before
+/// this, and the default extension decides the text format).
+fn export_params(cmd: &str, path: &str, p: &Value) -> Value {
+    let mut params = json!({});
+    if cmd == "file.exportText" {
+        let txt = path.to_ascii_lowercase().ends_with(".txt");
+        params["format"] = json!(if txt { "txt" } else { "rtf" });
+    }
+    // Fonts are not embedded unless asked, as PowerPoint's own save does.
+    if cmd == "file.exportPptx"
+        && let Some(embed) = p.get("embedFonts").and_then(Value::as_bool)
+    {
+        params["embedFonts"] = json!(embed);
+    }
+    params
+}
+
 /// Export EPUB / Text: ask for a path (default extension `ext`), run `cmd` without one and write
 /// what it returns (`base64` or `text`) with the platform writer.
 fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<Value, String> {
@@ -2053,18 +2075,14 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
-    let mut params = json!({});
-    if cmd == "file.exportText" {
-        let txt = path.to_ascii_lowercase().ends_with(".txt");
-        params["format"] = json!(if txt { "txt" } else { "rtf" });
-    }
+    let params = export_params(cmd, &path, p);
     let r = app.run(cmd, params)?;
     let bytes = match r["text"].as_str() {
         Some(t) => t.as_bytes().to_vec(),
         None => designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default()),
     };
     match app.services.write.as_mut() {
-        Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len()})),
+        Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "warnings": r["warnings"]})),
         None => Err("no writer".into()),
     }
 }
@@ -3525,6 +3543,38 @@ mod tests {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         activate(&mut app, "app.exportPdf", &json!({"path": "/tmp/x.pdf"}));
         assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn powerpoint_export_embeds_fonts_only_when_asked() {
+        // The menu's own call has no params: no embedding, as in PowerPoint's save.
+        assert_eq!(export_params("file.exportPptx", "/tmp/x.pptx", &json!({})), json!({}));
+        assert_eq!(export_params("file.exportPptx", "/tmp/x.pptx", &json!({"embedFonts": true})), json!({"embedFonts": true}));
+        assert_eq!(export_params("file.exportPptx", "/tmp/x.pptx", &json!({"embedFonts": false})), json!({"embedFonts": false}));
+        // The text export's format still comes from the resolved path.
+        assert_eq!(export_params("file.exportText", "/tmp/x.txt", &json!({})), json!({"format": "txt"}));
+    }
+
+    #[test]
+    fn powerpoint_export_keeps_the_warnings_for_the_caller() {
+        // `file.exportPptx` reports warnings (objects drawn without their blend mode, effects
+        // PowerPoint has no objects for); the UI command writes the file itself, so it must pass
+        // them on rather than drop them.
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200]})).unwrap();
+        app.run("selection.set", json!({"ids": [frame["id"]]})).unwrap();
+        app.run("object.opacity", json!({"opacity": 1.0, "blend": "multiply"})).unwrap();
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = written.clone();
+        app.services.write = Some(Box::new(move |_, bytes: &[u8]| {
+            sink.lock().unwrap().extend_from_slice(bytes);
+            Ok(())
+        }));
+        let r = run_ui(&mut app, "app.exportPptx", &json!({"path": "/tmp/warnings.pptx"})).unwrap().unwrap();
+        let warnings = r["warnings"].as_array().expect("the engine's warnings reach the caller");
+        assert!(warnings.iter().any(|w| w.as_str().is_some_and(|w| w.contains("blend modes"))), "the blend-mode warning is kept: {r}");
+        assert!(!written.lock().unwrap().is_empty(), "the file is still written");
     }
 
     #[test]
