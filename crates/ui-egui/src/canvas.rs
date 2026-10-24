@@ -1008,6 +1008,18 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     if let Some(tex) = app.canvas.texture.as_mut() {
         tex.set_partial([x0 as usize, y0 as usize], ci, egui::TextureOptions::LINEAR);
     }
+    // The same region in the canvas's own copy of its pixels.
+    if let Some(all) = app.canvas.pixels.as_mut() {
+        let all = std::sync::Arc::make_mut(all);
+        let (aw, pw) = (all.width as usize, img.width as usize);
+        for (row, src) in img.pixels.chunks_exact(pw * 4).enumerate() {
+            let start = ((y0 as usize + row) * aw + x0 as usize) * 4;
+            if let Some(dst) = all.pixels.get_mut(start..start + pw * 4) {
+                dst.copy_from_slice(src);
+            }
+        }
+        app.canvas.pixels_generation += 1;
+    }
     done(app);
     app.canvas.patches += 1;
     app.perf.render_ms = crate::now_ms() - t0;
@@ -1036,6 +1048,8 @@ fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render:
         Some(tex) => tex.set(ci, egui::TextureOptions::LINEAR),
         None => app.canvas.texture = Some(ctx.load_texture("canvas", ci, egui::TextureOptions::LINEAR)),
     }
+    app.canvas.pixels = Some(std::sync::Arc::new(img));
+    app.canvas.pixels_generation += 1;
 }
 
 fn dashed(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke, dash: f32, gap: f32) {
@@ -1576,8 +1590,8 @@ fn draw_text_selection(
         draw_cell_selection(app, painter, xf, doc, layout, &cs, ts, cell);
         return;
     }
-    let mut runs: Vec<(usize, Affine, Vec<[Point; 4]>, Vec<(usize, usize)>)> = Vec::new();
-    for (fi, ft) in cs.frames.iter().enumerate() {
+    let mut runs: Vec<(Affine, Vec<[Point; 4]>)> = Vec::new();
+    for ft in &cs.frames {
         let Some((a, _)) = item_canvas_xf(doc, layout, ft.frame) else { continue };
         let Some(it) = doc.item(ft.frame) else { continue };
         let m = a * doc.text_xf(it);
@@ -1611,8 +1625,7 @@ fn draw_text_selection(
             continue;
         }
         let mut quads = Vec::new();
-        let mut glyphs = Vec::new();
-        for (li, l) in ft.lines.iter().enumerate() {
+        for l in &ft.lines {
             let s = range.start.max(l.range.start);
             let e = range.end.min(l.range.end);
             if s > e || (s == e && !(l.range.end < range.end && e == l.range.end)) {
@@ -1629,18 +1642,13 @@ fn draw_text_selection(
                     quads.push([Point::new(a, r.y0), Point::new(b, r.y0), Point::new(b, r.y1), Point::new(a, r.y1)]);
                 }
             }
-            for (gi, g) in l.glyphs.iter().enumerate() {
-                if g.visible && g.len > 0 && g.byte >= s && g.byte < e {
-                    glyphs.push((li, gi));
-                }
-            }
         }
         if !quads.is_empty() {
-            runs.push((fi, m, quads, glyphs));
+            runs.push((m, quads));
         }
     }
     if !runs.is_empty() {
-        draw_inverse_highlight(app, painter, xf, doc, &cs, ts.story, &runs);
+        draw_inverse_highlight(app, painter, xf, doc, layout, ts.story, &runs);
     }
     if ts.is_caret()
         && let Some((fi, x, bl, asc, desc)) = compose::caret(&cs, ts.focus)
@@ -1742,24 +1750,49 @@ fn draw_cell_selection(
     }
 }
 
-/// InDesign draws selected text inverted: a black highlight with the selected glyphs in the
-/// inverse of their colour (white for black text). The highlight and glyph outlines are
-/// rasterised with `vello_cpu` into a small screen-space texture over the selection.
+thread_local! {
+    /// Renders what lies under a text highlight, apart from the canvas renderer and its worker.
+    static HIGHLIGHT_RENDERER: std::cell::RefCell<Option<designcraft_render::Renderer>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The `w` × `h` premultiplied pixels of `img` from (`x0`, `y0`), the pasteboard colour `back`
+/// where that reaches past the image.
+fn crop(img: &designcraft_render::Rendered, x0: i64, y0: i64, w: u32, h: u32, back: [u8; 3]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..i64::from(h) {
+        for x in 0..i64::from(w) {
+            let (sx, sy) = (x0 + x, y0 + y);
+            let inside = sx >= 0 && sy >= 0 && sx < i64::from(img.width) && sy < i64::from(img.height);
+            let px = inside.then(|| (sy as usize * img.width as usize + sx as usize) * 4).and_then(|i| img.pixels.get(i..i + 4));
+            match px {
+                Some(p) => out.extend_from_slice(p),
+                None => out.extend_from_slice(&[back[0], back[1], back[2], 255]),
+            }
+        }
+    }
+    out
+}
+
+/// InDesign draws selected text inverted: whatever lies under the highlight (paper, the frame's
+/// fill, a placed image, the selected glyphs themselves) shows in its inverse colour. Black text
+/// on white paper turns white on black, and white text on a dark fill turns dark on a light
+/// highlight instead of vanishing into a black bar. The area under the selection is rendered from
+/// the document into a small screen-space texture and inverted inside the highlight quads.
 fn draw_inverse_highlight(
     app: &DesignApp,
     painter: &egui::Painter,
     xf: &Xf,
     doc: &Document,
-    cs: &compose::ComposedStory,
+    layout: &CanvasLayout,
     story: designcraft_doc::StoryId,
-    runs: &[(usize, Affine, Vec<[Point; 4]>, Vec<(usize, usize)>)],
+    runs: &[(Affine, Vec<[Point; 4]>)],
 ) {
     use designcraft_render::vello_cpu::{self, kurbo, peniko};
     let ctx = painter.ctx();
     let ppp = ctx.pixels_per_point();
     let to_screen = |m: Affine, p: Point| xf.to_screen(m * p);
     let mut bbox = Rect::NOTHING;
-    for (_, m, quads, _) in runs {
+    for (m, quads) in runs {
         for q in quads {
             for p in q {
                 bbox.extend_with(to_screen(*m, *p));
@@ -1777,18 +1810,43 @@ fn draw_inverse_highlight(
     );
     let (w, h) = (((bbox.width() * ppp).round() as u32).clamp(1, 8192), ((bbox.height() * ppp).round() as u32).clamp(1, 8192));
     let Some(st) = app.session.active() else { return };
+    let preview = app.ui.screen_mode != ScreenMode::Normal;
+    let back = Tokens::get(ctx).pasteboard;
+    // Everything that changes the colours the canvas shows changes the highlight too: the display
+    // options the canvas texture is redrawn for (Rich Black, Overprint Preview, quality …) and
+    // the proof setup, ink limit and pasteboard behind them.
+    let display = (
+        format!("{:?}", display_key(app)),
+        app.ui.proof_colors.then(|| format!("{:?}", app.ui.proof_setup)),
+        app.ui.ink_limit.map(f32::to_bits),
+        back.to_array(),
+    );
+    // What the canvas shows under the highlight: cut from the canvas's own pixels when its texture
+    // is at this zoom (no second render; Preview mode's clipping included), else rendered here.
+    // The texture's pixel at the highlight's top left, kept in canvas space so scrolling (which
+    // only shifts the texture) reuses the highlight.
+    let from_canvas =
+        app.canvas.shown.zip(app.canvas.pixels.clone()).filter(|(sh, _)| (sh.zoom - xf.zoom).abs() < 1e-9 && xf.rot == 0).map(|(sh, px)| {
+            let c = xf.to_canvas(bbox.min);
+            let k = sh.zoom * ppp as f64;
+            (((c.x - sh.origin.x) * k).round() as i64, ((c.y - sh.origin.y) * k).round() as i64, px)
+        });
+    let at = from_canvas.as_ref().map(|(x, y, _)| (*x, *y));
     let key = egui::Id::new(("inverse_sel", st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, story.0))
-        .with((runs.iter().map(|r| r.2.len() + r.3.len() * 7919).sum::<usize>(), w, h))
-        .with((bbox.min.x.to_bits(), bbox.min.y.to_bits(), xf.zoom.to_bits(), st.selection.text.map(|t| (t.anchor, t.focus))));
+        .with(&display)
+        .with((runs.iter().map(|r| r.1.len()).sum::<usize>(), w, h, preview))
+        .with((at, app.canvas.pixels_generation, xf.zoom.to_bits(), xf.rot, st.selection.text.map(|t| (t.anchor, t.focus))))
+        .with(at.is_none().then(|| (bbox.min.x.to_bits(), bbox.min.y.to_bits())));
     let cache_id = egui::Id::new("inverse_sel_tex");
     let cached: Option<(egui::Id, egui::TextureHandle)> = ctx.data(|d| d.get_temp(cache_id));
     let tex = match cached {
         Some((k, t)) if k == key => t,
         _ => {
             let view = xf.affine(ppp as f64, bbox.min);
+            // How much of each pixel the highlight covers.
             let mut rc = vello_cpu::RenderContext::new_with(w as u16, h as u16, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
-            rc.set_paint(peniko::Color::from_rgba8(0, 0, 0, 255));
-            for (_, m, quads, _) in runs {
+            rc.set_paint(peniko::Color::from_rgba8(255, 255, 255, 255));
+            for (m, quads) in runs {
                 rc.set_transform(view * *m);
                 for q in quads {
                     let mut bp = kurbo::BezPath::new();
@@ -1800,36 +1858,64 @@ fn draw_inverse_highlight(
                     rc.fill_path(&bp);
                 }
             }
-            let db = designcraft_fonts::FontDb::global();
-            for (fi, m, _, glyphs) in runs {
-                let Some(ft) = cs.frames.get(*fi) else { continue };
-                for &(li, gi) in glyphs {
-                    let Some(l) = ft.lines.get(li) else { continue };
-                    let Some(g) = l.glyphs.get(gi) else { continue };
-                    let Some(style) = cs.styles.get(g.style as usize) else { continue };
-                    let Some(c) = doc.resolve_color(&style.fill, style.fill_tint) else { continue };
-                    let [r, gg, b, _] = c.to_rgba8(1.0);
-                    rc.set_paint(peniko::Color::from_rgba8(255 - r, 255 - gg, 255 - b, 255));
-                    let outline = db.outline(&g.face, g.gid);
-                    let skew =
-                        if style.skew != 0.0 { Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
-                    let shatai = style.shatai_xf(g, l.baseline).unwrap_or(Affine::IDENTITY);
-                    let ga = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
-                    rc.set_transform(view * *m * ga);
-                    rc.fill_path(&outline);
-                }
-            }
             rc.flush();
-            let mut pm = vello_cpu::Pixmap::new(w as u16, h as u16);
+            let mut mask = vello_cpu::Pixmap::new(w as u16, h as u16);
             let mut res = vello_cpu::Resources::new();
-            rc.render(&mut pm, &mut res);
-            let ci = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], pm.data_as_u8_slice());
+            rc.render(&mut mask, &mut res);
+            let under = match &from_canvas {
+                Some((x0, y0, px)) => crop(px, *x0, *y0, w, h, [back.r(), back.g(), back.b()]),
+                None => {
+                    // Rendered with the canvas's own options and colours, on this thread only (a
+                    // pool per frame of a drag would cost more than the render).
+                    let placed: Vec<designcraft_render::Placed> =
+                        layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
+                    let opts = screen_options(app, layout, preview, ppp as f64);
+                    let mut under = HIGHLIGHT_RENDERER.with(|r| {
+                        let mut r = r.borrow_mut();
+                        r.get_or_insert_with(|| {
+                            let mut r = designcraft_render::Renderer::new();
+                            r.threads = 0;
+                            r
+                        })
+                        .render(doc, &app.session.cache, &placed, w, h, view, &opts)
+                    });
+                    if app.ui.proof_colors {
+                        designcraft_render::proof_view(&mut under, &app.ui.proof_setup);
+                    }
+                    if app.ui.separation.is_none() && app.ui.ink_limit.is_some() {
+                        designcraft_render::separation_view(&mut under, None, app.ui.ink_limit);
+                    }
+                    under.pixels
+                }
+            };
+            let pixels = inverse_under(mask.data_as_u8_slice(), &under, [back.r(), back.g(), back.b()]);
+            let ci = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], &pixels);
             let t = crate::widgets::load_texture(ctx, "inverse_selection", ci, egui::TextureOptions::NEAREST);
             ctx.data_mut(|d| d.insert_temp(cache_id, (key, t.clone())));
             t
         }
     };
     painter.image(tex.id(), bbox, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+}
+
+/// Premultiplied RGBA: the inverse of `under` (composited over `back` where it is transparent),
+/// shown as far as `mask` (premultiplied white) covers each pixel.
+fn inverse_under(mask: &[u8], under: &[u8], back: [u8; 3]) -> Vec<u8> {
+    let mut out = vec![0u8; mask.len()];
+    let under = under.as_chunks::<4>().0.iter().chain(std::iter::repeat(&[0u8; 4]));
+    for ((o, m), u) in out.as_chunks_mut::<4>().0.iter_mut().zip(mask.as_chunks::<4>().0).zip(under) {
+        let cover = u32::from(m[3]);
+        if cover == 0 {
+            continue;
+        }
+        let a = u32::from(u[3]);
+        for k in 0..3 {
+            let shown = (u32::from(u[k]) + u32::from(back[k]) * (255 - a) / 255).min(255);
+            o[k] = ((255 - shown) * cover / 255) as u8;
+        }
+        o[3] = cover as u8;
+    }
+    out
 }
 
 fn draw_tool_overlays(app: &mut DesignApp, painter: &egui::Painter, xf: &Xf) {
@@ -3679,6 +3765,87 @@ mod tests {
     use egui_kittest::{Harness, kittest::Queryable};
 
     use super::*;
+
+    /// Selected text shows what lies under it inverted: paper turns black, black turns white,
+    /// and a half-covered pixel is half inverted.
+    #[test]
+    fn the_text_highlight_inverts_what_lies_under_it() {
+        let mask = [0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 128, 128, 128, 128, 255, 255, 255, 255];
+        let under = [9, 9, 9, 255, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 0];
+        let out = inverse_under(&mask, &under, [80, 80, 80]);
+        assert_eq!(&out[0..4], &[0, 0, 0, 0], "outside the highlight: untouched");
+        assert_eq!(&out[4..8], &[0, 0, 0, 255], "white paper turns black");
+        assert_eq!(&out[8..12], &[255, 255, 255, 255], "black turns white");
+        assert_eq!(&out[12..16], &[128, 128, 128, 128], "half covered: half the inverse");
+        assert_eq!(&out[16..20], &[175, 175, 175, 255], "transparent: the inverse of the pasteboard");
+    }
+
+    /// White text on a black frame used to turn black on a black highlight. Now the highlight is
+    /// light there and the selected letters dark.
+    #[test]
+    fn selected_white_text_on_a_dark_fill_stays_readable() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let id = app
+            .run("frame.create", serde_json::json!({"rect": [72, 72, 400, 200], "content": "text", "text": "White text", "caret": true}))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        app.run("edit.selectAll", serde_json::json!({})).unwrap();
+        app.run("type.char", serde_json::json!({"attrs": {"size": 28, "fill": "[Paper]"}})).unwrap();
+        app.run("object.fill", serde_json::json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+        let mut h = crate::test_window::open(app, vec2(900.0, 600.0));
+        h.run_steps(6);
+        let app = &h.state().app;
+        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+        let canvas = app.session.layout().xf(designcraft_doc::SpreadRef::Doc(0));
+        let (a, b) = (xf.to_screen(canvas * Point::new(76.0, 78.0)), xf.to_screen(canvas * Point::new(180.0, 98.0)));
+        let image = match h.render() {
+            Ok(image) => image,
+            // CI has a renderer: there a missing one is a failure, not a silent pass.
+            Err(e) if std::env::var_os("CI").is_some() => panic!("no offscreen renderer in CI: {e}"),
+            Err(e) => {
+                eprintln!("skipped: no offscreen renderer ({e})");
+                return;
+            }
+        };
+        let (mut light, mut dark) = (0, 0);
+        for y in a.y as u32..b.y as u32 {
+            for x in a.x as u32..b.x as u32 {
+                let p = image.get_pixel(x, y);
+                let l = (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3;
+                if l > 200 {
+                    light += 1;
+                } else if l < 60 {
+                    dark += 1;
+                }
+            }
+        }
+        assert!(light > dark, "a light highlight under the selected white text: {light} light, {dark} dark");
+        assert!(dark > 0, "with the letters dark on it");
+    }
+
+    /// The highlight is drawn from a render of what lies under it: a display option that changes
+    /// that render (Overprint Preview here) draws it again instead of keeping the old pixels.
+    #[test]
+    fn the_text_highlight_follows_the_display_options() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({})).unwrap();
+        app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Some text", "caret": true})).unwrap();
+        app.run("edit.selectAll", serde_json::json!({})).unwrap();
+        let mut h = crate::test_window::open(app, vec2(900.0, 600.0));
+        h.run_steps(6);
+        let cached = |h: &Harness<'_, crate::test_window::Window>| {
+            h.ctx.data(|d| d.get_temp::<(egui::Id, egui::TextureHandle)>(egui::Id::new("inverse_sel_tex"))).map(|(k, _)| k)
+        };
+        let before = cached(&h).expect("the highlight is drawn");
+        h.run_steps(2);
+        assert_eq!(cached(&h), Some(before), "unchanged: the cached highlight is kept");
+        h.state_mut().app.ui.overprint_preview = !h.state().app.ui.overprint_preview;
+        h.run_steps(2);
+        let after = cached(&h).expect("the highlight is drawn");
+        assert_ne!(after, before, "a new display option: the highlight is drawn again");
+    }
 
     #[test]
     fn a_press_after_a_drag_is_not_a_double_click() {
