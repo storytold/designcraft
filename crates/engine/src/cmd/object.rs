@@ -1050,6 +1050,17 @@ fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Deep-copy items `ids` from `src` into `dst` spread `to` (fresh ids; text frames get story copies).
 pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: SpreadRef, off: Vec2) -> Result<Vec<ItemId>> {
+    duplicate_from_with_story_map(dst, src, ids, to, off).map(|(items, _)| items)
+}
+
+/// Copy items and retain the complete story-ID map, including stories in nested groups.
+pub(super) fn duplicate_from_with_story_map(
+    dst: &mut Document,
+    src: &Document,
+    ids: &[ItemId],
+    to: SpreadRef,
+    off: Vec2,
+) -> Result<(Vec<ItemId>, HashMap<StoryId, StoryId>)> {
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
     for id in ids {
@@ -1064,7 +1075,7 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
-    Ok(out)
+    Ok((out, story_map))
 }
 
 /// The id to reference in `dst` for asset `id` of `src`. When `src` lacks the asset (a missing graphic), the reference
