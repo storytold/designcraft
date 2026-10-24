@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use designcraft_doc::numbering::NumberStarts;
 use designcraft_doc::{Document, Item, Story, StoryId, Styles};
 
 use crate::vars::RunningIndex;
@@ -53,6 +54,8 @@ pub struct Cache {
     running: Mutex<Option<(u64, Arc<RunningIndex>)>>,
     /// Cross-reference anchor pages with the document signature they were built for.
     xrefs: Mutex<Option<(u64, Arc<crate::xref::XrefIndex>)>>,
+    /// List, footnote and endnote starts with the signature and spreads they were built for.
+    starts: Mutex<Option<StartsEntry>>,
     /// The composition each story (page-independent key) had before its latest recomposition,
     /// with the story revision it was composed from (repaint only the frames an edit changed).
     previous: Mutex<HashMap<StoryId, (Vec<usize>, Arc<ComposedStory>)>>,
@@ -72,6 +75,15 @@ fn doc_signature(doc: &Document) -> u64 {
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
     h.finish()
+}
+
+/// [`Cache::number_starts`]'s entry. Numbering follows the pages frames sit on, so it holds the
+/// spreads it was built from: while held, a spread can't be edited in place (`Arc::make_mut`
+/// copies it) or freed and its address reused (a drag's previews), so `ptr_eq` means unchanged.
+struct StartsEntry {
+    sig: u64,
+    spreads: Vec<Arc<designcraft_doc::Spread>>,
+    starts: Arc<NumberStarts>,
 }
 
 /// Everything page names and section markers are made from.
@@ -172,6 +184,9 @@ impl Cache {
                 sig.push(doc_signature(doc) as usize);
             }
         }
+        // Numbering that continues from stories on earlier pages.
+        let starts = (!story.notes.is_empty() || !story.endnotes.is_empty() || doc.settings.lists.iter().any(|l| l.continue_across_stories))
+            .then(|| self.number_starts(doc));
         let with_xrefs = crate::xref::has_xrefs(story);
         if with_xrefs {
             // Cross-references show other stories' text and pages.
@@ -185,11 +200,12 @@ impl Cache {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             format!("{:?}", doc.footnote_options).hash(&mut h);
-            sig.extend([doc.footnote_start(sid) as usize, h.finish() as usize]);
+            let start = starts.as_ref().map_or(doc.footnote_options.start_at, |s| s.footnote(sid));
+            sig.extend([start as usize, h.finish() as usize]);
         }
         // Endnote numbers continue from stories on earlier pages.
         if !story.endnotes.is_empty() {
-            sig.push(doc.endnote_start(sid) as usize);
+            sig.push(starts.as_ref().map_or(doc.endnote_options.start_at, |s| s.endnote(sid)) as usize);
         }
         // User hyphenation exceptions.
         if !doc.hyphenation_exceptions.is_empty() {
@@ -212,7 +228,7 @@ impl Cache {
         // Named lists continue from earlier stories.
         for l in &doc.settings.lists {
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&doc.list_start(sid, &l.name), &mut h);
+            std::hash::Hash::hash(&starts.as_ref().map(|s| s.list(sid, &l.name)).unwrap_or_default(), &mut h);
             sig.push(std::hash::Hasher::finish(&h) as usize);
         }
         {
@@ -233,7 +249,16 @@ impl Cache {
         let out = Arc::new(crate::wrap::compose_among(
             doc,
             sid,
-            &ComposeOptions { page_name, section_marker, page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)), placed },
+            &ComposeOptions {
+                page_name,
+                section_marker,
+                page,
+                running,
+                label: None,
+                xrefs: with_xrefs.then(|| self.xref_index(doc)),
+                placed,
+                starts,
+            },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
         ));
         let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
@@ -329,6 +354,7 @@ impl Cache {
         self.map.lock().unwrap_or_else(PoisonError::into_inner).0.clear();
         *self.running.lock().unwrap_or_else(PoisonError::into_inner) = None;
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *self.starts.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Anchor pages for cross-references (rebuilt when the document changes).
@@ -341,6 +367,28 @@ impl Cache {
         }
         let r = Arc::new(crate::xref::XrefIndex::build(doc, &|sid| self.get(doc, sid, None)));
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
+        r
+    }
+
+    /// Where list, footnote and endnote numbering starts in each story (rebuilt when the document
+    /// or its numbering options change).
+    pub fn number_starts(&self, doc: &Document) -> Arc<NumberStarts> {
+        let sig = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            doc_signature(doc).hash(&mut h);
+            format!("{:?}{:?}{:?}", doc.settings.lists, doc.footnote_options, doc.endnote_options).hash(&mut h);
+            h.finish()
+        };
+        if let Some(e) = &*self.starts.lock().unwrap_or_else(PoisonError::into_inner)
+            && e.sig == sig
+            && e.spreads.len() == doc.spreads.len()
+            && e.spreads.iter().zip(&doc.spreads).all(|(a, b)| Arc::ptr_eq(a, b))
+        {
+            return e.starts.clone();
+        }
+        let r = Arc::new(doc.number_starts());
+        *self.starts.lock().unwrap_or_else(PoisonError::into_inner) = Some(StartsEntry { sig, spreads: doc.spreads.clone(), starts: r.clone() });
         r
     }
 

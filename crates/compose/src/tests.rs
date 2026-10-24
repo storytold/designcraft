@@ -7827,3 +7827,67 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     Arc::make_mut(&mut d.spreads[1]).pages[1].side = designcraft_doc::PageSide::Left;
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
 }
+
+#[test]
+fn many_stories_in_continuing_lists_compose_quickly() {
+    // Regression: each story's cache lookup searched the whole item tree per story and per list
+    // to order the stories by page, so a 677-story book took 69 s to compose and a second per
+    // repaint.
+    let pages = 20;
+    let mut d = Document::new(&NewDocument { pages, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let names: Vec<String> = (0..8).map(|i| format!("List {i}")).collect();
+    for name in &names {
+        d.settings.lists.push(designcraft_doc::NumberedList { name: name.clone(), continue_across_stories: true });
+    }
+    let mut sids = Vec::new();
+    for i in 0..400 {
+        let para = ParaAttrs { list_name: Some(names[i % names.len()].clone()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.^t") };
+        let (x, y) = ((i / pages % 4) as f64 * 120.0, (i / pages / 4) as f64 * 120.0);
+        let r = Rect::new(36.0 + x, 36.0 + y, 140.0 + x, 140.0 + y);
+        sids.push(d.add_text_frame(SpreadRef::Doc(i % pages), r, lid, "a\nb", ParaFormat { para, ..Default::default() }).unwrap().1);
+    }
+    let cache = Cache::new();
+    let t = std::time::Instant::now();
+    // Compose everything, then look everything up again (what every repaint does).
+    for _ in 0..2 {
+        for &sid in &sids {
+            cache.get(&d, sid, None);
+        }
+    }
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t.elapsed());
+    // Story 392 (list 0) sits on page 12. List 0 is every 8th story, on pages 0, 8, 16, 4, 12 in
+    // turn: 30 of them on earlier pages and 9 earlier on page 12 come first, two numbers each.
+    let later = cache.get(&d, sids[392], None);
+    assert_eq!(list_labels(&later, LABEL_CHARS), ["79.", "80."]);
+    assert_eq!(list_labels(&cache.get(&d, sids[0], None), LABEL_CHARS), ["1.", "2."]);
+}
+
+#[test]
+fn moving_a_frame_within_its_spread_renumbers_continuing_lists() {
+    // Regression: the numbering starts were cached by spread address, which an in-place edit of an
+    // unshared spread keeps, so moving a frame to the other page of its spread kept stale numbers.
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, ..Default::default() });
+    let lid = d.default_layer();
+    d.settings.lists.push(designcraft_doc::NumberedList { name: "Steps".into(), continue_across_stories: true });
+    let para = ParaAttrs { list_name: Some("Steps".into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.") };
+    let fmt = ParaFormat { para, ..Default::default() };
+    let (left, right) = {
+        let sp = &d.spreads[1];
+        (sp.pages[0].x, sp.pages[1].x)
+    };
+    // `b` is made first (lower id) on the right page, `a` on the left page: a numbers first.
+    let r = |x: f64| Rect::new(x + 36.0, 36.0, x + 200.0, 200.0);
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(1), r(right), lid, "b1\nb2", fmt.clone()).unwrap();
+    let (fa, a) = d.add_text_frame(SpreadRef::Doc(1), r(left), lid, "a1\na2", fmt).unwrap();
+    let cache = Cache::new();
+    assert_eq!(list_labels(&cache.get(&d, a, None), LABEL_CHARS), ["1.", "2."]);
+    assert_eq!(list_labels(&cache.get(&d, b, None), LABEL_CHARS), ["3.", "4."]);
+    // Move `a` onto the right page in place: same page as `b`, so `b` (lower id) now numbers first.
+    let loc = d.find(fa).unwrap();
+    let it = d.item_mut_at(&loc).unwrap();
+    it.xf = designcraft_geom::Affine::translate((right - left, 0.0)) * it.xf;
+    assert_eq!(d.stories_in_page_order().iter().map(|s| s.id).collect::<Vec<_>>()[..2], [b, a]);
+    assert_eq!(list_labels(&cache.get(&d, b, None), LABEL_CHARS), ["1.", "2."]);
+    assert_eq!(list_labels(&cache.get(&d, a, None), LABEL_CHARS), ["3.", "4."]);
+}

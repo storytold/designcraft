@@ -221,7 +221,8 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Missing:** incremental composition (recompose from the edited paragraph; 8 ms keystroke
   budget), benchmarks against InDesign on long books and image-heavy catalogues.
 - **Have:** compose 300k characters ~38 ms warm, damage-region repaint (< 1 ms while typing),
-  parallel story composition.
+  parallel story composition; list/footnote/endnote numbering across stories built once per
+  document version (a 677-story IDML with 8 continuing lists: 69 s → 37 ms to compose).
 - **Estimate:** 40–80 h.
 
 ### 26. Autoflow flows into the primary text frame of the pages that follow (F)

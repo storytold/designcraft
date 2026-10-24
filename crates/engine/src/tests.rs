@@ -1756,3 +1756,54 @@ fn aligning_the_key_object_alone_takes_the_page() {
     let x0 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds().x0;
     assert!(x0.abs() < 1e-6, "the object is at {x0}, not at the page's left edge");
 }
+
+#[test]
+fn dragging_a_frame_across_its_spread_renumbers_continuing_lists() {
+    // Regression: the composition cache keyed list numbering by spread address, and each preview of
+    // a drag frees the last preview's spread, so the next copy reused its address and the numbers
+    // kept the order from before the drag.
+    use designcraft_doc::{ListType, NumberStyle, NumberedList, ParaAttrs, ParaFormat, SpreadRef};
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+    let (fa, a, b, dx) = {
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let lid = d.default_layer();
+        d.settings.lists.push(NumberedList { name: "Steps".into(), continue_across_stories: true });
+        let para = ParaAttrs {
+            list_type: Some(ListType::Numbers),
+            list_name: Some("Steps".into()),
+            number_style: Some(NumberStyle::Arabic),
+            number_expression: Some("^#.".into()),
+            ..Default::default()
+        };
+        let fmt = ParaFormat { para, ..Default::default() };
+        let (left, right) = (d.spreads[1].pages[0].x, d.spreads[1].pages[1].x);
+        let rect = |x: f64| designcraft_geom::Rect::new(x + 36.0, 36.0, x + 200.0, 200.0);
+        // `b` (lower id) on the right page, `a` on the left page: `a` numbers first.
+        let (_, b) = d.add_text_frame(SpreadRef::Doc(1), rect(right), lid, "b1\nb2", fmt.clone()).unwrap();
+        let (fa, a) = d.add_text_frame(SpreadRef::Doc(1), rect(left), lid, "a1\na2", fmt).unwrap();
+        (fa, a, b, right - left)
+    };
+    let cache = designcraft_compose::Cache::new();
+    let numbers = |s: &Session, sid| -> String {
+        let cs = cache.get(&s.doc().unwrap().doc, sid, None);
+        cs.frames
+            .iter()
+            .flat_map(|f| &f.lines)
+            .flat_map(|l| &l.glyphs)
+            .filter(|g| g.len == 0 && g.visible)
+            .map(|g| g.rendered_char)
+            .filter(char::is_ascii_digit)
+            .collect()
+    };
+    assert_eq!((numbers(&s, a), numbers(&s, b)), ("12".into(), "34".into()));
+    // Drag `a` onto the right page, where `b` comes first by id; the cache sees every preview.
+    s.begin_interaction("Move").unwrap();
+    for k in 1..=10 {
+        s.preview("transform.move", json!({"dx": dx * f64::from(k) / 10.0, "dy": 0, "ids": [fa.0]})).unwrap();
+        numbers(&s, a);
+        numbers(&s, b);
+    }
+    s.commit_interaction().unwrap();
+    assert_eq!((numbers(&s, b), numbers(&s, a)), ("12".into(), "34".into()));
+}
