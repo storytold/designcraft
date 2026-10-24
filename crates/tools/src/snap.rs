@@ -1093,9 +1093,15 @@ fn pass_align(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> 
     }
     let flags = axis_flags(req, axis);
     let mut best: Option<Best> = None;
+    // An edge being drawn or resized also meets the page's centre line, as InDesign's smart
+    // guides do: a frame drawn from the top margin down to the middle of the page stops there.
+    let edge_to_centre = cx.snap.align_centers && matches!(req.gesture, Gesture::Create | Gesture::Resize);
     if let Some(sp) = cx.doc.spread(req.spread) {
         for page in &sp.pages {
             offer_box(&mut best, req.rect, flags, axis, page.bounds(), tol, (cx.snap.align_edges, cx.snap.align_centers));
+            if edge_to_centre {
+                offer_edges_to_centre(&mut best, req.rect, flags, axis, page.bounds(), tol);
+            }
         }
         for item in &sp.items {
             let Some(rect) = item_target_rect(cx.selection, req, item) else { continue };
@@ -1307,6 +1313,18 @@ fn offer_box(best: &mut Option<Best>, moving: Rect, flags: [bool; 3], axis: Axis
     }
     if centers && use_mid {
         offer(best, m_mid, t_mid, tol, Some(target));
+    }
+}
+
+/// The moving rect's enabled edges against the target's centre line.
+fn offer_edges_to_centre(best: &mut Option<Best>, moving: Rect, flags: [bool; 3], axis: Axis, target: Rect, tol: f64) {
+    let (m0, _, m1) = axis_triple(moving, axis);
+    let (_, t_mid, _) = axis_triple(target, axis);
+    if flags[0] {
+        offer(best, m0, t_mid, tol, Some(target));
+    }
+    if flags[2] {
+        offer(best, m1, t_mid, tol, Some(target));
     }
 }
 
@@ -2052,6 +2070,44 @@ mod tests {
         cx.snap.smart_spacing = false;
         let hit = snap(&cx, move_req(Rect::new(83.0, 5.0, 113.0, 25.0), &[]));
         assert_eq!(hit.delta.x, 0.0);
+    }
+
+    /// A frame drawn on an A4 landscape page from the top margin down to the middle of the page
+    /// stops at the page's centre line (297.6 pt), not at the hidden baseline grid line 1.4 pt
+    /// further down (300 pt), as InDesign's smart guides do.
+    #[test]
+    fn a_drawn_edge_snaps_to_the_page_centre() {
+        let a4 = NewDocument { width: 841.89, height: 595.276, ..NewDocument::default() };
+        let doc = with_baseline_grid(Document::new(&a4));
+        let cache = Cache::new();
+        let layout = CanvasLayout::new(&doc, false);
+        let sel = Selection::default();
+        let cx = ctx_on(&doc, &sel, &cache, &layout);
+        let create = |gesture, y_edges, rect| SnapRequest {
+            spread: SpreadRef::Doc(0),
+            gesture,
+            rect,
+            x_edges: [false, false, false],
+            y_edges,
+            exclude: &[],
+            exclude_guides: &[],
+            copying: false,
+            lengths: [None, None],
+            angle: None,
+            radius: 0.0,
+            pointer: Point::new(0.0, 0.0),
+        };
+        let centre = 595.276 / 2.0;
+        let hit = snap(&cx, create(Gesture::Create, [false, false, true], Rect::new(500.0, 42.52, 800.0, 298.6)));
+        assert!((hit.delta.y - (centre - 298.6)).abs() < 1e-6, "{}", hit.delta.y);
+        // Drawn upwards, the top edge meets it too; a resized edge does as well.
+        let hit = snap(&cx, create(Gesture::Create, [true, false, false], Rect::new(500.0, 296.0, 800.0, 552.0)));
+        assert!((hit.delta.y - (centre - 296.0)).abs() < 1e-6, "{}", hit.delta.y);
+        let hit = snap(&cx, create(Gesture::Resize, [false, false, true], Rect::new(500.0, 42.52, 800.0, 298.6)));
+        assert!((hit.delta.y - (centre - 298.6)).abs() < 1e-6, "{}", hit.delta.y);
+        // A moved frame still lines up by its centre only: its bottom edge goes to the baseline.
+        let hit = snap(&cx, create(Gesture::Move, [true, false, true], Rect::new(500.0, 42.52, 800.0, 298.6)));
+        assert!((hit.delta.y - 1.4).abs() < 1e-6, "{}", hit.delta.y);
     }
 
     #[test]
