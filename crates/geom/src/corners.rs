@@ -55,9 +55,52 @@ pub struct CornerOptions {
     pub corners: [Corner; 4],
 }
 
+/// The named corner (0 top left, 1 top right, 2 bottom right, 3 bottom left) each of a path's
+/// four anchors is, by its place on the path's bounds. A path that isn't one subpath of four
+/// anchors at four different corners keeps a rectangle's order.
+pub fn named_slots(path: &PathData) -> [usize; 4] {
+    let rect_order = [0, 1, 2, 3];
+    let Some(sp) = path.subpaths.first() else { return rect_order };
+    let Some(b) = path.bounds() else { return rect_order };
+    if sp.anchors.len() != 4 {
+        return rect_order;
+    }
+    let c = b.center();
+    let mut out = rect_order;
+    let mut seen = [false; 4];
+    for (i, a) in sp.anchors.iter().enumerate() {
+        let k = match (a.p.y < c.y, a.p.x < c.x) {
+            (true, true) => 0,
+            (true, false) => 1,
+            (false, false) => 2,
+            (false, true) => 3,
+        };
+        if std::mem::replace(&mut seen[k], true) {
+            return rect_order;
+        }
+        out[i] = k;
+    }
+    out
+}
+
 impl CornerOptions {
     pub fn uniform(shape: CornerShape, size: f64) -> Self {
         Self { corners: [Corner { shape, size }; 4] }
+    }
+
+    /// Named corners (top left, top right, bottom right, bottom left), as an object style holds
+    /// them, in `path`'s order.
+    pub fn named_to_path(&self, path: &PathData) -> Self {
+        Self { corners: named_slots(path).map(|k| self.corners[k]) }
+    }
+
+    /// `path`-order corners as named corners (top left, top right, bottom right, bottom left).
+    pub fn path_to_named(&self, path: &PathData) -> Self {
+        let mut corners = self.corners;
+        for (i, k) in named_slots(path).into_iter().enumerate() {
+            corners[k] = self.corners[i];
+        }
+        Self { corners }
     }
     pub fn is_none(&self) -> bool {
         self.corners.iter().all(Corner::is_none)
@@ -251,6 +294,30 @@ mod tests {
     use super::*;
     use crate::shapes::rectangle;
     use kurbo::{Rect, Shape};
+
+    /// Named corners go to the anchors at those corners, whatever order the path runs in, and
+    /// come back the same.
+    #[test]
+    fn named_corners_map_to_any_path_order() {
+        use kurbo::Point;
+        let named = CornerOptions {
+            corners: [CornerShape::Rounded, CornerShape::Bevel, CornerShape::Inset, CornerShape::Fancy].map(|shape| Corner { shape, size: 6.0 }),
+        };
+        // Top left, bottom left, bottom right, top right (as InDesign writes a rectangle).
+        let down_first = PathData::single(SubPath::polyline(
+            &[Point::new(0.0, 0.0), Point::new(0.0, 100.0), Point::new(100.0, 100.0), Point::new(100.0, 0.0)],
+            true,
+        ));
+        assert_eq!(named_slots(&down_first), [0, 3, 2, 1]);
+        let on_path = named.named_to_path(&down_first);
+        let shapes = on_path.corners.map(|c| c.shape);
+        assert_eq!(shapes, [CornerShape::Rounded, CornerShape::Fancy, CornerShape::Inset, CornerShape::Bevel]);
+        assert_eq!(on_path.path_to_named(&down_first), named);
+        // A rectangle in its own order, and a triangle, keep the order.
+        assert_eq!(named.named_to_path(&rectangle(Rect::new(0.0, 0.0, 10.0, 10.0))), named);
+        let tri = PathData::single(SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(5.0, 9.0)], true));
+        assert_eq!(named.named_to_path(&tri), named);
+    }
 
     #[test]
     fn none_is_identity() {
