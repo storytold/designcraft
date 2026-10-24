@@ -326,6 +326,7 @@ fn ruby_longer(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields) {
         ui.end_row();
     });
     char_check(ui, d, cf, "rubyAutoAlign", tr(lang, "Auto Align at Line Start/End"));
+    char_check(ui, d, cf, "rubyAdjustLeading", tr(lang, "Ruby Adjusts Leading"));
 }
 
 /// Ruby Color / Kenten Color (`prefix` "ruby" or "kenten"): the fill or stroke swatch (Text
@@ -405,6 +406,7 @@ pub(super) fn ruby_params(d: &Dialog) -> Value {
         ("rubyParentSpacing", "parentSpacing", 0.0),
         ("rubyAutoAlign", "autoAlign", 0.0),
         ("rubyAutoScaling", "autoScaling", 0.0),
+        ("rubyAdjustLeading", "adjustLeading", 0.0),
         ("rubyScalingMin", "scalingPercent", 100.0),
         ("rubyFill", "fill", 0.0),
         ("rubyStroke", "stroke", 0.0),

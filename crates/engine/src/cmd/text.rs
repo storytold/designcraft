@@ -255,7 +255,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Ruby",
             [],
             None,
-            "{text?, type?: group|perCharacter, alignment?: left|center|right|fullJustify|jis|equalAki|oneAki, position?: aboveRight|belowLeft, xOffset?, yOffset? (pt), font?, fontStyle? (\"\" = the text's), size? (pt; null = half the text size), xScale?, yScale? (%), openTypePro?: bool, autoTcyDigits?: 0-9, autoTcyIncludeRoman?: bool, autoTcyAutoScale?: bool, overhang?: none|oneRuby|halfRuby|oneChar|halfChar|noLimit, parentSpacing?: noAdjustment|bothSides|aki121|equalAki|fullJustify, autoAlign?: bool, autoScaling?: bool, scalingPercent? (%), fill?, stroke? (swatch; \"\" = the text's), fillTint?, strokeTint? (%; null = the text's), strokeWeight? (pt; null = the text's), overprintFill?, overprintStroke?: auto|on|off} — the reading set over the selected text and how it is placed; empty text removes it. Per-character ruby separates the readings with U+3000",
+            "{text?, type?: group|perCharacter, alignment?: left|center|right|fullJustify|jis|equalAki|oneAki, position?: aboveRight|belowLeft, xOffset?, yOffset? (pt), font?, fontStyle? (\"\" = the text's), size? (pt; null = half the text size), xScale?, yScale? (%), openTypePro?: bool, autoTcyDigits?: 0-9, autoTcyIncludeRoman?: bool, autoTcyAutoScale?: bool, overhang?: none|oneRuby|halfRuby|oneChar|halfChar|noLimit, parentSpacing?: noAdjustment|bothSides|aki121|equalAki|fullJustify, autoAlign?: bool, autoScaling?: bool, adjustLeading?: bool, scalingPercent? (%), fill?, stroke? (swatch; \"\" = the text's), fillTint?, strokeTint? (%; null = the text's), strokeWeight? (pt; null = the text's), overprintFill?, overprintStroke?: auto|on|off} — the reading set over the selected text and how it is placed; empty text removes it. Per-character ruby separates the readings with U+3000",
             has_text_or_frames,
             ruby_cmd
         ),
@@ -1480,6 +1480,7 @@ fn ruby_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         ("autoTcyAutoScale", "rubyAutoTcyAutoScale"),
         ("autoAlign", "rubyAutoAlign"),
         ("autoScaling", "rubyAutoScaling"),
+        ("adjustLeading", "rubyAdjustLeading"),
     ] {
         if let Some(v) = p.get(key) {
             let b = v.as_bool().ok_or_else(|| bad("type.ruby", format!("{key}: expected true or false")))?;
@@ -3174,7 +3175,7 @@ mod tcy_tests {
         let f = |s: &Session| s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].char_format_at(1).over.clone();
         s.execute(
             "type.ruby",
-            &json!({"text": "かん\u{3000}じ", "type": "perCharacter", "alignment": "oneAki", "position": "belowLeft", "size": 1e9, "xScale": -50, "scalingPercent": 5, "autoTcyDigits": 99, "fillTint": 250, "yOffset": -1e12, "fill": "[Black]"}),
+            &json!({"text": "かん\u{3000}じ", "type": "perCharacter", "alignment": "oneAki", "position": "belowLeft", "size": 1e9, "xScale": -50, "scalingPercent": 5, "autoTcyDigits": 99, "fillTint": 250, "yOffset": -1e12, "fill": "[Black]", "adjustLeading": true}),
         )
         .unwrap();
         let a = f(&s);
@@ -3188,6 +3189,7 @@ mod tcy_tests {
         assert_eq!(a.ruby_auto_tcy_digits, Some(9));
         assert_eq!(a.ruby_fill_tint, Some(Some(1.0)));
         assert_eq!(a.ruby_y_offset, Some(-1000.0));
+        assert_eq!(a.ruby_adjust_leading, Some(true));
         // Options alone keep the reading.
         s.execute("type.ruby", &json!({"alignment": "center"})).unwrap();
         assert_eq!((f(&s).ruby, f(&s).ruby_alignment), (a.ruby.clone(), Some(RubyAlignment::Center)));
@@ -3199,6 +3201,7 @@ mod tcy_tests {
             json!({"text": long}),
             json!({"fill": "Nope"}),
             json!({"autoAlign": 1}),
+            json!({"adjustLeading": 1}),
             json!({"text": 5}),
         ] {
             assert!(s.execute("type.ruby", &p).is_err(), "{p}");

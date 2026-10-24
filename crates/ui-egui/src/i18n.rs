@@ -4671,6 +4671,8 @@ mod tests {
                 assert_eq!(tr("", key), *key);
             }
         }
+        // The Japanese table's ruby caption, which the ruby leading work added.
+        assert_eq!(tr("ja", "Ruby Adjusts Leading"), "ルビが行送りを調整");
         // Strings no catalog has stay as they are, in every language.
         let unknown = String::from("A user-defined untranslated label");
         for lang in LANGUAGES.iter().map(|(code, _)| *code).chain(["en", "unknown"]) {
@@ -4921,6 +4923,7 @@ mod tests {
             "Redefine Document Style",
             "Report an issue",
             "Reverse the order",
+            "Ruby Adjusts Leading",
             "Sort Entries in Alphabetical Order",
             "Story {story} ← story {parent}",
             "Story Editor — {count} words",

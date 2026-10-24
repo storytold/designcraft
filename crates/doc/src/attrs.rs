@@ -1145,6 +1145,10 @@ attr_set! {
         /// A longer ruby is narrowed first, down to `ruby_scaling_min` (1.0 = 100%).
         ruby_auto_scaling: bool = false,
         ruby_scaling_min: f64 = 0.66,
+        /// Ruby Adjusts Leading: the line's leading grows by the room the ruby needs above (or
+        /// below) the parent, instead of the two overlapping the neighbouring line. A DesignCraft
+        /// setting with no IDML counterpart; off, ruby never changes leading.
+        ruby_adjust_leading: bool = false,
         /// Ruby colour: empty is the text's colour; `None` tint and weight follow the text.
         ruby_fill: String = String::new(),
         ruby_fill_tint: Option<f32> = None,
