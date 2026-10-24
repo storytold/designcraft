@@ -397,7 +397,7 @@ fn card(ui: &mut Ui, c: &Card, units: Unit, selected: bool) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(CARD, Sense::click());
     if selected {
         ui.painter().rect(r.shrink(1.0), 3.0, t.hover, Stroke::new(2.0, t.accent), StrokeKind::Inside);
-    } else if resp.hovered() {
+    } else if ui.rect_contains_pointer(r) {
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
     let page = Rect::from_center_size(pos2(r.center().x, r.top() + 56.0), vec2(72.0, 72.0));
@@ -503,19 +503,32 @@ fn presets(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
         for c in &list {
             let resp = card(ui, c, card_units, current == c.key);
-            if resp.clicked() || resp.double_clicked() {
-                select(d, c);
-            }
-            if resp.double_clicked() {
-                create = true;
-            }
+            let mut remove = false;
             if tab == "saved" && c.key != DEFAULT_CARD {
+                if current == c.key || ui.rect_contains_pointer(resp.rect) {
+                    let x = if rtl { resp.rect.left() + 4.0 } else { resp.rect.right() - 26.0 };
+                    let rect = Rect::from_min_size(pos2(x, resp.rect.top() + 4.0), vec2(22.0, 22.0));
+                    let button = ui.interact(rect, ui.id().with(("delete-preset", &c.key)), Sense::click());
+                    let label = format!("{}: {}", crate::i18n::tr(&lang, "Delete Preset"), c.label);
+                    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.as_str()));
+                    if button.hovered() {
+                        ui.painter().rect_filled(rect, 2.0, t.hover);
+                    }
+                    crate::icons::paint(ui.painter(), rect.shrink(3.0), "trash", t.icon);
+                    remove = button.on_hover_text(label).clicked();
+                }
                 resp.context_menu(|ui| {
                     if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Delete Preset"))).clicked() {
                         delete = Some(c.nd.title.clone());
                         ui.close();
                     }
                 });
+            }
+            if remove {
+                delete = Some(c.nd.title.clone());
+            } else if resp.clicked() || resp.double_clicked() {
+                select(d, c);
+                create |= resp.double_clicked();
             }
         }
     });
@@ -1092,6 +1105,43 @@ mod tests {
         // The saved preset makes documents by name, as file.new {preset} does from anywhere.
         app.run("file.new", json!({"preset": "Brochure"})).unwrap();
         assert!(!egui::Popup::is_any_open(&h.ctx), "the popup closed");
+    }
+
+    #[test]
+    fn saved_preset_delete_buttons_keep_the_preview_and_never_create_a_document() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.savePreset", json!({"name":"Portrait draft","pages":3,"facingPages":false})).unwrap();
+        app.run("file.savePreset", json!({"name":"Landscape draft","width":792,"height":612,"pages":2})).unwrap();
+        app.run("app.newDocumentDialog", json!({})).unwrap();
+        let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+        h.run_steps(4);
+        let saved = h.get_by_label("Saved").rect().center();
+        crate::test_window::click_at(&mut h, saved);
+        let portrait = h.get_by_label("Portrait draft").rect().center();
+        crate::test_window::click_at(&mut h, portrait);
+        h.get_by_label("Preview").click();
+        h.run_steps(20);
+        assert!(h.query_by_label("Delete Preset: Portrait draft").is_some(), "the selected preset has its action");
+        assert!(h.query_by_label("Delete Preset: [Default]").is_none(), "the factory card cannot be deleted");
+        let before = h.state().app.session.active().unwrap().doc.clone();
+        let preview = h.state().app.session.new_document_preview();
+        let count = h.state().app.session.documents().len();
+        let fields = params(h.state().app.ui.dialog.as_ref().unwrap());
+        let landscape = h.get_by_label("Landscape draft").rect().center();
+        h.event(egui::Event::PointerMoved(landscape));
+        h.run_steps(3);
+        let remove = h.get_by_label("Delete Preset: Landscape draft").rect().center();
+        crate::test_window::click_at(&mut h, remove);
+        assert_eq!(h.state().app.session.prefs.document_presets.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(), ["Portrait draft"]);
+        let remove = h.get_by_label("Delete Preset: Portrait draft").rect().center();
+        crate::test_window::click_at(&mut h, remove);
+        let app = &h.state().app;
+        assert!(app.session.prefs.document_presets.is_empty());
+        assert_eq!(app.session.new_document_preview(), preview);
+        assert_eq!(app.session.documents().len(), count);
+        assert_eq!(*app.session.active().unwrap().doc, *before);
+        assert_eq!(params(app.ui.dialog.as_ref().unwrap()), fields, "deletion does not select another preset or create the preview");
     }
 
     #[test]
