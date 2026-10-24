@@ -680,7 +680,15 @@ pub fn specs() -> Vec<CommandSpec> {
             path_reverse
         ),
         cmd!("path.close", "Close Path", ["Object", "Paths"], None, "{id, subpath?: index (default every subpath)}", has_doc, path_close),
-        cmd!("path.moveAnchors", "Move Anchors", [], None, "{id, anchors: [[subpath, index]], dx, dy, handle?: in|out}", has_doc, path_move_anchors),
+        cmd!(
+            "path.moveAnchors",
+            "Move Anchors",
+            [],
+            None,
+            "{id, anchors: [[subpath, index]], dx, dy, handle?: in|out} | {points: [[id, subpath, index]], dx, dy} (anchors of several paths, as Direct Selection drags them: one step)",
+            has_doc,
+            path_move_anchors
+        ),
         cmd!(
             "object.align",
             "Align",
@@ -3204,29 +3212,36 @@ fn path_create(s: &mut Session, p: &Value) -> Result<Value> {
 fn path_append(s: &mut Session, p: &Value) -> Result<Value> {
     let id = super::id_param(p, "id").ok_or_else(|| bad("path.appendAnchor", "missing id"))?;
     let a = p.get("anchor").and_then(anchor_from).ok_or_else(|| bad("path.appendAnchor", "missing anchor"))?;
-    let subpath = p.get("subpath").and_then(Value::as_u64);
+    // An omitted subpath is the last one; one given must name a subpath (never falls back).
+    let subpath = match p.get("subpath") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or_else(|| bad("path.appendAnchor", "`subpath` must be a subpath index"))?),
+    };
     let at_start = match p.get("at") {
         None => false,
         Some(v) if v.as_str() == Some("end") => false,
         Some(v) if v.as_str() == Some("start") => true,
         Some(_) => return Err(bad("path.appendAnchor", "`at` must be `start` or `end`")),
     };
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         path_editable(d, id, "path.appendAnchor")?;
         let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         let inv = (d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default()).inverse();
         let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let sp = match subpath {
-            Some(i) => {
-                usize::try_from(i).ok().and_then(|i| it.path.subpaths.get_mut(i)).ok_or_else(|| bad("path.appendAnchor", "no such subpath"))?
-            }
-            None => it.path.subpaths.last_mut().ok_or_else(|| bad("path.appendAnchor", "empty path"))?,
+        let si = match subpath {
+            Some(i) => usize::try_from(i).ok().filter(|i| *i < it.path.subpaths.len()).ok_or_else(|| bad("path.appendAnchor", "no such subpath"))?,
+            None => it.path.subpaths.len().checked_sub(1).ok_or_else(|| bad("path.appendAnchor", "empty path"))?,
         };
+        let sp = &mut it.path.subpaths[si];
         if sp.closed {
             return Err(bad("path.appendAnchor", "the subpath is closed"));
         }
         if at_start {
             sp.anchors.insert(0, a.transform(inv));
+            // The selected points of this sub-path move up one place with the others.
+            for a in sel.anchors.iter_mut().filter(|a| a.0 == id && a.1 == si) {
+                a.2 += 1;
+            }
         } else {
             sp.anchors.push(a.transform(inv));
         }
@@ -3305,7 +3320,7 @@ fn path_reverse(s: &mut Session, p: &Value) -> Result<Value> {
     {
         path_editable(doc, *id, "path.reverse")?;
     }
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         let mut reversed = 0;
         for id in &editable {
             let Some(it) = d.item_mut(*id) else { continue };
@@ -3315,6 +3330,11 @@ fn path_reverse(s: &mut Session, p: &Value) -> Result<Value> {
             for (i, sp) in it.path.subpaths.iter_mut().enumerate() {
                 if only.is_some_and(|o| o != i) {
                     continue;
+                }
+                // Selected points keep pointing at the same points, now counted from the other end.
+                let n = sp.anchors.len();
+                for a in sel.anchors.iter_mut().filter(|a| a.0 == *id && a.1 == i && a.2 < n) {
+                    a.2 = n - 1 - a.2;
                 }
                 sp.anchors.reverse();
                 for a in &mut sp.anchors {
@@ -3349,38 +3369,65 @@ fn path_close(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn path_move_anchors(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = super::id_param(p, "id").ok_or_else(|| bad("path.moveAnchors", "missing id"))?;
-    let which: Vec<(usize, usize)> = p.get("anchors").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    // The anchors to move, by path: `points` (several paths) or `id` with `anchors`.
+    let mut targets: Vec<(ItemId, Vec<(usize, usize)>)> = Vec::new();
+    // A `points` that isn't a list is an error, never the `id` form (which could move another path).
+    let points = match p.get("points") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(a),
+        Some(_) => return Err(bad("path.moveAnchors", "`points` must be a list of [id, subpath, index]")),
+    };
+    if let Some(points) = points {
+        for v in points {
+            let n = |i: usize| v.get(i).and_then(Value::as_u64).and_then(|x| usize::try_from(x).ok());
+            let (Some(id), Some(si), Some(ai)) = (v.get(0).and_then(Value::as_u64), n(1), n(2)) else {
+                return Err(bad("path.moveAnchors", "each point is [id, subpath, index]"));
+            };
+            match targets.iter_mut().find(|(i, _)| i.0 == id) {
+                Some((_, which)) => which.push((si, ai)),
+                None => targets.push((ItemId(id), vec![(si, ai)])),
+            }
+        }
+    } else {
+        let id = super::id_param(p, "id").ok_or_else(|| bad("path.moveAnchors", "missing id"))?;
+        let which: Vec<(usize, usize)> = p.get("anchors").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        targets.push((id, which));
+    }
     let d0 = Vec2::new(f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
     let handle = str_param(p, "handle").map(str::to_string);
     s.edit(|d, _| {
-        path_editable(d, id, "path.moveAnchors")?;
-        let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let m = d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default();
-        // Spread-space delta → inner-space delta (linear part only).
-        let inv = m.inverse();
-        let dv = (inv * Point::new(d0.x, d0.y)) - (inv * Point::ZERO);
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        for (si, ai) in &which {
-            let Some(a) = it.path.anchor_mut(*si, *ai) else { continue };
-            match handle.as_deref() {
-                Some("in") => {
-                    a.h_in += dv;
-                    if a.kind == designcraft_geom::AnchorKind::Smooth {
-                        a.h_out = a.p - (a.h_in - a.p);
-                    }
-                }
-                Some("out") => {
-                    a.h_out += dv;
-                    if a.kind == designcraft_geom::AnchorKind::Smooth {
-                        a.h_in = a.p - (a.h_out - a.p);
-                    }
-                }
-                _ => a.translate(dv),
-            }
+        for (id, _) in &targets {
+            path_editable(d, *id, "path.moveAnchors")?;
         }
-        if it.shape == Shape::Rectangle || it.shape == Shape::Oval || it.shape == Shape::Polygon {
-            it.shape = Shape::Path;
+        for (id, which) in &targets {
+            let id = *id;
+            let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+            let m = d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default();
+            // Spread-space delta → inner-space delta (linear part only).
+            let inv = m.inverse();
+            let dv = (inv * Point::new(d0.x, d0.y)) - (inv * Point::ZERO);
+            let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+            for (si, ai) in which {
+                let Some(a) = it.path.anchor_mut(*si, *ai) else { continue };
+                match handle.as_deref() {
+                    Some("in") => {
+                        a.h_in += dv;
+                        if a.kind == designcraft_geom::AnchorKind::Smooth {
+                            a.h_out = a.p - (a.h_in - a.p);
+                        }
+                    }
+                    Some("out") => {
+                        a.h_out += dv;
+                        if a.kind == designcraft_geom::AnchorKind::Smooth {
+                            a.h_in = a.p - (a.h_out - a.p);
+                        }
+                    }
+                    _ => a.translate(dv),
+                }
+            }
+            if it.shape == Shape::Rectangle || it.shape == Shape::Oval || it.shape == Shape::Polygon {
+                it.shape = Shape::Path;
+            }
         }
         ok()
     })

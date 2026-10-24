@@ -289,7 +289,7 @@ fn add_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let id = super::id_param(p, "id").ok_or_else(|| bad("path.addAnchor", "missing id"))?;
     let at = point_param(p, "at").ok_or_else(|| bad("path.addAnchor", "missing at"))?;
     let tol = p.get("tolerance").and_then(Value::as_f64).unwrap_or(4.0);
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         path_editable(d, id, "path.addAnchor")?;
         let inv = to_inner(d, id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
@@ -303,6 +303,10 @@ fn add_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         let t = t.clamp(1e-4, 1.0 - 1e-4);
         let ai = it.path.subpaths[si].insert_anchor(seg, t);
         as_path(&mut it.shape);
+        // Selected points after the new one move up an index, so they stay the same points.
+        for a in sel.anchors.iter_mut().filter(|a| a.0 == id && a.1 == si && a.2 >= ai) {
+            a.2 += 1;
+        }
         Ok(json!({"subpath": si, "anchor": ai}))
     })
 }
@@ -318,15 +322,27 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         }
         sp.anchors.remove(ai);
         // A subpath needs two points (three to stay closed).
-        if sp.anchors.len() < 2 {
+        let removed_subpath = sp.anchors.len() < 2;
+        if removed_subpath {
             it.path.subpaths.remove(si);
         } else if sp.closed && sp.anchors.len() < 3 {
             sp.closed = false;
         }
         as_path(&mut it.shape);
+        // The deleted point leaves the selection; the selected points after it (or the subpaths
+        // after a removed one) move down an index.
+        sel.anchors.retain(|a| !(a.0 == id && a.1 == si && (a.2 == ai || removed_subpath)));
+        for a in sel.anchors.iter_mut().filter(|a| a.0 == id) {
+            if removed_subpath && a.1 > si {
+                a.1 -= 1;
+            } else if !removed_subpath && a.1 == si && a.2 > ai {
+                a.2 -= 1;
+            }
+        }
         if it.path.subpaths.is_empty() {
             d.remove_item(id)?;
             sel.items.retain(|i| *i != id);
+            sel.anchors.retain(|a| a.0 != id);
             return Ok(json!({"deleted": true}));
         }
         Ok(json!({"deleted": false}))
@@ -484,6 +500,33 @@ mod tests {
         let r = s.execute("path.erase", &json!({"id": id, "points": drag})).unwrap();
         assert_eq!(r["subpaths"], 2, "a gap in the middle");
         assert!(s.execute("path.erase", &json!({"id": id, "points": [[100, 600]]})).is_err());
+    }
+
+    /// The Direct Selection's selected points stay the same points when the path changes under
+    /// them: a point added before them, one of them deleted, the path reversed.
+    #[test]
+    fn selected_anchors_follow_added_deleted_and_reversed_points() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        let point = |s: &Session, a: (usize, usize)| s.doc().unwrap().doc.item(ItemId(id)).unwrap().path.subpaths[a.0].anchors[a.1].p;
+        s.execute("selection.set", &json!({"anchors": [[id, 0, 2], [id, 0, 3]]})).unwrap();
+        let picked = |s: &Session| s.doc().unwrap().selection.anchors.iter().map(|a| (a.1, a.2)).collect::<Vec<_>>();
+        let before: Vec<_> = picked(&s).into_iter().map(|a| point(&s, a)).collect();
+        // A point added on the first side, before both.
+        let first = point(&s, (0, 0));
+        let second = point(&s, (0, 1));
+        let mid = [(first.x + second.x) / 2.0, (first.y + second.y) / 2.0];
+        s.execute("path.addAnchor", &json!({"id": id, "at": mid})).unwrap();
+        assert_eq!(picked(&s).into_iter().map(|a| point(&s, a)).collect::<Vec<_>>(), before, "after an added point");
+        // One of them deleted: the other stays selected, the same point.
+        let (si, ai) = picked(&s)[0];
+        s.execute("path.deleteAnchor", &json!({"id": id, "subpath": si, "anchor": ai})).unwrap();
+        assert_eq!(picked(&s).len(), 1);
+        assert_eq!(point(&s, picked(&s)[0]), before[1], "after a deleted point");
+        // Reversed: still the same point.
+        s.execute("path.reverse", &json!({"ids": [id]})).unwrap();
+        assert_eq!(point(&s, picked(&s)[0]), before[1], "after reversing");
     }
 
     #[test]
