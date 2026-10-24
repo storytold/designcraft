@@ -1048,11 +1048,72 @@ fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         let enabled = i.wrap != "none";
         let r = ui.add_enabled_ui(enabled, |ui| widgets::checkbox(ui, &mut inv, crate::i18n::tr(&app.ui.language, "Invert"))).inner;
         if r.changed() {
-            let _ = app.run("object.textWrap", json!({"mode": i.wrap, "invert": inv}));
+            // Each object keeps its own mode.
+            let _ = app.run("object.textWrap", json!({"mode": null, "invert": inv}));
         }
     });
+    wrap_offsets(app, ui, i);
     if more_options(ui, &app.ui.language).clicked() {
         show_panel(app, "textWrap");
+    }
+}
+
+/// The wrap offsets under the wrap buttons, as InDesign's Properties panel shows them: Top and
+/// Bottom, the link that makes all four the same, then Left and Right. Greyed with no wrap.
+fn wrap_offsets(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let u = units(app);
+    let enabled = i.wrap != "none";
+    let offsets = i.wrap_offsets;
+    ui.add_space(4.0);
+    let b = block(ui, 2.0 * FIELD_H + 5.0);
+    let mut set = None;
+    // The link's state belongs to the selection: another selection starts linked again when its
+    // four offsets are the same.
+    let selected: Vec<u64> = app.session.active().map(|st| st.selection.items.iter().map(|i| i.0).collect()).unwrap_or_default();
+    let link_id = egui::Id::new(("prop_wrap_linked", selected));
+    ui.add_enabled_ui(enabled, |ui| {
+        // Linked while the four are the same, until the link is clicked.
+        let same = offsets.iter().all(|v| (v - offsets[0]).abs() < 1e-9);
+        let linked = ui.data(|d| d.get_temp::<bool>(link_id)).unwrap_or(same);
+        // Offsets are [top, left, bottom, right].
+        for (k, key, icon, tip, x, y) in [
+            (0, "wrapTop", "margin-top", "Top", 0.0, 0.0),
+            (2, "wrapBottom", "margin-bottom", "Bottom", 0.0, FIELD_H + 5.0),
+            (1, "wrapLeft", "margin-inside", "Left", 140.0, 0.0),
+            (3, "wrapRight", "margin-outside", "Right", 140.0, FIELD_H + 5.0),
+        ] {
+            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+            icons::paint(ui.painter(), ir, icon, if enabled { t.icon } else { t.text_dim });
+            ui.interact(ir, ui.id().with(("prop_wrap_off", k)), Sense::hover()).on_hover_ui(|ui| {
+                crate::rtl::label(ui, tr(tip));
+            });
+            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
+                NumField::measure(key, Some(offsets[k]), u).width(76.0).spinner().range(-8000.0, 8000.0).enabled(enabled).show(ui)
+            });
+            if let Some(v) = nv {
+                // Linked, all four; else this side alone, each object keeping its other offsets.
+                let mut o = [None; 4];
+                if linked {
+                    o = [Some(v); 4];
+                } else {
+                    o[k] = Some(v);
+                }
+                set = Some(o);
+            }
+        }
+        if place(ui, sub(b, 106.0, (FIELD_H + 5.0) / 2.0, 22.0, FIELD_H), |ui| {
+            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
+                .clicked()
+        }) {
+            ui.data_mut(|d| d.insert_temp(link_id, !linked));
+        }
+    });
+    if let Some(o) = set {
+        // Each object keeps its own mode: only the offsets change.
+        let _ = app.run("object.textWrap", json!({"mode": null, "offset": o}));
     }
 }
 
@@ -3856,6 +3917,79 @@ mod tests {
         assert_eq!(items.len(), 1, "one shape left");
         let r = items[0].bounds();
         assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
+    }
+
+    /// Properties › Text Wrap shows the four offsets under the wrap buttons, as InDesign's
+    /// Properties panel does: linked at first, so one value sets all four; unlinked, one side.
+    #[test]
+    fn properties_text_wrap_shows_and_sets_the_offsets() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app.run("object.textWrap", json!({"mode": "boundingBox", "offset": 0})).unwrap();
+        let offsets = |app: &DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().wrap.offsets;
+        let mut h = panel(app);
+        // The fields between the Text Wrap heading and Quick Actions: Top, Left, Bottom, Right.
+        let fields = |h: &Harness<'_, DesignApp>| {
+            let (top, bottom) = (h.get_by_label("Text Wrap").rect().bottom(), h.get_by_label("Quick Actions").rect().top());
+            let mut v: Vec<egui::Rect> = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .map(|n| n.rect())
+                .filter(|r| r.center().y > top && r.center().y < bottom)
+                .collect();
+            v.sort_by(|a, b| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap());
+            v
+        };
+        let f = fields(&h);
+        assert_eq!(f.len(), 4, "four offsets: {f:?}");
+        let type_in = |h: &mut Harness<'_, DesignApp>, at: egui::Rect, text: &str| {
+            h.hover_at(at.center());
+            h.drag_at(at.center());
+            h.drop_at(at.center());
+            h.run_steps(2);
+            h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+            h.event(egui::Event::Text(text.into()));
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+        };
+        // Linked: the top offset sets all four.
+        type_in(&mut h, f[0], "12pt");
+        assert_eq!(offsets(h.state()), [12.0; 4]);
+        // Unlinked: the bottom one alone.
+        let (top, bottom) = (h.get_by_label("Text Wrap").rect().bottom(), h.get_by_label("Quick Actions").rect().top());
+        h.get_all_by_label("Make all settings the same").find(|n| n.rect().center().y > top && n.rect().center().y < bottom).unwrap().click();
+        h.run_steps(2);
+        let f = fields(&h);
+        type_in(&mut h, f[2], "6pt");
+        assert_eq!(offsets(h.state()), [12.0, 12.0, 6.0, 12.0], "[top, left, bottom, right]");
+        // Two objects with different offsets: a side typed in changes that side on each, and
+        // each keeps its other three.
+        let other = h.state_mut().run("frame.create", json!({"rect": [72, 300, 300, 400], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+        h.state_mut().run("object.textWrap", json!({"mode": "contour", "offset": [3, 4, 5, 6], "ids": [other]})).unwrap();
+        let of = |h: &Harness<'_, DesignApp>, id: u64| {
+            h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().wrap.offsets
+        };
+        h.state_mut().run("selection.set", json!({"ids": [id, other]})).unwrap();
+        h.run_steps(3);
+        let f = fields(&h);
+        type_in(&mut h, f[0], "9pt");
+        assert_eq!((of(&h, id), of(&h, other)), ([9.0, 12.0, 6.0, 12.0], [9.0, 4.0, 5.0, 6.0]), "the top alone, on each");
+        let mode =
+            |h: &Harness<'_, DesignApp>, id: u64| h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().wrap.mode;
+        assert_eq!(
+            (mode(&h, id), mode(&h, other)),
+            (designcraft_doc::WrapMode::BoundingBox, designcraft_doc::WrapMode::Contour),
+            "each keeps its mode"
+        );
+        // An object whose offsets are the same starts linked, though the link was off before.
+        let third = h.state_mut().run("frame.create", json!({"rect": [320, 72, 500, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+        h.state_mut().run("object.textWrap", json!({"mode": "boundingBox", "offset": 4, "ids": [third]})).unwrap();
+        h.state_mut().run("selection.set", json!({"ids": [third]})).unwrap();
+        h.run_steps(3);
+        let f = fields(&h);
+        type_in(&mut h, f[2], "8pt");
+        assert_eq!(of(&h, third), [8.0; 4], "linked again for this selection");
     }
 
     const CYAN: &str = "C=100 M=0 Y=0 K=0";

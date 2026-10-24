@@ -868,6 +868,9 @@ fn custom_wrap_path_follows_resize_and_yields_to_offsets() {
     s.execute("transform.resize", &json!({"from": [b.x0, b.y0, b.x1, b.y1], "to": to})).unwrap();
     let w = wrap_path(&s).unwrap().bounds().unwrap();
     assert!((w.width() - 80.0).abs() < 1e-6 && (w.height() - 100.0).abs() < 1e-6, "{w:?}");
+    // Offsets that are all null change nothing, so the boundary stays.
+    s.execute("object.textWrap", &json!({"mode": null, "offset": [null, null, null, null]})).unwrap();
+    assert!(wrap_path(&s).is_some(), "an all-null offset keeps the custom boundary");
     // An offset rebuilds the wrap from the frame.
     s.execute("object.textWrap", &json!({"offset": 6})).unwrap();
     assert_eq!(wrap_path(&s), None);
