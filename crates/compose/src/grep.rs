@@ -378,6 +378,16 @@ impl Grep {
         self.re.find_iter(text).take(limit).map(|m| m.map(|m| m.range()).map_err(run_err)).collect()
     }
 
+    /// The first match starting at or after byte `start`, with its replacement: `template`
+    /// expanded as [`Self::replacements`] does.
+    pub fn replacement_at(&self, text: &str, start: usize, template: &str) -> Result<Option<(Range<usize>, String)>, GrepError> {
+        if start > text.len() || !text.is_char_boundary(start) {
+            return Ok(None);
+        }
+        let Some(caps) = self.re.captures_from_pos(text, start).map_err(run_err)? else { return Ok(None) };
+        Ok(caps.get(0).map(|m| (m.range(), fancy_regex::Expander::default().expansion(template, &caps))))
+    }
+
     /// Matches in `text` and their replacements, `template` expanded per match (`$1`…; see
     /// [`translate_replacement`]). Stops after the first match when `first_only`.
     pub fn replacements(&self, text: &str, template: &str, first_only: bool) -> Result<Vec<(Range<usize>, String)>, GrepError> {

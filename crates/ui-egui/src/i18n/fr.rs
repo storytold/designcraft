@@ -324,7 +324,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Select Sentence", "Sélectionner la phrase"),
     ("Select Story", "Sélectionner l'article"),
     ("Select Text Unit", "Sélectionner une unité de texte"),
-    ("Selection", "Sélection"),
     ("Selection Tool", "Outil Sélection"),
     ("Sent {count} page(s) to {printer}", "{count} page(s) envoyée(s) à {printer}"),
     ("Sentence case", "Majuscule en début de phrase"),

@@ -1,12 +1,12 @@
 //! Edit → Find/Change: plain text and GREP (regular expressions) with InDesign's metacharacters,
-//! optional formatting in the change, scoped to the document, a story or the selection.
+//! a Find Format and a Change Format, scoped to the document, a story or the selection.
 
 use std::ops::Range;
 use std::sync::{Arc, Weak};
 
 use designcraft_compose::grep::{Grep, GrepOptions, translate_replacement};
 use designcraft_doc::story::floor_char_boundary;
-use designcraft_doc::{CellAddr, Document, Selection, StoryId, TextSel};
+use designcraft_doc::{CellAddr, Document, Selection, Story, StoryId, Styles, TextSel};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, bool_or, cmd, has_doc, str_param};
@@ -61,18 +61,18 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(query "find.find", "Find", ["Edit", "Find/Change"], None,
-            "{find, grep?: bool, caseSensitive?: bool, wholeWord?: bool, scope?: document|story|selection, story?, change?|first?|attrs?: ignored (find.change takes them; one request serves all three Find/Change commands)} → matches [{story, start, end, text, cell?: {table, row, col}}] (document scope also searches table cells; start/end then index the cell's text)",
+            "{find, grep?: bool, caseSensitive?: bool, wholeWord?: bool, scope?: document|story|selection, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), change?|first?|found?|attrs?|charStyle?|paraStyle?: ignored (find.change takes them; one request serves all three Find/Change commands)} → matches [{story, start, end, text, cell?: {table, row, col}}] (document scope also searches table cells; start/end then index the cell's text)",
             has_doc, find),
         cmd!(
             "find.change",
             "Change All",
             ["Edit", "Find/Change"],
             None,
-            "{find, change, grep?, caseSensitive?, wholeWord?, scope?, story?, first?: bool (change only the first match), attrs?: {character attributes applied to changed text}} → {count}",
+            "{find, change, grep?, caseSensitive?, wholeWord?, scope?, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), first?: bool (change only the first match), found?: bool (Change: only the text Find Next found, while it is selected and still a match; it stays selected, and Find Next goes on after it in the same domain), attrs?: {character attributes applied to changed text}, charStyle?: a character style applied to it, paraStyle?: a paragraph style applied to its paragraphs} → {count} — attrs, charStyle and paraStyle are the Change Format: with one and an empty change, the found text stays and is only formatted; with no find, change is literal text",
             has_doc,
             change
         ),
-        cmd!(noundo "find.next", "Find Next", ["Edit"], Some("Cmd+Alt+F"), "{find, grep?, caseSensitive?, wholeWord?, scope?: document|story|selection, story?, change?|first?|attrs?: ignored (find.change takes them; one request serves all three Find/Change commands)} — Selection starts at its original beginning; later calls advance within the scope", has_doc, find_next),
+        cmd!(noundo "find.next", "Find Next", ["Edit"], Some("Cmd+Alt+F"), "{find, grep?, caseSensitive?, wholeWord?, scope?: document|story|selection, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), change?|first?|found?|attrs?|charStyle?|paraStyle?: ignored (find.change takes them; one request serves all three Find/Change commands)} — Selection starts at its original beginning; later calls advance within the scope", has_doc, find_next),
     ]
 }
 
@@ -108,6 +108,227 @@ fn build(p: &Value) -> Result<Grep> {
     re.map_err(|e| bad("find", e))
 }
 
+/// Find/Change's Find Format: the text a search finds must have it all through.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FindFormat {
+    char_style: Option<String>,
+    para_style: Option<String>,
+    /// Resolved character attributes, as `type.selectionAttrs` reports them.
+    chars: serde_json::Map<String, Value>,
+}
+
+impl FindFormat {
+    fn from_params(p: &Value) -> Result<Option<Self>> {
+        let Some(f) = p.get("findFormat").filter(|f| !f.is_null()) else { return Ok(None) };
+        let o = f.as_object().ok_or_else(|| bad("find", "`findFormat` is an object"))?;
+        // A style is named; a null asks for none. Any other value is refused rather than
+        // searched without.
+        let name = |k: &str| match o.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(n)) => Ok(Some(n.clone())),
+            Some(v) => Err(bad("find", format!("findFormat: `{k}` is a style name, not {v}"))),
+        };
+        let chars = match o.get("chars") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(m)) => Some(m),
+            Some(v) => return Err(bad("find", format!("findFormat: `chars` is an object of character attributes, not {v}"))),
+        };
+        // Only attributes text has, kept as the document writes them: `font_style` and
+        // `fontStyle`, or 12 and 12.0, then find the same text. A null asks for nothing.
+        let mut known = designcraft_doc::CharAttrs::default();
+        for (k, v) in chars.into_iter().flatten() {
+            known.set_json(k, v).map_err(|e| bad("find", format!("findFormat: {e}")))?;
+        }
+        let chars = match serde_json::to_value(&known) {
+            Ok(Value::Object(m)) => m,
+            _ => serde_json::Map::new(),
+        };
+        let f = Self { char_style: name("charStyle")?, para_style: name("paraStyle")?, chars };
+        Ok((f != Self::default()).then_some(f))
+    }
+
+    /// Styles the document doesn't have are refused, as `find.change` refuses them.
+    fn check(&self, styles: &Styles) -> Result<()> {
+        if let Some(n) = self.char_style.as_ref().filter(|n| styles.char_style(n).is_none()) {
+            return Err(bad("find", format!("no character style `{n}`")));
+        }
+        if let Some(n) = self.para_style.as_ref().filter(|n| styles.para(n).is_none()) {
+            return Err(bad("find", format!("no paragraph style `{n}`")));
+        }
+        Ok(())
+    }
+
+    /// The text in `r` of `story` that has the format, relative to `r.start`: the longest
+    /// stretches, each paragraph's apart (a paragraph's `\n` isn't in one).
+    fn spans(&self, styles: &Styles, story: &Story, r: &Range<usize>) -> Vec<Range<usize>> {
+        let mut out: Vec<Range<usize>> = Vec::new();
+        // Paragraphs and runs both go in text order: the runs before a paragraph are passed once.
+        let runs: Vec<_> = story.runs().collect();
+        let mut first = 0;
+        for (pi, pr) in story.para_ranges().into_iter().enumerate() {
+            let (a, b) = (pr.start.max(r.start), pr.end.min(r.end));
+            let Some(pf) = story.paras.get(pi) else { continue };
+            if a >= b || self.para_style.as_ref().is_some_and(|n| *n != pf.style) {
+                continue;
+            }
+            while runs.get(first).is_some_and(|(run, _)| run.end <= a) {
+                first += 1;
+            }
+            let base = (!self.chars.is_empty()).then(|| styles.resolve_para(pf).1);
+            for (run, cf) in runs[first..].iter().take_while(|(run, _)| run.start < b) {
+                let (x, y) = (run.start.max(a), run.end.min(b));
+                if x >= y || self.char_style.as_ref().is_some_and(|n| *n != cf.style) {
+                    continue;
+                }
+                if let Some(base) = &base {
+                    let cp = serde_json::to_value(styles.resolve_char(base, cf)).unwrap_or_default();
+                    if !self.chars.iter().all(|(k, v)| cp.get(k).is_some_and(|c| same_value(c, v))) {
+                        continue;
+                    }
+                }
+                match out.last_mut() {
+                    Some(last) if last.end == x - r.start => last.end = y - r.start,
+                    _ => out.push(x - r.start..y - r.start),
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Attribute values alike: numbers to within rounding (inside objects and lists too), the rest
+/// exactly.
+fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(_), Value::Number(_)) => match (a.as_f64(), b.as_f64()) {
+            (Some(x), Some(y)) => (x - y).abs() < 1e-6,
+            _ => a == b,
+        },
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(a, b)| same_value(a, b)),
+        (Value::Object(x), Value::Object(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same_value(v, w))),
+        _ => a == b,
+    }
+}
+
+/// Whether match `m` lies in one of `spans`.
+fn within(spans: &[Range<usize>], m: &Range<usize>) -> bool {
+    spans.iter().any(|s| s.start <= m.start && m.end <= s.end)
+}
+
+/// What a search finds: the pattern's matches (with a Find Format, those whose text has it all
+/// through), or, with no pattern, the stretches of text with the Find Format.
+struct Search {
+    re: Option<Grep>,
+    format: Option<FindFormat>,
+}
+
+/// The search of a Find/Change request: an empty `find` needs a Find Format.
+fn search(p: &Value) -> Result<Search> {
+    let format = FindFormat::from_params(p)?;
+    if format.is_some() && str_param(p, "find") == Some("") {
+        return Ok(Search { re: None, format });
+    }
+    Ok(Search { re: Some(build(p)?), format })
+}
+
+impl Search {
+    fn check(&self, styles: &Styles) -> Result<()> {
+        self.format.as_ref().map_or(Ok(()), |f| f.check(styles))
+    }
+
+    /// Where the Find Format holds in target `r` of story `sid` (of its table cell `cell`, if any;
+    /// `None`: no Find Format).
+    fn spans(&self, d: &Document, sid: StoryId, cell: Option<CellAddr>, r: &Range<usize>) -> Option<Vec<Range<usize>>> {
+        let f = self.format.as_ref()?;
+        Some(d.text_story(sid, cell).map(|story| f.spans(&d.styles, story, r)).unwrap_or_default())
+    }
+
+    /// Up to `limit` matches in `text`, target `r` of story `sid` (offsets in `text`).
+    fn find_all(&self, d: &Document, sid: StoryId, cell: Option<CellAddr>, r: &Range<usize>, text: &str, limit: usize) -> Result<Vec<Range<usize>>> {
+        let spans = self.spans(d, sid, cell, r);
+        let Some(re) = &self.re else { return Ok(spans.unwrap_or_default().into_iter().take(limit).collect()) };
+        let Some(spans) = spans else { return re.find_all(text, limit).map_err(|e| bad("find", e)) };
+        Ok(re.find_all(text, usize::MAX).map_err(|e| bad("find", e))?.into_iter().filter(|m| within(&spans, m)).take(limit).collect())
+    }
+
+    /// The first match in `text` (target `r` of story `sid`) at or after byte `from`.
+    fn find_at(&self, d: &Document, sid: StoryId, cell: Option<CellAddr>, r: &Range<usize>, text: &str, from: usize) -> Result<Option<Range<usize>>> {
+        let spans = self.spans(d, sid, cell, r);
+        let Some(re) = &self.re else {
+            // From inside a stretch, the rest of it.
+            return Ok(spans.unwrap_or_default().into_iter().find(|s| s.end > from).map(|s| s.start.max(from)..s.end));
+        };
+        let mut at = from;
+        loop {
+            let Some(m) = re.find_at(text, at).map_err(|e| bad("find.next", e))? else { return Ok(None) };
+            if spans.as_ref().is_none_or(|s| within(s, &m)) {
+                return Ok(Some(m));
+            }
+            // On past it: its end, or a character on from an empty match.
+            at = if m.is_empty() { text.get(m.end..).and_then(|t| t.chars().next()).map_or(text.len() + 1, |c| m.end + c.len_utf8()) } else { m.end };
+            if at > text.len() {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// The edit Change makes when the selection `range` (offsets in `text`, target `r` of story
+    /// `sid`) is what Find Next found there, so the two commands agree on what a match is. With
+    /// no pattern: a selection inside one stretch with the Find Format (Find Next selects the rest
+    /// of a stretch from inside it). With a pattern: the match it makes from the selection's start
+    /// must be the selection, overlapping matches Find Next can select included.
+    #[allow(clippy::too_many_arguments)]
+    fn found_edit(
+        &self,
+        d: &Document,
+        sid: StoryId,
+        cell: Option<CellAddr>,
+        r: &Range<usize>,
+        text: &str,
+        range: &Range<usize>,
+        rep: &str,
+        grep: bool,
+    ) -> Result<Option<(Range<usize>, String)>> {
+        let spans = self.spans(d, sid, cell, r);
+        let Some(re) = &self.re else {
+            let inside = !range.is_empty() && spans.unwrap_or_default().iter().any(|s| s.start <= range.start && range.end <= s.end);
+            return Ok(inside.then(|| (range.clone(), rep.to_string())));
+        };
+        let found =
+            if grep { re.replacement_at(text, range.start, rep) } else { re.find_at(text, range.start).map(|m| m.map(|m| (m, rep.to_string()))) };
+        let found = found.map_err(|e| bad("find.change", e))?;
+        Ok(found.filter(|(m, _)| m == range && spans.as_ref().is_none_or(|s| within(s, m))))
+    }
+
+    /// The edits Change All makes in `text` (target `r` of story `sid`): `rep` expanded for each
+    /// GREP match, else `rep` itself.
+    #[allow(clippy::too_many_arguments)]
+    fn replacements(
+        &self,
+        d: &Document,
+        sid: StoryId,
+        cell: Option<CellAddr>,
+        r: &Range<usize>,
+        text: &str,
+        rep: &str,
+        grep: bool,
+        first_only: bool,
+    ) -> Result<Vec<(Range<usize>, String)>> {
+        let limit = if first_only { 1 } else { usize::MAX };
+        match (&self.re, self.spans(d, sid, cell, r)) {
+            (Some(re), None) if grep => re.replacements(text, rep, first_only).map_err(|e| bad("find.change", e)),
+            (Some(re), Some(spans)) if grep => Ok(re
+                .replacements(text, rep, false)
+                .map_err(|e| bad("find.change", e))?
+                .into_iter()
+                .filter(|(m, _)| within(&spans, m))
+                .take(limit)
+                .collect()),
+            _ => Ok(self.find_all(d, sid, cell, r, text, limit)?.into_iter().map(|m| (m, rep.to_string())).collect()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Domain {
     Document,
@@ -140,6 +361,7 @@ struct Matcher {
     grep: bool,
     case_sensitive: bool,
     whole_word: bool,
+    format: Option<FindFormat>,
 }
 
 impl Matcher {
@@ -149,6 +371,7 @@ impl Matcher {
             grep: bool_or(p, "grep", false),
             case_sensitive: bool_or(p, "caseSensitive", false),
             whole_word: bool_or(p, "wholeWord", false),
+            format: FindFormat::from_params(p).ok().flatten(),
         }
     }
 }
@@ -181,6 +404,29 @@ impl FindContext {
     fn acknowledge(&mut self, st: &DocState) {
         self.revision = st.revision;
         self.selection = st.selection.clone();
+    }
+
+    /// After Change put `new_len` bytes in place of `old` in story `sid`: the domain keeps the
+    /// changed text and the search goes on after it.
+    fn after_change(&mut self, st: &DocState, sid: StoryId, cell: Option<CellAddr>, old: &Range<usize>, new_len: usize) {
+        let moved = |x: usize| if x >= old.end { x - old.len() + new_len } else { x };
+        for (tid, tcell, r) in &mut self.targets {
+            if *tid == sid && *tcell == cell {
+                *r = moved(r.start)..moved(r.end);
+            }
+        }
+        self.offset = old.start + new_len;
+        self.last_match_end = Some(self.offset);
+        let at = self.offset;
+        if let Some(i) = self
+            .order
+            .iter()
+            .position(|i| self.targets.get(*i).is_some_and(|(tid, tcell, r)| *tid == sid && *tcell == cell && r.start <= at && at <= r.end))
+        {
+            self.target = i;
+        }
+        self.document = Arc::downgrade(&st.doc);
+        self.acknowledge(st);
     }
 
     fn restart(&mut self, st: &DocState) -> Result<()> {
@@ -299,13 +545,14 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
 const MAX_MATCHES: usize = 10_000;
 
 fn find(s: &mut Session, p: &Value) -> Result<Value> {
-    let re = build(p)?;
+    let re = search(p)?;
+    re.check(&s.doc()?.doc.styles)?;
     let context = scope(s, p)?;
     let st = s.doc()?;
     let mut out = Vec::new();
     for (sid, cell, r) in &context.targets {
         let text = target_text(&st.doc, *sid, *cell, r)?;
-        for m in re.find_all(text, MAX_MATCHES.saturating_sub(out.len())).map_err(|e| bad("find", e))? {
+        for m in re.find_all(&st.doc, *sid, *cell, r, text, MAX_MATCHES.saturating_sub(out.len()))? {
             let mut hit = json!({"story": sid.0, "start": r.start + m.start, "end": r.start + m.end, "text": text.get(m)});
             if let Some(c) = cell {
                 hit["cell"] = json!({"table": c.table, "row": c.row, "col": c.col});
@@ -324,9 +571,11 @@ fn replacement(p: &Value) -> String {
 }
 
 fn change(s: &mut Session, p: &Value) -> Result<Value> {
-    let re = build(p)?;
-    let grep = bool_or(p, "grep", false);
-    let rep = replacement(p);
+    let re = search(p)?;
+    re.check(&s.doc()?.doc.styles)?;
+    // With no pattern (a Find Format alone), the change is literal text.
+    let grep = bool_or(p, "grep", false) && re.re.is_some();
+    let rep = if re.re.is_some() { replacement(p) } else { metachars(str_param(p, "change").unwrap_or("")) };
     let first_only = bool_or(p, "first", false);
     let attrs = p.get("attrs").cloned();
     let mut over = designcraft_doc::CharAttrs::default();
@@ -336,27 +585,86 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     super::text::validate_char_fill(&s.doc()?.doc, &over, "find.change")?;
-    let targets = scope(s, p)?.targets;
-    s.edit(|d, sel| {
+    let char_style = str_param(p, "charStyle").map(str::to_string);
+    let para_style = str_param(p, "paraStyle").map(str::to_string);
+    let styles = &s.doc()?.doc.styles;
+    if let Some(n) = char_style.as_ref().filter(|n| styles.char_style(n).is_none()) {
+        return Err(bad("find.change", format!("no character style `{n}`")));
+    }
+    if let Some(n) = para_style.as_ref().filter(|n| styles.para(n).is_none()) {
+        return Err(bad("find.change", format!("no paragraph style `{n}`")));
+    }
+    // InDesign: with a Change Format and nothing in Change to, the found text is only formatted.
+    let format_only = str_param(p, "change").unwrap_or("").is_empty() && (char_style.is_some() || para_style.is_some() || !over.is_empty());
+    let context = scope(s, p)?;
+    let targets = context.targets.clone();
+    // Change: only the text Find Next found, the selection, while it is still a match (as Find
+    // Next defines one), with its replacement.
+    let (found, found_out) = if bool_or(p, "found", false) {
+        let st = s.doc()?;
+        let selected = st.selection.text.filter(|t| st.selection.cells.is_none() && !t.is_caret()).map(|t| (t.story, t.cell, t.range()));
+        let hit = selected.and_then(|(sid, cell, range)| {
+            targets.iter().find_map(|(tid, tcell, r)| {
+                if *tid != sid || *tcell != cell || range.start < r.start || r.end < range.end {
+                    return None;
+                }
+                let text = target_text(&st.doc, *tid, cell, r).ok()?;
+                let local = range.start - r.start..range.end - r.start;
+                let (m, out) = re.found_edit(&st.doc, *tid, cell, r, text, &local, &rep, grep).ok()??;
+                Some(((sid, cell, r.start + m.start..r.start + m.end), out))
+            })
+        });
+        match hit {
+            Some((hit, out)) => (Some(hit), Some(out)),
+            None => return Ok(json!({"count": 0})),
+        }
+    } else {
+        (None, None)
+    };
+    let (count, changed) = s.edit(|d, sel| {
+        let styles = d.styles.clone();
         let mut count = 0usize;
+        let mut changed = None;
         for (sid, cell, r) in targets {
+            if found.as_ref().is_some_and(|(at, in_cell, _)| *at != sid || *in_cell != cell) {
+                continue;
+            }
             let Some(story) = d.text_story(sid, cell) else { continue };
             // Collect matches first (positions refer to the original text), apply back to front.
             let text = story.text.get(r.clone()).ok_or_else(|| bad("find", "invalid selection bounds or UTF-8 boundary"))?;
-            let edits: Vec<(std::ops::Range<usize>, String)> = if grep {
-                re.replacements(text, &rep, first_only)
-            } else {
-                re.find_all(text, if first_only { 1 } else { usize::MAX }).map(|ms| ms.into_iter().map(|m| (m, rep.clone())).collect())
-            }
-            .map_err(|e| bad("find.change", e))?
-            .into_iter()
-            .map(|(m, out)| (r.start + m.start..r.start + m.end, out))
-            .collect();
+            let edits: Vec<(std::ops::Range<usize>, String)> = match (&found, &found_out) {
+                // Change: the found text alone, in the target it lies in.
+                (Some((_, _, range)), Some(out)) => {
+                    if r.start <= range.start && range.end <= r.end {
+                        vec![(range.clone(), out.clone())]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                _ => re
+                    .replacements(d, sid, cell, &r, text, &rep, grep, first_only)?
+                    .into_iter()
+                    .map(|(m, out)| (r.start + m.start..r.start + m.end, out))
+                    .collect(),
+            };
             let Some(st) = d.text_story_mut(sid, cell) else { continue };
             for (range, new) in edits.iter().rev() {
-                st.replace(range.clone(), new);
-                if !over.is_empty() && !new.is_empty() {
-                    st.format_chars(range.start..range.start + new.len(), |f| f.over.merge(&over));
+                let changed = if format_only {
+                    range.clone()
+                } else {
+                    st.replace(range.clone(), new);
+                    range.start..range.start + new.len()
+                };
+                if !changed.is_empty() {
+                    if let Some(n) = &para_style {
+                        super::style::apply_para_style(st, &styles, n, &changed, false);
+                    }
+                    if let Some(n) = &char_style {
+                        super::style::apply_char_style(st, &styles, n, &changed);
+                    }
+                    if !over.is_empty() {
+                        st.format_chars(changed, |f| f.over.merge(&over));
+                    }
                 }
                 count += 1;
             }
@@ -373,17 +681,34 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 (t.anchor, t.focus) = if t.anchor <= t.focus { (start, end) } else { (end, start) };
             }
+            // Change leaves the changed text selected.
+            if let Some((_, _, range)) = &found
+                && let Some((_, new)) = edits.first()
+                && let Some(t) = sel.text.as_mut()
+            {
+                let len = if format_only { range.len() } else { new.len() };
+                (t.anchor, t.focus) = (range.start, range.start + len);
+                changed = Some(len);
+            }
             // `first` is the first match of the whole search, not of each story.
             if first_only && count > 0 {
                 break;
             }
         }
-        Ok(json!({"count": count}))
-    })
+        Ok((count, changed))
+    })?;
+    // Change: Find Next goes on after the changed text, in the search's domain.
+    if let (Some((sid, cell, old)), Some(len)) = (&found, changed) {
+        let mut context = context;
+        context.after_change(s.doc()?, *sid, *cell, old, len);
+        s.find_context = Some(context);
+    }
+    Ok(json!({"count": count}))
 }
 
 fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
-    let re = build(p)?;
+    let re = search(p)?;
+    re.check(&s.doc()?.doc.styles)?;
     let mut context = scope(s, p)?;
     let st = s.doc()?;
     let mut hit = None;
@@ -393,7 +718,7 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
         if text.get(from..).is_none() {
             return Err(bad("find", "invalid UTF-8 search cursor"));
         }
-        if let Some(m) = re.find_at(text, from).map_err(|e| bad("find.next", e))? {
+        if let Some(m) = re.find_at(&st.doc, sid, cell, &r, text, from)? {
             let (a, b) = (r.start + m.start, r.start + m.end);
             // Match find_iter/captures_iter: suppress an empty match adjacent to the
             // previous match's end, but keep adjacent nonempty matches.
@@ -458,6 +783,192 @@ mod tests {
         assert_eq!(s.execute("find.find", &json!({"find": ".^pc"})).unwrap().as_array().unwrap().len(), 1);
         s.execute("find.next", &json!({"find": "or"})).unwrap();
         assert!(s.doc().unwrap().selection.text.is_some());
+    }
+
+    #[test]
+    fn change_format_styles_the_found_text_and_keeps_it() {
+        // The course's chapter 22: every lowercase "eggs" gets the character style "eggs", with
+        // Change to empty, so the words stay.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = "Poached Eggs\nBreak eggs; cook until eggs are set.";
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": text})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("style.character.create", &json!({"name": "eggs", "chars": {"fontStyle": "Bold", "fill": "C=15 M=100 Y=100 K=0"}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Method"})).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s.execute("find.change", &json!({"find": "eggs", "change": "", "caseSensitive": true, "charStyle": "eggs"})).unwrap();
+        assert_eq!(r["count"], 2);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1, "one undo step");
+        let style_at = |s: &Session, at: usize| s.doc().unwrap().doc.story(sid).unwrap().format_after(at).style.clone();
+        let story = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(story.text, text, "the words stay");
+        for at in [19, 36] {
+            assert_eq!(&story.text[at..at + 4], "eggs");
+            assert_eq!(style_at(&s, at), "eggs");
+        }
+        assert_eq!(style_at(&s, 8), designcraft_doc::NO_CHAR_STYLE, "case sensitive: not \"Eggs\"");
+        assert_eq!(style_at(&s, 25), designcraft_doc::NO_CHAR_STYLE, "only the found text");
+        // A paragraph style goes to the found text's paragraphs, with attributes over the text.
+        s.execute("find.change", &json!({"find": "cook", "change": "", "paraStyle": "Method", "attrs": {"underline": true}})).unwrap();
+        let story = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!((story.paras[0].style.as_str(), story.paras[1].style.as_str()), (designcraft_doc::BASIC_PARAGRAPH, "Method"));
+        assert_eq!(story.format_after(25).over.underline, Some(true));
+        assert_eq!(story.format_after(19).style, "eggs", "the other text keeps its character style");
+        // Change to and a Change Format: the new text is formatted.
+        s.execute("find.change", &json!({"find": "set", "change": "firm", "charStyle": "eggs"})).unwrap();
+        assert_eq!(style_at(&s, s.doc().unwrap().doc.story(sid).unwrap().text.find("firm").unwrap()), "eggs");
+        // No such style: refused, nothing changed.
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("find.change", &json!({"find": "eggs", "change": "", "charStyle": "Nope"})).is_err());
+        assert!(s.execute("find.change", &json!({"find": "eggs", "change": "", "paraStyle": "Nope"})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before);
+        // With no Change Format, an empty Change to still deletes the found text.
+        s.execute("find.change", &json!({"find": "Break ", "change": ""})).unwrap();
+        assert!(!s.doc().unwrap().doc.story(sid).unwrap().text.contains("Break"));
+    }
+
+    #[test]
+    fn a_find_format_finds_only_text_with_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s
+            .execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Break eggs; cook eggs.\nEggs and eggs"}))
+            .unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("style.character.create", &json!({"name": "eggs", "chars": {"fontStyle": "Bold"}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Method"})).unwrap();
+        for (a, b) in [(6, 10), (12, 16)] {
+            s.execute("text.select", &json!({"story": sid, "anchor": a, "focus": b})).unwrap();
+            s.execute("style.character.apply", &json!({"name": "eggs"})).unwrap();
+        }
+        s.execute("text.select", &json!({"story": sid, "anchor": 25, "focus": 25})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Method"})).unwrap();
+        let found = |s: &mut Session, p: serde_json::Value| -> Vec<(u64, u64)> {
+            let m = s.execute("find.find", &p).unwrap();
+            m.as_array().unwrap().iter().map(|m| (m["start"].as_u64().unwrap(), m["end"].as_u64().unwrap())).collect()
+        };
+        // "eggs" where it has the character style: the first only.
+        assert_eq!(found(&mut s, json!({"find": "eggs", "findFormat": {"charStyle": "eggs"}})), [(6, 10)]);
+        // Nothing in Find what: each stretch of text in the style.
+        assert_eq!(found(&mut s, json!({"find": "", "findFormat": {"charStyle": "eggs"}})), [(6, 10), (12, 16)]);
+        // A paragraph style, and resolved attributes.
+        assert_eq!(found(&mut s, json!({"find": "eggs", "findFormat": {"paraStyle": "Method"}})), [(23, 27), (32, 36)]);
+        assert_eq!(found(&mut s, json!({"find": "", "findFormat": {"chars": {"fontStyle": "Bold"}}})), [(6, 10), (12, 16)]);
+        assert_eq!(found(&mut s, json!({"find": "", "findFormat": {"chars": {"size": 12}}})), [(0, 22), (23, 36)], "each paragraph apart");
+        // Find Next walks the stretches.
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        let next = json!({"find": "", "findFormat": {"charStyle": "eggs"}});
+        assert_eq!(s.execute("find.next", &next).unwrap()["start"], 6);
+        assert_eq!(s.execute("find.next", &next).unwrap()["start"], 12);
+        // Equivalent spellings the attributes accept find the same text: a snake_case key, and a
+        // nested number written as an integer (14 pt leading on the second paragraph).
+        s.execute("text.select", &json!({"story": sid, "anchor": 23, "focus": 36})).unwrap();
+        s.execute("type.char", &json!({"leading": {"kind": "points", "value": 14.0}})).unwrap();
+        for (a, b) in [
+            (json!({"fontStyle": "Bold"}), json!({"font_style": "Bold"})),
+            (json!({"leading": {"kind": "points", "value": 14.0}}), json!({"leading": {"kind": "points", "value": 14}})),
+        ] {
+            let (a, b) = (json!({"find": "", "findFormat": {"chars": a}}), json!({"find": "", "findFormat": {"chars": b}}));
+            let all = found(&mut s, a.clone());
+            assert!(!all.is_empty(), "{a}");
+            assert_eq!(found(&mut s, b.clone()), all, "{b}");
+            for p in [&a, &b] {
+                s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+                assert_eq!(s.execute("find.next", p).unwrap()["start"].as_u64(), Some(all[0].0), "{p}");
+            }
+        }
+        // A null attribute asks for nothing.
+        assert_eq!(found(&mut s, json!({"find": "eggs", "findFormat": {"charStyle": "eggs", "chars": {"size": null}}})), [(6, 10)]);
+        // With a Change Format: the text in the style goes back to [None], underlined.
+        let r = s
+            .execute(
+                "find.change",
+                &json!({"find": "", "change": "", "findFormat": {"charStyle": "eggs", "chars": {"font_style": "Bold"}}, "charStyle": "[None]", "attrs": {"underline": true}}),
+            )
+            .unwrap();
+        assert_eq!(r["count"], 2, "a snake_case attribute changes the same text");
+        assert!(found(&mut s, json!({"find": "", "findFormat": {"charStyle": "eggs"}})).is_empty());
+        assert_eq!(found(&mut s, json!({"find": "", "findFormat": {"chars": {"underline": true}}})), [(6, 10), (12, 16)]);
+        // Unknown styles and attributes are refused; an empty search needs a Find Format.
+        assert!(s.execute("find.find", &json!({"find": "", "findFormat": {"charStyle": "Nope"}})).is_err());
+        assert!(s.execute("find.next", &json!({"find": "eggs", "findFormat": {"paraStyle": "Nope"}})).is_err());
+        assert!(s.execute("find.find", &json!({"find": "eggs", "findFormat": {"chars": {"bogus": 1}}})).is_err());
+        // Malformed fields are refused, not searched without.
+        for f in [json!({"chars": [1]}), json!({"chars": 12}), json!({"charStyle": 3}), json!({"paraStyle": ["Body"]})] {
+            assert!(s.execute("find.find", &json!({"find": "eggs", "findFormat": f})).is_err(), "{f}");
+        }
+        assert!(s.execute("find.find", &json!({"find": ""})).is_err());
+    }
+
+    /// Change and Change/Find: only the text Find Next found changes; it stays selected and the
+    /// search goes on after it in its domain (here the original selection). A selection that
+    /// isn't a match changes nothing and makes no undo step.
+    #[test]
+    fn change_changes_the_found_text_and_the_search_goes_on() {
+        let (mut s, sid) = scope_session("red red | red");
+        scope_select(&mut s, sid, 0, 7);
+        let p = json!({"find": "red", "change": "blue", "scope": "selection"});
+        let mut change = p.clone();
+        change["found"] = json!(true);
+        scope_hit(&mut s, &p, sid, 0, 3);
+        assert_eq!(s.execute("find.change", &change).unwrap()["count"], 1);
+        let text = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().text.clone();
+        assert_eq!(text(&s), "blue red | red");
+        assert_eq!(s.doc().unwrap().selection.text.unwrap().range(), 0..4, "the changed text stays selected");
+        scope_hit(&mut s, &p, sid, 5, 8);
+        s.execute("find.change", &change).unwrap();
+        assert_eq!(text(&s), "blue blue | red");
+        assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null, "the last red is outside the selection searched");
+        // Not a match: nothing changes, no undo step.
+        scope_select(&mut s, sid, 0, 4);
+        let history = s.doc().unwrap().history.undo.len();
+        assert_eq!(s.execute("find.change", &json!({"find": "red", "change": "blue", "found": true})).unwrap()["count"], 0);
+        assert_eq!(s.doc().unwrap().history.undo.len(), history);
+        // A Change Format with nothing in Change to formats the found text only.
+        scope_select(&mut s, sid, 0, 0);
+        let fmt = json!({"find": "red", "change": "", "attrs": {"underline": true}});
+        let hit = s.execute("find.next", &fmt).unwrap();
+        assert_eq!(hit["start"], 12);
+        let mut found = fmt.clone();
+        found["found"] = json!(true);
+        s.execute("find.change", &found).unwrap();
+        assert_eq!(text(&s), "blue blue | red");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().format_after(12).over.underline, Some(true));
+        assert_eq!(s.doc().unwrap().selection.text.unwrap().range(), 12..15);
+    }
+
+    /// Change accepts what Find Next selected even when Change All wouldn't match there: the
+    /// rest of a Find Format stretch from a caret inside it, and an overlapping match.
+    #[test]
+    fn change_takes_any_selection_find_next_made() {
+        // A caret inside a bold stretch: Find Next with only a Find Format selects the rest of it.
+        let (mut s, sid) = scope_session("plain bold text");
+        s.execute("style.character.create", &json!({"name": "Strong", "chars": {"fontStyle": "Bold"}})).unwrap();
+        scope_select(&mut s, sid, 6, 10);
+        s.execute("style.character.apply", &json!({"name": "Strong"})).unwrap();
+        scope_select(&mut s, sid, 8, 8);
+        let p = json!({"find": "", "change": "", "findFormat": {"charStyle": "Strong"}, "attrs": {"underline": true}, "scope": "story"});
+        let hit = s.execute("find.next", &p).unwrap();
+        assert_eq!((hit["start"].as_u64(), hit["end"].as_u64()), (Some(8), Some(10)));
+        let mut change = p.clone();
+        change["found"] = json!(true);
+        assert_eq!(s.execute("find.change", &change).unwrap()["count"], 1);
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!((st.format_after(7).over.underline, st.format_after(8).over.underline), (None, Some(true)), "only the selected rest");
+        // "aa" in "aaa" from the second a: Find Next selects 1..3, which Change All never finds.
+        for grep in [false, true] {
+            let (mut s, sid) = scope_session("aaa");
+            scope_select(&mut s, sid, 1, 1);
+            let (find, change) = if grep { ("(a)a", "<$1>") } else { ("aa", "b") };
+            let p = json!({"find": find, "change": change, "grep": grep, "scope": "story"});
+            let hit = s.execute("find.next", &p).unwrap();
+            assert_eq!((hit["start"].as_u64(), hit["end"].as_u64()), (Some(1), Some(3)));
+            let mut found = p.clone();
+            found["found"] = json!(true);
+            assert_eq!(s.execute("find.change", &found).unwrap()["count"], 1, "grep: {grep}");
+            assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, if grep { "a<a>" } else { "ab" });
+        }
     }
 
     #[test]
@@ -1057,6 +1568,27 @@ mod tests {
         assert_eq!(n["count"], 2);
         assert!(s.execute("find.find", &json!({"find": "12.15", "scope": "document"})).unwrap().as_array().unwrap().is_empty());
         assert_eq!(s.execute("find.find", &json!({"find": "13.00", "scope": "document"})).unwrap().as_array().unwrap().len(), 2);
+    }
+
+    /// Change (`found`) on text Find Next found in a table cell changes it there, leaves the
+    /// same text in the story alone, and Find Next goes on after it.
+    #[test]
+    fn change_changes_the_text_find_next_found_in_a_cell() {
+        let (mut s, sid) = scope_session("red here");
+        scope_select(&mut s, sid, 0, 0);
+        let table = s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        s.execute("table.setCell", &json!({"row": 0, "col": 1, "text": "red"})).unwrap();
+        let p = json!({"find": "red", "change": "blue", "scope": "document"});
+        let hit = s.execute("find.next", &p).unwrap();
+        assert_eq!(hit["cell"], json!({"table": table, "row": 0, "col": 1}), "{hit}");
+        let mut change = p.clone();
+        change["found"] = json!(true);
+        assert_eq!(s.execute("find.change", &change).unwrap()["count"], 1);
+        let t = s.execute("table.get", &json!({"table": table})).unwrap();
+        assert_eq!(t["cells"][1]["text"], "blue");
+        assert!(s.doc().unwrap().doc.story(sid).unwrap().text.contains("red here"), "the story's red stays");
+        let next = s.execute("find.next", &p).unwrap();
+        assert!(next.get("cell").is_none() && next.get("start").is_some(), "on to the story: {next}");
     }
 
     fn child_scope_session(note: bool, child: &str) -> (Session, designcraft_doc::StoryId, designcraft_doc::TextSel) {
