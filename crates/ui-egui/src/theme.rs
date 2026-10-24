@@ -83,6 +83,9 @@ pub struct Tokens {
     /// Measurement labels on the canvas (smart dimensions, gaps).
     pub measure_bg: Color32,
     pub measure_text: Color32,
+    /// The readout beside the cursor while drawing, moving or measuring ("W: 3.13 cm"): InDesign's
+    /// light grey box with white text, in every brightness but High Contrast.
+    pub readout_bg: Color32,
     /// Live-corner widget and corner diamonds.
     pub live_corner: Color32,
     /// The Windows caption Close button when hovered, and its glyph.
@@ -130,6 +133,7 @@ impl Tokens {
             smart_guide: hex(0x00c853),
             measure_bg: Color32::from_rgba_unmultiplied(70, 70, 70, 230),
             measure_text: Color32::WHITE,
+            readout_bg: hex(0xa8a8a8),
             live_corner: hex(0xffe500),
             caption_close: hex(0xc42b1c),
             caption_close_text: Color32::WHITE,
@@ -255,6 +259,8 @@ impl Tokens {
                 ruler_text: hex(0xffffff),
                 section_divider: hex(0xffffff),
                 tab_strip: hex(0x000000),
+                // White on InDesign's grey is too faint here: black, as the rest of the chrome.
+                readout_bg: hex(0x000000),
                 ..dark
             },
         }
@@ -800,5 +806,23 @@ mod russian_font_tests {
                 assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod readout_tests {
+    use super::{Brightness, Tokens};
+
+    /// The readout beside the cursor ("W: 3.13 cm" while drawing a frame) is InDesign's light
+    /// grey box with white text in every brightness, as measured from the tutorials' frames;
+    /// High Contrast keeps it black.
+    #[test]
+    fn the_cursor_readout_is_indesigns_light_grey() {
+        for b in [Brightness::Dark, Brightness::MediumDark, Brightness::MediumLight, Brightness::Light] {
+            let t = Tokens::for_brightness(b);
+            assert_eq!(t.readout_bg, egui::Color32::from_rgb(0xa8, 0xa8, 0xa8), "{b:?}");
+            assert_eq!(t.measure_text, egui::Color32::WHITE, "{b:?}");
+        }
+        assert_eq!(Tokens::for_brightness(Brightness::HighContrast).readout_bg, egui::Color32::BLACK);
     }
 }
