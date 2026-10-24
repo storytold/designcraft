@@ -31,6 +31,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Vyjmout"),
     ("Copy", "Kopírovat"),
     ("Paste", "Vložit"),
+    ("Maximum:", "Maximum:"),
+    ("Paragraph Spacing Limit:", "Limit mezer mezi odstavci:"),
     ("Restart Numbering", "Začít číslování znovu"),
     ("Continue Numbering", "Pokračovat v číslování"),
     ("Keep Options…", "Volby zachování…"),

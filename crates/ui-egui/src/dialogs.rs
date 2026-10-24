@@ -534,6 +534,7 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         "firstBaseline": kind(serde_json::to_value(o.first_baseline).unwrap_or_default()), "firstBaselineMin": fm(o.first_baseline_min),
         "insetTop": fm(o.inset[0]), "insetLeft": fm(o.inset[1]), "insetBottom": fm(o.inset[2]), "insetRight": fm(o.inset[3]),
         "verticalJustification": serde_json::to_value(o.vertical_justification).unwrap_or(Value::Null),
+        "paragraphSpacingLimit": fm(o.vj_paragraph_spacing_limit),
         "columnRule": o.column_rule, "columnRuleWeight": format_measure(o.column_rule_weight, Unit::Points), "columnRuleColor": o.column_rule_color,
         "columnRuleTint": percent(o.column_rule_tint), "columnRuleTopInset": fm(o.column_rule_top_inset),
         "columnRuleBottomInset": fm(o.column_rule_bottom_inset), "columnRuleOffset": fm(o.column_rule_offset),
@@ -549,6 +550,10 @@ fn seed_text_frame_options(app: &DesignApp, d: &mut Dialog) {
         }
     }
     d.fields.entry("insetLinked".to_string()).or_insert_with(|| json!(o.inset.iter().all(|v| (v - o.inset[0]).abs() < 1e-9)));
+    // The frame's width: Fixed Number shows each column's width from it as the fields change.
+    if let Some(w) = selected_frame_width(app) {
+        d.fields.insert("_frameWidth".into(), json!(w));
+    }
     d.fields.insert("_shown".into(), shown);
 }
 
@@ -574,7 +579,7 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
             ui,
             d,
             false,
-            &[("general", "General"), ("baseline", "Baseline Options"), ("autosize", "Auto-Size"), ("rules", "Column Rules")],
+            &[("general", "General"), ("rules", "Column Rules"), ("baseline", "Baseline Options"), ("autosize", "Auto-Size")],
         );
         ui.separator();
         ui.vertical(|ui| match d.s("section").as_str() {
@@ -599,49 +604,146 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
             _ => general(&lang, ui, d),
         });
     });
+    ui.add_space(6.0);
+    check(ui, d, "preview", tr("Preview"));
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+    }
 }
 
-/// Text Frame Options › General: columns, inset spacing, vertical justification, text wrap.
+/// A measure field of the dialog with InDesign's spinner (stored as text in the document's unit).
+fn spin_measure(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32, enabled: bool) {
+    let id = format!("tfo_{key}");
+    if let Some(v) = crate::widgets::NumField::measure(&id, d.m(key), d.unit).width(w).spinner().range(0.0, 15552.0).enabled(enabled).show(ui) {
+        d.fields.insert(key.into(), json!(format_measure(v, d.unit)));
+    }
+}
+
+/// A titled group in a thin frame, as InDesign's Text Frame Options draws them.
+fn framed(ui: &mut egui::Ui, title: Option<&str>, add: impl FnOnce(&mut egui::Ui)) {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    ui.add_space(4.0);
+    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).inner_margin(egui::Margin::symmetric(10, 8)).corner_radius(2.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if let Some(title) = title {
+            crate::rtl::label(ui, egui::RichText::new(title).font(semibold(12.0)));
+        }
+        add(ui);
+    });
+}
+
+/// A caption right-aligned in `w` (the dialog's fields line up after their captions).
+fn caption_at(ui: &mut egui::Ui, text: &str, w: f32) {
+    ui.allocate_ui_with_layout(egui::vec2(w, crate::widgets::FIELD_H), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.set_min_width(w);
+        ui.add(egui::Label::new(crate::rtl::widget(ui, text)).wrap_mode(egui::TextWrapMode::Extend));
+    });
+}
+
+/// Preview on: the options show on the page (redone when a field changes) without an undo step;
+/// off, the page goes back.
+fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
+    let shown = d.fields.get(PREVIEWED).cloned();
+    if !d.b("preview") {
+        if shown.is_some() {
+            app.session.cancel_interaction();
+            d.fields.remove(PREVIEWED);
+            d.fields.remove("status");
+        }
+        return;
+    }
+    let params = match text_frame_params(app, d) {
+        Ok(p) => Value::Object(p),
+        Err(e) => {
+            // Values OK would refuse don't stay on the page: it goes back to how it was.
+            if shown.is_some() {
+                app.session.cancel_interaction();
+                d.fields.remove(PREVIEWED);
+            }
+            d.fields.insert("status".into(), json!(e));
+            return;
+        }
+    };
+    if shown.as_ref() == Some(&params) {
+        return;
+    }
+    // Nothing edited (yet, or any more): the page as it was.
+    if params.as_object().is_some_and(|m| m.keys().all(|k| k == "ids")) {
+        if shown.is_some() {
+            app.session.cancel_interaction();
+            d.fields.remove(PREVIEWED);
+        }
+        return;
+    }
+    if shown.is_none()
+        && let Err(e) = app.session.begin_interaction("Text Frame Options")
+    {
+        d.fields.insert("status".into(), json!(e.to_string()));
+        return;
+    }
+    match app.session.preview("object.textFrameOptions", params.clone()) {
+        Ok(()) => d.fields.remove("status"),
+        Err(e) => d.fields.insert("status".into(), json!(e.to_string())),
+    };
+    d.fields.insert(PREVIEWED.into(), params);
+}
+
+/// Text Frame Options › General, as InDesign's: Columns (kind, number and width, gutter and
+/// maximum, Balance Columns), Inset Spacing (top and bottom, the link, left and right), Vertical
+/// Justification (align, paragraph spacing limit) and Ignore Text Wrap.
 fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
-    crate::rtl::label(ui, egui::RichText::new(tr("Columns")).font(semibold(12.0)));
-    egui::Grid::new("tfo_cols").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, tr("Columns:"));
-        translated_combo(lang, ui, d, "columnsKind", &[("fixedNumber", "Fixed Number"), ("fixedWidth", "Fixed Width")]);
-        ui.end_row();
-        crate::rtl::label(ui, crate::i18n::tr_context(lang, "Number:", "count"));
-        text_field(ui, d, "columns", 70.0);
-        // Fixed Number: the width follows from the frame; Fixed Width: it's set here.
-        crate::rtl::label(ui, tr("Width:"));
-        ui.add_enabled_ui(d.s("columnsKind") == "fixedWidth", |ui| text_field(ui, d, "columnWidth", 70.0));
-        ui.end_row();
-        crate::rtl::label(ui, tr("Gutter:"));
-        text_field(ui, d, "gutter", 70.0);
-        ui.end_row();
-    });
-    check(ui, d, "balanceColumns", tr("Balance Columns"));
-    ui.add_space(6.0);
-    crate::rtl::label(ui, egui::RichText::new(tr("Inset Spacing")).font(semibold(12.0)));
-    // While linked, a side typed in sets all four ("Make all settings the same").
-    let sides = ["insetTop", "insetLeft", "insetBottom", "insetRight"];
-    let before: Vec<String> = sides.iter().map(|k| d.s(k)).collect();
-    // Two rows, Top | Left and Bottom | Right, the link between the columns (fixed-width
-    // captions; the second column starts where the first row's does).
-    let mut col2_x: Option<f32> = None;
-    for (r, row) in [[("Top:", "insetTop"), ("Left:", "insetLeft")], [("Bottom:", "insetBottom"), ("Right:", "insetRight")]].into_iter().enumerate() {
+    let (cap, field, cap2) = (64.0, 110.0, 70.0);
+    framed(ui, None, |ui| {
         ui.horizontal(|ui| {
-            for (k, (label, key)) in row.into_iter().enumerate() {
-                if k == 1 {
-                    match col2_x {
-                        Some(x) => ui.add_space((x - ui.cursor().min.x).max(0.0)),
-                        None => col2_x = Some(ui.cursor().min.x),
-                    }
-                }
-                let x0 = ui.cursor().min.x;
-                crate::rtl::label(ui, tr(label));
-                ui.add_space(((if k == 0 { 56.0 } else { 44.0 }) - (ui.cursor().min.x - x0)).max(0.0));
-                text_field(ui, d, key, 70.0);
-                if k == 0 && r == 0 {
+            caption_at(ui, tr("Columns:"), cap);
+            translated_combo(lang, ui, d, "columnsKind", &[("fixedNumber", "Fixed Number"), ("fixedWidth", "Fixed Width")]);
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            caption_at(ui, crate::i18n::tr_context(lang, "Number:", "count"), cap);
+            let n = d.n("columns");
+            if let Some(v) = crate::widgets::NumField::number("tfo_columns", n, "", 0).width(field).spinner().range(1.0, 40.0).show(ui) {
+                d.fields.insert("columns".into(), json!(v.round().to_string()));
+            }
+            // Fixed Number: the width follows from the frame; Fixed Width: it's set here.
+            caption_at(ui, tr("Width:"), cap2);
+            if d.s("columnsKind") == "fixedWidth" {
+                spin_measure(ui, d, "columnWidth", field, true);
+            } else {
+                // Fixed Number: each column's width, from the frame, the insets and the gutter.
+                let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
+                let n = d.n("columns").unwrap_or(1.0).max(1.0);
+                let width = frame.map(|w| {
+                    let inner = w - d.m("insetLeft").unwrap_or(0.0) - d.m("insetRight").unwrap_or(0.0);
+                    ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
+                });
+                let _ = crate::widgets::NumField::measure("tfo_auto_width", width, d.unit).width(field).spinner().enabled(false).show(ui);
+            }
+        });
+        ui.horizontal(|ui| {
+            caption_at(ui, tr("Gutter:"), cap);
+            spin_measure(ui, d, "gutter", field, true);
+            // Maximum is for Flexible Width columns, which aren't in the document model yet.
+            caption_at(ui, tr("Maximum:"), cap2);
+            ui.add_enabled_ui(false, |ui| {
+                let _ = crate::widgets::NumField::number("tfo_max", None, "", 0).width(field).spinner().enabled(false).show(ui);
+            });
+        });
+        check(ui, d, "balanceColumns", tr("Balance Columns"));
+    });
+    framed(ui, Some(tr("Inset Spacing")), |ui| {
+        // While linked, a side typed in sets all four ("Make all settings the same").
+        let sides = ["insetTop", "insetLeft", "insetBottom", "insetRight"];
+        let before: Vec<String> = sides.iter().map(|k| d.s(k)).collect();
+        for (r, [(l1, k1), (l2, k2)]) in
+            [[("Top:", "insetTop"), ("Left:", "insetLeft")], [("Bottom:", "insetBottom"), ("Right:", "insetRight")]].into_iter().enumerate()
+        {
+            ui.horizontal(|ui| {
+                caption_at(ui, tr(l1), cap);
+                spin_measure(ui, d, k1, field, true);
+                ui.add_space(8.0);
+                if r == 0 {
                     let linked = d.b("insetLinked");
                     let tip = tr("Make all settings the same");
                     if crate::widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, egui::vec2(22.0, 21.0))
@@ -649,26 +751,40 @@ fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
                     {
                         d.fields.insert("insetLinked".into(), json!(!linked));
                     }
+                } else {
+                    ui.add_space(22.0 + ui.spacing().item_spacing.x);
                 }
-            }
-        });
-    }
-    if d.b("insetLinked")
-        && let Some(k) = sides.iter().zip(&before).find(|(k, b)| d.s(k) != **b).map(|(k, _)| *k)
-    {
-        let v = d.fields.get(k).cloned().unwrap_or_default();
-        for side in sides {
-            d.fields.insert(side.into(), v.clone());
+                caption_at(ui, tr(l2), cap2 - 30.0);
+                spin_measure(ui, d, k2, field, true);
+            });
         }
-    }
-    ui.add_space(6.0);
-    crate::rtl::label(ui, egui::RichText::new(tr("Vertical Justification")).font(semibold(12.0)));
-    egui::Grid::new("tfo_vj").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, tr("Align:"));
-        translated_combo(lang, ui, d, "verticalJustification", &[("top", "Top"), ("center", "Center"), ("bottom", "Bottom"), ("justify", "Justify")]);
-        ui.end_row();
+        if d.b("insetLinked")
+            && let Some(k) = sides.iter().zip(&before).find(|(k, b)| d.s(k) != **b).map(|(k, _)| *k)
+        {
+            let v = d.fields.get(k).cloned().unwrap_or_default();
+            for side in sides {
+                d.fields.insert(side.into(), v.clone());
+            }
+        }
     });
-    ui.add_space(6.0);
+    framed(ui, Some(tr("Vertical Justification")), |ui| {
+        ui.horizontal(|ui| {
+            caption_at(ui, tr("Align:"), 170.0);
+            translated_combo(
+                lang,
+                ui,
+                d,
+                "verticalJustification",
+                &[("top", "Top"), ("center", "Center"), ("bottom", "Bottom"), ("justify", "Justify")],
+            );
+        });
+        ui.horizontal(|ui| {
+            caption_at(ui, tr("Paragraph Spacing Limit:"), 170.0);
+            let justify = d.s("verticalJustification") == "justify";
+            spin_measure(ui, d, "paragraphSpacingLimit", field, justify);
+        });
+    });
+    ui.add_space(4.0);
     check(ui, d, "ignoreWrap", tr("Ignore Text Wrap"));
 }
 
@@ -776,7 +892,19 @@ fn edited(d: &Dialog, key: &str) -> bool {
 
 fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
     seed_text_frame_options(app, d);
-    let d = &*d;
+    // The preview goes; the options are set once, as one undo step.
+    if d.fields.remove(PREVIEWED).is_some() {
+        app.session.cancel_interaction();
+    }
+    let p = text_frame_params(app, d)?;
+    if p.keys().all(|k| k == "ids") {
+        return Ok(Value::Null);
+    }
+    app.run("object.textFrameOptions", Value::Object(p))
+}
+
+/// The `object.textFrameOptions` params of what the dialog changed.
+fn text_frame_params(app: &DesignApp, d: &Dialog) -> Result<Map<String, Value>, String> {
     let mut p = Map::new();
     let bad = |what: &str| format!("Text Frame Options: {what}");
     if edited(d, "columns") {
@@ -857,8 +985,11 @@ fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Val
             p.insert(key.into(), json!(d.m(key).filter(|v| *v >= 0.0).ok_or_else(|| bad(what))?));
         }
     }
-    if p.is_empty() {
-        return Ok(Value::Null);
+    if edited(d, "paragraphSpacingLimit") {
+        p.insert(
+            "paragraphSpacingLimit".into(),
+            json!(d.m("paragraphSpacingLimit").filter(|v| *v >= 0.0).ok_or_else(|| bad("the paragraph spacing limit is not a measure"))?),
+        );
     }
     // Typing in a frame: the options apply to that frame.
     if let Some(st) = app.session.active()
@@ -867,7 +998,7 @@ fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Val
     {
         p.insert("ids".into(), json!([f.0]));
     }
-    app.run("object.textFrameOptions", Value::Object(p))
+    Ok(p)
 }
 
 /// File › Document Setup, filled from the document.
@@ -2817,6 +2948,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     "textFrameOptions" => {
                         seed_text_frame_options(app, &mut d);
                         text_frame_options_dialog(app, ui, &mut d);
+                        text_frame_preview(app, &mut d);
                     }
                     "colorTheme" => color_theme(app, ui, &mut d),
                     "documentSetup" => {
@@ -8301,6 +8433,65 @@ mod tests {
         app.ui.dialog = Some(d);
         confirm(&mut app).unwrap();
         assert_eq!((opts(&app).columns_kind, opts(&app).column_width), (designcraft_doc::ColumnsKind::FixedNumber, 120.0));
+    }
+
+    /// The course's chapter 18: Text Frame Options with Preview on shows the columns and the
+    /// inset on the page while the dialog is open; Cancel puts the frame back, OK sets them as one
+    /// undo step. The Paragraph Spacing Limit is set from the dialog too.
+    #[test]
+    fn text_frame_options_preview_shows_the_change_until_ok_or_cancel() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "content": "text", "text": "Hello"})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+        let opts = |app: &DesignApp| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        let open = |app: &mut DesignApp| {
+            let mut d = Dialog::new("textFrameOptions", json!({}));
+            seed_text_frame_options(app, &mut d);
+            d
+        };
+        let mut d = open(&mut app);
+        d.fields.insert("columns".into(), json!("3"));
+        d.fields.insert("preview".into(), json!(true));
+        text_frame_preview(&mut app, &mut d);
+        assert_eq!(opts(&app).columns, 3, "previewed on the page");
+        d.fields.insert("insetTop".into(), json!("1p0"));
+        text_frame_preview(&mut app, &mut d);
+        assert_eq!((opts(&app).columns, opts(&app).inset[0]), (3, 12.0), "redone when a field changes");
+        d.fields.insert("preview".into(), json!(false));
+        text_frame_preview(&mut app, &mut d);
+        assert_eq!(opts(&app).columns, 1, "Preview off: the page as it was");
+        // A value OK would refuse: the page goes back while the status says why.
+        d.fields.insert("preview".into(), json!(true));
+        text_frame_preview(&mut app, &mut d);
+        assert_eq!(opts(&app).columns, 3);
+        let gutter = d.fields.get("gutter").cloned().unwrap_or_default();
+        d.fields.insert("gutter".into(), json!("wide"));
+        text_frame_preview(&mut app, &mut d);
+        assert_eq!(opts(&app).columns, 1, "the page as it was");
+        assert!(!d.fields.contains_key(PREVIEWED) && !d.s("status").is_empty());
+        d.fields.insert("gutter".into(), gutter);
+        d.fields.remove("status");
+        // Cancel after a preview: back as it was.
+        d.fields.insert("preview".into(), json!(true));
+        text_frame_preview(&mut app, &mut d);
+        app.ui.dialog = Some(d);
+        cancel(&mut app);
+        assert_eq!(opts(&app).columns, 1);
+        // OK after a preview: set once, one undo step.
+        let mut d = open(&mut app);
+        d.fields.insert("columns".into(), json!("2"));
+        d.fields.insert("verticalJustification".into(), json!("justify"));
+        d.fields.insert("paragraphSpacingLimit".into(), json!("2p0"));
+        d.fields.insert("preview".into(), json!(true));
+        text_frame_preview(&mut app, &mut d);
+        app.ui.dialog = Some(d);
+        confirm(&mut app).unwrap();
+        let o = opts(&app);
+        assert_eq!((o.columns, o.vj_paragraph_spacing_limit), (2, 24.0));
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(opts(&app).columns, 1, "one undo step");
     }
 
     #[test]

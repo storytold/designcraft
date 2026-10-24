@@ -46,6 +46,17 @@ pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 const TABLE: &[(&str, [&str; 5])] = &[
+    ("Maximum:", ["Maximum:", "Maximum :", "Máximo:", "最大 :", "最大值："]),
+    (
+        "Paragraph Spacing Limit:",
+        [
+            "Abstandsgrenze für Absätze:",
+            "Limite d'espacement des paragraphes :",
+            "Límite de espaciado de párrafo:",
+            "段落スペース最大値 :",
+            "段落间距限制：",
+        ],
+    ),
     (
         "Character Formatting Controls",
         [

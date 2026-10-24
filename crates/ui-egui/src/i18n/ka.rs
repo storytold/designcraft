@@ -31,6 +31,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "ამოჭრა"),
     ("Copy", "კოპირება"),
     ("Paste", "ჩასმა"),
+    ("Maximum:", "მაქსიმუმი:"),
+    ("Paragraph Spacing Limit:", "აბზაცებს შორის ინტერვალის ზღვარი:"),
     ("Restart Numbering", "ნუმერაციის თავიდან დაწყება"),
     ("Continue Numbering", "ნუმერაციის გაგრძელება"),
     ("Keep Options…", "შენარჩუნების პარამეტრები…"),
