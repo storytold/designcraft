@@ -160,28 +160,28 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, left
     CellLayout { text: Arc::new(cs), content_h, line_heights }
 }
 
-/// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
-/// when it doesn't fit the remaining frames (overset).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn place_table(
+/// Column positions, cells composed at their widths and row heights for a table set in a column of
+/// width `col_w`: columns are scaled down to fit the measure.
+struct Measured {
+    colx: Vec<f64>,
+    x_off: f64,
+    layouts: Vec<Option<CellLayout>>,
+    heights: Vec<f64>,
+}
+
+fn measure_table(
     doc: &Document,
     table: &Table,
-    anchor: usize,
-    pi: usize,
     pp: &ParaProps,
-    frames: &[FrameSpec],
-    cols: &[Vec<Rect>],
-    cur: &mut Cursor,
-    out: &mut ComposedStory,
+    col_w: f64,
     opts: &ComposeOptions,
-) -> bool {
-    if cur.fi >= frames.len() || table.nrows() == 0 || table.ncols() == 0 {
-        return false;
-    }
-    let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
-    let mut col = col_rect(cur);
+    left_page: bool,
+    owners: &[(usize, usize)],
+) -> Measured {
+    let (nr, nc) = (table.nrows(), table.ncols());
+    let is_owner = |r: usize, c: usize| owners.get(r * nc + c) == Some(&(r, c));
     // Column widths: scaled to fit the measure.
-    let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
+    let avail = (col_w - pp.left_indent - pp.right_indent).max(1.0);
     let natural = table.width();
     let k = if natural > avail && natural > 0.0 { avail / natural } else { 1.0 };
     let widths: Vec<f64> = table.columns.iter().map(|c| c.width * k).collect();
@@ -197,10 +197,6 @@ pub(crate) fn place_table(
     for (i, w) in widths.iter().enumerate() {
         colx[i + 1] = colx[i] + w;
     }
-    let (nr, nc) = (table.nrows(), table.ncols());
-    let owners = table.owners();
-    let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
-    let left_page = frames[cur.fi].left_page;
     // Compose every owner cell.
     let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
     for r in 0..nr {
@@ -249,6 +245,33 @@ pub(crate) fn place_table(
             }
         }
     }
+    Measured { colx, x_off, layouts, heights }
+}
+
+/// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
+/// when it doesn't fit the remaining frames (overset).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_table(
+    doc: &Document,
+    table: &Table,
+    anchor: usize,
+    pi: usize,
+    pp: &ParaProps,
+    frames: &[FrameSpec],
+    cols: &[Vec<Rect>],
+    cur: &mut Cursor,
+    out: &mut ComposedStory,
+    opts: &ComposeOptions,
+) -> bool {
+    if cur.fi >= frames.len() || table.nrows() == 0 || table.ncols() == 0 {
+        return false;
+    }
+    let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
+    let mut col = col_rect(cur);
+    let (nr, nc) = (table.nrows(), table.ncols());
+    let owners = table.owners();
+    let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
+    let mut m = measure_table(doc, table, pp, col.width(), opts, frames[cur.fi].left_page, &owners);
     // Row groups that must stay together: end (exclusive) of the group starting at each row.
     let mut group_end: Vec<usize> = (0..nr).map(|r| r + 1).collect();
     {
@@ -273,8 +296,8 @@ pub(crate) fn place_table(
     let header = table.header_rows();
     let footer = table.footer_rows();
     let body_end = nr - footer;
-    let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
-    let footer_h = sum(body_end, nr);
+    let sum = |m: &Measured, a: usize, b: usize| m.heights.get(a..b).map_or(0.0, |h| h.iter().sum::<f64>());
+    let mut footer_h = sum(&m, body_end, nr);
     let o = &table.options;
     let mut y = match cur.last_baseline {
         Some(b) => b + cur.last_descent + cur.pending + o.space_before,
@@ -284,27 +307,27 @@ pub(crate) fn place_table(
     let mut first_frag = true;
     let mut body_placed = 0usize;
     let mut top = y;
-    let place_rows = |rows: std::ops::Range<usize>, y: &mut f64, repeated: bool, frag_rows: &mut Vec<(usize, f64, bool)>| {
+    let place_rows = |m: &Measured, rows: std::ops::Range<usize>, y: &mut f64, repeated: bool, frag_rows: &mut Vec<(usize, f64, bool)>| {
         for r in rows {
             frag_rows.push((r, *y, repeated));
-            *y += heights[r];
+            *y += m.heights.get(r).copied().unwrap_or(0.0);
         }
     };
-    place_rows(0..header, &mut y, false, &mut frag_rows);
+    place_rows(&m, 0..header, &mut y, false, &mut frag_rows);
     let mut r = header;
     loop {
         if r >= body_end {
             break;
         }
         let ge = group_end[r].min(body_end).max(r + 1);
-        let gh = sum(r, ge);
+        let gh = sum(&m, r, ge);
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
         if y + gh + footer_h <= col.y1 + 0.01 || (body_placed == 0 && at_col_top) {
             if y + gh + footer_h > col.y1 + 0.01 && body_placed == 0 && at_col_top && y + gh > col.y1 + 0.01 {
                 // A row group taller than an empty column can never fit.
                 return false;
             }
-            place_rows(r..ge, &mut y, false, &mut frag_rows);
+            place_rows(&m, r..ge, &mut y, false, &mut frag_rows);
             body_placed += 1;
             r = ge;
             continue;
@@ -312,9 +335,9 @@ pub(crate) fn place_table(
         // Continue in the next column / frame.
         if body_placed > 0 {
             if o.repeat_footer {
-                place_rows(body_end..nr, &mut y, true, &mut frag_rows);
+                place_rows(&m, body_end..nr, &mut y, true, &mut frag_rows);
             }
-            emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
+            emit(table, anchor, pi, &frag_rows, &m.heights, &m.colx, col.x0 + m.x_off, top, y, first_frag, false, &m.layouts, &owners, cur, col, out);
             first_frag = false;
         }
         let was_first = first_frag;
@@ -323,19 +346,25 @@ pub(crate) fn place_table(
             return false;
         }
         col = col_rect(cur);
+        if was_first {
+            // Nothing of the table is set yet: it starts in this column, so it is measured for it (a table
+            // threaded on from a narrow frame into a wide one takes the wide frame's measure).
+            m = measure_table(doc, table, pp, col.width(), opts, frames[cur.fi].left_page, &owners);
+            footer_h = sum(&m, body_end, nr);
+        }
         y = col.y0;
         top = y;
         frag_rows.clear();
         body_placed = 0;
         // Headers: the first fragment's header moves along; later ones repeat it.
         if was_first {
-            place_rows(0..header, &mut y, false, &mut frag_rows);
+            place_rows(&m, 0..header, &mut y, false, &mut frag_rows);
         } else if o.repeat_header {
-            place_rows(0..header, &mut y, true, &mut frag_rows);
+            place_rows(&m, 0..header, &mut y, true, &mut frag_rows);
         }
     }
-    place_rows(body_end..nr, &mut y, false, &mut frag_rows);
-    emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
+    place_rows(&m, body_end..nr, &mut y, false, &mut frag_rows);
+    emit(table, anchor, pi, &frag_rows, &m.heights, &m.colx, col.x0 + m.x_off, top, y, first_frag, true, &m.layouts, &owners, cur, col, out);
     cur.last_baseline = Some(y);
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
@@ -1506,6 +1535,32 @@ mod border_tests {
             assert_eq!(rule.stroke.weight, weight);
         }
         assert_no_overlapping_rules(fragment);
+    }
+
+    #[test]
+    fn a_table_moved_on_from_a_narrow_frame_takes_the_measure_of_the_frame_it_starts_in() {
+        // A story threaded from a narrow frame into a wide one: an intro paragraph fills the first
+        // frame, so the table after it starts in the second and keeps its own widths there instead
+        // of the widths squeezed to fit the first frame.
+        let mut table = Table::new(78, 3, 3, 0, 0, 360.0);
+        for cell in table.cells.iter_mut() {
+            *cell = Cell::with_text("Row", ParaFormat::default());
+        }
+        let mut doc = Document::new(&NewDocument::default());
+        let layer = doc.default_layer();
+        let (narrow, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), layer, "Intro text", ParaFormat::default()).unwrap();
+        let (wide, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 100.0, 400.0, 400.0), layer, "", ParaFormat::default()).unwrap();
+        doc.thread(narrow, wide).unwrap();
+        let story = doc.story_mut(sid).unwrap();
+        let end = story.len();
+        story.insert_table(end, table);
+        let composed = crate::compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset(), "overset at {:?}", composed.overset_at);
+        assert!(composed.frames[0].tables.is_empty(), "the table starts in the first frame");
+        let fragment = &composed.frames[1].tables[0];
+        assert!((fragment.rect.width() - 360.0).abs() < 0.01, "table width {}", fragment.rect.width());
+        assert!(fragment.cell(2, 2).is_some());
     }
 
     fn compose_two_fragments(table: Table, height: f64) -> ComposedStory {
