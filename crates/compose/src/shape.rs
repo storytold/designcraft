@@ -784,8 +784,16 @@ fn shape_run_raw(
     // The language picks the fallback for CJK characters the primary font lacks. Without
     // fallback, the primary font sets them: the shaper gives its .notdef (glyph 0).
     let lang = designcraft_doc::language_tag(&p.language);
+    // A missing Korean face is replaced by one of its own style: the requested name says whether
+    // it was Dotum/Gothic or Batang/Myungjo, and if it does not, the substitute's own name does,
+    // which keeps today's chain (#1692).
+    let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| designcraft_fonts::sans_by_name(&primary.family));
     let fallback = |c: char| {
-        if auto_leading.glyph_fallback { db.fallback_for(c, primary.id(), lang).unwrap_or_else(|| primary.clone()) } else { primary.clone() }
+        if auto_leading.glyph_fallback {
+            db.fallback_for_styled(c, primary.id(), lang, prefer_sans).unwrap_or_else(|| primary.clone())
+        } else {
+            primary.clone()
+        }
     };
     let strong = |c| match unicode_bidi::bidi_class(c) {
         unicode_bidi::BidiClass::AL => Some(true),
@@ -1116,7 +1124,9 @@ fn shape_segment(
         let lang = designcraft_doc::language_tag(&p.language);
         let mut segments: Vec<(usize, usize, Arc<FontFace>)> = Vec::new();
         for (at, c) in label.char_indices() {
-            let selected = if face.covers(c) { face.clone() } else { db.fallback_for(c, face.id(), lang).unwrap_or_else(|| face.clone()) };
+            let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| designcraft_fonts::sans_by_name(&face.family));
+            let selected =
+                if face.covers(c) { face.clone() } else { db.fallback_for_styled(c, face.id(), lang, prefer_sans).unwrap_or_else(|| face.clone()) };
             if let Some((_, end, previous)) = segments.last_mut().filter(|(_, _, previous)| previous.id() == selected.id()) {
                 *end = at + c.len_utf8();
                 let _ = previous;

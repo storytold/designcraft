@@ -541,6 +541,55 @@ const TRADITIONAL_CHINESE_FALLBACKS: &[&str] = &[
     "Noto Sans CJK TC",
     "Source Han Sans TC",
 ];
+/// Korean fallbacks for a missing **sans** (Dotum/Gothic) face, system faces first.
+///
+/// [`KOREAN_FALLBACKS`] is serif-first, so on Windows the first installed entry is Batang and a
+/// document whose Korean text asked for KoPub Dotum or BM Dohyeon came out in a serif face --
+/// 5,298 characters of one school document, turning it from sans to serif (#1692).
+const KOREAN_SANS_FALLBACKS: &[&str] = &[
+    "Malgun Gothic",
+    "Apple SD Gothic Neo",
+    "Dotum",
+    "Gulim",
+    "Noto Sans CJK KR",
+    "Source Han Sans K",
+    "Noto Sans KR",
+    "Noto Serif CJK KR",
+    "Batang",
+];
+
+/// Whether a Korean family name says the face is sans (`Some(true)`) or serif (`Some(false)`).
+/// `None` when the name does not say, so the caller decides.
+///
+/// Korean family names carry the style: Dotum (돋움), Gulim (굴림) and Gothic (고딕) are sans;
+/// Batang (바탕), Myungjo/Myeongjo (명조) and Gungsuh (궁서) are serif. A missing font's name is
+/// the only thing left to go on, since the font itself is not there to classify (#1692).
+pub fn sans_by_name(family: &str) -> Option<bool> {
+    let lower = family.to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
+    // Serif first: "Myungjo Gothic" does not exist, but a name holding both reads as the serif
+    // it names, and "Sans" inside "Noto Sans Myungjo" would otherwise win.
+    if has(&["batang", "myungjo", "myeongjo", "gungsuh", "serif", "\u{BC14}\u{D5D5}", "\u{BA85}\u{C870}", "\u{AD81}\u{C11C}"]) {
+        return Some(false);
+    }
+    if has(&[
+        "dotum",
+        "gothic",
+        "gulim",
+        "sans",
+        "headline",
+        "graphic",
+        "dohyeon",
+        "\u{B3CB}\u{C6C0}",
+        "\u{ACE0}\u{B515}",
+        "\u{AD74}\u{B9BC}",
+        "\u{ADF8}\u{B798}\u{D53D}",
+    ]) {
+        return Some(true);
+    }
+    None
+}
+
 const KOREAN_FALLBACKS: &[&str] = &[
     "AppleMyungjo",
     "Apple SD Gothic Neo",
@@ -595,9 +644,10 @@ fn japanese_chain() -> &'static [&'static str] {
 /// The CJK fallback chain for `c` in `language` (a BCP 47 tag). The script decides where it is
 /// unambiguous (Hangul is Korean, kana Japanese, Bopomofo Traditional Chinese); ideographs and CJK
 /// punctuation follow the language, and have no chain without a CJK one.
-fn cjk_chain(c: char, language: Option<&str>) -> Option<&'static [&'static str]> {
+fn cjk_chain(c: char, language: Option<&str>, prefer_sans: Option<bool>) -> Option<&'static [&'static str]> {
+    let korean = if prefer_sans == Some(true) { KOREAN_SANS_FALLBACKS } else { KOREAN_FALLBACKS };
     match c as u32 {
-        0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF | 0xFFA0..=0xFFDC => return Some(KOREAN_FALLBACKS),
+        0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF | 0xFFA0..=0xFFDC => return Some(korean),
         0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F | 0x1B000..=0x1B16F => return Some(japanese_chain()),
         0x3100..=0x312F | 0x31A0..=0x31BF => return Some(TRADITIONAL_CHINESE_FALLBACKS),
         // Radicals, CJK symbols and punctuation, kanbun, strokes, enclosed and compatibility
@@ -620,7 +670,7 @@ fn cjk_chain(c: char, language: Option<&str>) -> Option<&'static [&'static str]>
     let language = language?;
     match language.split('-').next()? {
         "ja" => Some(japanese_chain()),
-        "ko" => Some(KOREAN_FALLBACKS),
+        "ko" => Some(korean),
         "zh" if language.starts_with("zh-Hant") => Some(TRADITIONAL_CHINESE_FALLBACKS),
         "zh" => Some(SIMPLIFIED_CHINESE_FALLBACKS),
         _ => None,
@@ -2055,7 +2105,14 @@ impl ScopedFonts<'_> {
     /// then load order, the document's fonts last) that covers `c`. On native, system fonts are
     /// cataloged and loaded lazily the first time no loaded face covers a character.
     pub fn fallback_for(&self, c: char, exclude: u32, language: Option<&str>) -> Option<Arc<FontFace>> {
-        if let Some(chain) = cjk_chain(c, language).or_else(|| script_chain(c))
+        self.fallback_for_styled(c, exclude, language, None)
+    }
+
+    /// [`Self::fallback_for`] following the style of the font that was asked for: `Some(true)`
+    /// takes the sans chain, so a missing Dotum or Gothic face is replaced by a sans one instead
+    /// of by the first installed serif (#1692). `None` keeps the chain as it was.
+    pub fn fallback_for_styled(&self, c: char, exclude: u32, language: Option<&str>, prefer_sans: Option<bool>) -> Option<Arc<FontFace>> {
+        if let Some(chain) = cjk_chain(c, language, prefer_sans).or_else(|| script_chain(c))
             && let Some(f) = chain.iter().find_map(|family| self.chain_face(family, c, exclude))
         {
             return Some(f);
@@ -2203,6 +2260,49 @@ mod tests_docfonts;
 #[cfg(test)]
 #[path = "tests_vertical.rs"]
 mod tests_vertical;
+
+#[cfg(test)]
+mod tests_korean_fallback {
+    use super::*;
+
+    /// A missing Korean face is replaced by one of its own style. The name is all there is to go
+    /// on, since the font itself is not installed to classify (#1692).
+    #[test]
+    fn a_korean_family_name_says_sans_or_serif() {
+        for sans in
+            ["KoPub Dotum Bold", "KHNP Han Dotum", "BM Dohyeon", "Malgun Gothic", "\u{B3CB}\u{C6C0}\u{CCB4}", "\u{ACE0}\u{B515}", "Noto Sans KR"]
+        {
+            assert_eq!(sans_by_name(sans), Some(true), "{sans} is sans");
+        }
+        for serif in ["Batang", "HCR Batang", "KoPub Myungjo", "\u{BA85}\u{C870}", "Gungsuh", "Noto Serif KR"] {
+            assert_eq!(sans_by_name(serif), Some(false), "{serif} is serif");
+        }
+        // A name that says neither leaves the choice to the caller.
+        for unknown in ["Times New Roman", "Helvetica", "Arial Unicode MS", ""] {
+            assert_eq!(sans_by_name(unknown), None, "{unknown} says neither");
+        }
+    }
+
+    /// The reported bug is the order of the chain: on Windows the first installed entry of the
+    /// serif-first chain is Batang, so every missing Dotum face came out serif (#1692).
+    #[test]
+    fn the_sans_chain_puts_a_sans_face_before_batang() {
+        let hangul = '\u{D55C}';
+        let sans = cjk_chain(hangul, None, Some(true)).expect("Hangul has a chain");
+        let serif = cjk_chain(hangul, None, None).expect("Hangul has a chain");
+        assert_eq!(serif, KOREAN_FALLBACKS, "without a style the chain is unchanged");
+        assert_eq!(sans, KOREAN_SANS_FALLBACKS);
+
+        let batang = |chain: &[&str]| chain.iter().position(|f| *f == "Batang");
+        let first_sans = |chain: &[&str]| chain.iter().position(|f| sans_by_name(f) == Some(true));
+        assert!(first_sans(sans) < batang(sans), "the sans chain reaches a sans face first: {sans:?}");
+        // And the Windows and macOS system faces are the first two entries, so an installed
+        // system font is preferred to a downloaded one.
+        assert_eq!(&sans[..2], &["Malgun Gothic", "Apple SD Gothic Neo"]);
+        // The serif chain still leads with serif faces, so a missing Myungjo is not made sans.
+        assert_eq!(sans_by_name(serif[0]), Some(false), "the serif chain still leads serif: {:?}", serif[0]);
+    }
+}
 
 #[cfg(test)]
 mod tests_heights {
