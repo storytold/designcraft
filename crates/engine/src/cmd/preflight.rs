@@ -249,6 +249,17 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             let xf = parent * it.xf;
             pending.extend(it.children().iter().rev().map(|child| (child.as_ref(), xf)));
             let page = page_of(d, SpreadRef::Doc(si), it, parent);
+            if let Content::Graphic(g) = &it.content
+                && g.layer_options.as_ref().is_some_and(designcraft_doc::GraphicLayerOptions::has_visibility_overrides)
+            {
+                out.push(Issue {
+                    severity: "warning",
+                    kind: "unsupportedGraphicLayers",
+                    message: designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING.into(),
+                    item: Some(it.id.0),
+                    page,
+                });
+            }
             match &it.content {
                 Content::Graphic(g) => match d.assets.get(&g.asset) {
                     None => out.push(Issue { severity: "error", kind: "missingLink", message: "Missing graphic".into(), item: Some(it.id.0), page }),
@@ -306,6 +317,17 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
                 });
             }
         }
+    }
+    // Nested graphic cells and anchored/parent items may not have a page frame
+    // in the walk above. Keep the warning visible after a native save/reopen.
+    if d.has_unwalked_graphic_layer_visibility_overrides() {
+        out.push(Issue {
+            severity: "warning",
+            kind: "unsupportedGraphicLayers",
+            message: designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING.into(),
+            item: None,
+            page: None,
+        });
     }
     out
 }

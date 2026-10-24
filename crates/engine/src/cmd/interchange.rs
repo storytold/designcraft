@@ -28,7 +28,8 @@ pub fn specs() -> Vec<CommandSpec> {
 fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts = designcraft_idml::ExportOptions { embed_images: p.get("embedImages").and_then(Value::as_bool).unwrap_or(true) };
-    let bytes = designcraft_idml::export_idml_with(&st.doc, &opts);
+    let layer_doc = with_pdf_layer_variants(&st.doc, opts.embed_images)?;
+    let bytes = designcraft_idml::export_idml_with(layer_doc.as_ref().unwrap_or(&st.doc), &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -37,6 +38,48 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
         }
         None => Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()})),
     }
+}
+
+/// Each placement gets its own embedded variant so two frames sharing a PDF can
+/// choose different layers. The live document and original linked bytes stay untouched.
+fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Document>> {
+    let ids: Vec<_> = doc
+        .all_items()
+        .into_iter()
+        .filter(|id| {
+            doc.item(*id).is_some_and(|it| {
+                it.has_pdf_layer_override()
+                    && it.graphic().and_then(|g| doc.assets.get(&g.asset)).is_some_and(|a| designcraft_render::is_pdf(&a.data))
+            })
+        })
+        .collect();
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    if !embed {
+        return Err(EngineError::Other("PDF layer choices require embedded images in IDML export".into()));
+    }
+    let mut out = doc.clone();
+    for id in ids {
+        let Some(it) = doc.item(id) else { continue };
+        let Some(asset) = it.graphic().and_then(|g| doc.assets.get(&g.asset)) else { continue };
+        let bytes = designcraft_render::pdf_hide_layers(&asset.data, &it.pdf_hidden_layers)
+            .ok_or_else(|| EngineError::Other(format!("{}: PDF layer choices could not be applied", asset.name)))?;
+        let mut variant = (**asset).clone();
+        variant.id = designcraft_doc::AssetId(out.alloc());
+        variant.data = std::sync::Arc::new(bytes);
+        variant.link = None;
+        let aid = variant.id;
+        out.assets.insert(aid, std::sync::Arc::new(variant));
+        if let Some(it) = out.item_mut(id) {
+            if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+                g.asset = aid;
+            }
+            it.pdf_layer_override = false;
+            it.pdf_hidden_layers.clear();
+        }
+    }
+    Ok(Some(out))
 }
 
 /// [`designcraft_idml::import_idml`] with the linked images read through [`crate::io`] from

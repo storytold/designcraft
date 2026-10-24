@@ -496,6 +496,7 @@ mod tests {
         let r = Rect::new(at.0, at.1, at.0 + 100.0, at.1 + 50.0);
         let mut it = Item::new(id, lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset,
             size,
             xf: Affine::translate(at) * Affine::scale(100.0 / size.0),

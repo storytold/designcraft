@@ -1593,7 +1593,10 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 Ok(v) => v,
                 Err(e) => return Some(Err(e.to_string())),
             };
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("layerOptions", json!({"layers": layers})));
+            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                "layerOptions",
+                json!({"useDefaults": !layers.as_array().and_then(|a| a.first()).and_then(|l| l["overridden"].as_bool()).unwrap_or(false), "layers": layers}),
+            ));
             Ok(Value::Null)
         }
         "view.rotateSpread" => {

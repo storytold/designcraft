@@ -654,13 +654,10 @@ impl Renderer {
                 let g = &if it.media.is_some() { it.drawn_graphic(&f.doc.assets).unwrap_or_else(|| g.clone()) } else { g.clone() };
                 ctx.set_transform(f.view * xf);
                 ctx.push_clip_layer(bp);
-                if !it.pdf_hidden_layers.is_empty() {
-                    HIDDEN_LAYERS.with(|h| *h.borrow_mut() = it.pdf_hidden_layers.clone());
-                }
+                let hidden = it.has_pdf_layer_override().then(|| it.pdf_hidden_layers.clone());
+                let previous = HIDDEN_LAYERS.with(|h| h.replace(hidden));
                 self.draw_graphic(ctx, f, g, xf);
-                if !it.pdf_hidden_layers.is_empty() {
-                    HIDDEN_LAYERS.with(|h| h.borrow_mut().clear());
-                }
+                HIDDEN_LAYERS.with(|h| h.replace(previous));
                 ctx.pop_layer();
             }
             // Items pasted into the frame, clipped by it.
@@ -880,12 +877,14 @@ impl Renderer {
         let on_screen = (f.view * xf * g.xf).determinant().abs().sqrt();
         let on_screen = if f.opts.quality == DisplayQuality::Typical { on_screen.min(1.0) } else { on_screen };
         let hidden = HIDDEN_LAYERS.with(|h| h.borrow().clone());
-        let data = if !hidden.is_empty() && is_pdf(&asset.data) {
-            // Stale persisted/relinked choices must not reveal hidden source content.
-            let Some(variant) = pdf_layers::layered(&asset.data, &hidden) else { return };
-            variant
-        } else {
-            asset.data.clone()
+        let data = match hidden.as_deref().filter(|_| is_pdf(&asset.data)) {
+            // An explicit choice (including all-on) that cannot be rewritten fails closed:
+            // stale persisted/relinked choices must not reveal hidden source content.
+            Some(hidden) => {
+                let Some(variant) = pdf_layers::layered(&asset.data, hidden) else { return };
+                variant
+            }
+            None => asset.data.clone(),
         };
         // A placed PDF cropped to a box: the whole page, placed so that the box spans graphic space.
         let [l, t, r, b] = shown_box(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
@@ -1025,7 +1024,7 @@ fn rect_overlaps(a: Rect, b: Rect) -> bool {
 
 thread_local! {
     /// Object Layer Options of the placed PDF being drawn.
-    static HIDDEN_LAYERS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static HIDDEN_LAYERS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
     /// Appearance of Black for the render on this thread: 100% K as pure black.
     static RICH_BLACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Separations Preview plate for the render on this thread.
@@ -1296,11 +1295,23 @@ pub fn pdf_page_png(bytes: &[u8], page: usize, max_side: u32, hidden: &[String],
 /// Rasterize a placed page for export, preserving available interpreter diagnostics.
 /// This cannot detect backend approximations that do not emit an interpreter warning.
 pub fn pdf_page_png_checked(bytes: &[u8], page: usize, max_side: u32, hidden: &[String], shown: Option<[f64; 4]>) -> Result<Vec<u8>, PdfRasterError> {
+    pdf_page_png_options_checked(bytes, page, max_side, (!hidden.is_empty()).then_some(hidden), shown)
+}
+
+/// Rasterize with an explicit visibility override: `Some(&[])` enables every layer;
+/// `None` retains file defaults. The legacy entry point keeps its empty-list semantics.
+pub fn pdf_page_png_options_checked(
+    bytes: &[u8],
+    page: usize,
+    max_side: u32,
+    hidden: Option<&[String]>,
+    shown: Option<[f64; 4]>,
+) -> Result<Vec<u8>, PdfRasterError> {
     check_pdf_input_size(bytes.len())?;
-    let data = if hidden.is_empty() {
-        std::borrow::Cow::Borrowed(bytes)
-    } else {
+    let data = if let Some(hidden) = hidden {
         std::borrow::Cow::Owned(pdf_hide_layers(bytes, hidden).ok_or(PdfRasterError::LayerRewrite)?)
+    } else {
+        std::borrow::Cow::Borrowed(bytes)
     };
     let raster = render_pdf_raster(&data, page, max_side)?;
     if raster.diagnostics.image_decode_failed {
@@ -1984,6 +1995,7 @@ mod tests {
         let mut it =
             Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
         it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
             asset: aid,
             size: (100.0, 100.0),
             xf: Affine::translate((100.0, 100.0)),
@@ -2038,6 +2050,7 @@ mod tests {
         let mut it =
             Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
         it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
             asset: aid,
             size: (100.0, 100.0),
             xf: Affine::translate((100.0, 100.0)),

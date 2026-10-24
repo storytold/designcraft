@@ -369,6 +369,7 @@ fn place_image(
     };
     let mode = fitting_of(&options.fitting);
     let mut g = Graphic {
+        layer_options: None,
         asset: AssetId(0),
         size: (nw, nh),
         xf: Affine::translate((inner.x0, inner.y0)),

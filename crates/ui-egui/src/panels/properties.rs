@@ -3207,6 +3207,7 @@ mod tests {
                 }),
             );
             doc.item_mut(id).unwrap().content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (72.0, 72.0),
                 xf: designcraft_geom::Affine::IDENTITY,

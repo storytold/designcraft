@@ -2431,7 +2431,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 && let Some(o) = l.as_object_mut()
                             {
                                 o.insert("visible".into(), json!(on));
+                                d.fields.insert("useDefaults".into(), json!(false));
                             }
+                        }
+                        if ui.button(crate::i18n::tr(&app.ui.language, "Use File Defaults")).clicked() {
+                            for layer in &mut layers {
+                                layer["visible"] = layer["default"].clone();
+                            }
+                            d.fields.insert("useDefaults".into(), json!(true));
                         }
                         d.fields.insert("layers".into(), json!(layers));
                     }
@@ -3307,7 +3314,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         }
         "layerOptions" => {
             let hidden: Vec<Value> = d.fields.get("layers").and_then(Value::as_array).map(|a| a.iter().filter(|l| l["visible"] == false).map(|l| l["name"].clone()).collect()).unwrap_or_default();
-            app.run("object.layerOptions", json!({"hidden": hidden}))
+            app.run("object.layerOptions", json!({"hidden": if d.b("useDefaults") { Vec::<Value>::new() } else { hidden }, "useDefaults": d.b("useDefaults")}))
         }
         "colorSettings" => {
             let r = app.run("color.settings", json!({"rgb": d.s("rgb"), "cmyk": d.s("cmyk"), "intent": d.s("intent"), "bpc": d.b("bpc")}))?;

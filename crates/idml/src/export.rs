@@ -20,6 +20,15 @@ const TOC_STYLE_ID: &str = "TOCStyle/Table of Contents";
 const TOC_STYLE_NAME: &str = "Table of Contents";
 const NO_CHAR_ID: &str = "CharacterStyle/$ID/[No character style]";
 
+// Retained IDML attributes have unprefixed ASCII names. Native JSON can be
+// edited independently: never let its map keys become XML syntax or Self IDs.
+fn graphic_layer_attribute_name(key: &str) -> bool {
+    !key.is_empty()
+        && key != "Self"
+        && key != "xmlns"
+        && key.bytes().enumerate().all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && (b.is_ascii_digit() || matches!(b, b'.' | b'-'))))
+}
+
 /// Export options.
 #[derive(Clone, Debug)]
 pub struct ExportOptions {
@@ -2060,6 +2069,53 @@ impl<'a> Ex<'a> {
         }
         if let Some(c) = &g.clip {
             el.push(clipping_settings(c));
+        }
+        if let Some(options) = &g.layer_options {
+            let mut option = El::new("GraphicLayerOption");
+            for (key, value) in &options.attributes {
+                if graphic_layer_attribute_name(key) {
+                    option.set(key, value);
+                }
+            }
+            // Only an ancestor whose subtree is still open can parent the next layer.
+            // Reopening a closed subtree would reorder native-edited lists on roundtrip.
+            let mut open = Vec::new();
+            let mut parents = Vec::with_capacity(options.layers.len());
+            for i in 0..options.layers.len() {
+                let parent = options.parents.get(i).copied().flatten();
+                if let Some(at) = parent.and_then(|p| open.iter().position(|id| *id == p)).filter(|at| *at < 239) {
+                    open.truncate(at + 1);
+                    parents.push(parent);
+                } else {
+                    open.clear();
+                    parents.push(None);
+                }
+                open.push(i);
+            }
+            let mut children: Vec<Vec<El>> = vec![Vec::new(); options.layers.len()];
+            let mut roots = Vec::new();
+            for (i, attributes) in options.layers.iter().enumerate().rev() {
+                let mut layer = El::new("GraphicLayer").attr("Self", self.fresh());
+                for (key, value) in attributes {
+                    if graphic_layer_attribute_name(key) {
+                        layer.set(key, value);
+                    }
+                }
+                if let Some(nested) = children.get_mut(i) {
+                    for child in std::mem::take(nested).into_iter().rev() {
+                        layer.push(child);
+                    }
+                }
+                if let Some(nested) = parents.get(i).copied().flatten().and_then(|parent| children.get_mut(parent)) {
+                    nested.push(layer);
+                } else {
+                    roots.push(layer);
+                }
+            }
+            for layer in roots.into_iter().rev() {
+                option.push(layer);
+            }
+            el.push(option);
         }
         let uri = match &asset.link {
             Some(l) => path_to_uri(l),

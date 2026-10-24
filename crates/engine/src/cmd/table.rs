@@ -2017,6 +2017,7 @@ fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         let t = st.table_mut(g.table).ok_or_else(|| bad(ID, "no table"))?;
         let cell = t.cell_mut(r, c).ok_or_else(|| bad(ID, format!("no cell {r},{c}")))?;
         cell.graphic = Some(designcraft_doc::Graphic {
+            layer_options: None,
             asset: aid,
             size: (nw, nh),
             xf,

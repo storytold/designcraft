@@ -434,6 +434,7 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
             );
             let mut it = Item::new(ItemId(out.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (w as f64, h as f64),
                 xf: designcraft_geom::Affine::translate((r.x0, r.y0))
@@ -604,6 +605,7 @@ fn rasterize_where(
         );
         let mut img_item = Item::new(ItemId(out.alloc()), it.layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(reach));
         img_item.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: aid,
             size: (w as f64, h as f64),
             xf: designcraft_geom::Affine::translate((reach.x0, reach.y0)) * designcraft_geom::Affine::scale(1.0 / k),
@@ -671,7 +673,7 @@ fn wrap_stand_in(it: &designcraft_doc::Item, depth: usize) -> designcraft_doc::I
 /// A copy of `d` where placed PDFs with Object Layer Options hidden layers are 300 ppi images.
 fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option<designcraft_doc::Document>, usize)> {
     let ids: Vec<designcraft_doc::ItemId> =
-        d.all_items().into_iter().filter(|id| d.item(*id).is_some_and(|it| !it.pdf_hidden_layers.is_empty() && it.graphic().is_some())).collect();
+        d.all_items().into_iter().filter(|id| d.item(*id).is_some_and(|it| it.has_pdf_layer_override() && it.graphic().is_some())).collect();
     if ids.is_empty() {
         return Ok((None, 0));
     }
@@ -688,7 +690,7 @@ fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option<designcraf
         let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let page_side = (g.size.0 / (r - l)).max(g.size.1 / (b - t));
         let side = (page_side * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
-        let png = designcraft_render::pdf_page_png_checked(&a.data, a.page as usize, side, &hidden, shown)
+        let png = designcraft_render::pdf_page_png_options_checked(&a.data, a.page as usize, side, Some(&hidden), shown)
             .map_err(|e| EngineError::Other(format!("{}: {e}", a.name)))?;
         let px = designcraft_render::image_size(&png);
         let aid = designcraft_doc::AssetId(out.alloc());
@@ -743,6 +745,10 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let doc: &designcraft_doc::Document = &boxed;
     let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
+    // Flattening and effect rasterization replace placements, so inspect the source too.
+    if st.doc.has_graphic_layer_visibility_overrides() && !r.warnings.iter().any(|w| w == designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING) {
+        r.warnings.push(designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING.into());
+    }
     // Transparency Blend Space: the page group of pages with transparency.
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     let blended: Vec<bool> = spreads.iter().map(|si| doc.spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))).collect();

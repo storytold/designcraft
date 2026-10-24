@@ -79,6 +79,7 @@ fn graphic_frame(d: &mut Document, sr: SpreadRef, r: Rect, asset: AssetId, px: (
     let (nw, nh) = (px.0 as f64, px.1 as f64);
     let k = (r.width() / nw).max(r.height() / nh);
     it.content = Content::Graphic(Graphic {
+        layer_options: None,
         asset,
         size: (nw, nh),
         xf: Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k),

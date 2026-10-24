@@ -4455,6 +4455,7 @@ fn exports_graphic_in_table_cell() {
     });
     let mut t = designcraft_doc::Table::new(d.alloc(), 2, 2, 0, 0, 200.0);
     t.cell_mut(1, 0).unwrap().graphic = Some(designcraft_doc::Graphic {
+        layer_options: None,
         asset: id,
         size: (24.0, 24.0),
         xf: designcraft_geom::Affine::IDENTITY,

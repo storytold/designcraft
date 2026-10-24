@@ -27,6 +27,7 @@ fn color_theme_tool_requests_a_palette_without_editing_the_image() {
     let mut d = Document::new(&NewDocument::default());
     let id = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
     d.item_mut(id).unwrap().content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(1),
         size: (100.0, 100.0),
         xf: designcraft_geom::Affine::IDENTITY,
@@ -1108,6 +1109,7 @@ fn graphic_frame(doc: &mut Document) -> ItemId {
     let id = ItemId(doc.alloc());
     let mut item = Item::new(id, doc.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
     item.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(1),
         size: (200.0, 100.0),
         xf: designcraft_geom::Affine::translate((50.0, 100.0)),
@@ -1502,6 +1504,7 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
     let photo = ItemId(d.alloc());
     let mut it = Item::new(photo, lid, Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
     it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(1),
         size: (100.0, 100.0),
         xf: designcraft_geom::Affine::translate((0.0, 0.0)),
@@ -1855,6 +1858,7 @@ fn eyedropper_ignores_inactive_states_of_a_multi_state_object() {
     let raster = {
         let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(area));
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: AssetId(1),
             size: (100.0, 100.0),
             xf: designcraft_geom::Affine::translate((0.0, 0.0)),
