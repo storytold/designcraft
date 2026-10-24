@@ -54,19 +54,25 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             delete
         ),
-        cmd!("guide.deleteAll", "Delete All Guides on Spread", ["View", "Grids & Guides"], None, "{spread?}", has_doc, |s, p| {
-            let r = super::spread_param(p, "guide.deleteAll")?;
-            s.edit(|d, sel| {
-                let sp = d.spread_mut(r).ok_or_else(|| bad("guide.deleteAll", "no such spread"))?;
-                let mut n = 0;
-                for pg in &mut sp.pages {
-                    n += pg.guides.len();
-                    pg.guides.clear();
-                }
-                sel.guides.retain(|g| g.spread != r);
-                Ok(json!({"deleted": n}))
-            })
-        }),
+        cmd!(
+            "guide.deleteAll",
+            "Delete All Guides on Spread",
+            ["View", "Grids & Guides"],
+            None,
+            "{spread?} — a locked guide, and the guides of a layer that is locked, hidden or locks its guides, stay → {deleted}",
+            has_doc,
+            |s, p| {
+                let r = super::spread_param(p, "guide.deleteAll")?;
+                s.edit(|d, sel| {
+                    let keep = kept_guides(d, r).ok_or_else(|| bad("guide.deleteAll", "no such spread"))?;
+                    let sp = d.spread_mut(r).ok_or_else(|| bad("guide.deleteAll", "no such spread"))?;
+                    let n: usize = sp.pages.iter_mut().zip(&keep).map(|(pg, keep)| drop_editable(&mut pg.guides, keep)).sum();
+                    // The guides kept can't be selected: the spread's selected guides are gone.
+                    sel.guides.retain(|g| g.spread != r);
+                    Ok(json!({"deleted": n}))
+                })
+            }
+        ),
         cmd!(
             "view.lockColumnGuides",
             "Lock Column Guides",
@@ -566,6 +572,7 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| bad("layout.createGuides", format!("a single command may create at most {MAX_GUIDES_CREATED} guides")))?;
     let layer = s.doc()?.active_layer;
     s.edit(|d, sel| {
+        let keep = kept_guides(d, r).ok_or_else(|| bad("layout.createGuides", "no such spread"))?;
         if remove {
             // The cleared pages' guide addresses name the new guides now.
             sel.guides.retain(|g| g.spread != r || only.is_some_and(|o| o != g.page));
@@ -577,7 +584,7 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
                 continue;
             }
             if remove {
-                pg.guides.clear();
+                drop_editable(&mut pg.guides, keep.get(pi).map_or(&[][..], Vec::as_slice));
             }
             let area: Rect = if to_page { pg.bounds() } else { pg.margin_rect() };
             for y in grid_positions(area.y0, area.y1, rows, rg)? {
@@ -605,6 +612,20 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(json!({"guides": n}))
     })
+}
+
+/// Per page of spread `r`, the guides that can't be edited (locked, or on a layer that is locked,
+/// hidden or locks its guides): what removing guides leaves. `None` without the spread.
+fn kept_guides(d: &designcraft_doc::Document, r: designcraft_doc::SpreadRef) -> Option<Vec<Vec<bool>>> {
+    Some(d.spread(r)?.pages.iter().map(|pg| pg.guides.iter().map(|g| !g.editable_in(d)).collect()).collect())
+}
+
+/// Remove the guides `keep` doesn't mark (the editable ones); returns how many went.
+fn drop_editable(guides: &mut Vec<Guide>, keep: &[bool]) -> usize {
+    let before = guides.len();
+    let mut keep = keep.iter();
+    guides.retain(|_| keep.next().copied().unwrap_or(false));
+    before - guides.len()
 }
 
 #[cfg(test)]
@@ -951,6 +972,53 @@ mod layer_tests {
         assert_eq!(s.execute("guide.list", &json!({})).unwrap(), json!([]));
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.execute("guide.list", &json!({})).unwrap()[0]["position"], 200.0);
+    }
+
+    /// Layer Options › Lock Guides: the layer's guides stay where they are (moving and deleting
+    /// them is refused) while its objects stay editable.
+    #[test]
+    fn lock_guides_locks_only_the_layers_guides() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let layer = s.execute("layer.new", &json!({"name": "Grid"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("layer.activate", &json!({"id": layer})).unwrap();
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 100})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("layer.set", &json!({"id": layer, "lockGuides": true})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let g = d.spreads[0].pages[0].guides[0].clone();
+        assert!(g.visible_in(&d) && !g.editable_in(&d));
+        for command in ["guide.move", "guide.delete"] {
+            assert!(s.execute(command, &json!({"page": 0, "index": 0, "position": 200})).is_err(), "{command} moved a locked guide");
+        }
+        assert_eq!(s.execute("guide.list", &json!({})).unwrap()[0]["position"], 100.0);
+        // The layer's objects aren't locked.
+        s.execute("transform.move", &json!({"ids": [frame], "dx": 10, "dy": 0})).unwrap();
+        s.execute("layer.set", &json!({"id": layer, "lockGuides": false})).unwrap();
+        s.execute("guide.move", &json!({"page": 0, "index": 0, "position": 200})).unwrap();
+        assert_eq!(s.execute("guide.list", &json!({})).unwrap()[0]["position"], 200.0);
+    }
+
+    #[test]
+    fn delete_all_and_remove_existing_keep_locked_guides() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let grid = s.execute("layer.new", &json!({"name": "Grid"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("layer.activate", &json!({"id": grid})).unwrap();
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 100})).unwrap();
+        let free = s.execute("layer.new", &json!({"name": "Free"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("layer.activate", &json!({"id": free})).unwrap();
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 200})).unwrap();
+        s.execute("layer.set", &json!({"id": grid, "lockGuides": true})).unwrap();
+        let positions = |s: &mut Session| {
+            s.execute("guide.list", &json!({})).unwrap().as_array().unwrap().iter().map(|g| g["position"].as_f64().unwrap()).collect::<Vec<_>>()
+        };
+        assert_eq!(s.execute("guide.deleteAll", &json!({})).unwrap()["deleted"], 1);
+        assert_eq!(positions(&mut s), [100.0], "the locked layer's guide stays");
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 200})).unwrap();
+        s.execute("layout.createGuides", &json!({"columns": 2, "removeExisting": true, "page": 0})).unwrap();
+        let after = positions(&mut s);
+        assert!(after.contains(&100.0) && !after.contains(&200.0), "{after:?}");
     }
 
     #[test]
