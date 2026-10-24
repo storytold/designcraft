@@ -1075,6 +1075,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Load Styles", ["Formate laden", "Charger les styles", "Cargar estilos", "スタイルを読み込み", "加载样式"]),
+    ("Cannot be edited", ["Nicht bearbeitbar", "Non modifiable", "No editable", "編集不可", "不可编辑"]),
     ("Restart Numbering", ["Nummerierung neu beginnen", "Recommencer la numérotation", "Reiniciar numeración", "番号の振り直し", "重新开始编号"]),
     ("Continue Numbering", ["Nummerierung fortführen", "Poursuivre la numérotation", "Continuar numeración", "番号の継続", "继续编号"]),
     ("Keep Options…", ["Umbruchoptionen …", "Options d'enchaînement…", "Opciones de separación…", "段落分離禁止オプション…", "保持选项…"]),

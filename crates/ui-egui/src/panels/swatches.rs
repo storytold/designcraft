@@ -206,7 +206,8 @@ fn header(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Documen
         }
         ui.add_space(6.0);
         crate::widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Tint:"));
-        let tint = target.map(|(_, ft, _, st)| f64::from(if stroke_front { *st } else { *ft }) * 100.0);
+        // With nothing selected InDesign's field reads 100.
+        let tint = target.map_or(Some(100.0), |(_, ft, _, st)| Some(f64::from(if stroke_front { *st } else { *ft }) * 100.0));
         if let Some(v) = crate::widgets::number(ui, "swatches_tint", tint, "", 44.0, 0) {
             let _ = set_tint(app, v);
         }
@@ -242,6 +243,156 @@ fn folder_button(ui: &mut egui::Ui, tip: &str) -> egui::Response {
     })
 }
 
+/// What a Swatches panel row marks on its right, as InDesign's columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RowMarks {
+    /// [None], [Registration] and [Black] can't be edited ([Paper] can).
+    not_editable: bool,
+    kind: Option<ColorType>,
+    mode: Option<RowMode>,
+}
+
+/// The colour-mode column: the ink model, or the special swatches' own glyphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowMode {
+    Cmyk,
+    Rgb,
+    Gray,
+    None,
+    Registration,
+}
+
+fn row_marks(sw: &designcraft_color::swatch::Swatch) -> RowMarks {
+    use designcraft_color::Color;
+    // Paper's colour can be edited, whatever the swatch is called (as the options dialog allows).
+    let not_editable = sw.locked && !matches!(sw.value, SwatchValue::Paper { .. });
+    match &sw.value {
+        SwatchValue::Color { color, color_type } => {
+            let mode = match color {
+                Color::Cmyk { .. } => RowMode::Cmyk,
+                Color::Rgb { .. } => RowMode::Rgb,
+                Color::Gray { .. } => RowMode::Gray,
+            };
+            RowMarks { not_editable, kind: Some(*color_type), mode: Some(mode) }
+        }
+        SwatchValue::None => RowMarks { not_editable, kind: None, mode: Some(RowMode::None) },
+        SwatchValue::Registration => RowMarks { not_editable, kind: None, mode: Some(RowMode::Registration) },
+        _ => RowMarks { not_editable, kind: None, mode: None },
+    }
+}
+
+/// A row's accessible name: the swatch's name, then what its marks show (colour type, colour
+/// mode, that it can't be edited). [None] and [Registration] say their mode by name.
+fn row_label(lang: &str, name: &str, marks: RowMarks) -> String {
+    let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
+    let mut parts = vec![name.to_string()];
+    match marks.kind {
+        Some(ColorType::Process) => parts.push(tr("Process")),
+        Some(ColorType::Spot) => parts.push(tr("Spot")),
+        None => {}
+    }
+    match marks.mode {
+        Some(RowMode::Cmyk) => parts.push(tr("CMYK")),
+        Some(RowMode::Rgb) => parts.push(tr("RGB")),
+        Some(RowMode::Gray) => parts.push(tr("Gray")),
+        Some(RowMode::None | RowMode::Registration) | None => {}
+    }
+    if marks.not_editable {
+        parts.push(tr("Cannot be edited"));
+    }
+    parts.join(", ")
+}
+
+/// Whether accessible name `label` is swatch `name`'s row (its name, then its marks).
+#[cfg(test)]
+pub(crate) fn names_swatch(label: &str, name: &str) -> bool {
+    label.strip_prefix(name).is_some_and(|rest| rest.is_empty() || rest.starts_with(", "))
+}
+
+/// A pencil with a stroke through it: the swatch can't be edited. Drawn in code.
+fn paint_not_editable(p: &egui::Painter, r: egui::Rect, ink: egui::Color32) {
+    // The pencil: its tip at the lower left, its body up to the right.
+    let tip = r.left_bottom() + vec2(1.5, -1.5);
+    let d = vec2(1.0, -1.0).normalized();
+    let n = vec2(d.y, -d.x) * 1.9;
+    let (b0, b1) = (tip + d * 3.4, tip + d * 12.5);
+    p.add(egui::Shape::convex_polygon(vec![tip, b0 + n, b0 - n], ink, egui::Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(vec![b0 + n, b1 + n, b1 - n, b0 - n], ink, egui::Stroke::NONE));
+    // The stroke through it, with a gap of the panel's colour around it so it reads on the body.
+    let (s0, s1) = (r.left_top() + vec2(1.5, 1.5), r.right_bottom() - vec2(1.5, 1.5));
+    p.line_segment([s0, s1], egui::Stroke::new(3.2, egui::Color32::from_black_alpha(140)));
+    p.line_segment([s0, s1], egui::Stroke::new(1.2, ink));
+}
+
+/// The colour type: a process colour is a halftone square, a spot colour a disc in a square.
+fn paint_color_type(p: &egui::Painter, r: egui::Rect, kind: ColorType, ink: egui::Color32) {
+    let sq = egui::Rect::from_center_size(r.center(), vec2(10.0, 10.0));
+    p.rect_filled(sq, 0.0, ink);
+    if kind == ColorType::Spot {
+        p.circle_filled(sq.center(), 3.2, egui::Color32::from_black_alpha(110));
+    } else {
+        // A fine halftone: a grey square with a light dot screen.
+        let dot = egui::Color32::from_black_alpha(70);
+        for i in 0..4u8 {
+            for j in 0..4u8 {
+                let o = if j % 2 == 0 { 1.5 } else { 2.6 };
+                p.circle_filled(sq.min + vec2(o + 2.2 * f32::from(i), 1.6 + 2.3 * f32::from(j)), 0.6, dot);
+            }
+        }
+    }
+}
+
+/// The colour mode: CMYK's four inks meeting in the middle, RGB's three primaries, a grey ramp,
+/// [None]'s red slash and [Registration]'s target.
+fn paint_mode(p: &egui::Painter, r: egui::Rect, mode: RowMode, ink: egui::Color32) {
+    let sq = egui::Rect::from_center_size(r.center(), vec2(11.0, 11.0));
+    let c = sq.center();
+    let rgb = egui::Color32::from_rgb;
+    match mode {
+        RowMode::Cmyk => {
+            let corners = [sq.left_top(), sq.right_top(), sq.right_bottom(), sq.left_bottom()];
+            // Top, right, bottom, left: magenta, yellow, black, cyan.
+            let inks = [rgb(236, 0, 140), rgb(255, 230, 0), rgb(30, 30, 30), rgb(0, 174, 239)];
+            for (k, colour) in inks.into_iter().enumerate() {
+                let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                p.add(egui::Shape::convex_polygon(vec![a, b, c], colour, egui::Stroke::NONE));
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Rgb => {
+            let w = sq.width() / 3.0;
+            for (k, colour) in [rgb(230, 40, 40), rgb(40, 190, 60), rgb(40, 90, 230)].into_iter().enumerate() {
+                let x = sq.min.x + w * k as f32;
+                p.rect_filled(egui::Rect::from_min_max(egui::pos2(x, sq.min.y), egui::pos2(x + w, sq.max.y)), 0.0, colour);
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Gray => {
+            let w = sq.width() / 4.0;
+            for k in 0..4u8 {
+                let x = sq.min.x + w * f32::from(k);
+                p.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(x, sq.min.y), egui::pos2(x + w, sq.max.y)),
+                    0.0,
+                    egui::Color32::from_gray(255 - 70 * k),
+                );
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::None => {
+            p.rect_filled(sq, 0.0, egui::Color32::WHITE);
+            p.line_segment([sq.left_bottom(), sq.right_top()], egui::Stroke::new(1.5, rgb(220, 30, 30)));
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Registration => {
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Inside);
+            p.circle_stroke(c, 3.0, egui::Stroke::new(1.0, ink));
+            p.line_segment([c - vec2(4.5, 0.0), c + vec2(4.5, 0.0)], egui::Stroke::new(1.0, ink));
+            p.line_segment([c - vec2(0.0, 4.5), c + vec2(0.0, 4.5)], egui::Stroke::new(1.0, ink));
+        }
+    }
+}
+
 /// One Swatches panel row: chip, name, type; click applies it to the fill or stroke in front of
 /// the proxy (of the frames or their text, see [`super::colors_affect_text`]), the context menu
 /// to the stroke, colour groups and delete.
@@ -256,7 +407,10 @@ fn swatch_row(
     let t = Tokens::get(ui.ctx());
     // Rows can be dragged onto the Gradient panel's ramp.
     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &sw.name));
+    // What the row's marks show, for screen readers too: "Cyan, Process, CMYK".
+    let marks = row_marks(sw);
+    let spoken = row_label(&app.ui.language, &sw.name, marks);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &spoken));
     resp.dnd_set_drag_payload(SwatchDrag(sw.name.clone()));
     if resp.dragged()
         && let Some(p) = ui.ctx().pointer_interact_pos()
@@ -277,24 +431,25 @@ fn swatch_row(
     let chip = egui::Rect::from_min_size(row.min + vec2(4.0 + indent, 3.0), vec2(16.0, 16.0));
     crate::widgets::paint_chip(ui.painter(), chip, c, g);
     ui.painter().text(row.min + vec2(28.0 + indent, 11.0), egui::Align2::LEFT_CENTER, &sw.name, egui::FontId::proportional(12.5), t.text);
-    // Type indicators: spot dot / process square, colour mode.
-    let kind = match &sw.value {
-        SwatchValue::Color { color, color_type } => {
-            let m = match color {
-                designcraft_color::Color::Cmyk { .. } => "CMYK",
-                designcraft_color::Color::Rgb { .. } => "RGB",
-                designcraft_color::Color::Gray { .. } => crate::i18n::tr(&app.ui.language, "Gray"),
-            };
-            format!("{}{}", if *color_type == ColorType::Spot { "● " } else { "" }, m)
-        }
-        SwatchValue::Gradient { .. } => "Gradient".into(),
+    // InDesign's columns on the right: not editable, colour type, colour mode.
+    let col = |k: f32| egui::Rect::from_min_size(egui::pos2(row.max.x - 19.0 - 18.0 * k, row.min.y + 4.5), vec2(13.0, 13.0));
+    if marks.not_editable {
+        paint_not_editable(ui.painter(), col(2.0), t.text_dim);
+    }
+    if let Some(kind) = marks.kind {
+        paint_color_type(ui.painter(), col(1.0), kind, t.text_dim);
+    }
+    if let Some(mode) = marks.mode {
+        paint_mode(ui.painter(), col(0.0), mode, t.text_dim);
+    }
+    let label = match &sw.value {
+        SwatchValue::Gradient { .. } => crate::i18n::tr(&app.ui.language, "Gradient").to_string(),
         SwatchValue::Tint { tint, .. } => format!("{:.0}%", tint * 100.0),
         _ => String::new(),
     };
-    if sw.locked {
-        icons::paint(ui.painter(), egui::Rect::from_min_size(egui::pos2(row.max.x - 64.0, row.min.y + 4.0), vec2(13.0, 13.0)), "lock", t.text_dim);
+    if !label.is_empty() {
+        ui.painter().text(row.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, label, egui::FontId::proportional(10.5), t.text_dim);
     }
-    ui.painter().text(row.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, kind, egui::FontId::proportional(10.5), t.text_dim);
     if resp.clicked() && !resp.double_clicked() {
         ui.data_mut(|d| d.insert_temp(egui::Id::new(PICKED), sw.name.clone()));
         let _ = super::apply_swatch(app, app.ui.stroke_front, &sw.name, None);
@@ -1080,7 +1235,7 @@ mod gradient_panel_tests {
         // The thumbnail sits left of the Type row.
         let ty = h.get_by_label("Type:").rect();
         let from = egui::pos2(ty.min.x - 21.0, ty.min.y + 12.0);
-        let to = h.get_by_label(label).rect().center();
+        let to = h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, label))).rect().center();
         h.event(Event::PointerMoved(from));
         h.step();
         h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
@@ -1192,14 +1347,14 @@ mod swatches_header_tests {
         let mut h = harness(app);
         h.run_steps(3);
         // Fill in front: a swatch is the fill.
-        h.get_by_label("C=0 M=100 Y=0 K=0").click();
+        h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, "C=0 M=100 Y=0 K=0"))).click();
         h.run_steps(2);
         assert_eq!(items(h.state())[0].fill.swatch, "C=0 M=100 Y=0 K=0");
         // The proxy brings the stroke to the front; the next swatch is the stroke.
         h.get_by_label("Fill").click();
         h.run_steps(2);
         assert!(h.state().ui.stroke_front);
-        h.get_by_label("C=100 M=0 Y=0 K=0").click();
+        h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, "C=100 M=0 Y=0 K=0"))).click();
         h.run_steps(2);
         let it = &items(h.state())[0];
         assert_eq!((it.fill.swatch.as_str(), it.stroke.swatch.as_str()), ("C=0 M=100 Y=0 K=0", "C=100 M=0 Y=0 K=0"));
@@ -1211,7 +1366,7 @@ mod swatches_header_tests {
         h.run_steps(2);
         assert!(!h.state().ui.formatting_affects_text);
         // Delete Swatch removes the swatch last clicked.
-        h.get_by_label("Brand").click();
+        h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, "Brand"))).click();
         h.run_steps(2);
         h.get_by_label("Delete Swatch").click();
         h.run_steps(2);
@@ -1242,5 +1397,56 @@ mod swatches_header_tests {
         let it = items(h.state());
         assert_eq!((it[0].fill.swatch.as_str(), it[0].fill.tint), ("C=100 M=0 Y=0 K=0", 0.4));
         assert_eq!((it[1].fill.swatch.as_str(), it[1].fill.tint), ("C=0 M=100 Y=0 K=0", 0.4));
+    }
+}
+
+#[cfg(test)]
+mod row_mark_tests {
+    use designcraft_color::swatch::{Swatch, default_swatches};
+    use designcraft_color::{Color, ColorType, SwatchValue};
+
+    use super::{RowMarks, RowMode, row_label, row_marks};
+
+    /// A row's accessible name says what its marks show.
+    #[test]
+    fn swatch_rows_say_their_marks() {
+        let all = default_swatches();
+        let label = |name: &str| row_label("", name, row_marks(all.iter().find(|s| s.name == name).unwrap()));
+        assert_eq!(label("[Black]"), "[Black], Process, CMYK, Cannot be edited");
+        assert_eq!(label("[None]"), "[None], Cannot be edited");
+        assert_eq!(label("[Paper]"), "[Paper]");
+        let cyan = all.iter().find(|s| matches!(&s.value, SwatchValue::Color { .. }) && !s.locked).unwrap();
+        let spot = Swatch {
+            name: "Pantone".into(),
+            value: SwatchValue::Color { color: Color::Rgb { r: 1.0, g: 0.0, b: 0.0 }, color_type: ColorType::Spot },
+            locked: false,
+            ..cyan.clone()
+        };
+        assert_eq!(row_label("it", &spot.name, row_marks(&spot)), "Pantone, Tinta piatta, RGB");
+    }
+
+    /// The Swatches panel's right-hand columns, as InDesign's: [None], [Registration] and [Black]
+    /// can't be edited, [Paper] can; colours show their type and mode.
+    #[test]
+    fn swatch_rows_mark_type_mode_and_whether_they_can_be_edited() {
+        let all = default_swatches();
+        let marks = |name: &str| row_marks(all.iter().find(|s| s.name == name).unwrap());
+        assert_eq!(marks("[None]"), RowMarks { not_editable: true, kind: None, mode: Some(RowMode::None) });
+        assert_eq!(marks("[Registration]"), RowMarks { not_editable: true, kind: None, mode: Some(RowMode::Registration) });
+        assert_eq!(marks("[Paper]"), RowMarks { not_editable: false, kind: None, mode: None });
+        assert_eq!(marks("[Black]"), RowMarks { not_editable: true, kind: Some(ColorType::Process), mode: Some(RowMode::Cmyk) });
+        let cyan = all.iter().find(|s| matches!(&s.value, SwatchValue::Color { .. }) && !s.locked).unwrap();
+        assert_eq!(row_marks(cyan), RowMarks { not_editable: false, kind: Some(ColorType::Process), mode: Some(RowMode::Cmyk) });
+        let spot = Swatch {
+            name: "PANTONE".into(),
+            value: SwatchValue::Color { color: Color::Rgb { r: 1.0, g: 0.0, b: 0.0 }, color_type: ColorType::Spot },
+            locked: false,
+            ..cyan.clone()
+        };
+        assert_eq!(row_marks(&spot), RowMarks { not_editable: false, kind: Some(ColorType::Spot), mode: Some(RowMode::Rgb) });
+        // A locked Paper swatch under another name (a document from elsewhere) is still editable.
+        let paper = all.iter().find(|s| s.name == designcraft_color::swatch::PAPER).unwrap();
+        let renamed = designcraft_color::swatch::Swatch { name: "Papier".into(), ..paper.clone() };
+        assert!(!row_marks(&renamed).not_editable);
     }
 }

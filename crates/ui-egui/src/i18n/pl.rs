@@ -29,6 +29,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Wytnij"),
     ("Copy", "Kopiuj"),
     ("Paste", "Wklej"),
+    ("Cannot be edited", "Nie można edytować"),
     ("Restart Numbering", "Zacznij numerowanie od nowa"),
     ("Continue Numbering", "Kontynuuj numerowanie"),
     ("Keep Options…", "Opcje utrzymywania…"),

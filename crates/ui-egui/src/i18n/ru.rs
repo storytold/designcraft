@@ -33,6 +33,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Вырезать"),
     ("Copy", "Копировать"),
     ("Paste", "Вставить"),
+    ("Cannot be edited", "Нельзя изменить"),
     ("Restart Numbering", "Начать нумерацию заново"),
     ("Continue Numbering", "Продолжить нумерацию"),
     ("Keep Options…", "Параметры удержания…"),

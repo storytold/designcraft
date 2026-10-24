@@ -30,6 +30,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "قص"),
     ("Copy", "نسخ"),
     ("Paste", "لصق"),
+    ("Cannot be edited", "غير قابل للتحرير"),
     ("Restart Numbering", "إعادة الترقيم"),
     ("Continue Numbering", "متابعة الترقيم"),
     ("Keep Options…", "خيارات الإبقاء…"),
