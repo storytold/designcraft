@@ -638,6 +638,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             fitting_options
         ),
+        cmd!(
+            "object.clearFittingOptions",
+            "Clear Frame Fitting Options",
+            ["Object", "Fitting"],
+            None,
+            "{ids?} — the frames' fitting options back to the defaults: no auto-fit, no crop amounts, the centre reference point; the content stays where it is",
+            has_selection,
+            clear_fitting_options
+        ),
         cmd!("object.rename", "Rename", [], None, "{id | ids?, name}", has_doc, |s, p| {
             let name = str_param(p, "name").unwrap_or("").to_string();
             set_flag(s, p, move |i| i.name = name.clone(), false)
@@ -2885,6 +2894,35 @@ fn fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Clear Frame Fitting Options: auto-fit off, no crop, the centre reference point. The content
+/// stays where it is, as in InDesign.
+fn clear_fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
+    // Locked frames (or frames on a locked layer) keep their options, as with Fit; frames whose
+    // options are already clear are left out; with nothing to change, no edit (and no empty undo
+    // step).
+    let doc = &s.doc()?.doc;
+    let set = |g: &designcraft_doc::Graphic| g.auto_fit != designcraft_doc::Fitting::None || g.crop != [0.0; 4] || g.fit_align != 4;
+    let ids: Vec<ItemId> = targets(s, p)?
+        .into_iter()
+        .filter(|id| doc.item(*id).is_some_and(|it| unlocked(doc, it) && matches!(&it.content, Content::Graphic(g) if set(g))))
+        .collect();
+    if ids.is_empty() {
+        return Ok(json!({"changed": 0}));
+    }
+    s.edit(|d, _| {
+        let mut n = 0;
+        for id in &ids {
+            let Some(it) = d.item_mut(*id) else { continue };
+            let Content::Graphic(g) = &mut it.content else { continue };
+            g.auto_fit = designcraft_doc::Fitting::None;
+            g.crop = [0.0; 4];
+            g.fit_align = 4;
+            n += 1;
+        }
+        Ok(json!({"changed": n}))
+    })
+}
+
 fn fit(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = &s.doc()?.doc;
     let ids: Vec<_> =
@@ -4289,6 +4327,38 @@ mod fitting_tests {
         let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
         let g = back.spreads.iter().flat_map(|sp| sp.items.iter()).find_map(|i| i.graphic().cloned()).unwrap();
         assert_eq!(g.auto_fit, designcraft_doc::Fitting::FillProportionally);
+    }
+
+    /// Clear Frame Fitting Options puts auto-fit, crop and the reference point back to their
+    /// defaults and leaves the picture where it is.
+    #[test]
+    fn clear_fitting_options_resets_the_frames_options_and_keeps_the_picture() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        s.execute("file.place", &json!({"base64": crate::cmd::base64_encode(&png), "name": "p.png", "frame": f})).unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "autoFit": true, "fitting": "fitProportionally", "crop": 10, "align": 0})).unwrap();
+        let graphic = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().graphic().unwrap().clone();
+        let before = graphic(&s);
+        assert_ne!(before.auto_fit, designcraft_doc::Fitting::None);
+        s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        let g = graphic(&s);
+        assert_eq!(g.auto_fit, designcraft_doc::Fitting::None);
+        assert_eq!(g.crop, [0.0; 4]);
+        assert_eq!(g.fit_align, 4, "the centre reference point");
+        assert_eq!(g.xf, before.xf, "the picture stays where it is");
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        assert_eq!((r["changed"].as_u64(), s.doc().unwrap().history.undo.len()), (Some(0), undo), "already clear: no change, no step");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(graphic(&s).crop, [10.0; 4], "one undo step");
+        s.execute("object.lock", &json!({"ids": [f]})).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        assert_eq!(r["changed"], 0);
+        assert_eq!(graphic(&s).crop, [10.0; 4], "a locked frame keeps its options");
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo, "no empty undo step");
     }
 }
 

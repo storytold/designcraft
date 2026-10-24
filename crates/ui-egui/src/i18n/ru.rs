@@ -33,6 +33,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Вырезать"),
     ("Copy", "Копировать"),
     ("Paste", "Вставить"),
+    ("Clear Frame Fitting Options", "Очистить параметры подгонки фрейма"),
     ("Restart Numbering", "Начать нумерацию заново"),
     ("Continue Numbering", "Продолжить нумерацию"),
     ("Keep Options…", "Параметры удержания…"),

@@ -29,6 +29,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Wytnij"),
     ("Copy", "Kopiuj"),
     ("Paste", "Wklej"),
+    ("Clear Frame Fitting Options", "Wyczyść opcje dopasowania ramki"),
     ("Restart Numbering", "Zacznij numerowanie od nowa"),
     ("Continue Numbering", "Kontynuuj numerowanie"),
     ("Keep Options…", "Opcje utrzymywania…"),

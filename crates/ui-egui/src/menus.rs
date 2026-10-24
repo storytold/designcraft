@@ -713,12 +713,16 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:anchored.options",
             "cmd:anchored.release",
             "<",
+            // InDesign's groups: proportional fits, frame and content fits, clearing, the dialog.
             ">Fitting",
             "ui:fit.fillFrameProportionally",
             "ui:fit.contentProportionally",
+            "-",
             "ui:fit.frameToContent",
             "ui:fit.contentToFrame",
             "ui:fit.centerContent",
+            "-",
+            "cmd:object.clearFittingOptions",
             "-",
             "ui:app.fittingOptions",
             "<",
@@ -3380,6 +3384,30 @@ mod tests {
         assert!(typ.contains(&"view.hiddenCharacters") && !view.contains(&"view.hiddenCharacters"));
         // W still toggles Normal / Preview without a menu entry.
         assert_eq!(ui_label("view.togglePreview").and_then(|c| c.1), Some("W"));
+    }
+
+    /// Object › Fitting in InDesign's groups: the proportional fits, the frame and content fits,
+    /// Clear Frame Fitting Options, then the dialog.
+    #[test]
+    fn the_fitting_menu_is_grouped_as_indesigns() {
+        let items = MENUS.iter().find(|(t, _)| *t == "Object").map(|(_, items)| *items).unwrap();
+        let start = items.iter().position(|e| *e == ">Fitting").unwrap() + 1;
+        let end = start + items[start..].iter().position(|e| *e == "<").unwrap();
+        assert_eq!(
+            &items[start..end],
+            [
+                "ui:fit.fillFrameProportionally",
+                "ui:fit.contentProportionally",
+                "-",
+                "ui:fit.frameToContent",
+                "ui:fit.contentToFrame",
+                "ui:fit.centerContent",
+                "-",
+                "cmd:object.clearFittingOptions",
+                "-",
+                "ui:app.fittingOptions",
+            ]
+        );
     }
 
     /// The submenu paths of a menu bar menu ("View/Screen Mode"), as Edit › Menus keys them.

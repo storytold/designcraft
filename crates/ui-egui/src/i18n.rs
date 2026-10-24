@@ -47,6 +47,16 @@ pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 const TABLE: &[(&str, [&str; 5])] = &[
     (
+        "Clear Frame Fitting Options",
+        [
+            "Rahmeneinpassungsoptionen löschen",
+            "Effacer les options d’ajustement du bloc",
+            "Borrar opciones de encaje de marco",
+            "フレーム調整オプションを消去",
+            "清除框架适合选项",
+        ],
+    ),
+    (
         "Character Formatting Controls",
         [
             "Steuerelemente für Zeichenformatierung",

@@ -31,6 +31,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "ამოჭრა"),
     ("Copy", "კოპირება"),
     ("Paste", "ჩასმა"),
+    ("Clear Frame Fitting Options", "ჩარჩოს მორგების პარამეტრების გასუფთავება"),
     ("Restart Numbering", "ნუმერაციის თავიდან დაწყება"),
     ("Continue Numbering", "ნუმერაციის გაგრძელება"),
     ("Keep Options…", "შენარჩუნების პარამეტრები…"),
