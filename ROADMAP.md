@@ -356,6 +356,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-10-18** · Table of Contents gains Create PDF Bookmarks: included headings become nested page destinations, regenerated in their existing outline position on update without replacing or moving surrounding manual bookmarks. The setting survives native and IDML files. No readiness percentage change.
+
 Newest first.
 
 - **2026-10-24** · New documents start with Hyphenate Capitalized Words, Hyphenate Last Word and Hyphenate Across Column off in [Basic Paragraph], as in InDesign. Opened and imported files keep the values they carry. No readiness percentage change.

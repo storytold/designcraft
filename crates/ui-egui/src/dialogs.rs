@@ -6478,6 +6478,7 @@ pub fn open_toc(app: &mut DesignApp) {
         "charStyles": char_styles,
         "hasToc": toc.is_some(),
         "replace": toc.is_some(),
+        "createBookmarks": toc.is_none_or(|t| t.create_bookmarks),
     });
     app.ui.dialog = Some(Dialog::new(TOC, fields));
 }
@@ -6506,7 +6507,7 @@ fn toc_params(app: &DesignApp, d: &Dialog) -> Value {
             e
         })
         .collect();
-    let mut p = json!({"title": d.s("title"), "entries": entries, "replace": d.b("replace")});
+    let mut p = json!({"title": d.s("title"), "entries": entries, "replace": d.b("replace"), "createBookmarks": d.b("createBookmarks")});
     let title_style = d.s("titleStyle");
     if !title_style.is_empty() {
         p["titleStyle"] = json!(title_style);
@@ -6644,6 +6645,7 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
     ui.add_space(8.0);
     crate::rtl::label(ui, egui::RichText::new(tr("Options")).font(semibold(12.0)));
+    check(ui, d, "createBookmarks", &tr("Create PDF Bookmarks"));
     let has_toc = d.b("hasToc");
     ui.add_enabled_ui(has_toc, |ui| check(ui, d, "replace", &tr("Replace Existing Table of Contents")));
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
@@ -8350,6 +8352,36 @@ mod tests {
             app.run("edit.undo", json!({})).unwrap();
         }
         assert_eq!(opts(&app), before);
+    }
+
+    /// The bookmarks checkbox persists through generation and reopening the dialog.
+    #[test]
+    fn toc_bookmarks_checkbox_sets_and_reopens_the_persisted_option() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.newSample", json!({})).unwrap();
+        open_toc(&mut app);
+        assert!(app.ui.dialog.as_ref().unwrap().b("createBookmarks"));
+        app.ui.dialog.as_mut().unwrap().fields.insert("included".into(), json!([{"style": "Headline", "level": 1}]));
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        visible_label(&labels, screen, "Create PDF Bookmarks");
+        confirm(&mut app).unwrap();
+        assert!(app.session.doc().unwrap().doc.toc.as_ref().unwrap().create_bookmarks);
+        assert!(!app.session.doc().unwrap().doc.bookmarks.is_empty());
+        open_toc(&mut app);
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Create PDF Bookmarks").center());
+        confirm(&mut app).unwrap();
+        assert!(app.session.doc().unwrap().doc.bookmarks.is_empty());
+        open_toc(&mut app);
+        assert!(!app.ui.dialog.as_ref().unwrap().b("createBookmarks"));
     }
 
     #[test]

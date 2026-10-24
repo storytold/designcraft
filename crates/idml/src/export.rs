@@ -1075,7 +1075,7 @@ impl<'a> Ex<'a> {
             .attr("RunIn", "false")
             .attr("IncludeHidden", "false")
             .attr("IncludeBookDocuments", "false")
-            .attr("CreatePdfBookmarks", "false");
+            .attr("CreateBookmarks", if toc.create_bookmarks { "true" } else { "false" });
         for e in &toc.entries {
             let format = e.entry_style.clone().unwrap_or_else(|| format!("TOC Level {}", e.level));
             let position = match e.page_number {

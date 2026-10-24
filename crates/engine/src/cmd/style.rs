@@ -2967,6 +2967,7 @@ mod delete_tests {
         assert_eq!(s.doc().unwrap().history.undo.len(), undo);
     }
 
+    /// Deleting a paragraph style also redirects TOC style references to its replacement.
     #[test]
     fn deleting_a_paragraph_style_points_every_use_at_the_replacement() {
         let mut s = Session::new();
@@ -2987,6 +2988,7 @@ mod delete_tests {
                 entries: vec![TocEntry { entry_style: Some("Table Body".into()), ..TocEntry::new("Table Body", 1) }],
                 page_numbers: false,
                 title_style: Some("Table Body".into()),
+                create_bookmarks: false,
             });
             Ok(())
         })
