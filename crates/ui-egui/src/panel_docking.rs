@@ -161,17 +161,29 @@ fn placement(params: &Value) -> Result<Placement<String>, String> {
 }
 
 pub(crate) fn command(app: &mut DesignApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    // Shift+F9 toggles Table: an open Table flyout closes (it isn't docked, so docking it would
+    // leave the flyout up); otherwise Table docks, or closes when it's in the layout.
     if id == "app.tablePanel" && app.ui.docking.is_some() {
         let panel = "table".to_string();
+        if app.ui.open_panel.as_deref() == Some("table")
+            && let Some(r) = iconic_command(app, "window.panel.close", &json!({"panel": panel}))
+        {
+            return Some(r);
+        }
         let visible = app.ui.docking.as_ref().is_some_and(|layout| layout.contains(&panel));
         return Some(change(app, if visible { "close" } else { "activate" }, &json!({"panel": panel})));
     }
     if id == "window.panel.closeGroup" {
         return Some(close_group(app, params));
     }
+    // A click on a panel's icon opens its flyout, not the Window menu's floating group.
     if id == "window.panel"
+        && params.get("from").and_then(Value::as_str) != Some("icons")
         && let Some(result) = open_floating_group(app, params)
     {
+        return Some(result);
+    }
+    if let Some(result) = iconic_command(app, id, params) {
         return Some(result);
     }
     if id == "window.panel.layout" {
@@ -193,6 +205,28 @@ pub(crate) fn command(app: &mut DesignApp, id: &str, params: &Value) -> Option<R
         _ => return None,
     };
     Some(change(app, operation, params))
+}
+
+/// Window opens a panel that still belongs to the icon rail as a flyout. Explicit docking and
+/// activation commands keep their layout semantics, including restoring a closed dock tab.
+fn iconic_command(app: &mut DesignApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    let layout = app.ui.docking.as_ref()?;
+    if !valid(layout) {
+        return None;
+    }
+    let panel = params.get("panel").and_then(Value::as_str).and_then(normalize)?;
+    if layout.contains(&panel.to_string()) {
+        return None;
+    }
+    if id == "window.panel.close" && app.ui.open_panel.as_deref() == Some(panel) {
+        app.ui.open_panel = None;
+        return Some(Ok(json!({"panel":panel,"iconic":true,"open":false})));
+    }
+    if id != "window.panel" || app.ui.docking_hidden.contains_key(panel) || !crate::dock::ICON_PANELS.iter().any(|(p, _, _)| *p == panel) {
+        return None;
+    }
+    app.ui.open_panel = Some(panel.to_string());
+    Some(Ok(json!({"panel":panel,"iconic":true,"open":true})))
 }
 
 // UI output and automation share this atomic dispatcher. The application owns the registry
@@ -466,6 +500,10 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) -> bool {
         let rect = ui.ctx().memory(|m| m.area_rect(egui::Id::new("story_editor"))).unwrap_or_else(|| ui.ctx().content_rect());
         blocked.push(rect);
     }
+    if app.ui.open_panel.is_some() {
+        // A foreground flyout must not accept a dock drop through its body.
+        blocked.push(ui.ctx().memory(|m| m.area_rect(egui::Id::new("panel_flyout"))).unwrap_or_else(|| ui.ctx().content_rect()));
+    }
     let t = crate::theme::Tokens::get(ui.ctx());
     let language = app.ui.language.clone();
     let mut draw = |ui: &mut egui::Ui| {
@@ -528,6 +566,10 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) -> bool {
         }
         ui.ctx().data_mut(|data| data.remove::<LegacyDrag>(egui::Id::new("designcraft-panel-docking").with("legacy-origin")));
     }
+    if app.ui.open_panel.is_some() && dock_drag_started(ui.ctx()) {
+        // As in InDesign, starting to drag a panel collapses the icon panel's flyout.
+        app.ui.open_panel = None;
+    }
     for action in output.actions {
         if let Err(error) = app.run("window.panel.layout", json!({"action": action})) {
             app.ui.status = error;
@@ -535,6 +577,14 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) -> bool {
     }
     icon_rail(app, ui);
     true
+}
+
+/// A drag began this frame on one of the docking surface's own controls: a tab, a floating
+/// group's grip, a divider or a resize corner.
+fn dock_drag_started(ctx: &egui::Context) -> bool {
+    let Some(started) = ctx.drag_started_id() else { return false };
+    let owned = egui::Id::new("designcraft-panel-docking").with("owned-interactions");
+    ctx.data(|data| data.get_temp::<Vec<egui::Id>>(owned)).is_some_and(|ids| ids.contains(&started))
 }
 
 fn icon_rail(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -553,10 +603,15 @@ fn icon_rail(app: &mut DesignApp, ui: &mut egui::Ui) {
                         continue;
                     }
 
+                    let open = app.ui.open_panel.as_deref() == Some(id);
                     let response =
-                        crate::icons::button(ui, icon, 28.0, false, crate::i18n::tr(&app.ui.language, label)).interact(egui::Sense::click_and_drag());
+                        crate::icons::button(ui, icon, 28.0, open, crate::i18n::tr(&app.ui.language, label)).interact(egui::Sense::click_and_drag());
                     if response.clicked() {
-                        let _ = app.run("window.panel.activate", json!({"panel":id}));
+                        let _ = if open {
+                            app.run("window.panel.close", json!({"panel":id}))
+                        } else {
+                            app.run("window.panel", json!({"panel":id, "from":"icons"}))
+                        };
                     }
                     legacy_tab(app, ui, id, &response);
                 }
@@ -732,6 +787,9 @@ fn tab_commands(app: &mut DesignApp, ui: &mut egui::Ui, panel: &'static str) {
 
 /// Close the last explicitly opened panel through the same validated layout transaction.
 pub(crate) fn close_visible(app: &mut DesignApp) -> Result<(), String> {
+    if app.ui.open_panel.take().is_some() {
+        return Ok(());
+    }
     if app.ui.docking.is_some() {
         if let Some(panel) = app.ui.docking_opened.clone() {
             change(app, "close", &json!({"panel": panel}))?;

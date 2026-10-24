@@ -255,7 +255,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "window.panel",
         "Show Panel",
         None,
-        "{panel: properties|pages|layers|swatches|paragraphStyles|characterStyles|stroke|character|paragraph|textWrap|links|table|preflight}",
+        "{panel: properties|pages|layers|swatches|paragraphStyles|characterStyles|stroke|character|paragraph|textWrap|links|table|preflight, from?: \"icons\" (a click on the panel's icon: open its flyout)}",
     ),
     ("window.floatPanel", "Float Panel", None, "{panel, x?, y?} — the panel in its own movable window"),
     (
