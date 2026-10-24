@@ -31,6 +31,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Ausschneiden"),
     ("Copy", "Kopieren"),
     ("Paste", "Einfügen"),
+    ("Corner Size and Shape:", "Eckengröße und -form:"),
     ("Restart Numbering", "Nummerierung neu beginnen"),
     ("Continue Numbering", "Nummerierung fortführen"),
     ("Keep Options…", "Umbruchoptionen …"),

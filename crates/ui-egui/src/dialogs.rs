@@ -2787,6 +2787,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         });
                     }
                     STEP_AND_REPEAT => step_and_repeat_dialog(app, ui, &mut d),
+                    CORNER_OPTIONS => corner_options_dialog(app, ui, &mut d),
                     TOC => toc_dialog(app, ui, &mut d),
                     id if id.starts_with("cmd:") => command_form(app, ui, &mut d),
                     "goToPage" => {
@@ -3643,6 +3644,22 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             // Confirmation consumes retained bounds before closing, even on an error.
             app.session.reset_find_scope();
             result
+        }
+        CORNER_OPTIONS => {
+            // The preview goes; the corners change once, as one undo step.
+            if d.fields.contains_key(PREVIEWED) {
+                app.session.cancel_interaction();
+            }
+            let mut d = d;
+            seed_corner_options(app, &mut d);
+            link_corners(&mut d);
+            let r = corner_options_params(&d).and_then(|p| app.run("object.cornerOptions", p));
+            if let Err(e) = &r {
+                d.fields.remove(PREVIEWED);
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
+            }
+            r
         }
         STEP_AND_REPEAT => {
             // The preview goes; the copies are made once, as one undo step.
@@ -6410,6 +6427,7 @@ fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 }
 
 const STEP_AND_REPEAT: &str = "cmd:edit.stepAndRepeat";
+pub(crate) const CORNER_OPTIONS: &str = "cmd:object.cornerOptions";
 const TOC: &str = "cmd:toc.generate";
 
 /// One included style of the Table of Contents dialog, as `toc.generate` takes it, with the
@@ -6763,6 +6781,179 @@ fn step_and_repeat_preview(app: &mut DesignApp, d: &mut Dialog) {
         return;
     }
     match app.session.preview("edit.stepAndRepeat", params.clone()) {
+        Ok(()) => d.fields.remove("status"),
+        Err(e) => d.fields.insert("status".into(), json!(e.to_string())),
+    };
+    d.fields.insert(PREVIEWED.into(), params);
+}
+
+/// The corners of Object › Corner Options, in `object.cornerOptions` path order (top-left,
+/// top-right, bottom-right, bottom-left), with the tip InDesign gives each.
+const CORNERS: [(&str, &str); 4] = [("0", "Top Left:"), ("1", "Top Right:"), ("2", "Bottom Right:"), ("3", "Bottom Left:")];
+
+/// The Corner Options dialog's fields from the first selected object's corners, once: each
+/// corner's size (in the ruler units) and shape, linked when all four are the same.
+fn seed_corner_options(app: &DesignApp, d: &mut Dialog) {
+    use designcraft_geom::corners::Corner;
+    let Some(st) = app.session.active() else { return };
+    d.unit = st.doc.settings.horizontal_units;
+    if d.fields.contains_key("_seeded") {
+        return;
+    }
+    let corners: [Corner; 4] = st.selection.items.iter().find_map(|id| st.doc.item(*id)).map(|it| it.corners.corners).unwrap_or_default();
+    for ((k, _), c) in CORNERS.iter().zip(corners) {
+        d.fields.entry(format!("size{k}")).or_insert(json!(format_measure(c.size, d.unit)));
+        d.fields.entry(format!("shape{k}")).or_insert(serde_json::to_value(c.shape).unwrap_or(json!("none")));
+    }
+    let first = corners[0];
+    d.fields.entry("link").or_insert(json!(corners.iter().all(|c| *c == first)));
+    d.fields.insert("_seeded".into(), json!(true));
+}
+
+/// Linked corners: a corner changed since the dialog last looked (size or shape, typed or set
+/// over the control channel) is all four.
+fn link_corners(d: &mut Dialog) {
+    let now: Vec<(String, String)> = CORNERS.iter().map(|(k, _)| (d.s(&format!("size{k}")), d.s(&format!("shape{k}")))).collect();
+    let seen: Vec<(String, String)> = d.fields.get("_corners").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_else(|| now.clone());
+    let mut now = now;
+    if d.b("link")
+        && let Some(i) = now.iter().zip(&seen).position(|(a, b)| a != b)
+        && let Some(changed) = now.get(i).cloned()
+    {
+        for (k, _) in &CORNERS {
+            d.fields.insert(format!("size{k}"), json!(changed.0));
+            d.fields.insert(format!("shape{k}"), json!(changed.1));
+        }
+        now = vec![changed; CORNERS.len()];
+    }
+    d.fields.insert("_corners".into(), json!(now));
+}
+
+/// `object.cornerOptions`' params from the dialog. A size that does not parse is an error to show.
+fn corner_options_params(d: &Dialog) -> Result<Value, String> {
+    use designcraft_geom::corners::CornerShape;
+    let mut corners = Vec::with_capacity(CORNERS.len());
+    for (k, _) in &CORNERS {
+        let key = format!("size{k}");
+        let size =
+            d.m(&key).filter(|v| v.is_finite() && *v >= 0.0).ok_or_else(|| format!("Enter a valid corner size, e.g. 12 or 3 mm: {}", d.s(&key)))?;
+        let shape: CornerShape = d.fields.get(&format!("shape{k}")).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        corners.push(json!({"shape": shape, "size": size}));
+    }
+    Ok(json!({"corners": corners}))
+}
+
+/// A corner's icon: the corner of a small square, with a dot at the corner it sets.
+fn paint_corner_icon(ui: &mut egui::Ui, corner: usize, tip: &str) {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+    resp.on_hover_text(tip);
+    let b = r.shrink(3.0);
+    ui.painter().rect_stroke(b, 0.0, egui::Stroke::new(1.0, t.icon), egui::StrokeKind::Inside);
+    let at = match corner {
+        0 => b.left_top(),
+        1 => b.right_top(),
+        2 => b.right_bottom(),
+        _ => b.left_bottom(),
+    };
+    ui.painter().rect_filled(egui::Rect::from_center_size(at, egui::vec2(4.0, 4.0)), 0.0, t.accent);
+}
+
+/// Object › Corner Options, as InDesign's: under "Corner Size and Shape:", each corner's size and
+/// shape (top corners above, bottom ones below, as on the frame), the link button that makes all
+/// four the same, and Preview.
+fn corner_options_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    use designcraft_geom::corners::CornerShape;
+    seed_corner_options(app, d);
+    link_corners(d);
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    crate::rtl::label(ui, tr("Corner Size and Shape:"));
+    ui.add_space(8.0);
+    let corner = |ui: &mut egui::Ui, d: &mut Dialog, i: usize| {
+        let Some((k, tip)) = CORNERS.get(i) else { return };
+        ui.horizontal(|ui| {
+            paint_corner_icon(ui, i, &tr(tip));
+            measure_field(ui, d, &format!("size{k}"), 70.0);
+            let key = format!("shape{k}");
+            let shape: CornerShape = d.fields.get(&key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            let resp = crate::panels::properties::corner_shape_button(ui, shape, 46.0);
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("{} {}", tr(tip), tr(shape.label()))));
+            egui::Popup::menu(&resp).show(|ui| {
+                ui.set_min_width(150.0);
+                for s in CornerShape::ALL {
+                    if ui.selectable_label(s == shape, crate::rtl::widget(ui, tr(s.label()))).clicked() {
+                        d.fields.insert(key.clone(), json!(s));
+                        ui.close();
+                    }
+                }
+            });
+        });
+    };
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            corner(ui, d, 0);
+            ui.add_space(6.0);
+            corner(ui, d, 3);
+        });
+        ui.add_space(8.0);
+        let linked = d.b("link");
+        let tip = tr("Make all settings the same");
+        let resp = ui
+            .vertical(|ui| {
+                ui.add_space(12.0);
+                crate::icons::button(ui, if linked { "link" } else { "link-broken" }, 20.0, linked, &tip)
+            })
+            .inner;
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &tip));
+        if resp.clicked() {
+            d.fields.insert("link".into(), json!(!linked));
+        }
+        ui.add_space(8.0);
+        ui.vertical(|ui| {
+            corner(ui, d, 1);
+            ui.add_space(6.0);
+            corner(ui, d, 2);
+        });
+    });
+    link_corners(d);
+    ui.add_space(10.0);
+    check(ui, d, "preview", &tr("Preview"));
+    corner_options_preview(app, d);
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+        ui.add_space(6.0);
+        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+    }
+}
+
+/// Preview on: the corners show on the frame (redone when a field changes); off: they go back.
+fn corner_options_preview(app: &mut DesignApp, d: &mut Dialog) {
+    let shown = d.fields.get(PREVIEWED).cloned();
+    if !d.b("preview") {
+        if shown.is_some() {
+            app.session.cancel_interaction();
+            d.fields.remove(PREVIEWED);
+            d.fields.remove("status");
+        }
+        return;
+    }
+    let params = match corner_options_params(d) {
+        Ok(p) => p,
+        Err(e) => {
+            d.fields.insert("status".into(), json!(e));
+            return;
+        }
+    };
+    if shown.as_ref() == Some(&params) {
+        return;
+    }
+    if shown.is_none()
+        && let Err(e) = app.session.begin_interaction("Corner Options")
+    {
+        d.fields.insert("status".into(), json!(e.to_string()));
+        return;
+    }
+    match app.session.preview("object.cornerOptions", params.clone()) {
         Ok(()) => d.fields.remove("status"),
         Err(e) => d.fields.insert("status".into(), json!(e.to_string())),
     };
@@ -7178,6 +7369,70 @@ mod tests {
         };
         let d = Dialog::new("paragraphStyleOptions", json!({"name":"Child"}));
         assert_eq!(paragraph_style_summary("", &d, &style, &styles), "Parent");
+    }
+
+    #[test]
+    fn corner_options_dialog_sets_each_corner_with_preview_and_one_undo_step() {
+        use designcraft_geom::corners::CornerShape;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 360, 360]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let corners = |app: &DesignApp| app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().corners.corners;
+        let undo = |app: &DesignApp| app.session.doc().unwrap().history.undo.len();
+        let set = |app: &mut DesignApp, k: &str, v: Value| {
+            app.ui.dialog.as_mut().unwrap().fields.insert(k.into(), v);
+        };
+        let u0 = undo(&app);
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        // Object › Corner Options… opens InDesign's dialog, not a form of the command's params.
+        crate::menus::activate(&mut app, "object.cornerOptions", &Value::Null);
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some(CORNER_OPTIONS));
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        for expected in ["Corner Options", "Corner Size and Shape:", "Preview", "OK", "Cancel"] {
+            visible_label(&labels, screen, expected);
+        }
+        assert!(!labels.iter().any(|(t, _, _)| t.trim() == "Ids"), "no raw command fields");
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!((d.s("size1"), d.s("shape1"), d.b("link")), ("0p0".into(), "none".into(), true), "seeded from the frame, linked");
+        // Linked: a corner changed is all four.
+        set(&mut app, "size0", json!("1p0"));
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("size2"), "1p0");
+        // Unlinked, only the top-right corner rounds, as in the tutorial.
+        set(&mut app, "link", json!(false));
+        for k in 0..4 {
+            set(&mut app, &format!("size{k}"), json!("0"));
+        }
+        set(&mut app, "size1", json!("3 cm"));
+        set(&mut app, "shape1", json!("rounded"));
+        set(&mut app, "preview", json!(true));
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        assert_eq!(corners(&app)[1].shape, CornerShape::Rounded, "Preview shows it");
+        assert_eq!(undo(&app), u0, "without an undo step");
+        set(&mut app, "preview", json!(false));
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        assert_eq!(corners(&app)[1].shape, CornerShape::None, "Preview off puts it back");
+        set(&mut app, "preview", json!(true));
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        confirm(&mut app).unwrap();
+        let c = corners(&app);
+        assert_eq!(c.map(|c| c.shape), [CornerShape::None, CornerShape::Rounded, CornerShape::None, CornerShape::None]);
+        assert!((c[1].size - 3.0 / 2.54 * 72.0).abs() < 1e-6, "{}", c[1].size);
+        assert_eq!(undo(&app), u0 + 1, "one undo step");
+        // Reopened, it shows the frame's corners, no longer linked.
+        crate::menus::activate(&mut app, "object.cornerOptions", &Value::Null);
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!((d.s("shape1"), d.s("shape0"), d.b("link")), ("rounded".into(), "none".into(), false));
+        // A size that does not parse keeps the dialog open with the error.
+        set(&mut app, "size0", json!("abc"));
+        assert!(confirm(&mut app).is_err());
+        assert!(app.ui.dialog.is_some());
+        cancel(&mut app);
+        assert_eq!(corners(&app), c);
     }
 
     #[test]

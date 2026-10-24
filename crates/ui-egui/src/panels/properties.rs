@@ -792,6 +792,11 @@ fn paint_corner_shape(p: &egui::Painter, r: Rect, shape: CornerShape) {
     p.add(egui::Shape::line(pts, s));
 }
 
+/// A corner shape picker's face: the shape's glyph and the dropdown arrow (the menu is the caller's).
+pub(crate) fn corner_shape_button(ui: &mut Ui, shape: CornerShape, width: f32) -> egui::Response {
+    preview_dropdown(ui, width, |p, r| paint_corner_shape(p, r, shape))
+}
+
 pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32) {
     let resp = preview_dropdown(ui, width, |p, r| paint_corner_shape(p, r, shape));
     egui::Popup::menu(&resp).show(|ui| {
@@ -859,7 +864,8 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let b = block(ui, FIELD_H);
     icons::paint(ui.painter(), sub(b, 3.0, 1.0, 19.0, 19.0), "corner", t.accent);
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Corner"), 56.0)).clicked() {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("frameSize", json!({})));
+        // Corner Options, as Object › Corner Options… opens it.
+        crate::menus::activate(app, "object.cornerOptions", &Value::Null);
     }
     let (shape, size) = i.corner;
     if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
