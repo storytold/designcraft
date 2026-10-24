@@ -22,8 +22,11 @@ use serde_json::{Value, json};
 
 pub const MIME: &str = "application/vnd.designcraft+zip";
 /// Latest reader capability. Version 2 pinned the Keep Lines Together and drop cap defaults;
-/// version 3 adds rendering of retained EPS source assets.
-pub const VERSION: u32 = 3;
+/// version 3 adds rendering of retained EPS source assets; version 4 retains placed graphic layer
+/// options. Version 4 is one capability shared with explicit all-on placed-PDF layer choices
+/// (storytold/designcraft#1671): it must not be released until a reader understands both, and any
+/// later capability needs version 5. [`required_version`] is the only place that picks a version.
+pub const VERSION: u32 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -67,6 +70,19 @@ pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u
 /// 4 GiB written without them; the margin covers deflate output that is larger than its input.
 const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
 
+/// The oldest reader capability that keeps everything in `doc`. Documents that need nothing newer
+/// keep their older requirement so existing readers still open them.
+fn required_version(doc: &Document) -> u32 {
+    // Older readers ignore unknown Graphic fields and would silently drop layer choices.
+    if doc.has_graphic_layer_options() {
+        return 4;
+    }
+    // Older readers would silently omit EPS artwork. Preview-only legacy assets and documents
+    // without EPS stay at 2 so their existing readers keep working; writing 1 would make a
+    // reader re-run the version 2 paragraph upgrade over current defaults.
+    if doc.assets.values().any(|a| designcraft_images::is_eps(&a.data)) { 3 } else { 2 }
+}
+
 fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
     // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
     if let Some(id) = doc.non_finite_item() {
@@ -84,10 +100,7 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         z.start_file("mimetype", stored).map_err(io)?;
         z.write_all(MIME.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         z.start_file("meta.json", deflate).map_err(io)?;
-        // Older readers would silently omit EPS artwork. Preview-only legacy assets and
-        // documents without EPS stay at 2 so their existing readers keep working; writing 1
-        // would make a reader re-run the version 2 paragraph upgrade over current defaults.
-        let version = if doc.assets.values().any(|a| designcraft_images::is_eps(&a.data)) { VERSION } else { 2 };
+        let version = required_version(doc);
         let meta = json!({"format": "designcraft", "version": version, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
         z.write_all(meta.to_string().as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         if let Some(png) = preview {
@@ -404,6 +417,7 @@ mod tests {
         let id = ItemId(d.alloc());
         let mut it = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 50.0, 50.0)));
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset,
             size: (1.0, 1.0),
             xf: Affine::translate((crop, crop)),
@@ -471,6 +485,25 @@ mod tests {
         assert_eq!(load(&save(&d).unwrap()).unwrap().assets[&aid].data.as_slice(), source);
         Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = Arc::new(b"\x89PNG\r\n\x1a\npreview".to_vec());
         assert_eq!(version(&d), 2, "legacy EPS previews stay compatible");
+    }
+
+    #[test]
+    fn one_place_picks_the_oldest_reader_that_keeps_the_document() {
+        use designcraft_doc::{Content, GraphicLayerOptions};
+        let mut d = Document::new(&NewDocument::default());
+        assert_eq!(required_version(&d), 2, "plain documents keep the version 2 reader");
+        let aid = AssetId(d.alloc());
+        let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n".to_vec();
+        d.assets.insert(
+            aid,
+            Arc::new(Asset { id: aid, name: "logo.eps".into(), mime: "application/postscript".into(), data: Arc::new(eps), ..Default::default() }),
+        );
+        let id = place(&mut d, aid, 0.0);
+        assert_eq!(required_version(&d), 3, "EPS sources alone keep the version 3 reader");
+        let Some(Content::Graphic(g)) = d.item_mut(id).map(|it| &mut it.content) else { panic!("placed graphic") };
+        g.layer_options = Some(GraphicLayerOptions { layers: vec![[("Name".to_string(), "Art".to_string())].into()], ..Default::default() });
+        assert_eq!(required_version(&d), 4, "retained graphic layer options need version 4 even with EPS");
+        assert_eq!(required_version(&load(&save(&d).unwrap()).unwrap()), 4);
     }
 
     #[test]

@@ -257,6 +257,7 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     let id = ItemId(d.alloc());
     let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(72.0, 72.0, 272.0, 172.0)));
     it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset,
         size: (px.0 as f64, px.1 as f64),
         xf: designcraft_geom::Affine::translate((72.0, 72.0)) * designcraft_geom::Affine::scale(50.0),

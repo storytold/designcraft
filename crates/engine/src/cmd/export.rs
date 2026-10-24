@@ -434,6 +434,7 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
             );
             let mut it = Item::new(ItemId(out.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (w as f64, h as f64),
                 xf: designcraft_geom::Affine::translate((r.x0, r.y0))
@@ -604,6 +605,7 @@ fn rasterize_where(
         );
         let mut img_item = Item::new(ItemId(out.alloc()), it.layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(reach));
         img_item.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: aid,
             size: (w as f64, h as f64),
             xf: designcraft_geom::Affine::translate((reach.x0, reach.y0)) * designcraft_geom::Affine::scale(1.0 / k),
@@ -743,6 +745,10 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let doc: &designcraft_doc::Document = &boxed;
     let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
+    // Flattening and effect rasterization replace placements, so inspect the source too.
+    if st.doc.has_graphic_layer_visibility_overrides() && !r.warnings.iter().any(|w| w == designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING) {
+        r.warnings.push(designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING.into());
+    }
     // Transparency Blend Space: the page group of pages with transparency.
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     let blended: Vec<bool> = spreads.iter().map(|si| doc.spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))).collect();

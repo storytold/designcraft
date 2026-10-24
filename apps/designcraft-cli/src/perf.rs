@@ -239,6 +239,7 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
             let (nw, nh) = (aw as f64, ah as f64);
             let s = (r.width() / nw).max(r.height() / nh);
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset,
                 size: (nw, nh),
                 xf: Affine::translate((r.x0 + (r.width() - nw * s) / 2.0, r.y0 + (r.height() - nh * s) / 2.0)) * Affine::scale(s),

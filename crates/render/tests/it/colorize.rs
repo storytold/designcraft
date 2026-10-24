@@ -51,6 +51,7 @@ fn shown(file: Vec<u8>, fill: Fill) -> Vec<[u8; 4]> {
     it.fill = Fill::swatch(CYAN);
     it.stroke = Stroke::default();
     it.content = Content::Graphic(Graphic {
+        layer_options: None,
         asset: aid,
         size: (150.0, 50.0),
         xf: Affine::translate((100.0, 100.0)),

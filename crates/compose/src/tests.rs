@@ -577,6 +577,7 @@ fn same_as_clipping_wrap_follows_the_clipping_path() {
     );
     let triangle = PathData::single(SubPath::polyline(&[Point::new(75.0, 0.0), Point::new(150.0, 200.0), Point::new(0.0, 200.0)], true));
     it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(1),
         size: (150.0, 200.0),
         xf: designcraft_geom::Affine::translate((150.0, 100.0)),
@@ -725,6 +726,7 @@ fn an_image_contour_stops_at_its_frame() {
     let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, frame);
     // The image overhangs the frame on every side.
     it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(d.alloc()),
         size: (300.0, 250.0),
         xf: designcraft_geom::Affine::IDENTITY,
@@ -769,6 +771,7 @@ fn a_clipping_path_contour_stops_at_its_frame() {
         true,
     ));
     it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(1),
         size: (150.0, 200.0),
         xf: designcraft_geom::Affine::translate((150.0, 100.0)),

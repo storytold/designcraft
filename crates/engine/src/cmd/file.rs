@@ -723,6 +723,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             let xf = Affine::translate((r.x0 + (r.width() - gw) / 2.0, r.y0 + (r.height() - gh) / 2.0)) * Affine::scale(k);
             validate_placement((bw, bh), r, xf, "file.place")?;
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (bw, bh),
                 xf,
@@ -749,6 +750,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
                 it.effects = e.clone();
             }
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (bw, bh),
                 xf,
@@ -913,6 +915,7 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     validate_placement((nw, nh), frame_rect, xf, "place.drop")?;
     let r = s.edit(|d, sel| {
         let graphic = Content::Graphic(Graphic {
+            layer_options: None,
             asset: aid,
             size: (nw, nh),
             xf,

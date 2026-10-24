@@ -1531,6 +1531,7 @@ mod tests {
             let mut item = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0)));
             item.alt_text = alt.into();
             item.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (1.0, 1.0),
                 xf: Affine::IDENTITY,
@@ -1939,6 +1940,7 @@ mod tests {
             let mut item = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(36.0, y, 72.0, y + 36.0)));
             item.alt_text = alt.into();
             item.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (1.0, 1.0),
                 xf: Affine::IDENTITY,
@@ -2055,6 +2057,7 @@ mod tests {
         let mut item = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(36.0, 120.0, 72.0, 156.0)));
         item.alt_text = "Cover \"A\" & B".into();
         item.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: aid,
             size: (1.0, 1.0),
             xf: Affine::IDENTITY,
