@@ -2008,6 +2008,10 @@ fn set_screen_mode(app: &mut DesignApp, mode: ScreenMode) {
         // Presentation fits the spread to the screen; leaving it puts the user's view back.
         app.ui.presentation_view = app.view_key().zip(app.view().copied());
     }
+    // Restore here, inside the command, before the next canvas frame: `canvas::presentation_view`
+    // runs on that frame and re-centres the last presented spread on top of this view. A restore
+    // made after that frame would overwrite it (see
+    // `presentation_exit_restores_the_entry_view_inside_the_command`).
     if mode != ScreenMode::Presentation
         && presenting
         && let Some((k, v)) = app.ui.presentation_view.take()
