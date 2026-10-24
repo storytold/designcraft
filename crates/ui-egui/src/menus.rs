@@ -2222,10 +2222,24 @@ pub fn shortcut_text(sc: &str) -> String {
         None => ("", sc),
     };
     let has = |m: &str| mods.split('+').any(|x| x == m);
+    if mac {
+        let mut out = String::new();
+        for (m, sym) in [("Ctrl", "⌃"), ("Alt", "⌥"), ("Shift", "⇧"), ("Cmd", "⌘")] {
+            if has(m) {
+                out += sym;
+            }
+        }
+        return out + key;
+    }
+    // Windows and Linux, as InDesign writes them: Ctrl (Cmd's key here) first, then Alt, Shift.
     let mut out = String::new();
-    for (m, sym, word) in [("Ctrl", "⌃", "Ctrl+"), ("Alt", "⌥", "Alt+"), ("Shift", "⇧", "Shift+"), ("Cmd", "⌘", "Ctrl+")] {
-        if has(m) && !(m == "Cmd" && !mac && has("Ctrl")) {
-            out += if mac { sym } else { word };
+    if has("Cmd") || has("Ctrl") {
+        out += "Ctrl+";
+    }
+    for m in ["Alt", "Shift"] {
+        if has(m) {
+            out += m;
+            out += "+";
         }
     }
     out + key
@@ -3604,7 +3618,12 @@ mod tests {
             assert_eq!(shortcut_text("Cmd+Alt+3"), "⌥⌘3");
             assert_eq!(shortcut_text("Cmd+Shift+."), "⇧⌘.");
         } else {
-            assert_eq!(shortcut_text("Cmd+Alt+3"), "Alt+Ctrl+3");
+            // InDesign's order on Windows: Ctrl+Alt+Shift+.
+            assert_eq!(shortcut_text("Cmd+Alt+3"), "Ctrl+Alt+3");
+            assert_eq!(shortcut_text("Cmd+Alt+Shift+C"), "Ctrl+Alt+Shift+C");
+            assert_eq!(shortcut_text("Cmd+Shift+E"), "Ctrl+Shift+E");
+            assert_eq!(shortcut_text("Ctrl+Cmd+Q"), "Ctrl+Q");
+            assert_eq!(shortcut_text("Cmd+-"), "Ctrl+-");
         }
     }
 
