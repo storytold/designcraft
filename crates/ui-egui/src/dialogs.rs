@@ -3876,9 +3876,9 @@ fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Resul
     }
     let (para, chars) = style_option_maps(d);
     let based = d.s("basedOn");
-    let rename = d.s("rename");
+    let rename = d.s("rename").trim().to_string();
     let (r, style) = if d.b("new") {
-        let mut params = json!({"name": if rename.trim().is_empty() { "Paragraph Style 1" } else { rename.trim() }, "para": para, "chars": chars});
+        let mut params = json!({"name": if rename.is_empty() { "Paragraph Style 1" } else { rename.as_str() }, "para": para, "chars": chars});
         if !based.is_empty() && based != designcraft_doc::NO_PARA_STYLE {
             params["basedOn"] = json!(based);
         }
@@ -3890,11 +3890,17 @@ fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Resul
         if !based.is_empty() {
             params["basedOn"] = if based == designcraft_doc::NO_PARA_STYLE { Value::Null } else { json!(based) };
         }
-        if !rename.is_empty() && rename != name {
+        let renaming = !rename.is_empty() && rename != name;
+        if renaming {
             params["rename"] = json!(rename);
         }
-        let style = if !rename.is_empty() && rename != name { rename } else { name };
-        (app.run("style.paragraph.edit", params)?, style)
+        let r = app.run("style.paragraph.edit", params).inspect_err(|_| {
+            // A refused name is shown next to the name field.
+            if renaming {
+                d.fields.insert("section".into(), json!("general"));
+            }
+        })?;
+        (r, if renaming { rename } else { name })
     };
     // The style now exists under `style`: if a later step fails, the dialog stays open on it and
     // a second OK edits it rather than creating another one.
@@ -7985,6 +7991,26 @@ mod tests {
         assert_eq!((d.s("section").as_str(), d.s("status").contains("bad GREP")), ("grep", true));
         assert!(app.session.doc().unwrap().doc.styles.para("Ruled").unwrap().para.grep_styles.is_none(), "nothing saved");
         draw(&mut app, &ctx);
+    }
+
+    #[test]
+    fn paragraph_style_options_show_a_refused_rename_on_general_and_trim_a_new_name() {
+        let (mut app, _) = ruled_paragraph();
+        let ctx = egui::Context::default();
+        app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled", "section": "rules"})));
+        draw(&mut app, &ctx);
+        app.ui.dialog.as_mut().unwrap().fields.insert("rename".into(), json!("Ruled Child"));
+        let e = confirm(&mut app).unwrap_err();
+        let d = app.ui.dialog.clone().expect("the dialog stays open");
+        assert_eq!(d.s("section"), "general", "the name field is on General");
+        assert!(d.s("status").contains("already exists"), "{e}");
+
+        app.ui.dialog.as_mut().unwrap().fields.insert("rename".into(), json!("  Fresh "));
+        app.ui.dialog.as_mut().unwrap().fields.insert("x.tag".into(), json!("h3"));
+        confirm(&mut app).unwrap();
+        let st = &app.session.doc().unwrap().doc.styles;
+        assert!(st.para("Fresh").is_some());
+        assert_eq!(st.export_tag("Fresh", false).map(|t| t.tag.as_str()), Some("h3"));
     }
 
     /// A frame with two paragraphs of [Basic Paragraph]; the first has a local Word Spacing minimum.
