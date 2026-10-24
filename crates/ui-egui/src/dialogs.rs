@@ -2102,7 +2102,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Create Table"),
-        "cellOptions" => crate::i18n::tr(&app.ui.language, "Cell Options"),
+        "cellOptions" | "diagonalLines" => crate::i18n::tr(&app.ui.language, "Cell Options"),
         "createGuides" => crate::i18n::tr(&app.ui.language, "Create Guides"),
         "marginsAndColumns" => crate::i18n::tr(&app.ui.language, "Margins and Columns"),
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
@@ -2869,6 +2869,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         });
                     }
                     "cellOptions" => cell_options(app, ui, &mut d),
+                    "diagonalLines" => diagonal_lines(app, ui, &mut d),
                     "createGuides" => create_guides_dialog(app, ui, &mut d),
                     "marginsAndColumns" => margins_and_columns_dialog(app, ui, &mut d),
                     "textFrameOptions" => {
@@ -3073,6 +3074,101 @@ fn confirm_cell_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, String
     app.run("table.setCell", Value::Object(params))
 }
 
+/// The line buttons of Cell Options › Diagonal Lines: the `diagonal.lines` name and its label.
+const DIAGONAL_LINES: [(&str, &str); 4] = [
+    ("none", "No Diagonal Lines"),
+    ("topLeft", "Diagonal Line from Top Left to Bottom Right"),
+    ("topRight", "Diagonal Line from Top Right to Bottom Left"),
+    ("crossed", "Crossed Diagonal Lines"),
+];
+
+/// Cell Options › Diagonal Lines keys (`table.getCellDiagonal` names).
+const DIAGONAL_KEYS: [&str; 8] = ["lines", "weight", "type", "color", "tint", "gapColor", "gapTint", "inFront"];
+
+/// Table › Cell Options › Diagonal Lines… for the target cells. The fields start from the
+/// cells' values (`seed`); OK applies the fields that differ from it.
+pub fn open_diagonal_lines(app: &mut DesignApp) -> Result<Value, String> {
+    let cur = app.session.execute("table.getCellDiagonal", &json!({})).map_err(|e| e.to_string())?;
+    let mut fields = Map::new();
+    for k in DIAGONAL_KEYS {
+        fields.insert(k.into(), cur[k].clone());
+    }
+    fields.insert("seed".into(), Value::Object(fields.clone()));
+    app.ui.dialog = Some(Dialog::new("diagonalLines", Value::Object(fields)));
+    Ok(Value::Null)
+}
+
+/// Cell Options › Diagonal Lines: the four line buttons, the Line Stroke fields and Draw.
+fn diagonal_lines(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.clone();
+    let t = crate::theme::Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        for (name, label) in DIAGONAL_LINES {
+            let on = d.fields.get("lines").and_then(Value::as_str) == Some(name);
+            let text = crate::i18n::tr(&lang, label).to_string();
+            let (r, resp) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &text));
+            let resp = resp.on_hover_text(&text);
+            if resp.clicked() {
+                d.fields.insert("lines".into(), json!(name));
+            }
+            let p = ui.painter();
+            p.rect_filled(r, 2.0, if resp.hovered() { t.hover } else { t.input });
+            let cell = r.shrink(7.0);
+            p.rect_stroke(cell, 0.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
+            let ink = egui::Stroke::new(1.5, if on { t.accent } else { t.icon });
+            if matches!(name, "topLeft" | "crossed") {
+                p.line_segment([cell.left_top(), cell.right_bottom()], ink);
+            }
+            if matches!(name, "topRight" | "crossed") {
+                p.line_segment([cell.right_top(), cell.left_bottom()], ink);
+            }
+            let rim = if on { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.field_border) };
+            p.rect_stroke(r, 2.0, rim, egui::StrokeKind::Inside);
+        }
+    });
+    ui.add_space(10.0);
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Line Stroke")).font(semibold(12.0)));
+    let values = Value::Object(d.fields.clone());
+    if let Some((k, v)) = crate::panels::cell_stroke::stroke_fields(app, ui, "diagonal_lines", &values) {
+        d.fields.insert(k.into(), v);
+    }
+    ui.add_space(10.0);
+    egui::Grid::new("diagonal_draw").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Draw:"));
+        let shown = match d.fields.get("inFront").and_then(Value::as_bool) {
+            Some(true) => crate::i18n::tr(&lang, "Diagonal In Front"),
+            Some(false) => crate::i18n::tr(&lang, "Content In Front"),
+            None => "",
+        }
+        .to_string();
+        egui::ComboBox::from_id_salt("diagonal_draw_order").selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
+            for (front, label) in [(true, "Diagonal In Front"), (false, "Content In Front")] {
+                let text = crate::i18n::tr(&lang, label);
+                if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {
+                    d.fields.insert("inFront".into(), json!(front));
+                }
+            }
+        });
+        ui.end_row();
+    });
+}
+
+/// Apply the Diagonal Lines fields that differ from the cells' values, as one `table.setCell`.
+fn confirm_diagonal_lines(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    let seed = d.fields.get("seed").cloned().unwrap_or(Value::Null);
+    let mut diagonal = Map::new();
+    for k in DIAGONAL_KEYS {
+        if let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && seed.get(k) != Some(*v)) {
+            diagonal.insert(k.into(), v.clone());
+        }
+    }
+    if diagonal.is_empty() {
+        return Ok(Value::Null);
+    }
+    app.run("table.setCell", json!({"diagonal": diagonal}))
+}
+
 /// Delete absolute pages `pages` as the Pages panel and Layout › Pages › Delete Page do: when
 /// they hold objects, InDesign's warning asks first, unless it was told not to.
 pub fn delete_pages(app: &mut DesignApp, pages: Vec<usize>) -> Result<Value, String> {
@@ -3197,6 +3293,15 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         "cellOptions" => {
             // On an error the dialog stays open to be corrected.
             let r = confirm_cell_options(app, &d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        "diagonalLines" => {
+            // On an error the dialog stays open to be corrected.
+            let r = confirm_diagonal_lines(app, &d);
             if let Err(e) = &r {
                 app.status(e.clone());
                 app.ui.dialog = Some(d);
@@ -7497,6 +7602,47 @@ mod tests {
         let st = app.session.active().unwrap();
         let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
         assert_eq!([t.cell(0, 0).unwrap().strokes[2].weight, t.cell(1, 1).unwrap().strokes[0].weight], [1.0; 2]);
+    }
+
+    #[test]
+    fn diagonal_lines_dialog_draws_and_applies_its_values_but_not_a_mixed_one() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+        let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        app.run("table.setCell", json!({"row": 0, "col": 0, "diagonal": {"color": "[Paper]"}})).unwrap();
+        app.run("table.select", json!({"what": "table"})).unwrap();
+        app.run("app.diagonalLinesDialog", json!({})).unwrap();
+        let ctx = dialog_context("");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+        // The first frame sizes the window without painting it.
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        for shown in ["Line Stroke", "Weight:", "Draw:", "Diagonal In Front"] {
+            visible_label(&labels, screen, shown);
+        }
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.id, "diagonalLines");
+        assert_eq!((&d.fields["lines"], &d.fields["color"], &d.fields["inFront"]), (&json!("none"), &Value::Null, &json!(true)));
+        // The fourth line button, in the row above Line Stroke, is Crossed Diagonal Lines.
+        let caption = visible_label(&labels, screen, "Line Stroke");
+        let gap = ctx.global_style().spacing.item_spacing;
+        let crossed = egui::pos2(caption.left() + 3.0 * (32.0 + gap.x) + 16.0, caption.top() - 10.0 - gap.y - 16.0);
+        click_dialog(&mut app, &ctx, screen, crossed);
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.fields["lines"], json!("crossed"));
+        d.fields.insert("inFront".into(), json!(false));
+        d.fields.insert("weight".into(), json!(0.5));
+        confirm(&mut app).unwrap();
+        let st = app.session.active().unwrap();
+        let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+        assert!(
+            t.cells
+                .iter()
+                .all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::Crossed && !c.diagonal.in_front && c.diagonal.stroke.weight == 0.5)
+        );
+        let colors: Vec<_> = t.cells.iter().map(|c| c.diagonal.stroke.color.as_str()).collect();
+        assert_eq!(colors, ["[Paper]", "[Black]", "[Black]", "[Black]"], "a mixed value is left as it is");
     }
 
     #[test]

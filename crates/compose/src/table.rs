@@ -33,6 +33,10 @@ pub struct PlacedCell {
     pub repeated: bool,
     /// Graphic cell content (drawn at `clip`'s top left, clipped to it).
     pub graphic: Option<designcraft_doc::Graphic>,
+    /// The cell's diagonal lines (Cell Options › Diagonal Lines), corner to corner of `rect`.
+    pub diagonals: Vec<StrokeSeg>,
+    /// Whether the diagonals are drawn over the cell's contents (otherwise under them).
+    pub diagonals_in_front: bool,
 }
 
 /// One cell edge (or the table border) to stroke.
@@ -87,6 +91,10 @@ impl TableFrag {
             c.rect = c.rect + v;
             c.clip = c.clip + v;
             c.origin += v;
+            for s in &mut c.diagonals {
+                s.a += v;
+                s.b += v;
+            }
         }
         for s in &mut self.strokes {
             s.a += v;
@@ -440,6 +448,14 @@ fn emit(
                 overset,
                 repeated,
                 graphic: cell.graphic.clone(),
+                diagonals: cell
+                    .diagonal
+                    .segments(rect)
+                    .into_iter()
+                    .filter(|_| cell.diagonal.stroke.is_visible())
+                    .map(|(a, b)| StrokeSeg { a, b, stroke: cell.diagonal.stroke.clone() })
+                    .collect(),
+                diagonals_in_front: cell.diagonal.in_front,
             });
         }
     }
@@ -1128,6 +1144,46 @@ mod border_tests {
         assert_eq!(bottom.stroke.weight, 3.0);
         let right = fragment.strokes.iter().find(|s| s.a.x == fragment.rect.x1 && s.b.x == fragment.rect.x1).unwrap();
         assert_eq!(right.stroke.weight, 2.0, "unoverridden right edge keeps the table border");
+    }
+
+    #[test]
+    fn diagonal_lines_cross_the_placed_cell_corner_to_corner() {
+        let mut table = Table::new(77, 2, 2, 0, 0, 100.0);
+        let stroke = CellStroke { weight: 3.0, ..Default::default() };
+        let cell = table.cell_mut(0, 0).unwrap();
+        cell.col_span = 2;
+        cell.diagonal = designcraft_doc::CellDiagonal { lines: designcraft_doc::DiagonalLines::Crossed, stroke: stroke.clone(), in_front: false };
+        table.cell_mut(1, 0).unwrap().diagonal.lines = designcraft_doc::DiagonalLines::TopLeft;
+        table.cell_mut(1, 0).unwrap().diagonal.stroke.color = designcraft_color::swatch::NONE.into();
+        let composed = compose_table(table);
+        let fragment = &composed.frames[0].tables[0];
+        let merged = fragment.cells.iter().find(|c| (c.row, c.col) == (0, 0)).unwrap();
+        let r = merged.rect;
+        let ends: Vec<_> = merged.diagonals.iter().map(|s| (s.a, s.b)).collect();
+        assert_eq!(
+            ends,
+            [(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1)), (Point::new(r.x1, r.y0), Point::new(r.x0, r.y1))],
+            "across the merged cell"
+        );
+        assert!(merged.diagonals.iter().all(|s| s.stroke == stroke) && !merged.diagonals_in_front);
+        assert!(fragment.cells.iter().filter(|c| c.row == 1).all(|c| c.diagonals.is_empty()), "none, or an invisible stroke, draws nothing");
+        assert!(fragment.strokes.iter().all(|s| s.a.x == s.b.x || s.a.y == s.b.y), "the edges stay edges");
+    }
+
+    #[test]
+    fn diagonal_lines_move_with_their_cell_in_a_bottom_justified_frame() {
+        let mut table = Table::new(77, 1, 1, 0, 0, 100.0);
+        table.cell_mut(0, 0).unwrap().diagonal.lines = designcraft_doc::DiagonalLines::TopLeft;
+        let mut doc = Document::new(&NewDocument::default());
+        let layer = doc.default_layer();
+        let (fid, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 300.0), layer, "", ParaFormat::default()).unwrap();
+        doc.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = VerticalJustification::Bottom;
+        doc.story_mut(sid).unwrap().insert_table(0, table);
+        let composed = crate::compose_story(&doc, sid, &ComposeOptions::default());
+        let cell = &composed.frames[0].tables[0].cells[0];
+        assert!(cell.rect.y0 > 100.0, "the table sits at the bottom: {:?}", cell.rect);
+        let s = &cell.diagonals[0];
+        assert_eq!((s.a, s.b), (Point::new(cell.rect.x0, cell.rect.y0), Point::new(cell.rect.x1, cell.rect.y1)));
     }
 
     #[test]

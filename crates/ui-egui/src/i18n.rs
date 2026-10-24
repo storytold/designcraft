@@ -4438,6 +4438,36 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Start At", ["Beginnen bei", "Commencer à", "Empezar en", "開始番号", "起始编号"]),
     // Cell strokes.
     ("Strokes and Fills…", ["Konturen und Flächen …", "Contours et fonds…", "Trazos y rellenos…", "線と塗り…", "描边和填色…"]),
+    ("Diagonal Lines…", ["Diagonale Linien …", "Lignes diagonales…", "Líneas diagonales…", "斜線…", "对角线…"]),
+    ("No Diagonal Lines", ["Keine diagonalen Linien", "Aucune ligne diagonale", "Sin líneas diagonales", "斜線なし", "无对角线"]),
+    (
+        "Diagonal Line from Top Left to Bottom Right",
+        [
+            "Diagonale Linie von links oben nach rechts unten",
+            "Ligne diagonale du coin supérieur gauche au coin inférieur droit",
+            "Línea diagonal de la esquina superior izquierda a la inferior derecha",
+            "左上から右下への斜線",
+            "从左上到右下的对角线",
+        ],
+    ),
+    (
+        "Diagonal Line from Top Right to Bottom Left",
+        [
+            "Diagonale Linie von rechts oben nach links unten",
+            "Ligne diagonale du coin supérieur droit au coin inférieur gauche",
+            "Línea diagonal de la esquina superior derecha a la inferior izquierda",
+            "右上から左下への斜線",
+            "从右上到左下的对角线",
+        ],
+    ),
+    (
+        "Crossed Diagonal Lines",
+        ["Gekreuzte diagonale Linien", "Lignes diagonales croisées", "Líneas diagonales cruzadas", "交差する斜線", "交叉对角线"],
+    ),
+    ("Line Stroke", ["Linienkontur", "Contour de ligne", "Trazo de línea", "斜線の線", "线条描边"]),
+    ("Draw:", ["Zeichnen:", "Dessin :", "Dibujar:", "描画:", "绘制："]),
+    ("Diagonal In Front", ["Diagonale im Vordergrund", "Diagonale au premier plan", "Diagonal delante", "斜線を前面へ", "对角线置前"]),
+    ("Content In Front", ["Inhalt im Vordergrund", "Contenu au premier plan", "Contenido delante", "内容を前面へ", "内容置前"]),
     ("Cell Stroke", ["Zellkontur", "Contour de cellule", "Trazo de celda", "セルの線", "单元格描边"]),
     ("Cell Fill", ["Zellfläche", "Fond de cellule", "Relleno de celda", "セルの塗り", "单元格填色"]),
     ("Cell edges", ["Zellkanten", "Bords de cellule", "Bordes de celda", "セルの境界線", "单元格边缘"]),

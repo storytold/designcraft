@@ -481,6 +481,9 @@ impl Renderer {
                 }
             }
             for c in &t.cells {
+                if !c.diagonals_in_front {
+                    draw_cell_diagonals(ctx, f, xf, c);
+                }
                 if let Some(g) = &c.graphic {
                     ctx.set_transform(f.view * xf);
                     ctx.push_clip_layer(&c.clip.to_path(0.1));
@@ -490,34 +493,56 @@ impl Renderer {
                 } else if let Some(cft) = c.text.frames.first() {
                     self.draw_text(ctx, f, &c.text, cft, xf * Affine::translate(c.origin.to_vec2()));
                 }
+                if c.diagonals_in_front {
+                    draw_cell_diagonals(ctx, f, xf, c);
+                }
             }
             ctx.set_transform(f.view * xf);
             for s in &t.strokes {
-                let Some(col) = doc.resolve_color(&s.stroke.color, s.stroke.tint) else { continue };
-                let kind = doc.stroke_kind(&s.stroke.kind);
-                let line = kurbo::Line::new(s.a, s.b).to_path(0.1);
-                // Butt-ended fills close the table's corners the way square caps do.
-                let (ca, cb) = t.corner_capped(s);
-                let capped = kurbo::Line::new(ca, cb).to_path(0.1);
-                // Gap colour under dashes, dots and stripes: the whole edge, solid.
-                if !matches!(kind, designcraft_doc::StrokeType::Solid)
-                    && let Some(gap) = doc.resolve_color(&s.stroke.gap_color, s.stroke.gap_tint)
-                {
-                    ctx.set_paint(color_of(&gap, 1.0));
-                    ctx.set_stroke(kurbo::Stroke::new(s.stroke.weight).with_caps(kurbo::Cap::Butt));
-                    ctx.stroke_path(&capped);
-                }
-                ctx.set_paint(color_of(&col, 1.0));
-                // Stripes, wavy and hash types are fills along the edge.
-                if let Some(o) = kind.outline(&capped, s.stroke.weight, 0.05 * f.px) {
-                    ctx.fill_path(&o);
-                    continue;
-                }
-                ctx.set_stroke(cell_stroke(&kind, s.stroke.weight, s.a.distance(s.b)));
-                ctx.stroke_path(&line);
+                draw_cell_stroke(ctx, f, s, t.corner_capped(s));
             }
         }
     }
+}
+
+/// A cell's diagonal lines, clipped to the cell so their caps stay inside it.
+fn draw_cell_diagonals(ctx: &mut RenderContext, f: &Frame, xf: Affine, c: &designcraft_compose::PlacedCell) {
+    if c.diagonals.is_empty() {
+        return;
+    }
+    ctx.set_transform(f.view * xf);
+    ctx.push_clip_layer(&c.rect.to_path(0.1));
+    for s in &c.diagonals {
+        draw_cell_stroke(ctx, f, s, (s.a, s.b));
+    }
+    ctx.pop_layer();
+}
+
+/// One cell edge or diagonal: the gap color, then the stroke type. `capped` holds the ends the
+/// butt-ended fills (stripes, wavy, hash, the gap color) run between.
+fn draw_cell_stroke(ctx: &mut RenderContext, f: &Frame, s: &designcraft_compose::StrokeSeg, capped: (kurbo::Point, kurbo::Point)) {
+    let doc = f.doc;
+    let Some(col) = doc.resolve_color(&s.stroke.color, s.stroke.tint) else { return };
+    let kind = doc.stroke_kind(&s.stroke.kind);
+    let line = kurbo::Line::new(s.a, s.b).to_path(0.1);
+    // Butt-ended fills close the table's corners the way square caps do.
+    let capped = kurbo::Line::new(capped.0, capped.1).to_path(0.1);
+    // Gap colour under dashes, dots and stripes: the whole edge, solid.
+    if !matches!(kind, designcraft_doc::StrokeType::Solid)
+        && let Some(gap) = doc.resolve_color(&s.stroke.gap_color, s.stroke.gap_tint)
+    {
+        ctx.set_paint(color_of(&gap, 1.0));
+        ctx.set_stroke(kurbo::Stroke::new(s.stroke.weight).with_caps(kurbo::Cap::Butt));
+        ctx.stroke_path(&capped);
+    }
+    ctx.set_paint(color_of(&col, 1.0));
+    // Stripes, wavy and hash types are fills along the edge.
+    if let Some(o) = kind.outline(&capped, s.stroke.weight, 0.05 * f.px) {
+        ctx.fill_path(&o);
+        return;
+    }
+    ctx.set_stroke(cell_stroke(&kind, s.stroke.weight, s.a.distance(s.b)));
+    ctx.stroke_path(&line);
 }
 
 /// A run's stroke colour, if it has one.

@@ -99,6 +99,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{} — Cell Options › Strokes and Fills of the target cells: edge proxy, stroke weight, type, colour, tint, gap colour, gap tint, and cell fill (table.setCell)",
     ),
+    (
+        "app.diagonalLinesDialog",
+        "Diagonal Lines…",
+        None,
+        "{} — Cell Options › Diagonal Lines of the target cells: the line type, its weight, type, color, tint, gap color and gap tint, and Draw (table.setCell {diagonal})",
+    ),
     ("app.footnoteOptionsDialog", "Document Footnote Options…", None, "{} — numbering, formatting and layout of footnotes"),
     ("app.rubyDialog", "Ruby…", None, "{} — the reading set over the selected text"),
     (
@@ -764,6 +770,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             ">Cell Options",
             "ui:app.cellOptionsDialog",
+            "ui:app.diagonalLinesDialog",
             "<",
             "cmd:table.merge",
             "cmd:table.unmerge",
@@ -1139,6 +1146,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.cellOptionsDialog" => crate::dialogs::open_cell_options(app),
+        "app.diagonalLinesDialog" => crate::dialogs::open_diagonal_lines(app),
         "window.hideMenuItem" => {
             let Some(item) = p.get("item").and_then(Value::as_str) else { return Some(Err("missing item".into())) };
             let hide = p.get("hidden").and_then(Value::as_bool).unwrap_or(true);

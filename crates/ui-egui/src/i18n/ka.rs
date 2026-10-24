@@ -1920,5 +1920,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Clear Recent Files", "ბოლო ფაილების სიის გასუფთავება"),
     ("Transparency…", "გამჭვირვალობა…"),
     ("Strokes and Fills…", "კონტურები და შევსებები…"),
+    ("Diagonal Lines…", "დიაგონალური ხაზები…"),
     ("Show/Hide Document Grid", "დოკუმენტის ბადის ჩვენება/დამალვა"),
 ];

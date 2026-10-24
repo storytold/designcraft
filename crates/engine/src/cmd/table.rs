@@ -9,8 +9,8 @@
 use designcraft_compose as compose;
 use designcraft_doc::story::floor_char_boundary;
 use designcraft_doc::{
-    AltFills, CellAddr, CellRange, CellStroke, Document, RowHeightMode, RowKind, Selection, StoryId, StrokeType, Table, TableSel, TextSel,
-    VerticalJustification,
+    AltFills, CellAddr, CellRange, CellStroke, DiagonalLines, Document, RowHeightMode, RowKind, Selection, StoryId, StrokeType, Table, TableSel,
+    TextSel, VerticalJustification,
 };
 use serde_json::{Value, json};
 
@@ -297,7 +297,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Cell Options",
             [],
             None,
-            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, rotation?: 0|90|180|270 (Cell Options › Text › Rotation; kept and written back to IDML, composed horizontally for now), text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
+            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, rotation?: 0|90|180|270 (Cell Options › Text › Rotation; kept and written back to IDML, composed horizontally for now), text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, diagonal?: {lines?: none|topLeft|topRight|crossed (Cell Options › Diagonal Lines: top left to bottom right, top right to bottom left, or both), weight?, color?, tint?, type?, gapColor?, gapTint? (as stroke), inFront?: bool (true: Diagonal In Front, false: Content In Front)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
             in_table,
             set_cell
         ),
@@ -309,6 +309,15 @@ fn table_specs() -> Vec<CommandSpec> {
             "{story?, table?, rows?, cols?, edges?} → {weight, color, tint, type, gapColor, gapTint, fill, fillTint, edges: count} of the chosen edges of the target cells; a value that differs between them is null",
             in_table_or_ids,
             get_cell_stroke
+        ),
+        cmd!(
+            query "table.getCellDiagonal",
+            "Get Cell Diagonal Lines",
+            [],
+            None,
+            "{story?, table?, rows?, cols?} → {lines, weight, color, tint, type, gapColor, gapTint, inFront} of the target cells' diagonal lines; a value that differs between them is null",
+            in_table_or_ids,
+            get_cell_diagonal
         ),
         cmd!(
             "table.setRowHeight",
@@ -925,6 +934,48 @@ impl StrokeEdit {
     }
 }
 
+/// A `diagonal` edit of `table.setCell`: the lines, their stroke attributes and Draw.
+struct DiagonalEdit {
+    lines: Option<DiagonalLines>,
+    stroke: StrokeEdit,
+    in_front: Option<bool>,
+}
+
+impl DiagonalEdit {
+    fn parse(doc: &Document, v: &Value, cmd: &str) -> Result<DiagonalEdit> {
+        if !v.is_object() {
+            return Err(bad(cmd, "diagonal must be an object"));
+        }
+        let lines = match v.get("lines").filter(|l| !l.is_null()) {
+            Some(Value::String(name)) => match name.as_str() {
+                "none" => Some(DiagonalLines::None),
+                "topLeft" => Some(DiagonalLines::TopLeft),
+                "topRight" => Some(DiagonalLines::TopRight),
+                "crossed" => Some(DiagonalLines::Crossed),
+                other => return Err(bad(cmd, format!("unknown diagonal lines `{other}`: none, topLeft, topRight or crossed"))),
+            },
+            Some(other) => return Err(bad(cmd, format!("diagonal lines must be a string, not {other}"))),
+            None => None,
+        };
+        let in_front = match v.get("inFront").filter(|f| !f.is_null()) {
+            Some(Value::Bool(b)) => Some(*b),
+            Some(other) => return Err(bad(cmd, format!("inFront must be true or false, not {other}"))),
+            None => None,
+        };
+        Ok(DiagonalEdit { lines, stroke: StrokeEdit::parse(doc, v, cmd)?, in_front })
+    }
+
+    fn apply(&self, d: &mut designcraft_doc::CellDiagonal) {
+        if let Some(l) = self.lines {
+            d.lines = l;
+        }
+        d.stroke = self.stroke.apply(d.stroke.clone());
+        if let Some(f) = self.in_front {
+            d.in_front = f;
+        }
+    }
+}
+
 /// The stroke drawn on side `side` of the owner cell at `(r, c)` (where that side meets its
 /// first neighbour), as rendering resolves it; the cell's own copy if the side has no stretch.
 fn drawn_side(t: &Table, owners: &[(usize, usize)], (r, c): (usize, usize), side: usize) -> Option<CellStroke> {
@@ -985,6 +1036,10 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         Some(sv) => Some((StrokeEdit::parse(doc, sv, ID)?, EdgeSel::parse(sv.get("edges"), ID)?)),
         None => None,
     };
+    let diagonal = match p.get("diagonal").filter(|v| !v.is_null()) {
+        Some(dv) => Some(DiagonalEdit::parse(doc, dv, ID)?),
+        None => None,
+    };
     edit_table(s, &g, ID, |t| {
         let owners = t.owners();
         let nc = t.ncols();
@@ -1036,6 +1091,9 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(tx) = &text {
                 let len = cell.text.len();
                 cell.text.replace(0..len, tx);
+            }
+            if let Some(edit) = &diagonal {
+                edit.apply(&mut cell.diagonal);
             }
             if let Some((edit, _)) = &stroke {
                 for i in 0..4 {
@@ -1139,6 +1197,31 @@ fn get_cell_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     out.insert("fillTint".into(), fill_tint.unwrap_or(Value::Null));
     out.insert("edges".into(), json!(seen.len()));
     Ok(Value::Object(out))
+}
+
+/// The diagonal lines of the target cells and their stroke; values that differ are null.
+fn get_cell_diagonal(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "table.getCellDiagonal";
+    let g = target(s, p, ID)?;
+    let st = s.doc()?;
+    let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let keys = ["lines", "weight", "color", "tint", "type", "gapColor", "gapTint", "inFront"];
+    let mut slots: [Option<Value>; 8] = Default::default();
+    for (r, c) in t.selected_owners(g.range) {
+        let Some(cell) = t.cell(r, c) else { continue };
+        let d = &cell.diagonal;
+        let e = &d.stroke;
+        let values =
+            [json!(d.lines), json!(e.weight), json!(e.color), json!(e.tint), json!(e.kind), json!(e.gap_color), json!(e.gap_tint), json!(d.in_front)];
+        for (slot, v) in slots.iter_mut().zip(values) {
+            match slot {
+                None => *slot = Some(v),
+                Some(cur) if *cur != v => *cur = Value::Null,
+                _ => {}
+            }
+        }
+    }
+    Ok(Value::Object(keys.iter().zip(slots).map(|(k, v)| ((*k).to_string(), v.unwrap_or(Value::Null))).collect()))
 }
 
 /// Only saturation needs rebasing. Preserve every distinct priority's order and keep
@@ -1574,7 +1657,7 @@ fn get(s: &mut Session, p: &Value) -> Result<Value> {
         .filter_map(|(r, c)| {
             let cell = t.cell(r, c)?;
             Some(json!({"row": r, "col": c, "rowSpan": cell.row_span, "colSpan": cell.col_span, "text": cell.text.text, "fill": cell.fill,
-                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "rotation": cell.rotation, "style": cell.style}))
+                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "rotation": cell.rotation, "style": cell.style, "diagonal": cell.diagonal}))
         })
         .collect();
     Ok(json!({
@@ -1875,6 +1958,48 @@ mod style_tests {
         let t = d.story(designcraft_doc::StoryId(sid)).unwrap().tables.values().next().unwrap();
         assert_eq!(t.cell(1, 1).unwrap().first_baseline, designcraft_doc::FirstBaseline::Leading);
         assert_eq!(t.cell(1, 0).unwrap().first_baseline, designcraft_doc::FirstBaseline::Ascent);
+    }
+
+    #[test]
+    fn diagonal_lines_are_a_cell_option_of_the_target_cells() {
+        use designcraft_doc::DiagonalLines;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let fresh = s.execute("table.getCellDiagonal", &json!({})).unwrap();
+        assert_eq!((&fresh["lines"], &fresh["weight"], &fresh["inFront"]), (&json!("none"), &json!(1.0), &json!(true)));
+        let p = json!({"rows": [0, 0], "cols": [0, 1], "diagonal": {"lines": "crossed", "weight": 2, "color": "[Paper]", "type": "dotted", "inFront": false}});
+        s.execute("table.setCell", &p).unwrap();
+        let cell = |s: &Session, r: usize, c: usize| {
+            s.doc().unwrap().doc.story(sid).unwrap().tables.values().next().unwrap().cell(r, c).unwrap().diagonal.clone()
+        };
+        let d = cell(&s, 0, 1);
+        assert_eq!(
+            (d.lines, d.stroke.weight, d.stroke.color.as_str(), &d.stroke.kind, d.in_front),
+            (DiagonalLines::Crossed, 2.0, "[Paper]", &designcraft_doc::StrokeType::Dotted, false)
+        );
+        assert!(cell(&s, 1, 0).is_default(), "other cells keep none");
+        // Only the attributes given change.
+        s.execute("table.setCell", &json!({"row": 0, "col": 0, "diagonal": {"lines": "topRight"}})).unwrap();
+        let d = cell(&s, 0, 0);
+        assert_eq!((d.lines, d.stroke.weight, d.in_front), (DiagonalLines::TopRight, 2.0, false));
+        let got = s.execute("table.getCellDiagonal", &json!({"rows": [0, 0], "cols": [0, 1]})).unwrap();
+        assert_eq!(
+            (&got["lines"], &got["weight"], &got["color"], &got["inFront"]),
+            (&serde_json::Value::Null, &json!(2.0), &json!("[Paper]"), &json!(false)),
+            "{got}"
+        );
+        let shown = s.execute("table.get", &json!({})).unwrap()["cells"][1]["diagonal"].clone();
+        assert_eq!((&shown["lines"], &shown["inFront"]), (&json!("crossed"), &json!(false)));
+        for bad in [json!({"lines": "x"}), json!({"lines": 1}), json!({"inFront": "yes"}), json!({"weight": -1}), json!("crossed")] {
+            assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "diagonal": bad})).is_err(), "{bad}");
+        }
+        assert_eq!(cell(&s, 0, 0).lines, DiagonalLines::TopRight, "a refused edit changes nothing");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(cell(&s, 0, 0).lines, DiagonalLines::Crossed, "one undo step per edit");
     }
 
     #[test]

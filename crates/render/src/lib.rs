@@ -2119,6 +2119,55 @@ mod tests {
     }
 
     #[test]
+    fn cell_diagonal_lines_draw_in_front_of_or_behind_the_cell_text() {
+        let render = |lines, in_front| {
+            let mut d = Document::new(&NewDocument::default());
+            let lid = d.default_layer();
+            let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+            let mut t = designcraft_doc::Table::new(1, 1, 1, 0, 0, 200.0);
+            t.rows[0].height = 60.0;
+            t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+            let cell = t.cell_mut(0, 0).unwrap();
+            cell.text.insert(0, "WWWWWWWWWWWWWWWWWWWW");
+            cell.text.format_chars(0..20, |f| f.over.size = Some(30.0));
+            let stroke = designcraft_doc::CellStroke { weight: 6.0, color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
+            cell.diagonal = designcraft_doc::CellDiagonal { lines, stroke, in_front };
+            d.story_mut(sid).unwrap().insert_table(0, t);
+            let cache = Cache::new();
+            let rect = cache.get(&d, sid, None).frames[0].tables[0].cell(0, 0).unwrap().rect;
+            let mut r = Renderer::new();
+            r.threads = 0;
+            let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+            let cyan = |p: [u8; 4]| p[0] < 80 && p[2] > 150;
+            let inside = |x: f64, y: f64| x > rect.x0 + 4.0 && x < rect.x1 - 4.0 && y > rect.y0 + 4.0 && y < rect.y1 - 4.0;
+            let count = |a: (f64, f64), b: (f64, f64)| {
+                (0..=200)
+                    .map(|i| (a.0 + (b.0 - a.0) * i as f64 / 200.0, a.1 + (b.1 - a.1) * i as f64 / 200.0))
+                    .filter(|&(x, y)| inside(x, y) && cyan(img.pixel(x as u32, y as u32)))
+                    .count()
+            };
+            let down = count((rect.x0, rect.y0), (rect.x1, rect.y1));
+            let up = count((rect.x1, rect.y0), (rect.x0, rect.y1));
+            // Just past the corner, outside the cell.
+            let outside = img.pixel((rect.x1 + 2.0) as u32, (rect.y1 + 2.0) as u32);
+            (down, up, cyan(outside))
+        };
+        use designcraft_doc::DiagonalLines;
+        assert_eq!(render(DiagonalLines::None, true), (0, 0, false));
+        let (down, up, outside) = render(DiagonalLines::Crossed, true);
+        assert!(down > 150 && up > 150 && !outside, "crossed: {down} {up} {outside}");
+        let (down, up, _) = render(DiagonalLines::TopLeft, true);
+        // The other diagonal meets this one only where they cross, near the middle.
+        assert!(down > 150 && up < 40, "top left to bottom right: {down} {up}");
+        let (down, up, _) = render(DiagonalLines::TopRight, true);
+        assert!(down < 40 && up > 150, "top right to bottom left: {down} {up}");
+        // The text covers part of the line drawn behind it.
+        let (behind, _, _) = render(DiagonalLines::TopLeft, false);
+        let (front, _, _) = render(DiagonalLines::TopLeft, true);
+        assert!(behind + 10 < front, "content in front: {behind} vs {front}");
+    }
+
+    #[test]
     fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
         let fine = designcraft_doc::StrokeType::Dashed { pattern: vec![1e-6, 1e-6] };
         // Expanding these would take ~10^8 dashes per edge.

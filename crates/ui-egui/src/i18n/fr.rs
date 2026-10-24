@@ -145,6 +145,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Generate Index", "Générer l'index"),
     ("Generate Live Caption", "Générer une légende dynamique"),
     ("Get Cell Stroke", "Obtenir le contour de cellule"),
+    ("Get Cell Diagonal Lines", "Obtenir les lignes diagonales de cellule"),
     ("Get Tabs", "Obtenir les tabulations"),
     ("Global Light", "Lumière globale"),
     ("Grab bag", "Liste"),
