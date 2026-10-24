@@ -575,6 +575,33 @@ pub fn swatch_colors(doc: &designcraft_doc::Document, name: &str, tint: f32) -> 
 }
 
 /// A 21 pt icon toggle (active = `#303030` well with a 1 pt rim).
+/// A push button with a painted icon before its text (the Links panel's Go To and Update).
+pub fn icon_text_button(ui: &mut Ui, icon: &str, text: &str) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let enabled = ui.is_enabled();
+    let color = if enabled { t.text } else { t.text_disabled };
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), color);
+    let (r, resp) = ui.allocate_exact_size(vec2(galley.size().x + 38.0, 26.0), Sense::click());
+    let visuals = ui.style().interact(&resp);
+    ui.painter().rect(r, f32::from(t.radius), visuals.weak_bg_fill, visuals.bg_stroke, StrokeKind::Inside);
+    crate::icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 15.0, r.center().y), vec2(14.0, 14.0)), icon, color);
+    ui.painter().galley(pos2(r.min.x + 27.0, r.center().y - galley.size().y / 2.0), galley, color);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
+    resp
+}
+
+/// A framed square push button with a painted icon, named and explained by `tip`.
+pub fn icon_frame_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let enabled = ui.is_enabled();
+    let (r, resp) = ui.allocate_exact_size(vec2(28.0, 26.0), Sense::click());
+    let visuals = ui.style().interact(&resp);
+    ui.painter().rect(r, f32::from(t.radius), visuals.weak_bg_fill, visuals.bg_stroke, StrokeKind::Inside);
+    crate::icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(15.0, 15.0)), icon, if enabled { t.text } else { t.text_disabled });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
+    resp.on_hover_text(tip)
+}
+
 pub fn icon_toggle(ui: &mut Ui, icon: &str, on: bool, tip: &str) -> Response {
     icon_toggle_sized(ui, icon, on, tip, vec2(23.0, 21.0))
 }

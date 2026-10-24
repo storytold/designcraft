@@ -64,6 +64,9 @@ pub type OpenAsyncFn = Box<dyn FnMut(ImportRequest)>;
 /// Starts a browser download; an error means no file was handed to the user.
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
+/// Shows a file in the system file manager (its folder opened, the file selected where the
+/// platform can); an error says why nothing was shown.
+pub type RevealFn = Box<dyn FnMut(&str) -> Result<(), String>>;
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
@@ -88,6 +91,8 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    /// Show a linked file in the file manager (Links panel › Show in Folder). Unset on the web.
+    pub reveal: Option<RevealFn>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

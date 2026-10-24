@@ -24,6 +24,7 @@ mod mac_window;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod profile;
+mod reveal;
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Services};
@@ -331,6 +332,7 @@ fn services() -> Services {
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::atomic::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string()))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
+        reveal: Some(Box::new(reveal::reveal)),
         ..Default::default()
     }
 }

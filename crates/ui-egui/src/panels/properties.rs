@@ -2587,8 +2587,142 @@ pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
 }
 
-/// Links: status (missing / modified / embedded), page and effective resolution of every placed
-/// graphic and linked text file; Relink, Go To Link, Update Link, Embed Link for the chosen row.
+/// What a Links panel row, its context menu, the action bar or the more-actions menu asked for;
+/// run after the list is drawn.
+enum LinkAction {
+    GoTo,
+    Update,
+    UpdateAll,
+    Relink,
+    RelinkFolder,
+    Reveal,
+    CopyPath,
+    Embed,
+}
+
+const LINK_ROW_H: f32 = 30.0;
+const LINK_PAGE_W: f32 = 44.0;
+const LINK_STATUS_W: f32 = 48.0;
+
+/// The id a Links row is chosen by: asset and story ids come from one counter.
+fn link_id(r: &Value) -> u64 {
+    r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0)
+}
+
+/// The file type badge of a row ("PDF", "JPG", "TXT"): the extension, at most four letters.
+fn link_kind(name: &str) -> String {
+    let ext = std::path::Path::new(name).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+    let ext = if ext == "JPEG" { "JPG".to_string() } else { ext };
+    if ext.is_empty() { "FILE".into() } else { ext.chars().take(4).collect() }
+}
+
+/// The colour of a link status (missing red, modified/unchecked amber, the rest dim).
+fn link_status_color(status: &str, t: &Tokens) -> egui::Color32 {
+    match status {
+        "missing" => egui::Color32::from_rgb(0xe5, 0x4b, 0x4b),
+        "modified" | "tooLarge" => egui::Color32::from_rgb(0xe8, 0xb3, 0x2c),
+        _ => t.text_dim,
+    }
+}
+
+/// Paint a row's status mark in `r`: a warning, a broken link, an embedded box, or a dash.
+fn paint_link_status(p: &egui::Painter, r: egui::Rect, status: &str, t: &Tokens) {
+    let c = link_status_color(status, t);
+    let icon = egui::Rect::from_center_size(r.center(), vec2(15.0, 15.0));
+    match status {
+        "modified" | "tooLarge" => crate::icons::paint(p, icon, "warning", c),
+        "missing" => crate::icons::paint(p, icon, "link-broken", c),
+        "embedded" => {
+            let b = egui::Rect::from_center_size(r.center(), vec2(10.0, 10.0));
+            p.rect_stroke(b, 1.0, egui::Stroke::new(1.0, c), egui::StrokeKind::Inside);
+            p.rect_filled(b.shrink(3.0), 0.0, c);
+        }
+        _ => {
+            p.line_segment([r.center() - vec2(5.0, 0.0), r.center() + vec2(5.0, 0.0)], egui::Stroke::new(1.0, c));
+        }
+    }
+}
+
+/// The page a link is placed on, `+n` for its other uses, a dash when unused.
+fn link_page(r: &Value) -> String {
+    let uses = r["uses"].as_array().map(Vec::as_slice).unwrap_or_default();
+    match uses.first() {
+        Some(u) => {
+            let page = u["page"].as_str().unwrap_or("PB");
+            if uses.len() > 1 { format!("{page} +{}", uses.len() - 1) } else { page.to_string() }
+        }
+        None => "—".into(),
+    }
+}
+
+/// One Links row: type badge, name, page and status; selected rows carry an accent edge.
+fn link_row(ui: &mut egui::Ui, r: &Value, selected: bool, t: &Tokens) -> egui::Response {
+    let name = r["name"].as_str().unwrap_or("");
+    let status = r["status"].as_str().unwrap_or("");
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), LINK_ROW_H), Sense::click());
+    // Named by the file, for screen readers and UI tests.
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, name));
+    let p = ui.painter_at(rect);
+    if selected {
+        p.rect_filled(rect, 0.0, t.row_selected);
+        p.rect_filled(egui::Rect::from_min_size(rect.min, vec2(2.0, rect.height())), 0.0, t.accent);
+    } else if resp.hovered() {
+        p.rect_filled(rect, 0.0, t.hover);
+    }
+    p.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, t.divider));
+    let text = if selected { t.text_strong } else { t.text };
+    // Type badge.
+    let badge = egui::Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.center().y - 8.0), vec2(26.0, 16.0));
+    p.rect_stroke(badge, 2.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
+    p.text(badge.center(), egui::Align2::CENTER_CENTER, link_kind(name), crate::theme::semibold(8.0), t.text_dim);
+    // Name, truncated to what the page and status columns leave.
+    let status_x = rect.max.x - LINK_STATUS_W;
+    let page_x = status_x - LINK_PAGE_W;
+    let name_w = (page_x - badge.max.x - 16.0).max(20.0);
+    let galley = egui::WidgetText::from(egui::RichText::new(name).size(12.5)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        name_w,
+        egui::TextStyle::Body,
+    );
+    p.galley(egui::pos2(badge.max.x + 10.0, rect.center().y - galley.size().y / 2.0), galley, text);
+    let page = egui::Rect::from_min_max(egui::pos2(page_x, rect.min.y), egui::pos2(status_x, rect.max.y));
+    p.text(page.center(), egui::Align2::CENTER_CENTER, link_page(r), egui::FontId::proportional(12.0), text);
+    let status_rect = egui::Rect::from_min_max(egui::pos2(status_x, rect.min.y), rect.max);
+    paint_link_status(&p, status_rect, status, t);
+    resp
+}
+
+/// A small caps-style section caption ("FILE INFORMATION").
+fn link_caption(ui: &mut egui::Ui, text: &str, t: &Tokens) {
+    ui.add(egui::Label::new(egui::RichText::new(text.to_uppercase()).font(crate::theme::semibold(10.0)).color(t.text_dim).extra_letter_spacing(0.6)));
+}
+
+/// The more-actions and right-click menu of a link.
+fn link_menu(ui: &mut egui::Ui, lang: &str, has_path: bool, is_text: bool, can_reveal: bool, action: &mut Option<LinkAction>) {
+    let tr = |s: &'static str| crate::i18n::tr(lang, s);
+    let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, a: LinkAction| {
+        if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+            *action = Some(a);
+            ui.close();
+        }
+    };
+    item(ui, true, tr("Go To"), LinkAction::GoTo);
+    item(ui, true, tr("Update"), LinkAction::Update);
+    item(ui, true, tr("Update All Links"), LinkAction::UpdateAll);
+    ui.separator();
+    item(ui, true, tr("Relink…"), LinkAction::Relink);
+    item(ui, true, tr("Relink to Folder…"), LinkAction::RelinkFolder);
+    ui.separator();
+    item(ui, has_path && can_reveal, tr("Show in Folder"), LinkAction::Reveal);
+    item(ui, has_path, tr("Copy Path"), LinkAction::CopyPath);
+    ui.separator();
+    item(ui, has_path, tr(if is_text { "Unlink" } else { "Embed" }), LinkAction::Embed);
+}
+
+/// Links: every placed graphic and linked text file with its type, page and status; the chosen
+/// link's file information (status, pages, effective resolution, source path) and its actions:
+/// Go To, Update, Relink, Show in Folder, Copy Path, Embed and Relink to Folder.
 pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     // Linked stories (Place and Link).
     let stories = app.session.execute("story.links", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
@@ -2621,6 +2755,8 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let Some(st) = app.session.active() else { return };
     let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tr = |s: &'static str| crate::i18n::tr(&lang, s);
     // The list checks files on disk: refresh it at most twice a second.
     let key = egui::Id::new("links_panel");
     let now = ui.input(|i| i.time);
@@ -2635,145 +2771,252 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     };
     if rows.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No placed graphics.")).color(t.text_dim));
+        crate::rtl::label(ui, egui::RichText::new(tr("No placed graphics.")).color(t.text_dim));
         return;
     }
-    let sel_key = egui::Id::new("links_panel_sel");
-    let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
-    // Leave room for Status and Page/PPI instead of widening the grid for long source paths.
-    let name_width = (ui.available_width() - 160.0).max(50.0);
-    egui::Grid::new("links_grid").num_columns(3).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Name")).color(t.text_dim).size(11.0));
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Status")).color(t.text_dim).size(11.0));
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page · PPI")).color(t.text_dim).size(11.0));
-        ui.end_row();
-        for r in &rows {
-            // Asset and story ids come from one counter: a row is chosen by either.
-            let aid = r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0);
-            let name = r["name"].as_str().unwrap_or("");
-            let response = ui
-                .vertical(|ui| {
-                    ui.set_width(name_width);
-                    let name = ui.add(egui::Button::selectable(chosen == Some(aid), name).truncate());
-                    match r["path"].as_str().filter(|path| !path.is_empty()) {
-                        Some(path) => name.union(
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0))
-                                    .truncate()
-                                    .sense(Sense::click())
-                                    .show_tooltip_when_elided(false),
-                            )
-                            .on_hover_text(path),
-                        ),
-                        None => name,
-                    }
-                })
-                .inner;
-            if response.clicked() {
-                chosen = Some(aid);
+
+    // Summary: how many files, how many need attention; the search field filters by name or path.
+    let filter_key = egui::Id::new("links_panel_filter");
+    let (mut searching, mut filter): (bool, String) = ui.data(|d| d.get_temp(filter_key)).unwrap_or_default();
+    let count = |s: &str| rows.iter().filter(|r| r["status"] == s).count();
+    let (modified, missing) = (count("modified"), count("missing"));
+    ui.horizontal(|ui| {
+        ui.set_min_height(24.0);
+        ui.label(egui::RichText::new(tr("{count} files").replace("{count}", &rows.len().to_string())).size(12.0).color(t.text));
+        for (n, icon, text, status) in [(modified, "warning", "{count} modified", "modified"), (missing, "link-broken", "{count} missing", "missing")]
+        {
+            if n > 0 {
+                ui.add_space(6.0);
+                let c = link_status_color(status, &t);
+                let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                crate::icons::paint(ui.painter(), r, icon, c);
+                ui.label(egui::RichText::new(tr(text).replace("{count}", &n.to_string())).size(12.0).color(c));
             }
-            let (txt, col) = match r["status"].as_str().unwrap_or("") {
-                "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
-                "modified" => ("\u{25B2} Modified", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
-                "embedded" => ("Embedded", t.text_dim),
-                "tooLarge" => ("Too large to check", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
-                _ => ("OK", t.text_dim),
-            };
-            let status = crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, txt)).color(col).size(11.0));
-            // Why a link isn't followed (a path on another computer, a device).
-            if let Some(why) = r["refused"].as_str() {
-                status.on_hover_text(why);
-            }
-            let uses = r["uses"].as_array().cloned().unwrap_or_default();
-            let info = match uses.first() {
-                Some(u) => {
-                    let page = u["page"].as_str().unwrap_or("PB");
-                    let ppi = u["ppi"].as_f64().map(|p| format!(" · {p:.0} ppi")).unwrap_or_default();
-                    let more = if uses.len() > 1 { format!(" (+{})", uses.len() - 1) } else { String::new() };
-                    format!("{page}{ppi}{more}")
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if widgets::icon_toggle(ui, "search", searching, tr("Search")).clicked() {
+                searching = !searching;
+                if !searching {
+                    filter.clear();
                 }
-                None => crate::i18n::tr(&app.ui.language, "unused").into(),
+            }
+        });
+    });
+    if searching {
+        let edit = ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tr("Name or folder")).desired_width(f32::INFINITY));
+        if !ui.memory(|m| m.has_focus(edit.id)) && filter.is_empty() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            searching = false;
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(filter_key, (searching, filter.clone())));
+    let needle = filter.to_lowercase();
+    let shown: Vec<&Value> = rows
+        .iter()
+        .filter(|r| needle.is_empty() || [&r["name"], &r["path"]].iter().any(|v| v.as_str().is_some_and(|s| s.to_lowercase().contains(&needle))))
+        .collect();
+
+    // The chosen link: the last one clicked, else the first.
+    let sel_key = egui::Id::new("links_panel_sel");
+    let chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
+    let mut chosen = chosen.filter(|c| rows.iter().any(|r| link_id(r) == *c)).or_else(|| rows.first().map(link_id));
+    let mut action: Option<LinkAction> = None;
+    let can_reveal = app.services.reveal.is_some();
+
+    // Column headings.
+    ui.add_space(2.0);
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
+    let head_font = egui::FontId::proportional(11.0);
+    let status_x = head.max.x - LINK_STATUS_W;
+    ui.painter().text(egui::pos2(head.min.x + 8.0, head.center().y), egui::Align2::LEFT_CENTER, tr("File"), head_font.clone(), t.text_dim);
+    ui.painter().text(
+        egui::pos2(status_x - LINK_PAGE_W / 2.0, head.center().y),
+        egui::Align2::CENTER_CENTER,
+        tr("Page"),
+        head_font.clone(),
+        t.text_dim,
+    );
+    ui.painter().text(egui::pos2(status_x + LINK_STATUS_W / 2.0, head.center().y), egui::Align2::CENTER_CENTER, tr("Status"), head_font, t.text_dim);
+    ui.painter().line_segment([head.left_bottom(), head.right_bottom()], egui::Stroke::new(1.0, t.divider));
+
+    egui::ScrollArea::vertical().id_salt("links_rows").max_height(LINK_ROW_H * 6.5).auto_shrink([false, true]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        if shown.is_empty() {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(tr("No links match.")).size(11.5).color(t.text_dim));
+        }
+        for r in &shown {
+            let id = link_id(r);
+            let resp = link_row(ui, r, chosen == Some(id), &t);
+            let resp = match r["path"].as_str().filter(|p| !p.is_empty()) {
+                Some(path) => resp.on_hover_text(path),
+                None => resp,
             };
-            // Low effective resolution for print is flagged like the Preflight check.
-            let low = uses.first().and_then(|u| u["ppi"].as_f64()).is_some_and(|p| p < 150.0);
-            crate::rtl::label(
-                ui,
-                egui::RichText::new(info).size(11.0).color(if low { egui::Color32::from_rgb(0xe8, 0xb3, 0x2c) } else { t.text_dim }),
-            );
-            ui.end_row();
+            if resp.clicked() || resp.secondary_clicked() {
+                chosen = Some(id);
+            }
+            if resp.double_clicked() {
+                action = Some(LinkAction::GoTo);
+            }
+            let has_path = r["path"].as_str().is_some_and(|p| !p.is_empty());
+            let is_text = r["story"].as_u64().is_some();
+            egui::Popup::context_menu(&resp).show(|ui| link_menu(ui, &lang, has_path, is_text, can_reveal, &mut action));
         }
     });
     if let Some(c) = chosen {
         ui.data_mut(|d| d.insert_temp(sel_key, c));
     }
-    ui.add_space(6.0);
-    if let Some(path) = rows
-        .iter()
-        .find(|r| r["asset"].as_u64().or_else(|| r["story"].as_u64()) == chosen)
-        .and_then(|r| r["path"].as_str())
-        .filter(|path| !path.is_empty())
-    {
-        // A selected link stays distinguishable even if two rows truncate to the same prefix.
-        ui.add(egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0)).wrap());
-        ui.add_space(6.0);
+    let Some(aid) = chosen else { return };
+    let Some(row) = rows.iter().find(|r| link_id(r) == aid).cloned() else { return };
+
+    // File information.
+    let name = row["name"].as_str().unwrap_or("");
+    let status = row["status"].as_str().unwrap_or("");
+    let path = row["path"].as_str().filter(|p| !p.is_empty()).map(str::to_string);
+    // A linked text file is addressed by its story.
+    let is_text = row["story"].as_u64().is_some();
+    ui.add_space(10.0);
+    link_caption(ui, tr("File Information"), &t);
+    ui.add_space(4.0);
+    ui.add(egui::Label::new(egui::RichText::new(name).font(crate::theme::semibold(13.0)).color(t.text_strong)).wrap());
+    ui.add_space(2.0);
+    let status_text = match status {
+        "missing" => tr("Missing: moved, renamed or deleted"),
+        "modified" => tr("Changed since it was placed"),
+        "embedded" => tr("Embedded in the document"),
+        "tooLarge" => tr("Too large to check"),
+        _ => tr("Up to date"),
+    };
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+        paint_link_status(ui.painter(), r, status, &t);
+        ui.label(egui::RichText::new(status_text).size(12.0).color(link_status_color(status, &t)));
+    });
+    // Why a link isn't followed (a path on another computer, a device).
+    if let Some(why) = row["refused"].as_str() {
+        ui.add(egui::Label::new(egui::RichText::new(why).size(11.0).color(t.text_dim)).wrap());
     }
-    ui.horizontal_wrapped(|ui| {
-        let Some(aid) = chosen else {
-            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Choose a link.")).color(t.text_dim).size(11.0));
-            return;
+    if is_text && row["edited"].as_bool() == Some(true) {
+        ui.label(egui::RichText::new(tr("Edited in the layout")).size(11.0).color(t.text_dim));
+    }
+    let uses = row["uses"].as_array().cloned().unwrap_or_default();
+    let pages: Vec<&str> = uses.iter().map(|u| u["page"].as_str().unwrap_or("PB")).collect();
+    let ppi = uses.first().and_then(|u| u["ppi"].as_f64());
+    let pixels = row["pixels"].as_array().and_then(|p| Some((p.first()?.as_u64()?, p.get(1)?.as_u64()?)));
+    ui.add_space(4.0);
+    egui::Grid::new("links_info").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+        let cap = |ui: &mut egui::Ui, s: &str| {
+            ui.label(egui::RichText::new(s).size(11.0).color(t.text_dim));
         };
-        // A linked text file is addressed by its story.
-        let is_text = rows.iter().any(|r| r["story"].as_u64() == Some(aid));
-        let target = if is_text { json!({"story": aid}) } else { json!({"asset": aid}) };
-        let with = |k: &str, v: Value| {
-            let mut p = target.clone();
-            p[k] = v;
-            p
-        };
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
-        {
-            let _ = app.run("links.relink", with("path", json!(path)));
+        cap(ui, tr("Page"));
+        ui.label(egui::RichText::new(if pages.is_empty() { tr("unused").to_string() } else { pages.join(", ") }).size(11.0));
+        ui.end_row();
+        if let Some(ppi) = ppi {
+            cap(ui, tr("Effective PPI"));
+            // Low effective resolution for print is flagged like the Preflight check.
+            let low = ppi < 150.0;
+            let text = if low { format!("{ppi:.0} · {}", tr("low for print")) } else { format!("{ppi:.0}") };
+            ui.label(egui::RichText::new(text).size(11.0).color(if low { link_status_color("modified", &t) } else { t.text }));
+            ui.end_row();
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
-            let _ = app.run("links.goTo", target.clone());
+        if let Some((w, h)) = pixels {
+            cap(ui, tr("Pixels"));
+            ui.label(egui::RichText::new(format!("{w} × {h}")).size(11.0));
+            ui.end_row();
         }
-        let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
-        let update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
-        let update = if edited {
-            update.on_hover_ui(|ui| {
-                crate::rtl::label(
-                    ui,
-                    crate::i18n::tr(&app.ui.language, "This story was edited in the layout: you'll be asked before those edits are replaced"),
-                );
-            })
+    });
+    if let Some(path) = &path {
+        ui.add_space(6.0);
+        ui.horizontal_top(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+            crate::icons::paint(ui.painter(), r, "chain", t.text_dim);
+            // A selected link stays distinguishable even if two rows truncate to the same prefix.
+            let w = (ui.available_width() - 2.0 * 27.0).max(40.0);
+            ui.allocate_ui(vec2(w, 16.0), |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0)).wrap().selectable(true));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                ui.add_enabled_ui(can_reveal, |ui| {
+                    if widgets::icon_toggle(ui, "folder-open", false, tr("Show in Folder")).clicked() {
+                        action = Some(LinkAction::Reveal);
+                    }
+                });
+                if widgets::icon_toggle(ui, "copy", false, tr("Copy Path")).clicked() {
+                    action = Some(LinkAction::CopyPath);
+                }
+            });
+        });
+    }
+
+    // Actions.
+    ui.add_space(8.0);
+    widgets::rule(ui);
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if widgets::icon_text_button(ui, "go-to", tr("Go To")).clicked() {
+            action = Some(LinkAction::GoTo);
+        }
+        let update = widgets::icon_text_button(ui, "rotate-clockwise", tr("Update"));
+        let update = if is_text && row["edited"].as_bool() == Some(true) {
+            update.on_hover_text(tr("This story was edited in the layout: you'll be asked before those edits are replaced"))
         } else {
             update
         };
         if update.clicked() {
-            update_links(app, target.clone());
+            action = Some(LinkAction::Update);
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if is_text { "Unlink" } else { "Embed" }))).clicked() {
-            let _ = app.run("links.embed", target.clone());
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let more = widgets::icon_frame_button(ui, "more", tr("More"));
+            egui::Popup::menu(&more).show(|ui| link_menu(ui, &lang, path.is_some(), is_text, can_reveal, &mut action));
+            ui.add_enabled_ui(can_reveal && path.is_some(), |ui| {
+                if widgets::icon_frame_button(ui, "folder-open", tr("Show in Folder")).clicked() {
+                    action = Some(LinkAction::Reveal);
+                }
+            });
+            if widgets::icon_frame_button(ui, "chain", tr("Relink…")).clicked() {
+                action = Some(LinkAction::Relink);
+            }
+        });
     });
-    ui.horizontal(|ui| {
+
+    let Some(action) = action else { return };
+    let target = if is_text { json!({"story": aid}) } else { json!({"asset": aid}) };
+    match action {
+        LinkAction::GoTo => {
+            let _ = app.run("links.goTo", target);
+        }
+        LinkAction::Update => update_links(app, target),
+        LinkAction::UpdateAll => update_links(app, json!({})),
+        LinkAction::Relink => {
+            if let Some(file) = app.services.pick_open.as_mut().and_then(|pick| pick("relink")) {
+                let mut p = target;
+                p["path"] = json!(file);
+                let _ = app.run("links.relink", p);
+            }
+        }
         // Choose any file in the folder: missing links are looked up there by name.
-        if ui
-            .button(crate::i18n::tr(&app.ui.language, "Relink to Folder…"))
-            .on_hover_ui(|ui| {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics"));
-            })
-            .clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
-            && let Some(dir) = std::path::Path::new(&path).parent()
-        {
-            let r = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()}));
-            if let Ok(v) = r {
+        LinkAction::RelinkFolder => {
+            if let Some(file) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
+                && let Some(dir) = std::path::Path::new(&file).parent()
+                && let Ok(v) = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()}))
+            {
                 app.status(crate::i18n::tr(&app.ui.language, "Relinked {count}").replace("{count}", &v["relinked"].to_string()));
             }
         }
-    });
+        LinkAction::Reveal => {
+            if let Err(e) = app.run("links.reveal", target) {
+                app.status(e);
+            }
+        }
+        LinkAction::CopyPath => {
+            if let Some(path) = path {
+                ui.ctx().copy_text(path);
+                app.status(crate::i18n::tr(&app.ui.language, "Path copied").to_string());
+            }
+        }
+        LinkAction::Embed => {
+            let _ = app.run("links.embed", target);
+        }
+    }
 }
 
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks
@@ -2794,6 +3037,27 @@ pub fn update_links(app: &mut DesignApp, target: Value) {
         let files = edited.join(", ");
         app.ui.dialog = Some(crate::dialogs::Dialog::new("updateLink", json!({"target": target, "files": files})));
     }
+}
+
+/// Show in Folder (`{asset}` or `{story}`): the linked file in the system file manager.
+pub(crate) fn reveal_link(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    let asset = p.get("asset").and_then(Value::as_u64);
+    let story = p.get("story").and_then(Value::as_u64);
+    if asset.is_none() && story.is_none() {
+        return Err("give the link's asset or story".into());
+    }
+    let rows = app.session.execute("links.list", &json!({})).map_err(|e| e.to_string())?;
+    let row = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| (asset.is_some() && r["asset"].as_u64() == asset) || (story.is_some() && r["story"].as_u64() == story)))
+        .ok_or("no such link")?;
+    let path = row["path"].as_str().filter(|path| !path.is_empty()).ok_or("this graphic is embedded: it has no file")?.to_string();
+    // A relative link names a file next to the document: the file manager needs the full path.
+    let document = app.session.doc().ok().and_then(|d| d.path.clone());
+    let file = designcraft_engine::io::document_path(&path, document.as_deref().map(std::path::Path::new)).map_err(|e| e.to_string())?;
+    let reveal = app.services.reveal.as_mut().ok_or("Show in Folder isn't available here")?;
+    reveal(&file.to_string_lossy())?;
+    Ok(json!({"path": path}))
 }
 
 /// Run `links.update`; its first warning goes to the status bar.
@@ -3309,27 +3573,50 @@ mod tests {
         let _ = h.get_by_label("Edit Page");
     }
 
+    fn click(h: &mut Harness<'static, DesignApp>, at: egui::Pos2) {
+        h.hover_at(at);
+        h.drag_at(at);
+        h.drop_at(at);
+        h.run_steps(1);
+    }
+
+    /// The Links panel's rows, top to bottom (each is named by its file).
+    fn link_rows(h: &Harness<'static, DesignApp>, name: &str) -> Vec<egui::Rect> {
+        let mut rows: Vec<egui::Rect> = h.get_all_by_label(name).map(|n| n.rect()).filter(|r| (r.height() - LINK_ROW_H).abs() < 0.5).collect();
+        rows.sort_by(|a, b| a.top().total_cmp(&b.top()));
+        rows
+    }
+
     #[test]
     fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
         let first = "/project/assets/studio-a/photo.svg";
         let second = "/project/assets/studio-b/photo.svg";
         let (app, items, assets) = linked_graphics(&[Some(first), Some(second), None]);
         let mut h = links_harness(app, 320.0);
-        assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
-        assert!(h.query_by_label(first).is_some(), "the first source path is visible in the row");
-        h.get_by_label(second).click();
+        let rows = link_rows(&h, "photo.svg");
+        assert_eq!(rows.len(), 3, "one row per graphic");
+        // The first link is chosen at first: File Information shows its source.
+        assert!(h.query_by_label(first).is_some());
+        h.get_by_label("2 missing");
+        click(&mut h, rows[1].center());
         h.run_steps(3);
+        assert!(h.query_by_label(second).is_some(), "the chosen link's source path is shown");
+        assert!(h.query_by_label(first).is_none());
         h.get_by_label("Go To").click();
         h.run_steps(3);
         assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[1]]);
+        h.get_by_label("More").click();
+        h.run_steps(3);
         h.get_by_label("Embed").click();
         h.run_steps(3);
         assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
         assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
         assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");
-        assert_eq!(h.get_all_by_label("Embedded").count(), 2);
-        assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
-        h.get_by_label(first).click();
+        h.get_by_label("Embedded in the document");
+        h.get_by_label("1 missing");
+        let rows = link_rows(&h, "photo.svg");
+        assert_eq!(rows.len(), 3);
+        click(&mut h, rows[0].center());
         h.run_steps(3);
         h.get_by_label("Go To").click();
         h.run_steps(3);
@@ -3340,14 +3627,84 @@ mod tests {
     fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
         let path = "/project/assets/studio-a/very-long-folder-name/another-long-folder-name/photo.svg";
         let (app, _, _) = linked_graphics(&[Some(path)]);
-        let mut h = links_harness(app, 240.0);
-        let source = h.get_by_label(path).rect();
-        assert!(source.width() < 150.0, "the source is truncated to its column: {source:?}");
-        assert!(source.right() <= 240.0, "the source stays inside the narrow panel: {source:?}");
-        assert!(h.get_by_label("Page · PPI").rect().right() <= 240.0);
-        h.get_by_label(path).click();
+        let h = links_harness(app, 240.0);
+        for row in link_rows(&h, "photo.svg") {
+            assert!(row.right() <= 240.0, "the row stays inside the narrow panel: {row:?}");
+        }
+        assert!(h.get_by_label("Go To").rect().right() <= 240.0);
+        assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the chosen link's path is painted in full and wraps inside the panel");
+    }
+
+    /// Show in Folder hands the chosen link's file to the host (the file manager); an embedded
+    /// graphic has no file, and without the host service (the web) it's not offered.
+    #[test]
+    fn show_in_folder_hands_the_linked_file_to_the_host() {
+        let path = "/project/assets/photo.svg";
+        let (mut app, _, assets) = linked_graphics(&[Some(path), None]);
+        let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = shown.clone();
+        app.services.reveal = Some(Box::new(move |p: &str| {
+            log.lock().unwrap().push(p.to_string());
+            Ok(())
+        }));
+        assert_eq!(app.run("links.reveal", json!({"asset": assets[0].0})).unwrap()["path"], path);
+        assert!(app.run("links.reveal", json!({"asset": assets[1].0})).unwrap_err().contains("embedded"));
+        assert!(app.run("links.reveal", json!({})).is_err(), "a link must be named");
+        let mut h = links_harness(app, 320.0);
+        let buttons: Vec<egui::Rect> = h.get_all_by_label("Show in Folder").map(|n| n.rect()).collect();
+        assert_eq!(buttons.len(), 2, "beside the path and in the action bar");
+        click(&mut h, buttons[0].center());
         h.run_steps(3);
-        assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the selected path is painted in full and wraps inside the panel");
+        assert_eq!(*shown.lock().unwrap(), vec![path.to_string(), path.to_string()]);
+        h.state_mut().services.reveal = None;
+        assert!(h.state_mut().run("links.reveal", json!({"asset": assets[0].0})).unwrap_err().contains("isn't available"));
+    }
+
+    /// A relative link is resolved against the document's file, as reading it is: the host gets
+    /// the full path, the panel keeps the stored one.
+    #[test]
+    fn show_in_folder_resolves_a_relative_link_against_the_document() {
+        let (mut app, _, assets) = linked_graphics(&[Some("assets/photo.svg")]);
+        app.session.doc_mut().unwrap().path = Some("/project/brochure.designcraft".into());
+        let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = shown.clone();
+        app.services.reveal = Some(Box::new(move |p: &str| {
+            log.lock().unwrap().push(p.to_string());
+            Ok(())
+        }));
+        assert_eq!(app.run("links.reveal", json!({"asset": assets[0].0})).unwrap()["path"], "assets/photo.svg");
+        assert_eq!(*shown.lock().unwrap(), vec!["/project/assets/photo.svg".to_string()]);
+        // Without a document file there is nothing to resolve it against.
+        app.session.doc_mut().unwrap().path = None;
+        assert!(app.run("links.reveal", json!({"asset": assets[0].0})).is_err());
+        assert_eq!(shown.lock().unwrap().len(), 1, "nothing handed to the host");
+    }
+
+    #[test]
+    fn copy_path_puts_the_source_on_the_clipboard() {
+        let path = "/project/assets/photo.svg";
+        let (app, _, _) = linked_graphics(&[Some(path)]);
+        let mut h = links_harness(app, 320.0);
+        h.get_by_label("Copy Path").click();
+        h.step();
+        assert!(h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == path)));
+    }
+
+    #[test]
+    fn the_search_field_filters_links_by_name_or_folder() {
+        let (app, _, _) = linked_graphics(&[Some("/a/studio-a/photo.svg"), Some("/a/studio-b/photo.svg")]);
+        let mut h = links_harness(app, 320.0);
+        assert_eq!(link_rows(&h, "photo.svg").len(), 2);
+        h.get_by_label("Search").click();
+        h.run_steps(3);
+        h.get_by_role(egui::accesskit::Role::TextInput).focus();
+        h.run_steps(1);
+        h.event(egui::Event::Text("studio-b".into()));
+        h.run_steps(3);
+        assert_eq!(link_rows(&h, "photo.svg").len(), 1, "only the link in studio-b");
+        h.event(egui::Event::Text("zzz".into()));
+        h.run_steps(3);
+        h.get_by_label("No links match.");
     }
 
     #[test]
