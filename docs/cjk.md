@@ -1,6 +1,6 @@
 # CJK typesetting plan
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (Japanese measurement units Q (級) and H (歯): both already in `geom::units`, now offered by the ruler menus with Show CJK Features and named 級/歯 in the Japanese interface; previously: trivial, status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
 
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
@@ -52,6 +52,7 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Font menus | Western families first, then Japanese, Simplified Chinese, Traditional Chinese and Korean groups (from the font's `meta` languages, CJK family names, OS/2 code pages, else its coverage); CJK families under their native names unless Preferences › Type › Show Font Names in English; the order is recalled from InDesign, not observed |
 | CJK fonts | Japanese faces (Shippori Mincho first) from the optional craft-fonts build input, in the font menus for users to apply; fallback by language (with fallback fonts on) (Japanese: the craft-fonts faces, then system fonts; Simplified and Traditional Chinese, Korean: system fonts); document fonts: the fonts of a `Document Fonts` folder beside an opened file belong to that document (composition, export, font menus), ahead of installed fonts of the same name, and are forgotten when it closes; Package copies every font file that draws text, fallback fonts included (licence permitting). Font files stay in memory for the session (reopening a document reuses them) and aren't read on the web |
 | Interface | Preferences › Type › Show CJK Features (`cjkFeatures`; until set, on for a Japanese, Chinese or Korean interface) shows the CJK-only menu items (Type › Tate-Chu-Yoko, Ruby…, Kenten, Warichu); layout, IDML and commands work either way |
+| Measurement units | Q (級) and H (歯) are 0.25 mm units in `geom::units`: parsed as `13Q`, `22H` or `12ha` (any case), converted, formatted (`13 Q`, `22.5 H`) and round-tripped, and Preferences lists both. With Show CJK Features the ruler menus offer Q and H as the Japanese edition's ruler lists H (#1357); the English menus stay as #1074 left them, and a document already in Q or H keeps its unit. The Japanese interface names the units (級, 歯, ポイント, ミリメートル…). Length-typed text fields still read a bare number in points (#1359) |
 | Everything else below | missing |
 
 Known bugs to fix first:
@@ -292,6 +293,7 @@ Each follows what an InDesign user expects.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | Measurement units row: Q (級) and H (歯) in the ruler menus with Show CJK Features, Japanese unit names, parsing/formatting coverage (#1357) |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-10 | minor | Updated (see git history) |
 | 2026-10-06 | major | Created: CJK typesetting plan and status (the Japanese/CJK feature set) |
