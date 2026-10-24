@@ -396,11 +396,13 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let fonts = s.execute("font.list", &json!({}))?;
     let links = s.execute("links.list", &json!({}))?;
     let pre = s.execute("preflight.run", &json!({})).unwrap_or(Value::Null);
-    let d = s.doc()?.doc.clone();
+    let st = s.doc()?;
+    let mut d = (*st.doc).clone();
+    super::native_links::prepare_paths(&mut d, st.path.as_deref().map(Path::new))?;
     let links_dir = root.child(LINKS_FOLDER)?;
     let (packed, mut files) = write_links(&d, &root, &links_dir, None, Some(LINKS_FOLDER))?;
     let doc_path = package_output_path(&dir, &title, "designcraft")?;
-    root.write(&doc_path, &super::to_bytes(&packed)?)?;
+    root.write(&doc_path, &super::native_links::save(&packed, &doc_path)?)?;
     files.insert(0, doc_path);
     // The font files, and what the report says about each font.
     let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);

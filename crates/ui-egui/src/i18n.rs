@@ -47,6 +47,16 @@ pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 const TABLE: &[(&str, [&str; 5])] = &[
     (
+        "Keep linked artwork external on save",
+        [
+            "Verknüpfte Grafiken beim Speichern extern lassen",
+            "Conserver les illustrations liées à l’extérieur lors de l’enregistrement",
+            "Mantener las ilustraciones vinculadas fuera del documento al guardar",
+            "保存時にリンクされた画像を外部に保持",
+            "保存时保留外部链接图稿",
+        ],
+    ),
+    (
         "Character Formatting Controls",
         [
             "Steuerelemente für Zeichenformatierung",

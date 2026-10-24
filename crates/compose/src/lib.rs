@@ -3004,6 +3004,17 @@ impl Cursor {
 /// The frame's first baseline offset below the top of a column, for a line with leading `lead`,
 /// ascent `asc` and first baseline heights `tops`.
 fn first_baseline_offset(f: &FrameSpec, lead: f64, asc: f64, tops: Tops) -> f64 {
+    if f.opts.legacy_first_baseline {
+        let off = match f.opts.first_baseline {
+            FirstBaseline::Ascent => asc,
+            FirstBaseline::CapHeight => asc * 0.72,
+            FirstBaseline::XHeight => asc * 0.5,
+            FirstBaseline::Leading => lead,
+            FirstBaseline::Fixed => 0.0,
+            FirstBaseline::EmboxHeight => tops.em,
+        };
+        return off.max(f.opts.first_baseline_min);
+    }
     let off = match f.opts.first_baseline {
         // Vertical frames measure from the ascent.
         FirstBaseline::Ascent | FirstBaseline::EmboxHeight if f.vertical => asc,

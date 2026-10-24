@@ -346,6 +346,10 @@ pub enum ChapterSource {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DocSettings {
+    /// Keep linked artwork outside native working files. Opt-in so older documents retain
+    /// their embedded originals; clipboard, recovery and byte serialization stay portable.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub external_links: bool,
     pub intent: Intent,
     pub page_width: f64,
     pub page_height: f64,
@@ -447,6 +451,7 @@ impl Default for NewObjectColors {
 impl Default for DocSettings {
     fn default() -> Self {
         DocSettings {
+            external_links: false,
             intent: Intent::Print,
             page_width: 612.0,
             page_height: 792.0,
@@ -529,7 +534,8 @@ pub const LAYER_COLORS: &[(&str, [u8; 3])] = &[
     ("Gold", [255, 153, 0]),
 ];
 
-/// An embedded file (placed image / PDF). Bytes are stored next to the JSON in the native format.
+/// A placed file (image, PDF or media). `data` is its editing cache; native working saves
+/// can keep linked graphics external, while portable saves retain their cached bytes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Asset {
@@ -623,6 +629,12 @@ impl PdfCrop {
 }
 
 impl Asset {
+    /// Formats whose source bytes can be loaded again for native linked-only artwork.
+    /// Media keeps its embedded data; an extension alone is not enough to trust its contents.
+    pub fn is_linkable_graphic(&self) -> bool {
+        self.is_raster() || matches!(self.mime.as_str(), "application/pdf" | "application/postscript" | "image/svg+xml")
+    }
+
     /// A raster image (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD), as opposed to a PDF, EPS or SVG.
     pub fn is_raster(&self) -> bool {
         matches!(

@@ -21,7 +21,7 @@ impl Asset {
     /// relinked on its own. Assets without bytes (a link that couldn't be read) are the same only
     /// when they link to the same path.
     pub fn same_file(&self, other: &Asset) -> bool {
-        if self.mime != other.mime || self.page != other.page || self.pdf_crop != other.pdf_crop {
+        if self.mime != other.mime || self.page != other.page || self.pdf_crop != other.pdf_crop || self.pdf_box != other.pdf_box {
             return false;
         }
         if self.link != other.link {
@@ -334,6 +334,24 @@ mod tests {
         assert_eq!(d.add_asset(pdf(3, crate::PdfCrop::Trim)), trim);
         assert_eq!(d.merge_duplicate_assets(), 0);
         assert_eq!(d.assets.len(), 2);
+    }
+
+    #[test]
+    fn unresolved_pdf_assets_with_different_visible_boxes_stay_apart() {
+        let mut doc = Document::new(&Default::default());
+        let pdf = |id, pdf_box| Asset {
+            mime: "application/pdf".into(),
+            data: Arc::new(Vec::new()),
+            link: Some("Links/page.pdf".into()),
+            pdf_box,
+            ..asset(id, b"")
+        };
+        let first = doc.add_asset(pdf(1, Some([0.0, 0.0, 0.5, 1.0])));
+        let second = doc.add_asset(pdf(2, Some([0.5, 0.0, 1.0, 1.0])));
+        assert_ne!(first, second);
+        assert_eq!(doc.add_asset(pdf(3, Some([0.0, 0.0, 0.5, 1.0]))), first);
+        assert_eq!(doc.merge_duplicate_assets(), 0);
+        assert_eq!(doc.assets.len(), 2);
     }
 
     #[test]

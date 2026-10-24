@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; linked-only working saves, portable-save compatibility and PDF crop-box identity, #856; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -122,9 +122,21 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Linked-only native working saves and legacy baseline compatibility (#856); only archives omitting linked originals need format 4, portable saves retain embedded compatibility, and distinct PDF crop boxes stay separate during compaction |
 | 2026-10-19 | minor | PDF/X-4 export and `validate-pdf` report visible unembedded fonts by name and page, including placed forms; invisible text is exempt, operation- or depth-limited checks report incompleteness, and automatic font repair remains missing (#909) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |
 | 2026-10-13 | minor | `.indd` and `.indt` read through storytold/indd-utils; INDD remaining work is a real-file corpus (10–30 h); score unchanged until it is measured |
 | 2026-10-12 | minor | XLSX table placement and data merge preserve small numeric values and cached formula strings; synthetic regressions in `textimport::xlsx::tests`. Scores unchanged. |
 | 2026-10-10 | major | Created from InDesign 2026's declared document types and filters, `plan/indesign/08-file-formats.md` and the code |
+
+## Linked native artwork (2026-10-20)
+
+Native working files can keep linked originals external through the Links panel or
+`file.save {embedImages:false}`. Embedded storage remains the default for existing documents;
+recovery and byte serialization retain originals. See [linked-artwork.md](linked-artwork.md).
+This adds external storage; cached editing data is still loaded in memory, and missing links
+do not yet have saved previews.
+
+Native format 1 text frames now preserve ascent-derived first-baseline offsets. Files retaining
+these compatibility settings use native format 5 so earlier readers reject them safely.

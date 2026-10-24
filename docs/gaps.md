@@ -273,3 +273,10 @@ Cue. These are excluded from every percentage.
 | 2026-10-12 | minor | Gap 0 shrunk to the Primary Text Frame page fixes (#165): text threads by hand; gaps added for autoflow onto existing pages and threading into grouped frames |
 | 2026-10-10 | minor | Gap 0 added and marked alpha blocker: manual text threading is missing (stage re-normalized to pre-alpha) |
 | 2026-10-10 | major | Created: 25 ranked gaps from the full re-measure against InDesign 2026 21.6 and issues #1–#352 |
+
+## External native artwork follow-ups (#856)
+
+Opt-in linked-only working saves are implemented; see [linked-artwork.md](linked-artwork.md).
+Remaining: small persistent previews for missing sources, lazy-loading full-resolution artwork,
+and deciding whether new documents should default to external storage. Existing embedded files
+keep their behavior until the user explicitly changes the storage mode.

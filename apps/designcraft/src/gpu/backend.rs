@@ -180,7 +180,7 @@ pub fn write(path: &Path, record: &Record) -> std::io::Result<()> {
 /// See [`Fallback::backends`].
 fn instance_backends(backend: Backend, failed: &[Backend]) -> wgpu::Backends {
     let mut backends = backend.bit();
-    if !cfg!(windows) && !failed.contains(&Backend::Gl) {
+    if !cfg!(windows) && backend != Backend::Metal && !failed.contains(&Backend::Gl) {
         backends |= wgpu::Backends::GL;
     }
     backends
@@ -252,7 +252,8 @@ impl Fallback {
     }
 
     /// The backends wgpu may use: the chosen one, with OpenGL as the in-process fallback when it
-    /// has no adapter (unless OpenGL itself has failed). Not on Windows: some OpenGL drivers
+    /// has no adapter (unless OpenGL itself has failed). Metal stays Metal-only on macOS.
+    /// Not on Windows: some OpenGL drivers
     /// (AMD's) crash while the instance is created (#167), before any fallback could help, so
     /// there OpenGL is only ever tried as its own candidate.
     pub fn backends(&self) -> wgpu::Backends {
@@ -407,8 +408,8 @@ mod tests {
     }
 
     /// The backend the previous start was still on stays in `failed` even where it is no
-    /// candidate: on macOS Metal is the only candidate, but the instance loads OpenGL beside it,
-    /// so a start OpenGL took down has to keep it out of the next one. Only the stored list is
+    /// candidate: an older macOS start could load OpenGL beside Metal,
+    /// so a start OpenGL took down must still be remembered even with Metal-only startup. Only the stored list is
     /// filtered to this platform's candidates — those entries came from another machine.
     #[test]
     fn the_backend_a_start_was_on_counts_as_failed_even_where_it_is_no_candidate() {
@@ -418,7 +419,7 @@ mod tests {
         assert_eq!(c.record.failed, &[Backend::Gl], "OpenGL ran here, so it failed here");
         assert_eq!(c.switched_from, Some(Backend::Gl));
         assert!(!instance_backends(c.backend, &c.record.failed).contains(wgpu::Backends::GL));
-        // Stored on another machine, never run here: dropped, and OpenGL may ride along again.
+        // Stored on another machine, never run here: dropped; Metal still stays Metal-only.
         let c = choose(MAC, &record(None, &[Backend::Gl]), V, &[]).unwrap();
         assert_eq!(c.record.failed, &[]);
     }
@@ -471,7 +472,7 @@ mod tests {
             assert_eq!(s.next_after(&[Backend::Gl]), Some(Backend::Vulkan));
             assert_eq!(s.next_after(&[Backend::Gl, Backend::Vulkan]), None);
         } else {
-            assert_eq!(next, None, "the first start already has OpenGL beside its backend");
+            assert_eq!(next, None, "the first start already includes all platform candidates");
         }
     }
 
@@ -493,6 +494,11 @@ mod tests {
     }
 
     #[test]
+    fn metal_never_adds_an_opengl_fallback() {
+        assert_eq!(instance_backends(Backend::Metal, &[]), wgpu::Backends::METAL);
+    }
+
+    #[test]
     fn a_start_records_its_backend_until_a_frame_is_presented() {
         let path = temp_path("startup");
         let mut s = Fallback::begin_unforced(Some(path.clone()), V, &[]).expect("candidates");
@@ -500,9 +506,9 @@ mod tests {
         assert_eq!(s.backend, first);
         assert_eq!(read(&path).trying, Some(first));
         assert!(s.backends().contains(first.bit()));
-        // OpenGL is the in-process fallback, except on Windows where it is only its own candidate
-        // (#167), and Windows never loads Vulkan drivers on its first try (#806).
-        assert_eq!(s.backends().contains(wgpu::Backends::GL), !cfg!(windows) || first == Backend::Gl);
+        // OpenGL is the Linux in-process fallback. Metal stays Metal-only; Windows tries
+        // OpenGL as its own candidate (#167) and never loads Vulkan on its first try (#806).
+        assert_eq!(s.backends().contains(wgpu::Backends::GL), (!cfg!(windows) && first != Backend::Metal) || first == Backend::Gl);
         if cfg!(windows) {
             assert_eq!(s.backends(), wgpu::Backends::DX12);
         }

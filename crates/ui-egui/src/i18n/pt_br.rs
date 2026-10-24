@@ -1,6 +1,7 @@
 //! Original Brazilian Portuguese interface translations, written from the English source
 //! using ordinary Brazilian Portuguese computing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Keep linked artwork external on save", "Manter ilustrações vinculadas externas ao salvar"),
     ("File", "Arquivo"),
     ("Edit", "Editar"),
     ("Layout", "Layout"),

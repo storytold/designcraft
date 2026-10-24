@@ -2590,6 +2590,27 @@ pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// Links: status (missing / modified / embedded), page and effective resolution of every placed
 /// graphic and linked text file; Relink, Go To Link, Update Link, Embed Link for the chosen row.
 pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    if let Some(st) = app.session.active() {
+        let mut external = st.doc.settings.external_links;
+        if ui
+            .add_enabled(
+                !cfg!(target_arch = "wasm32"),
+                egui::Checkbox::new(&mut external, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Keep linked artwork external on save"))),
+            )
+            .changed()
+            && let Err(error) = app.run("links.storage", json!({"mode": if external { "linked" } else { "embedded" }}))
+        {
+            app.status(error.to_string());
+        }
+        crate::rtl::label(
+            ui,
+            crate::i18n::tr(
+                &app.ui.language,
+                "Linked-only saves need the original files. Keep them with the document: moving, deleting or changing them can leave artwork missing or changed when reopening. Use Package to collect originals, or Embed for a self-contained file.",
+            ),
+        );
+        ui.separator();
+    }
     // Linked stories (Place and Link).
     let stories = app.session.execute("story.links", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     if !stories.is_empty() {
@@ -3175,6 +3196,20 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn links_panel_can_choose_external_storage_and_undo_it() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut harness = Harness::builder().with_size(vec2(320.0, 300.0)).build_ui_state(|ui, app: &mut DesignApp| links_panel(app, ui), app);
+        harness.get_by_label("Linked-only saves need the original files. Keep them with the document: moving, deleting or changing them can leave artwork missing or changed when reopening. Use Package to collect originals, or Embed for a self-contained file.");
+        harness.get_by_label("Keep linked artwork external on save").click();
+        harness.run_steps(2);
+        assert!(harness.state().session.doc().unwrap().doc.settings.external_links);
+        harness.state_mut().run("edit.undo", json!({})).unwrap();
+        harness.run_steps(2);
+        assert!(!harness.state().session.doc().unwrap().doc.settings.external_links);
+    }
 
     fn language(app: &mut DesignApp) -> Value {
         text_attrs(app).unwrap()["chars"]["language"].clone()

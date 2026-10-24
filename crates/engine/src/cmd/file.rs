@@ -52,14 +52,16 @@ pub fn specs() -> Vec<CommandSpec> {
             s.prefs.recent_files.clear();
             ok()
         }),
-        cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?} — a `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path} — a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
+        cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?, embedImages?: bool} — false keeps linked originals external; the choice persists. a `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
+        cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path, embedImages?: bool} — a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
+        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path, embedImages?: bool} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
             let path = with_document_extension(path);
             let mut copy = (*s.doc()?.doc).clone();
+            super::native_links::save_options(&mut copy, p)?;
+            super::native_links::prepare_paths(&mut copy, s.doc()?.path.as_deref().map(std::path::Path::new))?;
             super::datamerge::refresh_relative_paths(&mut copy, std::path::Path::new(&path));
-            let bytes = to_bytes_with_preview(&copy, &s.cache)?;
+            let bytes = to_bytes_with_preview(&copy, &s.cache, std::path::Path::new(&path))?;
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
@@ -188,7 +190,7 @@ const PREVIEW_PX: f64 = 320.0;
 
 /// [`to_bytes`] with a picture of the first page, which the start screen shows next to the file
 /// in its recent files. A page that can't be drawn just leaves the picture out.
-fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Result<Vec<u8>> {
+fn to_bytes_with_preview(d: &Document, cache: &crate::Cache, destination: &std::path::Path) -> Result<Vec<u8>> {
     let preview = d.page_loc(0).and_then(|(si, pi)| {
         let b = d.spreads.get(si)?.pages.get(pi)?.bounds();
         let side = b.width().max(b.height());
@@ -196,7 +198,11 @@ fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Result<Vec<u8>> 
     });
     let png =
         preview.and_then(|scale| designcraft_render::Renderer::new().render_page(d, cache, 0, scale, false, &Default::default())).map(|r| r.to_png());
-    save_bytes(d, png.as_deref())
+    #[cfg(test)]
+    if FAIL_TO_BYTES.with(std::cell::Cell::get) {
+        return Err(EngineError::Other("could not write the document: injected failure".into()));
+    }
+    super::native_links::save_with_preview(d, destination, png.as_deref())
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
@@ -491,7 +497,10 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
-        super::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
+        warnings.extend(super::native_links::resolve(&mut d, Some(std::path::Path::new(path))));
+        if !d.settings.external_links {
+            super::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
+        }
         super::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
         let (fonts, faces, font_warnings) = load_document_fonts(&mut d, path);
         warnings.extend(font_warnings);
@@ -555,7 +564,8 @@ fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if designcraft_idml::is_idml(&b) || super::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return super::interchange::open_idml(s, p);
     }
-    let (mut d, warnings) = load_bytes(&b)?;
+    let (mut d, mut warnings) = load_bytes(&b)?;
+    warnings.extend(super::native_links::resolve(&mut d, None));
     super::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
         d.title = n.to_string();
@@ -575,10 +585,13 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     crate::file_access::check_write(&path).map_err(EngineError::Other)?;
     // Prepare paths for the destination without changing the live document until persistence succeeds.
     let mut saved = (*st.doc).clone();
+    super::native_links::save_options(&mut saved, p)?;
+    super::native_links::prepare_paths(&mut saved, st.path.as_deref().map(std::path::Path::new))?;
     super::datamerge::refresh_relative_paths(&mut saved, std::path::Path::new(&path));
-    let paths_changed = saved.data_merge != st.doc.data_merge;
+    let paths_changed =
+        saved.data_merge != st.doc.data_merge || saved.settings.external_links != st.doc.settings.external_links || saved.assets != st.doc.assets;
     let saved = if paths_changed { Arc::new(saved) } else { st.doc.clone() };
-    let bytes = to_bytes_with_preview(&saved, &s.cache)?;
+    let bytes = to_bytes_with_preview(&saved, &s.cache, std::path::Path::new(&path))?;
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
     let st = s.doc_mut()?;
@@ -611,7 +624,10 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         #[cfg(target_arch = "wasm32")]
         let b: Vec<u8> = vec![];
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
-        (b, name, Some(path.to_string()))
+        // A path explicitly chosen by the caller is relative to the command's working
+        // directory. Store its absolute form before it becomes document-supplied data.
+        let link = std::path::absolute(path).map_err(|e| bad("file.place", e.to_string()))?;
+        (b, name, Some(link.to_string_lossy().into_owned()))
     } else {
         s.ui_requests.push(crate::UiRequest::Pick { purpose: "place".into(), params: json!({}) });
         return ok();
@@ -967,11 +983,15 @@ fn snippet_export(s: &mut Session, p: &Value) -> Result<Value> {
 /// 1-based) grouped, top-left at x/y (default: the source position on the first page).
 fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
     const ID: &str = "file.place";
-    let src = if name.to_lowercase().ends_with(".idml") {
+    let mut src = if name.to_lowercase().ends_with(".idml") {
         super::interchange::import_idml_confined(bytes, str_param(p, "path").map(std::path::Path::new)).map_err(|e| bad(ID, e.to_string()))?
     } else {
         from_bytes(bytes)?
     };
+    let warnings = super::native_links::resolve(&mut src, str_param(p, "path").map(std::path::Path::new));
+    if !warnings.is_empty() {
+        return Err(bad(ID, warnings.join("; ")));
+    }
     let n = src.page_count();
     let page = p.get("layoutPage").and_then(Value::as_u64).unwrap_or(1) as usize;
     if page == 0 || page > n {
@@ -1097,6 +1117,7 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         } else {
             from_bytes(&crate::io::read_file(&path).map_err(EngineError::Other)?)?
         };
+        let warnings = super::native_links::resolve(&mut d, Some(std::path::Path::new(&path)));
         // As opened again: the fonts beside it now (unchanged files are shared, not read again).
         let (fonts, _, _) = load_document_fonts(&mut d, &path);
         let uid = s.doc()?.uid;
@@ -1108,7 +1129,7 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         // A new state has a revision no state had before, so caches don't show the old document.
         crate::recovery::discard_document(s, index, recovery_dir.as_deref());
         *s.doc_mut()? = fresh;
-        Ok(json!({"path": path}))
+        Ok(json!({"path": path, "warnings": warnings}))
     }
     #[cfg(target_arch = "wasm32")]
     {

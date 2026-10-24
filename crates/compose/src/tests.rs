@@ -3055,6 +3055,22 @@ fn first_baseline_in_dir(family: &str, vertical: bool, opts: impl Fn(&mut design
 }
 
 #[test]
+fn legacy_native_frames_keep_the_old_first_baseline_metrics() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(typo_test_font("LegacyBase 07", Some(700)));
+    for (kind, offset) in [(FirstBaseline::Ascent, 20.0), (FirstBaseline::CapHeight, 14.4), (FirstBaseline::XHeight, 10.0)] {
+        let baseline = first_baseline_in("LegacyBase 07", |options| {
+            options.legacy_first_baseline = true;
+            options.first_baseline = kind;
+        });
+        assert!((baseline - (40.0 + offset)).abs() < 0.001, "{kind:?}: {baseline}");
+    }
+    let modern = first_baseline_in("LegacyBase 07", |_| {});
+    assert!((modern - 54.0).abs() < 0.001, "new documents keep modern metrics");
+}
+
+#[test]
 fn ascent_first_baseline_uses_the_typographic_ascender() {
     use designcraft_doc::FirstBaseline;
     let db = designcraft_fonts::FontDb::global();
