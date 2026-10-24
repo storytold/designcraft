@@ -347,6 +347,29 @@ fn make_document(path: &std::path::Path) {
     assert!(path.exists());
 }
 
+/// `path` without the `\\?\` or `\\?\UNC\` prefix that `canonicalize` adds on Windows, as the
+/// server shows a root (`file_access::plain`).
+fn without_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => path,
+    }
+}
+
+#[test]
+fn without_verbatim_prefix_keeps_a_share_a_share() {
+    let p = |t: &str| without_verbatim_prefix(std::path::PathBuf::from(t));
+    assert_eq!(p(r"\\?\UNC\server\share\dir"), std::path::PathBuf::from(r"\\server\share\dir"));
+    assert_eq!(p(r"\\?\C:\Users\dir"), std::path::PathBuf::from(r"C:\Users\dir"));
+    assert_eq!(p("/private/var/dir"), std::path::PathBuf::from("/private/var/dir"));
+}
+
 #[test]
 fn mcp_automation_roots_confine_the_server() {
     let base = std::env::temp_dir().join(format!("dc-cli-roots-{}", std::process::id()));
@@ -411,8 +434,10 @@ fn mcp_automation_roots_take_several_folders() {
     for d in ["in", "shared", "out", "scratch", "outside", "in2", "scratch2"] {
         std::fs::create_dir_all(base.join(d)).unwrap();
     }
-    // Resolved, as the server shows the roots (`/var` is `/private/var` on macOS).
-    let base = std::fs::canonicalize(base).unwrap();
+    // Resolved, as the server shows the roots (`/var` is `/private/var` on macOS), and without the
+    // `\\?\` prefix that `canonicalize` adds on Windows: the server shows the roots without it, and
+    // Windows does not resolve `..` in a path that has it.
+    let base = without_verbatim_prefix(std::fs::canonicalize(base).unwrap());
     for f in ["in/a.designcraft", "shared/b.designcraft", "outside/secret.designcraft", "parent.designcraft", "in2/c.designcraft"] {
         make_document(&base.join(f));
     }
