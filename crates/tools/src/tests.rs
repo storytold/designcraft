@@ -1452,6 +1452,29 @@ fn table_frame(degrees: f64) -> (Document, ItemId) {
     (d, id)
 }
 
+/// In a table cell Shift+Tab goes back a cell and Esc toggles cell selection, as InDesign; out of
+/// a table Tab types a tab and Esc leaves the text.
+#[test]
+fn type_tool_keys_in_a_table_cell() {
+    let (d, id) = table_frame(0.0);
+    let sid = d.item(id).unwrap().text_frame().unwrap().story;
+    let table = *d.story(sid).unwrap().tables.keys().next().unwrap();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cell = designcraft_doc::CellAddr { table, row: 1, col: 1 };
+    let s = Selection::text(designcraft_doc::TextSel { cell: Some(cell), ..designcraft_doc::TextSel::caret(sid, 0) });
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("type");
+    let shift = Mods { shift: true, ..Default::default() };
+    let exec = |c: &str, p: serde_json::Value| vec![Action::Exec(c.into(), p)];
+    assert_eq!(t.key(&cx, ToolKey::Tab, shift), exec("table.prevCell", serde_json::json!({})));
+    assert_eq!(t.key(&cx, ToolKey::Tab, Mods::default()), exec("text.insert", serde_json::json!({"text": "\t"})));
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exec("table.toggleSelection", serde_json::json!({})));
+    let s = Selection::text(designcraft_doc::TextSel::caret(sid, 0));
+    let cx = ctx(&d, &s, &c, &l);
+    assert_eq!(t.key(&cx, ToolKey::Tab, shift), exec("text.insert", serde_json::json!({"text": "\t"})));
+    assert!(matches!(t.key(&cx, ToolKey::Escape, Mods::default()).first(), Some(Action::SwitchTool(_))));
+}
+
 #[test]
 fn type_tool_drags_a_table_column_border() {
     for degrees in [0.0, 90.0] {

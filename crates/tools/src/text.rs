@@ -364,6 +364,7 @@ impl Tool for TypeTool {
             let steps = if mods.cmd || mods.ctrl { 5.0 } else { 1.0 };
             vec![Action::Exec("type.kernStep".into(), json!({"steps": sign * steps}))]
         };
+        let in_cell = cx.selection.text.is_some_and(|t| t.cell.is_some());
         match key {
             ToolKey::Left if mods.alt && !mods.shift => kern(-1.0),
             ToolKey::Right if mods.alt && !mods.shift => kern(1.0),
@@ -376,7 +377,11 @@ impl Tool for TypeTool {
             ToolKey::Backspace => vec![Action::Exec("text.delete".into(), json!({"forward": false, "word": mods.alt}))],
             ToolKey::Delete => vec![Action::Exec("text.delete".into(), json!({"forward": true, "word": mods.alt}))],
             ToolKey::Enter => vec![Action::Exec("text.insert".into(), json!({"text": if mods.shift { "\u{2028}" } else { "\n" }}))],
+            // In a table cell Shift+Tab goes back a cell (Tab goes on through `text.insert`).
+            ToolKey::Tab if mods.shift && in_cell => vec![Action::Exec("table.prevCell".into(), json!({}))],
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
+            // In a table Esc toggles between the cell's text and the cell, as InDesign.
+            ToolKey::Escape if in_cell => vec![Action::Exec("table.toggleSelection".into(), json!({}))],
             ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
             _ => vec![],
         }
