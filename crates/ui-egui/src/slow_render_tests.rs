@@ -53,3 +53,21 @@ fn edits_render_on_the_worker_once_rendering_is_slow() {
     assert!(current(&app), "the worker's image arrives");
     assert!(app.canvas.sync_ms < 10.0 * SYNC_BUDGET_MS, "its time replaces the slow one");
 }
+
+/// A slow repaint of an edit's regions sends the next edit to the worker even when the last full
+/// render was quick: a full render on the UI thread would stall at least as long.
+#[test]
+fn after_a_slow_patch_the_next_edit_goes_to_the_worker() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx);
+    if app.canvas.worker.is_none() {
+        return;
+    }
+    app.canvas.sync_ms = 0.0;
+    app.canvas.patch_ms = 10.0 * SYNC_BUDGET_MS;
+    app.run("frame.create", json!({"rect": [20, 20, 120, 120]})).unwrap();
+    frame(&mut app, &ctx);
+    assert!(!current(&app) && app.canvas.pending.is_some(), "the edit renders on the worker");
+}

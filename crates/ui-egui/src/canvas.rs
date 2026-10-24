@@ -844,7 +844,8 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
     }
     // A mode switch changes every spread's meaning, even if the document has no damage.
     // Show the new canvas immediately, including when fitting it changes the zoom.
-    if !has_worker || app.canvas.shown.is_none() || mode_changed || (doc_changed && zoom_same && sync_ok) {
+    // A slow repaint of an edit's regions means a full render would stall too: to the worker.
+    if !has_worker || app.canvas.shown.is_none() || mode_changed || (doc_changed && zoom_same && sync_ok && patch_ok) {
         let t0 = crate::now_ms();
         let Some((doc, placed, w, h, view, opts)) = job(app) else { return };
         let img = app.canvas.renderer.render(&doc, &app.session.cache, &placed, w, h, view, &opts);
