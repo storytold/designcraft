@@ -6,6 +6,8 @@ Every non-code asset in this repository (fonts, images, example art, presets) is
 
 Generated-in-code art is original and has no file to list: the UI icon set (`crates/ui-egui/src/icons.rs`), default swatches, and the sample magazine's imagery (`crates/engine/src/sample.rs`).
 
+**Panel icons (original, provenance recorded):** every sidebar panel icon in `crates/ui-egui/src/icons.rs` is original work and contains no third-party artwork; in particular none is derived from Adobe iconography or any other application's icons. `panel-articles` (redrawn), `panel-glyphs` and `panel-states` were hand-drawn by @soro-82 in Inkscape, starting from the author's own sketches, with no reference to any other application's artwork. The remaining panel icons — `panel-book`, `panel-buttons`, `panel-liquid`, `panel-media`, `panel-scripts`, `panel-track` and `panel-transitions` — were drawn in code as Pen coordinates directly, from the target shape, the 20×20 grid and the stroke-width constraints. All are contributed under MIT OR Apache-2.0. The test `sidebar_panel_icons_are_pairwise_distinct` (in `icons.rs`) asserts that every registered panel icon renders and that the icons are pairwise distinct.
+
 | Asset | Author | Source | Licence | Notes |
 |---|---|---|---|---|
 | `crates/ui-egui/src/i18n/uk.rs` (332 common phrases) | VectorCraft contributors | https://github.com/storytold/vectorcraft/blob/01f329aa99fa0c9517311c7b6cf7233ffc207742/crates/ui-egui/src/i18n/uk.tsv | MIT OR Apache-2.0 | Adapted for DesignCraft context; remaining Ukrainian phrases are original or credited below |
