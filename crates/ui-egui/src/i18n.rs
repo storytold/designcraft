@@ -228,6 +228,28 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Parents Fixed", ["Übergeordnete fixiert", "Gabarits fixes", "Páginas principales fijas", "親ページを固定", "父页面固定"]),
     ("Parents", ["Übergeordnete Seiten", "Gabarits", "Páginas principales", "親ページ", "父页面"]),
     (
+        "RGB Color Space View",
+        [
+            "RGB-Farbraumansicht",
+            "Affichage de l’espace colorimétrique RVB",
+            "Vista de espacio de color RGB",
+            "RGB カラースペース表示",
+            "RGB 色彩空间视图",
+        ],
+    ),
+    (
+        "Lab Color Space View",
+        [
+            "Lab-Farbraumansicht",
+            "Affichage de l’espace colorimétrique Lab",
+            "Vista de espacio de color Lab",
+            "Lab カラースペース表示",
+            "Lab 色彩空间视图",
+        ],
+    ),
+    ("Add CMYK Swatch", ["CMYK-Farbfeld hinzufügen", "Ajouter une nuance CMJN", "Añadir muestra CMYK", "CMYK スウォッチを追加", "添加 CMYK 色板"]),
+    ("Added swatch", ["Farbfeld hinzugefügt", "Nuance ajoutée", "Muestra añadida", "スウォッチを追加しました", "已添加色板"]),
+    (
         "Bulleted & Numbered Lists",
         [
             "Aufzählungszeichen und nummerierte Listen",
