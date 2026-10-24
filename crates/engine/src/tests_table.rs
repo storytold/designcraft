@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use super::*;
+use super::{Session, doc};
 
 fn session_with_frame() -> (Session, u64, u64) {
     let mut s = Session::new();

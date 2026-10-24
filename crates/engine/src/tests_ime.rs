@@ -4,7 +4,7 @@
 use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
 use serde_json::json;
 
-use super::*;
+use super::{Arc, Session, ViewInfo};
 
 fn session() -> Session {
     let mut s = Session::new();
