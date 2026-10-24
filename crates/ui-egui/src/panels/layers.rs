@@ -440,7 +440,8 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         } else if tri_r.clicked() {
             ui.data_mut(|d| d.insert_temp(open_id, !open));
         } else if sq.clicked() && l.visible && !l.locked {
-            let ids: Vec<u64> = spread_items.iter().filter(|i| i.layer == l.id).map(|i| i.id.0).collect();
+            // Locked objects stay unselected (they can't be edited).
+            let ids: Vec<u64> = spread_items.iter().filter(|i| i.layer == l.id && !i.locked).map(|i| i.id.0).collect();
             cmds.push(("selection.set", json!({"ids": ids})));
         } else if resp.double_clicked() {
             // The first click of the pair activated the layer; the second opens its options.
@@ -754,6 +755,19 @@ mod tests {
         h.run_steps(2);
         click(&mut h, row(0, 0.5, true));
         assert_eq!(selected(&h), [ItemId(a)]);
+    }
+
+    /// An unlocked layer's selection square selects its objects but not the locked ones.
+    #[test]
+    fn a_layers_selection_square_leaves_its_locked_objects_out() {
+        let mut app = app();
+        let a = app.run("frame.create", json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.lock", json!({"ids": [b]})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let mut h = panel(app);
+        click(&mut h, row(0, 0.5, true));
+        assert_eq!(h.state().session.active().unwrap().selection.items, [ItemId(a)]);
     }
 
     /// A locked object's row selects nothing either.

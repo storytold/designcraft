@@ -856,7 +856,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let id = LayerId(p.get("id").and_then(Value::as_u64).unwrap_or(0));
                 let f = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(false);
                 let (hide, lock, show, unlock) = (f("hide"), f("lock"), f("show"), f("unlock"));
-                s.edit(|d, _| {
+                s.edit(|d, sel| {
                     for l in &mut d.layers {
                         if show {
                             l.visible = true;
@@ -872,6 +872,11 @@ pub fn specs() -> Vec<CommandSpec> {
                                 l.locked = true;
                             }
                         }
+                    }
+                    // As locking or hiding one layer does.
+                    if hide || lock {
+                        let others: Vec<LayerId> = d.layers.iter().map(|l| l.id).filter(|l| *l != id).collect();
+                        deselect_on_layers(d, sel, &others);
                     }
                     ok()
                 })
@@ -1357,22 +1362,28 @@ fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Locking or hiding a layer deselects its objects: they can't be selected or edited.
         if locked == Some(true) || visible == Some(false) {
-            let mut on_layer = std::collections::HashSet::new();
-            for sp in d.spreads.iter().chain(d.parents.iter()) {
-                for it in sp.items.iter().filter(|i| i.layer == id) {
-                    it.walk(&mut |i| {
-                        on_layer.insert(i.id);
-                    });
-                }
-            }
-            sel.items.retain(|i| !on_layer.contains(i));
-            sel.anchors.retain(|(i, _, _)| !on_layer.contains(i));
-            if sel.items.is_empty() {
-                sel.content = false;
-            }
+            deselect_on_layers(d, sel, &[id]);
         }
         ok()
     })
+}
+
+/// Drop the objects on `layers` (nested ones too) from the selection: those layers were just
+/// locked or hidden, and their objects can't be selected or edited.
+fn deselect_on_layers(d: &designcraft_doc::Document, sel: &mut designcraft_doc::Selection, layers: &[LayerId]) {
+    let mut on_layer = std::collections::HashSet::new();
+    for sp in d.spreads.iter().chain(d.parents.iter()) {
+        for it in sp.items.iter().filter(|i| layers.contains(&i.layer)) {
+            it.walk(&mut |i| {
+                on_layer.insert(i.id);
+            });
+        }
+    }
+    sel.items.retain(|i| !on_layer.contains(i));
+    sel.anchors.retain(|(i, _, _)| !on_layer.contains(i));
+    if sel.items.is_empty() {
+        sel.content = false;
+    }
 }
 
 #[cfg(test)]
@@ -2145,6 +2156,29 @@ mod layer_options_tests {
         assert_eq!(sel(&s), [c], "the group member on the locked layer is deselected");
         s.execute("layer.set", &json!({"id": other, "visible": false})).unwrap();
         assert!(sel(&s).is_empty(), "hiding deselects too");
+    }
+
+    /// Lock Others and Hide Others deselect what they lock or hide, and Object › Lock deselects
+    /// the object it locks.
+    #[test]
+    fn lock_others_hide_others_and_object_lock_deselect() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.doc().unwrap().doc.layers[0].id.0;
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let other = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap();
+        let sel = |s: &crate::Session| s.doc().unwrap().selection.items.iter().map(|i| i.0).collect::<Vec<_>>();
+        for others in [json!({"id": other, "lock": true}), json!({"id": other, "hide": true})] {
+            s.execute("layer.others", &json!({"id": other, "show": true, "unlock": true})).unwrap();
+            s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+            s.execute("layer.others", &others).unwrap();
+            assert_eq!(sel(&s), [b], "{others}: the object on the other layer is deselected");
+        }
+        s.execute("layer.others", &json!({"id": first, "show": true, "unlock": true})).unwrap();
+        s.execute("selection.set", &json!({"ids": [b]})).unwrap();
+        s.execute("object.lock", &json!({})).unwrap();
+        assert!(sel(&s).is_empty(), "Object › Lock deselects");
     }
 }
 
