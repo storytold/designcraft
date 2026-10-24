@@ -944,6 +944,18 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 pen.line(&[(15.0, 13.5), (17.0, 15.5), (15.0, 17.5)]);
             }
         }
+        // A box with one corner marked (Top Left, Top Right, Bottom Left, Bottom Right Corner).
+        "corner-tl" | "corner-tr" | "corner-bl" | "corner-br" => {
+            pen.w = 1.0;
+            pen.rect(4.0, 4.0, 16.0, 16.0);
+            let (x, y) = match name {
+                "corner-tl" => (2.5, 2.5),
+                "corner-tr" => (13.5, 2.5),
+                "corner-bl" => (2.5, 13.5),
+                _ => (13.5, 13.5),
+            };
+            pen.frect(x, y, x + 4.0, y + 4.0);
+        }
         "vscale" => {
             pen.text(13.0, 10.5, "T", 15.0);
             pen.line(&[(4.0, 3.0), (4.0, 17.0)]);

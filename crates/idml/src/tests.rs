@@ -335,6 +335,9 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "ParagraphBorderOn": "false" => false, "true" => true, |r| r.0.border_on;
         "ParagraphBorderColor": "Color/Black" => "[Black]", "Swatch/None" => "[None]", |r| r.0.border_color;
         "ParagraphBorderTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.border_tint;
+        "ParagraphShadingOverprint": "false" => false, "true" => true, |r| r.0.shading_overprint;
+        "ParagraphBorderOverprint": "false" => false, "true" => true, |r| r.0.border_overprint;
+        "ParagraphBorderGapOverprint": "false" => false, "true" => true, |r| r.0.border_gap_overprint;
         "FontStyle": "Regular" => "Regular", "Bold" => "Bold", |r| r.1.font_style;
         "PointSize": "12" => 12.0, "9" => 9.0, |r| r.1.size;
         "Leading": "Auto" => Leading::Auto, "14" => Leading::Points(14.0), |r| r.1.leading;

@@ -705,11 +705,11 @@ pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, 
         ("Thin - Thin", "thinThin"),
         ("Thick - Thick", "thickThick"),
     ];
-    let resp = preview_dropdown(ui, w, |p, r| paint_stroke_type(p, r, cur));
+    let resp = preview_dropdown(ui, w, crate::i18n::tr(&app.ui.language, "Stroke Type"), |p, r| paint_stroke_type(p, r, cur, egui::Color32::BLACK));
     egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(140.0);
+        ui.set_min_width(170.0);
         for (label, kind) in TYPES {
-            if ui.selectable_label(*kind == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+            if preview_row(ui, *kind == cur, crate::i18n::tr(&app.ui.language, label), 40.0, |p, r, c| paint_stroke_type(p, r, kind, c)).clicked() {
                 let ty = if *kind == "dashed" { json!({"kind": "dashed", "pattern": [12.0, 4.0]}) } else { json!({"kind": kind}) };
                 let _ = app.run("object.stroke", json!({"type": ty}));
                 ui.close();
@@ -718,8 +718,7 @@ pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, 
     });
 }
 
-fn paint_stroke_type(p: &egui::Painter, r: Rect, kind: &str) {
-    let c = egui::Color32::BLACK;
+fn paint_stroke_type(p: &egui::Painter, r: Rect, kind: &str, c: egui::Color32) {
     let (x0, x1, y) = (r.min.x + 5.0, r.max.x - 5.0, r.center().y);
     match kind {
         "dashed" => {
@@ -752,10 +751,44 @@ fn paint_stroke_type(p: &egui::Painter, r: Rect, kind: &str) {
     }
 }
 
+/// A row of a preview dropdown's list, as InDesign's: a small preview of the choice (`preview_w`
+/// wide), then its name. Selected rows are highlighted.
+pub(crate) fn preview_row(
+    ui: &mut Ui,
+    selected: bool,
+    label: &str,
+    preview_w: f32,
+    paint: impl FnOnce(&egui::Painter, Rect, egui::Color32),
+) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    // As wide as the preview and its name, translated (at least 130 pt for the name), and as the
+    // popup once its widest row has set it: the rows' highlights then end together.
+    let font = egui::FontId::proportional(12.0);
+    let text_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), font, egui::Color32::WHITE).size().x);
+    let w = (preview_w + 12.0 + text_w + 12.0).max(preview_w + 130.0).max(ui.available_width().min(600.0));
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
+    if selected || resp.hovered() {
+        ui.painter().rect_filled(r, 2.0, if selected { t.row_selected } else { t.hover });
+    }
+    let ink = if selected { t.text_strong } else { t.text };
+    paint(ui.painter(), Rect::from_min_size(r.min + vec2(4.0, 0.0), vec2(preview_w, 22.0)), ink);
+    crate::rtl::paint(
+        ui.painter(),
+        pos2(r.min.x + preview_w + 12.0, r.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        ink,
+    );
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label));
+    resp
+}
+
 /// A dropdown whose face is a light preview box (stroke type, corner shape).
-fn preview_dropdown(ui: &mut Ui, w: f32, paint: impl FnOnce(&egui::Painter, Rect)) -> egui::Response {
+pub(crate) fn preview_dropdown(ui: &mut Ui, w: f32, label: &str, paint: impl FnOnce(&egui::Painter, Rect)) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, label));
     let face = Rect::from_min_max(r.min, pos2(r.max.x - widgets::SEG_W, r.max.y));
     ui.painter().rect_filled(face, 0.0, egui::Color32::from_gray(0xdf));
     paint(ui.painter(), face);
@@ -766,38 +799,56 @@ fn preview_dropdown(ui: &mut Ui, w: f32, paint: impl FnOnce(&egui::Painter, Rect
     resp
 }
 
-fn paint_corner_shape(p: &egui::Painter, r: Rect, shape: CornerShape) {
-    let c = egui::Color32::BLACK;
-    let s = Stroke::new(1.5, c);
-    let (x0, y0, x1, y1) = (r.min.x + 4.0, r.min.y + 4.0, r.max.x - 9.0, r.max.y - 3.0);
-    let k = 8.0;
-    let pts: Vec<egui::Pos2> = match shape {
-        CornerShape::None => vec![pos2(x0, y0), pos2(x1, y0), pos2(x1, y1)],
-        CornerShape::Bevel => vec![pos2(x0, y0), pos2(x1 - k, y0), pos2(x1, y0 + k), pos2(x1, y1)],
-        CornerShape::Inset => vec![pos2(x0, y0), pos2(x1 - k, y0), pos2(x1 - k, y0 + k), pos2(x1, y0 + k), pos2(x1, y1)],
-        CornerShape::Rounded | CornerShape::InverseRounded | CornerShape::Fancy => {
-            let mut v = vec![pos2(x0, y0)];
-            for i in 0..=8 {
-                let a = i as f32 / 8.0 * std::f32::consts::FRAC_PI_2;
-                v.push(if shape == CornerShape::InverseRounded {
-                    pos2(x1 - k * a.cos(), y0 + k * a.sin())
-                } else {
-                    pos2(x1 - k + k * a.sin(), y0 + k - k * a.cos())
-                });
-            }
-            v.push(pos2(x1, y1));
-            v
-        }
+/// A corner shape's glyph, as InDesign draws it in its corner lists: the top edge running into the
+/// corner and the right edge leaving it, in a square centred in `r`.
+pub(crate) fn paint_corner_shape(p: &egui::Painter, r: Rect, shape: CornerShape, c: egui::Color32) {
+    let side = (r.width() - 3.0).min(r.height() - 3.0).max(4.0);
+    let o = pos2(r.center().x - side / 2.0, r.center().y - side / 2.0);
+    let at = |x: f32, y: f32| pos2(o.x + x * side, o.y + y * side);
+    let quarter = |cx: f32, cy: f32, rad: f32, from: f32, to: f32| -> Vec<egui::Pos2> {
+        (0..=10).map(|i| from + (to - from) * i as f32 / 10.0).map(|a| at(cx + rad * a.cos(), cy + rad * a.sin())).collect()
     };
-    p.add(egui::Shape::line(pts, s));
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let stroke = Stroke::new(1.6, c);
+    let line = |pts: Vec<egui::Pos2>| {
+        p.add(egui::Shape::line(pts, stroke));
+    };
+    match shape {
+        CornerShape::None => line(vec![at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0)]),
+        // The corner cut by a diagonal, half the side.
+        CornerShape::Bevel => line(vec![at(0.0, 0.0), at(0.5, 0.0), at(1.0, 0.5), at(1.0, 1.0)]),
+        // A square notch.
+        CornerShape::Inset => line(vec![at(0.0, 0.0), at(0.5, 0.0), at(0.5, 0.45), at(1.0, 0.45), at(1.0, 1.0)]),
+        // A concave quarter circle centred on the corner.
+        CornerShape::InverseRounded => {
+            let mut v = vec![at(0.0, 0.0)];
+            v.extend(quarter(1.0, 0.0, 0.5, PI, FRAC_PI_2));
+            v.push(at(1.0, 1.0));
+            line(v)
+        }
+        // A large convex arc.
+        CornerShape::Rounded => {
+            let mut v = vec![at(0.0, 0.0)];
+            v.extend(quarter(0.08, 0.92, 0.92, -FRAC_PI_2, 0.0));
+            v.push(at(1.0, 1.0));
+            line(v)
+        }
+        // Steps into the corner with a small square loop between them.
+        CornerShape::Fancy => {
+            line(vec![at(0.0, 0.0), at(0.38, 0.0), at(0.38, 0.2), at(0.52, 0.2)]);
+            p.rect_stroke(Rect::from_min_max(at(0.52, 0.06), at(0.76, 0.3)), 0.0, stroke, StrokeKind::Middle);
+            line(vec![at(0.76, 0.3), at(0.76, 0.48), at(1.0, 0.48), at(1.0, 1.0)]);
+        }
+    }
 }
 
 pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32) {
-    let resp = preview_dropdown(ui, width, |p, r| paint_corner_shape(p, r, shape));
+    let resp =
+        preview_dropdown(ui, width, crate::i18n::tr(&app.ui.language, "Corner Shape"), |p, r| paint_corner_shape(p, r, shape, egui::Color32::BLACK));
     egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(140.0);
+        ui.set_min_width(150.0);
         for s in CornerShape::ALL {
-            if ui.selectable_label(s == shape, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, s.label()))).clicked() {
+            if preview_row(ui, s == shape, crate::i18n::tr(&app.ui.language, s.label()), 22.0, |p, r, c| paint_corner_shape(p, r, s, c)).clicked() {
                 let _ = app.run("object.cornerOptions", json!({"shape": s, "size": if size > 0.0 { size } else { 12.0 }}));
                 ui.close();
             }
@@ -3858,6 +3909,56 @@ mod tests {
         assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
     }
 
+    /// A row is as wide as its translated name needs: a long one isn't cut at a fixed width.
+    #[test]
+    fn preview_rows_fit_long_translated_names() {
+        let ctx = egui::Context::default();
+        let long = "Скругленный прямоугольник с обратным углом";
+        let mut widths = (0.0, 0.0);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::Area::new(egui::Id::new("rows")).show(ui.ctx(), |ui| {
+                ui.set_max_width(10.0);
+                let r = preview_row(ui, false, long, 40.0, |_, _, _| {});
+                let text = ui.fonts_mut(|f| f.layout_no_wrap(long.to_string(), egui::FontId::proportional(12.0), egui::Color32::WHITE).size().x);
+                widths = (r.rect.width(), 40.0 + 12.0 + text);
+            });
+        });
+        out.textures_delta.clear();
+        assert!(widths.0 >= widths.1, "{widths:?}");
+    }
+
+    /// The corner shape list shows each shape's glyph beside its name, as InDesign's; a row picks
+    /// the shape and the current one is marked.
+    #[test]
+    fn the_corner_shape_list_has_glyph_rows_and_picks_a_shape() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Corner Shape").click();
+        h.run_steps(3);
+        let rows = ["None", "Fancy", "Bevel", "Inset", "Inverse Rounded", "Rounded"];
+        for r in rows {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::Button, r);
+        }
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Bevel").click();
+        h.run_steps(3);
+        let it = h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().clone();
+        assert!(it.corners.corners.iter().all(|c| c.shape == designcraft_geom::corners::CornerShape::Bevel), "{:?}", it.corners);
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Corner Shape").click();
+        h.run_steps(3);
+        use egui_kittest::kittest::NodeT;
+        let n = h.get_by_role_and_label(egui::accesskit::Role::Button, "Bevel");
+        assert_eq!(n.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True), "the current shape is marked");
+        // The stroke type list has the same rows, by name.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Stroke Type").click();
+        h.run_steps(3);
+        let _ = h.get_by_role_and_label(egui::accesskit::Role::Button, "Thick - Thin");
+    }
+
     const CYAN: &str = "C=100 M=0 Y=0 K=0";
 
     #[test]
@@ -4261,7 +4362,7 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
         let cur = serde_json::to_value(cur).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         let icon = FLEX_JUSTIFY.iter().find(|j| j.0 == cur).map(|j| j.1).unwrap_or("flex-start");
         let resp = place(ui, sub(b, 0.0, 0.0, 58.0, FIELD_H), |ui| {
-            preview_dropdown(ui, 58.0, |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
+            preview_dropdown(ui, 58.0, &tr("Justification"), |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
         });
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(150.0);
