@@ -100,6 +100,25 @@ fn sort_key(s: &str) -> String {
     if k.is_empty() { s.to_lowercase() } else { k }
 }
 
+/// Record one reference's see-target or page on its topic node.
+fn record_ref(n: &mut Node, res: &Resolved) {
+    match &res.r.range {
+        IndexRange::See(t) => n.see.push(t.clone()),
+        IndexRange::SeeAlso(t) => {
+            n.see_also.push(t.clone());
+            if let Some(p) = res.pages {
+                n.pages.push(p);
+            }
+        }
+        IndexRange::SuppressPageRange => {}
+        _ => {
+            if let Some(p) = res.pages {
+                n.pages.push(p);
+            }
+        }
+    }
+}
+
 /// The index as paragraphs `(style, text)`; `page_name` formats an absolute page.
 pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> String) -> Vec<(String, String)> {
     let mut root: BTreeMap<String, Node> = BTreeMap::new();
@@ -114,21 +133,7 @@ pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> S
             .map(|(i, t)| (format!("{}\u{0}{}", sort_key(res.r.sort.get(i).filter(|s| !s.is_empty()).unwrap_or(t)), t.trim()), t.trim().to_string()))
             .collect();
         let n = descend(&mut root, &keys);
-        match &res.r.range {
-            IndexRange::See(t) => n.see.push(t.clone()),
-            IndexRange::SeeAlso(t) => {
-                n.see_also.push(t.clone());
-                if let Some(p) = res.pages {
-                    n.pages.push(p);
-                }
-            }
-            IndexRange::SuppressPageRange => {}
-            _ => {
-                if let Some(p) = res.pages {
-                    n.pages.push(p);
-                }
-            }
-        }
+        record_ref(n, res);
     }
     let mut out = Vec::new();
     if !spec.title.is_empty() {

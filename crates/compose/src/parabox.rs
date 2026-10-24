@@ -122,6 +122,45 @@ pub(crate) fn draw(out: &mut ComposedStory, boxes: &[Option<ParaBox>], frames: &
     }
 }
 
+/// The shading box for one part of a paragraph run, if it has any area.
+fn shading_deco(s: &Shading, part: &Part<'_>, frames: &[FrameSpec], first_part: bool, last_part: bool) -> Option<Deco> {
+    let r = inner_rect(&part.lines, s.width, s.top, s.bottom)?;
+    let [t, l, bo, rr] = s.offsets;
+    let mut rect = Rect::new(r.x0 - l, r.y0 - t, r.x1 + rr, r.y1 + bo);
+    if s.clip
+        && let Some(f) = frames.get(part.fi)
+    {
+        rect = rect.intersect(frame_rect(f));
+    }
+    if rect.width() > 0.0 && rect.height() > 0.0 {
+        // Corners stay square where the box is cut by a split.
+        let corners = cut_corners(s.corners, !first_part, !last_part);
+        let path = (!corners.iter().all(Corner::is_none)).then(|| box_outline(rect, &corners, [true; 4]));
+        return Some(Deco { rect, color: s.color.clone(), tint: s.tint, path, nonprinting: s.nonprinting });
+    }
+    None
+}
+
+/// The border strokes (and plain edges) for one part of a paragraph run, pushed onto `decos`.
+fn border_decos(bd: &Border, part: &Part<'_>, first_part: bool, last_part: bool, decos: &mut Vec<(usize, bool, Deco)>) {
+    let Some(r) = inner_rect(&part.lines, bd.width, bd.top, bd.bottom) else { return };
+    let [t, l, bo, rr] = bd.offsets;
+    let o = Rect::new(r.x0 - l, r.y0 - t, r.x1 + rr, r.y1 + bo);
+    let open_top = !first_part && !bd.display_if_splits;
+    let open_bottom = !last_part && !bd.display_if_splits;
+    for (path, gap) in border_paths(bd, o, open_top, open_bottom) {
+        let (color, tint) = if gap { (bd.gap_color.clone(), bd.gap_tint) } else { (bd.color.clone(), bd.tint) };
+        decos.push((part.fi, false, Deco { rect: path.bounding_box(), color, tint, path: Some(path), nonprinting: false }));
+    }
+    if is_plain(bd, open_top, open_bottom) {
+        decos.extend(
+            plain_edges(bd, o, open_top, open_bottom)
+                .into_iter()
+                .map(|rect| (part.fi, false, Deco { rect, color: bd.color.clone(), tint: bd.tint, path: None, nonprinting: false })),
+        );
+    }
+}
+
 /// The decorations of paragraphs `paras` sharing box `b`: (frame, drawn under the rest, deco).
 fn group_decos(out: &ComposedStory, paras: std::ops::RangeInclusive<usize>, b: &ParaBox, frames: &[FrameSpec]) -> Vec<(usize, bool, Deco)> {
     let mut parts: Vec<Part<'_>> = Vec::new();
@@ -136,40 +175,12 @@ fn group_decos(out: &ComposedStory, paras: std::ops::RangeInclusive<usize>, b: &
     for (k, part) in parts.iter().enumerate() {
         let (first_part, last_part) = (k == 0, k + 1 == n);
         if let Some(s) = &b.shading
-            && let Some(r) = inner_rect(&part.lines, s.width, s.top, s.bottom)
+            && let Some(deco) = shading_deco(s, part, frames, first_part, last_part)
         {
-            let [t, l, bo, rr] = s.offsets;
-            let mut rect = Rect::new(r.x0 - l, r.y0 - t, r.x1 + rr, r.y1 + bo);
-            if s.clip
-                && let Some(f) = frames.get(part.fi)
-            {
-                rect = rect.intersect(frame_rect(f));
-            }
-            if rect.width() > 0.0 && rect.height() > 0.0 {
-                // Corners stay square where the box is cut by a split.
-                let corners = cut_corners(s.corners, !first_part, !last_part);
-                let path = (!corners.iter().all(Corner::is_none)).then(|| box_outline(rect, &corners, [true; 4]));
-                decos.push((part.fi, true, Deco { rect, color: s.color.clone(), tint: s.tint, path, nonprinting: s.nonprinting }));
-            }
+            decos.push((part.fi, true, deco));
         }
-        if let Some(bd) = &b.border
-            && let Some(r) = inner_rect(&part.lines, bd.width, bd.top, bd.bottom)
-        {
-            let [t, l, bo, rr] = bd.offsets;
-            let o = Rect::new(r.x0 - l, r.y0 - t, r.x1 + rr, r.y1 + bo);
-            let open_top = !first_part && !bd.display_if_splits;
-            let open_bottom = !last_part && !bd.display_if_splits;
-            for (path, gap) in border_paths(bd, o, open_top, open_bottom) {
-                let (color, tint) = if gap { (bd.gap_color.clone(), bd.gap_tint) } else { (bd.color.clone(), bd.tint) };
-                decos.push((part.fi, false, Deco { rect: path.bounding_box(), color, tint, path: Some(path), nonprinting: false }));
-            }
-            if is_plain(bd, open_top, open_bottom) {
-                decos.extend(
-                    plain_edges(bd, o, open_top, open_bottom)
-                        .into_iter()
-                        .map(|rect| (part.fi, false, Deco { rect, color: bd.color.clone(), tint: bd.tint, path: None, nonprinting: false })),
-                );
-            }
+        if let Some(bd) = &b.border {
+            border_decos(bd, part, first_part, last_part, &mut decos);
         }
     }
     decos

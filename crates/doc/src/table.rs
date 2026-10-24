@@ -1040,6 +1040,15 @@ impl Table {
         if self.rows[h..self.nrows() - f].iter().any(|r| r.kind != RowKind::Body) {
             return Err(format!("table {}: header/footer rows out of order", self.id));
         }
+        self.check_spans()?;
+        for cell in &self.cells {
+            cell.text.check()?;
+        }
+        Ok(())
+    }
+
+    /// Every merged cell stays inside the grid and no two merged cells overlap.
+    fn check_spans(&self) -> Result<(), String> {
         let mut seen = vec![false; self.cells.len()];
         for r in 0..self.nrows() {
             for c in 0..self.ncols() {
@@ -1063,9 +1072,6 @@ impl Table {
                     }
                 }
             }
-        }
-        for cell in &self.cells {
-            cell.text.check()?;
         }
         Ok(())
     }

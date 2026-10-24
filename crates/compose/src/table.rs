@@ -343,6 +343,26 @@ pub(crate) fn place_table(
     true
 }
 
+/// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
+/// Uses the same baseline/bounds test as auto-growth, and retains a prefix: overset text cannot
+/// reappear after a line that did not fit.
+fn clip_overset(lay: &CellLayout, clip_height: f64) -> Arc<ComposedStory> {
+    let Some(f) = lay.text.frames.first() else { return lay.text.clone() };
+    let keep = lay.line_heights.iter().take_while(|h| **h <= clip_height + 0.01).count();
+    let overset_at = f.lines.get(keep).map(|l| l.range.start);
+    let mut t = (*lay.text).clone();
+    if let Some(frame) = t.frames.first_mut() {
+        frame.lines.truncate(keep);
+        frame.objects.retain(|o| o.line < keep);
+        frame.tables.retain(|table| table.line < keep);
+        frame.range.end = frame.lines.last().map_or(frame.range.start, |l| l.range.end);
+    }
+    if let Some(at) = overset_at {
+        t.overset_at = Some(at);
+    }
+    Arc::new(t)
+}
+
 /// Build one fragment from its rows and push it (with its glyph-less line) to the current frame.
 #[allow(clippy::too_many_arguments)]
 fn emit(
@@ -407,24 +427,7 @@ fn emit(
                 _ => 0.0,
             };
             let overset = space < -0.01 || lay.text.is_overset();
-            let mut text = lay.text.clone();
-            if overset && let Some(f) = text.frames.first() {
-                // Use the same baseline/bounds test as auto-growth, and retain a prefix:
-                // overset text cannot reappear after a line that did not fit.
-                let keep = lay.line_heights.iter().take_while(|h| **h <= clip.height() + 0.01).count();
-                let overset_at = f.lines.get(keep).map(|l| l.range.start);
-                let mut t = (*text).clone();
-                if let Some(frame) = t.frames.first_mut() {
-                    frame.lines.truncate(keep);
-                    frame.objects.retain(|o| o.line < keep);
-                    frame.tables.retain(|table| table.line < keep);
-                    frame.range.end = frame.lines.last().map_or(frame.range.start, |l| l.range.end);
-                }
-                if let Some(at) = overset_at {
-                    t.overset_at = Some(at);
-                }
-                text = Arc::new(t);
-            }
+            let text = if overset { clip_overset(lay, clip.height()) } else { lay.text.clone() };
             cells.push(PlacedCell {
                 row: r,
                 col: c,

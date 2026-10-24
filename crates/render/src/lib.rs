@@ -277,6 +277,26 @@ pub fn default_threads() -> u16 {
     }
 }
 
+/// An item's fill under its content; an overprinting fill multiplies into what is beneath.
+fn draw_body_fill(ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {
+    if it.fill.is_none() {
+        return;
+    }
+    let doc = f.doc;
+    ctx.set_transform(f.view * xf);
+    let op = overprints(f, &it.fill.swatch, it.fill.tint, it.fill.overprint);
+    if op {
+        ctx.push_layer(None, Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)), None, None, None);
+    }
+    if set_fill_paint(ctx, doc, &it.fill, bp.bounding_box()) {
+        ctx.fill_path(bp);
+    }
+    ctx.reset_paint_transform();
+    if op {
+        ctx.pop_layer();
+    }
+}
+
 impl Renderer {
     pub fn new() -> Self {
         Self {
@@ -627,22 +647,7 @@ impl Renderer {
 
     /// Fill, content and stroke of a leaf item (no opacity, blend or effects).
     pub(crate) fn draw_body(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn) {
-        let doc = f.doc;
-        // Fill.
-        if !it.fill.is_none() {
-            ctx.set_transform(f.view * xf);
-            let op = overprints(f, &it.fill.swatch, it.fill.tint, it.fill.overprint);
-            if op {
-                ctx.push_layer(None, Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)), None, None, None);
-            }
-            if set_fill_paint(ctx, doc, &it.fill, bp.bounding_box()) {
-                ctx.fill_path(bp);
-            }
-            ctx.reset_paint_transform();
-            if op {
-                ctx.pop_layer();
-            }
-        }
+        draw_body_fill(ctx, f, it, bp, xf);
         // Content.
         match &it.content {
             Content::Graphic(g) => {

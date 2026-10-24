@@ -134,6 +134,25 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
     write::guard(|| export_pdf_with_report_inner(doc, cache, opts))
 }
 
+/// Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X
+/// or PDF/A: this update comes after krilla's validator ran, and its NeedAppearances fields and
+/// Screen annotations aren't allowed in PDF/A.
+fn add_form_fields(bytes: &mut Vec<u8>, warnings: &mut Vec<String>, doc: &Document, sheets: &[Sheet], opts: &PdfOptions) {
+    let fields = crate::forms::collect(doc, sheets);
+    let media = if opts.media { crate::forms::collect_media(doc, sheets) } else { Vec::new() };
+    if fields.is_empty() && media.is_empty() {
+        return;
+    }
+    match opts.standard {
+        Standard::PdfX4 => warnings.push("PDF/X-4: form fields and media were left out".into()),
+        Standard::PdfA2b => warnings.push("PDF/A-2b: form fields and media were left out".into()),
+        _ => match crate::forms::add_fields(&*bytes, &fields, &media) {
+            Some(b) => *bytes = b,
+            None => warnings.push("form fields and media couldn't be added to this PDF".into()),
+        },
+    }
+}
+
 fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
     let sheets = sheets(doc, opts)?;
     let warnings = Vec::new();
@@ -235,23 +254,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         // group that got past it, with its page.
         crate::pdfx::cmyk_group_spaces(&mut bytes);
     }
-    // Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X
-    // or PDF/A: this update comes after krilla's validator ran, and its NeedAppearances fields and
-    // Screen annotations aren't allowed in PDF/A.
-    let fields = crate::forms::collect(doc, &sheets);
-    let media = if opts.media { crate::forms::collect_media(doc, &sheets) } else { Vec::new() };
-    if !fields.is_empty() || !media.is_empty() {
-        if opts.standard == Standard::PdfX4 {
-            warnings.push("PDF/X-4: form fields and media were left out".into());
-        } else if opts.standard == Standard::PdfA2b {
-            warnings.push("PDF/A-2b: form fields and media were left out".into());
-        } else {
-            match crate::forms::add_fields(&bytes, &fields, &media) {
-                Some(b) => bytes = b,
-                None => warnings.push("form fields and media couldn't be added to this PDF".into()),
-            }
-        }
-    }
+    add_form_fields(&mut bytes, &mut warnings, doc, &sheets, opts);
     if opts.standard == Standard::PdfX4 {
         // Output intent and PDF/X identification, then check the result.
         match crate::pdfx::make_pdfx4(&bytes, &title, created) {
@@ -654,6 +657,27 @@ impl Exporter<'_> {
         self.doc.resolve_color(name, tint).map(|c| device(&c, self.rgb_only))
     }
 
+    /// The parent pages' items on `layer` shown on page `pi` of spread `si`: the parent's bases
+    /// first, then the parent.
+    fn parent_items(&mut self, s: &mut Surface, si: usize, pi: usize, page: &designcraft_doc::Page, layer: &designcraft_doc::Layer, first: usize) {
+        let doc = self.doc;
+        for (ppi, ppage) in doc.shown_parent_pages(SpreadRef::Doc(si), pi) {
+            let Some(parent) = doc.parents.get(ppi) else { continue };
+            let Some(ppg) = parent.pages.get(ppage) else { continue };
+            let dx = page.x - ppg.x;
+            for it in &parent.items {
+                if it.layer != layer.id || page.overridden.contains(&it.id) {
+                    continue;
+                }
+                // Parent items belong to the parent page they sit on.
+                if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
+                    continue;
+                }
+                self.top_item(s, it, Affine::translate((dx, 0.0)), Some(first + pi), true);
+            }
+        }
+    }
+
     fn spread(&mut self, s: &mut Surface, si: usize) {
         let doc = self.doc;
         let Some(sp) = doc.spreads.get(si) else { return };
@@ -663,24 +687,8 @@ impl Exporter<'_> {
                 continue;
             }
             for (pi, page) in sp.pages.iter().enumerate() {
-                if !page.show_parent_items {
-                    continue;
-                }
-                // The parent's bases first, then the parent.
-                for (ppi, ppage) in doc.shown_parent_pages(SpreadRef::Doc(si), pi) {
-                    let Some(parent) = doc.parents.get(ppi) else { continue };
-                    let Some(ppg) = parent.pages.get(ppage) else { continue };
-                    let dx = page.x - ppg.x;
-                    for it in &parent.items {
-                        if it.layer != layer.id || page.overridden.contains(&it.id) {
-                            continue;
-                        }
-                        // Parent items belong to the parent page they sit on.
-                        if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
-                            continue;
-                        }
-                        self.top_item(s, it, Affine::translate((dx, 0.0)), Some(first + pi), true);
-                    }
+                if page.show_parent_items {
+                    self.parent_items(s, si, pi, page, layer, first);
                 }
             }
             for it in &sp.items {
