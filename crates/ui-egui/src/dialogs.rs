@@ -1577,6 +1577,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
         &[
             ("general", "General"),
             ("interface", "Interface"),
+            ("uiScaling", "UI Scaling"),
             ("type", "Type"),
             ("advancedType", "Advanced Type"),
             ("composition", "Composition"),
@@ -1597,6 +1598,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
         &[
             ("general", "General"),
             ("interface", "Interface"),
+            ("uiScaling", "UI Scaling"),
             ("type", "Type"),
             ("composition", "Composition"),
             ("spelling", "Spelling"),
@@ -1816,6 +1818,40 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     }
                 }
                 "interface" => {
+                    let lang = app.ui.language.clone();
+                    let t = crate::theme::Tokens::get(ui.ctx());
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Appearance")).font(semibold(12.0)));
+                    // Color Theme: a swatch per theme, as InDesign's. A click shows it at once;
+                    // Cancel goes back to the theme Preferences opened with.
+                    ui.horizontal(|ui| {
+                        crate::rtl::label(ui, crate::i18n::tr(&lang, "Color Theme:"));
+                        let cur = d.s("brightness");
+                        for b in crate::theme::Brightness::ALL {
+                            let (r, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                            let on = cur == b.id();
+                            let swatch = r.shrink(4.0);
+                            ui.painter().rect_filled(swatch, 1.0, crate::theme::Tokens::for_brightness(b).panel);
+                            ui.painter().rect_stroke(swatch, 1.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+                            if on || resp.hovered() {
+                                let ring = if on { t.accent_strong } else { t.field_border };
+                                ui.painter().rect_stroke(r.shrink(1.0), 2.0, egui::Stroke::new(2.0, ring), egui::StrokeKind::Inside);
+                            }
+                            let name = crate::i18n::tr(&lang, b.label()).to_string();
+                            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, &name));
+                            if resp.on_hover_text(&name).clicked() && !on {
+                                d.fields.insert("brightness".into(), json!(b.id()));
+                                d.fields.insert("applyBrightness".into(), json!(b.id()));
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Panels")).font(semibold(12.0)));
+                    ui.horizontal(|ui| {
+                        crate::rtl::label(ui, crate::i18n::tr(&lang, "Tools Panel:"));
+                        translated_combo(&lang, ui, d, "toolsColumns", &[("single", "Single Column"), ("double", "Double Column")]);
+                    });
+                }
+                "uiScaling" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "UI Scaling")).font(semibold(12.0)));
                     ui.horizontal(|ui| {
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "UI Size:"));
@@ -2899,6 +2935,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     {
         d.fields.insert("status".into(), json!(e));
     }
+    // So does Preferences › Interface › Color Theme, as InDesign's.
+    if let Some(b) = d.fields.remove("applyBrightness")
+        && let Err(e) = app.run("window.brightness", json!({"brightness": b}))
+    {
+        d.fields.insert("status".into(), json!(e));
+    }
     if d.id == "newDocument" && result.is_none() {
         crate::new_document::preview(app, &mut d, ctx);
     }
@@ -3042,10 +3084,18 @@ pub fn cancel(app: &mut DesignApp) {
     app.cancel_pdf_import();
     if let Some(d) = d
         && d.id == "preferences"
-        && let Some(lang) = d.fields.get("openedLanguage").and_then(Value::as_str)
-        && lang != app.ui.language
     {
-        let _ = app.run("app.language", json!({"lang": lang}));
+        if let Some(lang) = d.fields.get("openedLanguage").and_then(Value::as_str)
+            && lang != app.ui.language
+        {
+            let _ = app.run("app.language", json!({"lang": lang}));
+        }
+        // The Color Theme shown while choosing goes back too.
+        if let Some(b) = d.fields.get("openedBrightness").and_then(Value::as_str)
+            && b != app.ui.brightness.id()
+        {
+            let _ = app.run("window.brightness", json!({"brightness": b}));
+        }
     }
 }
 
@@ -3436,6 +3486,13 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             };
             app.run(view, json!({}))?;
             app.run("window.richBlack", json!({"on": d.b("richBlack")}))?;
+            // Interface: the theme (already showing, unless set without a click) and the Tools panel.
+            if let Some(b) = d.fields.get("brightness").and_then(Value::as_str).filter(|b| *b != app.ui.brightness.id()) {
+                app.run("window.brightness", json!({"brightness": b}))?;
+            }
+            if d.fields.contains_key("toolsColumns") {
+                app.run("window.toolsDoubleColumn", json!({"on": d.s("toolsColumns") == "double"}))?;
+            }
             if let Some(v) = d.n("uiScale") {
                 app.run("window.uiScale", json!({"scale": v / 100.0}))?;
             }
@@ -7631,6 +7688,73 @@ mod tests {
         type_slowly(&mut app, &ctx, screen, "10");
         confirm(&mut app).unwrap();
         assert!(matches!(fill(&app, id), designcraft_color::Color::Rgb { .. }), "{:?}", fill(&app, id));
+    }
+
+    /// The course's chapter 26: Preferences › Interface as InDesign's. A Color Theme swatch shows
+    /// its theme at once and Cancel goes back; OK keeps the theme and the Tools panel's columns.
+    /// UI Size is in a UI Scaling section of its own.
+    #[test]
+    fn preferences_interface_sets_the_color_theme_and_tools_panel() {
+        use crate::theme::Brightness;
+        use egui::accesskit::Role;
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let opened = app.ui.brightness;
+        let open = |app: &mut DesignApp| {
+            app.run("app.preferences", json!({})).unwrap();
+            app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("interface"));
+        };
+        open(&mut app);
+        let mut h = Harness::builder().with_size(egui::vec2(1100.0, 760.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::new("prefs_interface_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        let swatch =
+            |h: &Harness<'_, DesignApp>, name: &str| h.get_by(|n| n.role() == Role::RadioButton && n.label().as_deref() == Some(name)).click();
+        for l in ["Appearance", "Color Theme:", "Panels", "Tools Panel:"] {
+            assert!(h.query_by_label(l).is_some(), "{l}");
+        }
+        // A click shows the theme at once; Cancel goes back.
+        swatch(&h, "Light");
+        h.run_steps(3);
+        assert_eq!(h.state().ui.brightness, Brightness::Light);
+        h.get_by_label("Cancel").click();
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_none());
+        assert_eq!(h.state().ui.brightness, opened, "Cancel goes back to the theme Preferences opened with");
+        // OK keeps the theme and the Tools panel's columns.
+        open(h.state_mut());
+        h.run_steps(3);
+        swatch(&h, "Dark");
+        h.run_steps(2);
+        h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some("Single Column")).click();
+        h.run_steps(2);
+        h.get_by_label("Double Column").click();
+        h.run_steps(2);
+        h.get_by_label("  OK  ").click();
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_none());
+        assert_eq!(h.state().ui.brightness, Brightness::Dark);
+        assert!(h.state().ui.tools_double_column);
+        // The same command the Window menu toggles, with an explicit state for Preferences.
+        assert_eq!(h.state_mut().run("window.toolsDoubleColumn", json!({"on": false})).unwrap(), json!(false));
+        assert_eq!(h.state_mut().run("window.toolsDoubleColumn", json!({"on": false})).unwrap(), json!(false), "set, not toggled");
+        assert_eq!(h.state_mut().run("window.toolsDoubleColumn", json!({})).unwrap(), json!(true), "toggled without `on`");
+        // UI Size has a section of its own.
+        open(h.state_mut());
+        h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("uiScaling"));
+        h.run_steps(3);
+        assert!(h.query_by_label("UI Size:").is_some());
     }
 
     #[test]

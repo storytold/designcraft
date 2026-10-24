@@ -2346,6 +2346,9 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Typical Display", ["Typical Display", "Affichage standard", "Typical Display", "Typical Display", "典型显示"]),
     ("UI Scaling", ["UI Scaling", "Mise à l'échelle de l'interface", "UI Scaling", "UI Scaling", "UI 缩放"]),
+    ("Color Theme:", ["Farbdesign:", "Thème de couleur :", "Tema de color:", "カラーテーマ:", "颜色主题："]),
+    ("Tools Panel:", ["Werkzeugbedienfeld:", "Panneau Outils :", "Panel Herramientas:", "ツールパネル:", "工具面板："]),
+    ("Double Column", ["Doppelte Spalte", "Double colonne", "Columna doble", "2 列", "双栏"]),
     ("Update Link", ["Update Link", "Mettre à jour le lien", "Update Link", "Update Link", "更新链接"]),
     (
         "User Dictionary Words",
