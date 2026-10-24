@@ -887,9 +887,8 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let mresp = ui.interact(more, ui.id().with("opmore"), Sense::click());
     ui.painter().rect(more, 0.0, if mresp.hovered() { t.hover } else { t.input }, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     icons::paint(ui.painter(), more.shrink(4.0), "chevron-right", t.icon);
-    if mresp.clicked() {
-        show_panel(app, "effects");
-    }
+    mresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr(&app.ui.language, "Opacity")));
+    opacity_slider(app, &mresp, i.opacity);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
@@ -900,6 +899,46 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
             let _ = app.run("object.dropShadow", json!({"on": !i.shadow}));
         }
     });
+}
+
+/// The Opacity slider that the arrow beside the field opens, as in InDesign: a drag shows the
+/// new opacity live and is one undo step when let go.
+fn opacity_slider(app: &mut DesignApp, resp: &egui::Response, opacity: f64) {
+    let (mut slid, mut held, mut shown) = (None, false, false);
+    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        shown = true;
+        // A thin rail and a round knob, as InDesign draws it.
+        ui.spacing_mut().slider_width = 130.0;
+        ui.spacing_mut().slider_rail_height = 2.0;
+        let mut v = (opacity * 100.0).round();
+        let slider = ui.add(
+            egui::Slider::new(&mut v, 0.0..=100.0).integer().show_value(false).handle_shape(egui::style::HandleShape::Circle).trailing_fill(false),
+        );
+        // The slider has no visible caption (the field beside the arrow is the label), so it's
+        // named for assistive technology only.
+        let label = crate::i18n::tr(&app.ui.language, "Opacity");
+        slider.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), v, label));
+        // The release frame can move the value too; it stays part of the drag's preview, which
+        // the next frame commits as the one undo step.
+        let pressed = slider.is_pointer_button_down_on() || slider.dragged() || slider.drag_stopped();
+        if slider.changed() {
+            slid = Some((v, pressed));
+        }
+        held = pressed;
+    });
+    match slid {
+        Some((v, true)) => app.live_preview("Opacity", "object.opacity", json!({"opacity": v / 100.0})),
+        Some((v, false)) => {
+            // The keyboard (arrow keys on the focused slider): applied at once.
+            app.end_live_preview();
+            let _ = app.run("object.opacity", json!({"opacity": v / 100.0}));
+        }
+        None if held => app.hold_live_preview(),
+        // Shown but let go without a change (a click outside, Escape): the drag's preview is
+        // committed now, before whatever that click does, so that keeps its own undo step.
+        None if shown => app.end_live_preview(),
+        None => {}
+    }
 }
 
 /// The Fill (or Stroke) popup of Properties › Appearance, as InDesign's: Apply To (a text frame's
@@ -3856,6 +3895,60 @@ mod tests {
         assert_eq!(items.len(), 1, "one shape left");
         let r = items[0].bounds();
         assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
+    }
+
+    /// The arrow beside Opacity opens a slider, as in InDesign: a drag shows the opacity live and
+    /// is one undo step; the Opacity link still opens the Effects panel.
+    #[test]
+    fn the_opacity_arrow_opens_a_slider_and_a_drag_is_one_undo_step() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let opacity = |app: &DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().opacity;
+        let steps = undo_steps(&app);
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                app.settle_live_preview();
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        assert!(h.query_by_role(egui::accesskit::Role::Slider).is_none());
+        h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Opacity")).click();
+        h.run_steps(3);
+        assert!(
+            h.query_by(|n| n.role() == egui::accesskit::Role::Slider && n.label().as_deref() == Some("Opacity")).is_some(),
+            "assistive technology names the slider"
+        );
+        let track = h.get_by_role(egui::accesskit::Role::Slider).rect();
+        let y = track.center().y;
+        h.hover_at(egui::pos2(track.right() - 1.0, y));
+        h.run_steps(1);
+        h.drag_at(egui::pos2(track.right() - 1.0, y));
+        h.run_steps(1);
+        for k in 1..=5 {
+            h.hover_at(egui::pos2(track.right() - track.width() * 0.05 * k as f32, y));
+            h.run_steps(1);
+            assert_eq!(undo_steps(h.state()), steps, "no undo step while dragging");
+        }
+        let previewed = opacity(h.state());
+        assert!(previewed < 0.9 && previewed > 0.5, "the drag shows the opacity live: {previewed}");
+        // Let go further along than the last move: the release frame changes the value too.
+        h.drop_at(egui::pos2(track.right() - track.width() * 0.3, y));
+        h.run_steps(3);
+        assert_eq!(undo_steps(h.state()), steps + 1, "the whole drag is one undo step");
+        assert!(opacity(h.state()) < previewed, "the release position is applied: {previewed} → {}", opacity(h.state()));
+        assert_ne!(h.state().ui.open_panel.as_deref(), Some("effects"), "the arrow doesn't open Effects");
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(opacity(h.state()), 1.0);
     }
 
     const CYAN: &str = "C=100 M=0 Y=0 K=0";
