@@ -916,6 +916,45 @@ impl<'r> Importer<'r> {
         Some((c, ty))
     }
 
+    /// Custom stroke styles.
+    fn read_stroke_styles(&mut self, top: &[El]) {
+        for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
+            let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
+            let kind = match e.local() {
+                "StripedStrokeStyle" => designcraft_doc::StrokeType::Stripes {
+                    bands: nums(e.get("StripeArray").unwrap_or(""))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
+                        .collect(),
+                },
+                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: nums(e.get("DashArray").unwrap_or("")) },
+                _ => designcraft_doc::StrokeType::Dotted,
+            };
+            let _ = id;
+            self.stroke_styles.push(designcraft_doc::StrokeStyleDef { name: name.to_string(), kind });
+        }
+    }
+
+    /// Ink Manager settings: inks converted to process and ink aliases.
+    fn read_inks(&mut self, top: &[El]) {
+        for e in top.iter().filter(|e| e.local() == "Ink") {
+            let Some(name) = e
+                .get("Name")
+                .filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
+            else {
+                continue;
+            };
+            if e.get("ConvertToProcess") == Some("true") {
+                self.inks.to_process.push(name.to_string());
+            }
+            if let Some(a) = e.get("AliasInkName").filter(|a| !a.is_empty() && *a != name && !a.starts_with("$ID/")) {
+                self.inks.aliases.push((name.to_string(), a.to_string()));
+            }
+        }
+    }
+
     fn graphics(&mut self, top: &[El]) {
         let mut order: Vec<(String, Swatch)> = Vec::new();
         // Colours.
@@ -959,39 +998,8 @@ impl<'r> Importer<'r> {
                 Swatch { name, value: SwatchValue::Tint { base, tint: (t / 100.0) as f32 }, locked: false, named: true, hidden: false },
             ));
         }
-        // Custom stroke styles.
-        for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
-            let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
-            let kind = match e.local() {
-                "StripedStrokeStyle" => designcraft_doc::StrokeType::Stripes {
-                    bands: nums(e.get("StripeArray").unwrap_or(""))
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
-                        .collect(),
-                },
-                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: nums(e.get("DashArray").unwrap_or("")) },
-                _ => designcraft_doc::StrokeType::Dotted,
-            };
-            let _ = id;
-            self.stroke_styles.push(designcraft_doc::StrokeStyleDef { name: name.to_string(), kind });
-        }
-        // Ink Manager.
-        for e in top.iter().filter(|e| e.local() == "Ink") {
-            let Some(name) = e
-                .get("Name")
-                .filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
-            else {
-                continue;
-            };
-            if e.get("ConvertToProcess") == Some("true") {
-                self.inks.to_process.push(name.to_string());
-            }
-            if let Some(a) = e.get("AliasInkName").filter(|a| !a.is_empty() && *a != name && !a.starts_with("$ID/")) {
-                self.inks.aliases.push((name.to_string(), a.to_string()));
-            }
-        }
+        self.read_stroke_styles(top);
+        self.read_inks(top);
         for e in top.iter().filter(|e| e.local() == "Gradient") {
             let Some(id) = e.get("Self") else { continue };
             let mut stops: Vec<GradientStop> = Vec::new();
@@ -2223,43 +2231,7 @@ impl<'r> Importer<'r> {
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
             cell.text = self.story_with_para(StoryId(0), ce, default_para);
-            if let Some(fc) = ce.get("FillColor") {
-                cell.fill = self.swatch_ref(fc);
-            }
-            if let Some(tint) = tint(ce.num("FillTint")) {
-                cell.fill_tint = tint;
-            }
-            for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
-                if let Some(v) = ce.num(k) {
-                    cell.insets[i] = v.max(0.0);
-                }
-            }
-            if let Some(vj) = ce.get("VerticalJustification") {
-                cell.vj = names::vj_in(vj);
-            }
-            if let Some(fb) = ce.get("FirstBaselineOffset") {
-                cell.first_baseline = names::first_baseline_in(fb);
-            }
-            if let Some(min) = ce.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()) {
-                cell.first_baseline_min = min.clamp(0.0, 8640.0);
-            }
-            cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
-            if cell.rotation != 0.0 {
-                self.rotated_cells += 1;
-            }
-            for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
-                let attrs = self.cell_stroke_attrs(ce, side);
-                attrs.apply_to(&mut cell.strokes[i]);
-                cell.stroke_defined[i] |= !attrs.is_empty();
-                let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
-                cell.stroke_priorities[i] = priority;
-                // Preserve style-defined edges and #102's positive-priority local overrides.
-                cell.border_overrides[i] |= priority > 0;
-                // No table or table style border is given anywhere, so the built-in 1 pt default must not
-                // draw over an outer edge the cell explicitly hides (weight 0 or the None swatch), as InDesign draws nothing.
-                let hidden = attrs.weight == Some(0.0) || attrs.color.as_deref() == Some(swatch::NONE);
-                cell.border_overrides[i] |= border_unset && hidden;
-            }
+            self.read_cell_attrs(&mut cell, ce, border_unset);
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
             }
@@ -2271,6 +2243,47 @@ impl<'r> Importer<'r> {
             let _ = t.merge(rg);
         }
         t
+    }
+
+    /// A cell's local fill, insets, alignment, rotation and edge strokes.
+    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, ce: &El, border_unset: bool) {
+        if let Some(fc) = ce.get("FillColor") {
+            cell.fill = self.swatch_ref(fc);
+        }
+        if let Some(tint) = tint(ce.num("FillTint")) {
+            cell.fill_tint = tint;
+        }
+        for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
+            if let Some(v) = ce.num(k) {
+                cell.insets[i] = v.max(0.0);
+            }
+        }
+        if let Some(vj) = ce.get("VerticalJustification") {
+            cell.vj = names::vj_in(vj);
+        }
+        if let Some(fb) = ce.get("FirstBaselineOffset") {
+            cell.first_baseline = names::first_baseline_in(fb);
+        }
+        if let Some(min) = ce.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()) {
+            cell.first_baseline_min = min.clamp(0.0, 8640.0);
+        }
+        cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
+        if cell.rotation != 0.0 {
+            self.rotated_cells += 1;
+        }
+        for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
+            let attrs = self.cell_stroke_attrs(ce, side);
+            attrs.apply_to(&mut cell.strokes[i]);
+            cell.stroke_defined[i] |= !attrs.is_empty();
+            let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+            cell.stroke_priorities[i] = priority;
+            // Preserve style-defined edges and #102's positive-priority local overrides.
+            cell.border_overrides[i] |= priority > 0;
+            // No table or table style border is given anywhere, so the built-in 1 pt default must not
+            // draw over an outer edge the cell explicitly hides (weight 0 or the None swatch), as InDesign draws nothing.
+            let hidden = attrs.weight == Some(0.0) || attrs.color.as_deref() == Some(swatch::NONE);
+            cell.border_overrides[i] |= border_unset && hidden;
+        }
     }
 
     /// The format of the text in a `CharacterStyleRange`: its style, and its local attributes over
