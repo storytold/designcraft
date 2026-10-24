@@ -59,6 +59,9 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
     if st.selection.text.is_some() {
         return crate::i18n::tr(&app.ui.language, "Characters").into();
     }
+    if !st.selection.anchors.is_empty() {
+        return crate::i18n::tr(&app.ui.language, "Anchor Point(s)").into();
+    }
     if info.is_none() && !st.selection.guides.is_empty() {
         return crate::i18n::tr(&app.ui.language, "Ruler Guide").into();
     }
@@ -126,6 +129,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         document_sections(app, ui);
         return;
     };
+    if app.session.active().is_some_and(|st| !st.selection.anchors.is_empty()) {
+        anchor_point_sections(app, ui, &i);
+        return;
+    }
     section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
     transform_section(app, ui, &i);
     divider(ui);
@@ -621,6 +628,75 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     if more_options(ui, &app.ui.language).clicked() {
         show_panel(app, "info");
     }
+}
+
+/// Properties › Transform for points selected with Direct Selection: X/Y/W/H of the points'
+/// bounds (from the reference point); X and Y move the points, W and H spread or gather them
+/// about the reference point. No angles: those turn objects.
+fn anchor_transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    let u = units(app);
+    let rp = app.ui.ref_point;
+    let b = block(ui, 2.0 * FIELD_H + 4.0);
+    let r = i.page_rect;
+    let (fx, fy) = ((rp % 3) as f64 / 2.0, (rp / 3) as f64 / 2.0);
+    let (x, y) = (r.x0 + r.width() * fx, r.y0 + r.height() * fy);
+    if let Some(p) = ref_point_proxy(ui, sub(b, 5.0, 10.0, 26.0, 26.0), rp) {
+        app.ui.ref_point = p;
+    }
+    let mut set = serde_json::Map::new();
+    // A single point has no size: as InDesign, W and H show its object's, greyed out.
+    let single = super::selected_anchor_points(app).len() == 1;
+    let (w, h) = if single { i.object_size } else { (r.width(), r.height()) };
+    for (row, (lx, vx, kx, lw, vw, kw)) in [("X:", x, "x", "W:", w, "width"), ("Y:", y, "y", "H:", h, "height")].into_iter().enumerate() {
+        let yy = row as f32 * 25.0;
+        place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, lx, 18.0));
+        if let Some(v) = place(ui, sub(b, 59.0, yy, 54.0, FIELD_H), |ui| measure(ui, &format!("pt_{kx}"), Some(vx), u, 54.0)) {
+            set.insert(kx.into(), json!(v));
+        }
+        place(ui, sub(b, 120.0, yy, 19.0, FIELD_H), |ui| widgets::caption_w(ui, lw, 19.0));
+        let id = format!("pt_{kw}");
+        let field = NumField::measure(&id, Some(vw), u).width(54.0).enabled(!single);
+        if let Some(v) = place(ui, sub(b, 140.0, yy, 54.0, FIELD_H), |ui| field.show(ui)) {
+            set.insert(kw.into(), json!(v));
+        }
+    }
+    if !set.is_empty() {
+        let _ = transform_anchors(app, &Value::Object(set));
+    }
+    if more_options(ui, &app.ui.language).clicked() {
+        show_panel(app, "info");
+    }
+}
+
+/// Move the selected points as Properties › Transform's `set` asks ({x?, y?, width?, height?},
+/// in the page coordinates the fields show, from the reference point): one `path.moveAnchors`
+/// step, each point by its own movement. A width or height of a single point (0) can't scale.
+pub(crate) fn transform_anchors(app: &mut DesignApp, set: &Value) -> Result<Value, String> {
+    let points = super::selected_anchor_points(app);
+    let Some(i) = super::sel_info(app) else { return Ok(Value::Null) };
+    if points.is_empty() {
+        return Ok(Value::Null);
+    }
+    let rp = app.ui.ref_point;
+    let r = i.page_rect;
+    let (fx, fy) = ((rp % 3) as f64 / 2.0, (rp / 3) as f64 / 2.0);
+    // Page coordinates and spread coordinates differ by the ruler origin only.
+    let b = points.iter().skip(1).fold(designcraft_geom::Rect::from_points(points[0].1, points[0].1), |b, (_, p)| b.union_pt(*p));
+    let origin = (b.x0 - r.x0, b.y0 - r.y0);
+    let reference = (r.x0 + r.width() * fx + origin.0, r.y0 + r.height() * fy + origin.1);
+    let num = |k: &str| set.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+    let scale = |new: Option<f64>, old: f64| new.filter(|_| old > 1e-9).map_or(1.0, |v| v.max(0.0) / old);
+    let (kx, ky) = (scale(num("width"), r.width()), scale(num("height"), r.height()));
+    let shift = (num("x").map_or(0.0, |v| v - (r.x0 + r.width() * fx)), num("y").map_or(0.0, |v| v - (r.y0 + r.height() * fy)));
+    let moved: Vec<Value> = points
+        .iter()
+        .map(|&((id, s, a), p)| {
+            let nx = reference.0 + (p.x - reference.0) * kx + shift.0;
+            let ny = reference.1 + (p.y - reference.1) * ky + shift.1;
+            json!([id.0, s, a, nx - p.x, ny - p.y])
+        })
+        .collect();
+    app.run("path.moveAnchors", json!({"points": moved}))
 }
 
 /// Properties › Transform for selected ruler guides: X for one vertical guide, Y for one
@@ -2505,6 +2581,37 @@ const CONVERT_SHAPE: [(&str, &str, &str); 9] = [
     ("shape-orthogonal", "orthogonalLine", "Orthogonal Line"),
 ];
 
+/// Points selected with Direct Selection, as InDesign's Properties shows them: Transform,
+/// Appearance, Convert Points (the point type of the selected points) and Delete Point(s).
+fn anchor_point_sections(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
+    anchor_transform_section(app, ui, i);
+    divider(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
+    appearance_section(app, ui, i);
+    divider(ui);
+    let mut kind = None;
+    let lang = app.ui.language.clone();
+    section_row(ui, crate::i18n::tr(&lang, "Convert Points"), |ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        // Laid out from the right: last first, so the row reads Plain … Symmetrical.
+        for (icon, k, tip) in CONVERT_POINT.iter().rev() {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip)).clicked() {
+                kind = Some(k);
+            }
+        }
+    });
+    if let Some(k) = kind {
+        let _ = app.run("path.convertPoints", json!({"kind": k}));
+    }
+    rule(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
+    let fw = full_width(ui);
+    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Delete Point(s)"), fw).clicked() {
+        let _ = app.run("path.deletePoints", json!({}));
+    }
+}
+
 /// Pathfinder panel › Convert Point: (icon, kind, tooltip).
 const CONVERT_POINT: [(&str, &str, &str); 4] = [
     ("point-plain", "plain", "Plain"),
@@ -3932,6 +4039,83 @@ mod tests {
         let doc = &h.state().session.active().unwrap().doc;
         assert_eq!(doc.story(story).unwrap().char_format_at(0).over.fill.as_deref(), Some(CYAN), "the text is cyan");
         assert_eq!(doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]", "the frame isn't");
+    }
+
+    /// Points selected with Direct Selection: InDesign's "Anchor Point(s)" panel, with Convert
+    /// Points and the Delete Point(s) quick action, as in the Zero2Graphic tutorial (1:25).
+    #[test]
+    fn selected_points_show_convert_points_and_delete_points() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [200, 72, 300, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"anchors": [[a, 0, 0], [b, 0, 0]]})).unwrap();
+        assert_eq!(selection_title(&app, &super::super::sel_info(&app)), "Anchor Point(s)");
+        let mut h = panel(app);
+        // The four point types (Appearance has a Corner row too).
+        for tip in ["Plain", "Corner", "Smooth", "Symmetrical"] {
+            assert!(h.get_all_by_label(tip).next().is_some(), "{tip}");
+        }
+        assert!(h.query_by_label("Align").is_none(), "only the sections InDesign shows for points");
+        h.get_by_label("Delete Point(s)").click();
+        h.run_steps(3);
+        let d = &h.state().session.active().unwrap().doc;
+        for id in [a, b] {
+            assert_eq!(d.item(designcraft_doc::ids::ItemId(id)).unwrap().path.subpaths[0].anchors.len(), 3, "one point gone from each");
+        }
+    }
+
+    /// With points selected, Transform measures and moves the points: one corner of a frame shows
+    /// that corner, not the frame, and X moves the corner alone; W spreads two points apart.
+    #[test]
+    fn transform_measures_and_moves_the_selected_points() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+        let corner = |app: &DesignApp, i: usize| {
+            let d = &app.session.active().unwrap().doc;
+            let it = d.item(designcraft_doc::ids::ItemId(a)).unwrap();
+            it.xf * it.path.subpaths[0].anchors[i].p
+        };
+        let first = corner(&app, 0);
+        app.run("selection.set", json!({"anchors": [[a, 0, 0]]})).unwrap();
+        let i = super::super::sel_info(&app).unwrap();
+        assert_eq!((i.page_rect.width(), i.page_rect.height()), (0.0, 0.0), "a point, not the frame");
+        app.ui.ref_point = 0;
+        transform_anchors(&mut app, &json!({"x": i.page_rect.x0 + 10.0})).unwrap();
+        assert_eq!(corner(&app, 0), first + designcraft_geom::Vec2::new(10.0, 0.0), "the corner moved");
+        assert_eq!(corner(&app, 2), designcraft_geom::Point::new(172.0, 172.0), "the opposite corner stayed");
+        // Two points 100 pt apart, W 200 from the left: the right one goes 100 further.
+        app.run("selection.set", json!({"anchors": [[a, 0, 2], [a, 0, 3]]})).unwrap();
+        let (p2, p3) = (corner(&app, 2), corner(&app, 3));
+        let w = super::super::sel_info(&app).unwrap().page_rect.width();
+        transform_anchors(&mut app, &json!({"width": w * 2.0})).unwrap();
+        let (left, right) = if p2.x < p3.x { (2, 3) } else { (3, 2) };
+        let (pl, pr) = if left == 2 { (p2, p3) } else { (p3, p2) };
+        assert_eq!(corner(&app, left), pl, "the reference side stays");
+        assert!((corner(&app, right).x - (pr.x + w)).abs() < 1e-9, "spread to twice the width");
+    }
+
+    /// One point has no size: W and H show its frame's, greyed out, as InDesign; two points
+    /// measure (and set) their own.
+    #[test]
+    fn one_selected_point_shows_its_frames_size_greyed() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 172, 222]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"anchors": [[a, 0, 0]]})).unwrap();
+        assert_eq!(super::super::sel_info(&app).unwrap().object_size, (100.0, 150.0));
+        let mut h = panel(app);
+        h.run_steps(2);
+        let greyed = |h: &Harness<'_, DesignApp>| {
+            h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_disabled()).filter_map(|n| n.value()).collect::<Vec<_>>()
+        };
+        let u = units(h.state());
+        let f = |v| designcraft_geom::units::format_measure(v, u);
+        assert_eq!(greyed(&h), [f(100.0), f(150.0)], "the frame's W and H, greyed");
+        h.state_mut().run("selection.set", json!({"anchors": [[a, 0, 0], [a, 0, 2]]})).unwrap();
+        h.run_steps(2);
+        assert!(greyed(&h).is_empty(), "two points have a size of their own");
     }
 
     #[test]

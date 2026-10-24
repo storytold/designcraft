@@ -8,6 +8,21 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bool_or, cmd, has_doc, has_selection, ids_param, ok};
 use crate::{HistoryEntry, Result, Session};
 
+/// `anchors` of `selection.set`: the points that exist, once each.
+fn anchors_param(doc: &designcraft_doc::Document, p: &Value) -> Vec<(ItemId, usize, usize)> {
+    let mut out: Vec<(ItemId, usize, usize)> = Vec::new();
+    for v in p.get("anchors").and_then(Value::as_array).into_iter().flatten() {
+        let n = |i: usize| v.get(i).and_then(Value::as_u64);
+        let (Some(id), Some(si), Some(ai)) = (n(0), n(1), n(2)) else { continue };
+        let (Ok(si), Ok(ai)) = (usize::try_from(si), usize::try_from(ai)) else { continue };
+        let a = (ItemId(id), si, ai);
+        if doc.item(a.0).is_some_and(|it| it.path.subpaths.get(si).is_some_and(|sp| ai < sp.anchors.len())) && !out.contains(&a) {
+            out.push(a);
+        }
+    }
+    out
+}
+
 fn can_undo(s: &Session) -> std::result::Result<(), String> {
     s.active().filter(|d| !d.history.undo.is_empty()).map(|_| ()).ok_or_else(|| "nothing to undo".into())
 }
@@ -235,11 +250,17 @@ pub fn specs() -> Vec<CommandSpec> {
             s.typing_format = None;
             Ok(json!({"redone": e.label}))
         }),
-        cmd!(noundo "selection.set", "Select", [], None, "{ids: [id], add?: bool, content?: bool}", has_doc, |s, p| {
-            let ids = ids_param(p, "ids").unwrap_or_default();
+        cmd!(noundo "selection.set", "Select", [], None, "{ids: [id], add?: bool, content?: bool, anchors?: [[id, subpath, index]] (Direct Selection: the selected anchor points; their paths are selected too)}", has_doc, |s, p| {
+            let mut ids = ids_param(p, "ids").unwrap_or_default();
             let add = bool_or(p, "add", false);
             let content = bool_or(p, "content", false);
             let st = s.doc_mut()?;
+            let anchors = anchors_param(&st.doc, p);
+            for (id, _, _) in &anchors {
+                if !ids.contains(id) {
+                    ids.push(*id);
+                }
+            }
             let ids: Vec<ItemId> = ids.into_iter().filter(|i| st.doc.item(*i).is_some()).collect();
             if add {
                 for i in ids {
@@ -247,8 +268,13 @@ pub fn specs() -> Vec<CommandSpec> {
                         st.selection.items.push(i);
                     }
                 }
+                for a in anchors {
+                    if !st.selection.anchors.contains(&a) {
+                        st.selection.anchors.push(a);
+                    }
+                }
             } else {
-                st.selection = Selection { items: ids, content, ..Default::default() };
+                st.selection = Selection { items: ids, content, anchors, ..Default::default() };
             }
             st.selection.text = None;
             st.selection.cells = None;
@@ -262,6 +288,8 @@ pub fn specs() -> Vec<CommandSpec> {
             st.selection.cells = None;
             if let Some(i) = st.selection.items.iter().position(|x| *x == id) {
                 st.selection.items.remove(i);
+                // Its points go with it: arrow keys and Delete act on the selected points.
+                st.selection.anchors.retain(|a| a.0 != id);
                 // A key object needs another object to align to it.
                 if st.selection.key == Some(id) || st.selection.items.len() < 2 {
                     st.selection.key = None;
@@ -320,7 +348,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear",
             ["Edit"],
             Some("Delete"),
-            "{ids?} — delete selected items (or the selected text or ruler guides)",
+            "{ids?} — delete selected items (or the selected text, points or ruler guides)",
             has_doc,
             |s, p| {
                 if s.doc()?.selection.text.is_some() && p.get("ids").is_none() {
@@ -328,6 +356,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 if p.get("ids").is_none() && s.doc()?.selection.items.is_empty() && !s.doc()?.selection.guides.is_empty() {
                     return s.execute("guide.delete", &json!({}));
+                }
+                // Points selected with Direct Selection: they go, not their paths (as InDesign).
+                if p.get("ids").is_none() && !s.doc()?.selection.anchors.is_empty() {
+                    return s.execute("path.deletePoints", &json!({}));
                 }
                 let ids = super::targets(s, p)?;
                 // With a placed graphic itself selected (Direct Selection), only the graphic goes: its
