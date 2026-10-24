@@ -1331,7 +1331,7 @@ fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (visible, locked, printable) = (flag("visible")?, flag("locked")?, flag("printable")?);
     let (guides, wrap) = (flag("showGuides")?, flag("suppressWrapWhenHidden")?);
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         if let Some(n) = &name
             && d.layers.iter().any(|l| l.id != id && l.name == *n)
         {
@@ -1353,6 +1353,22 @@ fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
         ] {
             if let Some(v) = v {
                 *slot = v;
+            }
+        }
+        // Locking or hiding a layer deselects its objects: they can't be selected or edited.
+        if locked == Some(true) || visible == Some(false) {
+            let mut on_layer = std::collections::HashSet::new();
+            for sp in d.spreads.iter().chain(d.parents.iter()) {
+                for it in sp.items.iter().filter(|i| i.layer == id) {
+                    it.walk(&mut |i| {
+                        on_layer.insert(i.id);
+                    });
+                }
+            }
+            sel.items.retain(|i| !on_layer.contains(i));
+            sel.anchors.retain(|(i, _, _)| !on_layer.contains(i));
+            if sel.items.is_empty() {
+                sel.content = false;
             }
         }
         ok()
@@ -2110,6 +2126,25 @@ mod layer_options_tests {
         assert_eq!(s.doc().unwrap().doc.layers, before);
         // Keeping its own name is fine.
         s.execute("layer.set", &json!({"id": id, "name": "Art", "color": [1, 2, 3]})).unwrap();
+    }
+
+    /// Locking or hiding a layer deselects the objects on it, nested ones too.
+    #[test]
+    fn locking_or_hiding_a_layer_deselects_its_objects() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.doc().unwrap().doc.layers[0].id.0;
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.group", &json!({"ids": [a, b]})).unwrap();
+        let other = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        let c = s.execute("frame.create", &json!({"rect": [40, 0, 50, 10]})).unwrap()["id"].as_u64().unwrap();
+        let sel = |s: &crate::Session| s.doc().unwrap().selection.items.iter().map(|i| i.0).collect::<Vec<_>>();
+        s.execute("selection.set", &json!({"ids": [a, c]})).unwrap();
+        s.execute("layer.set", &json!({"id": first, "locked": true})).unwrap();
+        assert_eq!(sel(&s), [c], "the group member on the locked layer is deselected");
+        s.execute("layer.set", &json!({"id": other, "visible": false})).unwrap();
+        assert!(sel(&s).is_empty(), "hiding deselects too");
     }
 }
 
