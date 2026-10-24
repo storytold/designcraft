@@ -52,6 +52,12 @@ struct MenuState {
     frame: Option<u64>,
 }
 
+/// The keyboard highlight, distinct from the document's currently selected family.
+#[cfg(test)]
+pub(super) fn keyboard_highlight(ctx: &egui::Context) -> Option<usize> {
+    ctx.data(|data| data.get_temp::<MenuState>(egui::Id::new("font_menu_state"))).and_then(|state| state.highlight)
+}
+
 /// What the menu knows about a family it shows (read once, then kept for the session).
 #[derive(Clone)]
 struct FamilyMeta {

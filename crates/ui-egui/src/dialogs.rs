@@ -1971,6 +1971,10 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                 }
                 "display" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Options")).font(semibold(12.0)));
+                    ui.add_enabled_ui(!cfg!(target_arch = "wasm32"), |ui| {
+                        check(ui, d, "persistImagePreviews", crate::i18n::tr(&app.ui.language, "Save image previews on this computer"));
+                    });
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Previews can remain after a document is closed. Turning this off stops disk reads and writes; existing previews can be cleared from the profile's Previews folder while DesignCraft is closed."));
                     let cur = d.s("displayQuality");
                     ui.horizontal(|ui| {
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Default View:"));
@@ -3476,6 +3480,9 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
             app.run("prefs.set", prefs)?;
             app.ui.dynamic_spelling = d.b("dynamicSpelling");
+            if d.fields.contains_key("persistImagePreviews") {
+                app.ui.persist_image_previews = d.b("persistImagePreviews");
+            }
             if d.fields.contains_key("userWords") {
                 let words: Vec<String> = d.s("userWords").lines().map(str::to_string).collect();
                 app.run("spelling.setWords", json!({"words": words}))?;
@@ -7497,6 +7504,19 @@ mod tests {
         let st = app.session.active().unwrap();
         let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
         assert_eq!([t.cell(0, 0).unwrap().strokes[2].weight, t.cell(1, 1).unwrap().strokes[0].weight], [1.0; 2]);
+    }
+
+    #[test]
+    fn disk_preview_preference_applies_and_survives_preferences_reload() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        assert!(app.ui.persist_image_previews);
+        app.run("app.preferences", json!({})).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("persistImagePreviews".into(), json!(false));
+        assert!(app.ui.persist_image_previews, "editing the dialog does not apply before OK");
+        confirm(&mut app).unwrap();
+        let saved = serde_json::to_vec(&app.ui).unwrap();
+        assert!(!crate::UiState::from_preferences_json(&saved).unwrap().persist_image_previews);
+        assert!(crate::UiState::from_preferences_json(b"{}").unwrap().persist_image_previews);
     }
 
     #[test]

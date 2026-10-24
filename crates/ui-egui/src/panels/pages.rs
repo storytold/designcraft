@@ -10,14 +10,13 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
-/// What a thumbnail shows: a document page (absolute index) or a whole parent spread.
+/// Parent spread thumbnails; document pages use the background thumbnail worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ThumbOf {
-    Page(usize),
     Parent(SpreadId),
 }
 
-/// (document uid, revision, page or parent, thumbnail height).
+/// (document uid, revision, parent, thumbnail height).
 type ThumbKey = (u64, u64, ThumbOf, u32);
 
 static THUMBS: Mutex<Option<HashMap<ThumbKey, egui::TextureHandle>>> = Mutex::new(None);
@@ -37,25 +36,19 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     let mut r = designcraft_render::Renderer::new();
     r.threads = 0;
     let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
-    let (img, name) = match of {
-        ThumbOf::Page(abs) => {
-            let page = st.doc.page(abs)?;
-            let img = r.render_page(&st.doc, &app.session.cache, abs, px / page.height.max(1e-6), false, &opts)?;
-            (img, format!("thumb{abs}"))
+    let ThumbOf::Parent(id) = of;
+    let (img, name) = {
+        let i = st.doc.parent_index(id)?;
+        let b = st.doc.parents.get(i)?.bounds();
+        if !(b.width() > 0.0 && b.height() > 0.0) {
+            return None;
         }
-        ThumbOf::Parent(id) => {
-            let i = st.doc.parent_index(id)?;
-            let b = st.doc.parents.get(i)?.bounds();
-            if !(b.width() > 0.0 && b.height() > 0.0) {
-                return None;
-            }
-            let scale = (px / b.height()).min(MAX_THUMB_W / b.width());
-            let (w, h) = ((b.width() * scale).round().max(1.0) as u32, (b.height() * scale).round().max(1.0) as u32);
-            let view = designcraft_geom::Affine::scale(scale) * designcraft_geom::Affine::translate(-b.origin().to_vec2());
-            let o = designcraft_render::RenderOptions { background: Some([255, 255, 255, 255]), ..opts };
-            let placed = [designcraft_render::Placed { spread: SpreadRef::Parent(i), xf: designcraft_geom::Affine::IDENTITY }];
-            (r.render(&st.doc, &app.session.cache, &placed, w, h, view, &o), format!("thumbp{}", id.0))
-        }
+        let scale = (px / b.height()).min(MAX_THUMB_W / b.width());
+        let (w, h) = ((b.width() * scale).round().max(1.0) as u32, (b.height() * scale).round().max(1.0) as u32);
+        let view = designcraft_geom::Affine::scale(scale) * designcraft_geom::Affine::translate(-b.origin().to_vec2());
+        let o = designcraft_render::RenderOptions { background: Some([255, 255, 255, 255]), ..opts };
+        let placed = [designcraft_render::Placed { spread: SpreadRef::Parent(i), xf: designcraft_geom::Affine::IDENTITY }];
+        (r.render(&st.doc, &app.session.cache, &placed, w, h, view, &o), format!("thumbp{}", id.0))
     };
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let tex = crate::widgets::load_texture(ctx, format!("{name}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
@@ -264,6 +257,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
+    let interacting = st.interaction.is_some();
+    if !interacting {
+        app.thumbnails.begin(st.uid, st.revision, doc.clone(), ui.ctx());
+    }
     let editing_parents = st.editing_parents;
     let aspect = (doc.settings.page_width / doc.settings.page_height.max(1.0)) as f32;
     let mut drop: Option<(PageDrag, usize)> = None;
@@ -455,7 +452,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
                         });
                         let tint = if selected { SELECTED_TINT } else { Color32::WHITE };
-                        match thumbnails.then(|| thumb(app, ui.ctx(), ThumbOf::Page(abs), th)).flatten() {
+                        match (thumbnails && ui.is_rect_visible(pr))
+                            .then(|| app.thumbnails.get(abs, (th * ui.ctx().pixels_per_point()).round() as u32))
+                            .flatten()
+                        {
                             Some(tex) => {
                                 ui.painter().image(tex.id(), pr, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
                             }
@@ -557,6 +557,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         parents_part(app, ui);
         divider(app, ui);
         pages_part(app, ui);
+    }
+    if app.canvas.shown.is_some() && app.canvas.pending.is_none() && !interacting {
+        app.thumbnails.finish(ui.ctx(), app.session.cache.clone(), cur);
     }
     ui.spacing_mut().item_spacing.y = 4.0;
     ui.horizontal(|ui| {

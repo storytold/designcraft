@@ -102,3 +102,28 @@ fn small_edits_in_the_same_canvas_mode_still_repaint_partially() {
     assert_eq!(app.canvas.patches, 1);
     assert_eq!(pixel(&patch, app.canvas.shown.unwrap(), point), Color32::WHITE);
 }
+
+/// Compare actual partial texture uploads with a clean full render of the edited document.
+#[test]
+fn partial_edits_keep_proof_colors_and_ink_limit_identical_to_full_redraws() {
+    for (proof, ink_limit) in [(true, None), (false, Some(0.1)), (true, Some(0.1))] {
+        let mut app = app_with_document_object();
+        app.run("swatch.create", json!({"name":"Test red", "color":"#e61a33"})).unwrap();
+        app.ui.proof_colors = proof;
+        app.ui.proof_setup.target = designcraft_color::cms::ProofTarget::Protanopia;
+        app.ui.ink_limit = ink_limit;
+        let ctx = egui::Context::default();
+        let _ = render(&mut app, &ctx);
+        app.run("object.fill", json!({"swatch":"Test red"})).unwrap();
+        let patch = render(&mut app, &ctx);
+        assert!(patch.pos.is_some(), "colour previews must preserve partial redraws");
+        assert_eq!(app.canvas.patches, 1);
+        let point = Point::new(32.0, 32.0);
+        let patched = pixel(&patch, app.canvas.shown.unwrap(), point);
+        // Drop only the cached view, keeping the same document and colour options.
+        app.canvas.shown = None;
+        let full = render(&mut app, &ctx);
+        assert_eq!(patched, pixel(&full, app.canvas.shown.unwrap(), point), "proof={proof}, ink={ink_limit:?}");
+        assert_ne!(patched, Color32::from_rgb(230, 26, 51), "the display transform must affect the new colour");
+    }
+}

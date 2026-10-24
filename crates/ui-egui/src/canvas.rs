@@ -567,23 +567,80 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let preview = app.ui.screen_mode != ScreenMode::Normal;
     let bg = if app.ui.screen_mode == ScreenMode::Presentation { Color32::BLACK } else { t.pasteboard };
     painter.rect_filled(screen, 0.0, bg);
-    // Page shadow: a hard 1.5 pt black offset on the right and bottom (InDesign 2026).
-    for slot in &layout.slots {
-        let r = xf.rect(slot.bounds);
-        painter.rect_filled(r.translate(vec2(1.5, 1.5)), 0.0, Color32::BLACK);
+    // Paper and tiny previews cover the page shadow beyond the last sharp viewport texture.
+    // Use real page bounds: facing-page gaps and missing first/last pages stay pasteboard.
+    let interacting = st.interaction.is_some();
+    let settings = crate::canvas_preview::Settings {
+        options: screen_options(app, &layout, preview, 1.0),
+        parents: st.editing_parents,
+        colors: app.ui.color_settings.clone(),
+        proof: app.ui.proof_colors.then(|| app.ui.proof_setup.clone()),
+        ink_limit: app.ui.ink_limit,
     }
-    // Paper under the rendered content: a page scrolled or jumped to shows its paper colour,
-    // not the shadow's black, until its render arrives.
-    let [r, g, b, _] = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE).to_rgba8(1.0);
-    let paper = Color32::from_rgb(r, g, b);
-    for slot in &layout.slots {
-        for page in doc.spread(slot.spread).map(|sp| sp.pages.as_slice()).unwrap_or_default() {
-            painter.rect_filled(xf.rect(slot.xf.transform_rect_bbox(page.bounds())), 0.0, paper);
+    .coarse();
+    app.canvas.previews.begin(st.uid, st.revision, doc.clone(), settings, ui.ctx());
+    paint_page_previews(&mut app.canvas.previews, &painter, &xf, &doc, &layout, screen);
+    if !interacting {
+        // Current visible spreads first, followed by at most one neighbour on either side.
+        let visible: Vec<_> =
+            layout.slots.iter().enumerate().filter(|(_, s)| xf.rect(s.bounds).intersects(screen)).map(|(i, _)| i).take(32).collect();
+        let mut candidates: Vec<_> = visible.iter().filter_map(|i| layout.slots.get(*i)).copied().collect();
+        if let Some(first) = visible.first().and_then(|i| i.checked_sub(1)).and_then(|i| layout.slots.get(i)) {
+            candidates.push(*first);
+        }
+        if let Some(last) = visible.last().and_then(|i| i.checked_add(1)).and_then(|i| layout.slots.get(i)) {
+            candidates.push(*last);
+        }
+        candidates.truncate(32);
+        app.canvas.previews.request(candidates, app.session.cache.clone(), ui.ctx());
+    }
+    // A preview transaction retains the source snapshot; cursor/snapping overlays keep reading
+    // the live geometry, while image pixels can move without repainting the whole page.
+    if app.canvas.drag_active && !interacting {
+        app.canvas.defer_full = true;
+    }
+    app.canvas.drag_active = interacting;
+    let viewport = DRect::new(xf.origin.x, xf.origin.y, xf.origin.x + rect.width() as f64 / xf.zoom, xf.origin.y + rect.height() as f64 / xf.zoom);
+    let opts = screen_options(app, &layout, preview, ui.ctx().pixels_per_point() as f64);
+    let warm =
+        app.canvas.pending.is_none() && app.canvas.shown_doc.as_ref().is_some_and(|d| std::sync::Arc::ptr_eq(d, &st.doc)) && !app.canvas.defer_full;
+    let retained = app.canvas.drag.update(
+        st,
+        ui.ctx(),
+        layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect(),
+        viewport,
+        xf.zoom * ui.ctx().pixels_per_point() as f64,
+        opts,
+        app.session.cache.clone(),
+        warm,
+        app.canvas.defer_full,
+        !app.ui.proof_colors && app.ui.ink_limit.is_none() && !app.ui.document_grid,
+    );
+    if retained {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(worker) = &app.canvas.worker {
+            worker.cancel();
+        }
+        app.canvas.pending = None;
+        app.canvas.pending_doc = None;
+    }
+    // An immediate click-and-drag may beat background preparation. Keep the image moving
+    // using the draft path until the retained layers are ready, rather than freezing it.
+    if !retained || !app.canvas.drag.ready() {
+        render_texture(app, ui.ctx(), rect, &xf, &layout, preview);
+    }
+    let draw_drag = app.canvas.drag.ready() && (retained || app.canvas.defer_full);
+    if draw_drag {
+        if preview {
+            for slot in &layout.slots {
+                let clip = shown_area(app, &doc, &xf, slot).intersect(screen);
+                app.canvas.drag.paint(&painter.with_clip_rect(clip), &xf);
+            }
+        } else {
+            app.canvas.drag.paint(&painter, &xf);
         }
     }
-    // Rendered content.
-    render_texture(app, ui.ctx(), rect, &xf, &layout, preview);
-    if let (Some(tex), Some(sh)) = (&app.canvas.texture, app.canvas.shown) {
+    if !draw_drag && let (Some(tex), Some(sh)) = (&app.canvas.texture, app.canvas.shown) {
         // Place the texture where its region is in the current view (shifted while panning,
         // scaled while a zoom re-render is pending).
         // The texture's corners in canvas space, placed through the view (rotation included).
@@ -755,6 +812,47 @@ fn draw_cursor_badge(painter: &egui::Painter, p: Pos2, c: Cursor, t: &Tokens) {
     }
 }
 
+fn paint_page_previews(
+    previews: &mut crate::canvas_preview::Previews,
+    painter: &egui::Painter,
+    xf: &Xf,
+    doc: &Document,
+    layout: &CanvasLayout,
+    screen: Rect,
+) {
+    let [r, g, b, _] = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE).to_rgba8(1.0);
+    let paper = Color32::from_rgb(r, g, b);
+    for slot in &layout.slots {
+        if !xf.rect(slot.bounds).expand(2.0).intersects(screen) {
+            continue;
+        }
+        let Some(spread) = doc.spread(slot.spread) else { continue };
+        let texture = previews.get(slot.spread);
+        let mesh = texture.map(|texture| {
+            let b = slot.bounds;
+            let mut mesh = egui::Mesh::with_texture(texture.id());
+            for (point, uv) in [
+                (Point::new(b.x0, b.y0), pos2(0.0, 0.0)),
+                (Point::new(b.x1, b.y0), pos2(1.0, 0.0)),
+                (Point::new(b.x1, b.y1), pos2(1.0, 1.0)),
+                (Point::new(b.x0, b.y1), pos2(0.0, 1.0)),
+            ] {
+                mesh.vertices.push(egui::epaint::Vertex { pos: xf.to_screen(point), uv, color: Color32::WHITE });
+            }
+            mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+            mesh
+        });
+        for page in &spread.pages {
+            let r = xf.rect(slot.xf.transform_rect_bbox(page.bounds()));
+            painter.rect_filled(r.translate(vec2(1.5, 1.5)), 0.0, Color32::BLACK);
+            painter.rect_filled(r, 0.0, paper);
+            if let Some(mesh) = &mesh {
+                painter.with_clip_rect(r.intersect(screen)).add(egui::Shape::mesh(mesh.clone()));
+            }
+        }
+    }
+}
+
 /// Render options for the canvas texture.
 fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bool, ppp: f64) -> designcraft_render::RenderOptions {
     designcraft_render::RenderOptions {
@@ -882,11 +980,24 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
         app.canvas.shown = Some(shown);
         app.canvas.shown_doc = app.canvas.pending_doc.take();
         app.canvas.pending = None;
+        app.canvas.defer_full = false;
+        app.canvas.low_quality = false;
         app.perf.render_ms = done.ms;
     }
-    if app.canvas.shown.is_some_and(|s| covers(&s)) {
+    let expected_resolution = app.canvas.shown.zip(app.canvas.texture.as_ref()).is_some_and(|(sh, tex)| {
+        let expected = crate::widgets::fit_texture_size(canvas_pixels(sh, ppp), ctx.input(|i| i.max_texture_side));
+        tex.size() == expected
+    });
+    if ((!app.canvas.low_quality && expected_resolution) || (app.canvas.low_quality && app.canvas.drag_active))
+        && app.canvas.shown.is_some_and(|s| covers(&s))
+    {
+        // A small edit may already be fully painted; an empty interaction needs no refresh.
+        if !app.canvas.drag_active && !app.canvas.low_quality {
+            app.canvas.defer_full = false;
+        }
         return;
     }
+    let view_covered = app.canvas.shown.is_some_and(|s| covers(&crate::Shown { doc: doc_key, ..s }));
     let doc_changed = app.canvas.shown.is_none_or(|s| s.doc != doc_key);
     let mode_changed = app.canvas.shown.is_some_and(|s| s.editing_parents != editing_parents);
     let zoom_same = app.canvas.shown.is_some_and(|s| (s.zoom - xf.zoom).abs() < 1e-9);
@@ -894,10 +1005,14 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
         let st = app.session.active()?;
         let placed: Vec<designcraft_render::Placed> =
             layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
-        let w = (target.size.0 as f64 * ppp).round().max(1.0) as u32;
-        let h = (target.size.1 as f64 * ppp).round().max(1.0) as u32;
-        let view = Affine::scale(ppp) * Affine::scale(xf.zoom) * Affine::translate((-target.origin.x, -target.origin.y));
-        let opts = screen_options(app, layout, preview, ppp);
+        let render_ppp = if app.canvas.drag_active { ppp.min(0.5) } else { ppp };
+        let w = (target.size.0 as f64 * render_ppp).round().max(1.0) as u32;
+        let h = (target.size.1 as f64 * render_ppp).round().max(1.0) as u32;
+        let view = Affine::scale(render_ppp) * Affine::scale(xf.zoom) * Affine::translate((-target.origin.x, -target.origin.y));
+        let mut opts = screen_options(app, layout, preview, ppp);
+        if app.canvas.drag_active && opts.quality == designcraft_render::DisplayQuality::High {
+            opts.quality = designcraft_render::DisplayQuality::Typical;
+        }
         Some((st.doc.clone(), placed, w, h, view, opts))
     };
     // Synchronous path: document edits (keep editing crisp), first frame, or no worker.
@@ -910,19 +1025,29 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
     let has_worker = app.canvas.worker.is_some();
     #[cfg(target_arch = "wasm32")]
     let has_worker = false;
-    // An edit with the view unchanged: repaint just the regions it changed.
-    if doc_changed && zoom_same && patch_texture(app, layout, ppp, doc_key, preview) {
+    // Preserve full-quality partial redraws for small changes, including live interactions.
+    // Only a large or unbounded change needs the draft whole-canvas fallback.
+    if !app.canvas.defer_full
+        && !app.canvas.low_quality
+        && doc_changed
+        && zoom_same
+        && view_covered
+        && patch_texture(app, layout, ppp, doc_key, preview)
+    {
         return;
     }
     // A mode switch changes every spread's meaning, even if the document has no damage.
     // Show the new canvas immediately, including when fitting it changes the zoom.
-    if !has_worker || app.canvas.shown.is_none() || mode_changed || (doc_changed && zoom_same) {
+    if !has_worker || app.canvas.shown.is_none() || mode_changed || app.canvas.drag_active || (doc_changed && zoom_same && !app.canvas.defer_full) {
         let t0 = crate::now_ms();
         let Some((doc, placed, w, h, view, opts)) = job(app) else { return };
         let img = app.canvas.renderer.render(&doc, &app.session.cache, &placed, w, h, view, &opts);
+        designcraft_render::images::trim_originals();
         upload(app, ctx, img);
         app.canvas.shown = Some(target);
         app.canvas.shown_doc = Some(doc);
+        app.canvas.low_quality = app.canvas.drag_active;
+        app.canvas.defer_full = false;
         app.canvas.pending = None;
         app.canvas.pending_doc = None;
         app.perf.render_ms = crate::now_ms() - t0;
@@ -951,6 +1076,11 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
     }
 }
 
+/// Expected pixel allocation for a full-quality texture, separate from logical view coverage.
+fn canvas_pixels(shown: crate::Shown, ppp: f64) -> [usize; 2] {
+    [(shown.size.0 as f64 * ppp).round().max(1.0) as usize, (shown.size.1 as f64 * ppp).round().max(1.0) as usize]
+}
+
 /// Repaint only the damaged regions of the current texture after an edit (typing, nudging).
 /// Returns false when a full render is needed (view moved, too much changed, or damage unknown).
 fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: (u64, u64, u64, bool), preview: bool) -> bool {
@@ -958,16 +1088,18 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     if sh.doc.0 != doc_key.0 || sh.doc.3 != doc_key.3 || sh.editing_parents != st.editing_parents {
         return false;
     }
-    let (tw, th) = ((sh.size.0 as f64 * ppp).round() as i64, (sh.size.1 as f64 * ppp).round() as i64);
     // Patches are in full-resolution pixels: a texture `upload` shrank to the GPU's limit
     // (a viewport wider than `max_texture_side`) takes full renders instead.
-    let full = [usize::try_from(tw).unwrap_or(0), usize::try_from(th).unwrap_or(0)];
-    if app.canvas.texture.as_ref().is_none_or(|t| t.size() != full) {
+    // Native DPI/UI scaling can change after the first frame or between monitors.
+    // Patches use current pixels-per-point, so an older-sized texture cannot accept them.
+    let expected = canvas_pixels(sh, ppp);
+    if app.canvas.texture.as_ref().is_none_or(|tex| tex.size() != expected) {
         return false;
     }
     let new = st.doc.clone();
     let Some(regions) = designcraft_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return false };
     let t0 = crate::now_ms();
+    let (tw, th) = (expected[0] as i64, expected[1] as i64);
     let k = sh.zoom * ppp;
     let mut px: Option<(i64, i64, i64, i64)> = None;
     for (r, rect) in &regions {
@@ -1003,11 +1135,17 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
         * Affine::scale(sh.zoom)
         * Affine::translate((-sh.origin.x, -sh.origin.y));
     let opts = screen_options(app, layout, preview, ppp);
-    let img = app.canvas.patcher.render(&new, &app.session.cache, &placed, (x1 - x0) as u32, (y1 - y0) as u32, view, &opts);
-    let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
-    if let Some(tex) = app.canvas.texture.as_mut() {
-        tex.set_partial([x0 as usize, y0 as usize], ci, egui::TextureOptions::LINEAR);
+    let mut img = app.canvas.patcher.render(&new, &app.session.cache, &placed, (x1 - x0) as u32, (y1 - y0) as u32, view, &opts);
+    process_canvas_colors(app, &mut img);
+    let Some(tex) = app.canvas.texture.as_mut() else { return false };
+    let size = tex.size();
+    if (x0 as usize).checked_add(img.width as usize).is_none_or(|end| end > size[0])
+        || (y0 as usize).checked_add(img.height as usize).is_none_or(|end| end > size[1])
+    {
+        return false;
     }
+    let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
+    tex.set_partial([x0 as usize, y0 as usize], ci, egui::TextureOptions::LINEAR);
     done(app);
     app.canvas.patches += 1;
     app.perf.render_ms = crate::now_ms() - t0;
@@ -1023,18 +1161,23 @@ fn render_worker_spawn(ctx: &egui::Context) -> Option<crate::render_worker::Work
 }
 
 fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render::Rendered) {
-    if app.ui.proof_colors {
-        designcraft_render::proof_view(&mut img, &app.ui.proof_setup);
-    }
-    // Plates render from source colours; the ink limit is estimated from the composite.
-    if app.ui.separation.is_none() && app.ui.ink_limit.is_some() {
-        designcraft_render::separation_view(&mut img, None, app.ui.ink_limit);
-    }
+    process_canvas_colors(app, &mut img);
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let ci = crate::widgets::fit_texture(ci, ctx.input(|i| i.max_texture_side));
     match &mut app.canvas.texture {
         Some(tex) => tex.set(ci, egui::TextureOptions::LINEAR),
         None => app.canvas.texture = Some(ctx.load_texture("canvas", ci, egui::TextureOptions::LINEAR)),
+    }
+}
+
+/// Full uploads and damage patches must show the same proof and estimated ink limit.
+fn process_canvas_colors(app: &DesignApp, img: &mut designcraft_render::Rendered) {
+    if app.ui.proof_colors {
+        designcraft_render::proof_view(img, &app.ui.proof_setup);
+    }
+    // Plates render from source colours; the ink limit is estimated from the composite.
+    if app.ui.separation.is_none() && app.ui.ink_limit.is_some() {
+        designcraft_render::separation_view(img, None, app.ui.ink_limit);
     }
 }
 
@@ -3680,6 +3823,95 @@ mod tests {
 
     use super::*;
 
+    fn density_fixture() -> (DesignApp, designcraft_doc::ItemId) {
+        let mut doc = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument {
+            width: 100.0,
+            height: 100.0,
+            facing_pages: false,
+            ..Default::default()
+        });
+        let id = designcraft_doc::ItemId(doc.alloc());
+        let item = designcraft_doc::Item::new(
+            id,
+            doc.default_layer(),
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(DRect::new(60.0, 20.0, 80.0, 40.0)),
+        );
+        doc.insert_item(designcraft_doc::SpreadRef::Doc(0), item, None).unwrap();
+        let mut session = designcraft_engine::Session::new();
+        session.add_document(designcraft_engine::DocState::new(doc, None));
+        session.execute("selection.set", &json!({"ids":[id.0]})).unwrap();
+        (DesignApp::new(session, Default::default()), id)
+    }
+
+    #[test]
+    fn density_change_rejects_a_partial_upload_into_the_old_pixel_size() {
+        let (mut app, _) = density_fixture();
+        let ctx = egui::Context::default();
+        let st = app.session.active().unwrap();
+        app.canvas.shown = Some(crate::Shown {
+            doc: (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64, st.revision, false),
+            editing_parents: false,
+            origin: Point::new(-50.0, 0.0),
+            zoom: 1.0,
+            size: (100.0, 100.0),
+        });
+        app.canvas.shown_doc = Some(st.doc.clone());
+        app.canvas.texture =
+            Some(ctx.load_texture("old-1x-canvas", egui::ColorImage::filled([100, 100], Color32::WHITE), egui::TextureOptions::LINEAR));
+        app.session.execute("transform.move", &json!({"dx":1.0})).unwrap();
+        let st = app.session.active().unwrap();
+        let key = (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64, st.revision, false);
+        let layout = CanvasLayout::new(&st.doc, false);
+        // At 2x this damage starts beyond x=100. The previous implementation queued
+        // the invalid update; the native wgpu renderer then panicked on write_texture.
+        assert!(!patch_texture(&mut app, &layout, 2.0, key, false), "a stale 1x texture must be replaced before any 2x patch");
+        assert_eq!(app.canvas.patches, 0);
+        assert_eq!(app.canvas.texture.as_ref().unwrap().size(), [100, 100]);
+    }
+
+    fn density_frame(app: &mut DesignApp, ctx: &egui::Context, scale: f32) {
+        let mut input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            max_texture_side: Some(8192),
+            ..Default::default()
+        };
+        input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn density_changes_refresh_the_canvas_before_subsequent_edits() {
+        let (mut app, _) = density_fixture();
+        let ctx = egui::Context::default();
+        for scale in [1.0, 2.0, 1.5, 1.0] {
+            density_frame(&mut app, &ctx, scale);
+            density_frame(&mut app, &ctx, scale);
+            assert!((ctx.pixels_per_point() - scale).abs() < 0.001);
+            let matches = |a: &DesignApp| {
+                a.canvas.shown.zip(a.canvas.texture.as_ref()).is_some_and(|(sh, tex)| {
+                    tex.size() == [(sh.size.0 * scale).round().max(1.0) as usize, (sh.size.1 * scale).round().max(1.0) as usize]
+                })
+            };
+            assert!(matches(&app) || app.canvas.pending.is_some(), "density change must invalidate the old canvas even with no document edits");
+            app.session.execute("transform.move", &json!({"dx":1.0})).unwrap();
+            let start = std::time::Instant::now();
+            loop {
+                density_frame(&mut app, &ctx, scale);
+                if matches(&app) && app.canvas.pending.is_none() {
+                    break;
+                }
+                assert!(start.elapsed().as_secs() < 10, "density refresh stalled");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert!(!app.canvas.low_quality);
+        }
+    }
+
     #[test]
     fn a_press_after_a_drag_is_not_a_double_click() {
         let (delay, dist) = (0.3, 6.0);
@@ -3722,12 +3954,16 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // Each page on its own (a spread's pages may differ in size).
-        assert_eq!(paper.len(), st.doc.page_count());
-        for abs in 0..st.doc.page_count() {
-            let want = xf.rect(layout.page_rect(&st.doc, abs).unwrap());
-            assert!(paper.iter().any(|r| (r.min - want.min).length() < 0.01 && (r.max - want.max).length() < 0.01), "page {abs}");
+        // Each visible page has its own paper (a spread's pages may differ in size).
+        // Distant spreads are culled, so their offscreen paper need not be painted.
+        let pages: Vec<Rect> = (0..st.doc.page_count()).map(|abs| xf.rect(layout.page_rect(&st.doc, abs).unwrap())).collect();
+        let visible: Vec<_> = pages.iter().filter(|r| r.intersects(app.canvas_rect.unwrap())).collect();
+        assert!(!visible.is_empty());
+        let same = |a: &Rect, b: &Rect| (a.min - b.min).length() < 0.01 && (a.max - b.max).length() < 0.01;
+        for want in visible {
+            assert!(paper.iter().any(|r| same(r, want)), "visible page {want:?}");
         }
+        assert!(paper.iter().all(|r| pages.iter().any(|p| same(r, p))), "paper follows individual page bounds");
     }
 
     /// Bleed and Slug are preview modes: like Preview they hide the guides, and what the page
@@ -5346,6 +5582,10 @@ mod tests {
             assert!(size[0] <= limit && size[1] <= limit, "{size:?}");
             let shown = h.state().canvas.shown.unwrap().size;
             assert_eq!(shown.0 > limit as f32, sampled_down, "view {shown:?}, limit {limit}");
+            // A valid downsampled texture is final at this GPU limit. It must not keep
+            // scheduling background renders merely because it is smaller than view pixels.
+            h.run_steps(3);
+            assert!(h.state().canvas.pending.is_none(), "an unchanged canvas is reused, width {width}");
             let patches = h.state().canvas.patches;
             // A small edit: one more character in the frame.
             h.state_mut().run("text.insert", json!({"story": frame["story"], "at": 4, "text": "s"})).unwrap();
@@ -5951,3 +6191,7 @@ mod scrollbar_tests {
         assert_eq!(origin(&h), after);
     }
 }
+
+#[cfg(test)]
+#[path = "scroll_preview_tests.rs"]
+mod scroll_preview_tests;

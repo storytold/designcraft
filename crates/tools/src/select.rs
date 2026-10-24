@@ -1179,9 +1179,12 @@ impl Tool for SelectionTool {
     }
 
     fn key(&mut self, cx: &ToolContext, key: ToolKey, mods: Mods) -> Vec<Action> {
-        if key == ToolKey::Escape && self.loaded.take().is_some() {
-            // Unload; the selection stays. Cancel (no interaction runs) marks the key handled.
+        if key == ToolKey::Escape && (self.loaded.take().is_some() || !matches!(&self.drag, Drag::None)) {
+            // Restore the interaction snapshot before releasing a drag; a later mouse-up
+            // must not commit it. Idle Escape still deselects below.
             self.drag = Drag::None;
+            self.guides.clear();
+            self.shift_release = None;
             return vec![Action::Cancel];
         }
         let inc = cx.doc.settings.keyboard_increment * if mods.shift { 10.0 } else { 1.0 };

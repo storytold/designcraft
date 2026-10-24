@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use designcraft_color::BlendMode as DcBlend;
 use designcraft_compose::{Cache, ComposedStory, ShownOn};
@@ -126,6 +127,10 @@ pub struct RenderOptions {
     pub printing_only: bool,
     /// Items not to draw (live drag previews).
     pub hidden: Vec<designcraft_doc::ItemId>,
+    /// A retained drag layer in the normal painting order; children keep their own clips.
+    pub slice: Option<DrawSlice>,
+    /// Native background jobs may stop between items when a newer view supersedes them.
+    pub cancellation: Option<Cancellation>,
     /// Draw text smaller than this many pixels as grey bars ("greeking"); 0 = never.
     pub greek_below_px: f64,
     /// Drop shadow on pages (screen view).
@@ -165,6 +170,43 @@ pub struct RenderOptions {
     pub document_grid: Vec<(SpreadRef, Rect)>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlicePart {
+    Before,
+    Item,
+    After,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawSlice {
+    pub item: designcraft_doc::ItemId,
+    pub part: SlicePart,
+}
+
+#[derive(Clone, Debug)]
+pub struct Cancellation {
+    pub generation: Arc<AtomicU64>,
+    pub expected: u64,
+}
+
+impl PartialEq for Cancellation {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.generation, &other.generation) && self.expected == other.expected
+    }
+}
+
+impl Cancellation {
+    pub fn cancelled(&self) -> bool {
+        self.generation.load(Ordering::Relaxed) != self.expected
+    }
+}
+
+impl RenderOptions {
+    fn cancelled(&self) -> bool {
+        self.cancellation.as_ref().is_some_and(Cancellation::cancelled)
+    }
+}
+
 /// View › Display Performance: how placed graphics and effects are drawn on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -185,6 +227,8 @@ impl Default for RenderOptions {
             paper: true,
             printing_only: false,
             hidden: vec![],
+            slice: None,
+            cancellation: None,
             greek_below_px: 0.0,
             page_shadow: false,
             highlight_missing_fonts: false,
@@ -241,6 +285,7 @@ pub struct Renderer {
     cmyk_pass_items: usize,
     pub threads: u16,
     pub stats: FrameStats,
+    slice_seen: bool,
 }
 
 impl Default for Renderer {
@@ -315,6 +360,7 @@ impl Renderer {
             cmyk_pass_items: 0,
             threads: default_threads(),
             stats: FrameStats::default(),
+            slice_seen: false,
         }
     }
 
@@ -344,7 +390,9 @@ impl Renderer {
         let start = now();
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
-        if let Some(hit) = self.cmyk_view.as_ref().filter(|entry| entry.matches(doc, spreads, width, height, view, opts, self.threads)) {
+        if let Some(hit) =
+            self.cmyk_view.as_ref().filter(|entry| !opts.cancelled() && entry.matches(doc, spreads, width, height, view, opts, self.threads))
+        {
             let image = hit.image();
             self.stats = hit.stats();
             self.stats.micros = now().saturating_sub(start);
@@ -355,7 +403,7 @@ impl Renderer {
         self.cmyk_ran = false;
         let image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
         // Kept only when the ink passes ran: other views render at their usual cost anyway.
-        if self.cmyk_ran && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
+        if self.cmyk_ran && !image.pixels.is_empty() && !opts.cancelled() && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
         }
         self.stats.micros = now().saturating_sub(start);
@@ -386,6 +434,7 @@ impl Renderer {
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
         self.stats = FrameStats::default();
+        self.slice_seen = false;
         self.stories.clear();
         self.glyphs.tick();
         if let Some(bg) = opts.background {
@@ -396,6 +445,9 @@ impl Renderer {
         let px = 1.0 / view.determinant().abs().sqrt().max(1e-12);
         let canvas_visible = view.inverse().transform_rect_bbox(Rect::new(0.0, 0.0, w as f64, h as f64));
         for pl in spreads {
+            if opts.cancelled() {
+                break;
+            }
             let Some(sp) = doc.spread(pl.spread) else { continue };
             let sview = view * pl.xf;
             let visible = pl.xf.inverse().transform_rect_bbox(canvas_visible);
@@ -407,11 +459,21 @@ impl Renderer {
             let f = Frame { doc, cache, view: sview, visible, px, opts, mt };
             self.draw_spread(&mut ctx, &f, pl.spread);
         }
+        if opts.cancelled() {
+            self.cmyk_ran = false;
+            self.ctx = Some(ctx);
+            return Rendered { width: 0, height: 0, pixels: Vec::new() };
+        }
         ctx.flush();
         // Render straight into the returned buffer (no extra copy of the frame).
         let mut pixels = vec![0u8; w as usize * h as usize * 4];
         if let Some(pm) = vello_cpu::PixmapMut::new(w, h, &mut pixels) {
             ctx.render(pm, &mut self.resources);
+        }
+        if opts.cancelled() {
+            self.cmyk_ran = false;
+            self.ctx = Some(ctx);
+            return Rendered { width: 0, height: 0, pixels: Vec::new() };
         }
         if opts.blend_space_view && doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk && opts.plate.is_none() {
             let mut img = Rendered { width: w as u32, height: h as u32, pixels };
@@ -456,7 +518,7 @@ impl Renderer {
         let doc = f.doc;
         let Some(sp) = doc.spread(sr) else { return };
         // Paper.
-        if f.opts.paper {
+        if f.opts.paper && self.slice_includes_surrounding(f.opts) {
             let paper = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE);
             if f.opts.page_shadow {
                 ctx.set_transform(f.view);
@@ -479,12 +541,12 @@ impl Renderer {
         }
         let grid_area = f.opts.document_grid.iter().find(|(r, _)| *r == sr).map(|(_, a)| *a);
         let grid = &doc.settings.grid;
-        if let Some(area) = grid_area.filter(|_| grid.in_back) {
+        if let Some(area) = grid_area.filter(|_| grid.in_back && self.slice_includes_surrounding(f.opts)) {
             grid::draw(ctx, f, sp, grid, area);
         }
         if blendspace::uses_cmyk(doc, sr, f.opts) {
             self.draw_cmyk_spread(ctx, f, sr);
-            if let Some(area) = grid_area.filter(|_| !grid.in_back) {
+            if let Some(area) = grid_area.filter(|_| !grid.in_back && self.slice_includes_surrounding(f.opts)) {
                 grid::draw(ctx, f, sp, grid, area);
             }
             return;
@@ -528,21 +590,47 @@ impl Renderer {
                         if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
                             continue;
                         }
-                        self.draw_item(ctx, f, it, Affine::translate((dx, 0.0)), shown_on(pi));
+                        self.draw_root(ctx, f, it, Affine::translate((dx, 0.0)), shown_on(pi));
                     }
                 }
             }
             for it in &sp.items {
                 if it.layer == layer.id {
-                    self.draw_item(ctx, f, it, Affine::IDENTITY, ShownOn::Own);
+                    self.draw_root(ctx, f, it, Affine::IDENTITY, ShownOn::Own);
                 }
             }
         }
         if isolate {
             ctx.pop_layer();
         }
-        if let Some(area) = grid_area.filter(|_| !grid.in_back) {
+        if let Some(area) = grid_area.filter(|_| !grid.in_back && self.slice_includes_surrounding(f.opts)) {
             grid::draw(ctx, f, sp, grid, area);
+        }
+    }
+
+    /// Paper and grids stay in the surrounding slice at their position in paint order.
+    /// They never move with the selected item.
+    fn slice_includes_surrounding(&self, opts: &RenderOptions) -> bool {
+        opts.slice.is_none_or(|slice| match slice.part {
+            SlicePart::Before => !self.slice_seen,
+            SlicePart::Item => false,
+            SlicePart::After => self.slice_seen,
+        })
+    }
+
+    fn draw_root(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
+        let draw = f.opts.slice.is_none_or(|s| {
+            let hit = s.item == it.id;
+            let was_seen = self.slice_seen;
+            self.slice_seen |= hit;
+            match s.part {
+                SlicePart::Before => !was_seen && !hit,
+                SlicePart::Item => hit,
+                SlicePart::After => was_seen && !hit,
+            }
+        });
+        if draw && !f.opts.cancelled() {
+            self.draw_item(ctx, f, it, parent, page);
         }
     }
 
@@ -556,7 +644,7 @@ impl Renderer {
     }
 
     fn draw_item_inner(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
-        if it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
+        if f.opts.cancelled() || it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
             return;
         }
         let xf = parent * it.xf;
@@ -1347,13 +1435,11 @@ fn render_pdf_raster(bytes: &[u8], page: usize, max_side: u32) -> Result<craft_p
         other => PdfRasterError::Input(other),
     })?;
     let p = pdf.pages().get(page).ok_or(PdfRasterError::MissingPage { page: page.saturating_add(1) })?;
-    let (w, h) = p.render_dimensions();
-    let scale = (max_side as f32 / w.max(h).max(1.0)).min(8.0);
     craft_pdf::raster::render(
         p,
         &craft_pdf::raster::RenderCache::new(),
         &craft_pdf::interpret::InterpreterSettings::default(),
-        &craft_pdf::raster::Options { scale: [scale; 2], ..Default::default() },
+        &pdf_screen_options(p, max_side),
     )
     .map_err(PdfRasterError::Render)
 }
@@ -1381,6 +1467,21 @@ pub fn pdf_page_box(bytes: &[u8], page: usize, kind: &str) -> Option<(f64, f64, 
     let transform = Affine::new(p.initial_transform(true).as_coeffs());
     let b = transform.transform_rect_bbox(Rect::new(page_box.x0, page_box.y0, page_box.x1, page_box.y1));
     b.is_finite().then_some((b.x0, b.y0, b.width(), b.height()))
+}
+
+/// Use the same sizing contract as the PDF rasterizer without rasterizing the page. Source
+/// bytes are shared with the document; page points must not be mistaken for screen pixels.
+fn pdf_raster_size(bytes: &Arc<Vec<u8>>, page: u32) -> Option<(u32, u32)> {
+    let pdf = craft_pdf::open(bytes.clone(), None).ok()?;
+    let page = pdf.pages().get(page as usize)?;
+    let [w, h] = craft_pdf::raster::dimensions(page, &pdf_screen_options(page, 3000)).ok()?;
+    Some((w, h))
+}
+
+fn pdf_screen_options(page: &craft_pdf::syntax::page::Page<'_>, max_side: u32) -> craft_pdf::raster::Options {
+    let (w, h) = page.render_dimensions();
+    let scale = (max_side as f32 / w.max(h).max(1.0)).min(8.0);
+    craft_pdf::raster::Options { scale: [scale; 2], ..Default::default() }
 }
 
 /// The part of PDF page `page` that `crop` shows: its left, top, right and bottom edges as
@@ -1580,6 +1681,172 @@ mod tests {
     use designcraft_doc::build::NewDocument;
     use designcraft_doc::{Fill, ParaFormat};
 
+    #[test]
+    fn retained_layers_preserve_stacking_opacity_and_moved_foreground_occlusion() {
+        let mut d = Document::new(&NewDocument { width: 120.0, height: 100.0, facing_pages: false, ..Default::default() });
+        let lid = d.default_layer();
+        let mut selected = None;
+        for (n, rect, sw, alpha) in [
+            (0, Rect::new(0.0, 0.0, 120.0, 100.0), "C=0 M=0 Y=100 K=0", 1.0),
+            (1, Rect::new(10.0, 10.0, 80.0, 80.0), "C=100 M=0 Y=0 K=0", 0.5),
+            (2, Rect::new(50.0, 40.0, 100.0, 90.0), designcraft_color::swatch::BLACK, 0.7),
+        ] {
+            let id = designcraft_doc::ItemId(d.alloc());
+            let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+            it.fill = Fill::swatch(sw);
+            it.opacity = alpha;
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+            if n == 1 {
+                selected = Some(id);
+            }
+        }
+        let id = selected.unwrap();
+        let cache = Cache::new();
+        let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let images: Vec<_> = [SlicePart::Before, SlicePart::Item, SlicePart::After]
+            .into_iter()
+            .map(|part| {
+                r.render(
+                    &d,
+                    &cache,
+                    &placed,
+                    120,
+                    100,
+                    Affine::IDENTITY,
+                    &RenderOptions { slice: Some(DrawSlice { item: id, part }), ..Default::default() },
+                )
+            })
+            .collect();
+        d.item_mut(id).unwrap().xf = Affine::translate((12.0, 6.0));
+        let full = r.render(&d, &cache, &placed, 120, 100, Affine::IDENTITY, &RenderOptions::default());
+        for y in 0..100usize {
+            for x in 0..120usize {
+                let mut px = [0u8; 4];
+                for (i, image) in images.iter().enumerate() {
+                    let (sx, sy) = if i == 1 { (x.checked_sub(12), y.checked_sub(6)) } else { (Some(x), Some(y)) };
+                    let (Some(sx), Some(sy)) = (sx, sy) else { continue };
+                    let src = &image.pixels[(sy * 120 + sx) * 4..(sy * 120 + sx) * 4 + 4];
+                    for c in 0..4 {
+                        px[c] = (src[c] as u32 + (px[c] as u32 * (255 - src[3] as u32) + 127) / 255).min(255) as u8;
+                    }
+                }
+                let expected = &full.pixels[(y * 120 + x) * 4..(y * 120 + x) * 4 + 4];
+                assert!(px.iter().zip(expected).all(|(a, b)| a.abs_diff(*b) <= 2), "wrong layer composite at {x},{y}: {px:?} vs {expected:?}");
+            }
+        }
+    }
+    #[test]
+    fn retained_grid_layers_match_a_moved_full_redraw_in_rgb_and_cmyk() {
+        for blend_space in [designcraft_doc::BlendSpace::Rgb, designcraft_doc::BlendSpace::Cmyk] {
+            for in_back in [true, false] {
+                let mut doc = Document::new(&NewDocument { width: 96.0, height: 80.0, facing_pages: false, ..Default::default() });
+                doc.settings.blend_space = blend_space;
+                doc.settings.grid.in_back = in_back;
+                doc.settings.grid.vertical = 24.0;
+                doc.settings.grid.horizontal = 24.0;
+                doc.settings.grid.subdivisions = 3;
+                let item = designcraft_doc::ItemId(doc.alloc());
+                let mut moved = Item::new(
+                    item,
+                    doc.default_layer(),
+                    designcraft_doc::Shape::Rectangle,
+                    designcraft_geom::shapes::rectangle(Rect::new(12.0, 12.0, 54.0, 48.0)),
+                );
+                moved.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
+                doc.insert_item(SpreadRef::Doc(0), moved, None).unwrap();
+                // A separate blended object exercises the CMYK path without making the
+                // selected item's appearance depend on its backdrop.
+                let other = designcraft_doc::ItemId(doc.alloc());
+                let mut fixed = Item::new(
+                    other,
+                    doc.default_layer(),
+                    designcraft_doc::Shape::Rectangle,
+                    designcraft_geom::shapes::rectangle(Rect::new(76.0, 60.0, 90.0, 75.0)),
+                );
+                fixed.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+                fixed.blend = designcraft_color::BlendMode::Multiply;
+                doc.insert_item(SpreadRef::Doc(0), fixed, None).unwrap();
+                let options = RenderOptions {
+                    blend_space_view: true,
+                    document_grid: vec![(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 96.0, 80.0))],
+                    ..Default::default()
+                };
+                let cache = Cache::new();
+                let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+                let mut renderer = Renderer::new();
+                renderer.threads = 0;
+                let images: Vec<_> = [SlicePart::Before, SlicePart::Item, SlicePart::After]
+                    .into_iter()
+                    .map(|part| {
+                        renderer.render(
+                            &doc,
+                            &cache,
+                            &placed,
+                            96,
+                            80,
+                            Affine::IDENTITY,
+                            &RenderOptions { slice: Some(DrawSlice { item, part }), ..options.clone() },
+                        )
+                    })
+                    .collect();
+                doc.item_mut(item).unwrap().xf = Affine::translate((7.0, 5.0));
+                let full = renderer.render(&doc, &cache, &placed, 96, 80, Affine::IDENTITY, &options);
+                for y in 0..80usize {
+                    for x in 0..96usize {
+                        let mut pixel = [0u8; 4];
+                        for (index, image) in images.iter().enumerate() {
+                            let (sx, sy) = if index == 1 { (x.checked_sub(7), y.checked_sub(5)) } else { (Some(x), Some(y)) };
+                            let (Some(sx), Some(sy)) = (sx, sy) else { continue };
+                            let source = &image.pixels[(sy * 96 + sx) * 4..(sy * 96 + sx) * 4 + 4];
+                            for channel in 0..4 {
+                                pixel[channel] =
+                                    (source[channel] as u32 + (pixel[channel] as u32 * (255 - source[3] as u32) + 127) / 255).min(255) as u8;
+                            }
+                        }
+                        let expected = full.pixel(x as u32, y as u32);
+                        assert!(
+                            pixel.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                            "{blend_space:?}, back={in_back}, {x},{y}: {pixel:?} vs {expected:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cancelled_background_render_does_not_publish_partial_pixels_or_poison_next_render() {
+        let doc = Document::new(&NewDocument::default());
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let generation = Arc::new(AtomicU64::new(2));
+        let opts = RenderOptions { cancellation: Some(Cancellation { generation, expected: 1 }), ..Default::default() };
+        let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let cancelled = r.render(&doc, &cache, &placed, 64, 64, Affine::IDENTITY, &opts);
+        assert!(cancelled.pixels.is_empty());
+        assert_eq!(cancelled.width, 0);
+        assert!(r.cmyk_view.is_none(), "a cancelled result must not enter the view cache");
+        let good = r.render(&doc, &cache, &placed, 64, 64, Affine::IDENTITY, &RenderOptions::default());
+        assert_eq!(good.pixel(20, 20), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn cancelled_render_clears_a_completed_cmyk_pass_before_returning() {
+        let doc = Document::new(&NewDocument::default());
+        let cache = Cache::new();
+        let mut renderer = Renderer::new();
+        renderer.threads = 0;
+        // Model cancellation after a spread's ink pass has marked the frame cacheable.
+        renderer.cmyk_ran = true;
+        let opts = RenderOptions { cancellation: Some(Cancellation { generation: Arc::new(AtomicU64::new(2)), expected: 1 }), ..Default::default() };
+        let image = renderer.render_uncached(&doc, &cache, &[], 64, 64, Affine::IDENTITY, &opts);
+        assert!(image.pixels.is_empty());
+        assert!(!renderer.cmyk_ran, "an aborted frame must clear its completed ink-pass state");
+        assert!(renderer.cmyk_view.is_none());
+    }
     #[test]
     fn eps_source_decodes_like_its_preview() {
         let source = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n";
@@ -2217,6 +2484,20 @@ mod tests {
         }
         out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
         out
+    }
+
+    /// Persistent previews must use the shared renderer's actual pixel dimensions without
+    /// drawing the page just to choose a preview key.
+    #[test]
+    fn pdf_preview_dimensions_match_shared_rendering_without_rasterizing() {
+        let bytes = Arc::new(one_page_pdf("0 0 0 rg 10 10 20 20 re f"));
+        let before = PDF_RENDERS.with(std::cell::Cell::get);
+        let size = pdf_raster_size(&bytes, 0).unwrap();
+        assert_eq!(PDF_RENDERS.with(std::cell::Cell::get), before);
+        let actual = render_pdf_page(&bytes, 0, 3000).unwrap();
+        assert_eq!(size, (u32::from(actual.width()), u32::from(actual.height())));
+        assert_eq!(pdf_raster_size(&bytes, 1), None);
+        assert_eq!(pdf_raster_size(&Arc::new(b"%PDF-invalid".to_vec()), 0), None);
     }
 
     /// A Bounding Box crop is the exact extent of what the page draws, strokes included, found

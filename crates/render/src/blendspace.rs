@@ -44,7 +44,7 @@ impl CachedView {
         self.image.width == width.clamp(1, crate::MAX_SIDE)
             && self.image.height == height.clamp(1, crate::MAX_SIDE)
             && self.view == view
-            && self.opts == *opts
+            && self.opts == RenderOptions { cancellation: None, ..opts.clone() }
             && self.spreads == spreads
             && self.threads == threads
             && self.settings == designcraft_color::cms::active_settings()
@@ -68,7 +68,7 @@ impl CachedView {
         Self {
             doc: doc.clone(),
             settings: designcraft_color::cms::active_settings(),
-            opts: opts.clone(),
+            opts: RenderOptions { cancellation: None, ..opts.clone() },
             spreads: spreads.to_vec(),
             view,
             image: image.clone(),
@@ -338,6 +338,9 @@ impl Renderer {
     /// it must never be a blend backdrop. Only the area transparent objects can change takes the
     /// two ink passes (C/M/Y complements, then K); the rest of the view is drawn once, as usual.
     pub(crate) fn draw_cmyk_spread(&mut self, ctx: &mut RenderContext, f: &Frame, sr: SpreadRef) {
+        // The outside-region traversal and both ink passes paint the same item slice.
+        // Each must start before any traversal can advance the selected-item state.
+        let slice_seen = self.slice_seen;
         let (w, h) = (ctx.width(), ctx.height());
         let view = Rect::new(0.0, 0.0, w as f64, h as f64);
         let area = self.transparent_area(f, sr).unwrap_or(view);
@@ -375,6 +378,7 @@ impl Renderer {
         let stats = self.stats;
         let threads = self.threads;
         let mut pass = |plate| {
+            self.slice_seen = slice_seen;
             let opts = RenderOptions { plate: Some(plate), ..rgb.clone() };
             crate::PLATE.with(|p| p.set(opts.plate));
             let mut off = RenderContext::new_with(aw, ah, vello_cpu::RenderSettings { num_threads: threads, ..Default::default() });
@@ -568,6 +572,83 @@ mod tests {
         let text_after = draw(&doc, &mut renderer);
         assert_ne!(text_before.pixels, text_after.pixels, "story edits invalidate the viewport");
         assert_eq!(renderer.cmyk_passes, 10);
+    }
+
+    #[test]
+    fn cmyk_retained_slices_match_isolated_items_in_both_ink_passes() {
+        use crate::{DrawSlice, SlicePart};
+        for fill_view in [false, true] {
+            let mut doc = document();
+            doc.settings.blend_space = designcraft_doc::BlendSpace::Cmyk;
+            let sr = SpreadRef::Doc(0);
+            let bounds = if fill_view { Rect::new(-50.0, -50.0, 200.0, 160.0) } else { Rect::new(5.0, 5.0, 25.0, 25.0) };
+            let before = rectangle(&mut doc, sr, bounds, "C=100 M=0 Y=0 K=0", DcBlend::Multiply);
+            let selected = rectangle(&mut doc, sr, Rect::new(40.0, 20.0, 65.0, 50.0), "Lilac", DcBlend::Multiply);
+            let after = rectangle(&mut doc, sr, Rect::new(100.0, 70.0, 130.0, 100.0), "C=0 M=100 Y=0 K=0", DcBlend::Multiply);
+            let cache = Cache::new();
+            let placed = [Placed { spread: sr, xf: Affine::IDENTITY }];
+            let opts = RenderOptions { paper: false, page_shadow: false, blend_space_view: true, ..Default::default() };
+            for (part, id) in [(SlicePart::Before, before), (SlicePart::Item, selected), (SlicePart::After, after)] {
+                let mut renderer = Renderer::new();
+                renderer.threads = 0;
+                let image = renderer.render(
+                    &doc,
+                    &cache,
+                    &placed,
+                    160,
+                    120,
+                    Affine::IDENTITY,
+                    &RenderOptions { slice: Some(DrawSlice { item: selected, part }), ..opts.clone() },
+                );
+                let mut isolated = doc.clone();
+                Arc::make_mut(&mut isolated.spreads[0]).items.retain(|item| item.id == id);
+                let expected = renderer.render(&isolated, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+                assert!(
+                    image.pixels.iter().zip(&expected.pixels).all(|(a, b)| a.abs_diff(*b) <= 2),
+                    "inconsistent CMYK {part:?} slice, full area={fill_view}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmyk_cache_reuses_job_generations_without_returning_cancelled_pixels() {
+        use crate::Cancellation;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let mut doc = document();
+        doc.settings.blend_space = designcraft_doc::BlendSpace::Cmyk;
+        rectangle(&mut doc, SpreadRef::Doc(0), Rect::new(20.0, 20.0, 100.0, 100.0), "C=100 M=0 Y=0 K=0", DcBlend::Multiply);
+        let mut renderer = Renderer::new();
+        renderer.threads = 0;
+        let cache = Cache::new();
+        let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+        let generation = Arc::new(AtomicU64::new(1));
+        let mut opts = RenderOptions {
+            blend_space_view: true,
+            cancellation: Some(Cancellation { generation: generation.clone(), expected: 1 }),
+            ..Default::default()
+        };
+        let first = renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+        assert_eq!(renderer.cmyk_passes, 2);
+        assert!(renderer.cmyk_view.as_ref().unwrap().opts.cancellation.is_none(), "the snapshot must not retain job state");
+        generation.store(2, Ordering::Relaxed);
+        opts.cancellation = Some(Cancellation { generation: generation.clone(), expected: 2 });
+        assert_eq!(renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts).pixels, first.pixels);
+        assert_eq!(renderer.cmyk_passes, 2, "a new live job generation reuses the same visual result");
+        opts.cancellation = Some(Cancellation { generation: Arc::new(AtomicU64::new(7)), expected: 7 });
+        assert_eq!(renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts).pixels, first.pixels);
+        assert_eq!(renderer.cmyk_passes, 2, "a different job owner also reuses the same visual result");
+        opts.rich_black = !opts.rich_black;
+        let _ = renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+        assert_eq!(renderer.cmyk_passes, 4, "visual options still invalidate the cache");
+        opts.cancellation = Some(Cancellation { generation, expected: 1 });
+        let cancelled = renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+        assert!(cancelled.pixels.is_empty(), "a cancelled request must not return a matching cached view");
+        assert_eq!(renderer.cmyk_passes, 4);
+        assert!(!renderer.cmyk_ran);
+        opts.cancellation = None;
+        let _ = renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+        assert_eq!(renderer.cmyk_passes, 6, "a live render still works after cancellation");
     }
 
     #[test]

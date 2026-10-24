@@ -8,12 +8,14 @@
 
 pub mod about;
 pub mod canvas;
+mod canvas_preview;
 pub mod chrome;
 pub mod control;
 pub mod credits;
 pub mod cursors;
 pub mod dialogs;
 pub mod dock;
+mod drag_preview;
 pub mod effects_dialog;
 pub mod i18n;
 pub mod icons;
@@ -32,6 +34,7 @@ mod shortcut_import;
 pub mod story_editor;
 pub mod taskbar;
 pub mod theme;
+mod thumbnails;
 pub mod title_bar;
 pub mod toolbar;
 pub mod widgets;
@@ -256,6 +259,8 @@ pub struct UiState {
     pub ink_limit: Option<f32>,
     /// View › Display Performance.
     pub display_quality: designcraft_render::DisplayQuality,
+    /// Native disposable disk previews; originals and memory previews are unaffected.
+    pub persist_image_previews: bool,
     /// Preferences › Interface › UI scaling (1 = 100%).
     pub ui_scale: f32,
     /// Preferences › Appearance of Black: 100% K on screen as rich black (InDesign's default,
@@ -413,6 +418,7 @@ impl Default for UiState {
             separation: None,
             ink_limit: None,
             display_quality: designcraft_render::DisplayQuality::High,
+            persist_image_previews: true,
             ui_scale: 1.0,
             rich_black: true,
             overprint_preview: false,
@@ -535,6 +541,11 @@ impl CanvasCache {
             display_key: None,
             patcher: designcraft_render::Renderer::new(),
             patches: 0,
+            drag: Default::default(),
+            previews: Default::default(),
+            drag_active: false,
+            defer_full: false,
+            low_quality: false,
         }
     }
 }
@@ -566,6 +577,11 @@ pub struct CanvasCache {
     pub patcher: designcraft_render::Renderer,
     /// Partial repaints / full renders since start (perf readout).
     pub patches: u64,
+    pub(crate) drag: crate::drag_preview::Preview,
+    pub(crate) previews: crate::canvas_preview::Previews,
+    pub(crate) drag_active: bool,
+    pub(crate) defer_full: bool,
+    pub(crate) low_quality: bool,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]
@@ -600,6 +616,7 @@ pub struct DesignApp {
     /// The persisted colour settings have been applied this session.
     pub color_applied: bool,
     pub perf: Perf,
+    pub(crate) thumbnails: thumbnails::Thumbnails,
     pub synthetic: Vec<egui::Event>,
     /// Control input stays separate from native-menu input until its frame is processed.
     pub(crate) control_synthetic: Vec<egui::Event>,
@@ -653,6 +670,8 @@ pub struct DesignApp {
     pub(crate) canvas_ime: bool,
     /// Quit was chosen: close the window on the next frame, as its close button does.
     quit_requested: bool,
+    /// The root close event passed the unsaved-document checks in the current frame.
+    native_close_approved: bool,
     /// Close the window without asking about unsaved changes (the control channel's `app.quit`).
     pub(crate) quit_without_asking: bool,
     /// No document is discarded until every unsaved document has an up-to-date approval.
@@ -697,6 +716,7 @@ impl DesignApp {
             power_zoom: None,
             color_applied: false,
             perf: Perf::default(),
+            thumbnails: Default::default(),
             synthetic: vec![],
             control_synthetic: vec![],
             control_input_frame: Default::default(),
@@ -727,6 +747,7 @@ impl DesignApp {
             ime_discard: false,
             canvas_ime: false,
             quit_requested: false,
+            native_close_approved: false,
             quit_without_asking: false,
             quitting: None,
             cursors: cursors::Images::default(),
@@ -1158,6 +1179,19 @@ impl DesignApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        self.thumbnails.retain_open(self.session.documents().iter().any(|d| d.uid == self.thumbnails.document_uid()));
+        self.canvas.previews.retain_open(self.session.documents().iter().any(|d| d.uid == self.canvas.previews.document_uid()));
+        if let Some((canvas, _)) = &mut self.other_pane {
+            canvas.previews.retain_open(self.session.documents().iter().any(|d| d.uid == canvas.previews.document_uid()));
+        }
+        if self.session.active().is_none() {
+            self.canvas.drag.clear();
+            self.canvas.previews.clear();
+            if let Some((canvas, _)) = &mut self.other_pane {
+                canvas.drag.clear();
+                canvas.previews.clear();
+            }
+        }
         if self.egui_ctx.is_none() {
             self.egui_ctx = Some(ctx.clone());
         }
@@ -1258,18 +1292,27 @@ impl DesignApp {
         self.quit_requested = true;
     }
 
+    /// A native host may finish an accepted quit before destroying its platform window.
+    /// A graphics failure or a cancelled/pending unsaved-document question is not a quit.
+    pub fn native_quit_approved(&self) -> bool {
+        self.native_close_approved || self.quit_without_asking
+    }
+
     /// Ask about unsaved documents without closing any of them yet. A later Cancel must also
     /// keep documents whose earlier answer was Don't Save, including their history and recovery.
     fn handle_quit(&mut self, ctx: &egui::Context) {
+        self.native_close_approved = false;
         if std::mem::take(&mut self.quit_requested) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if ctx.input(|i| i.viewport().close_requested()) {
             if self.quit_without_asking {
                 self.quitting = None;
+                self.native_close_approved = true;
                 return;
             }
             if self.quitting.is_none() && !self.session.documents().iter().any(|d| d.is_dirty()) {
+                self.native_close_approved = true;
                 return;
             }
             let approved =
@@ -1281,6 +1324,8 @@ impl DesignApp {
                     self.status(e);
                     self.cancel_quit();
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else {
+                    self.native_close_approved = true;
                 }
                 return;
             }
@@ -2445,6 +2490,7 @@ mod tests {
         assert!(quit_frame(&mut app, &ctx, false).contains(&egui::ViewportCommand::Close));
         assert!(quit_frame(&mut app, &ctx, true).is_empty());
         assert!(app.ui.dialog.is_none());
+        assert!(app.native_quit_approved());
     }
 
     /// Scripts must not hang on a question: the control channel's quit never asks.
@@ -2459,6 +2505,20 @@ mod tests {
         out.textures_delta.clear();
         assert!(quit_frame(&mut app, &ctx, true).is_empty());
         assert!(app.ui.dialog.is_none());
+        assert!(app.native_quit_approved());
+    }
+
+    #[test]
+    fn native_quit_approval_excludes_pending_and_cancelled_questions() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_unsaved_document();
+        assert!(!app.native_quit_approved());
+        assert!(quit_frame(&mut app, &ctx, true).contains(&egui::ViewportCommand::CancelClose));
+        assert!(!app.native_quit_approved());
+        app.ui.dialog = None;
+        quit_frame(&mut app, &ctx, false);
+        assert!(!app.native_quit_approved());
+        assert!(app.session.doc().unwrap().is_dirty());
     }
 
     /// The Control panel's two-row groups were centred as if they were one row tall, so the second
