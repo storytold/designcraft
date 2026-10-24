@@ -1209,7 +1209,7 @@ fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
         )
         .clicked()
         {
-            app.ui.open_panel = Some(if tab == 0 { "paragraphStyles" } else { "characterStyles" }.into());
+            show_panel(app, if tab == 0 { "paragraphStyles" } else { "characterStyles" });
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
@@ -1227,7 +1227,7 @@ fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
                 let _ = app.run("style.paragraph.apply", json!({"name": cur, "clearOverrides": true}));
             }
             if icon_toggle(ui, "style-load", false, crate::i18n::tr(&app.ui.language, "Styles panel")).clicked() {
-                app.ui.open_panel = Some(if tab == 0 { "paragraphStyles" } else { "characterStyles" }.into());
+                show_panel(app, if tab == 0 { "paragraphStyles" } else { "characterStyles" });
             }
         });
     });

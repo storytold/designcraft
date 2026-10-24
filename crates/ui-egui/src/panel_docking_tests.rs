@@ -6,6 +6,228 @@ fn app() -> DesignApp {
     DesignApp::new(designcraft_engine::Session::new(), Default::default())
 }
 
+fn floating_style_group() -> DesignApp {
+    let mut app = app();
+    app.run("file.new", json!({})).unwrap();
+    app.run("window.panel.float", json!({"panel":"paragraphStyles","x":300,"y":180,"width":320,"height":260})).unwrap();
+    app.run("window.panel.move", json!({"panel":"characterStyles","anchor":"paragraphStyles","before":"paragraphStyles"})).unwrap();
+    app.run("window.panel.activate", json!({"panel":"paragraphStyles"})).unwrap();
+    app
+}
+
+#[test]
+fn docking_a_floating_group_keeps_order_active_tab_and_document() {
+    let mut app = floating_style_group();
+    let doc = app.session.active().unwrap().doc.clone();
+    app.run("window.panel.dockGroup", json!({"panel":"paragraphStyles","anchor":"properties","before":"pages"})).unwrap();
+    let layout = app.ui.docking.as_ref().unwrap();
+    assert!(layout.floating.is_empty());
+    let Some(Node::Tabs { panels, active }) = &layout.root else { panic!("tabbed root expected") };
+    assert_eq!(panels, &["properties", "characterStyles", "paragraphStyles", "pages", "layers"]);
+    assert_eq!(panels[*active], "paragraphStyles");
+    assert_eq!(app.session.active().unwrap().doc, doc);
+
+    let mut app = floating_style_group();
+    app.run("window.panel.dockGroup", json!({"panel":"characterStyles","anchor":"properties","zone":"bottom"})).unwrap();
+    let layout = app.ui.docking.as_ref().unwrap();
+    let Some(Node::Split { second, .. }) = &layout.root else { panic!("split root expected") };
+    let Node::Tabs { panels, active } = &**second else { panic!("group remains tabbed") };
+    assert_eq!(panels, &["characterStyles", "paragraphStyles"]);
+    assert_eq!(panels[*active], "paragraphStyles");
+    assert!(layout.floating.is_empty());
+}
+
+#[test]
+fn invalid_group_docking_is_atomic() {
+    let mut app = floating_style_group();
+    let before = (app.ui.docking.clone(), app.ui.docking_hidden.clone());
+    for params in [
+        json!({"panel":"paragraphStyles","anchor":"characterStyles"}),
+        json!({"panel":"paragraphStyles","anchor":"unknown"}),
+        json!({"panel":"properties","anchor":"pages"}),
+        json!({"panel":"paragraphStyles","anchor":"properties","zone":"invalid"}),
+        json!({"panel":"paragraphStyles","anchor":"properties","before":"characterStyles"}),
+    ] {
+        assert!(app.run("window.panel.dockGroup", params).is_err());
+        // The status message can explain the error; workspace ownership must not change.
+        assert_eq!(app.ui.docking, before.0);
+        assert_eq!(app.ui.docking_hidden, before.1);
+    }
+}
+
+#[test]
+fn iconic_groups_keep_their_tabs_when_reopened_floated_and_reset() {
+    let mut app = floating_style_group();
+    let root = app.ui.docking.as_ref().unwrap().root.clone();
+    app.run("window.panel.dockGroup", json!({"panel":"paragraphStyles","target":"icons"})).unwrap();
+    assert!(app.ui.docking.as_ref().unwrap().floating.is_empty());
+    assert_eq!(app.ui.docking.as_ref().unwrap().root, root);
+    assert_eq!(iconic_group(&app, "paragraphStyles"), ["characterStyles", "paragraphStyles"]);
+    app.run("window.panel", json!({"panel":"paragraphStyles"})).unwrap();
+    assert_eq!(app.ui.open_panel.as_deref(), Some("paragraphStyles"));
+    app.run("window.newWorkspace", json!({"name":"Grouped icons"})).unwrap();
+    app.run("window.panel.floatGroup", json!({"panel":"paragraphStyles","x":250,"y":120})).unwrap();
+    let group = &app.ui.docking.as_ref().unwrap().floating[0];
+    assert_eq!(group.panels, ["characterStyles", "paragraphStyles"]);
+    assert_eq!(group.panels[group.active], "paragraphStyles");
+    assert_eq!(app.ui.docking.as_ref().unwrap().root, root);
+    app.run("window.resetWorkspace", json!({})).unwrap();
+    assert!(app.ui.docking.as_ref().unwrap().floating.is_empty());
+    assert_eq!(iconic_group(&app, "paragraphStyles"), ["characterStyles", "paragraphStyles"]);
+    assert_eq!(app.ui.open_panel.as_deref(), Some("paragraphStyles"));
+}
+
+/// Any panels can be collapsed to icons together, including dock-only ones such as Properties.
+#[test]
+fn a_floating_group_of_dock_tabs_collapses_to_icons_and_reopens_as_one_flyout() {
+    let mut app = app();
+    app.run("file.new", json!({})).unwrap();
+    app.run("window.panel.float", json!({"panel":"properties","x":300,"y":180,"width":320,"height":300})).unwrap();
+    app.run("window.panel.move", json!({"panel":"layers","anchor":"properties"})).unwrap();
+    let root = app.ui.docking.as_ref().unwrap().root.clone();
+    let members = app.ui.docking.as_ref().unwrap().floating[0].panels.clone();
+    assert_eq!(members.len(), 2);
+    app.run("window.panel.dockGroup", json!({"panel":"properties","target":"icons"})).unwrap();
+    let layout = app.ui.docking.clone().unwrap();
+    assert!(layout.floating.is_empty());
+    assert_eq!(layout.root, root);
+    assert!(!layout.contains(&"properties".to_string()) && !layout.contains(&"layers".to_string()));
+    assert_eq!(app.ui.icon_groups.as_deref(), Some(std::slice::from_ref(&members)));
+    assert_eq!(iconic_group(&app, "properties"), members);
+    app.run("window.panel", json!({"panel":"properties"})).unwrap();
+    assert_eq!(app.ui.open_panel.as_deref(), Some("properties"));
+    assert_eq!(app.ui.docking, Some(layout.clone()));
+
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    assert!(h.ctx.memory(|m| m.area_rect(egui::Id::new("panel_flyout"))).is_some());
+    let rail = crate::test_window::panel_rect(&h, "shared-panel-icons");
+    let tab = h.query_all_by_label("Layers").find(|node| node.rect().right() < rail.left()).expect("Layers tab in the flyout");
+    tab.click();
+    h.run_steps(4);
+    assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("layers"));
+    assert_eq!(h.state().app.ui.docking, Some(layout));
+    h.state_mut().app.run("window.panel.floatGroup", json!({"panel":"layers","x":250,"y":120})).unwrap();
+    let group = h.state().app.ui.docking.as_ref().unwrap().floating[0].clone();
+    assert_eq!(group.panels, members);
+    assert_eq!(group.panels[group.active], "layers");
+}
+
+/// A wide iconic group's flyout scrolls its tab strip so the tab of the panel that opened is in
+/// view, then leaves the strip where the user scrolls it.
+#[test]
+fn a_wide_iconic_group_flyout_shows_the_opened_panels_tab() {
+    let mut app = app();
+    app.run("file.new", json!({})).unwrap();
+    app.run("window.panel.float", json!({"panel":"stroke","x":300,"y":180,"width":320,"height":300})).unwrap();
+    for panel in ["swatches", "color", "gradient", "effects", "character", "paragraph"] {
+        app.run("window.panel.move", json!({"panel":panel,"anchor":"stroke"})).unwrap();
+    }
+    app.run("window.panel.dockGroup", json!({"panel":"stroke","target":"icons"})).unwrap();
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    let rail = crate::test_window::panel_rect(&h, "shared-panel-icons");
+    let tab = |h: &Harness<'static, crate::test_window::Window>, label: &str| {
+        h.query_all_by_label(label).map(|node| node.rect()).find(|r| r.right() < rail.left()).expect("flyout tab")
+    };
+    for (panel, label) in [("paragraph", "Paragraph"), ("stroke", "Stroke"), ("character", "Character")] {
+        h.state_mut().app.run("window.panel", json!({"panel":panel})).unwrap();
+        h.run_steps(6);
+        let flyout = h.ctx.memory(|m| m.area_rect(egui::Id::new("panel_flyout"))).expect("flyout");
+        let at = tab(&h, label);
+        assert!(at.left() >= flyout.left() - 0.5 && at.right() <= flyout.right() + 0.5, "{label} tab {at:?} outside flyout {flyout:?}");
+    }
+}
+
+#[test]
+fn invalid_iconic_group_requests_preserve_ownership() {
+    let mut app = floating_style_group();
+    let before = app.ui.docking.clone();
+    app.ui.icon_groups = Some(vec![Vec::new(); 65]);
+    assert!(app.run("window.panel.dockGroup", json!({"panel":"paragraphStyles","target":"icons"})).is_err());
+    assert_eq!(app.ui.docking, before);
+    app.ui.icon_groups = None;
+    assert!(app.run("window.panel.dockGroup", json!({"panel":"paragraphStyles","target":false})).is_err());
+    assert_eq!(app.ui.docking, before);
+    app.run("window.panel.dockGroup", json!({"panel":"paragraphStyles","target":"icons"})).unwrap();
+    let collapsed = app.ui.docking.clone();
+    let icons = app.ui.icon_groups.clone();
+    assert!(app.run("window.panel.floatGroup", json!({"panel":"paragraphStyles","width":-1})).is_err());
+    assert_eq!(app.ui.docking, collapsed);
+    assert_eq!(app.ui.icon_groups, icons);
+    // A panel closed from the dock goes back there: it isn't an icon-column panel to float.
+    app.run("window.panel.close", json!({"panel":"properties"})).unwrap();
+    assert!(app.ui.docking_hidden.get("properties").is_some_and(|location| location.floating.is_none()));
+    let closed = app.ui.docking.clone();
+    assert!(app.run("window.panel.floatGroup", json!({"panel":"properties"})).is_err());
+    assert_eq!(app.ui.docking, closed);
+    assert!(app.ui.docking_hidden.contains_key("properties"));
+}
+
+#[test]
+fn dragging_a_group_into_the_icon_column_opens_both_tabs_in_one_flyout() {
+    let app = floating_style_group();
+    let root = app.ui.docking.as_ref().unwrap().root.clone();
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    let area = egui::Id::new("designcraft-panel-docking");
+    let first = "characterStyles".to_string();
+    let from = h.ctx.read_response(area.with(("move-group", Some(&first)))).unwrap().rect.center();
+    let rail = crate::test_window::panel_rect(&h, "shared-panel-icons");
+    let to = egui::pos2(rail.center().x, rail.top() + 120.0);
+    h.hover_at(from);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    for step in 1..=12 {
+        h.event(Event::PointerMoved(from + (to - from) * (step as f32 / 12.0)));
+        h.run_steps(1);
+    }
+    assert!(group_icon_target(&h.state().app, &h.ctx, &first, to, &[]).is_some());
+    // A surface in front (a dialog, the Story Editor, a flyout) takes the drop instead.
+    let cover = [egui::Rect::from_center_size(to, vec2(40.0, 40.0))];
+    assert!(group_icon_target(&h.state().app, &h.ctx, &first, to, &cover).is_none());
+    h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(4);
+    assert!(h.state().app.ui.docking.as_ref().unwrap().floating.is_empty());
+    assert_eq!(h.state().app.ui.docking.as_ref().unwrap().root, root);
+    h.get_by_label("Character Styles").click();
+    h.run_steps(4);
+    assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("characterStyles"));
+    let tab = h.query_all_by_label("Paragraph Styles").find(|node| node.rect().right() < rail.left()).expect("paired tab in flyout");
+    tab.click();
+    h.run_steps(4);
+    assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("paragraphStyles"));
+    assert_eq!(h.state().app.ui.docking.as_ref().unwrap().root, root);
+}
+
+#[test]
+fn dragging_the_group_grip_into_the_dock_moves_both_style_tabs() {
+    let app = floating_style_group();
+    let doc = app.session.active().unwrap().doc.clone();
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    let area = egui::Id::new("designcraft-panel-docking");
+    let first = "characterStyles".to_string();
+    let from = h.ctx.read_response(area.with(("move-group", Some(&first)))).unwrap().rect.center();
+    let to = h.ctx.read_response(area.with(("tab", &"properties".to_string()))).unwrap().rect.center();
+    h.hover_at(from);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    for step in 1..=12 {
+        h.event(Event::PointerMoved(from + (to - from) * (step as f32 / 12.0)));
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    assert!(group_proposal(&h.state().app, &h.ctx, &first, to, &[]).is_some(), "a valid highlighted dock target");
+    let cover = [egui::Rect::from_center_size(to, vec2(40.0, 40.0))];
+    assert!(group_proposal(&h.state().app, &h.ctx, &first, to, &cover).is_none(), "not through a surface in front");
+    h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(4);
+    let layout = h.state().app.ui.docking.as_ref().unwrap();
+    assert!(layout.floating.is_empty(), "the entire group must dock: {layout:?}");
+    let Some(Node::Tabs { panels, active }) = &layout.root else { panic!("tabbed root expected") };
+    let start = panels.iter().position(|p| p == "characterStyles").unwrap();
+    assert_eq!(panels.get(start + 1).map(String::as_str), Some("paragraphStyles"));
+    assert_eq!(panels[*active], "paragraphStyles");
+    assert_eq!(h.state().app.session.active().unwrap().doc, doc);
+}
+
 #[test]
 fn panel_commands_group_split_reorder_float_and_restore_without_duplicate_ownership() {
     let mut app = app();
@@ -47,6 +269,160 @@ fn invalid_panel_requests_are_atomic_and_do_not_enter_a_custom_workspace() {
         assert_eq!(app.ui.docking, old);
         assert_eq!(app.ui.docking_hidden, hidden);
     }
+}
+
+#[test]
+fn iconic_panels_keep_the_customized_dock_and_floating_group_unchanged() {
+    let mut app = app();
+    app.run("window.panel.float", json!({"panel":"paragraphStyles"})).unwrap();
+    app.run("window.panel.move", json!({"panel":"characterStyles","anchor":"paragraphStyles"})).unwrap();
+    let before = app.ui.docking.clone();
+    for panel in ["color", "links"] {
+        app.run("window.panel", json!({"panel":panel})).unwrap();
+        assert_eq!(app.ui.open_panel.as_deref(), Some(panel));
+        assert_eq!(app.ui.docking, before);
+    }
+    let saved = serde_json::to_value(&app.ui).unwrap();
+    let restored: crate::UiState = serde_json::from_value(saved).unwrap();
+    assert_eq!(restored.open_panel.as_deref(), Some("links"));
+    assert_eq!(restored.docking, before);
+    app.run("window.newWorkspace", json!({"name":"Chapter 4"})).unwrap();
+    app.run("window.panel", json!({"panel":"color"})).unwrap();
+    app.run("window.resetWorkspace", json!({})).unwrap();
+    assert_eq!(app.ui.open_panel.as_deref(), Some("links"));
+    assert_eq!(app.ui.docking, before);
+    app.run("window.panel.close", json!({"panel":"links"})).unwrap();
+    assert!(app.ui.open_panel.is_none());
+    assert_eq!(app.ui.docking, before);
+    // Explicitly docked panels keep their saved home after closing and reopening.
+    app.run("window.panel.dock", json!({"panel":"color","anchor":"properties"})).unwrap();
+    let docked = app.ui.docking.clone();
+    app.run("window.panel.close", json!({"panel":"color"})).unwrap();
+    app.run("window.panel", json!({"panel":"color"})).unwrap();
+    assert_eq!(app.ui.docking, docked);
+    assert!(app.ui.open_panel.is_none());
+}
+
+#[test]
+fn customized_icon_rail_toggles_a_flyout_next_to_the_actual_dock() {
+    let mut app = app();
+    app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+    let before = app.ui.docking.clone();
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    let icon = h.get_by_label("Color").rect().center();
+    crate::test_window::click_at(&mut h, icon);
+    assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("color"));
+    let flyout = h.ctx.memory(|m| m.area_rect(egui::Id::new("panel_flyout"))).expect("flyout rendered");
+    let rail = crate::test_window::panel_rect(&h, "shared-panel-icons");
+    assert!(flyout.right() <= rail.left() + 2.0, "flyout {flyout:?}, rail {rail:?}");
+    assert_eq!(h.state().app.ui.docking, before);
+    crate::test_window::click_at(&mut h, icon);
+    assert!(h.state().app.ui.open_panel.is_none());
+    assert_eq!(h.state().app.ui.docking, before);
+    crate::test_window::click_at(&mut h, icon);
+    h.get_by_label("Collapse to Icons").click();
+    h.run_steps(3);
+    assert!(h.state().app.ui.open_panel.is_none());
+    assert_eq!(h.state().app.ui.docking, before);
+}
+
+/// The icon of a panel in the customized dock's icon rail.
+fn rail_icon(h: &Harness<'static, crate::test_window::Window>, panel: &str) -> Pos2 {
+    let rail = crate::test_window::panel_rect(h, "shared-panel-icons");
+    h.query_all_by_label(crate::dock::panel_label(panel)).map(|node| node.rect()).find(|r| rail.contains(r.center())).expect("rail icon").center()
+}
+
+/// The rail sends Show Panel for a closed dock tab, which brings it back where Activate Panel
+/// (the rail's command before flyouts) puts it.
+#[test]
+fn customized_icon_rail_reopens_a_closed_dock_tab_where_activate_puts_it() {
+    for panel in ["properties", "pages"] {
+        let setup = || {
+            let mut app = app();
+            app.run("file.new", json!({})).unwrap();
+            app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+            app.run("window.panel.close", json!({"panel":panel})).unwrap();
+            app
+        };
+        let mut expected = setup();
+        expected.run("window.panel.activate", json!({"panel":panel})).unwrap();
+        let mut h = crate::test_window::open(setup(), vec2(1440.0, 900.0));
+        let icon = rail_icon(&h, panel);
+        crate::test_window::click_at(&mut h, icon);
+        let ui = &h.state().app.ui;
+        assert_eq!(ui.docking, expected.ui.docking, "{panel}");
+        assert!(ui.docking.as_ref().unwrap().contains(&panel.to_string()), "{panel}");
+        assert_eq!(ui.docking_hidden, expected.ui.docking_hidden, "{panel}");
+        assert_eq!(ui.docking_opened.as_deref(), Some(panel));
+        assert!(ui.open_panel.is_none(), "{panel}");
+    }
+}
+
+/// Paragraph Styles' icon opens its flyout like any other icon; Window › Paragraph Styles still
+/// opens the floating Character Styles | Paragraph Styles group.
+#[test]
+fn customized_icon_rail_opens_paragraph_styles_as_a_flyout() {
+    let mut app = app();
+    app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+    let before = app.ui.docking.clone();
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    let icon = rail_icon(&h, "paragraphStyles");
+    crate::test_window::click_at(&mut h, icon);
+    assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("paragraphStyles"));
+    assert_eq!(h.state().app.ui.docking, before);
+    assert!(h.ctx.memory(|m| m.area_rect(egui::Id::new("panel_flyout"))).is_some());
+    crate::test_window::click_at(&mut h, icon);
+    assert!(h.state().app.ui.open_panel.is_none());
+    h.state_mut().app.run("window.panel", json!({"panel":"paragraphStyles"})).unwrap();
+    let layout = h.state().app.ui.docking.clone().unwrap();
+    assert!(layout.floating.iter().any(|g| g.panels == ["characterStyles", "paragraphStyles"]), "{:?}", layout.floating);
+}
+
+/// As in InDesign, an icon panel's flyout collapses when a panel drag starts.
+#[test]
+fn dragging_a_panel_collapses_the_icon_panel_flyout() {
+    let mut app = app();
+    app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+    app.run("window.panel", json!({"panel":"color"})).unwrap();
+    let before = app.ui.docking.clone();
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    assert!(h.ctx.memory(|m| m.area_rect(egui::Id::new("panel_flyout"))).is_some());
+    let tab = egui::Id::new("designcraft-panel-docking").with(("tab", &"pages".to_string()));
+    let from = h.ctx.read_response(tab).expect("Pages tab").rect.center();
+    h.event(Event::PointerMoved(from));
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("color"), "a press alone keeps the flyout");
+    for step in 1..=6 {
+        h.event(Event::PointerMoved(from - vec2(30.0 * step as f32, 0.0)));
+        h.run_steps(1);
+    }
+    assert!(h.state().app.ui.open_panel.is_none(), "the drag collapses the flyout");
+    h.event(Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+    assert!(h.state().app.ui.open_panel.is_none());
+    assert_eq!(h.state().app.ui.docking, before, "a cancelled drag leaves the dock as it was");
+
+    // So does moving a floating group by its grip.
+    h.state_mut().app.run("window.panel", json!({"panel":"color"})).unwrap();
+    h.run_steps(2);
+    let grip = egui::Id::new("designcraft-panel-docking").with(("move-group", Some(&"layers".to_string())));
+    let from = h.ctx.read_response(grip).expect("Layers grip").rect.center();
+    h.event(Event::PointerMoved(from));
+    h.run_steps(1);
+    assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("color"));
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    for step in 1..=6 {
+        h.event(Event::PointerMoved(from + vec2(0.0, 20.0 * step as f32)));
+        h.run_steps(1);
+    }
+    assert!(h.state().app.ui.open_panel.is_none(), "moving a floating group collapses the flyout");
+    h.event(Event::PointerButton { pos: from + vec2(0.0, 120.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
 }
 
 fn harness(app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
@@ -326,8 +702,9 @@ fn properties_stroke_link_opens_the_stroke_panel_in_a_custom_workspace() {
         h.run_steps(1);
     }
     h.run_steps(2);
-    assert!(h.state().ui.docking.as_ref().unwrap().contains(&"stroke".into()));
-    assert_eq!(h.state().ui.docking_opened.as_deref(), Some("stroke"));
+    assert_eq!(h.state().ui.open_panel.as_deref(), Some("stroke"));
+    assert!(!h.state().ui.docking.as_ref().unwrap().contains(&"stroke".into()));
+    assert_eq!(h.state().ui.docking_opened.as_deref(), Some("properties"));
 }
 
 #[test]
@@ -402,10 +779,19 @@ fn legacy_table_and_control_visibility_work_after_customization_without_document
     let doc = serde_json::to_value(&app.session.active().unwrap().doc).unwrap();
     let undo = app.session.active().unwrap().history.undo.len();
     app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+    // With Table's flyout open (it isn't in the layout), Shift+F9 closes the flyout instead of
+    // docking Table under it.
+    let before = app.ui.docking.clone();
+    app.run("window.panel", json!({"panel": "table", "from": "icons"})).unwrap();
+    assert_eq!(app.ui.open_panel.as_deref(), Some("table"), "the Table flyout");
+    app.run("app.tablePanel", json!({})).unwrap();
+    assert!(app.ui.open_panel.is_none(), "Shift+F9 closes it");
+    assert_eq!(app.ui.docking, before, "and docks nothing");
     app.run("app.tablePanel", json!({})).unwrap();
     assert!(app.ui.docking.as_ref().unwrap().contains(&"table".into()));
     app.run("app.tablePanel", json!({})).unwrap();
     assert!(!app.ui.docking.as_ref().unwrap().contains(&"table".into()));
+    app.run("app.tablePanel", json!({})).unwrap();
     app.run("app.tablePanel", json!({})).unwrap();
     let ctx = egui::Context::default();
     let (req, _) = crate::control::ControlRequest::new("ui.set", json!({"closePanel":true,"dockExpanded":false}));
@@ -786,4 +1172,30 @@ fn pages_keeps_its_panel_menu_in_the_docking_layout() {
     }
     assert!(h.query_by_label("Close Panel").is_none());
     assert!(h.query_by_label("Panel Options…").is_none(), "the panel's own commands stay in its panel menu");
+}
+
+/// Properties' Styles buttons open the panel as Window › Paragraph Styles does: a docked
+/// Paragraph Styles panel is brought forward, with no stale flyout left behind.
+#[test]
+fn properties_styles_button_raises_a_docked_styles_panel() {
+    let mut app = app();
+    app.run("file.new", json!({"width":480,"height":360})).unwrap();
+    let f = app.run("frame.create", json!({"rect":[80,70,330,230],"content":"text","text":"Recipe"})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 6})).unwrap();
+    app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+    app.run("window.panel.dock", json!({"panel":"paragraphStyles"})).unwrap();
+    app.run("window.panel", json!({"panel":"properties"})).unwrap();
+    assert!(app.ui.docking.as_ref().unwrap().contains(&"paragraphStyles".into()));
+    let mut h = Harness::builder().with_size(vec2(1280.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(5);
+    h.get_by_label("Paragraph Styles panel").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.open_panel, None, "no flyout for a docked panel");
+    assert_eq!(h.state().ui.docking_opened.as_deref(), Some("paragraphStyles"));
 }
