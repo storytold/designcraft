@@ -46,6 +46,71 @@ pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 const TABLE: &[(&str, [&str; 5])] = &[
+    (
+        "Character Formatting Controls",
+        [
+            "Steuerelemente für Zeichenformatierung",
+            "Commandes de mise en forme des caractères",
+            "Controles de formato de carácter",
+            "文字形式コントロール",
+            "字符格式控制",
+        ],
+    ),
+    (
+        "Paragraph Formatting Controls",
+        [
+            "Steuerelemente für Absatzformatierung",
+            "Commandes de mise en forme des paragraphes",
+            "Controles de formato de párrafo",
+            "段落形式コントロール",
+            "段落格式控制",
+        ],
+    ),
+    ("Font Size", ["Schriftgrad", "Corps", "Tamaño de fuente", "フォントサイズ", "字体大小"]),
+    ("Vertical Scale", ["Vertikal skalieren", "Échelle verticale", "Escala vertical", "垂直比率", "垂直缩放"]),
+    ("Horizontal Scale", ["Horizontal skalieren", "Échelle horizontale", "Escala horizontal", "水平比率", "水平缩放"]),
+    ("Baseline Shift", ["Grundlinienversatz", "Décalage vertical", "Desplazamiento vertical", "ベースラインシフト", "基线偏移"]),
+    (
+        "Skew (False Italic)",
+        ["Verzerren (falscher Kursivstil)", "Inclinaison (faux italique)", "Sesgar (cursiva falsa)", "歪み（斜体）", "倾斜（伪斜体）"],
+    ),
+    ("Left Indent", ["Einzug links", "Retrait gauche", "Sangría izquierda", "左インデント", "左缩进"]),
+    ("Right Indent", ["Einzug rechts", "Retrait droit", "Sangría derecha", "右インデント", "右缩进"]),
+    (
+        "First Line Left Indent",
+        ["Einzug links in erster Zeile", "Retrait gauche de première ligne", "Sangría izquierda en primera línea", "1行目左インデント", "首行左缩进"],
+    ),
+    (
+        "Last Line Right Indent",
+        ["Einzug rechts in letzter Zeile", "Retrait droit de dernière ligne", "Sangría derecha en última línea", "最終行右インデント", "末行右缩进"],
+    ),
+    (
+        "Drop Cap Number of Lines",
+        ["Initiale: Anzahl der Zeilen", "Lettrine (nombre de lignes)", "Capitular: número de líneas", "ドロップキャップの行数", "首字下沉行数"],
+    ),
+    (
+        "Drop Cap One or More Characters",
+        [
+            "Initiale: ein oder mehrere Zeichen",
+            "Lettrine (un ou plusieurs caractères)",
+            "Capitular: uno o más caracteres",
+            "ドロップキャップの文字数",
+            "首字下沉一个或多个字符",
+        ],
+    ),
+    (
+        "Align to Baseline Grid",
+        [
+            "An Grundlinienraster ausrichten",
+            "Aligner sur la grille de ligne de base",
+            "Alinear con cuadrícula base",
+            "ベースライングリッドに揃える",
+            "对齐基线网格",
+        ],
+    ),
+    // Properties › Paragraph (•••).
+    ("Space Before", ["Abstand davor", "Espace avant", "Espacio anterior", "段落前の間隔", "段前间距"]),
+    ("Space After", ["Abstand danach", "Espace après", "Espacio posterior", "段落後の間隔", "段后间距"]),
     // Menus.
     ("File", ["Datei", "Fichier", "Archivo", "ファイル", "文件"]),
     ("Edit", ["Bearbeiten", "Édition", "Edición", "編集", "编辑"]),
@@ -1648,6 +1713,8 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Define Lists…", ["Define Lists…", "Définir des listes…", "Define Lists…", "Define Lists…", "定义列表…"]),
+    ("Apply Bullets", ["Aufzählungszeichen anwenden", "Appliquer des puces", "Aplicar viñetas", "箇条書きを適用", "应用项目符号"]),
+    ("Apply Numbers", ["Nummerierung anwenden", "Appliquer la numérotation", "Aplicar números", "段落番号を適用", "应用编号"]),
     (
         "Define Text Variable…",
         ["Define Text Variable…", "Définir une variable de texte…", "Define Text Variable…", "Define Text Variable…", "定义文本变量…"],
