@@ -195,6 +195,22 @@ pub(crate) fn command(app: &mut DesignApp, id: &str, params: &Value) -> Option<R
     Some(change(app, operation, params))
 }
 
+/// The height of a window a docked panel floats into: as InDesign's, a panel-sized window rather
+/// than the dock column it came from.
+pub(crate) const FLOAT_HEIGHT: f32 = 400.0;
+
+/// A docked panel floated from the UI (its tab dragged out, or Float Panel) takes the width of
+/// its dock group and at most [`FLOAT_HEIGHT`]: the docking surface sizes it as the whole group,
+/// as tall as the dock column. A panel moved out of a floating group keeps that group's size.
+fn panel_sized(app: &DesignApp, action: Action<String>) -> Action<String> {
+    match action {
+        Action::Float { panel, rect } if app.ui.docking.as_ref().is_none_or(|layout| layout.location(&panel).is_ok_and(|l| l.floating.is_none())) => {
+            Action::Float { panel, rect: [rect[0], rect[1], rect[2], rect[3].min(FLOAT_HEIGHT)] }
+        }
+        action => action,
+    }
+}
+
 // UI output and automation share this atomic dispatcher. The application owns the registry
 // and saved return locations; craft-ui owns tree validation and structural changes.
 fn apply_action(app: &mut DesignApp, action: Action<String>) -> Result<Value, String> {
@@ -529,6 +545,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) -> bool {
         ui.ctx().data_mut(|data| data.remove::<LegacyDrag>(egui::Id::new("designcraft-panel-docking").with("legacy-origin")));
     }
     for action in output.actions {
+        let action = panel_sized(app, action);
         if let Err(error) = app.run("window.panel.layout", json!({"action": action})) {
             app.ui.status = error;
         }
