@@ -1702,7 +1702,10 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     ui.horizontal(|ui| {
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Number of Recent Items to Display:"));
                         let mut v = d.n("recentFilesMax").unwrap_or(20.0);
-                        if ui.add(egui::DragValue::new(&mut v).range(0.0..=f64::from(designcraft_engine::MAX_RECENT_FILES)).speed(0.2)).changed() {
+                        // A count: a whole number ("20", not "20.0").
+                        let field =
+                            egui::DragValue::new(&mut v).range(0.0..=f64::from(designcraft_engine::MAX_RECENT_FILES)).speed(0.2).fixed_decimals(0);
+                        if ui.add(field).changed() {
                             d.fields.insert("recentFilesMax".into(), json!(v.round()));
                         }
                     });
@@ -7631,6 +7634,25 @@ mod tests {
         type_slowly(&mut app, &ctx, screen, "10");
         confirm(&mut app).unwrap();
         assert!(matches!(fill(&app, id), designcraft_color::Color::Rgb { .. }), "{:?}", fill(&app, id));
+    }
+
+    /// Preferences › File Handling shows the number of recent items as a whole number, as
+    /// InDesign's does ("20"; it read "20.0").
+    #[test]
+    fn file_handling_shows_the_recent_items_count_as_a_whole_number() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("app.preferences", json!({})).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("files"));
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        visible_label(&labels, screen, "Number of Recent Items to Display:");
+        let count = app.ui.dialog.as_ref().unwrap().n("recentFilesMax").unwrap();
+        assert_eq!(count, 20.0, "InDesign's default");
+        visible_label(&labels, screen, &format!("{count}"));
+        assert!(!labels.iter().any(|(t, _, _)| t.trim() == format!("{count:.1}")), "no decimal shown");
     }
 
     #[test]
