@@ -39,6 +39,35 @@ pub const FORCED_LINE_BREAK: char = '\u{2028}';
 pub const ODD_PAGE_BREAK: char = '\u{E011}';
 pub const EVEN_PAGE_BREAK: char = '\u{E012}';
 
+/// Encode a table-of-contents separator using InDesign's special-character notation.
+pub fn toc_separator_notation(text: &str) -> String {
+    text.replace('^', "^^").replace('\t', "^t").replace(RIGHT_INDENT_TAB, "^y").replace('\u{2003}', "^m").replace('\u{2002}', "^>")
+}
+
+/// Decode TOC notation, preserving unknown codes and an escaped literal caret.
+pub fn toc_separator_text(notation: &str) -> String {
+    let mut text = String::new();
+    let mut chars = notation.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '^' {
+            text.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('t') => text.push('\t'),
+            Some('y') => text.push(RIGHT_INDENT_TAB),
+            Some('m') => text.push('\u{2003}'),
+            Some('>') => text.push('\u{2002}'),
+            Some('^') | None => text.push('^'),
+            Some(other) => {
+                text.push('^');
+                text.push(other);
+            }
+        }
+    }
+    text
+}
+
 /// A column, frame or page break character. It ends its paragraph: the story stores it as the
 /// paragraph's last character, followed by the `\n` separator (also at the end of the story), and
 /// the next paragraph starts in the next column, frame or page. A break inside a paragraph (from

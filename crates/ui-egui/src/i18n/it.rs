@@ -1,6 +1,10 @@
 //! Original Italian interface translations, written from the English source
 //! using ordinary Italian desktop-publishing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Tab Character", "Carattere di tabulazione"),
+    ("Right Indent Tab", "Tabulazione rientro destro"),
+    ("Em Space", "Spazio em"),
+    ("En Space", "Spazio en"),
     ("File", "File"),
     ("Edit", "Modifica"),
     ("Layout", "Layout"),

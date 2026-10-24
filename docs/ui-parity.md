@@ -70,6 +70,12 @@ history (DC-1).
 
 ## Remaining effort
 
+The Table of Contents separator field accepts `^y` (Right Indent Tab), with a special-character
+picker alongside it. Literal carets use `^^`; ordinary tabs, em/en spaces and surrounding spaces
+survive reopening. IDML preserves right-indent separators, including `$ID/^y`, so updating an
+imported TOC keeps page numbers at the right edge and inherits paragraph tab leaders. This covers
+10:54–16:08 of [Michael Bullo's TOC tutorial](https://www.youtube.com/watch?v=m4y2tm6LH_c).
+
 Applying a paragraph or character style now removes local values equal to the applied style,
 so text used to capture a style follows later edits to that style. Different local formatting
 and named character styles stay intact. Paragraph-style application treats selection endpoints

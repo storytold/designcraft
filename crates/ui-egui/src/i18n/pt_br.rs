@@ -1,6 +1,10 @@
 //! Original Brazilian Portuguese interface translations, written from the English source
 //! using ordinary Brazilian Portuguese computing vocabulary.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Tab Character", "Caractere de tabulação"),
+    ("Right Indent Tab", "Tabulação de recuo à direita"),
+    ("Em Space", "Espaço eme"),
+    ("En Space", "Espaço ene"),
     ("File", "Arquivo"),
     ("Edit", "Editar"),
     ("Layout", "Layout"),

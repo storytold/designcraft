@@ -2,6 +2,7 @@
 //! are welcome. Terminology follows common Polish DTP usage
 //! (rozkładówka, łam, strona wzorcowa, obszar informacyjny) and the sibling ArtCraft catalogs.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Tab Character", "Znak tabulacji"),
     ("File", "Plik"),
     ("Edit", "Edycja"),
     ("Layout", "Układ"),

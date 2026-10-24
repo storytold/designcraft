@@ -1518,10 +1518,12 @@ impl<'r> Importer<'r> {
             let story = top.iter().find(|e| e.local() == "Story" && e.get("AppliedTOCStyle") == Some(id))?;
             Some((ts, *self.story_ids.get(story.get("Self")?)?))
         })?;
-        let known = |r: Option<&str>| r.map(|r| self.para_style_ref(r)).filter(|n| self.styles.para(n).is_some());
+        // Property children are element text: formatting whitespace around a reference is dropped
+        // unless the reference as written names a style.
+        let known = |r: Option<&str>| r.map(|r| self.listed_para_style_ref(r)).filter(|n| self.styles.para(n).is_some());
         // Character styles the document has; [None] is stored as no style.
         let known_chars = |r: Option<&str>| {
-            r.map(|r| self.char_style_ref(r)).filter(|n| n != designcraft_doc::NO_CHAR_STYLE && self.styles.char_style(n).is_some())
+            r.map(|r| self.listed_char_style_ref(r)).filter(|n| n != designcraft_doc::NO_CHAR_STYLE && self.styles.char_style(n).is_some())
         };
         let entries: Vec<TocEntry> = ts
             .elements()
@@ -1538,9 +1540,10 @@ impl<'r> Importer<'r> {
                     _ => TocPageNumber::After,
                 };
                 let separator = e.get("Separator").map(crate::names::toc_separator_in).filter(|s| s != "\t" && s.chars().count() <= 64);
-                let entry_style = known(e.get("FormatStyle")).filter(|n| *n != format!("TOC Level {level}"));
-                let page_number_style = known_chars(e.get("PageNumberStyle"));
-                let separator_style = known_chars(e.get("SeparatorStyle"));
+                // InDesign writes these as `Properties` children; attributes are read too.
+                let entry_style = known(e.prop("FormatStyle").as_deref()).filter(|n| *n != format!("TOC Level {level}"));
+                let page_number_style = known_chars(e.prop("PageNumberStyle").as_deref());
+                let separator_style = known_chars(e.prop("SeparatorStyle").as_deref());
                 let sort = e.get("Sort").is_some_and(|v| v.trim() == "true");
                 Some(TocEntry { style, level, entry_style, page_number, separator, page_number_style, separator_style, sort })
             })
@@ -1556,6 +1559,11 @@ impl<'r> Importer<'r> {
 
     fn para_style_ref(&self, r: &str) -> String {
         self.para_names.get(r).cloned().unwrap_or_else(|| names::style_name_in(PARA_BUILTINS, &unescape_id(r.trim_start_matches("ParagraphStyle/"))))
+    }
+    /// A paragraph style reference written as an element's text: as written when it names a
+    /// style, otherwise without surrounding whitespace (see [`Self::listed_char_style_ref`]).
+    fn listed_para_style_ref(&self, r: &str) -> String {
+        if self.para_names.contains_key(r) { self.para_style_ref(r) } else { self.para_style_ref(r.trim()) }
     }
     /// A character style reference written as an element's text (nested, line and GREP styles).
     /// A style name may end in a space, so the reference is used as written when it names a

@@ -2,6 +2,10 @@
 //! Common phrases are adapted from the MIT OR Apache-2.0 ArtCraft sibling catalogs
 //! (VectorCraft, PhotoCraft, WordCraft and DeckCraft); see ASSETS.md for pinned sources.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Tab Character", "Символ табуляції"),
+    ("Right Indent Tab", "Табуляція правого відступу"),
+    ("Em Space", "Кругла шпація"),
+    ("En Space", "Півкругла шпація"),
     ("File", "Файл"),
     ("Edit", "Редагування"),
     ("Layout", "Макет"),

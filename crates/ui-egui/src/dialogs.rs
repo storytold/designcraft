@@ -6429,11 +6429,20 @@ struct TocRow {
 }
 
 fn toc_separator_shown(s: &str) -> String {
-    s.replace('\t', "^t").replace('\u{2003}', "^m").replace('\u{2002}', "^>")
+    designcraft_doc::story::toc_separator_notation(s)
 }
 
 fn toc_separator_typed(s: &str) -> String {
-    s.replace("^t", "\t").replace("^m", "\u{2003}").replace("^>", "\u{2002}")
+    designcraft_doc::story::toc_separator_text(s)
+}
+
+/// Appends the special-character `code` (such as `^y`) to the separator field's notation. A
+/// trailing unescaped caret is a literal caret: it's escaped first, so it doesn't swallow the code.
+fn toc_separator_append(field: &mut String, code: &str) {
+    if field.chars().rev().take_while(|&c| c == '^').count() % 2 == 1 {
+        field.push('^');
+    }
+    field.push_str(code);
 }
 
 fn toc_rows(d: &Dialog) -> Vec<TocRow> {
@@ -6624,7 +6633,19 @@ fn toc_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             toc_style_combo(ui, "page_number", &char_styles, none, &mut r.page_number_style);
             ui.end_row();
             crate::rtl::label(ui, tr("Between Entry and Number:"));
-            ui.add(egui::TextEdit::singleline(&mut r.separator).desired_width(80.0).horizontal_align(egui::Align::Min));
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut r.separator).desired_width(80.0).horizontal_align(egui::Align::Min));
+                ui.menu_button("▸", |ui| {
+                    for (label, code) in [("Tab Character", "^t"), ("Right Indent Tab", "^y"), ("Em Space", "^m"), ("En Space", "^>")] {
+                        if ui.button(tr(label)).clicked() {
+                            toc_separator_append(&mut r.separator, code);
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(tr("Insert Special Character"));
+            });
             crate::rtl::label(ui, tr("Style:"));
             toc_style_combo(ui, "separator", &char_styles, none, &mut r.separator_style);
             ui.end_row();
@@ -8350,6 +8371,40 @@ mod tests {
             app.run("edit.undo", json!({})).unwrap();
         }
         assert_eq!(opts(&app), before);
+    }
+
+    #[test]
+    fn toc_right_indent_separator_survives_the_dialog_and_update() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.newSample", json!({})).unwrap();
+        open_toc(&mut app);
+        app.ui.dialog.as_mut().unwrap().fields.insert(
+            "included".into(),
+            json!([
+                {"style": "Headline", "level": 1, "separator": " ^y "}
+            ]),
+        );
+        confirm(&mut app).unwrap();
+        if app.session.tool_id() == "tocPlace" {
+            app.run("toc.place", json!({"x":36,"y":36})).unwrap();
+        }
+        let separator = format!(" {} ", designcraft_doc::story::RIGHT_INDENT_TAB);
+        let d = &app.session.doc().unwrap().doc;
+        let toc = d.toc.as_ref().unwrap();
+        assert_eq!(toc.entries[0].separator.as_deref(), Some(separator.as_str()));
+        assert!(d.story(toc.story).unwrap().text.contains(&separator));
+        app.run("toc.update", json!({})).unwrap();
+        open_toc(&mut app);
+        assert_eq!(toc_rows(app.ui.dialog.as_ref().unwrap())[0].separator, " ^y ");
+        for text in ["^y", "^t^y", "^m^>", "unknown ^q and trailing ^", "a\t\u{E006}\u{2003}\u{2002}z"] {
+            assert_eq!(toc_separator_typed(&toc_separator_shown(text)), text);
+        }
+        // The picker after a literal caret: the caret stays, and the code is the code.
+        for (field, typed) in [("^", "^\u{E006}"), ("^^", "^\u{E006}"), ("a", "a\u{E006}"), ("^^^", "^^\u{E006}")] {
+            let mut f = field.to_string();
+            toc_separator_append(&mut f, "^y");
+            assert_eq!(toc_separator_typed(&f), typed, "{field:?} → {f:?}");
+        }
     }
 
     #[test]

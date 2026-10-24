@@ -4585,6 +4585,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("OpenType font", ["OpenType-Schrift", "Police OpenType", "Fuente OpenType", "OpenType フォント", "OpenType 字体"]),
     ("Variable font", ["Variable Schrift", "Police variable", "Fuente variable", "バリアブルフォント", "可变字体"]),
     ("Color font", ["Farbschrift", "Police couleur", "Fuente de color", "カラーフォント", "彩色字体"]),
+    ("Tab Character", ["Tabulatorzeichen", "Caractère de tabulation", "Carácter de tabulación", "タブ文字", "制表符"]),
     // Table of Contents.
     (
         "Sort Entries in Alphabetical Order",
