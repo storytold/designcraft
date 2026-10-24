@@ -228,6 +228,28 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Parents Fixed", ["Übergeordnete fixiert", "Gabarits fixes", "Páginas principales fijas", "親ページを固定", "父页面固定"]),
     ("Parents", ["Übergeordnete Seiten", "Gabarits", "Páginas principales", "親ページ", "父页面"]),
     (
+        "RGB Color Space View",
+        [
+            "RGB-Farbraumansicht",
+            "Affichage de l’espace colorimétrique RVB",
+            "Vista de espacio de color RGB",
+            "RGB カラースペース表示",
+            "RGB 色彩空间视图",
+        ],
+    ),
+    (
+        "Lab Color Space View",
+        [
+            "Lab-Farbraumansicht",
+            "Affichage de l’espace colorimétrique Lab",
+            "Vista de espacio de color Lab",
+            "Lab カラースペース表示",
+            "Lab 色彩空间视图",
+        ],
+    ),
+    ("Add CMYK Swatch", ["CMYK-Farbfeld hinzufügen", "Ajouter une nuance CMJN", "Añadir muestra CMYK", "CMYK スウォッチを追加", "添加 CMYK 色板"]),
+    ("Added swatch", ["Farbfeld hinzugefügt", "Nuance ajoutée", "Muestra añadida", "スウォッチを追加しました", "已添加色板"]),
+    (
         "Bulleted & Numbered Lists",
         [
             "Aufzählungszeichen und nummerierte Listen",
@@ -906,6 +928,16 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Choose Image…", ["Choose Image…", "Choisir une image…", "Choose Image…", "Choose Image…", "选择图像…"]),
     ("Class:", ["Class:", "Classe :", "Class:", "Class:", "类别："]),
     ("Color Picker", ["Color Picker", "Sélecteur de couleurs", "Color Picker", "Color Picker", "拾色器"]),
+    (
+        "Eyedropper: drag it onto the page",
+        [
+            "Pipette: auf die Seite ziehen",
+            "Pipette : faites-la glisser sur la page",
+            "Cuentagotas: arrástrelo a la página",
+            "スポイト : ページにドラッグ",
+            "吸管：将其拖到页面上",
+        ],
+    ),
     ("Color Settings", ["Color Settings", "Réglages des couleurs", "Color Settings", "Color Settings", "颜色设置"]),
     ("Color:", ["Color:", "Couleur :", "Color:", "Color:", "颜色："]),
     ("Columns", ["Columns", "Colonnes", "Columns", "Columns", "栏"]),
