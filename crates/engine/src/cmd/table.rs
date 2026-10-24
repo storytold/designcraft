@@ -88,8 +88,9 @@ fn table_specs() -> Vec<CommandSpec> {
             "table.insert",
             "Create Table",
             [],
-            Some("Cmd+Alt+Shift+T"),
-            "{rows?: body rows (4), cols? | columns? (4), headerRows? (0), footerRows? (0), width?} — at the text insertion point",
+            // InDesign's Cmd+Alt+Shift+T opens the Insert Table dialog (`app.insertTableDialog`).
+            None,
+            "{rows?: body rows (4, at most 500), cols? | columns? (4, at most 200), headerRows? (0), footerRows? (0, each at most 100), tableStyle?: name, width?} — at the text insertion point, styled in the same step",
             has_text,
             insert
         ),
@@ -563,15 +564,38 @@ fn para_direction(d: &Document, story: StoryId, offset: usize) -> designcraft_do
         .map_or(designcraft_doc::TextDirection::LeftToRight, |pf| d.styles.resolve_para(pf).0.direction)
 }
 
+/// The most body rows, columns, and header or footer rows `table.insert` makes (the Insert Table
+/// dialog's limits too).
+pub const MAX_BODY_ROWS: u64 = 500;
+pub const MAX_COLUMNS: u64 = 200;
+pub const MAX_HEADER_FOOTER_ROWS: u64 = 100;
+
+/// A command's `tableStyle`: none for an absent one or [Basic Table] (a new table's look), else the
+/// resolved style and the cell styles it names. Anything but an existing style's name is an error.
+fn table_style_param(s: &Session, p: &Value, cmd: &str) -> Result<Option<(designcraft_doc::TableStyle, Vec<designcraft_doc::CellStyle>)>> {
+    let name = match p.get("tableStyle") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(n)) if n == designcraft_doc::BASIC_TABLE => return Ok(None),
+        Some(Value::String(n)) => n,
+        Some(_) => return Err(bad(cmd, "`tableStyle` must be a table style's name")),
+    };
+    let styles = &s.doc()?.doc.styles;
+    if !styles.table.iter().any(|x| x.name == *name) {
+        return Err(bad(cmd, format!("no table style `{name}`")));
+    }
+    Ok(Some((styles.resolve_table_style(name), styles.cell.clone())))
+}
+
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| bad("table.insert", "no insertion point"))?;
     if t.cell.is_some() {
         return Err(bad("table.insert", "tables can't be nested in cells"));
     }
-    let rows = p.get("rows").and_then(Value::as_u64).unwrap_or(4).clamp(1, 500) as usize;
-    let cols = p.get("cols").or_else(|| p.get("columns")).and_then(Value::as_u64).unwrap_or(4).clamp(1, 200) as usize;
-    let header = p.get("headerRows").and_then(Value::as_u64).unwrap_or(0).min(100) as usize;
-    let footer = p.get("footerRows").and_then(Value::as_u64).unwrap_or(0).min(100) as usize;
+    let rows = p.get("rows").and_then(Value::as_u64).unwrap_or(4).clamp(1, MAX_BODY_ROWS) as usize;
+    let cols = p.get("cols").or_else(|| p.get("columns")).and_then(Value::as_u64).unwrap_or(4).clamp(1, MAX_COLUMNS) as usize;
+    let header = p.get("headerRows").and_then(Value::as_u64).unwrap_or(0).min(MAX_HEADER_FOOTER_ROWS) as usize;
+    let footer = p.get("footerRows").and_then(Value::as_u64).unwrap_or(0).min(MAX_HEADER_FOOTER_ROWS) as usize;
+    let style = table_style_param(s, p, "table.insert")?;
     let width = p.get("width").and_then(Value::as_f64).unwrap_or_else(|| column_width(s, &t));
     s.edit(|d, sel| {
         let id = d.alloc();
@@ -584,6 +608,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         for c in &mut table.cells {
             c.text.paras[0] = designcraft_doc::ParaFormat { table: None, ..pf.clone() };
             c.text.chars[0].format = cf.clone();
+        }
+        if let Some((ts, cells)) = &style {
+            ts.apply_to(&mut table, cells);
         }
         let r = t.range();
         st.delete(r.clone());

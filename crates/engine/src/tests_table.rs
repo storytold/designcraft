@@ -426,6 +426,26 @@ fn rows_columns_merge_and_options() {
     assert_eq!(st.doc.story(sid).unwrap().text, "Intro");
 }
 
+/// `table.insert` styles the table in the same step; a style that isn't there, or isn't a name,
+/// leaves the story alone. Its dimensions stop at the documented limits.
+#[test]
+fn insert_table_with_a_style_is_one_step() {
+    let (mut s, sid, _) = session_with_frame();
+    s.execute("style.table.create", &json!({"name": "Grid"})).unwrap();
+    for bad in [json!("Missing"), json!(7)] {
+        assert!(s.execute("table.insert", &json!({"tableStyle": bad})).is_err(), "{bad}");
+    }
+    assert!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().tables.is_empty());
+    let r = s.execute("table.insert", &json!({"rows": 900, "cols": 300, "headerRows": 150, "tableStyle": "Grid"})).unwrap();
+    let t = s.execute("table.get", &json!({"table": r["table"]})).unwrap();
+    assert_eq!(t["style"], "Grid");
+    let n = |k: &str| t[k].as_array().unwrap().len() as u64;
+    use crate::cmd::table::{MAX_BODY_ROWS, MAX_COLUMNS, MAX_HEADER_FOOTER_ROWS};
+    assert_eq!((n("rows"), n("columns")), (MAX_BODY_ROWS + MAX_HEADER_FOOTER_ROWS, MAX_COLUMNS));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().tables.is_empty(), "one undo");
+}
+
 #[test]
 fn convert_text_to_table_and_back() {
     let (mut s, sid, _) = session_with_frame();

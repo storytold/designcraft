@@ -92,7 +92,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{path | text} — a set saved by InDesign's Show Set (.txt): matched commands take its Default shortcuts (or none), other commands lose keys it takes → {set, imported, changed, conflictsCleared, skipped (an earlier item whose keys a later one took), unmatched, unmatchedWithoutShortcut, unreadable}",
     ),
     ("app.findChange", "Find/Change…", Some("Cmd+F"), "{}"),
-    ("app.insertTableDialog", "Create Table…", None, "{} — Insert Table dialog (body/header/footer rows, columns)"),
+    ("app.insertTableDialog", "Insert Table…", Some("Cmd+Alt+Shift+T"), "{} — Insert Table dialog (body/header/footer rows, columns, table style)"),
     (
         "app.cellOptionsDialog",
         "Strokes and Fills…",
@@ -730,11 +730,16 @@ pub const MENUS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        // InDesign's order. The Table panel is in Window › Type & Tables (Shift+F9).
         "Table",
         &[
             "ui:app.insertTableDialog",
             "cmd:table.convertFromText",
             "cmd:table.convertToText",
+            "-",
+            ">Cell Options",
+            "ui:app.cellOptionsDialog",
+            "<",
             "-",
             ">Insert",
             "cmd:table.insertRowAbove",
@@ -753,11 +758,10 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:table.selectTable",
             "<",
             "-",
-            ">Cell Options",
-            "ui:app.cellOptionsDialog",
-            "<",
             "cmd:table.merge",
             "cmd:table.unmerge",
+            "cmd:table.splitHorizontally",
+            "cmd:table.splitVertically",
             ">Convert Cell Type",
             "ui:app.graphicCell|Convert Cell to Graphic Cell…",
             "cmd:table.textCell",
@@ -767,12 +771,9 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:table.convertRowsToBody",
             "cmd:table.convertRowsToFooter",
             "<",
-            "cmd:table.splitHorizontally",
-            "cmd:table.splitVertically",
-            "cmd:table.distributeColumns",
-            "cmd:table.distributeRows",
             "-",
-            "ui:app.tablePanel",
+            "cmd:table.distributeRows",
+            "cmd:table.distributeColumns",
         ],
     ),
     (
@@ -4984,6 +4985,47 @@ mod tests {
                 assert!(ui_label(id).is_some() || designcraft_engine::find_command(id).is_some(), "context entry {label}: unknown command {id}");
             }
         }
+    }
+
+    #[test]
+    fn the_table_menu_follows_indesigns_order() {
+        // InDesign's Table menu with a text insertion point (Adobe's "How to make a table").
+        let table = menu_tree().into_iter().find(|(m, _)| *m == "Table").unwrap().1;
+        let labels: Vec<String> = table
+            .iter()
+            .map(|i| match i {
+                Item::Sep => "-".to_string(),
+                Item::Sub(n, _) => format!("{n} >"),
+                Item::Cmd { label, .. } => label.clone(),
+            })
+            .collect();
+        let expected = [
+            "Insert Table…",
+            "Convert Text to Table",
+            "Convert Table to Text",
+            "-",
+            "Cell Options >",
+            "-",
+            "Insert >",
+            "Delete >",
+            "Select >",
+            "-",
+            "Merge Cells",
+            "Unmerge Cells",
+            "Split Cell Horizontally",
+            "Split Cell Vertically",
+            "Convert Cell Type >",
+            "Convert Rows >",
+            "-",
+            "Distribute Rows Evenly",
+            "Distribute Columns Evenly",
+        ];
+        assert_eq!(labels, expected);
+        // Cmd+Alt+Shift+T opens the dialog, as InDesign's; the engine command has no shortcut of
+        // its own. The Table panel is in Window › Type & Tables.
+        assert_eq!(ui_label("app.insertTableDialog").and_then(|c| c.1), Some("Cmd+Alt+Shift+T"));
+        assert_eq!(designcraft_engine::find_command("table.insert").unwrap().shortcut, None);
+        assert_eq!(ui_label("app.tablePanel").and_then(|c| c.1), Some("Shift+F9"));
     }
 
     #[test]
