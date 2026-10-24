@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Hyperlink…",
             ["Type", "Hyperlinks & Cross-References"],
             None,
-            "{url? | email? | page? (1-based), name?, ids?} — from the selected text, or the selected frames",
+            "{url? | email? | page? (1-based) | anchor? (a text anchor's id or name; the link follows it as the text reflows), name?, ids?} — from the selected text, or the selected frames",
             has_doc,
             create
         ),
@@ -25,9 +25,9 @@ pub fn specs() -> Vec<CommandSpec> {
             })
         }),
         cmd!(query "hyperlink.list", "Hyperlinks", [], None, "{}", has_doc, |s, _| Ok(serde_json::to_value(&s.doc()?.doc.hyperlinks).unwrap_or_default())),
-        cmd!("hyperlink.edit", "Hyperlink Options…", [], None, "{id, name?, url? | email? | page? (1-based)}", has_doc, |s, p| {
+        cmd!("hyperlink.edit", "Hyperlink Options…", [], None, "{id, name?, url? | email? | page? (1-based) | anchor?}", has_doc, |s, p| {
             let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("hyperlink.edit", "missing id"))?;
-            let dest = dest_param(p);
+            let dest = dest_param(&s.doc()?.doc, p);
             let name = str_param(p, "name").map(str::to_string);
             s.edit(|d, _| {
                 let h = d.hyperlinks.iter_mut().find(|h| h.id == id).ok_or_else(|| bad("hyperlink.edit", format!("no hyperlink {id}")))?;
@@ -90,19 +90,33 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn dest_param(p: &Value) -> Option<HyperlinkDest> {
+/// `url`, `email`, `page` (1-based) or `anchor` (a text anchor's id, or its name).
+fn dest_param(d: &designcraft_doc::Document, p: &Value) -> Option<HyperlinkDest> {
     if let Some(u) = str_param(p, "url") {
         Some(HyperlinkDest::Url(u.to_string()))
     } else if let Some(e) = str_param(p, "email") {
         Some(HyperlinkDest::Email(e.to_string()))
+    } else if let Some(a) = p.get("anchor").filter(|a| !a.is_null()) {
+        let by_name = |name: &str| d.stories.values().flat_map(|st| st.anchors.iter()).find(|x| x.name == name).map(|x| x.id);
+        a.as_u64().or_else(|| a.as_str().and_then(by_name)).map(HyperlinkDest::Anchor)
     } else {
         p.get("page").and_then(Value::as_u64).map(|pg| HyperlinkDest::Page((pg as usize).saturating_sub(1)))
     }
 }
 
+/// The anchor's own name, for a link to one that was not given a name.
+fn dest_label(d: &designcraft_doc::Document, dest: &HyperlinkDest) -> String {
+    if let HyperlinkDest::Anchor(a) = dest
+        && let Some(x) = d.stories.values().flat_map(|st| st.anchors.iter()).find(|x| x.id == *a)
+    {
+        return x.name.clone();
+    }
+    dest.label()
+}
+
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
-    let dest = dest_param(p).ok_or_else(|| bad("hyperlink.create", "give `url`, `email` or `page`"))?;
     let st = s.doc()?;
+    let dest = dest_param(&st.doc, p).ok_or_else(|| bad("hyperlink.create", "give `url`, `email`, `page` or `anchor`"))?;
     let sources: Vec<HyperlinkSource> = if let Some(ids) = super::ids_param(p, "ids") {
         ids.into_iter().map(|id| HyperlinkSource::Item { id }).collect()
     } else if let Some(t) = st.selection.text.filter(|t| !t.is_caret()) {
@@ -118,11 +132,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         let mut ids = vec![];
         for src in sources {
             let id = d.alloc();
-            let name = name.clone().unwrap_or_else(|| match &dest {
-                HyperlinkDest::Url(u) => u.clone(),
-                HyperlinkDest::Email(e) => e.clone(),
-                HyperlinkDest::Page(p) => format!("Page {}", p + 1),
-            });
+            let name = name.clone().unwrap_or_else(|| dest_label(d, &dest));
             d.hyperlinks.push(Hyperlink { id, name, source: src, dest: dest.clone() });
             ids.push(id);
         }
@@ -154,5 +164,81 @@ mod panel_tests {
         s.execute("bookmark.add", &json!({"page": 2})).unwrap();
         s.execute("bookmark.rename", &json!({"index": 0, "name": "Back"})).unwrap();
         assert_eq!(s.execute("bookmark.list", &json!({})).unwrap()[0]["name"], "Back");
+    }
+}
+
+#[cfg(test)]
+mod anchor_dest_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// The page object numbers of a PDF, in order, and the page each link annotation points at
+    /// (as an index into that list).
+    fn link_pages(s: &mut Session) -> Vec<usize> {
+        let r = s.execute("file.exportPdf", &json!({})).unwrap();
+        let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+        let pdf = String::from_utf8_lossy(&bytes).into_owned();
+        let kids: Vec<&str> = pdf
+            .split("/Kids[")
+            .nth(1)
+            .and_then(|k| k.split(']').next())
+            .map(|k| k.split(" 0 R").map(str::trim).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        let object =
+            |n: &str| -> String { pdf.split(&format!("\n{n} 0 obj\n")).nth(1).and_then(|o| o.split("\nendobj").next()).unwrap_or("").to_string() };
+        let mut out = Vec::new();
+        for part in pdf.split("/Subtype/Link").skip(1) {
+            let Some(dest) = part.split("/Dest ").nth(1).and_then(|d| d.split(" 0 R").next()) else { continue };
+            // `[<page> 0 R/XYZ …]`
+            let page = object(dest.trim());
+            let Some(page) = page.trim_start_matches('[').split(" 0 R").next() else { continue };
+            if let Some(i) = kids.iter().position(|k| *k == page.trim()) {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    /// A frame can link to a text anchor, as a cross-reference refers to one, and the link lands
+    /// on whichever page the anchor's text is on when the PDF is written — IDML files link photo
+    /// thumbnails to their full-size pictures that way (#1446).
+    #[test]
+    fn a_frame_can_link_to_a_text_anchor_and_follows_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 300, "pages": 3, "facingPages": false, "margins": 0})).unwrap();
+        // The destination: an anchor in text on page 3.
+        let sp = s.doc().unwrap().doc.page_loc(2).unwrap().0;
+        let dest =
+            s.execute("frame.create", &json!({"spread": sp, "rect": [20, 20, 280, 100], "content": "text", "text": "Photo 1 full size"})).unwrap();
+        s.execute("text.select", &json!({"story": dest["story"].clone(), "anchor": 0, "focus": 7})).unwrap();
+        let anchor = s.execute("anchor.create", &json!({"name": "Photo 1"})).unwrap();
+        // The source: a thumbnail frame on page 1, linked by the anchor's name.
+        let thumb = s.execute("frame.create", &json!({"rect": [20, 20, 120, 80], "content": "unassigned"})).unwrap();
+        s.execute("hyperlink.create", &json!({"anchor": "Photo 1", "ids": [thumb["id"].clone()]})).unwrap();
+        let links = s.execute("hyperlink.list", &json!({})).unwrap();
+        assert_eq!(links[0]["dest"], json!({"kind": "anchor", "value": anchor["id"].clone()}), "{links}");
+        // Named after the anchor, since no name was given.
+        assert_eq!(links[0]["name"], "Photo 1");
+        assert_eq!(link_pages(&mut s), vec![2], "the link lands on the anchor's page (the third)");
+
+        // A page inserted in front moves the anchor's text to page 4, and the link follows it
+        // without being edited.
+        s.execute("layout.pages.insert", &json!({"count": 1, "after": 0})).unwrap();
+        assert_eq!(s.execute("anchor.list", &json!({})).unwrap()[0]["page"], "4");
+        assert_eq!(link_pages(&mut s), vec![3], "the link follows the text");
+
+        // An anchor's id works as well as its name, and an unknown name is refused.
+        s.execute("hyperlink.delete", &json!({"id": links[0]["id"].clone()})).unwrap();
+        s.execute("hyperlink.create", &json!({"anchor": anchor["id"].clone(), "ids": [thumb["id"].clone()], "name": "Thumbnail"})).unwrap();
+        assert_eq!(s.execute("hyperlink.list", &json!({})).unwrap()[0]["name"], "Thumbnail");
+        assert_eq!(link_pages(&mut s), vec![3]);
+        assert!(s.execute("hyperlink.create", &json!({"anchor": "No Such Anchor", "ids": [thumb["id"].clone()]})).is_err());
+
+        // A link to a deleted anchor is not exported, rather than pointing at the wrong page.
+        s.execute("text.select", &json!({"story": dest["story"].clone(), "anchor": 0, "focus": 8})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        assert!(s.execute("anchor.list", &json!({})).unwrap().as_array().unwrap().is_empty());
+        assert_eq!(link_pages(&mut s), Vec::<usize>::new(), "no link rather than a wrong one");
     }
 }

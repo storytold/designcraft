@@ -116,11 +116,14 @@ pub fn import_idml_report_with_previews(
         ));
     }
     warnings.append(&mut im.warnings);
-    let mut document = im.finish(&root).map_err(|e| match e {
+    // `finish` resolves what needs the whole document (hyperlinks, #1446) and so reports its own
+    // warnings; it is called after this append, so they come back with the document.
+    let (mut document, finishing) = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
         e => e,
     })?;
+    warnings.extend(finishing);
     warnings.extend(document.fix_parent_bases());
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
     Ok(Imported { document, warnings })
@@ -255,6 +258,22 @@ struct ItemCtx {
     threads: Vec<(ItemId, String, String, String)>,
 }
 
+/// An IDML value given either as an attribute or inside `<Properties>`, trimmed.
+fn attr_or_prop(e: &El, key: &str) -> Option<String> {
+    e.get(key).map(|v| v.trim().to_string()).or_else(|| e.prop(key).map(|v| v.trim().to_string())).filter(|v| !v.is_empty())
+}
+
+/// Where a hyperlink destination element points, before the pages, items and anchors it names
+/// have been read (#1446). A `Hyperlink` names its destination by `Self` and the elements come in
+/// any order, so both ends are resolved once the document is complete.
+#[derive(Clone, Debug)]
+enum PendingDest {
+    /// `HyperlinkURLDestination`'s `DestinationURL`; a `mailto:` one is an email link.
+    Url(String),
+    /// `HyperlinkPageDestination`'s `DestinationPage`, a page's `Self`.
+    Page(String),
+}
+
 struct Importer<'r> {
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
     /// Graphic `Self` → stand-in image for a linked file that can't be read.
@@ -314,6 +333,17 @@ struct Importer<'r> {
     anchor_ids: HashMap<String, u64>,
     /// Cross-reference source Self → (story, index in its cross-references).
     xref_srcs: HashMap<String, (StoryId, usize)>,
+    /// `HyperlinkPageItemSource` Self → the page item's Self (#1446). Items are read after the
+    /// hyperlinks are listed, so the names are resolved at the end, in [`Importer::finish`].
+    link_item_srcs: HashMap<String, String>,
+    /// `HyperlinkTextSource` Self → the story and the byte range of the text it wrapped.
+    link_text_srcs: HashMap<String, (StoryId, usize, usize)>,
+    /// A destination element's Self → where it points, as far as its own element says.
+    link_dests: HashMap<String, PendingDest>,
+    /// Destination Self → element name, for the kinds this importer does not read.
+    other_dests: HashMap<String, String>,
+    /// Each `Hyperlink`: its name, its source's Self and its destination's Self.
+    links: Vec<(String, String, String)>,
     /// Cross-reference format Self → name.
     xref_format_names: HashMap<String, String>,
     xref_formats: Vec<designcraft_doc::XrefFormat>,
@@ -549,6 +579,11 @@ impl<'r> Importer<'r> {
             footnote_options: Default::default(),
             anchor_ids: HashMap::new(),
             xref_srcs: HashMap::new(),
+            link_item_srcs: HashMap::new(),
+            link_text_srcs: HashMap::new(),
+            link_dests: HashMap::new(),
+            other_dests: HashMap::new(),
+            links: Vec::new(),
             xref_format_names: HashMap::new(),
             xref_formats: designcraft_doc::xref::default_formats(),
             index_topics: HashMap::new(),
@@ -723,6 +758,41 @@ impl<'r> Importer<'r> {
         }
         for e in top.iter().filter(|e| e.local() == "CrossReferenceFormat") {
             self.xref_format(e);
+        }
+        // Hyperlink sources, destinations and the `Hyperlink` elements that join them (#1446).
+        // Only the names are taken here: the pages, page items and anchors they name are read
+        // later, so the two ends are put together in `finish`.
+        for e in top {
+            let me = || e.get("Self").unwrap_or("").trim().to_string();
+            match e.local() {
+                "HyperlinkURLDestination" => {
+                    if let Some(u) = attr_or_prop(e, "DestinationURL") {
+                        self.link_dests.insert(me(), PendingDest::Url(u));
+                    }
+                }
+                "HyperlinkPageDestination" => {
+                    if let Some(pg) = attr_or_prop(e, "DestinationPage") {
+                        self.link_dests.insert(me(), PendingDest::Page(pg));
+                    }
+                }
+                "HyperlinkPageItemSource" => {
+                    if let Some(it) = attr_or_prop(e, "SourcePageItem") {
+                        self.link_item_srcs.insert(me(), it);
+                    }
+                }
+                "Hyperlink" => {
+                    if let (Some(src), Some(dest)) = (attr_or_prop(e, "Source"), attr_or_prop(e, "Destination")) {
+                        let name = e.get("Name").unwrap_or("").trim().to_string();
+                        self.links.push((name, src, dest));
+                    }
+                }
+                // A destination kind this importer does not read (an external page, say): kept
+                // by name so a link dropped for it can say what it led to.
+                other if other.starts_with("Hyperlink") && other.ends_with("Destination") => {
+                    self.other_dests.insert(me(), other.to_string());
+                }
+                _ => {}
+            }
         }
         if let Some(ix) = top.iter().find(|e| e.local() == "Index") {
             self.index_topics_of(ix, &IndexTopic::default());
@@ -2067,11 +2137,15 @@ impl<'r> Importer<'r> {
             notes: Vec::new(),
             anchors: Vec::new(),
             xrefs: Vec::new(),
+            link_srcs: Vec::new(),
             index_refs: Vec::new(),
             objects: Vec::new(),
         };
         self.walk_story(e, &mut b, &default_para, &CharAttrs::default(), &CharFormat::default(), None);
-        let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, .. } = b;
+        let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, link_srcs, .. } = b;
+        for (me, start, end) in link_srcs {
+            self.link_text_srcs.insert(me, (id, start, end));
+        }
         let mut chars: Vec<CharRun> = runs.into_iter().filter(|r| r.len > 0).collect();
         if chars.is_empty() {
             chars.push(CharRun { len: 0, format: last });
@@ -2349,6 +2423,15 @@ impl<'r> Importer<'r> {
                     "Table" => {
                         let t = self.table(c);
                         b.push_table(t, pf, cf);
+                    }
+                    // The source wraps the text the link covers: its children are ordinary ranges
+                    // and content, so the range is where the text stood before and after (#1446).
+                    "HyperlinkTextSource" => {
+                        let start = b.text.len();
+                        self.walk_story(c, b, pf, pchars, cf, brk);
+                        if b.text.len() > start {
+                            b.link_srcs.push((c.get("Self").unwrap_or("").to_string(), start, b.text.len()));
+                        }
                     }
                     "HyperlinkTextDestination" | "ParagraphDestination" => {
                         b.anchors.push((c.get("Self").unwrap_or("").to_string(), c.get("Name").unwrap_or("Anchor").to_string()));
@@ -3231,7 +3314,72 @@ impl<'r> Importer<'r> {
         }
     }
 
-    fn finish(mut self, root: &El) -> Result<Document> {
+    /// The document's hyperlinks, put together from the sources, destinations and `Hyperlink`
+    /// elements the package listed (#1446). Called once the pages, page items and text anchors
+    /// they name have been read. A link whose source or destination is not in the file is
+    /// dropped: a source that names no item is nothing to click, and a destination that resolves
+    /// to nothing would be a link that goes nowhere.
+    fn hyperlink_list(&mut self) -> Vec<designcraft_doc::Hyperlink> {
+        use designcraft_doc::{HyperlinkDest as D, HyperlinkSource as S};
+        let mut out: Vec<designcraft_doc::Hyperlink> = Vec::new();
+        for (name, src, dest) in std::mem::take(&mut self.links) {
+            // A cross-reference's source is its own kind and is joined to its anchor elsewhere.
+            if self.xref_srcs.contains_key(&src) {
+                continue;
+            }
+            let label = if name.is_empty() { src.clone() } else { name.clone() };
+            let source = if let Some(item) = self.link_item_srcs.get(&src) {
+                let Some(&id) = self.item_ids.get(item) else {
+                    let item = item.clone();
+                    self.warnings.push(format!("hyperlink {label}: its page item {item} is not in the package, so the link was dropped"));
+                    continue;
+                };
+                S::Item { id }
+            } else if let Some(&(story, start, end)) = self.link_text_srcs.get(&src) {
+                S::Text { story, start, end }
+            } else {
+                self.warnings.push(format!("hyperlink {label}: its source {src} is not a page item or a run of text, so the link was dropped"));
+                continue;
+            };
+            let dest = match self.link_dests.get(&dest) {
+                Some(PendingDest::Url(u)) => match u.strip_prefix("mailto:") {
+                    // `hyperlink.create` keeps an email address as one, so a `mailto:` URL is
+                    // read back as the email link it was written from.
+                    Some(address) if !address.is_empty() => D::Email(address.to_string()),
+                    _ => D::Url(u.clone()),
+                },
+                Some(PendingDest::Page(pg)) => match self.page_index.get(pg) {
+                    Some(&i) => D::Page(i),
+                    None => {
+                        self.warnings.push(format!("hyperlink {label}: it leads to a page that is not in the package, so the link was dropped"));
+                        continue;
+                    }
+                },
+                // A `HyperlinkTextDestination` has no entry of its own: it sits in a story and is
+                // named straight by its `Self`, as a cross-reference names its anchor.
+                None => match (self.anchor_ids.get(&dest), self.other_dests.get(&dest)) {
+                    (Some(&id), _) => D::Anchor(id),
+                    // A kind InDesign writes and this importer does not read yet: say which,
+                    // rather than report it as missing from the package.
+                    (None, Some(kind)) => {
+                        let kind = kind.clone();
+                        self.warnings.push(format!("hyperlink {label}: a {kind} is not read yet, so the link was dropped"));
+                        continue;
+                    }
+                    (None, None) => {
+                        self.warnings.push(format!("hyperlink {label}: its destination {dest} is not in the package, so the link was dropped"));
+                        continue;
+                    }
+                },
+            };
+            let name = if name.is_empty() { dest.label() } else { name };
+            out.push(designcraft_doc::Hyperlink { id: self.alloc(), name, source, dest });
+        }
+        out
+    }
+
+    /// The finished document, and the warnings raised while finishing it.
+    fn finish(mut self, root: &El) -> Result<(Document, Vec<String>)> {
         let title = root.get("Name").map(|n| n.trim_end_matches(".indd").to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Untitled".into());
         if self.spreads.is_empty() {
             return Err(IdmlError::Invalid("document has no spreads".into()));
@@ -3258,7 +3406,7 @@ impl<'r> Importer<'r> {
             endnote_story: None,
             sections: std::mem::take(&mut self.sections),
             assets: std::mem::take(&mut self.assets),
-            hyperlinks: vec![],
+            hyperlinks: self.hyperlink_list(),
             data_merge: Default::default(),
             bookmarks: vec![],
             user_words: vec![],
@@ -3278,7 +3426,7 @@ impl<'r> Importer<'r> {
         {
             d.settings.zero_point = zp;
         }
-        Ok(d)
+        Ok((d, std::mem::take(&mut self.warnings)))
     }
 }
 
@@ -3430,6 +3578,8 @@ struct StoryBuilder {
     anchors: Vec<(String, String)>,
     index_refs: Vec<designcraft_doc::IndexRef>,
     xrefs: Vec<(String, String)>,
+    /// `HyperlinkTextSource` Self and the byte range of the text it wrapped (#1446).
+    link_srcs: Vec<(String, usize, usize)>,
     objects: Vec<designcraft_doc::AnchoredObject>,
 }
 
