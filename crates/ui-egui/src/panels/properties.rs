@@ -1591,8 +1591,9 @@ fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
+            // As InDesign's: the Bullets and Numbering dialog for the selected paragraphs.
             if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 66.0).clicked() {
-                show_panel(app, "paragraph");
+                let _ = app.run("app.bulletsNumberingDialog", json!({}));
             }
         });
     });
@@ -3801,6 +3802,22 @@ mod tests {
         );
         h.run_steps(3);
         h
+    }
+
+    /// The course's chapter 21: Properties › Bullets and Numbering › Options opens the Bullets
+    /// and Numbering dialog, as InDesign's, not the Paragraph panel.
+    #[test]
+    fn bullets_options_open_the_bullets_and_numbering_dialog() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "4 eggs"})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 6})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Options").click();
+        h.run_steps(3);
+        let d = h.state().ui.dialog.clone().expect("a dialog");
+        assert_eq!((d.id.as_str(), d.s("section").as_str()), ("paragraphLocal", "bullets"));
+        assert_ne!(h.state().ui.open_panel.as_deref(), Some("paragraph"));
     }
 
     /// The course's chapter 21: Properties' Bulleted List button gives the selected paragraphs
