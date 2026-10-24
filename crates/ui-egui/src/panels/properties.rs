@@ -211,6 +211,35 @@ pub(crate) fn preset_name(w: f64, h: f64) -> &'static str {
     PAGE_PRESETS.iter().find(|p| (p.1 - a).abs() < 0.6 && (p.2 - b).abs() < 0.6).map(|p| p.0).unwrap_or("Custom")
 }
 
+/// The preset dropdown and orientation toggles for one page; the new (width, height) when one changed.
+fn page_preset_row(ui: &mut Ui, lang: &str, w: f64, h: f64) -> Option<(f64, f64)> {
+    let landscape = w > h;
+    let b = block(ui, FIELD_H);
+    let mut size = None;
+    place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
+        let resp = dropdown(ui, crate::i18n::tr(lang, preset_name(w, h)), 93.0);
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(140.0);
+            for p in PAGE_PRESETS {
+                if ui.selectable_label(preset_name(w, h) == p.0, crate::i18n::tr(lang, p.0)).clicked() {
+                    size = Some(if landscape { (p.2, p.1) } else { (p.1, p.2) });
+                    ui.close();
+                }
+            }
+        });
+    });
+    place(ui, sub(b, 126.0, 0.0, 52.0, FIELD_H), |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if icon_toggle(ui, "orient-portrait", !landscape, crate::i18n::tr(lang, "Portrait")).clicked() && landscape {
+            size = Some((h, w));
+        }
+        if icon_toggle(ui, "orient-landscape", landscape, crate::i18n::tr(lang, "Landscape")).clicked() && !landscape {
+            size = Some((h, w));
+        }
+    });
+    size
+}
+
 /// Properties with the Page tool (Properties › Edit Page), as InDesign's: a "Page" band with Back,
 /// Page Size for this page alone (which page, preset, orientation, W/H), Margins and Columns and
 /// Quick Actions. Back returns to the Selection tool and the document's properties.
@@ -258,29 +287,7 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     // Preset and orientation: this page alone.
     let (w, h) = (pg.width, pg.height);
     let landscape = w > h;
-    let b = block(ui, FIELD_H);
-    let mut size = None;
-    place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        let resp = dropdown(ui, crate::i18n::tr(&lang, preset_name(w, h)), 93.0);
-        egui::Popup::menu(&resp).show(|ui| {
-            ui.set_min_width(140.0);
-            for p in PAGE_PRESETS {
-                if ui.selectable_label(preset_name(w, h) == p.0, crate::i18n::tr(&lang, p.0)).clicked() {
-                    size = Some(if landscape { (p.2, p.1) } else { (p.1, p.2) });
-                    ui.close();
-                }
-            }
-        });
-    });
-    place(ui, sub(b, 126.0, 0.0, 52.0, FIELD_H), |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if icon_toggle(ui, "orient-portrait", !landscape, crate::i18n::tr(&lang, "Portrait")).clicked() && landscape {
-            size = Some((h, w));
-        }
-        if icon_toggle(ui, "orient-landscape", landscape, crate::i18n::tr(&lang, "Landscape")).clicked() && !landscape {
-            size = Some((h, w));
-        }
-    });
+    let mut size = page_preset_row(ui, &lang, w, h);
     ui.add_space(3.0);
     let b = block(ui, 2.0 * FIELD_H + 5.0);
     for (row, (label, v, key)) in [("W:", w, "width"), ("H:", h, "height")].into_iter().enumerate() {
@@ -4171,21 +4178,16 @@ fn selected_container(app: &DesignApp) -> Option<(designcraft_doc::Item, Vec<des
     Some((it, kids))
 }
 
-/// The alignment grid: 3 × 3 cells (one column or row of three when a space justification spreads
-/// the objects along the main axis); the chosen cell shows the direction's arrow.
-fn flex_grid(ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> Option<u8> {
+/// The chosen (column, row) of the Flex Layout alignment grid, and whether a space justification
+/// leaves only one axis (`Some(true)` for a row layout).
+fn flex_grid_choice(f: Option<&designcraft_doc::FlexLayout>) -> ((usize, usize), Option<bool>) {
     use designcraft_doc::{FlexAlign, FlexJustify};
-    let t = Tokens::get(ui.ctx());
-    let resp = ui.interact(r, ui.scope_id().with("flex_grid"), Sense::click());
-    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let cell = r.width() / 3.0;
     let pos = |a: FlexAlign| match a {
         FlexAlign::Start => 0,
         FlexAlign::Center => 1,
         FlexAlign::End => 2,
     };
-    // The chosen (column, row), and whether a space justification leaves only one axis.
-    let (chosen, spread_row) = match f {
+    match f {
         Some(f) => {
             let main = match f.justify {
                 FlexJustify::Center => 1,
@@ -4197,7 +4199,17 @@ fn flex_grid(ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> O
             (if f.direction.is_row() { (main, cross) } else { (cross, main) }, f.justify.distributes().then_some(f.direction.is_row()))
         }
         None => ((0, 0), None),
-    };
+    }
+}
+
+/// The alignment grid: 3 × 3 cells (one column or row of three when a space justification spreads
+/// the objects along the main axis); the chosen cell shows the direction's arrow.
+fn flex_grid(ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> Option<u8> {
+    let t = Tokens::get(ui.ctx());
+    let resp = ui.interact(r, ui.id().with("flex_grid"), Sense::click());
+    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    let cell = r.width() / 3.0;
+    let (chosen, spread_row) = flex_grid_choice(f);
     let mut picked = None;
     for row in 0..3usize {
         for col in 0..3usize {

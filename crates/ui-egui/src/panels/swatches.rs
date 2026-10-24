@@ -242,6 +242,33 @@ fn folder_button(ui: &mut egui::Ui, tip: &str) -> egui::Response {
     })
 }
 
+/// The swatch's chip following the pointer while the row is dragged.
+fn paint_drag_chip(ui: &egui::Ui, doc: &designcraft_doc::Document, name: &str, p: egui::Pos2) {
+    let t = Tokens::get(ui.ctx());
+    let (c, g) = crate::widgets::swatch_colors(doc, name, 1.0);
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("swatch_drag")));
+    let chip = egui::Rect::from_min_size(p + vec2(8.0, 8.0), vec2(16.0, 16.0));
+    crate::widgets::paint_chip(&painter, chip, c, g);
+    painter.rect_stroke(chip, 0.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Outside);
+}
+
+/// The type indicator shown at the right of a swatch row: colour mode (spot dot), gradient or tint.
+fn swatch_kind_label(lang: &str, value: &SwatchValue) -> String {
+    match value {
+        SwatchValue::Color { color, color_type } => {
+            let m = match color {
+                designcraft_color::Color::Cmyk { .. } => "CMYK",
+                designcraft_color::Color::Rgb { .. } => "RGB",
+                designcraft_color::Color::Gray { .. } => crate::i18n::tr(lang, "Gray"),
+            };
+            format!("{}{}", if *color_type == ColorType::Spot { "● " } else { "" }, m)
+        }
+        SwatchValue::Gradient { .. } => "Gradient".into(),
+        SwatchValue::Tint { tint, .. } => format!("{:.0}%", tint * 100.0),
+        _ => String::new(),
+    }
+}
+
 /// One Swatches panel row: chip, name, type; click applies it to the fill or stroke in front of
 /// the proxy (of the frames or their text, see [`super::colors_affect_text`]), the context menu
 /// to the stroke, colour groups and delete.
@@ -261,12 +288,7 @@ fn swatch_row(
     if resp.dragged()
         && let Some(p) = ui.ctx().pointer_interact_pos()
     {
-        // The swatch's chip follows the pointer.
-        let (c, g) = crate::widgets::swatch_colors(doc, &sw.name, 1.0);
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("swatch_drag")));
-        let chip = egui::Rect::from_min_size(p + vec2(8.0, 8.0), vec2(16.0, 16.0));
-        crate::widgets::paint_chip(&painter, chip, c, g);
-        painter.rect_stroke(chip, 0.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Outside);
+        paint_drag_chip(ui, doc, &sw.name, p);
     }
     if fill_cur == Some(sw.name.as_str()) {
         ui.painter().rect_filled(row, 0.0, t.row_selected);
@@ -278,19 +300,7 @@ fn swatch_row(
     crate::widgets::paint_chip(ui.painter(), chip, c, g);
     ui.painter().text(row.min + vec2(28.0 + indent, 11.0), egui::Align2::LEFT_CENTER, &sw.name, egui::FontId::proportional(12.5), t.text);
     // Type indicators: spot dot / process square, colour mode.
-    let kind = match &sw.value {
-        SwatchValue::Color { color, color_type } => {
-            let m = match color {
-                designcraft_color::Color::Cmyk { .. } => "CMYK",
-                designcraft_color::Color::Rgb { .. } => "RGB",
-                designcraft_color::Color::Gray { .. } => crate::i18n::tr(&app.ui.language, "Gray"),
-            };
-            format!("{}{}", if *color_type == ColorType::Spot { "● " } else { "" }, m)
-        }
-        SwatchValue::Gradient { .. } => "Gradient".into(),
-        SwatchValue::Tint { tint, .. } => format!("{:.0}%", tint * 100.0),
-        _ => String::new(),
-    };
+    let kind = swatch_kind_label(&app.ui.language, &sw.value);
     if sw.locked {
         icons::paint(ui.painter(), egui::Rect::from_min_size(egui::pos2(row.max.x - 64.0, row.min.y + 4.0), vec2(13.0, 13.0)), "lock", t.text_dim);
     }

@@ -2451,6 +2451,26 @@ fn scrollbar_rects(outer: Rect, screen: Rect, content: Rect, vertical: bool) -> 
     }
 }
 
+/// How far a scrollbar interaction pans the view along its axis: a thumb drag follows the pointer,
+/// a click on the track beside the thumb pages by one view.
+fn scrollbar_move(resp: &egui::Response, grabbed: bool, vertical: bool, thumb: Rect, page: f32, k: f32) -> f32 {
+    if grabbed {
+        let d = resp.drag_delta();
+        return -(if vertical { d.y } else { d.x }) * k;
+    }
+    if resp.clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let (p, a, b) = if vertical { (p.y, thumb.min.y, thumb.max.y) } else { (p.x, thumb.min.x, thumb.max.x) };
+        if p < a {
+            return page;
+        } else if p > b {
+            return -page;
+        }
+    }
+    0.0
+}
+
 /// The view's scrollbars, on the right and bottom edges of `outer`: they span the pasteboard;
 /// dragging a thumb pans, clicking the track pages by one view.
 fn scrollbars(app: &mut DesignApp, ui: &mut egui::Ui, outer: Rect, screen: Rect, rect: Rect, t: &Tokens) {
@@ -2476,21 +2496,8 @@ fn scrollbars(app: &mut DesignApp, ui: &mut egui::Ui, outer: Rect, screen: Rect,
         if !resp.dragged() {
             ui.data_mut(|d| d.remove::<bool>(grab_id));
         }
-        let along = |p: egui::Vec2| if vertical { p.y } else { p.x };
-        let page = along(screen.size());
-        let mut moved = 0.0;
-        if grabbed {
-            moved = -along(resp.drag_delta()) * k;
-        } else if resp.clicked()
-            && let Some(p) = resp.interact_pointer_pos()
-        {
-            let (p, a, b) = if vertical { (p.y, thumb.min.y, thumb.max.y) } else { (p.x, thumb.min.x, thumb.max.x) };
-            if p < a {
-                moved = page;
-            } else if p > b {
-                moved = -page;
-            }
-        }
+        let page = if vertical { screen.size().y } else { screen.size().x };
+        let moved = scrollbar_move(&resp, grabbed, vertical, thumb, page, k);
         if moved != 0.0 && moved.is_finite() {
             pan(app, &xf, if vertical { vec2(0.0, moved) } else { vec2(moved, 0.0) });
         }
@@ -3686,6 +3693,37 @@ fn guide_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<(designcraft_doc::Sprea
     None
 }
 
+/// A primary press at `o` on a ruler starts a new guide; on a guide it selects and grabs it.
+fn begin_guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf, o: Pos2) -> Option<GuideDrag> {
+    let full = resp.rect;
+    if full.contains(o) && !rect.contains(o) {
+        // In a ruler (not the corner).
+        let orientation = if o.y < rect.min.y && o.x >= rect.min.x {
+            Some(designcraft_doc::Orientation::Horizontal)
+        } else if o.x < rect.min.x && o.y >= rect.min.y {
+            Some(designcraft_doc::Orientation::Vertical)
+        } else {
+            None
+        };
+        if let Some(orientation) = orientation {
+            return Some(GuideDrag { orientation, from: None, at: Some(o), mods: egui::Modifiers::NONE });
+        }
+    } else if rect.contains(o)
+        && matches!(app.session.tool_id(), "selection" | "directSelection")
+        && let Some((r, pi, gi, orientation)) = guide_at(app, xf, o)
+    {
+        let shift = ui.input(|i| i.modifiers.shift);
+        // A press on a guide selects it (Shift: on release, as a click adds or removes it).
+        let selected = app.session.active().is_some_and(|st| st.selection.guides.contains(&GuideSel { spread: r, page: pi, index: gi }));
+        if !shift && !selected {
+            let _ = app.run("guide.select", json!({"spread": r, "page": pi, "index": gi}));
+        }
+        ui.data_mut(|d| d.insert_temp(egui::Id::unique(GUIDE_PRESS), GuidePress { origin: o, shift }));
+        return Some(GuideDrag { orientation, from: Some((r, pi, gi)), at: Some(o), mods: egui::Modifiers::NONE });
+    }
+    None
+}
+
 /// Ruler guides: drag one out of a ruler, drag an existing one (Selection tools) to move it, drop
 /// it back on a ruler to delete it. A press near an unlocked guide takes it even over an object:
 /// the guide is selected and the object is not. Returns true from the press to the release, so
@@ -3697,32 +3735,7 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
     let mut drag: Option<GuideDrag> = ui.data(|d| d.get_temp(id));
     if drag.is_none() && pressed && resp.hovered() && app.ui.guides && !app.ui.guides_locked {
         let Some(o) = origin else { return false };
-        let full = resp.rect;
-        if full.contains(o) && !rect.contains(o) {
-            // In a ruler (not the corner).
-            let orientation = if o.y < rect.min.y && o.x >= rect.min.x {
-                Some(designcraft_doc::Orientation::Horizontal)
-            } else if o.x < rect.min.x && o.y >= rect.min.y {
-                Some(designcraft_doc::Orientation::Vertical)
-            } else {
-                None
-            };
-            if let Some(orientation) = orientation {
-                drag = Some(GuideDrag { orientation, from: None, at: Some(o), mods: egui::Modifiers::NONE });
-            }
-        } else if rect.contains(o)
-            && matches!(app.session.tool_id(), "selection" | "directSelection")
-            && let Some((r, pi, gi, orientation)) = guide_at(app, xf, o)
-        {
-            let shift = ui.input(|i| i.modifiers.shift);
-            // A press on a guide selects it (Shift: on release, as a click adds or removes it).
-            let selected = app.session.active().is_some_and(|st| st.selection.guides.contains(&GuideSel { spread: r, page: pi, index: gi }));
-            if !shift && !selected {
-                let _ = app.run("guide.select", json!({"spread": r, "page": pi, "index": gi}));
-            }
-            ui.data_mut(|d| d.insert_temp(egui::Id::unique(GUIDE_PRESS), GuidePress { origin: o, shift }));
-            drag = Some(GuideDrag { orientation, from: Some((r, pi, gi)), at: Some(o), mods: egui::Modifiers::NONE });
-        }
+        drag = begin_guide_drag(app, ui, resp, rect, xf, o);
     }
     let Some(mut g) = drag else { return false };
     if let Some(p) = latest {

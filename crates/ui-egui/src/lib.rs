@@ -1368,6 +1368,50 @@ impl DesignApp {
         self.ui.flyout = None;
     }
 
+    /// First frame only: load the saved colour profiles and make the saved Color Settings active.
+    fn apply_saved_color_settings(&mut self) {
+        if self.color_applied {
+            return;
+        }
+        self.color_applied = true;
+        for path in self.ui.color_profiles.clone() {
+            if let Err(e) = self.session.execute("color.loadProfile", &json!({"path": path})) {
+                log::warn!("Color Settings: {e}");
+                self.status_error("Color Settings", e);
+            }
+        }
+        if let Some(cs) = self.ui.color_settings.clone() {
+            let known = cs.with_known_profiles();
+            for (saved, used) in [(&cs.rgb, &known.rgb), (&cs.cmyk, &known.cmyk)] {
+                if saved != used {
+                    let e = format!("saved profile {saved} is not available; using {used}");
+                    log::warn!("Color Settings: {e}");
+                    self.status_error("Color Settings", e);
+                }
+            }
+            let _ = designcraft_color::cms::set_active(&known);
+        }
+    }
+
+    /// Install the UI fonts on the first frame, and again when the language or the system fonts change.
+    fn update_fonts(&mut self, ctx: &egui::Context) {
+        if !self.styled {
+            // The UI scale is a preference (applied above); egui's own Cmd+Plus/Minus/0 would rescale the
+            // whole window instead of the canvas, only to be reset next frame.
+            ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
+            self.fonts_lang = self.ui.language.clone();
+            self.styled = true;
+            self.restyle = true;
+        } else {
+            if self.fonts_lang != self.ui.language || (!self.fonts_system && theme::system_fonts_ready()) {
+                self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
+                self.fonts_lang = self.ui.language.clone();
+            }
+            self.fonts_ready = true;
+        }
+    }
+
     /// Queue and deadline work, run once per app callback.
     ///
     /// `logic_tick` runs on every call (a first pass, a later discarded pass, or a hidden
@@ -1418,45 +1462,12 @@ impl DesignApp {
             self.egui_ctx = Some(ctx.clone());
         }
         self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-        if !self.color_applied {
-            self.color_applied = true;
-            for path in self.ui.color_profiles.clone() {
-                if let Err(e) = self.session.execute("color.loadProfile", &json!({"path": path})) {
-                    log::warn!("Color Settings: {e}");
-                    self.status_error("Color Settings", e);
-                }
-            }
-            if let Some(cs) = self.ui.color_settings.clone() {
-                let known = cs.with_known_profiles();
-                for (saved, used) in [(&cs.rgb, &known.rgb), (&cs.cmyk, &known.cmyk)] {
-                    if saved != used {
-                        let e = format!("saved profile {saved} is not available; using {used}");
-                        log::warn!("Color Settings: {e}");
-                        self.status_error("Color Settings", e);
-                    }
-                }
-                let _ = designcraft_color::cms::set_active(&known);
-            }
-        }
+        self.apply_saved_color_settings();
         let scale = self.ui.ui_scale.clamp(0.5, 3.0);
         if (ctx.zoom_factor() - scale).abs() > 1e-3 {
             ctx.set_zoom_factor(scale);
         }
-        if !self.styled {
-            // The UI scale is a preference (applied above); egui's own Cmd+Plus/Minus/0 would rescale the
-            // whole window instead of the canvas, only to be reset next frame.
-            ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
-            self.fonts_lang = self.ui.language.clone();
-            self.styled = true;
-            self.restyle = true;
-        } else {
-            if self.fonts_lang != self.ui.language || (!self.fonts_system && theme::system_fonts_ready()) {
-                self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
-                self.fonts_lang = self.ui.language.clone();
-            }
-            self.fonts_ready = true;
-        }
+        self.update_fonts(ctx);
         if !self.fonts_system {
             // The font scan runs in the background: look again shortly.
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
