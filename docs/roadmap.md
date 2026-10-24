@@ -20,7 +20,7 @@ but are next in line.
 | Set up a document (size, margins, columns, parent pages, page numbers, sections); save and reopen | yes | New Document, Document Setup, parent pages and overrides, Numbering & Section Options; `.designcraft` round-trip tests; recovery | 0 |
 | Flow a long story across frames and pages: thread, unthread, autoflow | **no** | threading by hand works (ports, loaded text cursor, `text.thread`/`text.unthread`/`text.removeFromThread`); Primary Text Frame autoflow adds pages users can't delete (#165) | 5–7 |
 | Format text with paragraph and character styles | partial (not blocking) | Paragraph/Character Style Options, Quick Apply, based-on, nested/GREP styles work; style edit/delete from the panel reported (#169); formatting set at a caret is discarded (#289) | 6–12 |
-| Place, crop and fit images; wrap text around them | yes | place gun, frame fitting and Fitting Options, content grabber, text wrap, Links panel | 0 |
+| Place, crop and fit images; wrap text around them | yes | place gun, frame fitting, Content-Aware Fit and Fitting Options, content grabber, text wrap, Links panel | 0 |
 | Arrange and edit objects: select, move, transform, duplicate, copy/paste, align, layers | partial (not blocking on macOS) | all present and working on macOS; Paste in Place lands on page 1 (#348); right-click menus fail for some macOS users (#160, #238); copy/paste and context menus fail on Windows/Linux (#351, #185, #164) | 10–20 |
 | Export a print-ready PDF (bleed, marks, CMYK and spot, PDF/X-4) | yes | krilla export with subset fonts, Separations, marks and bleed, PDF/X-4 with validator; 53 PDF tests | 0 |
 

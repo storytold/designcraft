@@ -281,6 +281,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     // Object › Fitting with InDesign's shortcuts (one `object.fit` mode each).
     ("fit.fillFrameProportionally", "Fill Frame Proportionally", Some("Cmd+Alt+Shift+C"), "{} — object.fit {mode: fillProportionally}"),
     ("fit.contentProportionally", "Fit Content Proportionally", Some("Cmd+Alt+Shift+E"), "{} — object.fit {mode: fitProportionally}"),
+    ("fit.contentAware", "Content-Aware Fit", Some("Cmd+Alt+X"), "{} — object.fit {mode: contentAwareFit}"),
     ("fit.frameToContent", "Fit Frame to Content", Some("Cmd+Alt+C"), "{} — object.fit {mode: fitFrameToContent}"),
     ("fit.contentToFrame", "Fit Content to Frame", Some("Cmd+Alt+E"), "{} — object.fit {mode: fitContentToFrame}"),
     ("fit.centerContent", "Center Content", Some("Cmd+Shift+E"), "{} — object.fit {mode: centerContent}"),
@@ -716,6 +717,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Fitting",
             "ui:fit.fillFrameProportionally",
             "ui:fit.contentProportionally",
+            "ui:fit.contentAware",
             "ui:fit.frameToContent",
             "ui:fit.contentToFrame",
             "ui:fit.centerContent",
@@ -1705,10 +1707,16 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             }
             Ok(Value::Null)
         }
-        "fit.fillFrameProportionally" | "fit.contentProportionally" | "fit.frameToContent" | "fit.contentToFrame" | "fit.centerContent" => {
+        "fit.fillFrameProportionally"
+        | "fit.contentProportionally"
+        | "fit.contentAware"
+        | "fit.frameToContent"
+        | "fit.contentToFrame"
+        | "fit.centerContent" => {
             let mode = match id {
                 "fit.fillFrameProportionally" => "fillProportionally",
                 "fit.contentProportionally" => "fitProportionally",
+                "fit.contentAware" => "contentAwareFit",
                 "fit.frameToContent" => "fitFrameToContent",
                 "fit.contentToFrame" => "fitContentToFrame",
                 _ => "centerContent",
@@ -3955,6 +3963,7 @@ mod tests {
         for (id, keys) in [
             ("fit.fillFrameProportionally", "Cmd+Alt+Shift+C"),
             ("fit.contentProportionally", "Cmd+Alt+Shift+E"),
+            ("fit.contentAware", "Cmd+Alt+X"),
             ("fit.frameToContent", "Cmd+Alt+C"),
             ("fit.contentToFrame", "Cmd+Alt+E"),
             ("fit.centerContent", "Cmd+Shift+E"),
