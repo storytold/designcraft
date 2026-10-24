@@ -1652,6 +1652,53 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
 
+#[test]
+fn direct_selection_on_a_selected_frame_deletes_only_its_image() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("photo.png");
+    std::fs::write(&png, designcraft_render::Rendered { width: 100, height: 100, pixels: vec![40u8; 100 * 100 * 4] }.to_png()).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let frame = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("file.place", &json!({"path": png.to_string_lossy(), "frame": frame})).unwrap();
+    s.execute("selection.set", &json!({"ids": [frame], "content": false})).unwrap();
+    let v = ViewInfo::at_zoom(1.0);
+    let click = |s: &mut Session| {
+        s.pointer(&PointerEvent::new(PointerKind::Down, 110.0, 150.0), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Up, 110.0, 150.0), v).unwrap();
+    };
+    // The frame is selected with the Selection tool, then the image is clicked with Direct Selection.
+    s.set_tool("selection");
+    click(&mut s);
+    assert!(!s.doc().unwrap().selection.content);
+    s.set_tool("directSelection");
+    click(&mut s);
+    assert!(s.doc().unwrap().selection.content, "Direct Selection selects the image inside the selected frame");
+    assert!(s.tool_key(ToolKey::Delete, Mods::default(), v).unwrap());
+    let st = s.doc().unwrap();
+    let it = st.doc.item(designcraft_doc::ItemId(frame)).expect("the frame stays");
+    assert!(matches!(it.content, designcraft_doc::Content::Unassigned), "{:?}", it.content);
+    assert_eq!(st.selection.items, vec![designcraft_doc::ItemId(frame)]);
+    // A frame holding pasted-in items: the click selects them too, so arrow keys move them.
+    let inner = s.execute("frame.create", &json!({"rect": [320, 120, 360, 160]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [inner]})).unwrap();
+    s.execute("edit.cut", &json!({})).unwrap();
+    let holder = s.execute("frame.create", &json!({"rect": [300, 100, 400, 200]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [holder]})).unwrap();
+    s.execute("edit.pasteInto", &json!({})).unwrap();
+    s.set_tool("selection");
+    s.pointer(&PointerEvent::new(PointerKind::Down, 340.0, 140.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 340.0, 140.0), v).unwrap();
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(holder)]);
+    assert!(!s.doc().unwrap().selection.content);
+    s.set_tool("directSelection");
+    s.pointer(&PointerEvent::new(PointerKind::Down, 340.0, 140.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 340.0, 140.0), v).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.selection.content && st.selection.items == [designcraft_doc::ItemId(holder)], "the pasted-in items are selected: {:?}", st.selection);
+}
+
 /// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key
 /// object, and Align to Key Object leaves it in place. A second click on it drops the key.
 #[test]
