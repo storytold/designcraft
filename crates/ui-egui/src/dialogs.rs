@@ -338,13 +338,13 @@ pub fn open_print(app: &mut DesignApp) {
 }
 
 /// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
-/// (`UiState.pdf_export`) and the active document. `pages` is per-job (not persisted); `flatten`
-/// falls back to the global flattener preset when the persisted value is empty.
+/// (`UiState.pdf_export`). `pages` is per-job (not persisted); `flatten` falls back to the global
+/// flattener preset when the persisted value is empty. `title` starts empty: a title given to the
+/// dialog is the PDF's title and names the file, and without one the file is named after the
+/// document and the PDF takes its title from File Info.
 pub fn open_pdf_export(app: &mut DesignApp) {
     let mut fields = serde_json::to_value(&app.ui.pdf_export).unwrap_or_else(|_| json!({}));
     if let Value::Object(m) = &mut fields {
-        let title = app.session.active().map(|st| st.doc.title.clone()).unwrap_or_default();
-        m.insert("title".into(), json!(title));
         m.insert("pages".into(), json!("all"));
         if app.ui.pdf_export.flatten.is_empty() {
             m.insert("flatten".into(), json!(app.ui.flattener));
@@ -1305,6 +1305,91 @@ pub fn open_document_setup(app: &mut DesignApp) {
     app.ui.dialog = Some(d);
 }
 
+/// The fields of File › File Info, in the order the dialog shows them, with their labels.
+const FILE_INFO_FIELDS: [(&str, &str); 6] = [
+    ("documentTitle", "Document Title:"),
+    ("author", "Author:"),
+    ("description", "Description:"),
+    ("keywords", "Keywords:"),
+    ("copyrightNotice", "Copyright Notice:"),
+    ("copyrightInfoUrl", "Copyright Info URL:"),
+];
+
+/// File › File Info, filled from the document. Keywords show as one line, separated by semicolons.
+pub fn open_file_info(app: &mut DesignApp) {
+    let Ok(cur) = app.session.execute("file.info.get", &json!({})) else { return };
+    let mut f = Map::new();
+    for (key, _) in FILE_INFO_FIELDS {
+        let v = match &cur[key] {
+            Value::Array(words) => words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; "),
+            v => v.as_str().unwrap_or_default().to_string(),
+        };
+        f.insert(key.into(), Value::String(v));
+    }
+    // The keywords as shown and as stored: OK sends them only when they were edited, and then a
+    // stored keyword holding a semicolon or comma that is still there whole stays one keyword.
+    let shown = f.get("keywords").cloned().unwrap_or_default();
+    f.insert("keywordsShown".into(), shown);
+    f.insert("keywordsStored".into(), cur["keywords"].clone());
+    // The document the fields belong to, should another one become active before OK.
+    f.insert("uid".into(), json!(app.session.active().map(|doc| doc.uid)));
+    app.ui.dialog = Some(Dialog::new("fileInfo", Value::Object(f)));
+}
+
+fn file_info_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    egui::Grid::new("file_info").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        for (key, label) in FILE_INFO_FIELDS {
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label));
+            if key == "description" {
+                let mut s = d.s(key);
+                if ui.add(egui::TextEdit::multiline(&mut s).desired_rows(3).desired_width(320.0)).changed() {
+                    d.fields.insert(key.into(), Value::String(s));
+                }
+            } else {
+                text_field(ui, d, key, 320.0);
+            }
+            ui.end_row();
+        }
+    });
+}
+
+/// File Info's OK: every field as typed (an empty one clears it); the keywords only when they
+/// were edited. The fields go to the document the dialog was opened for, even when another one
+/// became active meanwhile, and the active document stays active; when the dialog's document has
+/// closed, nothing is stored.
+fn confirm_file_info(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    let keywords_edited = d.fields.get("keywordsShown").and_then(Value::as_str) != Some(d.s("keywords").as_str());
+    let stored: Vec<String> = match d.fields.get("keywordsStored") {
+        Some(Value::Array(words)) => words.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        _ => Vec::new(),
+    };
+    let p: Map<String, Value> = FILE_INFO_FIELDS
+        .iter()
+        .filter(|(key, _)| *key != "keywords" || keywords_edited)
+        .map(|(key, _)| {
+            let v = if *key == "keywords" {
+                json!(designcraft_doc::file_info::parse_keywords_keeping(&d.s(key), &stored))
+            } else {
+                Value::String(d.s(key))
+            };
+            (key.to_string(), v)
+        })
+        .collect();
+    let uid = d.fields.get("uid").and_then(Value::as_u64);
+    let active = app.session.active().map(|doc| doc.uid);
+    if uid.is_none() || uid == active {
+        return app.run("file.info", Value::Object(p));
+    }
+    let index = |app: &DesignApp, uid: Option<u64>| app.session.documents().iter().position(|doc| Some(doc.uid) == uid);
+    let Some(i) = index(app, uid) else { return Ok(Value::Null) };
+    app.run("file.activate", json!({"index": i}))?;
+    let r = app.run("file.info", Value::Object(p));
+    if let Some(back) = index(app, active) {
+        app.run("file.activate", json!({"index": back}))?;
+    }
+    r
+}
+
 /// The edges of Document Setup's margins, bleed and slug (field suffixes).
 const SETUP_EDGES: [&str; 4] = ["Top", "Bottom", "Inside", "Outside"];
 
@@ -2108,6 +2193,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
         "colorTheme" => crate::i18n::tr(&app.ui.language, "Color Theme"),
         "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
+        "fileInfo" => crate::i18n::tr(&app.ui.language, "File Info"),
         "numberingSection" => crate::i18n::tr(&app.ui.language, "Numbering & Section Options…").trim_end_matches('…'),
         "findChange" => crate::i18n::tr(&app.ui.language, "Find/Change"),
         "paragraphStyleOptions" => crate::i18n::tr(&app.ui.language, "Paragraph Style Options"),
@@ -2883,6 +2969,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             result = Some(true);
                         }
                     }
+                    "fileInfo" => file_info_dialog(app, ui, &mut d),
                     "numberingSection" => crate::section_options::body(app, ui, &mut d),
                     "pdfExport" => pdf_export(app, ui, &mut d),
                     "alert" => {
@@ -3222,6 +3309,14 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
             r
         }
+        "fileInfo" => {
+            let r = confirm_file_info(app, &d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
         "paragraphStyleOptions" => {
             let mut d = d;
             let r = confirm_paragraph_style_options(app, &mut d);
@@ -3448,10 +3543,14 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 params["pages"] = json!(pages);
             }
             let title = d.s("title");
+            // Without a title the document's name names the file, and the PDF's title comes from
+            // File Info.
+            let doc_name = app.session.active().map(|st| st.doc.title.clone()).unwrap_or_default();
             if !title.is_empty() {
                 params["title"] = json!(title);
             }
-            let name = if title.is_empty() { "Export.pdf".to_string() } else { format!("{title}.pdf") };
+            let stem = if title.is_empty() { doc_name } else { title };
+            let name = if stem.is_empty() { "Export.pdf".to_string() } else { format!("{stem}.pdf") };
             match app.pick_save(&name) {
                 Some(path) => {
                     params["path"] = json!(path);
@@ -7351,6 +7450,87 @@ mod tests {
         for (k, v) in fields.as_object().unwrap() {
             d.fields.insert(k.clone(), v.clone());
         }
+    }
+
+    /// File › File Info opens filled from the document and OK stores what was typed; Export PDF
+    /// then names the file after the document and takes the PDF's title from File Info.
+    #[test]
+    fn file_info_dialog_stores_the_fields_and_titles_the_pdf() {
+        use std::sync::{Arc, Mutex};
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"title": "flyer-v3"})).unwrap();
+        app.run("file.info", json!({"author": "Ana Ruiz", "keywords": ["spring", "shoes"]})).unwrap();
+        crate::menus::activate(&mut app, "file.info", &Value::Null);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.id, "fileInfo");
+        assert_eq!((d.s("documentTitle"), d.s("author"), d.s("keywords")), (String::new(), "Ana Ruiz".into(), "spring; shoes".into()));
+        setup_fields(&mut app, json!({"documentTitle": "Spring Catalog", "author": "", "keywords": "spring, catalog", "description": "Shoes"}));
+        confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        let info = app.session.active().unwrap().doc.file_info.clone();
+        assert_eq!((info.document_title.as_str(), info.author.as_str(), info.description.as_str()), ("Spring Catalog", "", "Shoes"));
+        assert_eq!(info.keywords, ["spring", "catalog"]);
+        // Keywords left as shown stay as they are, even one with a comma in it.
+        app.run("file.info", json!({"keywords": ["Washington, DC", "map"]})).unwrap();
+        crate::menus::activate(&mut app, "file.info", &Value::Null);
+        setup_fields(&mut app, json!({"author": "Studio"}));
+        confirm(&mut app).unwrap();
+        let info = app.session.active().unwrap().doc.file_info.clone();
+        assert_eq!((info.author.as_str(), info.keywords.clone()), ("Studio", vec!["Washington, DC".to_string(), "map".to_string()]));
+        // Another keyword edited: the one with a comma in it still stays one keyword.
+        crate::menus::activate(&mut app, "file.info", &Value::Null);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("keywords"), "Washington, DC; map");
+        setup_fields(&mut app, json!({"keywords": "Washington, DC; atlas"}));
+        confirm(&mut app).unwrap();
+        assert_eq!(app.session.active().unwrap().doc.file_info.keywords, ["Washington, DC", "atlas"]);
+
+        let writes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = writes.clone();
+        app.services.write = Some(Box::new(move |_: &str, bytes: &[u8]| {
+            sink.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }));
+        let names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let asked = names.clone();
+        app.services.pick_save = Some(Box::new(move |name: &str| {
+            asked.lock().unwrap().push(name.to_string());
+            Some("/tmp/designcraft-file-info.pdf".to_string())
+        }));
+        open_pdf_export(&mut app);
+        confirm(&mut app).unwrap();
+        assert_eq!(names.lock().unwrap().as_slice(), ["flyer-v3.pdf"]);
+        let pdf = String::from_utf8_lossy(&writes.lock().unwrap()[0]).into_owned();
+        assert!(pdf.contains("/Title(Spring Catalog)") && !pdf.contains("/Title(flyer-v3)"), "the PDF's title is File Info's");
+        // A title given to the export is the PDF's title, even when it is the document's name.
+        open_pdf_export(&mut app);
+        setup_fields(&mut app, json!({"title": "flyer-v3"}));
+        confirm(&mut app).unwrap();
+        let asked = names.lock().unwrap().last().cloned().unwrap_or_default();
+        assert_eq!(std::path::Path::new(&asked).file_name().and_then(|n| n.to_str()), Some("flyer-v3.pdf"), "{asked}");
+        let pdf = String::from_utf8_lossy(&writes.lock().unwrap()[1]).into_owned();
+        assert!(pdf.contains("/Title(flyer-v3)") && !pdf.contains("/Title(Spring Catalog)"), "the given title wins");
+    }
+
+    /// File Info's OK stores the fields in the document the dialog was opened for, even when
+    /// another document became active meanwhile; once that document has closed, OK stores nothing.
+    #[test]
+    fn file_info_dialog_stores_into_the_document_it_was_opened_for() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"title": "first"})).unwrap();
+        crate::menus::activate(&mut app, "file.info", &Value::Null);
+        app.run("file.new", json!({"title": "second"})).unwrap();
+        setup_fields(&mut app, json!({"author": "Ana Ruiz"}));
+        confirm(&mut app).unwrap();
+        let docs = app.session.documents();
+        let author = |title: &str| docs.iter().find(|d| d.doc.title == title).map(|d| d.doc.file_info.author.clone());
+        assert_eq!((author("first").as_deref(), author("second").as_deref()), (Some("Ana Ruiz"), Some("")));
+        assert_eq!(app.session.active().map(|d| d.doc.title.as_str()), Some("second"), "the active document stays active");
+
+        crate::menus::activate(&mut app, "file.info", &Value::Null);
+        app.run("file.close", json!({})).unwrap();
+        setup_fields(&mut app, json!({"author": "Studio"}));
+        confirm(&mut app).unwrap();
+        assert!(app.session.documents().iter().all(|d| d.doc.file_info.author != "Studio"), "the dialog's document closed");
     }
 
     #[test]

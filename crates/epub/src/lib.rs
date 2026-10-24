@@ -187,7 +187,7 @@ pub struct FixedPage {
 
 /// A pre-paginated (fixed-layout) EPUB: one XHTML page per document page.
 pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions) -> Result<Vec<u8>, EpubError> {
-    let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
+    let title = opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string());
     let lang = language_tag(&opts.language);
     let id = identifier(doc, opts, &title);
     let modified = modified(doc, opts);
@@ -221,7 +221,7 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
     let rendition = format!(
         "\n<meta property=\"rendition:layout\">pre-paginated</meta>\n<meta property=\"rendition:spread\">auto</meta>\n<meta name=\"original-resolution\" content=\"{vw}x{vh}\"/>"
     );
-    let head = PackageHead { lang, id: &id, title: &title, author: opts.author.as_deref(), modified: &modified };
+    let head = PackageHead { lang, id: &id, title: &title, author: opts.author.as_deref().or(doc.metadata_author()), modified: &modified };
     let opf = package_opf(&head, " prefix=\"rendition: http://www.idpf.org/vocab/rendition/#\"", &rendition, &manifest, &spine);
     let entries = files.iter().map(|(name, data)| (name.clone(), data.as_slice(), name.ends_with(".png")));
     write_package(&opf, &nav, entries)
@@ -1370,7 +1370,7 @@ pub struct HtmlOptions {
 /// File › Export › HTML: one self-contained page (styles inline, images as data URIs) with the
 /// document's stories and graphics in reading order.
 pub fn export_html(doc: &Document, opts: &HtmlOptions) -> String {
-    let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
+    let title = opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string());
     let language = opts.language.as_deref().unwrap_or("en");
     let lang = language_tag(language);
     let body = body_html(doc, false, &|_, mime, data| format!("data:{mime};base64,{}", base64(data))).html;
@@ -1395,7 +1395,7 @@ fn base64(data: &[u8]) -> String {
 
 /// Export the document as a reflowable EPUB 3.
 pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubError> {
-    let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
+    let title = opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string());
     let id = identifier(doc, opts, &title);
     let modified = modified(doc, opts);
     let Body { html: body, images, toc, .. } = body_html(doc, true, &|name, _, _| name.to_string());
@@ -1455,7 +1455,7 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
         );
     }
     let cover_spine = if opts.cover.is_some() { "<itemref idref=\"cover\"/>\n" } else { "" };
-    let head = PackageHead { lang, id: &id, title: &title, author: opts.author.as_deref(), modified: &modified };
+    let head = PackageHead { lang, id: &id, title: &title, author: opts.author.as_deref().or(doc.metadata_author()), modified: &modified };
     let opf = package_opf(&head, "", "", &manifest, &format!("{cover_spine}{spine}"));
     let css = stylesheet_with(doc, &opts.generic_families, &opts.fonts);
     let mut entries: Vec<(String, &[u8], bool)> = vec![("OEBPS/style.css".into(), css.as_bytes(), false)];
@@ -2098,6 +2098,30 @@ mod tests {
         assert!(opf.contains("<dc:identifier id=\"bookid\">notes&amp;edition</dc:identifier>"));
         assert!(opf.contains("<dc:creator>A &amp; B</dc:creator>"));
         assert!(opf.contains("media-type=\"image/png\""));
+    }
+
+    /// File › File Info's Document Title and Author name the EPUB and the HTML page; the export
+    /// options' title and author replace them.
+    #[test]
+    fn file_info_titles_the_epub_and_the_html_page() {
+        let mut d = Document::new(&NewDocument { title: "flyer-v3".into(), ..Default::default() });
+        d.file_info.document_title = "Spring & Summer".into();
+        d.file_info.author = "Ana Ruiz".into();
+        let opf = |d: &Document, opts: &EpubOptions| {
+            let mut z = zip::ZipArchive::new(std::io::Cursor::new(export_epub(d, opts).unwrap())).unwrap();
+            let mut opf = String::new();
+            z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
+            opf
+        };
+        let o = opf(&d, &EpubOptions::default());
+        assert!(o.contains("<dc:title>Spring &amp; Summer</dc:title>") && o.contains("<dc:creator>Ana Ruiz</dc:creator>"), "{o}");
+        let o = opf(&d, &EpubOptions { title: Some("Proof".into()), author: Some("Studio".into()), ..Default::default() });
+        assert!(o.contains("<dc:title>Proof</dc:title>") && o.contains("<dc:creator>Studio</dc:creator>"), "{o}");
+        let html = export_html(&d, &HtmlOptions::default());
+        assert!(html.contains("<title>Spring &amp; Summer</title>"));
+        d.file_info = Default::default();
+        let o = opf(&d, &EpubOptions::default());
+        assert!(o.contains("<dc:title>flyer-v3</dc:title>") && !o.contains("<dc:creator>"), "{o}");
     }
 
     /// "Body¹ text", a 2×2 table, then "Closing" with an endnote.

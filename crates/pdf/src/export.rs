@@ -165,14 +165,8 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, configuration, ..Default::default() };
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let created = opts.created.or_else(now_unix);
-    let metadata = Metadata {
-        creator: "DesignCraft".into(),
-        producer: "DesignCraft".into(),
-        title: Some(title.clone()),
-        authors: opts.author.iter().cloned().collect(),
-        created: created.map(date_time),
-        ..Default::default()
-    };
+    let metadata = Metadata { created: created.map(date_time), ..file_info_metadata(doc, opts.title.as_deref(), opts.author.as_deref()) };
+    let meta_title = metadata.title.clone().unwrap_or_default();
     let mut writer = Writer::new(settings, metadata);
     let pdf = writer.document_mut();
 
@@ -257,7 +251,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     add_form_fields(&mut bytes, &mut warnings, doc, &sheets, opts);
     if opts.standard == Standard::PdfX4 {
         // Output intent and PDF/X identification, then check the result.
-        match crate::pdfx::make_pdfx4(&bytes, &title, created) {
+        match crate::pdfx::make_pdfx4(&bytes, &meta_title, created) {
             Some(b) => bytes = b,
             None => warnings.push("PDF/X-4: the output intent couldn't be added".into()),
         }
@@ -343,8 +337,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
     }
     let pdf_opts = PdfOptions { title: opts.title.clone(), ..PdfOptions::default() };
     let settings = krilla::SerializeSettings { compress_content_streams: true, ..Default::default() };
-    let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let metadata = Metadata { creator: "DesignCraft".into(), producer: "DesignCraft".into(), title: Some(title), ..Default::default() };
+    let metadata = file_info_metadata(doc, opts.title.as_deref(), None);
     let mut writer = Writer::new(settings, metadata);
     let pdf = writer.document_mut();
     let mut ex = Exporter {
@@ -425,6 +418,22 @@ fn now_unix() -> Option<i64> {
 #[cfg(target_arch = "wasm32")]
 fn now_unix() -> Option<i64> {
     None
+}
+
+/// The document information from File Info (title, author, description, keywords). `title` and
+/// `author` from the export options replace File Info's.
+fn file_info_metadata(doc: &Document, title: Option<&str>, author: Option<&str>) -> Metadata {
+    let info = &doc.file_info;
+    let description = info.description.trim();
+    Metadata {
+        creator: "DesignCraft".into(),
+        producer: "DesignCraft".into(),
+        title: Some(title.unwrap_or_else(|| doc.metadata_title()).to_string()),
+        authors: author.or_else(|| doc.metadata_author()).map(str::to_string).into_iter().collect(),
+        description: (!description.is_empty()).then(|| description.to_string()),
+        keywords: info.keywords.clone(),
+        created: None,
+    }
 }
 
 fn date_time(t: i64) -> krilla::metadata::DateTime {

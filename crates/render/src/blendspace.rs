@@ -87,6 +87,7 @@ fn same_document(old: &Document, new: &Document) -> bool {
         styles,
         assets,
         title,
+        file_info,
         settings,
         layers,
         swatches,
@@ -125,6 +126,7 @@ fn same_document(old: &Document, new: &Document) -> bool {
         && old.assets.len() == assets.len()
         && old.assets.iter().zip(assets).all(|((a, x), (b, y))| a == b && std::sync::Arc::ptr_eq(x, y))
         && old.title == *title
+        && old.file_info == *file_info
         && old.settings == *settings
         && old.layers == *layers
         && old.swatches == *swatches

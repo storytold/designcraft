@@ -809,6 +809,38 @@ fn empty_and_populated_export_metadata_preserve_key_presence() {
     assert!(s.contains("Synthetic title") && s.contains("Test author"));
 }
 
+/// File › File Info goes into the PDF's document information and XMP; the export options' title
+/// and author replace File Info's, and PDF/X-4 and Print Booklet keep them.
+#[test]
+fn file_info_is_written_into_the_pdf_metadata() {
+    let mut d = doc_with_text("Body");
+    d.title = "flyer-v3".into();
+    d.file_info.document_title = "Spring Catalog".into();
+    d.file_info.author = "Ana Ruiz".into();
+    d.file_info.description = "Shoes for the spring season".into();
+    d.file_info.keywords = vec!["spring".into(), "shoes".into()];
+    let s = uncompressed(&d, PdfOptions::default());
+    for want in ["/Title(Spring Catalog)", "/Author(Ana Ruiz)", "/Subject(Shoes for the spring season)", "/Keywords(spring, shoes)"] {
+        assert!(s.contains(want), "missing {want}");
+    }
+    for want in ["<dc:title>", "<dc:creator>", "<dc:description>", "spring, shoes</pdf:Keywords>"] {
+        assert!(s.contains(want), "XMP missing {want}");
+    }
+    assert!(!s.contains("flyer-v3"), "the document's name is not the title");
+    let s = uncompressed(&d, PdfOptions { title: Some("Proof".into()), author: Some("Studio".into()), ..Default::default() });
+    assert!(s.contains("/Title(Proof)") && s.contains("/Author(Studio)") && !s.contains("Ana Ruiz"), "the options win");
+    let s = uncompressed(&d, PdfOptions { standard: Standard::PdfX4, ..Default::default() });
+    assert!(s.contains("GTS_PDFXVersion"), "PDF/X-4");
+    let booklet = export_booklet(&d, &Cache::new(), &BookletOptions::default()).unwrap();
+    let b = String::from_utf8_lossy(&booklet.bytes);
+    for (name, s) in [("PDF/X-4", s.as_str()), ("Print Booklet", &*b)] {
+        for want in ["/Title(Spring Catalog)", "/Author(Ana Ruiz)", "/Subject(Shoes for the spring season)", "/Keywords(spring, shoes)"] {
+            assert!(s.contains(want), "{name} missing {want}");
+        }
+        assert!(s.contains("<dc:description>") && s.contains("spring, shoes</pdf:Keywords>"), "{name} XMP");
+    }
+}
+
 /// A swatch applied to a placed greyscale image colours it (#1094): the image's darkness is the
 /// coverage of the swatch, so a spot swatch prints on its own plate. A colour image, or a swatch
 /// that no longer exists, exports as the image itself.

@@ -20,6 +20,7 @@ pub mod cjk_settings;
 pub mod datamerge;
 mod edit;
 pub mod endnotes;
+pub mod file_info;
 pub mod flex;
 pub mod ids;
 pub mod index;
@@ -53,6 +54,7 @@ pub use designcraft_color as color;
 pub use designcraft_geom as geom;
 pub use edit::{ItemLoc, ItemPath, SpreadRef, hit_descendant, item_hit as edit_hit};
 pub use endnotes::{ENDNOTE_REF, EditorialNote, EndnoteOptions, NOTE_MARK};
+pub use file_info::FileInfo;
 pub use flex::{FlexAlign, FlexDirection, FlexJustify, FlexLayout, FlexSize};
 pub use ids::*;
 pub use index::{INDEX_MARK, IndexRef};
@@ -640,6 +642,9 @@ fn is_zero(v: &u32) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Document {
     pub title: String,
+    /// File › File Info.
+    #[serde(default, skip_serializing_if = "FileInfo::is_empty")]
+    pub file_info: FileInfo,
     pub settings: DocSettings,
     pub spreads: Vec<Arc<Spread>>,
     pub parents: Vec<Arc<Spread>>,
