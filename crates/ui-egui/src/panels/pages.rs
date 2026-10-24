@@ -28,7 +28,7 @@ const MAX_THUMB_W: f64 = 1024.0;
 fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Option<egui::TextureHandle> {
     let st = app.session.active()?;
     let key = (st.uid, st.revision, of, h.round() as u32);
-    let mut g = THUMBS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = g.get_or_insert_with(HashMap::new);
     if let Some(t) = map.get(&key) {
         return Some(t.clone());

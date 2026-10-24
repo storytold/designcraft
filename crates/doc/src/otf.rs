@@ -53,7 +53,7 @@ pub fn figures(list: &[String]) -> &'static str {
 pub fn set_figures(list: &mut Vec<String>, id: &str) -> bool {
     let Some((_, _, tags, _)) = FIGURES.iter().find(|f| f.0 == id) else { return false };
     list.retain(|t| !matches!(t.as_str(), "tnum" | "pnum" | "lnum" | "onum"));
-    list.extend(tags.iter().map(|t| t.to_string()));
+    list.extend(tags.iter().map(ToString::to_string));
     true
 }
 

@@ -11,7 +11,7 @@ use crate::{ImportError, Imported};
 
 /// "B12" → (row 11, column 1).
 fn cell_ref(r: &str) -> Option<(usize, usize)> {
-    let letters: String = r.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let letters: String = r.chars().take_while(char::is_ascii_alphabetic).collect();
     let row: usize = r[letters.len()..].parse().ok()?;
     let col = letters.chars().try_fold(0usize, |acc, c| {
         let digit = (c.to_ascii_uppercase() as u8).checked_sub(b'A')? as usize + 1;

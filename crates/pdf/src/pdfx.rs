@@ -285,7 +285,7 @@ fn device_rgb(pdf: &[u8]) -> Vec<String> {
     found
         .into_iter()
         .map(|(what, pages)| {
-            let list: Vec<String> = pages.iter().take(10).map(|p| p.to_string()).collect();
+            let list: Vec<String> = pages.iter().take(10).map(ToString::to_string).collect();
             let more = if pages.len() > 10 { ", …" } else { "" };
             let s = if pages.len() == 1 { "" } else { "s" };
             format!("{what} on page{s} {}{more}: under a CMYK output intent RGB needs an ICC profile", list.join(", "))

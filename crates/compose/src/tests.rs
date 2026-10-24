@@ -1150,7 +1150,7 @@ fn nonbreaking_space_alone_fills_a_justified_line() {
 /// Story of `n` one-line filler paragraphs followed by `extra` paragraphs, in a 2-column frame.
 fn keep_doc(fillers: usize, extra: &[&str], height: f64) -> (Document, StoryId, Vec<usize>) {
     let mut parts: Vec<String> = (0..fillers).map(|k| format!("Filler {k}")).collect();
-    parts.extend(extra.iter().map(|s| s.to_string()));
+    parts.extend(extra.iter().map(ToString::to_string));
     let text = parts.join("\n");
     let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, height), ParaAttrs::default());
     d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;

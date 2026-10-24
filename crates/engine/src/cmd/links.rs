@@ -480,7 +480,7 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let old = std::path::PathBuf::from(a.link.clone().unwrap_or_else(|| a.name.clone()));
-        let mut name = old.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| a.name.clone().into());
+        let mut name = old.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_else(|| a.name.clone().into());
         if let Some(e) = &ext {
             name = std::path::Path::new(&name).with_extension(e).into_os_string();
         }

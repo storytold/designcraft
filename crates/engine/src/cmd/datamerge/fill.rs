@@ -254,7 +254,7 @@ fn find_markers(text: &str) -> Vec<(usize, usize, String)> {
                 continue;
             }
         }
-        i += text[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        i += text[i..].chars().next().map(char::len_utf8).unwrap_or(1);
     }
     out
 }

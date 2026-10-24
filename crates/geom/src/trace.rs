@@ -36,12 +36,12 @@ pub fn trace(mask: &[bool], w: usize, h: usize, tol: f64, min_area: f64) -> Vec<
     let mut starts: Vec<(isize, isize)> = next.keys().copied().collect();
     starts.sort();
     for s in starts {
-        while let Some(first) = next.get_mut(&s).and_then(|v| v.pop()) {
+        while let Some(first) = next.get_mut(&s).and_then(Vec::pop) {
             let mut ring = vec![s];
             let mut cur = first;
             while cur != s {
                 ring.push(cur);
-                match next.get_mut(&cur).and_then(|v| v.pop()) {
+                match next.get_mut(&cur).and_then(Vec::pop) {
                     Some(n) => cur = n,
                     None => break,
                 }

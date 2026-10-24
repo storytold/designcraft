@@ -166,7 +166,7 @@ fn save_bytes(d: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>> {
 /// the file opens from the file manager. A path without a file name is left for the write to fail.
 pub fn with_document_extension(path: &str) -> String {
     let p = std::path::Path::new(path);
-    let ext = p.extension().and_then(|e| e.to_str());
+    let ext = p.extension().and_then(std::ffi::OsStr::to_str);
     if p.file_name().is_none() || ext.is_some_and(|e| e.eq_ignore_ascii_case(designcraft_format::EXTENSION)) {
         return path.to_string();
     }
@@ -469,7 +469,7 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
         // The content decides first: a file's extension may be missing or wrong. The extension
         // then routes files whose content isn't recognised to the reader that explains why.
-        let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+        let ext = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
         let native = designcraft_format::is_designcraft(&bytes) || bytes.trim_ascii_start().starts_with(b"{");
         if designcraft_idml::is_idml(&bytes) || (!native && (super::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return super::interchange::open_idml(s, p);

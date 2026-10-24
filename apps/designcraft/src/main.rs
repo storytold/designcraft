@@ -256,7 +256,7 @@ const ALL_FILES: &str = if cfg!(target_os = "macos") { "public.data" } else { "*
 /// The extension of the file name a save dialog suggests (`Brochure.designcraft`), if it has one.
 /// The dialog filters on it, so the macOS and Windows dialogs add it to a name typed without it.
 fn suggested_extension(name: &str) -> Option<&str> {
-    std::path::Path::new(name).extension().and_then(|e| e.to_str()).filter(|e| !e.is_empty() && !e.contains(char::is_whitespace))
+    std::path::Path::new(name).extension().and_then(std::ffi::OsStr::to_str).filter(|e| !e.is_empty() && !e.contains(char::is_whitespace))
 }
 
 /// The file a save dialog's answer writes: `picked` with the suggested extension added when it has

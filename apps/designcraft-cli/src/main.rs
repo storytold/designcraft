@@ -263,7 +263,7 @@ impl Export {
     /// A name with another extension is an error: it used to get a PNG of the page. One with no
     /// extension still does (`--export /dev/stdout`).
     fn of(out: &str) -> Result<Self, String> {
-        let ext = std::path::Path::new(out).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
+        let ext = std::path::Path::new(out).extension().and_then(std::ffi::OsStr::to_str).map(str::to_lowercase);
         Ok(match ext.as_deref() {
             None | Some("png" | "jpg" | "jpeg") => Export::Image,
             Some("pdf") => Export::Pdf,

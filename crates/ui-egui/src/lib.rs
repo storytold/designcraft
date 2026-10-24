@@ -1071,7 +1071,7 @@ impl DesignApp {
             }
         }
         let Some(inbox) = self.services.inbox.clone() else { return };
-        let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(|e| e.into_inner()));
+        let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         for file in files {
             if file.request.purpose == "shortcuts" {
                 shortcut_import::import_delivered(self, &file.bytes);

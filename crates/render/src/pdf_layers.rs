@@ -236,7 +236,7 @@ pub(crate) fn layered(data: &Arc<Vec<u8>>, hidden: &[String]) -> Option<Arc<Vec<
     type Key = (usize, Vec<String>);
     static CACHE: Mutex<Option<HashMap<Key, (Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)>>> = Mutex::new(None);
     let key = (Arc::as_ptr(data) as usize, hidden.to_vec());
-    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = c.get_or_insert_with(HashMap::new);
     if let Some(v) = map.get(&key) {
         return v.1.clone();

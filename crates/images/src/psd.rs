@@ -298,7 +298,7 @@ impl<'a> ImageData<'a> {
         }
         let mut counts = self.counts.chunks_exact(self.count_size).map(|c| c.iter().fold(0usize, |n, &b| n << 8 | usize::from(b)));
         // This channel starts after every earlier channel's rows.
-        let mut at = counts.by_ref().take(ch.checked_mul(self.height)?).try_fold(0usize, |at, n| at.checked_add(n))?;
+        let mut at = counts.by_ref().take(ch.checked_mul(self.height)?).try_fold(0usize, usize::checked_add)?;
         for _ in 0..self.height {
             let n = counts.next()?;
             let end = at.checked_add(n)?;

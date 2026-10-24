@@ -177,7 +177,7 @@ impl<'a> Ex<'a> {
     }
 
     fn assign_swatch_ids(&mut self) {
-        let mut used: HashSet<String> = ["Swatch/None", "Color/Paper", "Color/Black", "Color/Registration"].iter().map(|s| s.to_string()).collect();
+        let mut used: HashSet<String> = ["Swatch/None", "Color/Paper", "Color/Black", "Color/Registration"].iter().map(ToString::to_string).collect();
         self.swatch_ids.insert(swatch::NONE.into(), "Swatch/None".into());
         self.swatch_ids.insert(swatch::PAPER.into(), "Color/Paper".into());
         self.swatch_ids.insert(swatch::BLACK.into(), "Color/Black".into());

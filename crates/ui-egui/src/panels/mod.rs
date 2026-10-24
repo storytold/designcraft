@@ -264,7 +264,7 @@ pub fn preflight_errors(app: &DesignApp) -> usize {
     static MEMO: std::sync::Mutex<Option<(usize, usize)>> = std::sync::Mutex::new(None);
     let Some(st) = app.session.active() else { return 0 };
     let key = std::sync::Arc::as_ptr(&st.doc) as usize;
-    let mut g = MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = MEMO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((k, n)) = *g
         && k == key
     {

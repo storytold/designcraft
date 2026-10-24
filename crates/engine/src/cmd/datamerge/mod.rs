@@ -617,7 +617,7 @@ fn marker_ranges(text: &str, marker: &str) -> Vec<(usize, usize)> {
             i = end;
             continue;
         }
-        i = i.saturating_add(text[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1));
+        i = i.saturating_add(text[i..].chars().next().map(char::len_utf8).unwrap_or(1));
     }
     out
 }

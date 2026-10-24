@@ -379,7 +379,7 @@ fn sniff(name: &str, text: &str) -> Delimiter {
 }
 
 pub fn extension(name: &str) -> String {
-    Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
+    Path::new(name).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase()
 }
 
 struct HeaderDelimiterCandidate {

@@ -4040,7 +4040,7 @@ fn hyphenation_points(
     // Words repeat a lot: remember their points per set of limits.
     static CACHE: Mutex<Vec<(LimitsKey, HashMap<(hyphen::Lang, Box<str>), Box<[usize]>>)>> = Mutex::new(Vec::new());
     let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
-    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let idx = match guard.iter().position(|e| e.0 == key) {
         Some(i) => i,
         None => {
@@ -4541,7 +4541,7 @@ pub fn adjacent_row(l: &Line, x: f64, caret_y: f64, up: bool) -> Option<f64> {
     // count as still inside the note.
     let over = |r: &(f64, f64, f64)| x >= r.1 - 0.01 && x < r.2 - 0.01;
     let candidates = rows.iter().filter(|r| over(r)).filter(|r| if up { r.0 < caret_y - ROW_Y } else { r.0 > caret_y + ROW_Y });
-    if up { candidates.map(|r| r.0).max_by(|a, b| a.total_cmp(b)) } else { candidates.map(|r| r.0).min_by(|a, b| a.total_cmp(b)) }
+    if up { candidates.map(|r| r.0).max_by(f64::total_cmp) } else { candidates.map(|r| r.0).min_by(f64::total_cmp) }
 }
 
 #[cfg(test)]

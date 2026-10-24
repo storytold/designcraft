@@ -335,7 +335,7 @@ fn row(rows: &mut Vec<Row>, name: impl Into<String>, ms: f64, budget: Option<f64
 /// Measure `doc`. `runs` = repetitions per row (median).
 fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
     let mut rows = vec![];
-    let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let chars: usize = doc.stories.values().map(|s| s.text.len()).sum();
     // Budget: 250 ms per 300k characters (MT), scaled to this document.
     let compose_budget = 250.0 * (chars as f64 / 300_000.0).max(1.0);
@@ -532,7 +532,7 @@ fn print(title: &str, rows: &[Row], noisy: bool) -> Result<(), String> {
 }
 
 fn header() -> (usize, bool) {
-    let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let load = load_average();
     let noisy = load.is_some_and(|l| l > cores as f64 * 0.75);
     outln!(

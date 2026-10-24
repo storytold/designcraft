@@ -56,7 +56,7 @@ fn size_of(pm: &Pixmap) -> usize {
 }
 
 fn with<R>(f: impl FnOnce(&mut Cache) -> R) -> R {
-    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let c = g.get_or_insert_with(Cache::default);
     // Decoding converts CMYK through the working space: new colour settings, new pixels.
     let colour = designcraft_color::cms::generation();

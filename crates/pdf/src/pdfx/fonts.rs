@@ -33,7 +33,7 @@ pub(super) fn unembedded_fonts(pdf: &[u8]) -> Vec<String> {
     let mut warnings: Vec<String> = found
         .into_iter()
         .map(|(name, pages)| {
-            let list: Vec<String> = pages.iter().take(10).map(|p| p.to_string()).collect();
+            let list: Vec<String> = pages.iter().take(10).map(ToString::to_string).collect();
             let more = if pages.len() > 10 { ", …" } else { "" };
             let s = if pages.len() == 1 { "" } else { "s" };
             format!("the font {name} isn't embedded (page{s} {}{more}): PDF/X-4 needs every font used for visible text embedded", list.join(", "))

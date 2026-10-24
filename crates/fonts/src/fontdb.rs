@@ -1314,7 +1314,7 @@ impl FontDb {
                     stack.push(p);
                     continue;
                 }
-                let ext = p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+                let ext = p.extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase);
                 if !matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc")) {
                     continue;
                 }
@@ -1399,7 +1399,7 @@ impl FontDb {
         let Ok(entries) = std::fs::read_dir(folder) else { return out };
         let mut files: Vec<std::path::PathBuf> = Vec::new();
         for path in entries.flatten().map(|e| e.path()) {
-            let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+            let ext = path.extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase);
             if !matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc")) {
                 continue;
             }

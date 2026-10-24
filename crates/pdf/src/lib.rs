@@ -56,7 +56,7 @@ pub enum Standard {
 impl Standard {
     /// `none`, `x4` / `pdfx4` / `PDF/X-4`, `a2b` / `pdfa2b` / `PDF/A-2b`.
     pub fn parse(s: &str) -> Option<Self> {
-        let k: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let k: String = s.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
         match k.as_str() {
             "" | "none" => Some(Self::None),
             "x4" | "pdfx4" | "pdfx42008" | "pdfx42010" => Some(Self::PdfX4),

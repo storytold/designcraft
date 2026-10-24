@@ -240,7 +240,7 @@ fn srgb_table() -> std::sync::Arc<Vec<[f32; 3]>> {
     type Lut = (designcraft_color::cms::ColorSettings, std::sync::Arc<Vec<[f32; 3]>>);
     static LUT: std::sync::Mutex<Option<Lut>> = std::sync::Mutex::new(None);
     let settings = designcraft_color::cms::active_settings();
-    let mut g = LUT.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = LUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     match g.as_ref() {
         Some((s, t)) if *s == settings => t.clone(),
         _ => {

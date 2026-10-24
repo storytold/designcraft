@@ -1933,7 +1933,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 "Typography" => Some(TYPOGRAPHY_GROUPS),
                 _ => None,
             };
-            app.ui.icon_groups = groups.map(|groups| groups.iter().map(|g| g.iter().map(|p| p.to_string()).collect()).collect());
+            app.ui.icon_groups = groups.map(|groups| groups.iter().map(|g| g.iter().map(ToString::to_string).collect()).collect());
             app.ui.dock_expanded = groups.is_none();
             let dock_tab = match name {
                 "Interactive for PDF" | "Digital Publishing" => Some("pages"),
