@@ -194,6 +194,32 @@ fn gradient_tool_drag_sets_the_vector() {
 }
 
 #[test]
+fn gradient_tool_drag_follows_a_rotated_spread() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+    Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let start = l.to_canvas(SpreadRef::Doc(0), Point::new(150.0, 150.0));
+    let mut t = create("gradientSwatch");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, start.x, start.y));
+    for shift in [false, true] {
+        let ev = PointerEvent::new(PointerKind::Drag, start.x + 100.0, start.y).with_mods(Mods { shift, ..Default::default() });
+        match &t.pointer(&cx, &ev)[0] {
+            Action::Preview(_, p) => {
+                let to: Vec<f64> = p["to"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+                let want = l.delta_to_spread(SpreadRef::Doc(0), Vec2::new(100.0, 0.0));
+                assert!((to[0] - (150.0 + want.x)).abs() < 1e-6 && (to[1] - (150.0 + want.y)).abs() < 1e-6, "{to:?} want {want:?}");
+                assert!((to[0] - 150.0).abs() > 1e-6 || (to[1] - 150.0).abs() > 1e-6);
+                assert!((to[0] - 150.0).abs() < 1e-6, "{to:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
 fn anchor_tools_emit_path_commands() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
