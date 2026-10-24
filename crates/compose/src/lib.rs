@@ -925,6 +925,19 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut span_paras = vec![false; np];
     let mut split_paras = vec![false; np];
     'paras: while pi <= np {
+        // A rewind to before a balancing trial's paragraph (keep options) lays that paragraph out
+        // again: its trial and the bottoms it found are stale. Left in place, the trial would
+        // rewind forward to its paragraph when it fails, past paragraphs not laid out yet.
+        if trial.as_ref().is_some_and(|t| t.key.para() > pi)
+            && let Some(t) = trial.take()
+        {
+            set_limit(&mut limits, t.key, None);
+        }
+        if split_trial.as_ref().is_some_and(|t| t.key.para() > pi)
+            && let Some(t) = split_trial.take()
+        {
+            set_limit(&mut split_limits, t.key, None);
+        }
         cur.pi = pi;
         cur.limits = Rc::clone(&limits);
         cur.split_limits = Rc::clone(&split_limits);
@@ -1740,6 +1753,29 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         } else {
                             None
                         };
+                        // Columns a balancing trial shortened break keep options the band would keep
+                        // with more room: the trial fails and the band is laid out again lower,
+                        // before keep options move paragraphs on.
+                        if action.is_some()
+                            && trial.as_ref().is_some_and(|t| t.key == cur.band_key())
+                            && let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget)
+                        {
+                            balance_runs += 1;
+                            rewind(
+                                j,
+                                &snaps,
+                                &note_snaps,
+                                &mut notes,
+                                &mut out,
+                                &mut cur,
+                                &mut list_counter,
+                                &mut force_col,
+                                &mut line_cap,
+                                &mut no_hyph,
+                            );
+                            pi = j;
+                            continue 'paras;
+                        }
                         if let Some(action) = action {
                             restores += 1;
                             let j = match action {
@@ -2530,7 +2566,7 @@ fn keep_violation(ctx: &KeepCtx, pp: &ParaProps, info: &[ParaInfo], force_col: &
     let total_lines = ctx.line_no + ctx.remaining;
     // Keep with next: the previous paragraph's last line must share a column with our first lines.
     if ctx.started_here && ctx.pi > 0 {
-        let prev = &info[ctx.pi - 1];
+        let prev = info.get(ctx.pi - 1)?;
         let need = (prev.keep_with_next as usize).min(total_lines);
         if prev.keep_with_next > 0 && prev.end == ctx.here && ctx.line_no < need {
             let j = chain_start(ctx.pi);
