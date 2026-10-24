@@ -991,6 +991,39 @@ fn hyphen_limit_is_a_hard_constraint() {
     }
 }
 
+/// A Korean notice leaves its paragraphs at the default English language, so English
+/// hyphenation broke the Latin words Korean particles attach to and the addresses such a document
+/// is full of: `New-` / `s와`, `library.exam-` / `ple.kr` (#1688). The lines may now be looser --
+/// that is the cost of not hyphenating, and what #1691 is about -- but no hyphen is invented
+/// inside those tokens.
+#[test]
+fn korean_text_and_addresses_are_not_hyphenated() {
+    // Narrow enough that every line has to break somewhere.
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    let hyphens_in = |text: &str| {
+        let (d, sid, _) = doc_with(text, rect, para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+
+    // 이번 통지문은 News와 관련된 library.example.kr 주소를 포함합니다
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} News\u{C640} \u{AD00}\u{B828}\u{B41C} library.example.kr \u{C8FC}\u{C18C}\u{B97C} \u{D3EC}\u{D568}\u{D569}\u{B2C8}\u{B2E4}";
+    assert_eq!(hyphens_in(korean), 0, "a Korean paragraph invents no hyphens");
+
+    // An English paragraph holding the same address: the prose still hyphenates, the address does
+    // not, so the protection is about the token and not about turning hyphenation off.
+    let english = "This notice about hyphenation and composition mentions library.example.kr somewhere inside a long sentence";
+    assert!(hyphens_in(english) > 0, "English prose is still hyphenated");
+    let (d, sid, _) = doc_with(english, rect, para.clone());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    for l in all_lines(&cs).iter().filter(|l| l.hyphenated) {
+        let upto = &english[..l.range.end.min(english.len())];
+        let token = upto.rsplit(char::is_whitespace).next().unwrap_or("");
+        assert!(!"library.example.kr".starts_with(token) || token.is_empty(), "a hyphen was invented inside the address: {token:?}");
+    }
+}
+
 #[test]
 fn hyphenation_zone_limits_ragged_hyphens() {
     let text = CORPUS.join(" ");

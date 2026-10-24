@@ -198,6 +198,82 @@ pub fn word_breaks_in(word: &str, lang: Lang) -> (Vec<usize>, Source) {
 
 /// Allowed hyphenation points in `word` as char indices (a hyphen goes before that char), with
 /// the paragraph limits applied to each letter run.
+/// Whether a whitespace-delimited token is one no language's hyphenation should break.
+///
+/// Korean attaches particles straight onto Latin words ("News와", "PDF로"), and notices are full
+/// of addresses. With the paragraph language left at the default English -- which is what an
+/// ordinary Korean document has -- a word run inside such a token was hyphenated as English,
+/// giving `New-` / `s와` and `library.exam-` / `ple.kr` (#1688).
+///
+/// A token is kept whole when it carries Hangul, kana or Han, or when it reads as an address: a
+/// URL with a scheme, an e-mail address, a dotted domain, a `/`-rooted path or a Windows drive
+/// path. Breaking at a hyphen the author typed is still allowed; this only stops hyphens being
+/// invented inside the token.
+pub fn keep_whole(token: &str) -> bool {
+    let cjk = |c: char| {
+        matches!(c as u32,
+            0xAC00..=0xD7A3     // Hangul syllables
+            | 0x1100..=0x11FF   // Hangul Jamo
+            | 0x3130..=0x318F   // Hangul compatibility Jamo
+            | 0x3040..=0x30FF   // kana
+            | 0x4E00..=0x9FFF   // CJK unified ideographs
+            | 0x3400..=0x4DBF
+            | 0xF900..=0xFAFF)
+    };
+    if token.chars().any(cjk) {
+        return true;
+    }
+    let lower = token.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("ftp://") || lower.starts_with("www.") {
+        return true;
+    }
+    // An e-mail address: one `@` with something either side, no space (tokens have none).
+    if let Some((user, host)) = token.split_once('@') {
+        return !user.is_empty() && host.contains('.');
+    }
+    // A path, rooted or with a drive letter.
+    if token.starts_with('/') || token.starts_with('\\') {
+        return true;
+    }
+    let mut cs = token.chars();
+    if let (Some(a), Some(b), Some(c)) = (cs.next(), cs.next(), cs.next())
+        && a.is_ascii_alphabetic()
+        && b == ':'
+        && (c == '/' || c == '\\')
+    {
+        return true;
+    }
+    // A domain: dot-separated labels up to the first `/`, whose last label is a short run of
+    // letters -- "example.kr", "library.example.kr". Ordinary prose ("end. Next") never reaches
+    // here, because a token holds no space.
+    let host = lower.split('/').next().unwrap_or("");
+    let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
+    if labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels.last().is_some_and(|tld| tld.len() <= 6 && tld.chars().all(|c| c.is_ascii_lowercase()))
+    {
+        return true;
+    }
+    false
+}
+
+/// Whether a paragraph is set in Korean, so automatic hyphenation does not apply to it.
+///
+/// Korean is set word by word and is not hyphenated (KLREQ). A paragraph with at least as many
+/// Hangul syllables as Latin letters is treated as Korean however its language is set, since an
+/// ordinary Korean document leaves the paragraph language at the default English (#1688).
+pub fn mostly_hangul(text: &str) -> bool {
+    let (mut hangul, mut latin) = (0usize, 0usize);
+    for c in text.chars() {
+        match c as u32 {
+            0xAC00..=0xD7A3 | 0x1100..=0x11FF | 0x3130..=0x318F => hangul += 1,
+            _ if c.is_ascii_alphabetic() => latin += 1,
+            _ => {}
+        }
+    }
+    hangul > 0 && hangul >= latin
+}
+
 pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
     hyphen_points_in(word, lim, Lang::English)
 }
@@ -308,6 +384,40 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// A token no language's hyphenation should break: Korean particles on Latin words, and the
+    /// addresses a notice is full of (#1688).
+    #[test]
+    fn a_token_with_hangul_or_an_address_is_kept_whole() {
+        for t in [
+            "News\u{C640}",             // News와
+            "PDF\u{B85C}",              // PDF로
+            "\u{C77C}\u{BCF8}\u{C5B4}", // 일본어
+            "https://example.kr/page",
+            "www.example.kr",
+            "library.example.kr",
+            "mail@example.kr",
+            "/usr/share/fonts",
+            "C:\\Users\\Hong",
+            "example.kr",
+        ] {
+            assert!(keep_whole(t), "{t} should be kept whole");
+        }
+        // Ordinary words, including ones with a hyphen or a full stop, are still hyphenated.
+        for t in ["hyphenation", "well-known", "sentence.", "Mr.", "re-examine", "3.5"] {
+            assert!(!keep_whole(t), "{t} should not be protected");
+        }
+    }
+
+    /// A Korean paragraph gets no automatic hyphens whatever its language is set to (#1688).
+    #[test]
+    fn a_paragraph_that_is_mostly_hangul_is_not_hyphenated() {
+        assert!(mostly_hangul("\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} News\u{C640} \u{AD00}\u{B828}"));
+        assert!(!mostly_hangul("An English paragraph about hyphenation and composition"));
+        // A Latin paragraph with a Korean word in it is still hyphenated as Latin.
+        assert!(!mostly_hangul("The Korean word \u{D55C}\u{AD6D} appears once in this English sentence"));
+        assert!(!mostly_hangul(""));
+    }
+
     use super::*;
 
     fn h(w: &str) -> String {
