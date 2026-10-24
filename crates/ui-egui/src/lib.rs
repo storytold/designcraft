@@ -9,6 +9,7 @@
 pub mod about;
 pub mod canvas;
 pub mod chrome;
+pub mod cloud;
 pub mod control;
 pub mod credits;
 pub mod cursors;
@@ -64,6 +65,8 @@ pub type OpenAsyncFn = Box<dyn FnMut(ImportRequest)>;
 /// Starts a browser download; an error means no file was handed to the user.
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
+/// Open a URL in the user's browser.
+pub type OpenUrlFn = Box<dyn Fn(&str)>;
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
@@ -88,6 +91,10 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    /// Opens a URL somewhere other than egui's own tab request. Unset, links
+    /// go through `egui::Context::open_url`, which is what the desktop and web
+    /// hosts both want. A test sets this to watch where it was sent.
+    pub open_url: Option<OpenUrlFn>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -580,6 +587,30 @@ pub struct DesignApp {
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
+    /// Open and Save against cloud storage: the account, the folder being
+    /// browsed, transfers in flight, and where each open layout came from.
+    /// The pages are `craft_ui`'s, so every Craft app offers the same ones.
+    /// Inert until the host connects a backend (see [`cloud`]).
+    pub cloud: cloud::CloudFiles,
+    /// The cloud page over the window, when one is open.
+    pub cloud_page: Option<cloud::Page>,
+    /// Save As: whether the cloud was the destination last picked. `None`
+    /// until the user has said, which is when the account's own files decide.
+    pub save_to_cloud: Option<bool>,
+    /// The layout snapshot each cloud save in flight encoded. Only DesignCraft
+    /// knows what a version of a layout is, so the pages do not hold these.
+    pub(crate) cloud_sent: cloud::Sent,
+    /// Desktop device-flow sign-in: set when the cloud worker starts; the UI
+    /// raises it when the user cancels the browser wait.
+    pub cloud_sign_in_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Previous frame had a device-flow browser wait (link poll with no handle).
+    pub(crate) cloud_sign_in_was_waiting: bool,
+    /// Giving other people access to this layout. The dialog is `craft-ui`'s,
+    /// so every Craft app offers the same one. Inert until the host connects a
+    /// backend, and unavailable until that service says sharing exists.
+    pub share: craft_ui::share::ShareDialog,
+    /// Who else is in this layout. Draws nothing when nobody is.
+    pub presence: craft_ui::presence::PresenceBar,
     pub views: HashMap<u64, View>,
     /// Layout ▸ Go Back / Go Forward, by view (like `views`).
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,
@@ -685,6 +716,14 @@ impl DesignApp {
             session,
             ui: UiState::default(),
             services,
+            cloud: cloud::CloudFiles::new(),
+            cloud_page: None,
+            save_to_cloud: None,
+            cloud_sent: cloud::Sent::new(),
+            cloud_sign_in_cancel: None,
+            cloud_sign_in_was_waiting: false,
+            share: craft_ui::share::ShareDialog::new(),
+            presence: craft_ui::presence::PresenceBar::new().badges_only(),
             views: HashMap::new(),
             page_history: HashMap::new(),
             canvas: CanvasCache::new(),
@@ -1227,6 +1266,9 @@ impl DesignApp {
         self.last_time = now;
         self.drain_control(ctx);
         new_document::end_stale_preview(self);
+        // Answers from the cloud worker, and anything still in flight.
+        cloud::pump(self, ctx);
+        share_save(self);
         if self.fonts_ready {
             self.drain_inbox();
             self.open_os_documents();
@@ -1477,23 +1519,7 @@ impl DesignApp {
             }
             self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": title, "file": file, "message": e})));
         } else if let Ok(result) = &r {
-            let warnings: Vec<&str> = result
-                .get("warnings")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .filter(|warning| !warning.is_empty())
-                .collect();
-            if !warnings.is_empty() {
-                self.status(format!("{file}: {}", warnings.join("; ")));
-                // Find Font, offered for the document's missing fonts, stays up: the status line
-                // keeps the warnings.
-                if self.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont") {
-                    self.ui.dialog =
-                        Some(dialogs::Dialog::new("alert", json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n")})));
-                }
-            }
+            self.show_open_warnings(&file, result);
         }
         r
     }
@@ -1502,6 +1528,29 @@ impl DesignApp {
     pub(crate) fn flush_window_commands(&mut self, ctx: &egui::Context) {
         for command in std::mem::take(&mut self.pending_window_commands) {
             ctx.send_viewport_cmd(command);
+        }
+    }
+
+    /// Put an import's warnings to the user, in the status line and an alert.
+    ///
+    /// Separate from [`DesignApp::open_file`] because a layout read from cloud
+    /// storage reports its own failure (the cloud pages say which file could
+    /// not be opened, and why) while still owing the user these.
+    pub(crate) fn show_open_warnings(&mut self, file: &str, result: &Value) {
+        let warnings: Vec<&str> = result
+            .get("warnings")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|warning| !warning.is_empty())
+            .collect();
+        if warnings.is_empty() {
+            return;
+        }
+        self.status(format!("{file}: {}", warnings.join("; ")));
+        if self.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont") {
+            self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n")})));
         }
     }
 
@@ -1674,7 +1723,20 @@ impl DesignApp {
             dock::floating(self, &ctx);
         }
         story_editor::show(self, &ctx);
+        // The Open and Save pages, when the File menu asked for one. Below the
+        // ordinary dialogs, because egui gives the last modal of a frame the
+        // input: an alert raised while these pages are open has to be the one
+        // the user can answer.
+        cloud::modal(self, &ctx);
         dialogs::show(self, &ctx);
+        // Unconditional, because this is also where the share service's
+        // answers are collected, which has to keep happening while the dialog
+        // is shut.
+        self.share.show(&ctx);
+        // Above the message box: a refused save has to be answered, and the
+        // answer decides what happens to the user's edits.
+        cloud::conflict_modal(self, &ctx);
+        cloud::track_sign_in_cancel(self);
         about::show(self, &ctx);
         menus::palette(self, &ctx);
         if self.custom_titlebar {
@@ -1765,6 +1827,36 @@ impl DesignApp {
 /// in both editions and stay outside it.
 pub fn cjk_features(app: &DesignApp) -> bool {
     app.session.prefs.cjk_features.unwrap_or_else(|| i18n::is_cjk(&app.ui.language))
+}
+
+/// Carry out a save the share dialog asked for, and report the outcome back.
+///
+/// Split into asking and answering because the save is asynchronous. The
+/// dialog waits, showing its own progress, until one of these arrives.
+fn share_save(app: &mut DesignApp) {
+    if let Some(request) = app.share.take_save_request() {
+        // One destination today. `request.destination` names which, and is
+        // carried through so a second provider needs no change here.
+        let _ = request.destination;
+        match cloud::save_as(app, "/", &request.name) {
+            Ok(_) => app.cloud.sharing_save = true,
+            Err(reason) => app.share.save_failed(reason),
+        }
+    }
+    // The worker reports by clearing `busy`. A new origin means it landed.
+    if app.cloud.sharing_save && app.cloud.busy.is_none() {
+        app.cloud.sharing_save = false;
+        match cloud::origin(app) {
+            Some(origin) => {
+                let (id, name) = (origin.entry.id.clone(), origin.entry.name.clone());
+                app.share.saved(id, name);
+            }
+            None => {
+                let reason = app.cloud.status.clone().unwrap_or_else(|| "the layout was not saved".to_owned());
+                app.share.save_failed(reason);
+            }
+        }
+    }
 }
 
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,

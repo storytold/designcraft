@@ -1,4 +1,4 @@
-//! DesignCraft desktop app.
+﻿//! DesignCraft desktop app.
 //!
 //! Usage: `designcraft [--control <port>] [--sample] [files…]`
 //!
@@ -13,6 +13,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod cloud;
 #[cfg(target_os = "macos")]
 mod apple_events;
 mod control_server;
@@ -524,6 +525,15 @@ fn main() -> std::process::ExitCode {
                 if let Some(note) = portable_note {
                     app.status(note);
                 }
+                // Cloud storage, when a service is configured. Without one the
+                // interface offers nothing cloud-shaped at all.
+                if let Some((backend, sign_in_cancel)) = cloud::service(cc.egui_ctx.clone()) {
+                    app.cloud.connect(backend);
+                    app.cloud_sign_in_cancel = Some(sign_in_cancel);
+                }
+                // The share dialog reaches the same service through its own
+                // client, so a sign-in through either half serves both.
+                app.share.connect(collabcraft_share::CollabCraft::from_fn(cloud::client).for_app("designcraft"));
                 app.integrated_titlebar = cfg!(target_os = "macos");
                 app.custom_titlebar = cfg!(target_os = "windows");
                 if let Some(port) = control_port {

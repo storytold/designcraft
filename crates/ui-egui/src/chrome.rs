@@ -268,6 +268,10 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let size = vec2(tools_slot_width(ui.available_width(), tools_w), ui.available_height());
                         let tools = ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(4.0);
+                            if crate::cloud::available(app) {
+                                crate::cloud::who(app, ui);
+                                ui.add_space(8.0);
+                            }
                             search_field(app, ui);
                             ui.add_space(8.0);
                             let current = app.ui.workspace.clone();
@@ -322,7 +326,11 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 },
                             );
                             ui.add_space(6.0);
-                            if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
+                            if crate::cloud::shares(app) {
+                                if let Some(id) = crate::cloud::share_button(app, ui, &crate::cloud::copies()) {
+                                    let _ = app.run(&id, json!({}));
+                                }
+                            } else if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
                                 app.status(crate::i18n::tr(&app.ui.language, "Export a PDF, IDML or package to share — no cloud account needed."));
                             }
                             ui.add_space(8.0);

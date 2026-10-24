@@ -6,7 +6,7 @@ use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
+const DOC_EXTS: &[&str] = &["designcraft", "idml"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
     "jpg",
@@ -58,6 +58,14 @@ pub fn start() {
         }
         let runner = eframe::WebRunner::new();
         let creator_graphics = graphics.clone();
+        let mut invite = match craft_cloud_client::invite::arrive().await {
+            craft_cloud_client::invite::Arrival::Ordinary => None,
+            craft_cloud_client::invite::Arrival::Refused(reason) => {
+                craft_cloud_client::invite::refuse(&reason);
+                return;
+            }
+            craft_cloud_client::invite::Arrival::Invited(invitation) => Some(invitation),
+        };
         let result = runner
             .start(
                 canvas.clone(),
@@ -73,10 +81,18 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
-                    if has_query_flag(&query(), "sample") {
+                    if invite.is_none() && has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    let session_dirty = std::rc::Rc::new(std::cell::Cell::new(false));
+                    app.cloud.connect(crate::cloud::Service::new(cc.egui_ctx.clone(), std::rc::Rc::clone(&session_dirty)));
+                    if let Some(share) = collabcraft_share::CollabCraft::from_env() {
+                        app.share.connect(share.for_app("designcraft"));
+                    }
+                    if let Some(invitation) = invite.take() {
+                        open_invite(&mut app, invitation);
+                    }
+                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics, session_dirty }))
                 }),
             )
             .await;
@@ -335,6 +351,25 @@ fn add_document_recovery_controls(snapshots: Vec<RecoveryDocument>) -> Result<bo
     Ok(true)
 }
 
+fn open_invite(app: &mut DesignApp, invitation: craft_cloud_client::invite::Invitation) {
+    let name = invitation.name.clone();
+    match designcraft_ui_egui::cloud::CloudApp::open_bytes(app, &name, invitation.document.clone()) {
+        Ok(Some(_)) => {
+            let mode = if invitation.read_only() { " (view only)" } else { "" };
+            let who = if invitation.recipient.is_empty() { String::new() } else { format!(" (shared with {})", invitation.recipient) };
+            app.status(format!("Opened \"{name}\"{mode}{who}"));
+            if let Err(e) = invitation.join() {
+                log::warn!("invite relay join failed: {e}");
+            }
+        }
+        Ok(None) => app.status(format!("Shared \"{name}\" needs a choice before it opens")),
+        Err(e) => {
+            log::error!("invite open failed: {e}");
+            craft_cloud_client::invite::refuse(&format!("The shared layout could not be opened. {e}"));
+        }
+    }
+}
+
 fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
@@ -345,6 +380,11 @@ struct WebShell {
     app: DesignApp,
     inbox: Inbox,
     graphics: GraphicsState,
+    session_dirty: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+fn refresh_session_dirty(app: &DesignApp, session_dirty: &std::cell::Cell<bool>) {
+    session_dirty.set(app.session.documents().iter().any(|d| d.is_dirty()));
 }
 
 impl eframe::App for WebShell {
@@ -368,6 +408,7 @@ impl eframe::App for WebShell {
                 });
             }
             self.app.logic(ctx);
+            refresh_session_dirty(&self.app, &self.session_dirty);
         });
     }
 
@@ -379,7 +420,10 @@ impl eframe::App for WebShell {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let _ = self.graphics.run_if_healthy(|| self.app.ui(ui));
+        let _ = self.graphics.run_if_healthy(|| {
+            self.app.ui(ui);
+            refresh_session_dirty(&self.app, &self.session_dirty);
+        });
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -400,7 +444,7 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             } else if request.purpose == "place" {
                 rfd::AsyncFileDialog::new().add_filter("Graphics", IMAGE_EXTS)
             } else {
-                rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML or InDesign", DOC_EXTS)
+                rfd::AsyncFileDialog::new().add_filter("DesignCraft", DOC_EXTS)
             };
             wasm_bindgen_futures::spawn_local(async move {
                 let Some(file) = dialog.pick_file().await else {
@@ -414,7 +458,13 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
         // Exports ask for a name; the browser decides where the download goes.
         pick_save: Some(Box::new(|name: &str| Some(name.to_string()))),
         write: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
-        download: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
+        download: Some(Box::new(|name: &str, bytes: &[u8]| match download(name, bytes) {
+            ok @ Ok(()) => ok,
+            Err(e) => {
+                log::error!("download of {name} failed: {e}");
+                Err(e)
+            }
+        })),
         inbox: Some(inbox),
         ..Default::default()
     }
@@ -443,9 +493,6 @@ fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
     let revoke = wasm_bindgen::closure::Closure::once_into_js(move || {
         web_sys::Url::revoke_object_url(&url).ok();
     });
-    // The download has started; a missed revoke only keeps the blob until the page closes.
-    if let Err(e) = window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 10_000) {
-        log::warn!("could not schedule revoking the download URL: {}", js(e));
-    }
+    window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 10_000).map_err(js)?;
     Ok(())
 }
