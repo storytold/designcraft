@@ -220,6 +220,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
     ("view.hiddenCharacters", "Show Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
+    (
+        "view.storyEditorDepthRuler",
+        "Show/Hide Depth Ruler",
+        None,
+        "{} — the Story Editor's vertical ruler of how deep the text reaches in its frames",
+    ),
     ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
     ("window.hidePanelsExceptTools", "Show/Hide Panels Except Tools", Some("Shift+Tab"), "{}"),
     ("window.nextDocument", "Next Document", Some("Cmd+F6"), "{}"),
@@ -864,6 +870,9 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Structure",
             "ui:view.taggedFrames",
             "ui:view.tagMarkers",
+            "<",
+            ">Story Editor",
+            "ui:view.storyEditorDepthRuler",
             "<",
         ],
     ),
@@ -1584,6 +1593,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
+        "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
             let mode = if id == "window.hidePanels" { 1 } else { 2 };
             app.ui.hidden_panels = if app.ui.hidden_panels == mode { 0 } else { mode };
@@ -2485,6 +2495,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.textThreads" => app.ui.text_threads,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
+        "view.storyEditorDepthRuler" => app.ui.story_editor_depth_ruler,
         "changes.track" => app.session.active().is_some_and(|d| d.doc.settings.track_changes),
         // Pressed, as the Bulleted and Numbered List buttons: every paragraph the command applies
         // to (selected text, cells or text frames) has it.
@@ -3424,6 +3435,7 @@ mod tests {
             "view.separations",
             "view.taggedFrames",
             "view.tagMarkers",
+            "view.storyEditorDepthRuler",
         ] {
             assert!(view.contains(&id), "{id} is in View");
             assert!(!typ.contains(&id), "{id} isn't in Type");

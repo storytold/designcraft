@@ -709,6 +709,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set Visibility / Lock", "Nastavit viditelnost / zámek"),
     ("Show Panel", "Zobrazit panel"),
     ("Show/Hide Baseline Grid", "Zobrazit/skrýt mřížku účaří"),
+    ("Show/Hide Depth Ruler", "Zobrazit/skrýt pravítko hloubky"),
     ("Show/Hide Frame Edges", "Zobrazit/skrýt okraje rámečků"),
     ("Show/Hide Guides", "Zobrazit/skrýt vodítka"),
     ("Show/Hide Hidden Characters", "Zobrazit/skrýt skryté znaky"),

@@ -241,6 +241,8 @@ pub struct UiState {
     pub dynamic_spelling: bool,
     /// Preferences › Story Editor Display: text size (points).
     pub story_editor_size: f32,
+    /// View › Story Editor › Show/Hide Depth Ruler.
+    pub story_editor_depth_ruler: bool,
     /// Preferences › General › Interface Language: supported codes are listed in `i18n::LANGUAGES`.
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
@@ -391,6 +393,7 @@ impl Default for UiState {
             hidden_menu_items: Vec::new(),
             show_full_menus: false,
             story_editor_size: 14.0,
+            story_editor_depth_ruler: true,
             scripts: vec![
                 ("Number the pages".into(), "# A page-number frame at the bottom of the current page.\nframe.create {\"rect\": [288, 740, 324, 760], \"content\": \"text\", \"text\": \"\"}\ntext.select {\"story\": \"$0.story\", \"anchor\": 0, \"focus\": 0}\ntext.insert {\"text\": \"\\ue000\", \"raw\": true}".into()),
                 ("Two-column grid".into(), "# Four text frames in a 2 × 2 grid.\nframe.grid {\"rect\": [36, 36, 576, 756], \"cols\": 2, \"rows\": 2, \"gutter\": 12}".into()),

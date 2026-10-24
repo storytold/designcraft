@@ -1553,6 +1553,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set Visibility / Lock", "تعيين الظهور / القفل"),
     ("Show Panel", "إظهار اللوحة"),
     ("Show/Hide Baseline Grid", "إظهار/إخفاء شبكة خط الأساس"),
+    ("Show/Hide Depth Ruler", "إظهار/إخفاء مسطرة العمق"),
     ("Show/Hide Document Grid", "إظهار/إخفاء شبكة المستند"),
     ("Show/Hide Frame Edges", "إظهار/إخفاء حواف الإطارات"),
     ("Show/Hide Guides", "إظهار/إخفاء الأدلة"),

@@ -50,7 +50,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Panels: Pages, Layers, Swatches, Color, Stroke, Character, Paragraph, Styles, Links, Effects, Text Wrap, Align, Pathfinder, Table, Index, TOC, Hyperlinks, Bookmarks, Articles, Tags, Notes, Track Changes, Object States, Buttons and Forms, Preflight, Data Merge, Library, Scripts, Glyphs, Info, Tabs, Story | ✓ | all present | ~ | Navigator, Trap Presets, Animation, Timing missing; pull-down panels can't scroll on Linux (#267) |
 | Dialogs: New Document, Document Setup, Preferences (all pages), Paragraph/Character/Object/Table/Cell Style Options, Export PDF, Print, Package, Find/Change | ✓ | present | ~ | generated command dialogs fill the long tail; depth varies |
 | Workspaces | Essentials, Essentials Classic, Advanced, Book, Digital Publishing, Interactive for PDF, Printing and Proofing, Review, Typography, Touch | ✓ named workspaces (Essentials Classic: Control panel and iconic panel groups) + custom; Window › Workspace; no Review or Touch | ~ | tab bar overlaps menus in Book/Advanced (#182) |
-| Story Editor | ✓ | ✓ | ~ | style-name column, depth ruler missing |
+| Story Editor | ✓ | ✓ | ~ | depth ruler and View › Story Editor › Show/Hide Depth Ruler (`story_editor.rs` `depth_ruler_shows_and_hides_from_the_view_menu`); hiding or resizing the style-name column missing |
 | Undo granularity (a drag = one step) | ✓ | ✓ (Begin/Preview/Commit) | ✓ | |
 | Closing with unsaved changes asks | ✓ | ✓ File › Close and window/menu quit (#146, #545) | ✓ | macOS Dock Quit still bypasses the prompt (#544) |
 | UI scaling, System appearance | ✓ | scaling ✓ (#281); follows macOS light/dark ✗ (#237) | ~ | |

@@ -765,6 +765,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set Visibility / Lock", "ხილვადობის / ჩაკეტვის დაყენება"),
     ("Show Panel", "პანელის ჩვენება"),
     ("Show/Hide Baseline Grid", "საბაზისო ხაზების ბადის ჩვენება/დამალვა"),
+    ("Show/Hide Depth Ruler", "სიღრმის სახაზავის ჩვენება/დამალვა"),
     ("Show/Hide Frame Edges", "ჩარჩოს კიდეების ჩვენება/დამალვა"),
     ("Show/Hide Guides", "დამხმარე ხაზების ჩვენება/დამალვა"),
     ("Show/Hide Hidden Characters", "დამალული სიმბოლოების ჩვენება/დამალვა"),

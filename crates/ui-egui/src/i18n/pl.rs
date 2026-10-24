@@ -716,6 +716,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set Visibility / Lock", "Ustaw widoczność / blokadę"),
     ("Show Panel", "Pokaż panel"),
     ("Show/Hide Baseline Grid", "Pokaż/ukryj siatkę linii bazowych"),
+    ("Show/Hide Depth Ruler", "Pokaż/ukryj linijkę głębokości"),
     ("Show/Hide Frame Edges", "Pokaż/ukryj krawędzie ramek"),
     ("Show/Hide Guides", "Pokaż/ukryj linie pomocnicze"),
     ("Show/Hide Hidden Characters", "Pokaż/ukryj ukryte znaki"),
