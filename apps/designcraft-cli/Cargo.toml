@@ -22,4 +22,5 @@ designcraft-compose = { workspace = true }
 designcraft-format = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-mcp = { workspace = true }
+image = { workspace = true }
 serde_json = { workspace = true }

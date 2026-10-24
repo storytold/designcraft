@@ -1340,6 +1340,7 @@ dependencies = [
  "designcraft-mcp",
  "designcraft-pdf",
  "designcraft-render",
+ "image",
  "serde_json",
 ]
 
