@@ -337,8 +337,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sixth Space", "Sixième d'espace"),
     ("Smart Guide Options", "Options des repères commentés"),
     ("Smooth Tool", "Outil Lissage"),
-    ("Space After", "Espace après"),
-    ("Space Before", "Espace avant"),
     ("Start Page #", "N° de la première page"),
     ("Step and Repeat", "Exécuter et répéter"),
     ("Stop Preview", "Arrêter l'aperçu"),

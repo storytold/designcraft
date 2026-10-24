@@ -46,6 +46,71 @@ pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 const TABLE: &[(&str, [&str; 5])] = &[
+    (
+        "Character Formatting Controls",
+        [
+            "Steuerelemente für Zeichenformatierung",
+            "Commandes de mise en forme des caractères",
+            "Controles de formato de carácter",
+            "文字形式コントロール",
+            "字符格式控制",
+        ],
+    ),
+    (
+        "Paragraph Formatting Controls",
+        [
+            "Steuerelemente für Absatzformatierung",
+            "Commandes de mise en forme des paragraphes",
+            "Controles de formato de párrafo",
+            "段落形式コントロール",
+            "段落格式控制",
+        ],
+    ),
+    ("Font Size", ["Schriftgrad", "Corps", "Tamaño de fuente", "フォントサイズ", "字体大小"]),
+    ("Vertical Scale", ["Vertikal skalieren", "Échelle verticale", "Escala vertical", "垂直比率", "垂直缩放"]),
+    ("Horizontal Scale", ["Horizontal skalieren", "Échelle horizontale", "Escala horizontal", "水平比率", "水平缩放"]),
+    ("Baseline Shift", ["Grundlinienversatz", "Décalage vertical", "Desplazamiento vertical", "ベースラインシフト", "基线偏移"]),
+    (
+        "Skew (False Italic)",
+        ["Verzerren (falscher Kursivstil)", "Inclinaison (faux italique)", "Sesgar (cursiva falsa)", "歪み（斜体）", "倾斜（伪斜体）"],
+    ),
+    ("Left Indent", ["Einzug links", "Retrait gauche", "Sangría izquierda", "左インデント", "左缩进"]),
+    ("Right Indent", ["Einzug rechts", "Retrait droit", "Sangría derecha", "右インデント", "右缩进"]),
+    (
+        "First Line Left Indent",
+        ["Einzug links in erster Zeile", "Retrait gauche de première ligne", "Sangría izquierda en primera línea", "1行目左インデント", "首行左缩进"],
+    ),
+    (
+        "Last Line Right Indent",
+        ["Einzug rechts in letzter Zeile", "Retrait droit de dernière ligne", "Sangría derecha en última línea", "最終行右インデント", "末行右缩进"],
+    ),
+    (
+        "Drop Cap Number of Lines",
+        ["Initiale: Anzahl der Zeilen", "Lettrine (nombre de lignes)", "Capitular: número de líneas", "ドロップキャップの行数", "首字下沉行数"],
+    ),
+    (
+        "Drop Cap One or More Characters",
+        [
+            "Initiale: ein oder mehrere Zeichen",
+            "Lettrine (un ou plusieurs caractères)",
+            "Capitular: uno o más caracteres",
+            "ドロップキャップの文字数",
+            "首字下沉一个或多个字符",
+        ],
+    ),
+    (
+        "Align to Baseline Grid",
+        [
+            "An Grundlinienraster ausrichten",
+            "Aligner sur la grille de ligne de base",
+            "Alinear con cuadrícula base",
+            "ベースライングリッドに揃える",
+            "对齐基线网格",
+        ],
+    ),
+    // Properties › Paragraph (•••).
+    ("Space Before", ["Abstand davor", "Espace avant", "Espacio anterior", "段落前の間隔", "段前间距"]),
+    ("Space After", ["Abstand danach", "Espace après", "Espacio posterior", "段落後の間隔", "段后间距"]),
     // Menus.
     ("File", ["Datei", "Fichier", "Archivo", "ファイル", "文件"]),
     ("Edit", ["Bearbeiten", "Édition", "Edición", "編集", "编辑"]),
@@ -1010,6 +1075,102 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Load Styles", ["Formate laden", "Charger les styles", "Cargar estilos", "スタイルを読み込み", "加载样式"]),
+    ("Restart Numbering", ["Nummerierung neu beginnen", "Recommencer la numérotation", "Reiniciar numeración", "番号の振り直し", "重新开始编号"]),
+    ("Continue Numbering", ["Nummerierung fortführen", "Poursuivre la numérotation", "Continuar numeración", "番号の継続", "继续编号"]),
+    ("Keep Options…", ["Umbruchoptionen …", "Options d'enchaînement…", "Opciones de separación…", "段落分離禁止オプション…", "保持选项…"]),
+    (
+        "Space Between Paragraphs Using Same Style",
+        [
+            "Abstand zwischen Absätzen mit gleichem Format",
+            "Espace entre les paragraphes de même style",
+            "Espacio entre párrafos con el mismo estilo",
+            "同じスタイルの段落間のスペース",
+            "使用相同样式的段落间距",
+        ],
+    ),
+    ("Ignore", ["Ignorieren", "Ignorer", "Ignorar", "無視", "忽略"]),
+    (
+        "Do Not Align to Baseline Grid",
+        [
+            "Nicht am Grundlinienraster ausrichten",
+            "Ne pas aligner sur la grille de ligne de base",
+            "No alinear con cuadrícula base",
+            "ベースライングリッドに揃えない",
+            "不对齐基线网格",
+        ],
+    ),
+    (
+        "Only Align First Line to Grid",
+        [
+            "Nur erste Zeile am Raster ausrichten",
+            "Aligner uniquement la première ligne sur la grille",
+            "Alinear solo primera línea con cuadrícula",
+            "最初の行のみグリッドに揃える",
+            "仅首行对齐网格",
+        ],
+    ),
+    (
+        "Balance Ragged Lines",
+        ["Unausgeglichene Zeilen ausgleichen", "Équilibrer les lignes irrégulières", "Equilibrar líneas desiguales", "行末を調整", "平衡未对齐的行"],
+    ),
+    (
+        "Drop Caps and Nested Styles…",
+        [
+            "Initialen und verschachtelte Formate …",
+            "Lettrines et styles imbriqués…",
+            "Capitulares y estilos anidados…",
+            "ドロップキャップと先頭文字スタイル…",
+            "首字下沉和嵌套样式…",
+        ],
+    ),
+    ("GREP Styles…", ["GREP-Stile …", "Styles GREP…", "Estilos GREP…", "正規表現スタイル…", "GREP 样式…"]),
+    (
+        "Restart/Continue Numbering",
+        [
+            "Nummerierung neu beginnen/fortführen",
+            "Recommencer/Poursuivre la numérotation",
+            "Reiniciar/Continuar numeración",
+            "番号の振り直し/継続",
+            "重新开始/继续编号",
+        ],
+    ),
+    (
+        "Convert Bullets and Numbering to Text",
+        [
+            "Aufzählungszeichen und Nummerierung in Text konvertieren",
+            "Convertir les puces et la numérotation en texte",
+            "Convertir viñetas y numeración en texto",
+            "箇条書きと段落番号をテキストに変換",
+            "将项目符号和编号转换为文本",
+        ],
+    ),
+    ("Hyphenation…", ["Silbentrennung …", "Césure…", "Separación por sílabas…", "ハイフネーション…", "连字…"]),
+    (
+        "Hyphenation Settings",
+        ["Silbentrennungseinstellungen", "Paramètres de césure", "Configuración de separación por sílabas", "ハイフネーション設定", "连字设置"],
+    ),
+    ("hyphens", ["Trennstriche", "tirets", "guiones", "ハイフン", "连字符"]),
+    ("Hyphenation Zone:", ["Silbentrennungsbereich:", "Zone de césure :", "Zona de separación:", "ハイフネーション領域 :", "连字区："]),
+    ("Better Spacing", ["Bessere Abstände", "Meilleur espacement", "Mejor espaciado", "スペースを優先", "更好的间距"]),
+    ("Fewer Hyphens", ["Weniger Trennstriche", "Moins de tirets", "Menos guiones", "ハイフンを減らす", "更少的连字符"]),
+    (
+        "Hyphenate Capitalized Words",
+        [
+            "Großgeschriebene Wörter trennen",
+            "Césure des mots en capitales",
+            "Separar palabras en mayúscula",
+            "大文字で始まる単語をハイフネーション",
+            "连字大写的单词",
+        ],
+    ),
+    (
+        "Hyphenate Last Word",
+        ["Letztes Wort trennen", "Césure du dernier mot", "Separar última palabra", "最後の単語をハイフネーション", "连字最后一个单词"],
+    ),
+    (
+        "Hyphenate Across Column",
+        ["Über Spalten trennen", "Césure entre colonnes", "Separar entre columnas", "段をまたいでハイフネーション", "跨栏连字"],
+    ),
     (
         "Differs from this document",
         ["Weicht von diesem Dokument ab", "Diffère de ce document", "Difiere de este documento", "このドキュメントと異なります", "与此文档不同"],
@@ -1648,6 +1809,8 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Define Lists…", ["Define Lists…", "Définir des listes…", "Define Lists…", "Define Lists…", "定义列表…"]),
+    ("Apply Bullets", ["Aufzählungszeichen anwenden", "Appliquer des puces", "Aplicar viñetas", "箇条書きを適用", "应用项目符号"]),
+    ("Apply Numbers", ["Nummerierung anwenden", "Appliquer la numérotation", "Aplicar números", "段落番号を適用", "应用编号"]),
     (
         "Define Text Variable…",
         ["Define Text Variable…", "Définir une variable de texte…", "Define Text Variable…", "Define Text Variable…", "定义文本变量…"],

@@ -1270,6 +1270,9 @@ attr_set! {
         number_expression: String = "^#.^t".into(),
         /// Text after the bullet (metacharacters expand as in [`expand_list_text`]).
         list_separator: String = "\t".into(),
+        /// The hanging indent was set by the Bulleted or Numbered List button, which takes it away
+        /// again with the list (an indent the paragraph had before stays).
+        list_hang: bool = false,
         balance_ragged: bool = false,
         optical_margin: bool = false,
         /// None uses the legacy built-in rules; an empty set explicitly disables kinsoku.

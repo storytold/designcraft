@@ -80,6 +80,10 @@ pub struct NumField<'a> {
     range: (f64, f64),
     enabled: bool,
     parens: bool,
+    /// The widget naming the field (an icon or caption beside it), for accessibility.
+    label: Option<egui::Id>,
+    /// What an unset value shows (InDesign's "Ignore"), and the first of the presets.
+    empty: Option<&'a str>,
 }
 
 impl<'a> NumField<'a> {
@@ -90,7 +94,20 @@ impl<'a> NumField<'a> {
         Self::new(id, value, NumKind::Number { suffix, decimals })
     }
     fn new(id: &'a str, value: Option<f64>, kind: NumKind<'a>) -> Self {
-        NumField { id, value, kind, width: 72.0, spinner: false, presets: &[], step: None, range: (f64::MIN, f64::MAX), enabled: true, parens: false }
+        NumField {
+            id,
+            value,
+            kind,
+            width: 72.0,
+            spinner: false,
+            presets: &[],
+            step: None,
+            range: (f64::MIN, f64::MAX),
+            enabled: true,
+            parens: false,
+            label: None,
+            empty: None,
+        }
     }
     /// Total width (spinner and preset segments included).
     pub fn width(mut self, w: f32) -> Self {
@@ -128,6 +145,19 @@ impl<'a> NumField<'a> {
     }
     pub fn enabled(mut self, on: bool) -> Self {
         self.enabled = on;
+        self
+    }
+    /// The editor is labelled by widget `id` (an icon or caption that names the field), so
+    /// assistive technology reads the field's name with its value.
+    pub fn labelled_by(mut self, id: egui::Id) -> Self {
+        self.label = Some(id);
+        self
+    }
+
+    /// An unset value shows `text` (dimmed), and the preset menu offers it first: picking it, or
+    /// emptying the field, commits `Some(None)` from [`NumField::show_or_clear`].
+    pub fn empty_text(mut self, text: &'a str) -> Self {
+        self.empty = Some(text);
         self
     }
 
@@ -194,13 +224,16 @@ impl<'a> NumField<'a> {
         // Value.
         ui.painter().rect_filled(text_rect, 0.0, bg);
         let mut buf: String = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| self.value.map(|v| self.fmt(v)).unwrap_or_default());
-        let te = egui::TextEdit::singleline(&mut buf)
+        let mut te = egui::TextEdit::singleline(&mut buf)
             .id(focused_id)
             .frame(egui::Frame::NONE)
             .font(label_font())
             .text_color(fg)
             .margin(egui::Margin::ZERO)
             .vertical_align(egui::Align::Center);
+        if let Some(empty) = self.empty {
+            te = te.hint_text(egui::RichText::new(empty).font(label_font()).color(t.text_dim));
+        }
         // The field already allocated its slot. A scoped allocation here would consume another
         // grid cell and enlarge toolbar rows; the value editor must stay inside that same slot.
         let value_rect = Rect::from_min_max(text_rect.min + vec2(5.0, 1.0), text_rect.max - vec2(1.0, 1.0));
@@ -210,6 +243,10 @@ impl<'a> NumField<'a> {
             editor_ui.disable();
         }
         let r = editor_ui.put(value_rect, te);
+        let r = match self.label {
+            Some(id) => r.labelled_by(id),
+            None => r,
+        };
         if r.has_focus() {
             // ↑/↓ step the value while typing.
             let (up, down, shift) = ui.input_mut(|i| {
@@ -227,8 +264,14 @@ impl<'a> NumField<'a> {
             ui.data_mut(|d| d.insert_temp(key, buf.clone()));
         }
         if r.lost_focus() {
-            if let Some(v) = self.parse(&buf).map(clamp)
-                && self.value.is_none_or(|old| (old - v).abs() > 1e-9)
+            // An automatic value (in parentheses) typed over commits even when it's the same
+            // number: typing "14.4 pt" over "(14.4 pt)" makes it a fixed value. Escape reverts
+            // whatever was typed, as in InDesign.
+            let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let typed_over_auto = self.parens && !buf.trim_start().starts_with('(');
+            if escaped {
+            } else if let Some(v) = self.parse(&buf).map(clamp)
+                && (typed_over_auto || self.value.is_none_or(|old| (old - v).abs() > 1e-9))
             {
                 out = Some(v);
             } else if buf.trim().is_empty() && self.value.is_some() {
@@ -253,6 +296,12 @@ impl<'a> NumField<'a> {
         if let Some(resp) = preset_resp {
             egui::Popup::menu(&resp).show(|ui| {
                 ui.set_min_width(self.width);
+                if let Some(empty) = self.empty
+                    && ui.selectable_label(self.value.is_none(), empty).clicked()
+                {
+                    cleared = self.value.is_some();
+                    ui.close();
+                }
                 for v in self.presets {
                     if ui.selectable_label(self.value.is_some_and(|c| (c - v).abs() < 1e-9), self.kind.format(*v)).clicked() {
                         out = Some(*v);
@@ -382,6 +431,8 @@ pub fn more_options(ui: &mut Ui, language: &str) -> Response {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
     let r = Rect::from_min_max(pos2(row.max.x - 26.0, row.min.y), pos2(row.max.x - 4.0, row.max.y));
     let resp = ui.interact(r, ui.id().with(("more", row.min.y as i32)), Sense::click());
+    let label = crate::i18n::tr(language, "More Options");
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     for i in 0..3 {
         ui.painter().circle_filled(pos2(r.min.x + 4.0 + i as f32 * 7.0, r.center().y), 1.9, if resp.hovered() { t.text_strong } else { t.icon });
     }
@@ -567,6 +618,8 @@ pub fn checkbox(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
         *on = !*on;
         resp.mark_changed();
     }
+    let checked = *on;
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, checked, label));
     resp
 }
 

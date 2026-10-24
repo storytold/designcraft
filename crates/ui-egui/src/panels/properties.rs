@@ -1348,21 +1348,141 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     }) {
         let _ = app.run("type.char", json!({"attrs": {"tracking": v}}));
     }
-    // Language: hyphenation, spelling and typographer's quotes follow it.
-    ui.add_space(1.0);
+    // ••• shows the rest in place, as InDesign's Properties panel does.
+    let more = temp_bool(ui, "props_char_more", false);
+    if more {
+        character_more(app, ui, &c, fw);
+    }
+    if more_options(ui, &app.ui.language).clicked() {
+        set_temp_bool(ui, "props_char_more", !more);
+    }
+}
+
+/// A percentage or other number field in one half of a two-field row, with its icon.
+#[allow(clippy::too_many_arguments)]
+fn half_field(ui: &mut Ui, b: Rect, right: bool, y: f32, half: f32, icon: &str, tip: &str, field: NumField) -> Option<f64> {
+    half_field_or_clear(ui, b, right, y, half, icon, tip, field).flatten()
+}
+
+/// [`half_field`] for a value that may be unset: emptying the field commits `Some(None)`.
+#[allow(clippy::too_many_arguments)]
+fn half_field_or_clear(ui: &mut Ui, b: Rect, right: bool, y: f32, half: f32, icon: &str, tip: &str, field: NumField) -> Option<Option<f64>> {
+    let t = Tokens::get(ui.ctx());
+    let x = if right { half + 10.0 } else { 0.0 };
+    let ir = sub(b, x, y + 1.0, 19.0, 19.0);
+    icons::paint(ui.painter(), ir, icon, t.icon);
+    let resp = ui.interact(ir, ui.id().with(("half_icon", icon)), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, tip));
+    let label = resp.id;
+    resp.on_hover_text(tip);
+    place(ui, sub(b, x + 24.0, y, half - 24.0, FIELD_H), |ui| field.width(half - 24.0).labelled_by(label).show_or_clear(ui))
+}
+
+/// Properties › Character after •••: vertical and horizontal scale, baseline shift and skew,
+/// language and OpenType, then All Caps, Small Caps, Superscript, Subscript, Underline and
+/// Strikethrough, as InDesign lays them out.
+fn character_more(app: &mut DesignApp, ui: &mut Ui, c: &Value, fw: f32) {
+    let lang_ui = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang_ui, s).to_string();
+    let half = (fw - 10.0) / 2.0;
+    let b = block(ui, 2.0 * FIELD_H + 5.0);
+    const SCALES: &[f64] = &[25.0, 50.0, 75.0, 80.0, 90.0, 100.0, 110.0, 120.0, 125.0, 150.0, 200.0];
+    let pct = |v: &Value| v.as_f64().map(|s| (s * 1000.0).round() / 10.0);
+    let field = |id, v, suffix, decimals| NumField::number(id, v, suffix, decimals).spinner();
+    if let Some(v) = half_field(
+        ui,
+        b,
+        false,
+        0.0,
+        half,
+        "vscale",
+        &tr("Vertical Scale"),
+        field("cvscale", pct(&c["vScale"]), "%", 1).presets(SCALES).range(1.0, 1000.0),
+    ) {
+        let _ = app.run("type.char", json!({"attrs": {"vScale": v / 100.0}}));
+    }
+    if let Some(v) = half_field(
+        ui,
+        b,
+        true,
+        0.0,
+        half,
+        "hscale",
+        &tr("Horizontal Scale"),
+        field("chscale", pct(&c["hScale"]), "%", 1).presets(SCALES).range(1.0, 1000.0),
+    ) {
+        let _ = app.run("type.char", json!({"attrs": {"hScale": v / 100.0}}));
+    }
+    if let Some(v) = half_field(
+        ui,
+        b,
+        false,
+        26.0,
+        half,
+        "baseline-shift",
+        &tr("Baseline Shift"),
+        field("cbshift", c["baselineShift"].as_f64(), " pt", 2).range(-5000.0, 5000.0),
+    ) {
+        let _ = app.run("type.char", json!({"attrs": {"baselineShift": v}}));
+    }
+    if let Some(v) =
+        half_field(ui, b, true, 26.0, half, "skew", &tr("Skew (False Italic)"), field("cskew", c["skew"].as_f64(), "°", 1).range(-85.0, 85.0))
+    {
+        let _ = app.run("type.char", json!({"attrs": {"skew": v}}));
+    }
+    // Language (hyphenation, spelling and typographer's quotes follow it) and OpenType.
+    ui.add_space(4.0);
     let lang = c["language"].as_str().unwrap_or("English: USA").to_string();
-    let label = crate::i18n::tr(&app.ui.language, "Language");
-    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &lang), fw).on_hover_ui(|ui| {
-        crate::rtl::label(ui, label);
+    let label = tr("Language");
+    let row = block(ui, FIELD_H);
+    let resp = place(ui, sub(row, 0.0, 0.0, half, FIELD_H), |ui| widgets::dropdown(ui, crate::i18n::tr(&lang_ui, &lang), half)).on_hover_ui(|ui| {
+        crate::rtl::label(ui, label.clone());
     });
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, label));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label));
     egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(fw);
+        ui.set_min_width(half);
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| language_menu(app, ui, &lang));
     });
-    if more_options(ui, &app.ui.language).clicked() {
-        show_panel(app, "character");
+    if place(ui, sub(row, half + 10.0, 0.0, half, FIELD_H), |ui| widgets::outline_button(ui, &tr("OpenType"), half)).clicked() {
+        show_typography_panel(app);
     }
+    // The case and position buttons.
+    ui.add_space(8.0);
+    let caps = c["capitalization"].as_str().unwrap_or("normal").to_string();
+    let pos = c["position"].as_str().unwrap_or("normal").to_string();
+    let (ul, st) = (c["underline"].as_bool().unwrap_or(false), c["strikethrough"].as_bool().unwrap_or(false));
+    let buttons: [(&str, &str, bool, Value); 6] = [
+        ("TT", "All Caps", caps == "allCaps", json!({"capitalization": if caps == "allCaps" { "normal" } else { "allCaps" }})),
+        ("Tᴛ", "Small Caps", caps == "smallCaps", json!({"capitalization": if caps == "smallCaps" { "normal" } else { "smallCaps" }})),
+        ("T¹", "Superscript", pos == "superscript", json!({"position": if pos == "superscript" { "normal" } else { "superscript" }})),
+        ("T₁", "Subscript", pos == "subscript", json!({"position": if pos == "subscript" { "normal" } else { "subscript" }})),
+        ("T̲", "Underline", ul, json!({"underline": !ul})),
+        ("T", "Strikethrough", st, json!({"strikethrough": !st})),
+    ];
+    let pitch = fw / 6.0;
+    let row = block(ui, 22.0);
+    for (i, (text, tip, on, attrs)) in buttons.into_iter().enumerate() {
+        let r = Rect::from_center_size(row.min + vec2(pitch * (i as f32 + 0.5), 11.0), vec2(26.0, 22.0));
+        let resp = ui.interact(r, ui.id().with(("case", i)), Sense::click());
+        let t = Tokens::get(ui.ctx());
+        if on {
+            ui.painter().rect_filled(r, 2.0, t.tool_active);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(r, 2.0, t.hover);
+        }
+        let col = if on { t.text_strong } else { t.icon };
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), col);
+        // Strikethrough: the T struck through (a combining stroke doesn't draw in every font).
+        if i == 5 {
+            ui.painter().line_segment([r.center() + vec2(-6.0, 0.5), r.center() + vec2(6.0, 0.5)], Stroke::new(1.2, col));
+        }
+        let tip = tr(tip);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &tip));
+        if resp.on_hover_text(&tip).clicked() {
+            let _ = app.run("type.char", json!({"attrs": attrs}));
+        }
+    }
+    ui.add_space(4.0);
 }
 
 /// Paragraph section: the 9 alignment buttons and •••.
@@ -1392,20 +1512,81 @@ fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
             }
         }
     });
+    let more = temp_bool(ui, "props_para_more", false);
+    if more {
+        paragraph_more(app, ui, &a["para"], fw);
+    }
     if more_options(ui, &app.ui.language).clicked() {
-        show_panel(app, "paragraph");
+        set_temp_bool(ui, "props_para_more", !more);
     }
 }
 
+/// Properties › Paragraph after •••: left and right indent, first line and last line indent,
+/// space before and after, drop cap lines and characters, then Hyphenate and Align to Baseline
+/// Grid, as InDesign lays them out.
+fn paragraph_more(app: &mut DesignApp, ui: &mut Ui, p: &Value, fw: f32) {
+    let lang_ui = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang_ui, s).to_string();
+    let u = units(app);
+    let half = (fw - 10.0) / 2.0;
+    ui.add_space(4.0);
+    let b = block(ui, 4.0 * FIELD_H + 15.0);
+    let rows = [
+        (("indent-left", "Left Indent", "leftIndent"), ("indent-right", "Right Indent", "rightIndent")),
+        (("indent-first", "First Line Left Indent", "firstLineIndent"), ("indent-last", "Last Line Right Indent", "lastLineIndent")),
+        (("space-before", "Space Before", "spaceBefore"), ("space-after", "Space After", "spaceAfter")),
+    ];
+    for (i, (l, r)) in rows.into_iter().enumerate() {
+        let y = i as f32 * (FIELD_H + 5.0);
+        for (right, (icon, tip, key)) in [(false, l), (true, r)] {
+            // The first and last line indents may be negative (a hanging line), as InDesign's.
+            let min = if matches!(key, "firstLineIndent" | "lastLineIndent") { -10_000.0 } else { 0.0 };
+            let field = NumField::measure(key, p[key].as_f64(), u).spinner().range(min, 10_000.0);
+            if let Some(v) = half_field(ui, b, right, y, half, icon, &tr(tip), field) {
+                let _ = app.run("type.para", json!({"attrs": {key: v}}));
+            }
+        }
+    }
+    let y = 3.0 * (FIELD_H + 5.0);
+    for (right, icon, tip, key, max) in [
+        (false, "drop-lines", "Drop Cap Number of Lines", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES),
+        (true, "drop-chars", "Drop Cap One or More Characters", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS),
+    ] {
+        let field = NumField::number(key, p[key].as_f64(), "", 0).spinner().range(0.0, max as f64);
+        if let Some(v) = half_field(ui, b, right, y, half, icon, &tr(tip), field) {
+            let _ = app.run("type.para", json!({"attrs": {key: (v.max(0.0) as u64).min(max as u64)}}));
+        }
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let grid = p["gridAlign"].as_str() == Some("allLines");
+        if widgets::icon_toggle(ui, "grid-baseline", grid, &tr("Align to Baseline Grid")).clicked() {
+            let _ = app.run("type.para", json!({"attrs": {"gridAlign": if grid { "none" } else { "allLines" }}}));
+        }
+        ui.add_space(12.0);
+        let mut h = p["hyphenate"].as_bool().unwrap_or(true);
+        if widgets::checkbox(ui, &mut h, &tr("Hyphenate")).changed() {
+            let _ = app.run("type.para", json!({"attrs": {"hyphenate": h}}));
+        }
+    });
+    ui.add_space(4.0);
+}
+
 fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
-    let Some(a) = text_attrs(app) else { return };
-    let lt = a["para"]["listType"].as_str().unwrap_or("none").to_string();
+    if text_attrs(app).is_none() {
+        return;
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        for (icon, kind, tip) in [("bullets", "bullets", "Bulleted List"), ("numbering", "numbers", "Numbered List")] {
-            let on = lt == kind;
+        // As InDesign's: a list with the default hanging indent, or (pressed: every selected
+        // paragraph has it, as Type › Apply Bullets shows) no list.
+        use designcraft_doc::ListType;
+        for (icon, kind, cmd, tip) in
+            [("bullets", ListType::Bullets, "list.bullets", "Bulleted List"), ("numbering", ListType::Numbers, "list.numbers", "Numbered List")]
+        {
+            let on = app.session.selection_has_list(kind);
             if icon_toggle(ui, icon, on, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("type.para", json!({"attrs": {"listType": if on { "none" } else { kind }}}));
+                let _ = app.run(cmd, json!({"on": !on}));
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1505,7 +1686,7 @@ pub(crate) const LANGUAGES: &[&str] = &[
 
 /// The Language list (Character panel, Properties ▸ Character): picking one sets the language of
 /// the selected text.
-fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
+pub(crate) fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
     for l in LANGUAGES {
         if ui.selectable_label(*l == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
             let _ = app.run("type.char", json!({"attrs": {"language": l}}));
@@ -1517,7 +1698,7 @@ fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
 /// Kerning for the text selection, or at a caret for the pair at the caret: the label shows
 /// Metrics, Optical, 0 or the manual value; its menu sets one of the first three or a manual value
 /// in 1/1000 em (typed or stepped).
-fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, width: f32) {
+pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, width: f32) {
     let kind = k["kind"].as_str().unwrap_or("metrics");
     let manual = k["value"].as_f64().filter(|v| kind == "manual" && v.is_finite());
     let label = match (kind, manual) {
@@ -1737,161 +1918,234 @@ pub fn show_typography_panel(app: &mut DesignApp) {
     let _ = app.run("window.panel", json!({"panel": "typography"}));
 }
 
+/// The paragraph alignments in InDesign's order, with their icons.
+const PARA_ALIGNS: [(Align, &str); 9] = [
+    (Align::Left, "palign-left"),
+    (Align::Center, "palign-center"),
+    (Align::Right, "palign-right"),
+    (Align::LeftJustified, "palign-justify-left"),
+    (Align::CenterJustified, "palign-justify-center"),
+    (Align::RightJustified, "palign-justify-right"),
+    (Align::FullyJustified, "palign-justify-all"),
+    (Align::TowardsSpine, "palign-spine-towards"),
+    (Align::AwayFromSpine, "palign-spine-away"),
+];
+
+/// Space Between Paragraphs Using Same Style's presets (pt), after Ignore.
+const SAME_STYLE_SPACING: &[f64] = &[0.0, 3.0, 6.0, 9.0, 12.0, 18.0, 24.0];
+
+/// The Paragraph panel, laid out as InDesign's: the alignment buttons in groups of 3, 4 and 2;
+/// indents, spacing and drop cap fields by their icons in two columns; Shading and Border with
+/// their colours; Hyphenate and the baseline grid buttons. The rest (composer, grid and ragged
+/// lines options, the paragraph dialogs) is in the panel menu.
 pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(a) = text_attrs(app) else {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select text or a text frame."));
         return;
     };
+    let lang_ui = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang_ui, s).to_string();
     let u = units(app);
     let p = a["para"].clone();
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            crate::menus::menu_button(ui, "☰", |ui| {
-                for (label, id) in [
-                    ("Paragraph Rules…", "app.paragraphRulesDialog"),
-                    ("Justification…", "app.justificationDialog"),
-                    ("Paragraph Borders and Shading…", "app.paragraphBordersDialog"),
-                    ("Span Columns…", "app.spanColumnsDialog"),
-                    ("Bullets and Numbering…", "app.bulletsNumberingDialog"),
-                ] {
-                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                        let _ = app.run(id, json!({}));
-                        ui.close();
-                    }
-                }
-            });
-        });
-    });
+    let fw = full_width(ui);
+    let half = (fw - 10.0) / 2.0;
+    // Alignment, and the panel menu at the right.
     let cur: Align = serde_json::from_value(p["align"].clone()).unwrap_or_default();
-    ui.horizontal(|ui| {
-        for (al, icon) in [
-            (Align::Left, "align-left"),
-            (Align::Center, "align-center"),
-            (Align::Right, "align-right"),
-            (Align::LeftJustified, "align-justify"),
-            (Align::FullyJustified, "align-justify-all"),
-        ] {
-            if icons::button(ui, icon, 24.0, cur == al, al.label()).clicked() {
-                let _ = app.run("type.para", json!({"attrs": {"align": al}}));
-            }
+    const GAP: f32 = 8.0;
+    let pitch = ((fw - 24.0 - 2.0 * GAP) / 9.0).clamp(16.0, 24.0);
+    let b = block(ui, 21.0);
+    let mut x = 0.0;
+    for (i, (al, icon)) in PARA_ALIGNS.into_iter().enumerate() {
+        if i == 3 || i == 7 {
+            x += GAP;
         }
-    });
-    // Paragraph Direction (World-Ready): switching also mirrors left/right alignment.
-    let rtl = p["direction"] == "rightToLeft";
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Direction"));
-        for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
-            if ui.selectable_label(on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() && !on {
-                let align = match cur {
-                    Align::Left => Align::Right,
-                    Align::Right => Align::Left,
-                    a => a,
-                };
-                let _ = app.run("type.para", json!({"attrs": {"direction": dir, "align": align}}));
-            }
-        }
-    });
-    egui::Grid::new("paragrid").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
-        for (row, ((la, ka), (lb, kb))) in [
-            (("Left", "leftIndent"), ("Right", "rightIndent")),
-            (("First", "firstLineIndent"), ("Last", "lastLineIndent")),
-            (("Before", "spaceBefore"), ("After", "spaceAfter")),
-        ]
-        .into_iter()
-        .enumerate()
+        if place(ui, sub(b, x, 0.0, pitch, 21.0), |ui| widgets::icon_toggle_sized(ui, icon, cur == al, &tr(al.label()), vec2(pitch, 21.0))).clicked()
         {
-            caption(ui, crate::i18n::tr(&app.ui.language, la));
-            if let Some(v) = measure(ui, &format!("pp{row}a"), p[ka].as_f64(), u, 64.0) {
-                let _ = app.run("type.para", json!({"attrs": {ka: v}}));
-            }
-            caption(ui, crate::i18n::tr(&app.ui.language, lb));
-            if let Some(v) = measure(ui, &format!("pp{row}b"), p[kb].as_f64(), u, 64.0) {
-                let _ = app.run("type.para", json!({"attrs": {kb: v}}));
-            }
-            ui.end_row();
+            let _ = app.run("type.para", json!({"attrs": {"align": al}}));
         }
-        // Drop cap: number of lines and characters.
-        for (label, key, max, id) in [
-            ("Drop Lines", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES, "ppdl"),
-            ("Drop Chars", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS, "ppdc"),
-        ] {
-            caption(ui, crate::i18n::tr(&app.ui.language, label));
-            if let Some(v) = number(ui, id, p[key].as_f64(), "", 64.0, 0) {
-                let _ = app.run("type.para", json!({"attrs": {key: (v.max(0.0) as u64).min(max as u64)}}));
-            }
-        }
-        ui.end_row();
-    });
-    ui.horizontal(|ui| {
-        let mut h = p["hyphenate"].as_bool().unwrap_or(true);
-        if ui.checkbox(&mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
-            let _ = app.run("type.para", json!({"attrs": {"hyphenate": h}}));
-        }
-        let mut grid = p["gridAlign"].as_str() == Some("allLines");
-        if ui.checkbox(&mut grid, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Align to baseline grid"))).changed() {
-            let _ = app.run("type.para", json!({"attrs": {"gridAlign": if grid { "allLines" } else { "none" }}}));
-        }
-    });
-    let mut optical = p["opticalMargin"].as_bool().unwrap_or(false);
-    if ui.checkbox(&mut optical, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Optical Margin Alignment"))).changed() {
-        let _ = app.run("type.para", json!({"attrs": {"opticalMargin": optical}}));
+        x += pitch;
     }
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Composer"));
-        let (single, [paragraph, single_line]) = composer_choice(p["composer"].as_str());
-        if ui.selectable_label(!single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph"))).clicked() {
-            let _ = app.run("type.para", json!({"attrs": {"composer": paragraph}}));
+    place(ui, sub(b, fw - 20.0, 0.0, 20.0, 21.0), |ui| crate::menus::menu_button(ui, "☰", |ui| paragraph_panel_menu(app, ui, &p)));
+    ui.add_space(6.0);
+    // Indents, spacing and drop cap, two to a row as in InDesign.
+    let row = FIELD_H + 5.0;
+    let b = block(ui, 5.0 * row - 5.0);
+    let rows = [
+        (("indent-left", "Left Indent", "leftIndent"), ("indent-right", "Right Indent", "rightIndent")),
+        (("indent-first", "First Line Left Indent", "firstLineIndent"), ("indent-last", "Last Line Right Indent", "lastLineIndent")),
+        (("space-before", "Space Before", "spaceBefore"), ("space-after", "Space After", "spaceAfter")),
+    ];
+    for (i, (l, r)) in rows.into_iter().enumerate() {
+        for (right, (icon, tip, key)) in [(false, l), (true, r)] {
+            // The first and last line indents may be negative (a hanging line), as InDesign's.
+            let min = if matches!(key, "firstLineIndent" | "lastLineIndent") { -10_000.0 } else { 0.0 };
+            let field = NumField::measure(key, p[key].as_f64(), u).spinner().range(min, 10_000.0);
+            if let Some(v) = half_field(ui, b, right, i as f32 * row, half, icon, &tr(tip), field) {
+                let _ = app.run("type.para", json!({"attrs": {key: v}}));
+            }
         }
-        if ui.selectable_label(single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Single-line"))).clicked() {
-            let _ = app.run("type.para", json!({"attrs": {"composer": single_line}}));
+    }
+    // Space Between Paragraphs Using Same Style: Ignore (unset) or a space that replaces the
+    // space after and before between paragraphs of the same style.
+    let ignore = tr("Ignore");
+    let field = NumField::measure("sameParaStyleSpacing", p["sameParaStyleSpacing"].as_f64(), u)
+        .spinner()
+        .presets(SAME_STYLE_SPACING)
+        .empty_text(&ignore)
+        .range(0.0, 10_000.0);
+    if let Some(v) = half_field_or_clear(ui, b, false, 3.0 * row, half, "space-same", &tr("Space Between Paragraphs Using Same Style"), field) {
+        let _ = app.run("type.para", json!({"attrs": {"sameParaStyleSpacing": v}}));
+    }
+    for (right, icon, tip, key, max) in [
+        (false, "drop-lines", "Drop Cap Number of Lines", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES),
+        (true, "drop-chars", "Drop Cap One or More Characters", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS),
+    ] {
+        let field = NumField::number(key, p[key].as_f64(), "", 0).spinner().range(0.0, max as f64);
+        if let Some(v) = half_field(ui, b, right, 4.0 * row, half, icon, &tr(tip), field) {
+            let _ = app.run("type.para", json!({"attrs": {key: (v.max(0.0) as u64).min(max as u64)}}));
         }
-    });
-    // Paragraph Border and Shading.
-    let swatches: Vec<String> =
-        app.session.active().map(|d| d.doc.swatches.iter().filter(|w| !w.hidden).map(|w| w.name.clone()).collect()).unwrap_or_default();
-    for (on_key, color_key, label) in [("shadingOn", "shadingColor", "Shading"), ("borderOn", "borderColor", "Border")] {
-        ui.horizontal(|ui| {
-            let mut on = p[on_key].as_bool().unwrap_or(false);
-            if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).changed() {
-                let _ = app.run("type.para", json!({ on_key: on }));
-            }
-            if on {
-                let cur = p[color_key].as_str().unwrap_or("[Black]").to_string();
-                egui::ComboBox::from_id_salt(("pbs", label)).selected_text(&cur).width(110.0).show_ui(ui, |ui| {
-                    for w in &swatches {
-                        if ui.selectable_label(*w == cur, w).clicked() {
-                            let _ = app.run("type.para", json!({ color_key: w }));
-                        }
-                    }
-                });
-                if label == "Shading" {
-                    if let Some(v) = number(ui, "pshtint", p["shadingTint"].as_f64().map(|t| t * 100.0), "%", 46.0, 0) {
-                        let _ = app.run("type.para", json!({"shadingTint": (v / 100.0).clamp(0.0, 1.0)}));
-                    }
-                } else if let Some(v) = number(ui, "pbw", p["borderWeights"][0].as_f64(), " pt", 50.0, 2) {
-                    let w = [v.max(0.0); 4];
-                    let _ = app.run("type.para", json!({ "borderWeights": w }));
-                }
-            }
-        });
     }
-    if p["shadingOn"].as_bool().unwrap_or(false) || p["borderOn"].as_bool().unwrap_or(false) {
-        ui.horizontal(|ui| {
-            caption(ui, crate::i18n::tr(&app.ui.language, "Offsets"));
-            let o = p["borderOffsets"][0].as_f64().or(p["shadingOffsets"][0].as_f64());
-            if let Some(v) = number(ui, "pbo", o, " pt", 50.0, 2) {
-                let o = [v; 4];
-                let _ = app.run("type.para", json!({ "borderOffsets": o, "shadingOffsets": o }));
+    // Shading and Border: on or off at the left; at the right the Paragraph Borders and Shading
+    // dialog on its tab and the colour.
+    ui.add_space(10.0);
+    let doc = app.session.active().map(|d| d.doc.clone());
+    let b = block(ui, 2.0 * row - 5.0);
+    for (i, (on_key, color_key, label, icon, tab, name)) in [
+        ("shadingOn", "shadingColor", "Shading", "para-shading", "shading", "Paragraph Shading"),
+        ("borderOn", "borderColor", "Border", "para-border", "border", "Paragraph Border"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let y = i as f32 * row;
+        let mut on = p[on_key].as_bool().unwrap_or(false);
+        if place(ui, sub(b, 0.0, y, half, FIELD_H), |ui| widgets::checkbox(ui, &mut on, &tr(label))).changed() {
+            let _ = app.run("type.para", json!({"attrs": {on_key: on}}));
+        }
+        if place(ui, sub(b, half + 10.0, y, 23.0, FIELD_H), |ui| widgets::icon_toggle(ui, icon, false, &tr("Paragraph Borders and Shading…")))
+            .clicked()
+        {
+            let _ = app.run("app.paragraphBordersDialog", json!({"tab": tab}));
+        }
+        if let Some(doc) = &doc {
+            let color = p[color_key].as_str().unwrap_or("[Black]").to_string();
+            let w = half - 24.0;
+            if let Some(sw) = place(ui, sub(b, half + 34.0, y, w, FIELD_H), |ui| crate::chrome::swatch_field(ui, doc, &color, w, &tr(name))) {
+                let _ = app.run("type.para", json!({"attrs": {color_key: sw}}));
             }
-        });
+        }
     }
-    let ps = a["paragraphStyle"].as_str().unwrap_or("").to_string();
-    let ov = a["paraOverrides"].as_u64().unwrap_or(0) + a["charOverrides"].as_u64().unwrap_or(0);
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Style"));
-        super::para_style_picker(app, ui, &ps, ov > 0, 190.0);
-    });
+    // Hyphenate, and Do Not Align / Align to Baseline Grid.
+    ui.add_space(10.0);
+    let b = block(ui, FIELD_H);
+    let mut h = p["hyphenate"].as_bool().unwrap_or(true);
+    if place(ui, sub(b, 0.0, 0.0, half, FIELD_H), |ui| widgets::checkbox(ui, &mut h, &tr("Hyphenate"))).changed() {
+        let _ = app.run("type.para", json!({"attrs": {"hyphenate": h}}));
+    }
+    let grid = matches!(p["gridAlign"].as_str(), Some("allLines" | "firstLineOnly"));
+    for (i, (icon, tip, on, v)) in
+        [("grid-none", "Do Not Align to Baseline Grid", !grid, "none"), ("grid-baseline", "Align to Baseline Grid", grid, "allLines")]
+            .into_iter()
+            .enumerate()
+    {
+        if place(ui, sub(b, fw - 48.0 + i as f32 * 25.0, 0.0, 23.0, FIELD_H), |ui| widgets::icon_toggle(ui, icon, on, &tr(tip))).clicked() && !on {
+            let _ = app.run("type.para", json!({"attrs": {"gridAlign": v}}));
+        }
+    }
+    ui.add_space(4.0);
+}
+
+/// The Paragraph panel menu, in the order of InDesign's.
+fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
+    let lang = app.ui.language.clone();
+    let item = |ui: &mut Ui, label: &str, check: Option<bool>, enabled: bool| -> bool {
+        let label = crate::i18n::tr(&lang, label);
+        let text = match check {
+            Some(true) => format!("✓ {label}"),
+            Some(false) => format!("   {label}"),
+            None => label.to_string(),
+        };
+        let clicked = ui.add_enabled(enabled, egui::Button::new(crate::rtl::widget(ui, text))).clicked();
+        if clicked {
+            ui.close();
+        }
+        clicked
+    };
+    let mut attrs = None;
+    let mut command = None;
+    let (single, [paragraph, single_line]) = composer_choice(p["composer"].as_str());
+    if item(ui, "Paragraph Composer", Some(!single), true) {
+        attrs = Some(json!({"composer": paragraph}));
+    }
+    if item(ui, "Single-line Composer", Some(single), true) {
+        attrs = Some(json!({"composer": single_line}));
+    }
+    ui.separator();
+    let grid = p["gridAlign"].as_str().unwrap_or("none");
+    if item(ui, "Only Align First Line to Grid", Some(grid == "firstLineOnly"), grid != "none") {
+        attrs = Some(json!({"gridAlign": if grid == "firstLineOnly" { "allLines" } else { "firstLineOnly" }}));
+    }
+    let balance = p["balanceRagged"].as_bool().unwrap_or(false);
+    if item(ui, "Balance Ragged Lines", Some(balance), true) {
+        attrs = Some(json!({"balanceRagged": !balance}));
+    }
+    let optical = p["opticalMargin"].as_bool().unwrap_or(false);
+    if item(ui, "Optical Margin Alignment", Some(optical), true) {
+        attrs = Some(json!({"opticalMargin": !optical}));
+    }
+    ui.separator();
+    for (label, id) in [
+        ("Justification…", "app.justificationDialog"),
+        ("Keep Options…", "app.keepOptionsDialog"),
+        ("Span Columns…", "app.spanColumnsDialog"),
+        ("Hyphenation…", "app.hyphenationDialog"),
+        ("Drop Caps and Nested Styles…", "app.nestedStylesDialog"),
+        ("GREP Styles…", "app.grepStylesDialog"),
+        ("Paragraph Rules…", "app.paragraphRulesDialog"),
+        ("Paragraph Borders and Shading…", "app.paragraphBordersDialog"),
+    ] {
+        if item(ui, label, None, true) {
+            command = Some(id);
+        }
+    }
+    ui.separator();
+    if item(ui, "Bullets and Numbering…", None, true) {
+        command = Some("app.bulletsNumberingDialog");
+    }
+    // Restart Numbering at 1, or Continue Numbering from the paragraph before, for a numbered list.
+    let numbered = p["listType"].as_str() == Some("numbers");
+    let restarts = p["startAt"].is_u64();
+    let label = match (numbered, restarts) {
+        (false, _) => "Restart/Continue Numbering",
+        (true, false) => "Restart Numbering",
+        (true, true) => "Continue Numbering",
+    };
+    if item(ui, label, None, numbered) {
+        attrs = Some(json!({"startAt": if restarts { Value::Null } else { json!(1) }}));
+    }
+    item(ui, "Convert Bullets and Numbering to Text", None, false);
+    if item(ui, "Define Lists…", None, true) {
+        command = Some("list.define");
+    }
+    // Paragraph Direction (World-Ready): switching also mirrors left and right alignment.
+    ui.separator();
+    let rtl = p["direction"] == "rightToLeft";
+    for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+        if item(ui, label, Some(on), true) && !on {
+            let align = match serde_json::from_value(p["align"].clone()).unwrap_or_default() {
+                Align::Left => Align::Right,
+                Align::Right => Align::Left,
+                a => a,
+            };
+            attrs = Some(json!({"direction": dir, "align": align}));
+        }
+    }
+    if let Some(attrs) = attrs {
+        let _ = app.run("type.para", json!({"attrs": attrs}));
+    }
+    if let Some(id) = command {
+        crate::menus::activate(app, id, &json!({}));
+    }
 }
 
 /// Stroke panel: weight, cap, miter limit, join, alignment, type, arrowheads, gap colour.
@@ -3094,11 +3348,126 @@ mod tests {
             app,
         );
         h.run_steps(3);
+        assert!(h.query_by_label("Language").is_none(), "under •••, as in InDesign");
+        h.get_all_by_label("More Options").next().unwrap().click();
+        h.run_steps(3);
         h.get_by_label("Language").click();
         h.run_steps(2);
         h.get_by_label("French").click();
         h.run_steps(2);
         assert_eq!(language(h.state_mut()), "French");
+    }
+
+    /// Properties › Character and Paragraph •••, as in InDesign: the sections expand in place,
+    /// with the scales, baseline shift, skew, language, OpenType and the case buttons, and the
+    /// indents, spacing and drop caps.
+    #[test]
+    fn more_options_expand_character_and_paragraph_in_place() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "If fine plants", "caret": true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        let mut h = panel_harness(app, show);
+        h.run_steps(3);
+        for l in ["Vertical Scale", "Small Caps", "Drop Cap Number of Lines", "Space Before"] {
+            assert!(h.query_by_label(l).is_none(), "{l} hidden until •••");
+        }
+        h.get_all_by_label("More Options").next().unwrap().click();
+        h.run_steps(3);
+        h.get_by_label("Small Caps").click();
+        h.run_steps(3);
+        let _ = h.get_by_label("OpenType");
+        let _ = h.get_by_label("Language");
+        h.get_all_by_label("More Options").nth(1).unwrap().click();
+        h.run_steps(3);
+        let _ = h.get_by_label("Hyphenate");
+        h.get_by_label("Align to Baseline Grid").click();
+        h.run_steps(3);
+        let a = text_attrs(h.state_mut()).unwrap();
+        assert_eq!(a["chars"]["capitalization"], "smallCaps");
+        assert_eq!(a["para"]["gridAlign"], "allLines");
+        // ••• again folds the section.
+        h.get_all_by_label("More Options").next().unwrap().click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Small Caps").is_none());
+    }
+
+    #[test]
+    fn paragraph_panel_is_laid_out_as_indesigns_with_its_panel_menu() {
+        let mut h = panel_harness(text_app(), paragraph_panel);
+        h.run_steps(3);
+        for l in [
+            "Left Indent",
+            "Right Indent",
+            "First Line Left Indent",
+            "Last Line Right Indent",
+            "Space Before",
+            "Space After",
+            "Space Between Paragraphs Using Same Style",
+            "Drop Cap Number of Lines",
+            "Drop Cap One or More Characters",
+            "Paragraph Shading",
+            "Paragraph Border",
+            "Hyphenate",
+            "Do Not Align to Baseline Grid",
+        ] {
+            let _ = h.get_by_label(l);
+        }
+        let para = |h: &mut Harness<'static, DesignApp>| text_attrs(h.state_mut()).unwrap()["para"].clone();
+        // Space Between Paragraphs Using Same Style starts at Ignore; a value is set, and emptying
+        // the field ignores it again.
+        assert!(para(&mut h)["sameParaStyleSpacing"].is_null());
+        let field = h.get_all_by_role(egui::accesskit::Role::TextInput).nth(6).unwrap();
+        field.focus();
+        field.type_text("6 pt");
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(para(&mut h)["sameParaStyleSpacing"], 6.0);
+        h.get_all_by_role(egui::accesskit::Role::TextInput).nth(6).unwrap().focus();
+        h.run_steps(1);
+        for _ in 0..8 {
+            h.key_press(egui::Key::Backspace);
+        }
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(para(&mut h)["sameParaStyleSpacing"].is_null(), "Ignore");
+        // Shading on, then the grid buttons and Only Align First Line to Grid from the menu.
+        h.get_by_label("Shading").click();
+        h.run_steps(3);
+        assert_eq!(para(&mut h)["shadingOn"], true);
+        h.get_by_label("Align to Baseline Grid").click();
+        h.run_steps(3);
+        assert_eq!(para(&mut h)["gridAlign"], "allLines");
+        h.get_by_label("☰").click();
+        h.run_steps(3);
+        for l in [
+            "   Balance Ragged Lines",
+            "Keep Options…",
+            "Drop Caps and Nested Styles…",
+            "GREP Styles…",
+            "Define Lists…",
+            "Restart/Continue Numbering",
+        ] {
+            let _ = h.get_by_label(l);
+        }
+        h.get_by_label("   Only Align First Line to Grid").click();
+        h.run_steps(3);
+        assert_eq!(para(&mut h)["gridAlign"], "firstLineOnly");
+        h.get_by_label("Do Not Align to Baseline Grid").click();
+        h.run_steps(3);
+        assert_eq!(para(&mut h)["gridAlign"], "none");
+        // Keep Options… opens the selected paragraphs' Keep Options, and OK applies them.
+        h.get_by_label("☰").click();
+        h.run_steps(3);
+        h.get_by_label("Keep Options…").click();
+        h.run_steps(3);
+        let app = h.state_mut();
+        let d = app.ui.dialog.as_mut().expect("Keep Options");
+        assert_eq!((d.id.as_str(), d.s("section").as_str()), ("paragraphLocal", "keep"));
+        d.fields.insert("p.keepWithNext".into(), json!(2));
+        crate::dialogs::confirm(app).unwrap();
+        assert_eq!(para(&mut h)["keepWithNext"], 2);
     }
 
     fn kerning(app: &mut DesignApp) -> Value {
@@ -3362,6 +3731,35 @@ mod tests {
         );
         h.run_steps(3);
         h
+    }
+
+    /// The course's chapter 21: Properties' Bulleted List button gives the selected paragraphs
+    /// bullets with InDesign's hanging indent; pressed again, both go.
+    #[test]
+    fn the_bulleted_list_button_applies_a_hanging_indent() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app
+            .run(
+                "frame.create",
+                json!({"rect": [72, 72, 300, 200], "content": "text", "text": "4 eggs
+1 cup milk"}),
+            )
+            .unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 15})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Bulleted List").click();
+        h.run_steps(3);
+        let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+        assert_eq!(
+            (a["para"]["listType"].as_str(), a["para"]["leftIndent"].as_f64(), a["para"]["firstLineIndent"].as_f64()),
+            (Some("bullets"), Some(18.0), Some(-18.0))
+        );
+        assert_eq!(crate::menus::checked(h.state(), "list.bullets", &json!({})), Some(true), "Type › Apply Bullets shows it");
+        h.get_by_label("Bulleted List").click();
+        h.run_steps(3);
+        let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+        assert_eq!((a["para"]["listType"].as_str(), a["para"]["leftIndent"].as_f64()), (Some("none"), Some(0.0)));
     }
 
     #[test]

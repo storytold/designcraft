@@ -114,7 +114,21 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{tab?: border|shading} — border and shading of the selected paragraphs (type.para)",
     ),
     ("app.spanColumnsDialog", "Span Columns…", None, "{} — span or split columns of the selected paragraphs (type.para)"),
+    ("app.keepOptionsDialog", "Keep Options…", None, "{} — Keep with Next and Keep Lines Together of the selected paragraphs (type.para)"),
+    (
+        "app.nestedStylesDialog",
+        "Drop Caps and Nested Styles…",
+        None,
+        "{} — drop cap, nested styles and nested line styles of the selected paragraphs (type.para)",
+    ),
+    ("app.grepStylesDialog", "GREP Styles…", None, "{} — GREP styles of the selected paragraphs (type.para)"),
     ("app.bulletsNumberingDialog", "Bullets and Numbering…", None, "{} — bullets or numbers of the selected paragraphs (type.para)"),
+    (
+        "app.hyphenationDialog",
+        "Hyphenation…",
+        None,
+        "{} — Hyphenation Settings of the selected paragraphs (type.para): limits, zone, Better Spacing ↔ Fewer Hyphens, Preview",
+    ),
     (
         "app.justificationDialog",
         "Justification…",
@@ -510,6 +524,9 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "-",
             ">Bulleted & Numbered Lists",
+            "cmd:list.bullets",
+            "cmd:list.numbers",
+            "-",
             "cmd:list.define",
             "<",
             "-",
@@ -1280,11 +1297,19 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphRules", json!({"rule": rule, "current": current})));
             Ok(Value::Null)
         }
-        "app.paragraphBordersDialog" | "app.spanColumnsDialog" | "app.bulletsNumberingDialog" => {
+        "app.paragraphBordersDialog"
+        | "app.spanColumnsDialog"
+        | "app.bulletsNumberingDialog"
+        | "app.keepOptionsDialog"
+        | "app.nestedStylesDialog"
+        | "app.grepStylesDialog" => {
             let Some(a) = crate::panels::text_attrs(app) else { return Some(Err("select text or a text frame".into())) };
             let section = match id {
                 "app.spanColumnsDialog" => "span",
                 "app.bulletsNumberingDialog" => "bullets",
+                "app.keepOptionsDialog" => "keep",
+                "app.nestedStylesDialog" => "nested",
+                "app.grepStylesDialog" => "grep",
                 _ if p.get("tab").and_then(Value::as_str) == Some("shading") => "shading",
                 _ => "border",
             };
@@ -1295,6 +1320,18 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 "style": a["chars"]["fontStyle"],
             });
             app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphLocal", fields));
+            Ok(Value::Null)
+        }
+        "app.hyphenationDialog" => {
+            let Some(a) = app.session.execute("type.selectionAttrs", &json!({"mixed": true})).ok().filter(|a| !a.is_null()) else {
+                return Some(Err("select text or a text frame".into()));
+            };
+            let mixed: Vec<&str> = a["paraMixed"].as_array().map(|m| m.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let current: serde_json::Map<String, Value> = crate::dialogs::HYPH_ATTRS
+                .iter()
+                .map(|k| (k.to_string(), if mixed.contains(k) { Value::Null } else { a["para"][*k].clone() }))
+                .collect();
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("hyphenation", json!({"current": current})));
             Ok(Value::Null)
         }
         "app.justificationDialog" => {
@@ -2399,6 +2436,11 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
         "changes.track" => app.session.active().is_some_and(|d| d.doc.settings.track_changes),
+        // Pressed, as the Bulleted and Numbered List buttons: every paragraph the command applies
+        // to (selected text, cells or text frames) has it.
+        "list.bullets" | "list.numbers" => {
+            app.session.selection_has_list(if id == "list.bullets" { designcraft_doc::ListType::Bullets } else { designcraft_doc::ListType::Numbers })
+        }
         "window.controlBar" => app.ui.control_bar,
         "window.split" => app.split,
         "window.newWindow" => app.second_window,
@@ -2455,7 +2497,7 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if is_window_control(id) {
         return window_control_available(app, id);
     }
-    if id == "app.justificationDialog" {
+    if matches!(id, "app.justificationDialog" | "app.hyphenationDialog") {
         return enabled(app, "type.para");
     }
     if id.starts_with("fit.") {
