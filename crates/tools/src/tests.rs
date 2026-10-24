@@ -1058,6 +1058,33 @@ fn double_click_on_a_port_breaks_its_link() {
     }
 }
 
+/// With the Type tool, a drag that starts in an empty rectangle draws a new text frame over it
+/// (the rectangle stays as it is), as InDesign's does; a click still turns the rectangle into a
+/// text frame with the caret in it.
+#[test]
+fn type_tool_drag_over_an_empty_frame_draws_a_new_text_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 300.0));
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let at = |x: f64, y: f64| (x + off.x, y + off.y);
+    let mut t = create("type");
+    let (x, y) = at(120.0, 120.0);
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x, y)).is_empty());
+    let (x1, y1) = at(280.0, 200.0);
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, x1, y1));
+    assert!(matches!(&a[..], [Action::Begin(_), Action::Preview(cmd, p)] if cmd == "frame.create" && p["content"] == "text"), "{a:?}");
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x1, y1)), vec![Action::Commit]);
+    // A click: the caret goes into the rectangle, which becomes a text frame.
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x, y)).is_empty());
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x, y));
+    assert!(matches!(&a[..], [Action::Exec(cmd, p)] if cmd == "text.placeCaret" && p["frame"] == id.0), "{a:?}");
+    // A release away from the press with no drag in between isn't a click: no caret, no conversion.
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x, y)).is_empty());
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x1, y1)).is_empty());
+}
+
 #[test]
 fn clicks_in_a_row_edit_and_select_text() {
     let mut d = Document::new(&NewDocument::default());
