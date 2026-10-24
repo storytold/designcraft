@@ -91,6 +91,34 @@ fn general(f: f64) -> String {
     }
 }
 
+/// The first and last column used on the header row, if that row has any cells.
+fn header_span(cells: &[(usize, usize, String)], header_row: usize) -> Option<(usize, usize)> {
+    cells.iter().filter(|(r, _, _)| *r == header_row).fold(None, |span, (_, c, _)| match span {
+        None => Some((*c, *c)),
+        Some((lo, hi)) => Some((lo.min(*c), hi.max(*c))),
+    })
+}
+
+/// One row's values laid into `width` columns starting at column `min_c`; values outside that
+/// span come back separately (only the non-empty ones), so the caller can warn.
+fn place_row(cols: &[(usize, String)], min_c: usize, width: usize) -> (Vec<String>, Vec<String>) {
+    let mut row = vec![String::new(); width];
+    let mut extra: Vec<String> = Vec::new();
+    for (c, v) in cols {
+        let at = c.checked_sub(min_c).filter(|at| *at < width);
+        match at {
+            Some(at) => {
+                if let Some(cell) = row.get_mut(at) {
+                    *cell = v.clone();
+                }
+            }
+            None if !v.is_empty() => extra.push(v.clone()),
+            None => {}
+        }
+    }
+    (row, extra)
+}
+
 /// One worksheet as a grid of cached cell text, empty cells kept, for data merge.
 /// The first used row is the header. Later rows that are entirely empty are left out.
 /// Cells past the header are kept so the caller can warn. Over 200 columns or 100,000
@@ -117,19 +145,9 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
         return Err(ImportError::Corrupt("the worksheet is empty".into()));
     }
     let header_row = cells.iter().map(|c| c.0).min().unwrap_or(0);
-    let mut min_c = usize::MAX;
-    let mut max_c = 0usize;
-    let mut header_used = false;
-    for (r, c, _) in &cells {
-        if *r == header_row {
-            header_used = true;
-            min_c = min_c.min(*c);
-            max_c = max_c.max(*c);
-        }
-    }
-    if !header_used || min_c == usize::MAX {
+    let Some((min_c, max_c)) = header_span(&cells, header_row) else {
         return Err(ImportError::Corrupt("the worksheet has no header".into()));
-    }
+    };
     let width = max_c.saturating_sub(min_c).saturating_add(1);
     if width > crate::DATA_MERGE_MAX_COLS {
         return Err(ImportError::Corrupt(format!("the sheet has {width} columns; the limit is {}", crate::DATA_MERGE_MAX_COLS)));
@@ -154,25 +172,7 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
     }
     let mut out = Vec::with_capacity(data_rows.saturating_add(1));
     for (r, cols) in &by_row {
-        let mut row = vec![String::new(); width];
-        let mut extra: Vec<String> = Vec::new();
-        for (c, v) in cols {
-            if *c < min_c {
-                // Outside the header span. Keep one non-empty value so the caller can warn.
-                if !v.is_empty() {
-                    extra.push(v.clone());
-                }
-                continue;
-            }
-            let at = c - min_c;
-            if at < width {
-                if let Some(cell) = row.get_mut(at) {
-                    *cell = v.clone();
-                }
-            } else if !v.is_empty() {
-                extra.push(v.clone());
-            }
-        }
+        let (mut row, extra) = place_row(cols, min_c, width);
         if *r != header_row && row.iter().all(String::is_empty) && extra.is_empty() {
             continue;
         }

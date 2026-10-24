@@ -17,6 +17,53 @@ struct Names<'a> {
 }
 
 impl Names<'_> {
+    /// Rename the swatch references in every paragraph, character, object, cell and table style.
+    fn styles(&self, styles: &mut crate::styles::Styles) {
+        let n = self;
+        for p in &mut styles.paragraph {
+            n.para(&mut p.para);
+            n.chars(&mut p.chars);
+        }
+        for c in &mut styles.character {
+            n.chars(&mut c.chars);
+        }
+        for o in &mut styles.object {
+            if let Some(f) = &mut o.fill {
+                n.fill(f);
+            }
+            if let Some(s) = &mut o.stroke {
+                n.stroke(s);
+            }
+            if let Some(tf) = &mut o.text_frame {
+                n.frame(tf);
+            }
+        }
+        for c in &mut styles.cell {
+            n.o(&mut c.fill);
+            if let Some(s) = &mut c.stroke {
+                n.cell_stroke(s);
+            }
+            for s in &mut c.strokes {
+                n.stroke_attrs(s);
+            }
+        }
+        for t in &mut styles.table {
+            if let Some(b) = &mut t.border {
+                n.cell_stroke(b);
+            }
+            for b in &mut t.borders {
+                n.stroke_attrs(b);
+            }
+            if let Some(f) = &mut t.alt_rows {
+                n.alt_fills(f);
+            }
+            n.alt_fill_attrs(&mut t.row_fills);
+            n.alt_fill_attrs(&mut t.column_fills);
+            n.alt_stroke_attrs(&mut t.row_strokes);
+            n.alt_stroke_attrs(&mut t.column_strokes);
+        }
+    }
+
     fn s(&self, v: &mut String) {
         if v == self.from {
             *v = self.to.to_string();
@@ -170,49 +217,7 @@ impl Document {
             n.s(b);
         }
         n.s(&mut self.footnote_options.rule.color);
-        let styles = self.styles_mut();
-        for p in &mut styles.paragraph {
-            n.para(&mut p.para);
-            n.chars(&mut p.chars);
-        }
-        for c in &mut styles.character {
-            n.chars(&mut c.chars);
-        }
-        for o in &mut styles.object {
-            if let Some(f) = &mut o.fill {
-                n.fill(f);
-            }
-            if let Some(s) = &mut o.stroke {
-                n.stroke(s);
-            }
-            if let Some(tf) = &mut o.text_frame {
-                n.frame(tf);
-            }
-        }
-        for c in &mut styles.cell {
-            n.o(&mut c.fill);
-            if let Some(s) = &mut c.stroke {
-                n.cell_stroke(s);
-            }
-            for s in &mut c.strokes {
-                n.stroke_attrs(s);
-            }
-        }
-        for t in &mut styles.table {
-            if let Some(b) = &mut t.border {
-                n.cell_stroke(b);
-            }
-            for b in &mut t.borders {
-                n.stroke_attrs(b);
-            }
-            if let Some(f) = &mut t.alt_rows {
-                n.alt_fills(f);
-            }
-            n.alt_fill_attrs(&mut t.row_fills);
-            n.alt_fill_attrs(&mut t.column_fills);
-            n.alt_stroke_attrs(&mut t.row_strokes);
-            n.alt_stroke_attrs(&mut t.column_strokes);
-        }
+        n.styles(self.styles_mut());
         for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
             for it in &mut Arc::make_mut(sp).items {
                 n.item(Arc::make_mut(it), 0);
