@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("endnote.delete", "Delete Endnote", [], None, "{story, id} — removes the reference and its text", has_doc, |s, p| {
             let (sid, id) = target(p)?;
-            s.edit(|d, _| {
+            s.edit(|d, sel| {
                 let st = d.story_mut(sid).ok_or_else(|| bad("endnote.delete", "no such story"))?;
                 let k = st.endnotes.iter().position(|n| n.id == id).ok_or_else(|| bad("endnote.delete", format!("no endnote {id}")))?;
                 let at = st
@@ -40,6 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     .nth(k)
                     .map(|(i, _)| i)
                     .ok_or_else(|| bad("endnote.delete", format!("endnote {id} has no reference in the text")))?;
+                super::notes::follow_delete(sel, sid, at..at + designcraft_doc::ENDNOTE_REF.len_utf8());
                 st.delete(at..at + designcraft_doc::ENDNOTE_REF.len_utf8());
                 ok()
             })
@@ -171,5 +172,22 @@ mod tests {
         assert_eq!(d.stories[&sid].text.matches(designcraft_doc::ENDNOTE_REF).count(), 1);
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.stories[&esid].text, "Notes\ni\tEarlier.\nii\tEdited.");
+    }
+
+    #[test]
+    fn deleting_an_endnote_keeps_the_caret_on_its_character() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Alpha beta."})).unwrap();
+        let sid = designcraft_doc::StoryId(a["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 5, "focus": 5})).unwrap();
+        let r = s.execute("endnote.insert", &json!({"text": "Source."})).unwrap();
+        let n = designcraft_doc::ENDNOTE_REF.len_utf8();
+        // "beta" is selected after the reference.
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 6 + n, "focus": 10 + n})).unwrap();
+        s.execute("endnote.delete", &json!({"story": r["story"], "id": r["id"]})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.anchor, t.focus), (6, 10));
+        assert_eq!(&s.doc().unwrap().doc.stories[&sid].text[t.anchor..t.focus], "beta");
     }
 }
