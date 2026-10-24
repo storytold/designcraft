@@ -46,6 +46,19 @@ pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 const TABLE: &[(&str, [&str; 5])] = &[
+    ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
+    ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),
+    ("Reset To Base", ["Auf Basis zurücksetzen", "Rétablir la base", "Restablecer a base", "基準に戻す", "重置为基准"]),
+    (
+        "Apply Style to Selection",
+        [
+            "Format auf Auswahl anwenden",
+            "Appliquer le style à la sélection",
+            "Aplicar estilo a la selección",
+            "選択範囲にスタイルを適用",
+            "将样式应用于选区",
+        ],
+    ),
     (
         "Character Formatting Controls",
         [

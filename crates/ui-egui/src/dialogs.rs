@@ -3708,12 +3708,47 @@ fn grep_error(p: &str) -> Option<String> {
     designcraft_compose::grep::Grep::new(p, Default::default()).err().map(|e| e.to_string())
 }
 
+/// What paragraph style `style` resolves to when based on `based` (the Based On chosen in its
+/// dialog, which may not be its own yet): `based`'s chain with the style's own settings over it.
+fn style_over(
+    styles: &designcraft_doc::Styles,
+    based: &str,
+    style: &designcraft_doc::ParagraphStyle,
+) -> (designcraft_doc::ParaProps, designcraft_doc::CharProps) {
+    styles.resolve_para(&designcraft_doc::ParaFormat {
+        style: based.into(),
+        para: style.para.clone(),
+        chars: style.chars.clone(),
+        ..Default::default()
+    })
+}
+
 /// The Justification spacing check of Paragraph Style Options, against what the section showed:
 /// the style's own values, or a new style's Based On.
 fn check_paragraph_style_justification(app: &DesignApp, d: &Dialog) -> Result<(), String> {
-    let shown = if d.b("new") { d.s("basedOn") } else { d.s("name") };
-    let base =
-        app.session.active().map(|st| serde_json::to_value(st.doc.styles.resolve_para_style(&shown).0).unwrap_or_default()).unwrap_or_default();
+    // After Reset To Base the style starts from its Based On (the one chosen here, if any).
+    let base_of = |st: &designcraft_engine::DocState| {
+        let chosen = d.s("basedOn");
+        if chosen.is_empty() { st.doc.styles.para(&d.s("name")).and_then(|s| s.based_on.clone()).unwrap_or_default() } else { chosen }
+    };
+    let base = app
+        .session
+        .active()
+        .map(|st| {
+            let pp = if d.b("new") {
+                st.doc.styles.resolve_para_style(&d.s("basedOn")).0
+            } else if d.b("resetToBase") {
+                st.doc.styles.resolve_para_style(&base_of(st)).0
+            } else {
+                // The style's own settings over the Based On chosen in the dialog.
+                match st.doc.styles.para(&d.s("name")) {
+                    Some(style) => style_over(&st.doc.styles, &base_of(st), style).0,
+                    None => st.doc.styles.resolve_para_style(&d.s("name")).0,
+                }
+            };
+            serde_json::to_value(pp).unwrap_or_default()
+        })
+        .unwrap_or_default();
     check_justification(d, "p.", &base)
 }
 
@@ -3751,16 +3786,26 @@ fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Resul
     let (para, chars) = style_option_maps(d);
     let based = d.s("basedOn");
     let rename = d.s("rename");
+    let next = d.fields.get("nextStyle").cloned();
     let (r, style) = if d.b("new") {
         let mut params = json!({"name": if rename.trim().is_empty() { "Paragraph Style 1" } else { rename.trim() }, "para": para, "chars": chars});
         if !based.is_empty() && based != designcraft_doc::NO_PARA_STYLE {
             params["basedOn"] = json!(based);
+        }
+        if let Some(Value::String(n)) = &next {
+            params["nextStyle"] = json!(n);
         }
         let r = app.run("style.paragraph.create", params)?;
         let style = r["name"].as_str().unwrap_or_default().to_string();
         (r, style)
     } else {
         let mut params = json!({"name": name, "para": para, "chars": chars});
+        if let Some(n) = next {
+            params["nextStyle"] = n;
+        }
+        if d.b("resetToBase") {
+            params["resetToBase"] = json!(true);
+        }
         if !based.is_empty() {
             params["basedOn"] = if based == designcraft_doc::NO_PARA_STYLE { Value::Null } else { json!(based) };
         }
@@ -3772,9 +3817,14 @@ fn confirm_paragraph_style_options(app: &mut DesignApp, d: &mut Dialog) -> Resul
     };
     // The style now exists under `style`: if a later step fails, the dialog stays open on it and
     // a second OK edits it rather than creating another one.
+    let created = d.b("new");
     d.fields.insert("new".into(), json!(false));
     d.fields.insert("name".into(), json!(&style));
     d.fields.insert("rename".into(), json!(&style));
+    // Apply Style to Selection.
+    if created && d.b("apply") && app.session.active().is_some_and(|st| st.selection.text.is_some()) {
+        app.run("style.paragraph.apply", json!({"name": style}))?;
+    }
     if d.fields.contains_key("x.tag") {
         let tag = d.s("x.tag");
         let tag = if tag == "[Automatic]" { String::new() } else { tag };
@@ -3839,6 +3889,10 @@ fn style_options_preview(app: &mut DesignApp, d: &mut Dialog) {
             _ => based.clone(),
         };
     }
+    // Reset To Base shows on the page too.
+    if paragraph && d.b("resetToBase") {
+        params["resetToBase"] = json!(true);
+    }
     if shown.as_ref() == Some(&params) {
         return;
     }
@@ -3880,9 +3934,17 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     if new && !d.fields.contains_key("rename") {
         d.fields.insert("rename".into(), json!(next_style_name(&doc.styles, true)));
     }
+    let mut style = style;
+    let reset = !new && d.b("resetToBase");
+    if reset {
+        style.para = Default::default();
+        style.chars = Default::default();
+    }
     let names: Vec<String> = doc.styles.paragraph.iter().map(|p| p.name.clone()).filter(|n| new || *n != name).collect();
-    // A new style shows what it would inherit from its Based On.
-    let (pp, cp) = doc.styles.resolve_para_style(if new { d.fields.get("basedOn").and_then(Value::as_str).unwrap_or("") } else { &name });
+    // A new style shows what it would inherit from its Based On (as does one reset to it).
+    let based_name = d.fields.get("basedOn").and_then(Value::as_str).map(str::to_string).or(style.based_on.clone()).unwrap_or_default();
+    // An existing style shows its own settings over the Based On chosen here.
+    let (pp, cp) = if new || reset { doc.styles.resolve_para_style(&based_name) } else { style_over(&doc.styles, &based_name, &style) };
     let units = doc.settings.horizontal_units;
     let pv = serde_json::to_value(&pp).unwrap_or_default();
     let cv = serde_json::to_value(&cp).unwrap_or_default();
@@ -4033,13 +4095,51 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                             }
                         });
                     ui.end_row();
+                    // Next Style: the style of the paragraph that follows when Enter ends this one.
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Next Style:"));
+                    let next = match d.fields.get("nextStyle") {
+                        Some(Value::String(n)) => Some(n.clone()),
+                        Some(_) => None,
+                        None => style.next_style.clone().filter(|n| *n != name),
+                    };
+                    let same = crate::i18n::tr(&app.ui.language, "[Same style]").to_string();
+                    let shown = next.as_deref().map_or(same.clone(), |n| crate::i18n::style_name(&app.ui.language, n).to_string());
+                    egui::ComboBox::from_id_salt("psnext").selected_text(crate::rtl::widget(ui, shown)).width(220.0).show_ui(ui, |ui| {
+                        if ui.selectable_label(next.is_none(), crate::rtl::widget(ui, &same)).clicked() {
+                            d.fields.insert("nextStyle".into(), Value::Null);
+                        }
+                        for n in names.iter().filter(|n| *n != designcraft_doc::NO_PARA_STYLE) {
+                            if ui
+                                .selectable_label(next.as_deref() == Some(n), crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n)))
+                                .clicked()
+                            {
+                                d.fields.insert("nextStyle".into(), json!(n));
+                            }
+                        }
+                    });
+                    ui.end_row();
                 });
+                // Reset To Base: the style keeps nothing of its own (the edits made here stay).
+                if !new
+                    && ui
+                        .add_enabled(
+                            !based_name.is_empty() && based_name != designcraft_doc::NO_PARA_STYLE,
+                            egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Reset To Base"))),
+                        )
+                        .clicked()
+                {
+                    d.fields.insert("resetToBase".into(), json!(true));
+                }
                 ui.add_space(8.0);
                 crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Style Settings:")).font(semibold(12.0)));
                 let summary = paragraph_style_summary(&app.ui.language, d, &style, &doc.styles);
-                egui::ScrollArea::vertical().id_salt("paragraph_style_settings").max_height(220.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("paragraph_style_settings").max_height(180.0).show(ui, |ui| {
                     ui.add(egui::Label::new(egui::RichText::new(summary).color(crate::theme::Tokens::get(ui.ctx()).text_dim)).wrap());
                 });
+                if new {
+                    ui.add_space(8.0);
+                    check(ui, d, "apply", crate::i18n::tr(&app.ui.language, "Apply Style to Selection"));
+                }
             }
         });
     });
@@ -5206,8 +5306,28 @@ pub fn open_style_options(app: &mut DesignApp, para: bool, name: &str) {
 pub fn open_new_style(app: &mut DesignApp, para: bool) {
     let Some(st) = app.session.active() else { return };
     let name = next_style_name(&st.doc.styles, para);
+    let has_text = st.selection.text.is_some();
+    let (bp, bc) = st.doc.styles.resolve_para_style(designcraft_doc::NO_PARA_STYLE);
     let id = if para { "paragraphStyleOptions" } else { "characterStyleOptions" };
-    app.ui.dialog = Some(Dialog::new(id, json!({"new": true, "rename": name})));
+    let mut fields = json!({"new": true, "rename": name});
+    // New Paragraph Style with text selected starts from it, as InDesign's: Based On [No Paragraph
+    // Style] and every setting of the text that differs, applied to the selection on OK.
+    if para
+        && has_text
+        && let Some(sel) = app.session.execute("type.selectionAttrs", &json!({})).ok().filter(|v| !v.is_null())
+    {
+        for (prefix, now, base) in
+            [("p.", &sel["para"], serde_json::to_value(bp).unwrap_or_default()), ("c.", &sel["chars"], serde_json::to_value(bc).unwrap_or_default())]
+        {
+            for (k, v) in now.as_object().into_iter().flatten() {
+                if !v.is_null() && base.get(k) != Some(v) && base.get(k).is_some() {
+                    fields[format!("{prefix}{k}")] = v.clone();
+                }
+            }
+        }
+        fields["apply"] = json!(true);
+    }
+    app.ui.dialog = Some(Dialog::new(id, fields));
 }
 
 /// The General section of the Character Style Options dialog: name, Based On, and a summary of
@@ -5384,7 +5504,7 @@ fn char_number(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, su
 fn char_choice(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, opts: &[(Value, &str)]) {
     let cur = cf.get(d, key);
     let shown = opts.iter().find(|o| o.0 == cur).map_or("", |o| crate::i18n::tr(lang, o.1));
-    egui::ComboBox::from_id_salt(("cs", key)).selected_text(crate::rtl::widget(ui, shown)).width(200.0).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt(("cs", key)).selected_text(crate::rtl::widget(ui, shown)).width(140.0).show_ui(ui, |ui| {
         if cf.sparse && ui.selectable_label(cur.is_null(), " ").clicked() {
             cf.set(d, key, Value::Null);
         }
@@ -5427,6 +5547,7 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     let lang = lang.as_str();
     let fonts = crate::panels::fonts(app);
     let menu = crate::panels::font_menu(app);
+    // Two columns, as InDesign's: the font, then Size | Leading, Kerning | Tracking, Case | Position.
     egui::Grid::new("psc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Font Family:"));
         let fam = cf.get(d, "fontFamily").as_str().unwrap_or("").to_string();
@@ -5469,9 +5590,10 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             });
         }
         ui.end_row();
+    });
+    egui::Grid::new("psc2").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Size:"));
         char_number(ui, d, cf, "size", " pt", 1.0, (0.1, 1296.0));
-        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Leading:"));
         let lv = match cf.get(d, "leading") {
             v if v["kind"] == "points" => v["value"].as_f64(),
@@ -5492,7 +5614,6 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             "kerning",
             &[(json!({"kind": "metrics"}), "Metrics"), (json!({"kind": "optical"}), "Optical"), (json!({"kind": "none"}), "0")],
         );
-        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Tracking:"));
         char_number(ui, d, cf, "tracking", "", 1.0, (-1000.0, 10000.0));
         ui.end_row();
@@ -5510,7 +5631,6 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                 (json!("openTypeAllSmallCaps"), "OpenType All Small Caps"),
             ],
         );
-        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Position:"));
         char_choice(
             lang,
@@ -7706,6 +7826,87 @@ mod tests {
         assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], want);
         app.run("edit.undo", json!({})).unwrap();
         assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["para"]["ruleBelow"], rule);
+    }
+
+    /// The course's chapter 20: the "Recipe Categories" title formatted on the page (size, All
+    /// Caps, tracking, space after), then New Paragraph Style from it: the dialog starts from the
+    /// text, and with Apply Style to Selection the paragraph takes the new style. Next Style and
+    /// Reset To Base are set from General.
+    #[test]
+    fn a_new_paragraph_style_starts_from_the_selected_text() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Egg Recipes\rBoil them."})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 11})).unwrap();
+        app.run("type.char", json!({"attrs": {"size": 20, "capitalization": "allCaps", "tracking": 50}})).unwrap();
+        app.run("type.para", json!({"attrs": {"spaceAfter": 6}})).unwrap();
+        open_new_style(&mut app, true);
+        let d = app.ui.dialog.clone().unwrap();
+        assert_eq!(
+            (d.fields["c.size"].clone(), d.fields["c.capitalization"].clone(), d.fields["p.spaceAfter"].clone()),
+            (json!(20.0), json!("allCaps"), json!(6.0))
+        );
+        assert!(d.b("apply") && !d.fields.contains_key("c.fontFamily"), "only what differs from [No Paragraph Style]");
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("rename".into(), json!("Recipe Categories"));
+            d.fields.insert("nextStyle".into(), json!(designcraft_doc::BASIC_PARAGRAPH));
+        }
+        confirm(&mut app).unwrap();
+        let a = app.run("type.selectionAttrs", json!({})).unwrap();
+        assert_eq!(a["paragraphStyle"], "Recipe Categories", "applied to the selection");
+        assert_eq!(a["paraOverrides"].as_u64().unwrap_or(0) + a["charOverrides"].as_u64().unwrap_or(0), 0);
+        let style = |app: &DesignApp| app.session.doc().unwrap().doc.styles.para("Recipe Categories").cloned().unwrap();
+        assert_eq!(style(&app).next_style.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
+        assert_eq!(style(&app).chars.size, Some(20.0));
+        // Reset To Base: the style keeps nothing of its own, apart from the edits made then.
+        app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Recipe Categories", "basedOn": designcraft_doc::BASIC_PARAGRAPH})));
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("resetToBase".into(), json!(true));
+            d.fields.insert("c.tracking".into(), json!(10.0));
+        }
+        confirm(&mut app).unwrap();
+        let s = style(&app);
+        assert_eq!((s.chars.size, s.chars.tracking, s.para.space_after), (None, Some(10.0), None), "{s:?}");
+        assert_eq!(s.based_on.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
+    }
+
+    /// A Based On changed in the dialog (without Reset To Base) is what the fields are checked
+    /// against: the style's own settings over the new parent.
+    #[test]
+    fn a_changed_based_on_is_what_the_fields_are_checked_against() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("style.paragraph.create", json!({"name": "Loose", "para": {"wordSpaceMin": 1.2, "wordSpaceDesired": 1.3}})).unwrap();
+        app.run("style.paragraph.create", json!({"name": "Child", "basedOn": "Loose"})).unwrap();
+        let mut d = Dialog::new("paragraphStyleOptions", json!({"name": "Child"}));
+        d.fields.insert("p.wordSpaceDesired".into(), json!(1.0));
+        assert!(check_paragraph_style_justification(&app, &d).is_err(), "below Loose's minimum");
+        d.fields.insert("basedOn".into(), json!(designcraft_doc::BASIC_PARAGRAPH));
+        assert_eq!(check_paragraph_style_justification(&app, &d), Ok(()), "[Basic Paragraph]'s minimum is lower");
+    }
+
+    /// With Reset To Base, the justification fields are checked against the base style (the
+    /// style's own minimum no longer applies), and Preview shows the reset on the page.
+    #[test]
+    fn reset_to_base_checks_and_previews_against_the_base() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Loose words"})).unwrap();
+        app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+        app.run("style.paragraph.create", json!({"name": "Loose", "basedOn": designcraft_doc::BASIC_PARAGRAPH, "para": {"wordSpaceMin": 1.2, "wordSpaceDesired": 1.3}, "chars": {"size": 30}}))
+            .unwrap();
+        app.run("style.paragraph.apply", json!({"name": "Loose"})).unwrap();
+        let mut d = Dialog::new("paragraphStyleOptions", json!({"name": "Loose"}));
+        d.fields.insert("p.wordSpaceDesired".into(), json!(1.1));
+        assert!(check_paragraph_style_justification(&app, &d).is_err(), "below the style's own minimum");
+        d.fields.insert("resetToBase".into(), json!(true));
+        assert_eq!(check_paragraph_style_justification(&app, &d), Ok(()), "the base's minimum is 100%");
+        d.fields.insert("preview".into(), json!(true));
+        style_options_preview(&mut app, &mut d);
+        assert_eq!(d.fields[PREVIEWED]["resetToBase"], true);
+        let size = app.run("type.selectionAttrs", json!({})).unwrap()["chars"]["size"].clone();
+        assert_eq!(size, json!(12.0), "the page shows the style reset to its base");
+        app.session.cancel_interaction();
     }
 
     #[test]
@@ -10046,7 +10247,8 @@ mod tests {
         assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
         let st = app.session.active().unwrap().doc.styles.para("Paragraph Style 1").cloned().unwrap();
         assert_eq!(st.based_on.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
-        assert_eq!(st.chars, CharAttrs { size: Some(20.0), ..Default::default() });
+        // The selected text's own Italic comes along, as InDesign's New Paragraph Style takes it.
+        assert_eq!(st.chars, CharAttrs { size: Some(20.0), font_style: Some("Italic".into()), ..Default::default() });
     }
 
     #[test]
