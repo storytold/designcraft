@@ -995,12 +995,39 @@ pub struct DropShadow {
     pub distance: f64,
     pub size: f64,
     pub spread: f64,
+    /// How the shadow blends with what's behind it (InDesign: Multiply). A document saved before
+    /// effects had modes reads Normal, as they were drawn then.
+    #[serde(default = "normal_blend")]
+    pub mode: BlendMode,
+    /// Noise: percentage (0–100) of grain roughening the shadow.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub noise: f64,
+    /// Object Knocks Out Shadow: no shadow shows through the object where it is translucent
+    /// (InDesign: on; a document saved before reads off, as it was drawn).
+    #[serde(default)]
+    pub knockout: bool,
+    /// Shadow Honors Other Effects: the shadow takes the object's feathered silhouette.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub honors_effects: bool,
+}
+
+/// The blend of an effect saved before effects had one.
+fn normal_blend() -> BlendMode {
+    BlendMode::Normal
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl Default for DropShadow {
     fn default() -> Self {
         DropShadow {
             on: false,
+            mode: BlendMode::Multiply,
+            noise: 0.0,
+            knockout: true,
+            honors_effects: false,
             color: designcraft_color::swatch::BLACK.into(),
             opacity: 0.75,
             angle: 120.0,
@@ -1027,12 +1054,20 @@ pub struct InnerShadow {
     pub size: f64,
     /// Percentage (0–100) of `size` that hardens the edge instead of blurring it.
     pub choke: f64,
+    /// How the shadow blends with the object (InDesign: Multiply; Normal when saved before).
+    #[serde(default = "normal_blend")]
+    pub mode: BlendMode,
+    /// Noise: percentage (0–100) of grain.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub noise: f64,
 }
 
 impl Default for InnerShadow {
     fn default() -> Self {
         InnerShadow {
             on: false,
+            mode: BlendMode::Multiply,
+            noise: 0.0,
             color: designcraft_color::swatch::BLACK.into(),
             opacity: 0.75,
             angle: 120.0,
@@ -1054,11 +1089,29 @@ pub struct OuterGlow {
     pub size: f64,
     /// Percentage (0–100) of `size` that grows the silhouette instead of blurring it.
     pub spread: f64,
+    /// How the glow blends with what's behind it (InDesign: Screen; Normal when saved before).
+    #[serde(default = "normal_blend")]
+    pub mode: BlendMode,
+    /// Softer blurs the edge; Precise keeps the glow close to the shape.
+    pub technique: GlowTechnique,
+    /// Noise: percentage (0–100) of grain.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub noise: f64,
 }
 
 impl Default for OuterGlow {
     fn default() -> Self {
-        OuterGlow { on: false, color: designcraft_color::swatch::BLACK.into(), opacity: 0.75, size: 7.0, spread: 0.0 }
+        // InDesign starts a glow screened in white.
+        OuterGlow {
+            on: false,
+            color: designcraft_color::swatch::PAPER.into(),
+            opacity: 0.75,
+            size: 7.0,
+            spread: 0.0,
+            mode: BlendMode::Screen,
+            technique: GlowTechnique::Softer,
+            noise: 0.0,
+        }
     }
 }
 
@@ -1150,6 +1203,9 @@ pub struct InnerGlow {
     /// How the glow blends with the object (InDesign: Screen).
     pub mode: BlendMode,
     pub technique: GlowTechnique,
+    /// Noise: percentage (0–100) of grain.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub noise: f64,
 }
 
 impl Default for InnerGlow {
@@ -1163,6 +1219,7 @@ impl Default for InnerGlow {
             center: false,
             mode: BlendMode::Screen,
             technique: GlowTechnique::Softer,
+            noise: 0.0,
         }
     }
 }
@@ -1660,6 +1717,26 @@ impl Item {
 mod tests {
     use super::*;
     use designcraft_geom::shapes;
+
+    /// Shadows and glows saved before they had a blend mode read Normal, as they were drawn;
+    /// new ones start as InDesign's: Multiply for shadows, Screen for the outer glow.
+    #[test]
+    fn effect_blend_modes_default_as_indesign_and_keep_old_documents() {
+        let old: DropShadow =
+            serde_json::from_str(r#"{"on": true, "color": "[Black]", "opacity": 0.75, "angle": 120, "distance": 7, "size": 5, "spread": 0}"#)
+                .unwrap();
+        assert_eq!(old.mode, BlendMode::Normal);
+        let old: OuterGlow = serde_json::from_str(r#"{"on": true, "color": "[Black]", "opacity": 0.75, "size": 7, "spread": 0}"#).unwrap();
+        assert_eq!(old.mode, BlendMode::Normal);
+        assert_eq!(DropShadow::default().mode, BlendMode::Multiply);
+        assert_eq!(InnerShadow::default().mode, BlendMode::Multiply);
+        assert_eq!(OuterGlow::default().mode, BlendMode::Screen);
+        // Object Knocks Out Shadow starts on (as InDesign), and reads off when saved before.
+        let old: DropShadow = serde_json::from_str(r#"{"on": true}"#).unwrap();
+        assert!(!old.knockout && DropShadow::default().knockout);
+        let saved = serde_json::to_value(DropShadow { mode: BlendMode::Screen, ..Default::default() }).unwrap();
+        assert_eq!(serde_json::from_value::<DropShadow>(saved).unwrap().mode, BlendMode::Screen, "round trip");
+    }
 
     #[test]
     fn graphics_without_a_clipping_path_load_and_save_as_before() {

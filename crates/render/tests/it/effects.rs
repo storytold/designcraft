@@ -141,6 +141,8 @@ fn outer_glow_surrounds_the_object() {
     g.size = 12.0;
     g.color = "C=0 M=100 Y=0 K=0".into();
     g.opacity = 1.0;
+    // Normal, so the glow shows on the white page (screened, magenta on white is white).
+    g.mode = designcraft_color::BlendMode::Normal;
     let img = render(&d);
     golden("outer-glow", &img);
     for (x, y) in [(46, 80), (114, 80), (80, 46), (80, 114)] {
@@ -148,6 +150,179 @@ fn outer_glow_surrounds_the_object() {
         assert!(p[1] < 200 && p[0] > p[1] + 40, "magenta glow at {x},{y}: {p:?}");
     }
     assert_eq!(lum(img.pixel(10, 10)), WHITE);
+}
+
+/// An effect's blend mode works on what's behind it: a glow screened onto a dark backdrop
+/// lightens it in the glow's colour, where Normal paints the glow's colour over it.
+#[test]
+fn outer_glow_blends_with_its_mode() {
+    let glow = |mode| {
+        let mut d = doc();
+        rect_item(&mut d, Rect::new(0.0, 0.0, 160.0, 160.0), "C=100 M=90 Y=10 K=0");
+        let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Black]");
+        let g = &mut d.item_mut(id).unwrap().effects.outer_glow;
+        g.on = true;
+        g.size = 12.0;
+        g.color = "C=0 M=0 Y=100 K=0".into();
+        g.opacity = 1.0;
+        g.mode = mode;
+        render(&d)
+    };
+    let screen = glow(designcraft_color::BlendMode::Screen);
+    let normal = glow(designcraft_color::BlendMode::Normal);
+    let backdrop = screen.pixel(10, 10);
+    let (s, n) = (screen.pixel(46, 80), normal.pixel(46, 80));
+    // Screen only lightens: every channel at least the backdrop's, and the navy shows through
+    // (blue stays high), where Normal paints yellow (blue drops).
+    assert!(s.iter().zip(backdrop).take(3).all(|(a, b)| *a + 2 >= b), "screen lightens: {s:?} over {backdrop:?}");
+    assert!(s[2] > n[2] + 25, "screen keeps the backdrop's blue: {s:?} vs normal {n:?}");
+}
+
+/// A shadow under the object at a distance of 0, black and fully opaque, cast by a black square
+/// at 50% opacity, so the shadow shows through it unless the object knocks it out.
+fn shadow_under(f: impl FnOnce(&mut designcraft_doc::DropShadow), opacity: f32) -> Rendered {
+    let mut d = doc();
+    let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Black]");
+    let it = d.item_mut(id).unwrap();
+    it.opacity = opacity;
+    let s = &mut it.effects.drop_shadow;
+    s.on = true;
+    s.distance = 0.0;
+    s.size = 6.0;
+    s.opacity = 1.0;
+    s.mode = designcraft_color::BlendMode::Normal;
+    f(s);
+    render(&d)
+}
+
+/// Object Knocks Out Shadow (InDesign's default): the shadow doesn't show through a translucent
+/// object; off, it darkens it.
+#[test]
+fn a_translucent_object_knocks_out_its_shadow() {
+    let on = shadow_under(|s| s.knockout = true, 0.5);
+    let off = shadow_under(|s| s.knockout = false, 0.5);
+    let (a, b) = (lum(on.pixel(80, 80)), lum(off.pixel(80, 80)));
+    assert!(a > b + 60, "knocked out {a} vs showing through {b}");
+    // Outside the object the shadow is the same.
+    assert!(lum(on.pixel(113, 80)).abs_diff(lum(off.pixel(113, 80))) < 4);
+    // A feathered edge is translucent too: knocked out, the shadow doesn't darken it.
+    let feathered = |knockout| {
+        let mut d = doc();
+        let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Paper]");
+        let fx = &mut d.item_mut(id).unwrap().effects;
+        fx.feather = 10.0;
+        fx.drop_shadow = designcraft_doc::DropShadow {
+            on: true,
+            distance: 0.0,
+            size: 2.0,
+            spread: 100.0,
+            opacity: 1.0,
+            mode: designcraft_color::BlendMode::Normal,
+            knockout,
+            ..Default::default()
+        };
+        render(&d)
+    };
+    let (on, off) = (feathered(true), feathered(false));
+    assert!(lum(on.pixel(52, 80)) > lum(off.pixel(52, 80)) + 60, "{:?} vs {:?}", on.pixel(52, 80), off.pixel(52, 80));
+}
+
+/// The standard deviation of the luminance over a square of pixels.
+fn grain(img: &Rendered, x0: u32, y0: u32, n: u32) -> f64 {
+    let v: Vec<f64> = (0..n * n).map(|i| f64::from(lum(img.pixel(x0 + i % n, y0 + i / n)))).collect();
+    let m = v.iter().sum::<f64>() / v.len() as f64;
+    (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / v.len() as f64).sqrt()
+}
+
+/// Noise roughens a shadow, a glow and the inner effects with grain; without it they are smooth.
+#[test]
+fn noise_adds_grain_to_shadows_and_glows() {
+    let smooth = shadow_under(|s| s.spread = 100.0, 1.0);
+    let rough = shadow_under(
+        |s| {
+            s.spread = 100.0;
+            s.noise = 60.0;
+        },
+        1.0,
+    );
+    // Just outside the object, inside the hard-spread shadow.
+    assert!(grain(&smooth, 111, 70, 4) < 2.0, "smooth: {}", grain(&smooth, 111, 70, 4));
+    assert!(grain(&rough, 111, 70, 4) > 10.0, "rough: {}", grain(&rough, 111, 70, 4));
+    let glow = |noise| {
+        let mut d = doc();
+        let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Paper]");
+        let fx = &mut d.item_mut(id).unwrap().effects;
+        fx.outer_glow = designcraft_doc::OuterGlow {
+            on: true,
+            color: "[Black]".into(),
+            opacity: 1.0,
+            size: 8.0,
+            spread: 100.0,
+            mode: designcraft_color::BlendMode::Normal,
+            noise,
+            ..Default::default()
+        };
+        fx.inner_glow.on = true;
+        fx.inner_glow.color = "[Black]".into();
+        fx.inner_glow.opacity = 1.0;
+        fx.inner_glow.size = 8.0;
+        fx.inner_glow.choke = 100.0;
+        fx.inner_glow.mode = designcraft_color::BlendMode::Normal;
+        fx.inner_glow.noise = noise;
+        render(&d)
+    };
+    let (smooth, rough) = (glow(0.0), glow(60.0));
+    for (x, y) in [(112, 70), (52, 70)] {
+        assert!(grain(&rough, x, y, 4) > grain(&smooth, x, y, 4) + 8.0, "grain at {x},{y}");
+    }
+}
+
+/// Outer Glow's Precise technique keeps the glow close to the shape; Softer spreads it out.
+#[test]
+fn a_precise_outer_glow_stays_closer_than_a_softer_one() {
+    let glow = |technique| {
+        let mut d = doc();
+        let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Black]");
+        d.item_mut(id).unwrap().effects.outer_glow = designcraft_doc::OuterGlow {
+            on: true,
+            color: "[Black]".into(),
+            opacity: 1.0,
+            size: 14.0,
+            mode: designcraft_color::BlendMode::Normal,
+            technique,
+            ..Default::default()
+        };
+        render(&d)
+    };
+    let soft = glow(designcraft_doc::GlowTechnique::Softer);
+    let precise = glow(designcraft_doc::GlowTechnique::Precise);
+    // Close in the precise one is denser; past the size both are gone.
+    assert!(lum(precise.pixel(113, 80)) + 30 < lum(soft.pixel(113, 80)), "{:?} vs {:?}", precise.pixel(113, 80), soft.pixel(113, 80));
+    assert!(lum(precise.pixel(130, 80)) > 750 && lum(soft.pixel(130, 80)) > 740);
+}
+
+/// Shadow Honors Other Effects: the shadow of a feathered object is cast by its feathered
+/// silhouette, so it fades with it; otherwise by the hard shape.
+#[test]
+fn a_shadow_that_honors_other_effects_follows_the_feather() {
+    let shadow = |honors| {
+        let mut d = doc();
+        let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Black]");
+        let fx = &mut d.item_mut(id).unwrap().effects;
+        fx.feather = 12.0;
+        fx.drop_shadow = designcraft_doc::DropShadow {
+            on: true,
+            distance: 0.0,
+            size: 4.0,
+            opacity: 1.0,
+            mode: designcraft_color::BlendMode::Normal,
+            honors_effects: honors,
+            ..Default::default()
+        };
+        render(&d)
+    };
+    let (hard, honored) = (shadow(false), shadow(true));
+    assert!(lum(honored.pixel(112, 80)) > lum(hard.pixel(112, 80)) + 30, "{:?} vs {:?}", honored.pixel(112, 80), hard.pixel(112, 80));
 }
 
 #[test]

@@ -618,10 +618,12 @@ impl Renderer {
         }
         self.stats.items += 1;
         let bp = if it.corners.is_none() { it.path.to_bezpath() } else { corners::apply(&it.path, &it.corners) };
-        let layered = it.opacity < 0.999 || it.blend != DcBlend::Normal;
+        // A shadow the object doesn't knock out takes the opacity apart from the object.
+        let opacity = if effects && fx::opacity_apart(it) { 1.0 } else { it.opacity };
+        let layered = opacity < 0.999 || it.blend != DcBlend::Normal;
         if layered {
             ctx.set_transform(Affine::IDENTITY);
-            ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
+            ctx.push_layer(None, Some(blend_mode(it.blend)), Some(opacity), None, None);
         }
         if effects {
             self.draw_item_fx(ctx, f, it, &bp, xf, page);
