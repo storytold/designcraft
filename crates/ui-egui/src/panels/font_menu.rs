@@ -63,13 +63,15 @@ fn regular(styles: &[String]) -> String {
     styles.iter().find(|s| *s == "Regular").or(styles.first()).cloned().unwrap_or_else(|| "Regular".into())
 }
 
-fn meta(ui: &Ui, fonts: &designcraft_fonts::ScopedFonts<'static>, scope: u32, family: &str) -> FamilyMeta {
+fn meta(ui: &Ui, fonts: &designcraft_fonts::ScopedFonts<'_>, scope: u32, family: &str) -> FamilyMeta {
     let key = egui::Id::new(("font_meta", family, scope));
     if let Some(m) = ui.data(|d| d.get_temp::<FamilyMeta>(key)) {
         return m;
     }
     let styles = fonts.styles(family);
     let kind = fonts.face(family, &regular(&styles)).kind();
+    // Loading a catalogued variable font discovers its named instances.
+    let styles = fonts.styles(family);
     let m = FamilyMeta { styles, kind };
     ui.data_mut(|d| d.insert_temp(key, m.clone()));
     m
@@ -682,5 +684,106 @@ mod preview_cache_tests {
         assert_eq!((c.map.len(), c.order.len()), (Previews::CAP, Previews::CAP));
         assert!(c.get(key(1)).is_none(), "the oldest unused one was let go");
         assert!(c.get(key(Previews::CAP + 39)).is_some());
+    }
+}
+
+#[cfg(test)]
+mod variable_catalog_regression {
+    #[test]
+    #[ignore = "requires the pinned Bricolage fixture; see docs/testing-variable-fonts.md"]
+    fn cold_family_menu_contains_named_instances() {
+        let path = std::env::var_os("DESIGNCRAFT_TEST_VARIABLE_FONT").expect("set DESIGNCRAFT_TEST_VARIABLE_FONT");
+        let path = std::path::PathBuf::from(path);
+        let db = Box::leak(Box::new(designcraft_fonts::FontDb::with_font_dirs(vec![path.parent().unwrap().to_owned()])));
+        let fonts = db.scoped(0);
+        assert!(!fonts.styles("Bricolage Grotesque").contains(&"SemiBold".into()), "the fixture must be catalogued but not loaded");
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |root| {
+            egui::CentralPanel::default().show(root, |ui| {
+                let first = super::meta(ui, &fonts, 0, "Bricolage Grotesque");
+                assert!(
+                    first.styles.contains(&"SemiBold".into()),
+                    "cold menu cached {:?}, live styles {:?}",
+                    first.styles,
+                    fonts.styles("Bricolage Grotesque")
+                );
+                let second = super::meta(ui, &fonts, 0, "Bricolage Grotesque");
+                assert_eq!(first.styles, second.styles);
+            });
+        });
+        output.textures_delta.clear();
+
+        // Exercise the family menu's actual style-row selection too.
+        use egui_kittest::{Harness, kittest::Queryable};
+        designcraft_fonts::FontDb::global().add_font(std::fs::read(&path).unwrap());
+        let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let menu: Vec<_> =
+            designcraft_fonts::FontDb::global().scoped(0).family_infos().into_iter().filter(|f| f.family == "Bricolage Grotesque").collect();
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+            move |ui, state: &mut (crate::DesignApp, Option<super::FontPick>)| {
+                let key = egui::Id::new("font_menu_state");
+                let mut st: super::MenuState = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+                st.expanded.insert("Bricolage Grotesque".into());
+                ui.data_mut(|d| d.insert_temp(key, st));
+                if let Some(pick) = super::font_menu_body(&mut state.0, ui, &menu, "Bricolage Grotesque", 560.0) {
+                    state.1 = Some(pick);
+                }
+            },
+            (app, None),
+        );
+        h.run_steps(3);
+        h.get_by_label("SemiBold").click();
+        h.run_steps(3);
+        let pick = h.state().1.as_ref().expect("a style row was picked");
+        assert_eq!(pick.family, "Bricolage Grotesque");
+        assert_eq!(pick.style.as_deref(), Some("SemiBold"));
+    }
+}
+
+#[cfg(test)]
+mod synthetic_variable_catalog_regression {
+    #[test]
+    fn family_menu_selects_a_synthetic_named_instance() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let family = "Synthetic Menu Wiring";
+        let db = designcraft_fonts::FontDb::global();
+        db.add_font(designcraft_fonts::testing::variable_font(family).unwrap());
+        let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let menu: Vec<_> = db.scoped(0).family_infos().into_iter().filter(|f| f.family == family).collect();
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+            |ui, state: &mut (crate::DesignApp, Option<super::FontPick>)| {
+                let key = egui::Id::new("font_menu_state");
+                let mut st: super::MenuState = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+                st.expanded.insert(family.into());
+                ui.data_mut(|d| d.insert_temp(key, st));
+                if let Some(pick) = super::font_menu_body(&mut state.0, ui, &menu, family, 560.0) {
+                    state.1 = Some(pick);
+                }
+            },
+            (app, None),
+        );
+        h.run_steps(3);
+        h.get_by_label("SemiBold").click();
+        h.run_steps(3);
+        let pick = h.state().1.as_ref().expect("the real Family menu selected a style");
+        assert_eq!(pick.family, family);
+        assert_eq!(pick.style.as_deref(), Some("SemiBold"));
+    }
+    #[test]
+    fn cold_family_menu_discovers_and_caches_named_instances() {
+        let dir = tempfile::tempdir().unwrap();
+        let family = "Synthetic Cold Menu";
+        std::fs::write(dir.path().join("variable.ttf"), designcraft_fonts::testing::variable_font(family).unwrap()).unwrap();
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.path().to_owned()]);
+        let fonts = db.scoped(0);
+        assert_eq!(fonts.styles(family), ["Regular"]);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let first = super::meta(ui, &fonts, 0, family);
+            assert_eq!(first.styles, ["Regular", "SemiBold"]);
+            let second = super::meta(ui, &fonts, 0, family);
+            assert_eq!(first.styles, second.styles);
+        });
+        output.textures_delta.clear();
     }
 }
