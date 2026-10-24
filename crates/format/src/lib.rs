@@ -154,10 +154,32 @@ const MAX_PREVIEW_BYTES: u64 = 4 << 20;
 
 /// Read `.designcraft` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
-    if bytes.starts_with(b"PK") {
-        return load_zip(bytes);
+    let mut doc = if bytes.starts_with(b"PK") { load_zip(bytes)? } else { load_legacy_json(bytes)? };
+    normalize_story_revisions_on_load(&mut doc);
+    Ok(doc)
+}
+
+/// Rebase extreme persisted top-level revisions while preserving each link's freshness.
+/// Keep the original parent revisions: a linked child may itself be a high-revision parent.
+fn normalize_story_revisions_on_load(doc: &mut Document) {
+    let original: HashMap<_, _> = doc.stories.iter().filter(|(_, story)| story.rev >= (1_u64 << 63)).map(|(&id, story)| (id, story.rev)).collect();
+    if original.is_empty() {
+        return;
     }
-    load_legacy_json(bytes)
+    for (id, story) in &mut doc.stories {
+        let rebase = original.contains_key(id);
+        let link = story.link.and_then(|(parent, copied)| original.get(&parent).map(|&rev| (parent, if copied == rev { 0 } else { u64::MAX })));
+        if !rebase && link.is_none() {
+            continue;
+        }
+        let story = Arc::make_mut(story);
+        if rebase {
+            story.rev = 0;
+        }
+        if let Some(link) = link {
+            story.link = Some(link);
+        }
+    }
 }
 
 /// Most entries a `.designcraft` archive may hold.
