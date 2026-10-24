@@ -213,6 +213,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.baselineGrid", "Show/Hide Baseline Grid", Some("Cmd+Alt+'"), "{}"),
     ("view.documentGrid", "Show/Hide Document Grid", Some("Cmd+'"), "{}"),
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
+    ("view.linkBadge", "Show/Hide Link Badge", None, "{}"),
     ("view.hiddenCharacters", "Show Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
     ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
@@ -833,6 +834,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Extras",
             "ui:view.frameEdges",
             "ui:view.textThreads",
+            "ui:view.linkBadge",
             "<",
             ">Grids & Guides",
             "ui:view.guides",
@@ -1565,6 +1567,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             flag(&mut app.ui.document_grid)
         }
         "view.textThreads" => flag(&mut app.ui.text_threads),
+        "view.linkBadge" => flag(&mut app.ui.link_badge),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
@@ -2433,6 +2436,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.baselineGrid" => app.ui.baseline_grid,
         "view.documentGrid" => app.ui.document_grid,
         "view.textThreads" => app.ui.text_threads,
+        "view.linkBadge" => app.ui.link_badge,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
         "changes.track" => app.session.active().is_some_and(|d| d.doc.settings.track_changes),

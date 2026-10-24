@@ -1686,6 +1686,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Rulers", "Mostrar/ocultar réguas"),
     ("Show/Hide Tagged Frames", "Mostrar/ocultar quadros marcados"),
     ("Show/Hide Text Threads", "Mostrar/ocultar encadeamentos de texto"),
+    ("Show/Hide Link Badge", "Mostrar/ocultar selo de vínculo"),
     ("Sort", "Ordenar"),
     ("Split Path", "Dividir traçado"),
     ("Step and Repeat…", "Passo e repetição…"),
