@@ -4024,6 +4024,24 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                             }
                         });
                     ui.end_row();
+                    // Paragraph Direction (World-Ready): switching also mirrors left/right alignment,
+                    // as the Paragraph panel does.
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Direction:"));
+                    let rtl = cur(d, "p.direction", &pv["direction"]).as_str() == Some("rightToLeft");
+                    ui.horizontal(|ui| {
+                        for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+                            if ui.selectable_label(on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() && !on {
+                                let align = match a {
+                                    designcraft_doc::Align::Left => designcraft_doc::Align::Right,
+                                    designcraft_doc::Align::Right => designcraft_doc::Align::Left,
+                                    other => other,
+                                };
+                                d.fields.insert("p.direction".into(), json!(dir));
+                                d.fields.insert("p.align".into(), serde_json::to_value(align).unwrap_or_default());
+                            }
+                        }
+                    });
+                    ui.end_row();
                     for (label, key) in [
                         ("Left Indent:", "leftIndent"),
                         ("First Line Indent:", "firstLineIndent"),
@@ -5874,7 +5892,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 12] = [
+pub const JUSTIFY_ATTRS: [&str; 13] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -5886,6 +5904,7 @@ pub const JUSTIFY_ATTRS: [&str; 12] = [
     "glyphScaleMax",
     "composer",
     "kashidas",
+    "kashidaLevel",
     "koreanCharBreaks",
 ];
 
@@ -6113,18 +6132,43 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             d.fields.insert(format!("{prefix}composer"), json!(single_line));
         }
         ui.end_row();
-        for (label, key, text, default) in [
-            ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
-            ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
-        ] {
-            crate::rtl::label(ui, crate::i18n::tr(lang, label));
-            let v = cur(d, key);
-            let mut on = v.as_bool().unwrap_or(default);
-            if ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, text))).indeterminate(v.is_null())).changed() {
-                d.fields.insert(format!("{prefix}{key}"), json!(on));
-            }
-            ui.end_row();
+        // Insert Kashidas: None is the switch off; the other levels turn it on and say how far a join
+        // stretches. Mixed paragraphs show empty until a level is chosen.
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Insert Kashidas:"));
+        {
+            use designcraft_doc::arabic::KashidaLevel;
+            let (on, level) = (cur(d, "kashidas"), cur(d, "kashidaLevel"));
+            let shown = if on.is_null() || level.is_null() {
+                None
+            } else if on.as_bool().unwrap_or(true) {
+                Some(serde_json::from_value::<KashidaLevel>(level).unwrap_or_default())
+            } else {
+                Some(KashidaLevel::None)
+            };
+            let text = shown.map_or("", KashidaLevel::label);
+            egui::ComboBox::from_id_salt("pskashida").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, text))).width(120.0).show_ui(
+                ui,
+                |ui| {
+                    for l in KashidaLevel::ALL {
+                        if ui.selectable_label(shown == Some(l), crate::rtl::widget(ui, crate::i18n::tr(lang, l.label()))).clicked() {
+                            d.fields.insert(format!("{prefix}kashidas"), json!(l != KashidaLevel::None));
+                            if l != KashidaLevel::None {
+                                d.fields.insert(format!("{prefix}kashidaLevel"), json!(l.key()));
+                            }
+                        }
+                    }
+                },
+            );
         }
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Korean Line Breaks:"));
+        let v = cur(d, "koreanCharBreaks");
+        let mut on = v.as_bool().unwrap_or(false);
+        let text = crate::i18n::tr(lang, "Between syllables (not only at spaces)");
+        if ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, text)).indeterminate(v.is_null())).changed() {
+            d.fields.insert(format!("{prefix}koreanCharBreaks"), json!(on));
+        }
+        ui.end_row();
     });
     if let Some(e) = d.fields.get("justifyError").and_then(Value::as_str) {
         ui.add_space(6.0);
@@ -8152,6 +8196,17 @@ mod tests {
             assert_eq!(para_attr(&mut app, &story, at, "wordSpaceMax"), 1.5);
             assert_eq!(para_attr(&mut app, &story, at, "wordSpaceMin"), min, "each paragraph keeps its own minimum");
         }
+    }
+
+    #[test]
+    fn paragraph_style_options_direction_and_kashida_level_reach_the_styled_paragraph() {
+        let para = style_section_edit(
+            &["indents", "justify"],
+            json!({"p.direction": "rightToLeft", "p.align": "right", "p.kashidas": true, "p.kashidaLevel": "high"}),
+        );
+        assert_eq!(para["direction"], "rightToLeft");
+        assert_eq!(para["kashidaLevel"], "high");
+        assert_eq!(para["kashidas"], true);
     }
 
     fn command_app(id: &str, fields: Value) -> DesignApp {

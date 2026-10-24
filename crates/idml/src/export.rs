@@ -1445,8 +1445,10 @@ impl<'a> Ex<'a> {
                 if v == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
             );
         }
-        if let Some(v) = a.kashidas {
-            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
+        // The level (None, Low, Medium, High) is DesignCraft's own; InDesign only knows on or off.
+        let level_off = a.kashida_level == Some(designcraft_doc::arabic::KashidaLevel::None);
+        if a.kashidas.is_some() || level_off {
+            el.set("Kashidas", if a.kashidas.unwrap_or(true) && !level_off { "DefaultKashidas" } else { "KashidasOff" });
         }
         if let Some(v) = &a.arabic_justification {
             el.set("ParagraphJustification", v);
