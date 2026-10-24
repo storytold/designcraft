@@ -407,6 +407,11 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     app.ui.stroke_front = stroke;
     ui.data_mut(|d| d.insert_temp(mode_id, mode));
+    // A gradient: the stop selected in the Gradient panel, as InDesign's Color panel shows it.
+    if !text && let Some(g) = designcraft_color::swatch::resolve_gradient(&doc.swatches, &name).cloned() {
+        gradient_stop(app, ui, &g, target, mode);
+        return;
+    }
     let sw = doc.swatch(&name).cloned();
     let Some(c) = doc.resolve_color(&name, 1.0) else {
         ui.label(crate::rtl::widget(
@@ -553,8 +558,80 @@ fn cmyk_ramp(k: usize, x: f32) -> egui::Color32 {
     egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
 
+/// The Color panel on a gradient fill (or stroke): the stop selected in the Gradient panel (the
+/// stop before a selected midpoint), in the panel's colour mode, as InDesign's. Its fields and the
+/// spectrum colour that stop.
+fn gradient_stop(app: &mut DesignApp, ui: &mut egui::Ui, g: &designcraft_color::Gradient, target: &str, mode: ColorMode) {
+    use designcraft_color::Color;
+    let t = Tokens::get(ui.ctx());
+    let sel: RampSel = ui.data(|d| d.get_temp(egui::Id::new(GRAD_SEL))).unwrap_or(RampSel::Stop(0));
+    let i = match sel {
+        RampSel::Stop(i) | RampSel::Mid(i) => i,
+    }
+    .min(g.stops.len().saturating_sub(1));
+    let Some(stop) = g.stops.get(i) else { return };
+    let c = stop.color;
+    let pct = |v: f32| (v * 100.0).round();
+    let values = match c {
+        Color::Cmyk { c, m, y, k } => format!("C={} M={} Y={} K={}", pct(c), pct(m), pct(y), pct(k)),
+        Color::Gray { k } => format!("K={}", pct(k)),
+        Color::Rgb { .. } => {
+            let [r, g, b, _] = c.to_rgba8(1.0);
+            format!("R={r} G={g} B={b}")
+        }
+    };
+    ui.label(egui::RichText::new(values).size(11.0).color(t.text_dim));
+    let mut new = None;
+    match mode {
+        ColorMode::Cmyk => {
+            let mut v = c.to_cmyk();
+            let mut done = false;
+            for (k, label) in ["C", "M", "Y", "K"].iter().enumerate() {
+                done |= channel(ui, label, &mut v[k], 100.0, "%", |x| cmyk_ramp(k, x));
+            }
+            if done {
+                new = Some(Color::cmyk(v[0], v[1], v[2], v[3]));
+            }
+        }
+        ColorMode::Rgb => {
+            let mut v = c.to_rgb();
+            let mut done = false;
+            for (k, label) in ["R", "G", "B"].iter().enumerate() {
+                done |= channel(ui, label, &mut v[k], 255.0, "", |x| {
+                    let mut p = [0.0; 3];
+                    p[k] = x;
+                    egui::Color32::from_rgb((p[0] * 255.0) as u8, (p[1] * 255.0) as u8, (p[2] * 255.0) as u8)
+                });
+            }
+            if done {
+                new = Some(Color::rgb(v[0], v[1], v[2]));
+            }
+        }
+        ColorMode::Lab => {
+            let lab = c.to_lab();
+            ui.label(egui::RichText::new(format!("L {:.0}   a {:.0}   b {:.0}", lab.l, lab.a, lab.b)).color(t.text_dim));
+        }
+    }
+    if let Some([r, gr, b]) = spectrum_pick(ui) {
+        new = Some(Color::rgb(r, gr, b));
+    }
+    if let Some(c) = new {
+        let mut stops = stops_json(g);
+        set_stop(&mut stops, i, "color", color_json(&c));
+        let _ = app.run("object.gradient", json!({"stops": stops, "target": target}));
+    }
+}
+
 /// The spectrum ramp: hue across, light to dark down; click to apply.
 fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
+    if let Some([r, g, b]) = spectrum_pick(ui) {
+        let text = super::colors_affect_text(app);
+        let _ = app.run("object.color", json!({"color": {"model": "rgb", "r": r, "g": g, "b": b}, "target": target, "text": text}));
+    }
+}
+
+/// The spectrum ramp; a click on it gives that colour (RGB, 0–1, in 1/255 steps).
+fn spectrum_pick(ui: &mut egui::Ui) -> Option<[f32; 3]> {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
     let at = |u: f32, v: f32| -> [f32; 3] {
         let c = egui::ecolor::Hsva::new(u, (v * 2.0).min(1.0), (2.0 - v * 2.0).min(1.0), 1.0).to_rgb();
@@ -571,14 +648,9 @@ fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
             ui.painter().rect_filled(cell, 0.0, egui::Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8));
         }
     }
-    if resp.clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-    {
-        let c = at(((p.x - r.min.x) / r.width()).clamp(0.0, 1.0), ((p.y - r.min.y) / r.height()).clamp(0.0, 1.0));
-        let text = super::colors_affect_text(app);
-        let q = |v: f32| (v * 255.0).round() / 255.0;
-        let _ = app.run("object.color", json!({"color": {"model": "rgb", "r": q(c[0]), "g": q(c[1]), "b": q(c[2])}, "target": target, "text": text}));
-    }
+    let p = resp.interact_pointer_pos().filter(|_| resp.clicked())?;
+    let c = at(((p.x - r.min.x) / r.width()).clamp(0.0, 1.0), ((p.y - r.min.y) / r.height()).clamp(0.0, 1.0));
+    Some(c.map(|v| (v * 255.0).round() / 255.0))
 }
 
 /// A swatch dragged out of the Swatches panel (the Gradient panel's ramp takes it as a stop).
@@ -636,9 +708,13 @@ fn thumbnail(p: &egui::Painter, r: egui::Rect, g: &designcraft_color::Gradient, 
     p.rect_stroke(r, 0.0, egui::Stroke::new(1.0, border), egui::StrokeKind::Outside);
 }
 
+/// Temp-data key of what's selected on the Gradient panel's ramp ([`RampSel`]): the Color panel
+/// edits that stop.
+pub(super) const GRAD_SEL: &str = "grad_sel";
+
 /// What's selected on the ramp: a stop, or the midpoint after a stop.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum RampSel {
+pub(super) enum RampSel {
     Stop(usize),
     Mid(usize),
 }
@@ -681,7 +757,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let is_gradient = cur.is_some();
     let g = cur.unwrap_or_default();
     let radial = g.kind == designcraft_color::GradientKind::Radial;
-    let sel_id = egui::Id::new("grad_sel");
+    let sel_id = egui::Id::new(GRAD_SEL);
     let drag_id = egui::Id::new("grad_drag");
     let mut sel: RampSel = ui.data(|d| d.get_temp(sel_id)).unwrap_or(RampSel::Stop(0));
     let last = g.stops.len().saturating_sub(1);
