@@ -1116,6 +1116,10 @@ fn quick_actions_object(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         }
         return;
     }
+    if i.is_graphic && i.count == 1 {
+        image_actions(app, ui, hw);
+        return;
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Arrange"), hw);
@@ -1133,6 +1137,99 @@ fn quick_actions_object(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Convert Shape"), fw);
         convert_shape_menu(app, &r);
     }
+}
+
+/// Quick Actions for a placed image, as InDesign's: Import File (place another file in the
+/// frame), Embed, Edit Original (the linked file in its default application) and Reveal in
+/// Explorer / Finder (the folder it's in). Linked-file actions are greyed for an embedded image.
+fn image_actions(app: &mut DesignApp, ui: &mut Ui, hw: f32) {
+    let tr = |app: &DesignApp, s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
+    let asset = app.session.active().and_then(|st| {
+        let g = st.selection.items.first().and_then(|id| st.doc.item(*id)).and_then(|it| it.graphic())?;
+        st.doc.assets.get(&g.asset).map(|a| (a.id, a.link.clone()))
+    });
+    let link = asset.as_ref().and_then(|(_, l)| l.clone()).filter(|l| !l.is_empty());
+    // Edit Original and Reveal need the system's opener: a browser won't open file:// URLs, so
+    // the web build greys them out.
+    let can_open = link.is_some() && app.services.open_path.is_some();
+    let reveal = if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Reveal in Explorer"
+    } else {
+        "Show in Folder"
+    };
+    let (import, embed, edit, show) = (tr(app, "Import File"), tr(app, "Embed"), tr(app, "Edit Original"), tr(app, reveal));
+    let mut clicked = [false; 4];
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        clicked[0] = outline_button(ui, &import, hw).clicked();
+        clicked[1] = ui.add_enabled_ui(link.is_some(), |ui| outline_button(ui, &embed, hw)).inner.clicked();
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        ui.add_enabled_ui(can_open, |ui| {
+            clicked[2] = outline_button(ui, &edit, hw).clicked();
+            clicked[3] = outline_button(ui, &show, hw).clicked();
+        });
+    });
+    if clicked[0] {
+        // With the frame selected, the file placed replaces the image (File › Place).
+        if let Err(e) = app.pick_and_open("place") {
+            app.status(e);
+        }
+    }
+    if clicked[1]
+        && let Some((id, _)) = asset
+    {
+        let _ = app.run("links.embed", json!({"asset": id.0}));
+    }
+    if let Some(path) = link.filter(|_| clicked[2] || clicked[3]) {
+        // A relative link belongs to the document: resolved against its folder, not the app's
+        // working directory. A link that can't be followed (another computer, a device) says so.
+        let document = app.session.active().and_then(|st| st.path.clone());
+        let file = match designcraft_engine::io::document_path(&path, document.as_deref().map(std::path::Path::new)) {
+            Ok(file) => file,
+            Err(e) => {
+                app.status(e.to_string());
+                return;
+            }
+        };
+        // The link comes from the document, so it isn't trusted: only an existing file goes to the
+        // system's opener, and Edit Original only opens what File › Place takes (not a program).
+        if let Err(e) = openable(&file, clicked[3]) {
+            let msg = crate::i18n::tr(&app.ui.language, e).to_string();
+            app.status(msg);
+            return;
+        }
+        // The system's opener: the file in its application, or selected in the file manager.
+        if let Some(open) = app.services.open_path.as_mut()
+            && let Err(e) = open(&file, clicked[3])
+        {
+            app.status(e);
+        }
+    }
+}
+
+/// Whether the system's opener may be handed `file` (a link resolved against the document, so
+/// not a URL, a device or another computer's): an existing file; to open (Edit Original), one of
+/// the image and document formats File › Place takes; to reveal, a name Explorer's `/select,`
+/// argument can't be broken out of. The error is the status line's message (untranslated).
+fn openable(file: &std::path::Path, reveal: bool) -> Result<(), &'static str> {
+    if !designcraft_engine::io::is_file(file) {
+        return Err("The link isn't a file on this computer");
+    }
+    let name = file.to_string_lossy();
+    if reveal {
+        if name.contains('"') {
+            return Err("The link isn't a file on this computer");
+        }
+        return Ok(());
+    }
+    let ext = file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    const PLACEABLE: [&str; 13] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "psd", "eps", "ai", "pdf"];
+    if PLACEABLE.contains(&ext.as_str()) { Ok(()) } else { Err("Edit Original opens only linked images and documents") }
 }
 
 // ---------------------------------------------------------------- Text
@@ -3856,6 +3953,159 @@ mod tests {
         assert_eq!(items.len(), 1, "one shape left");
         let r = items[0].bounds();
         assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
+    }
+
+    /// A placed image's Quick Actions, as InDesign's: Edit Original and Reveal open the linked file
+    /// and its folder; Embed embeds it, and the linked-file actions grey out.
+    #[test]
+    fn image_quick_actions_open_the_link_and_embed_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my photo.png");
+        std::fs::write(&path, designcraft_render::Rendered { width: 4, height: 4, pixels: vec![200; 64] }.to_png()).unwrap();
+        // The system opener, recording what it was asked to open.
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = opened.clone();
+        let services = crate::Services {
+            open_path: Some(Box::new(move |p: &std::path::Path, reveal: bool| {
+                log.borrow_mut().push((p.to_path_buf(), reveal));
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": path.to_string_lossy(), "frame": id, "link": true})).unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        let _ = h.get_by_label("Import File");
+        let reveal = if cfg!(target_os = "macos") {
+            "Reveal in Finder"
+        } else if cfg!(target_os = "windows") {
+            "Reveal in Explorer"
+        } else {
+            "Show in Folder"
+        };
+        h.get_by_label("Edit Original").click();
+        h.run_steps(2);
+        h.get_by_label(reveal).click();
+        h.run_steps(2);
+        // The file itself, opened, then revealed in the file manager; no browser URL.
+        assert_eq!(*opened.borrow(), [(path.clone(), false), (path.clone(), true)]);
+        assert!(h.state().ui.pending_urls.is_empty());
+        // Embedded: no link left, and the linked-file actions grey out.
+        h.get_by_label("Embed").click();
+        h.run_steps(3);
+        let st = h.state().session.active().unwrap();
+        let g = st.doc.item(designcraft_doc::ids::ItemId(id)).unwrap().graphic().unwrap().clone();
+        assert!(st.doc.assets[&g.asset].link.is_none(), "embedded");
+        use egui_kittest::kittest::NodeT;
+        assert!(h.get_by_label("Edit Original").accesskit_node().is_disabled(), "nothing linked to edit");
+    }
+
+    /// The opener only gets an existing image or document: a program, a URL, a missing file or a
+    /// name with a quote in it is refused with a status message.
+    #[test]
+    fn image_quick_actions_refuse_links_that_are_not_images_on_this_computer() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("photo.png");
+        std::fs::write(&png, designcraft_render::Rendered { width: 4, height: 4, pixels: vec![200; 64] }.to_png()).unwrap();
+        let exe = dir.path().join("setup.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = opened.clone();
+        let services = crate::Services {
+            open_path: Some(Box::new(move |p: &std::path::Path, reveal: bool| {
+                log.borrow_mut().push((p.to_path_buf(), reveal));
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": png.to_string_lossy(), "frame": id, "link": true})).unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let aid = app.session.doc().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().graphic().unwrap().asset;
+        let missing = dir.path().join("gone.png");
+        let quoted = dir.path().join("a\" b.png");
+        let mut h = panel(app);
+        for link in [
+            exe.to_string_lossy().to_string(),
+            "https://example.com/photo.png".to_string(),
+            "ms-msdt:/id PCWDiagnostic".to_string(),
+            missing.to_string_lossy().to_string(),
+            quoted.to_string_lossy().to_string(),
+        ] {
+            {
+                let app = h.state_mut();
+                app.ui.status.clear();
+                let st = app.session.doc_mut().unwrap();
+                let doc = std::sync::Arc::make_mut(&mut st.doc);
+                std::sync::Arc::make_mut(doc.assets.get_mut(&aid).unwrap()).link = Some(link.clone());
+            }
+            h.run_steps(2);
+            h.get_by_label("Edit Original").click();
+            h.run_steps(2);
+            assert!(!h.state().ui.status.is_empty(), "{link}: a status message");
+        }
+        // The exe is refused for Edit Original; Reveal of a real file still works.
+        assert!(opened.borrow().is_empty(), "{:?}", opened.borrow());
+        assert!(openable(&exe, true).is_ok() && openable(&png, false).is_ok());
+        assert!(openable(&exe, false).is_err() && openable(&missing, true).is_err());
+    }
+
+    /// A relative link opens the file beside the document, wherever the app was started from.
+    #[test]
+    fn image_quick_actions_resolve_a_relative_link_against_the_document() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("pics")).unwrap();
+        let path = dir.path().join("pics").join("photo.png");
+        std::fs::write(&path, designcraft_render::Rendered { width: 4, height: 4, pixels: vec![200; 64] }.to_png()).unwrap();
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = opened.clone();
+        let services = crate::Services {
+            open_path: Some(Box::new(move |p: &std::path::Path, reveal: bool| {
+                log.borrow_mut().push((p.to_path_buf(), reveal));
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": path.to_string_lossy(), "frame": id, "link": true})).unwrap();
+        app.run("file.saveAs", json!({"path": dir.path().join("doc.designcraft").to_string_lossy()})).unwrap();
+        // The link stored relative to the document, as a moved project keeps it.
+        let st = app.session.doc_mut().unwrap();
+        let doc = std::sync::Arc::make_mut(&mut st.doc);
+        let aid = doc.item(designcraft_doc::ids::ItemId(id)).unwrap().graphic().unwrap().asset;
+        std::sync::Arc::make_mut(doc.assets.get_mut(&aid).unwrap()).link = Some("pics/photo.png".into());
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Edit Original").click();
+        h.run_steps(2);
+        let got = opened.borrow().first().cloned().expect("the opener was asked");
+        assert_eq!(got.0, path, "the file beside the document: {:?}", got.0);
+    }
+
+    /// Without a system opener (the web build), Edit Original and Reveal grey out: a browser
+    /// won't open a file:// URL. Embed still works.
+    #[test]
+    fn without_an_opener_the_linked_file_actions_grey_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.png");
+        std::fs::write(&path, designcraft_render::Rendered { width: 4, height: 4, pixels: vec![200; 64] }.to_png()).unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": path.to_string_lossy(), "frame": id, "link": true})).unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let h = panel(app);
+        use egui_kittest::kittest::NodeT;
+        assert!(h.get_by_label("Edit Original").accesskit_node().is_disabled());
+        assert!(!h.get_by_label("Embed").accesskit_node().is_disabled());
+        assert!(h.state().ui.pending_urls.is_empty());
     }
 
     const CYAN: &str = "C=100 M=0 Y=0 K=0";

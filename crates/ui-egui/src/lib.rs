@@ -53,6 +53,10 @@ pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
 pub struct ImportRequest {
     pub purpose: String,
     pub target: Option<u64>,
+    /// The objects selected when the file was asked for: a "place" replaces their graphic even
+    /// if the selection changed while the file was being chosen (the web's file picker). `None`
+    /// leaves the document's selection as it is.
+    pub selection: Option<Vec<u64>>,
 }
 pub struct ImportedFile {
     pub request: ImportRequest,
@@ -63,6 +67,8 @@ pub type OpenAsyncFn = Box<dyn FnMut(ImportRequest)>;
 /// Starts a browser download; an error means no file was handed to the user.
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
+/// Open a file in its default application, or with `reveal`, show it in the file manager.
+pub type OpenPathFn = Box<dyn FnMut(&std::path::Path, bool) -> Result<(), String>>;
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
@@ -87,6 +93,9 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    /// Open a linked file in its application or show it in the file manager (Edit Original,
+    /// Reveal in Explorer / Finder). Without it, the file's `file://` URL is opened instead.
+    pub open_path: Option<OpenPathFn>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1029,7 +1038,11 @@ impl DesignApp {
     }
 
     pub fn import_request(&self, purpose: &str) -> ImportRequest {
-        ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) }
+        ImportRequest {
+            purpose: purpose.into(),
+            target: self.session.active().map(|d| d.uid),
+            selection: self.session.active().map(|d| d.selection.items.iter().map(|id| id.0).collect()),
+        }
     }
 
     pub(crate) fn activate_import_target(&mut self, request: &ImportRequest) -> Result<(), String> {
@@ -1039,6 +1052,11 @@ impl DesignApp {
             return Err(message.into());
         };
         self.run("file.activate", json!({"index": index}))?;
+        if request.purpose == "place"
+            && let Some(ids) = &request.selection
+        {
+            self.run("selection.set", json!({ "ids": ids }))?;
+        }
         Ok(())
     }
 
@@ -2972,6 +2990,20 @@ mod browser_import_tests {
         assert!(app.session.doc().unwrap().doc.assets.is_empty());
         app.run("edit.redo", json!({})).unwrap();
         assert_eq!(app.session.doc().unwrap().doc.assets.len(), 1);
+    }
+
+    /// A place asked for with a frame selected fills that frame, even if the selection changed
+    /// while the file was being chosen (Properties › Import File on the web).
+    #[test]
+    fn delayed_place_fills_the_frame_selected_when_it_was_asked_for() {
+        let mut app = app();
+        let f = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [f]})).unwrap();
+        let request = app.import_request("place");
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        deliver(&mut app, request, "red.svg", image());
+        let doc = &app.session.doc().unwrap().doc;
+        assert!(doc.item(designcraft_doc::ItemId(f)).unwrap().graphic().is_some(), "the frame selected at the time holds the image");
     }
 
     #[test]
