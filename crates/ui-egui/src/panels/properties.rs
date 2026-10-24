@@ -808,6 +808,10 @@ pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: Corn
 fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+    // Every selected object is a text frame: the popups offer Apply To Frame or Text, for one
+    // frame or several, as InDesign's do.
+    let text_frames =
+        i.is_text && app.session.active().is_some_and(|st| st.selection.items.iter().all(|id| doc.item(*id).is_some_and(|it| it.is_text_frame())));
     // Fill.
     let b = block(ui, FIELD_H);
     let (fc, fg) = widgets::swatch_colors(&doc, &i.fill, 1.0);
@@ -820,7 +824,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         i.fill
     ));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fill swatch"));
-    swatch_menu(app, &resp, &doc, &i.fill, false, i.is_text && i.count == 1, false);
+    swatch_menu(app, &resp, &doc, &i.fill, false, text_frames, false);
     crate::rtl::paint(
         ui.painter(),
         b.min + vec2(34.0, FIELD_H / 2.0),
@@ -842,7 +846,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         i.stroke
     ));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stroke swatch"));
-    swatch_menu(app, &resp, &doc, &i.stroke, true, i.is_text && i.count == 1, false);
+    swatch_menu(app, &resp, &doc, &i.stroke, true, text_frames, false);
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
         show_panel(app, "stroke");
     }
@@ -3932,6 +3936,34 @@ mod tests {
         let doc = &h.state().session.active().unwrap().doc;
         assert_eq!(doc.story(story).unwrap().char_format_at(0).over.fill.as_deref(), Some(CYAN), "the text is cyan");
         assert_eq!(doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]", "the frame isn't");
+    }
+
+    #[test]
+    fn apply_to_text_colours_the_text_of_several_text_frames() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut ids = vec![];
+        let mut stories = vec![];
+        for x in [72, 250, 430] {
+            let r = app.run("frame.create", json!({"rect": [x, 72, x + 150, 140], "content": "text", "text": "75%"})).unwrap();
+            ids.push(r["id"].as_u64().unwrap());
+            stories.push(designcraft_doc::StoryId(r["story"].as_u64().unwrap()));
+        }
+        app.run("selection.set", json!({"ids": ids})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        // Three text frames, as one: Apply To is offered.
+        assert!(h.query_by_label("Apply To:").is_some());
+        h.get_by_label("Text").click();
+        h.run_steps(3);
+        h.get_by_label(CYAN).click();
+        h.run_steps(3);
+        let doc = &h.state().session.active().unwrap().doc;
+        for (id, story) in ids.iter().zip(&stories) {
+            assert_eq!(doc.story(*story).unwrap().char_format_at(0).over.fill.as_deref(), Some(CYAN), "every frame's text is cyan");
+            assert_eq!(doc.item(designcraft_doc::ids::ItemId(*id)).unwrap().fill.swatch, "[None]", "the frames aren't");
+        }
     }
 
     #[test]
