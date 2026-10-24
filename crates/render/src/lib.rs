@@ -555,6 +555,48 @@ impl Renderer {
         self.drawing_items.pop();
     }
 
+    /// A group: children carry their own transforms relative to the group.
+    fn draw_group(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, xf: Affine, page: ShownOn) {
+        // Isolate Blending / Knockout: the group is its own layer (blend modes stop at it).
+        let layered = it.opacity < 0.999 || it.blend != DcBlend::Normal || it.isolate || it.knockout;
+        if layered {
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
+        }
+        // Gradient feather: the group's objects drawn together, then faded as one.
+        let feather = it.effects.gradient_feather.on && f.opts.quality != DisplayQuality::Fast;
+        if feather {
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, None, None, None, None);
+        }
+        if it.knockout {
+            // Knockout: each object first clears its area of those behind it, so it composites
+            // with the group's backdrop rather than with its siblings.
+            for c in it.shown_children() {
+                if !c.hidden {
+                    ctx.set_transform(Affine::IDENTITY);
+                    ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
+                    ctx.set_transform(f.view * xf * c.xf);
+                    ctx.set_paint(peniko::Color::BLACK);
+                    ctx.fill_path(&c.path.to_bezpath());
+                    ctx.pop_layer();
+                }
+                self.draw_item(ctx, f, c, xf, page);
+            }
+        } else {
+            for c in it.shown_children() {
+                self.draw_item(ctx, f, c, xf, page);
+            }
+        }
+        if feather {
+            fx::gradient_feather_mask(ctx, f, it, xf);
+            ctx.pop_layer();
+        }
+        if layered {
+            ctx.pop_layer();
+        }
+    }
+
     fn draw_item_inner(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
         if it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
             return;
@@ -564,45 +606,7 @@ impl Renderer {
         // A frame with items pasted into it draws like any other object (draw_body: fill, the items
         // clipped to the frame, stroke), so its effects apply to all of it.
         if !it.children().is_empty() && !it.has_nested_items() {
-            // Groups: children carry their own transforms relative to the group.
-            // Isolate Blending / Knockout: the group is its own layer (blend modes stop at it).
-            let layered = it.opacity < 0.999 || it.blend != DcBlend::Normal || it.isolate || it.knockout;
-            if layered {
-                ctx.set_transform(Affine::IDENTITY);
-                ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
-            }
-            // Gradient feather: the group's objects drawn together, then faded as one.
-            let feather = it.effects.gradient_feather.on && f.opts.quality != DisplayQuality::Fast;
-            if feather {
-                ctx.set_transform(Affine::IDENTITY);
-                ctx.push_layer(None, None, None, None, None);
-            }
-            if it.knockout {
-                // Knockout: each object first clears its area of those behind it, so it composites
-                // with the group's backdrop rather than with its siblings.
-                for c in it.shown_children() {
-                    if !c.hidden {
-                        ctx.set_transform(Affine::IDENTITY);
-                        ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
-                        ctx.set_transform(f.view * xf * c.xf);
-                        ctx.set_paint(peniko::Color::BLACK);
-                        ctx.fill_path(&c.path.to_bezpath());
-                        ctx.pop_layer();
-                    }
-                    self.draw_item(ctx, f, c, xf, page);
-                }
-            } else {
-                for c in it.shown_children() {
-                    self.draw_item(ctx, f, c, xf, page);
-                }
-            }
-            if feather {
-                fx::gradient_feather_mask(ctx, f, it, xf);
-                ctx.pop_layer();
-            }
-            if layered {
-                ctx.pop_layer();
-            }
+            self.draw_group(ctx, f, it, xf, page);
             return;
         }
         // Composed text stays inside its frame apart from glyph overhang (italics, swashes, big
