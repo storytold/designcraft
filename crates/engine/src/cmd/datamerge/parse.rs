@@ -128,7 +128,7 @@ pub fn table_from_objects(rows: &[Value]) -> Result<Table, String> {
                 warnings.push(format!("Row {} has an extra field \"{key}\". It was ignored.", i + 1));
             }
         }
-        if cells.iter().all(|c| c.is_empty()) {
+        if cells.iter().all(String::is_empty) {
             continue;
         }
         out.push(cells);

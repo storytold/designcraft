@@ -173,7 +173,7 @@ pub fn records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>>, Im
                 extra.push(v.clone());
             }
         }
-        if *r != header_row && row.iter().all(|c| c.is_empty()) && extra.is_empty() {
+        if *r != header_row && row.iter().all(String::is_empty) && extra.is_empty() {
             continue;
         }
         row.extend(extra);
