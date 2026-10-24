@@ -720,9 +720,20 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
 
 fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
-    let opts = options(p, st.doc.page_count())?;
-    // Transparency Flattener presets: High / Medium / Low Resolution, or a ppi.
-    let ppi = match p.get("flatten") {
+    let r = pdf_report(&st.doc, &s.cache, p)?;
+    match str_param(p, "path") {
+        Some(path) => {
+            write_file(path, &r.bytes)?;
+            Ok(json!({"path": path, "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings}))
+        }
+        None => Ok(json!({"base64": super::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
+    }
+}
+
+/// The Transparency Flattener's resolution `p.flatten` asks for: High, Medium or Low Resolution,
+/// or a ppi; `None` when the PDF isn't flattened.
+fn flatten_ppi(p: &Value) -> Result<Option<f64>> {
+    Ok(match p.get("flatten") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => None,
         Some(Value::String(s)) if s == "high" => Some(300.0),
         Some(Value::String(s)) if s == "medium" => Some(150.0),
@@ -731,28 +742,12 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(
             v.as_f64().filter(|v| (36.0..=1200.0).contains(v)).ok_or_else(|| bad("file.exportPdf", "`flatten`: high|medium|low or 36–1200 ppi"))?,
         ),
-    };
-    let flattened = ppi.map(|ppi| flatten(&st.doc, &s.cache, ppi));
-    // Placed PDFs with hidden layers go out as images showing just their visible layers.
-    let base: &designcraft_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
-    let (layered, layer_count) = rasterize_layered(base)?;
-    let base2: &designcraft_doc::Document = layered.as_ref().unwrap_or(base);
-    let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache);
-    let doc: &designcraft_doc::Document = fx_doc.as_ref().unwrap_or(base2);
-    let boxed = super::interchange::with_pdf_boxes(doc);
-    let doc: &designcraft_doc::Document = &boxed;
-    let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
-    let mut r = r;
-    // Transparency Blend Space: the page group of pages with transparency.
-    let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
-    let blended: Vec<bool> = spreads.iter().map(|si| doc.spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))).collect();
-    if blended.iter().any(|b| *b) {
-        match designcraft_pdf::add_blend_space(&r.bytes, &blended, doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk) {
-            Some(b) => r.bytes = b,
-            None => r.warnings.push("the transparency blend space couldn't be set".into()),
-        }
-    }
-    // Interactive PDF view options.
+    })
+}
+
+/// The catalog entries of the interactive view options in `p` (page mode and layout) and the
+/// destination the first page opens at (`view`); unknown values are refused.
+fn view_options(p: &Value) -> Result<(String, Option<&'static str>)> {
     let mut cat = String::new();
     if p.get("fullScreen").and_then(Value::as_bool) == Some(true) {
         cat.push_str("/PageMode/FullScreen");
@@ -768,17 +763,57 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
         Some(o) => return Err(bad("file.exportPdf", format!("unknown pageLayout `{o}`"))),
         None => {}
     }
-    if let Some(v) = str_param(p, "view") {
-        // The first page opens with this view (pages are objects in order, so refer by index 0).
-        let dest = match v {
-            "fitPage" => "/Fit",
-            "fitWidth" => "/FitH null",
-            "actual" => "/XYZ null null 1",
-            o => return Err(bad("file.exportPdf", format!("unknown view `{o}` (fitPage, fitWidth, actual)"))),
-        };
-        if let Some(first) = first_page_ref(&r.bytes) {
-            cat.push_str(&format!("/OpenAction[{first} 0 R{dest}]"));
+    let dest = match str_param(p, "view") {
+        None => None,
+        Some("fitPage") => Some("/Fit"),
+        Some("fitWidth") => Some("/FitH null"),
+        Some("actual") => Some("/XYZ null null 1"),
+        Some(o) => return Err(bad("file.exportPdf", format!("unknown view `{o}` (fitPage, fitWidth, actual)"))),
+    };
+    Ok((cat, dest))
+}
+
+/// Refuses PDF options `p` that `pdf_report` would refuse for a document of `pages` pages,
+/// without exporting: `file.package` checks them before it writes anything.
+pub(super) fn check_pdf_options(p: &Value, pages: usize) -> Result<()> {
+    options(p, pages)?;
+    flatten_ppi(p)?;
+    view_options(p)?;
+    Ok(())
+}
+
+/// The PDF of `doc` as `file.exportPdf` makes it from options `p`: flattened when asked, placed
+/// PDFs with hidden layers and soft effects as images, the blend space, the view options and the
+/// page transitions. `file.package` writes its PDF with it too.
+pub(super) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    let opts = options(p, doc.page_count())?;
+    let (mut cat, dest) = view_options(p)?;
+    let flattened = flatten_ppi(p)?.map(|ppi| flatten(doc, cache, ppi));
+    // Placed PDFs with hidden layers go out as images showing just their visible layers.
+    let base: &designcraft_doc::Document = flattened.as_ref().map_or(doc, |f| &f.0);
+    let (layered, layer_count) = rasterize_layered(base)?;
+    let base2: &designcraft_doc::Document = layered.as_ref().unwrap_or(base);
+    let (fx_doc, fx_count) = rasterize_effects(base2, cache);
+    let doc: &designcraft_doc::Document = fx_doc.as_ref().unwrap_or(base2);
+    let boxed = super::interchange::with_pdf_boxes(doc);
+    let doc: &designcraft_doc::Document = &boxed;
+    let r = designcraft_pdf::export_pdf_with_report(doc, cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut r = r;
+    // Transparency Blend Space: the page group of pages with transparency.
+    let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
+    let blended: Vec<bool> = spreads.iter().map(|si| doc.spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))).collect();
+    if blended.iter().any(|b| *b) {
+        match designcraft_pdf::add_blend_space(&r.bytes, &blended, doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk) {
+            Some(b) => r.bytes = b,
+            None => r.warnings.push("the transparency blend space couldn't be set".into()),
         }
+    }
+    // Interactive PDF view options; the first page opens with the view (pages are objects in
+    // order, so refer by index 0).
+    if let Some(dest) = dest
+        && let Some(first) = first_page_ref(&r.bytes)
+    {
+        cat.push_str(&format!("/OpenAction[{first} 0 R{dest}]"));
     }
     if !cat.is_empty() {
         match designcraft_pdf::add_catalog_entries(&r.bytes, &cat) {
@@ -815,13 +850,7 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     {
         r.warnings.push(format!("transparency flattened: {n} region(s) rasterised"));
     }
-    match str_param(p, "path") {
-        Some(path) => {
-            write_file(path, &r.bytes)?;
-            Ok(json!({"path": path, "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings}))
-        }
-        None => Ok(json!({"base64": super::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
-    }
+    Ok(r)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

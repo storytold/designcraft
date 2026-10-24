@@ -203,7 +203,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
+            "{dir: folder to create, idml?: true, pdf?: false|true|{…options of file.exportPdf}, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
             has_doc,
             package
         ),
@@ -390,6 +390,17 @@ fn drawn_faces(cs: &ComposedStory, depth: usize, out: &mut Vec<FaceRef>) {
 fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = PathBuf::from(str_param(p, "dir").ok_or_else(|| bad("file.package", "missing `dir`"))?);
     let st = s.doc()?;
+    // The PDF: with the default settings, or with the options of a PDF preset, made as
+    // file.exportPdf makes it. Read first, so that bad options write nothing.
+    let pdf = match p.get("pdf") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(json!({})),
+        Some(o @ Value::Object(_)) => {
+            super::export::check_pdf_options(o, st.doc.page_count())?;
+            Some(o.clone())
+        }
+        Some(v) => return Err(bad("file.package", format!("`pdf` is true, false or PDF export options, not {v}"))),
+    };
     let root = OutputRoot::new(dir.clone())?;
     let display_title = st.doc.title.clone();
     let title = safe_component(&display_title, "Untitled");
@@ -434,18 +445,18 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         root.write(&path, &designcraft_idml::export_idml_with(&packed, &opts))?;
         files.push(path);
     }
-    if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
+    if let Some(params) = pdf {
         let path = package_output_path(&dir, &title, "pdf")?;
-        let bytes = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(&packed), &s.cache, &Default::default())
-            .map_err(|e| EngineError::Other(e.to_string()))?;
-        root.write(&path, &bytes)?;
+        root.write(&path, &super::export::pdf_report(&packed, &s.cache, &params)?.bytes)?;
         files.push(path);
     }
-    // The report: fonts (missing first), links, preflight, the user's instructions.
-    let mut r = format!("Package report: {display_title}\n\n");
+    // The printing instructions first, as the form gave them; then the report: fonts (missing
+    // first), links, preflight.
+    let mut r = String::new();
     if let Some(t) = str_param(p, "instructions").filter(|t| !t.trim().is_empty()) {
         r += &format!("Instructions\n{t}\n\n");
     }
+    r += &format!("Package report: {display_title}\n\n");
     r += "Fonts\n";
     r += &font_lines.concat();
     if !fallback_lines.is_empty() {
@@ -507,6 +518,58 @@ mod tests {
             let links = opened.execute("links.list", &json!({})).unwrap();
             assert_eq!(links[0]["status"], "ok", "{extension}");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `pdf` takes file.exportPdf's options (a PDF preset's): a PDF/X-4 package PDF; `true` is the
+    /// default PDF, and bad options are refused.
+    #[test]
+    fn package_pdf_takes_export_options() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("dc-package-pdf-options-{}-{nonce}", std::process::id()));
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Options", "width": 72, "height": 72})).unwrap();
+        let x4 = dir.join("x4");
+        s.execute("file.package", &json!({"dir": x4.to_string_lossy(), "idml": false, "pdf": {"standard": "x4"}})).unwrap();
+        let has = |path: &std::path::Path, what: &[u8]| std::fs::read(path).unwrap().windows(what.len()).any(|w| w == what);
+        assert!(has(&x4.join("Options.pdf"), b"GTS_PDFX"));
+        let plain = dir.join("plain");
+        s.execute("file.package", &json!({"dir": plain.to_string_lossy(), "idml": false, "pdf": true})).unwrap();
+        assert!(!has(&plain.join("Options.pdf"), b"GTS_PDFX"));
+        // Refused before anything is written: bad options, a bad flattener or view option, and a
+        // `pdf` that is neither a switch nor options.
+        for bad in [
+            json!({"standard": "nope"}),
+            json!({"flatten": "extreme"}),
+            json!({"pageLayout": "spiral"}),
+            json!({"view": "zoomed"}),
+            json!("print"),
+            json!(3),
+        ] {
+            let out = dir.join("bad");
+            assert!(s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": bad})).is_err(), "{bad}");
+            assert!(!out.exists(), "{bad}: bad options write nothing");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A preset that flattens transparency (Screen and Email's `flatten: low`) gives the packaged
+    /// PDF the flattening `file.exportPdf` does.
+    #[test]
+    fn the_packaged_pdf_is_flattened_as_export_flattens_it() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("dc-package-pdf-flatten-{}-{nonce}", std::process::id()));
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Flat", "width": 144, "height": 144})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [10, 10, 100, 100], "content": "unassigned"})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+        s.execute("object.opacity", &json!({"ids": [id], "opacity": 0.5})).unwrap();
+        let exported = super::super::base64_decode(s.execute("file.exportPdf", &json!({"flatten": "low"})).unwrap()["base64"].as_str().unwrap());
+        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false, "pdf": {"flatten": "low"}})).unwrap();
+        let packaged = std::fs::read(dir.join("Flat.pdf")).unwrap();
+        let images = |pdf: &[u8]| pdf.windows(b"/Subtype/Image".len()).filter(|w| *w == b"/Subtype/Image").count();
+        assert!(images(&exported) > 0, "the export rasterises the transparent object");
+        assert_eq!(images(&packaged), images(&exported), "so does the package");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -629,6 +692,7 @@ mod tests {
         assert!(out.join("Links").join("logo.svg").exists());
         let report = std::fs::read_to_string(out.join("Instructions.txt")).unwrap();
         assert!(report.contains("Print on matte.") && report.contains("logo.svg"), "{report}");
+        assert!(report.find("Print on matte.") < report.find("Package report:"), "the instructions come first: {report}");
         assert!(report.contains("Preflight:"), "{report}");
         // The packaged document links to its Links folder.
         let doc_file = files.iter().find(|f| f.ends_with(".designcraft")).unwrap();

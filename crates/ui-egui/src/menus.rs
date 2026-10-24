@@ -39,7 +39,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{page?: transparency|dropShadow|innerShadow|outerGlow|innerGlow|bevel|satin|feather|directionalFeather|gradientFeather} — the Effects dialog for the selected objects",
     ),
-    ("app.packageDialog", "Package…", Some("Cmd+Alt+Shift+P"), "{} — choose the package folder to create (file.package)"),
+    (
+        "app.packageDialog",
+        "Package…",
+        Some("Cmd+Alt+Shift+P"),
+        "{} — the Package dialog (what the package carries, printing instructions), then the folder to create (file.package)",
+    ),
     ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
     ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),
     ("app.exportIdml", "Export IDML…", None, "{path?} — InDesign Markup (IDML) package"),
@@ -1171,23 +1176,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),
-        "app.packageDialog" => {
-            let name = app.session.active().map(|d| format!("{} Folder", d.doc.title)).unwrap_or_default();
-            match app.pick_save(&name) {
-                Some(dir) => {
-                    let r = app.run("file.package", json!({"dir": dir}));
-                    if let Ok(v) = &r {
-                        app.status(
-                            crate::i18n::tr(&app.ui.language, "Packaged {count} files into {dir}")
-                                .replace("{count}", &v["files"].as_array().map_or(0, |f| f.len()).to_string())
-                                .replace("{dir}", v["dir"].as_str().unwrap_or("")),
-                        );
-                    }
-                    r
-                }
-                None => Ok(Value::Null),
-            }
-        }
+        "app.packageDialog" => crate::package_dialog::open(app).map(|()| Value::Null),
         "app.language" => {
             let Some(v) = p.get("lang").and_then(Value::as_str) else { return Some(app.run("app.preferences", json!({}))) };
             if !crate::i18n::LANGUAGES.iter().any(|(c, _)| *c == v) {
