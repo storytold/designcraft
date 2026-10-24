@@ -81,12 +81,47 @@ fn saved_cmyk_names_still_load() {
 #[test]
 fn output_intent_follows_the_working_cmyk_space() {
     let fogra = cms().output_intent().unwrap();
-    assert_eq!((fogra.identifier, fogra.condition.as_str()), ("FOGRA39", COATED_FOGRA39));
+    assert_eq!((&*fogra.identifier, fogra.condition.as_str()), ("FOGRA39", COATED_FOGRA39));
     assert_eq!(&*fogra.icc, craft_cms::builtin::COATED_FOGRA39_ICC);
     for name in [GENERIC_CMYK, DEVICE_CMYK] {
         let g = Cms::new(&ColorSettings { cmyk: name.into(), ..Default::default() }).unwrap().output_intent().unwrap();
-        assert_eq!((g.identifier, g.condition.as_str()), ("Custom", GENERIC_CMYK), "{name}");
+        assert_eq!((&*g.identifier, g.condition.as_str()), ("Custom", GENERIC_CMYK), "{name}");
         assert_eq!(&*g.icc, icc_out::generic_cmyk_icc().unwrap());
+    }
+    // A loaded profile whose description names its characterisation: the registered identifier,
+    // not `Custom`, which is the one field a print provider's preflight matches on (#1475).
+    let bytes = craft_cms::Builtin::CoatedCmyk.profile().to_bytes().to_vec();
+    for (name, want) in [
+        ("PSOuncoated_v3_FOGRA52", "FOGRA52"),
+        ("eciCMYK v2 (FOGRA59)", "FOGRA59"),
+        ("Coated FOGRA51 (ISO 12647-2:2013)", "FOGRA51"),
+        ("CGATS21_CRPC6", "CGATS21_CRPC6"),
+        ("Our House Press", "Custom"),
+    ] {
+        super::register_icc(&bytes, Some(name.to_string())).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let c = Cms::new(&ColorSettings { cmyk: name.into(), ..Default::default() }).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let intent = c.output_intent().unwrap();
+        assert_eq!((&*intent.identifier, intent.condition.as_str()), (want, name), "{name}");
+    }
+}
+
+/// The identifier is read off the profile's own description, never guessed from anything else.
+#[test]
+fn a_registered_characterisation_is_the_one_the_profile_names() {
+    use super::registered_identifier;
+    for (description, want) in [
+        ("PSOuncoated_v3_FOGRA52", Some("FOGRA52")),
+        ("eciCMYK v2 (FOGRA59)", Some("FOGRA59")),
+        ("Coated FOGRA39 (ISO 12647-2:2004)", Some("FOGRA39")),
+        ("fogra51 lowercase", Some("FOGRA51")),
+        ("CGATS21_CRPC6", Some("CGATS21_CRPC6")),
+        ("GRACoL2013_CRPC6", None),
+        ("Our House Press", None),
+        ("FOGRA", None),
+        ("XFOGRA39", None),
+        ("", None),
+    ] {
+        assert_eq!(registered_identifier(description).as_deref(), want, "{description:?}");
     }
 }
 

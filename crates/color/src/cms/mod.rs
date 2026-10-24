@@ -160,9 +160,36 @@ impl ColorSettings {
 pub struct OutputIntent {
     pub icc: Cow<'static, [u8]>,
     /// `OutputConditionIdentifier`: a registered characterisation, or `Custom`.
-    pub identifier: &'static str,
+    pub identifier: Cow<'static, str>,
     /// `OutputCondition` / `Info`: the profile's name.
     pub condition: String,
+}
+
+/// The registered characterisation identifier a profile names in its own description, spelled as
+/// the ICC registry spells it.
+///
+/// A print provider's preflight matches on the identifier, so `Custom` is only right when the
+/// profile names no characterisation: `PSOuncoated_v3_FOGRA52` is FOGRA52 and
+/// `eciCMYK v2 (FOGRA59)` is FOGRA59, and saying `Custom` for those loses the one field the
+/// provider reads (#1475). Nothing is guessed from a profile's other properties — the identifier
+/// has to be in the description, which is where these profiles put it.
+pub fn registered_identifier(description: &str) -> Option<String> {
+    let chars: Vec<char> = description.chars().collect();
+    let upper: String = description.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    // `FOGRA` or `CGATS21_CRPC` followed by digits, and not inside a longer word.
+    for prefix in ["CGATS21_CRPC", "FOGRA"] {
+        let mut from = 0;
+        while let Some(at) = upper.get(from..).and_then(|s| s.find(prefix)).map(|i| i + from) {
+            from = at + prefix.len();
+            let before_is_word = at > 0 && bytes.get(at - 1).is_some_and(|b| b.is_ascii_alphanumeric());
+            let digits: String = chars.get(from..).into_iter().flatten().take_while(|c| c.is_ascii_digit()).collect();
+            if !before_is_word && !digits.is_empty() {
+                return Some(format!("{prefix}{digits}"));
+            }
+        }
+    }
+    None
 }
 
 /// Target colour model for [`Cms::convert`].
@@ -332,12 +359,18 @@ impl Cms {
     /// described by the Generic CMYK one.
     pub fn output_intent(&self) -> Result<OutputIntent, CmsError> {
         Ok(match &self.cmyk {
-            CmykSpace::Icc(p) if p.name == COATED_FOGRA39 => {
-                OutputIntent { icc: Cow::Borrowed(craft_cms::builtin::COATED_FOGRA39_ICC), identifier: "FOGRA39", condition: COATED_FOGRA39.into() }
-            }
-            CmykSpace::Icc(p) => OutputIntent { icc: Cow::Owned(p.profile().to_bytes().to_vec()), identifier: "Custom", condition: p.name.clone() },
+            CmykSpace::Icc(p) if p.name == COATED_FOGRA39 => OutputIntent {
+                icc: Cow::Borrowed(craft_cms::builtin::COATED_FOGRA39_ICC),
+                identifier: "FOGRA39".into(),
+                condition: COATED_FOGRA39.into(),
+            },
+            CmykSpace::Icc(p) => OutputIntent {
+                icc: Cow::Owned(p.profile().to_bytes().to_vec()),
+                identifier: registered_identifier(&p.name).map_or(Cow::Borrowed("Custom"), Cow::Owned),
+                condition: p.name.clone(),
+            },
             CmykSpace::Generic(_) | CmykSpace::Device => {
-                OutputIntent { icc: Cow::Borrowed(icc_out::generic_cmyk_icc()?), identifier: "Custom", condition: GENERIC_CMYK.into() }
+                OutputIntent { icc: Cow::Borrowed(icc_out::generic_cmyk_icc()?), identifier: "Custom".into(), condition: GENERIC_CMYK.into() }
             }
         })
     }

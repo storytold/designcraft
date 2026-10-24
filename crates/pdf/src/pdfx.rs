@@ -62,7 +62,7 @@ pub fn make_pdfx4(pdf: &[u8], title: &str, date: Option<i64>) -> Option<Vec<u8>>
         oi_id,
         format!(
             "<</Type/OutputIntent/S/GTS_PDFX/OutputConditionIdentifier{}/OutputCondition{}/Info{}/RegistryName(http://www.color.org)/DestOutputProfile {icc_id} 0 R>>",
-            lit(intent.identifier),
+            lit(&intent.identifier),
             lit(cond),
             lit(cond)
         )
