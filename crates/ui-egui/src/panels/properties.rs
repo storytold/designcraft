@@ -896,10 +896,94 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         if icon_toggle(ui, "frame-dashed", false, crate::i18n::tr(&app.ui.language, "Frame Fitting")).clicked() {
             show_panel(app, "textWrap");
         }
-        if icon_toggle(ui, "fx", i.shadow, crate::i18n::tr(&app.ui.language, "Effects: Drop Shadow")).clicked() {
-            let _ = app.run("object.dropShadow", json!({"on": !i.shadow}));
+        effects_button(app, ui);
+    });
+}
+
+/// The effects applied to the selection's first object, as Effects dialog pages, in the
+/// dialog's order (for the link beside the button); and, over every selected object, whether
+/// any has an effect (Clear Effects) and whether any has transparency other than plain (Clear
+/// All Transparency).
+fn applied_effects(app: &DesignApp) -> (Vec<&'static str>, bool, bool) {
+    let Some(st) = app.session.active() else { return (Vec::new(), false, false) };
+    let items: Vec<&designcraft_doc::Item> = st.selection.items.iter().filter_map(|id| st.doc.item(*id)).collect();
+    let pages = items.first().map(|it| effect_pages(it)).unwrap_or_default();
+    let any_effect = items.iter().any(|it| !effect_pages(it).is_empty());
+    let transparent = any_effect || items.iter().any(|it| it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal);
+    (pages, any_effect, transparent)
+}
+
+/// The Effects dialog pages of the effects `it` has on, in the dialog's order.
+fn effect_pages(it: &designcraft_doc::Item) -> Vec<&'static str> {
+    let fx = &it.effects;
+    let on = [
+        ("dropShadow", fx.drop_shadow.on),
+        ("innerShadow", fx.inner_shadow.on),
+        ("outerGlow", fx.outer_glow.on),
+        ("innerGlow", fx.inner_glow.on),
+        ("bevel", fx.bevel.on),
+        ("satin", fx.satin.on),
+        ("feather", fx.feather > 0.0),
+        ("directionalFeather", fx.directional_feather.on),
+        ("gradientFeather", fx.gradient_feather.on),
+    ];
+    on.iter().filter(|(_, on)| *on).map(|(p, _)| *p).collect()
+}
+
+/// Properties › Appearance › fx, as InDesign's: a menu of the effects (each opens the Effects
+/// dialog on its page), Clear Effects, Clear All Transparency and Global Light…; beside it, the
+/// first effect applied, a link to it in the dialog.
+fn effects_button(app: &mut DesignApp, ui: &mut Ui) {
+    let lang = app.ui.language.clone();
+    let (applied, any_effect, transparent) = applied_effects(app);
+    let fx = icon_toggle(ui, "fx", !applied.is_empty(), crate::i18n::tr(&lang, "Effects"));
+    let mut page = None;
+    let mut clear = None;
+    let mut global_light = false;
+    egui::Popup::menu(&fx).show(|ui| {
+        for (p, label) in crate::effects_dialog::PAGES {
+            if ui.button(crate::rtl::widget(ui, format!("{}…", crate::i18n::tr(&lang, label)))).clicked() {
+                page = Some(p);
+                ui.close();
+            }
+            // InDesign keeps Transparency apart from the effects.
+            if p == "transparency" {
+                ui.separator();
+            }
+        }
+        ui.separator();
+        if ui.add_enabled(any_effect, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Clear Effects")))).clicked() {
+            clear = Some(false);
+            ui.close();
+        }
+        if ui.add_enabled(transparent, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Clear All Transparency")))).clicked() {
+            clear = Some(true);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Global Light…"))).clicked() {
+            global_light = true;
+            ui.close();
         }
     });
+    if let Some(&first) = applied.first()
+        && let Some((_, label)) = crate::effects_dialog::PAGES.iter().find(|(p, _)| *p == first)
+    {
+        let text = crate::i18n::tr(&lang, label);
+        let w = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::proportional(11.5), egui::Color32::WHITE).size().x) + 4.0;
+        if link_label(ui, text, w).clicked() {
+            page = Some(first);
+        }
+    }
+    if let Some(p) = page {
+        crate::effects_dialog::open(app, p);
+    }
+    if let Some(opaque) = clear {
+        let _ = app.run("object.clearEffects", if opaque { json!({"opaque": true}) } else { json!({}) });
+    }
+    if global_light {
+        crate::menus::activate(app, "object.globalLight", &Value::Null);
+    }
 }
 
 /// The Fill (or Stroke) popup of Properties › Appearance, as InDesign's: Apply To (a text frame's
@@ -2878,55 +2962,36 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("object.opacity", json!({"opacity": (v / 100.0).clamp(0.0, 1.0)}));
         }
     });
-    // The level the settings apply to, with its blend mode and opacity ("Group: Color Dodge 100%").
+    // The levels, as in InDesign's Effects panel: Object (or Group) with its blend mode and
+    // opacity ("Group: Color Dodge 100%") and an fx badge when it has effects, which opens the
+    // Effects dialog; Stroke, Fill and Text are listed greyed (their own transparency isn't kept).
     let group = it.is_group();
+    let first_effect = crate::effects_dialog::first_page(&it.effects);
     ui.horizontal(|ui| {
         let level = crate::i18n::tr(&app.ui.language, if group { "Group:" } else { "Object:" });
         crate::rtl::label(ui, egui::RichText::new(level).font(crate::theme::semibold(12.0)));
         crate::rtl::label(ui, format!("{} {}%", crate::i18n::tr(&app.ui.language, it.blend.label()), (it.opacity * 100.0).round()));
+        if let Some(page) = first_effect {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let badge = ui
+                    .add(egui::Button::new(egui::RichText::new("fx").italics().strong()).frame(false))
+                    .on_hover_text(crate::i18n::tr(&app.ui.language, "Effects…"));
+                if badge.clicked() {
+                    crate::effects_dialog::open(app, page);
+                }
+            });
+        }
     });
-    divider(ui);
-    let ds = it.effects.drop_shadow.clone();
-    let mut on = ds.on;
-    if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Drop Shadow"))).changed() {
-        let _ = app.run("object.dropShadow", json!({"on": on}));
-    }
-    if ds.on {
-        egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
-            caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
-            if let Some(v) = number(ui, "dsd", Some(ds.distance), " pt", 56.0, 1) {
-                let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
-            }
-            caption(ui, crate::i18n::tr(&app.ui.language, "Angle"));
-            let global = app.session.active().map_or(120.0, |st| st.doc.settings.global_light);
-            if let Some(v) = number(ui, "dsa", Some(if ds.global_light { global } else { ds.angle }), "°", 50.0, 0) {
-                // With Use Global Light on, the angle is the document's (every such shadow moves).
-                let _ = if ds.global_light {
-                    app.run("object.globalLight", json!({"angle": v}))
-                } else {
-                    app.run("object.dropShadow", json!({"on": true, "angle": v}))
-                };
-            }
-            ui.end_row();
-            crate::rtl::label(ui, "");
-            crate::rtl::label(ui, "");
-            caption(ui, "");
-            let mut gl = ds.global_light;
-            if ui.checkbox(&mut gl, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Use Global Light"))).changed() {
-                let _ = app.run("object.dropShadow", json!({"on": true, "globalLight": gl}));
-            }
-            ui.end_row();
-            caption(ui, crate::i18n::tr(&app.ui.language, "Opacity"));
-            if let Some(v) = number(ui, "dso", Some(ds.opacity as f64 * 100.0), "%", 56.0, 0) {
-                let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
-            }
-            caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-            if let Some(v) = number(ui, "dss", Some(ds.size), " pt", 50.0, 1) {
-                let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
-            }
-            ui.end_row();
-        });
-    }
+    ui.add_enabled_ui(false, |ui| {
+        for (level, shown) in [("Stroke:", true), ("Fill:", true), ("Text:", it.is_text_frame())] {
+            ui.horizontal(|ui| {
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, level));
+                if shown {
+                    crate::rtl::label(ui, format!("{} 100%", crate::i18n::tr(&app.ui.language, designcraft_color::BlendMode::Normal.label())));
+                }
+            });
+        }
+    });
     divider(ui);
     // Groups only, as in InDesign (greyed for other objects).
     ui.horizontal(|ui| {
@@ -2941,20 +3006,30 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("object.transparencyGroup", json!({"knockout": ko}));
         }
     });
-    // The fx button, as at the bottom of InDesign's Effects panel: each effect opens the Effects
-    // dialog on its page.
-    let fx = ui
-        .add(egui::Button::new(egui::RichText::new("fx").italics().strong()).min_size(vec2(28.0, 20.0)))
-        .on_hover_text(crate::i18n::tr(&app.ui.language, "Add an object effect to the selected target"));
-    egui::Popup::menu(&fx).show(|ui| {
-        for (page, label) in crate::effects_dialog::PAGES {
-            let text = format!("{}…", crate::i18n::tr(&app.ui.language, label));
-            if ui.button(crate::rtl::widget(ui, text)).clicked() {
-                crate::effects_dialog::open(app, page);
-                ui.close();
-            }
+    divider(ui);
+    // The buttons at the bottom of InDesign's Effects panel: clear all effects and make the object
+    // opaque, add an effect (each opens the Effects dialog on its page), remove the effects.
+    let mut fx = None;
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 24.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Remove effects from the selected target")).clicked() {
+            let _ = app.run("object.clearEffects", json!({}));
+        }
+        fx = Some(icons::button(ui, "fx", 20.0, false, crate::i18n::tr(&app.ui.language, "Add an object effect to the selected target")));
+        if icons::button(ui, "none", 20.0, false, crate::i18n::tr(&app.ui.language, "Clear all effects and make object opaque")).clicked() {
+            let _ = app.run("object.clearEffects", json!({"opaque": true}));
         }
     });
+    if let Some(fx) = fx {
+        egui::Popup::menu(&fx).show(|ui| {
+            for (page, label) in crate::effects_dialog::PAGES {
+                let text = format!("{}…", crate::i18n::tr(&app.ui.language, label));
+                if ui.button(crate::rtl::widget(ui, text)).clicked() {
+                    crate::effects_dialog::open(app, page);
+                    ui.close();
+                }
+            }
+        });
+    }
 }
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -3934,6 +4009,43 @@ mod tests {
         assert_eq!(doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]", "the frame isn't");
     }
 
+    /// Properties › fx, as InDesign's: a menu of every effect (each opens the Effects dialog on
+    /// it), Clear Effects and Clear All Transparency; the effect applied shows beside the button
+    /// and opens the dialog on it.
+    #[test]
+    fn the_fx_button_lists_the_effects_and_names_the_one_applied() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 172, 172], "shape": "ellipse"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        assert!(h.query_by_label("Drop Shadow").is_none(), "no effect named yet");
+        h.get_by_label("Effects").click();
+        h.run_steps(3);
+        for l in ["Transparency…", "Drop Shadow…", "Outer Glow…", "Gradient Feather…", "Clear Effects", "Clear All Transparency", "Global Light…"]
+        {
+            let _ = h.get_by_label(l);
+        }
+        h.get_by_label("Outer Glow…").click();
+        h.run_steps(3);
+        let d = h.state().ui.dialog.clone().expect("the Effects dialog");
+        assert_eq!(d.id, crate::effects_dialog::ID);
+        h.state_mut().ui.dialog = None;
+        // A drop shadow applied: its name beside fx opens the dialog on it; Clear Effects removes it.
+        h.state_mut().run("object.dropShadow", json!({"on": true})).unwrap();
+        h.run_steps(3);
+        h.get_by_label("Drop Shadow").click();
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.as_ref().is_some_and(|d| d.id == crate::effects_dialog::ID));
+        h.state_mut().ui.dialog = None;
+        h.get_by_label("Effects").click();
+        h.run_steps(3);
+        h.get_by_label("Clear Effects").click();
+        h.run_steps(3);
+        let st = h.state().session.active().unwrap();
+        assert!(!st.doc.item(designcraft_doc::ids::ItemId(id)).unwrap().effects.drop_shadow.on);
+    }
+
     #[test]
     fn transform_flips_and_rotates_from_properties() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -3999,6 +4111,21 @@ mod effects_panel_tests {
     }
 
     #[test]
+    fn clear_actions_look_at_every_selected_object() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let plain = app.run("frame.create", json!({"rect": [0, 0, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        let fx = app.run("frame.create", json!({"rect": [60, 0, 110, 50]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.effects", json!({"ids": [fx], "effects": {"feather": 4}})).unwrap();
+        app.run("selection.set", json!({"ids": [plain, fx]})).unwrap();
+        let (pages, any_effect, transparent) = applied_effects(&app);
+        assert!(pages.is_empty(), "the link names the first object's effect");
+        assert!(any_effect && transparent, "Clear Effects and Clear All Transparency stay available");
+        app.run("object.effects", json!({"ids": [fx], "effects": {"feather": 0}, "opacity": 0.5})).unwrap();
+        assert_eq!(applied_effects(&app), (Vec::new(), false, true));
+    }
+
+    #[test]
     fn the_effects_panel_shows_the_level_and_isolate_blending_and_knockout_group_for_groups() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
         app.run("file.new", json!({})).unwrap();
@@ -4025,6 +4152,31 @@ mod effects_panel_tests {
         assert!(texts.iter().any(|t| t == "Object:"), "{texts:?}");
         click(&mut app, &ctx, "Knockout Group");
         assert!(!item(&app, a).knockout);
+    }
+
+    #[test]
+    fn the_levels_show_an_fx_badge_that_opens_the_effects_dialog() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [a]})).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::default()));
+        let texts = |app: &mut DesignApp| frame(app, &ctx, vec![]).into_iter().map(|(t, _)| t).collect::<Vec<_>>();
+        let t = texts(&mut app);
+        for expected in ["Object:", "Stroke:", "Fill:"] {
+            assert!(t.iter().any(|x| x == expected), "{expected} in {t:?}");
+        }
+        assert!(!t.iter().any(|x| x == "Drop Shadow"), "no drop-shadow fields in the panel: {t:?}");
+        let fx = |t: &[String]| t.iter().filter(|x| *x == "fx").count();
+        assert_eq!(fx(&t), 1, "only the fx button, no badge, without effects: {t:?}");
+        // An Inner Glow: the badge shows, and opens the dialog on it.
+        app.run("object.innerGlow", json!({"on": true})).unwrap();
+        assert_eq!(fx(&texts(&mut app)), 2, "the badge on the Object row");
+        click(&mut app, &ctx, "fx");
+        let d = app.ui.dialog.as_ref().expect("the Effects dialog");
+        assert_eq!((d.id.as_str(), d.fields.get("page").and_then(Value::as_str)), (crate::effects_dialog::ID, Some("innerGlow")));
     }
 
     #[test]
