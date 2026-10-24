@@ -38,9 +38,11 @@ pub struct Glyph {
     pub descent: f64,
     /// The leading this character asks for (absolute, or auto = size × auto %).
     pub leading: f64,
-    /// Cap height and x height, scaled like `ascent`: the Cap Height and x Height first baseline
-    /// offsets.
+    /// Declared cap height and x height, scaled like `ascent`. The physical first-baseline cap
+    /// height is kept separately below.
     pub cap: f64,
+    /// Physical cap height for the first baseline, separately from the declared cap metric.
+    pub baseline_cap: f64,
     pub xh: f64,
     pub size: f64,
     /// Index into the composed story's [`RunStyle`] table.
@@ -487,7 +489,7 @@ pub(crate) fn shape_para(
                 }
                 let mut g = control_glyph(&face, &first.props, first.env, first.style, first.range.start + k, c);
                 g.ch = HIDDEN;
-                (g.ascent, g.typo_ascent, g.descent, g.leading, g.cap, g.xh) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+                (g.ascent, g.typo_ascent, g.descent, g.leading, g.cap, g.baseline_cap, g.xh) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
                 glyphs.push(g);
             }
             i += 1;
@@ -884,7 +886,7 @@ fn shape_run_raw(
                                 // The replacement character has no font ink. Its box alone
                                 // supplies extents; adjacent text supplies its own font metrics.
                                 let top = (o.h + y).max(0.0);
-                                (g.ascent, g.typo_ascent, g.cap, g.xh) = (top, top, top, top);
+                                (g.ascent, g.typo_ascent, g.cap, g.baseline_cap, g.xh) = (top, top, top, top, top);
                                 g.descent = (-y).max(0.0);
                             }
                             // Pushes its line down by its height and spacing.
@@ -892,6 +894,7 @@ fn shape_run_raw(
                                 g.ascent += o.h + o.space;
                                 g.typo_ascent += o.h + o.space;
                                 g.cap += o.h + o.space;
+                                g.baseline_cap += o.h + o.space;
                                 g.xh += o.h + o.space;
                             }
                         }
@@ -1069,6 +1072,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         descent,
         leading,
         cap,
+        baseline_cap: face.baseline_cap_height * k * p.v_scale,
         xh,
         size,
         style,
@@ -1226,6 +1230,7 @@ fn shape_segment(
             descent,
             leading,
             cap,
+            baseline_cap: face.baseline_cap_height * k * p.v_scale,
             xh,
             size,
             style: styles.at(byte),

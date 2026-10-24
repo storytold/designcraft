@@ -112,10 +112,11 @@ pub struct FontFace {
     pub typo_ascent: f64,
     /// Descender in font units (positive = down).
     pub descent: f64,
-    /// Cap height and x height in font units (without plausible OS/2 values, the cap height is the
-    /// top of the H, and either is estimated from the ascent): the Cap Height and x Height first
-    /// baseline offsets.
+    /// Declared cap height and x height in font units. Without plausible OS/2 values, measure
+    /// flat letters, then estimate from the ascent. First-baseline caps use `baseline_cap_height`.
     pub cap_height: f64,
+    /// Physical flat-cap top for Cap Height first baselines; falls back to the declared cap height.
+    pub baseline_cap_height: f64,
     pub x_height: f64,
     pub shaper: harfrust::ShaperData,
     /// Variable fonts: the named instance's axis settings (user units; empty = default instance),
@@ -931,6 +932,11 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         // (drop caps are sized from the cap height).
         cap_height: plausible(m.cap_height.map(f64::from), upem)
             .or_else(|| measured_top(&f, (&location).into(), &['H', 'I', 'E', 'T'], upem))
+            .unwrap_or(m.ascent as f64 * 0.72),
+        // First-baseline placement follows the physical capital (H), even when a font's
+        // rounded OS/2 sCapHeight differs. Keep the declared metric for other typography.
+        baseline_cap_height: measured_top(&f, (&location).into(), &['H', 'I', 'E', 'T'], upem)
+            .or_else(|| plausible(m.cap_height.map(f64::from), upem))
             .unwrap_or(m.ascent as f64 * 0.72),
         x_height: plausible(m.x_height.map(f64::from), upem)
             .or_else(|| measured_top(&f, (&location).into(), &['x', 'z', 'v'], upem))
