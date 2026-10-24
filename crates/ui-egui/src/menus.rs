@@ -19,6 +19,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{}"),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),
+    ("app.contactSheetDialog", "Place Contact Sheet…", None, "{}"),
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{}"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{}"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
@@ -347,6 +348,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:file.revert",
             "-",
             "ui:app.placeDialog",
+            "ui:app.contactSheetDialog",
             "ui:app.placeWithOptions",
             "-",
             "ui:app.exportPdf",
@@ -1060,6 +1062,10 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 .map(|path| recent_label(path))
                 .unwrap_or_default();
             app.open_named_file("file.openRecent", json!({"index": index}), name)
+        }
+        "app.contactSheetDialog" => {
+            crate::dialogs::open_contact_sheet(app);
+            Ok(Value::Null)
         }
         "app.placeDialog" => app.pick_and_open("place"),
         "app.placeWithOptions" => {
