@@ -876,19 +876,20 @@ fn doc_unit(app: &DesignApp) -> Unit {
     app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
 }
 
-/// Layout › Create Guides…: guides go on the page in view (or the parent page being edited), not
-/// on the first page, and the gutters are typed in the document's ruler unit.
+/// Layout › Create Guides…: guides go on every page of the spread in view (or of the parent
+/// spread being edited), as InDesign's do; "This page" narrows them to
+/// the page in view. The gutters are typed in the document's ruler unit.
 pub fn open_create_guides(app: &mut DesignApp) {
     let unit = doc_unit(app);
     let Some((spread, page)) = crate::canvas::current_spread_page(app) else { return };
-    let editing_parents = matches!(spread, SpreadRef::Parent(_));
     let gutter = json!(format_measure(12.0, unit));
     let mut d = Dialog::new(
         "createGuides",
         json!({"rows": 0, "columns": 0, "rowGutter": gutter, "columnGutter": gutter, "fitTo": "margins", "removeExisting": false,
             "spread": serde_json::to_value(spread).unwrap_or(json!(0)), "page": page,
-            // A parent spread is edited as a whole (both pages of a facing spread), so the guides show on every page that uses it.
-            "target": if editing_parents { "spread" } else { "page" },
+            // InDesign puts the guides on both pages of a facing spread (and a parent spread is
+            // edited as a whole, so they show on every page that uses it).
+            "target": "spread",
             "where": target_description(app, spread, page)}),
     );
     d.unit = unit;
@@ -10261,18 +10262,20 @@ mod tests {
     }
 
     #[test]
-    fn create_guides_dialog_targets_the_page_in_view() {
+    fn create_guides_dialog_covers_the_spread_in_view() {
         let mut app = facing_app(6);
+        // As in InDesign, both pages of the facing spread in view get the guides.
+        crate::canvas::go_to_page(&mut app, 1);
+        crate::menus::activate(&mut app, "layout.createGuides", &Value::Null);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("target"), "spread");
+        ctl(&mut app, "ui.dialog.set", json!({"field": "columns", "value": "2"}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        assert_eq!(guide_counts(&app), vec![0, 2, 2, 0, 0, 0]);
+        // "This page" narrows them to the page in view.
         crate::canvas::go_to_page(&mut app, 4);
         crate::menus::activate(&mut app, "layout.createGuides", &Value::Null);
         ctl(&mut app, "ui.dialog.set", json!({"field": "columns", "value": "3"}));
-        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
-        assert_eq!(guide_counts(&app), vec![0, 0, 0, 0, 4, 0]);
-        // "Both pages of the spread" covers the facing pair.
-        crate::canvas::go_to_page(&mut app, 1);
-        crate::menus::activate(&mut app, "layout.createGuides", &Value::Null);
-        ctl(&mut app, "ui.dialog.set", json!({"field": "columns", "value": "2"}));
-        ctl(&mut app, "ui.dialog.set", json!({"field": "target", "value": "spread"}));
+        ctl(&mut app, "ui.dialog.set", json!({"field": "target", "value": "page"}));
         assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
         assert_eq!(guide_counts(&app), vec![0, 2, 2, 0, 4, 0]);
     }
