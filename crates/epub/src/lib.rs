@@ -976,6 +976,20 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         out
     }
 
+    /// One table cell with its row and column spans, as `th` or `td`.
+    fn table_cell(&mut self, text: &Story, cell_tag: &str, (rs, cs): (usize, usize), depth: usize, out: &mut String) {
+        let _ = write!(out, "<{cell_tag}");
+        if rs > 1 {
+            let _ = write!(out, " rowspan=\"{rs}\"");
+        }
+        if cs > 1 {
+            let _ = write!(out, " colspan=\"{cs}\"");
+        }
+        out.push('>');
+        self.paragraphs(text, depth, "", out);
+        let _ = writeln!(out, "</{cell_tag}>");
+    }
+
     /// A table: header rows as `thead`, footer rows as `tfoot`, merged cells as row and column
     /// spans (kept within their row group).
     fn table(&mut self, t: &Table, depth: usize, out: &mut String) {
@@ -1009,16 +1023,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                             }
                         }
                     }
-                    let _ = write!(out, "<{cell_tag}");
-                    if rs > 1 {
-                        let _ = write!(out, " rowspan=\"{rs}\"");
-                    }
-                    if cs > 1 {
-                        let _ = write!(out, " colspan=\"{cs}\"");
-                    }
-                    out.push('>');
-                    self.paragraphs(&cell.text, depth, "", out);
-                    let _ = writeln!(out, "</{cell_tag}>");
+                    self.table_cell(&cell.text, cell_tag, (rs, cs), depth, out);
                 }
                 out.push_str("</tr>\n");
             }

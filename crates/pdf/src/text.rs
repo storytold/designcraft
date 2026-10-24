@@ -233,6 +233,34 @@ impl Exporter<'_> {
         }
     }
 
+    /// One line's glyphs as tagged runs; a glyph that is turned or slanted gets a transform of its own.
+    fn line_glyphs(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, l: &designcraft_compose::Line, story: &str) {
+        let gs = &l.glyphs;
+        let mut i = 0;
+        while i < gs.len() {
+            let g = &gs[i];
+            if !g.visible || g.sx <= 0.0 || g.sy <= 0.0 {
+                i += 1;
+                continue;
+            }
+            // Vertical type: an upright glyph turns back a quarter about its em box centre.
+            // Shatai slants each glyph about its own em box centre first.
+            let turn = if ft.vertical { g.vertical_xf(l.baseline) } else { None };
+            let shatai = cs.styles.get(g.style as usize).and_then(|st| st.shatai_xf(g, l.baseline));
+            if turn.is_some() || shatai.is_some() {
+                let m = turn.unwrap_or(Affine::IDENTITY) * shatai.unwrap_or(Affine::IDENTITY);
+                s.push_transform(&crate::export::tf(m));
+                self.tagged_run(s, cs, &gs[i..i + 1], l.baseline, story);
+                s.pop();
+                i += 1;
+                continue;
+            }
+            let j = run_end(ft, gs, i);
+            self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
+            i = j;
+        }
+    }
+
     pub(crate) fn frame_text(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, story: &str) {
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
@@ -260,30 +288,7 @@ impl Exporter<'_> {
             });
         }
         for l in &ft.lines {
-            let gs = &l.glyphs;
-            let mut i = 0;
-            while i < gs.len() {
-                let g = &gs[i];
-                if !g.visible || g.sx <= 0.0 || g.sy <= 0.0 {
-                    i += 1;
-                    continue;
-                }
-                // Vertical type: an upright glyph turns back a quarter about its em box centre.
-                // Shatai slants each glyph about its own em box centre first.
-                let turn = if ft.vertical { g.vertical_xf(l.baseline) } else { None };
-                let shatai = cs.styles.get(g.style as usize).and_then(|st| st.shatai_xf(g, l.baseline));
-                if turn.is_some() || shatai.is_some() {
-                    let m = turn.unwrap_or(Affine::IDENTITY) * shatai.unwrap_or(Affine::IDENTITY);
-                    s.push_transform(&crate::export::tf(m));
-                    self.tagged_run(s, cs, &gs[i..i + 1], l.baseline, story);
-                    s.pop();
-                    i += 1;
-                    continue;
-                }
-                let j = run_end(ft, gs, i);
-                self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
-                i = j;
-            }
+            self.line_glyphs(s, cs, ft, l, story);
         }
         self.as_artifact(s, |me, s| {
             for (rule, r) in text_rules(cs, ft, false) {
