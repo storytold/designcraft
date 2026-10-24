@@ -204,10 +204,98 @@ fn percent(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str]) {
 
 fn angle(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], enabled: bool, global: f64) {
     let mut v = if enabled { num(d, path) } else { global };
-    let r = ui.add_enabled(enabled, egui::DragValue::new(&mut v).range(-180.0..=180.0).suffix("°").max_decimals(1));
-    if r.changed() {
-        set(d, path, json!(v));
+    ui.horizontal(|ui| {
+        if let Some(a) = angle_dial(ui, v, enabled) {
+            v = a;
+            set(d, path, json!(v));
+        }
+        let r = ui.add_enabled(enabled, egui::DragValue::new(&mut v).range(-180.0..=180.0).suffix("°").max_decimals(1));
+        if r.changed() {
+            set(d, path, json!(v));
+        }
+    });
+}
+
+/// InDesign's angle dial: a circle with a radius pointing where the light comes from (0° to the
+/// right, counter-clockwise). A click or a drag on it points it at the pointer. Focused, the
+/// arrow keys turn it a degree (Shift: 10°) — Right and Up counter-clockwise — and assistive
+/// technology can step it or set its value, as with a slider.
+fn angle_dial(ui: &mut egui::Ui, deg: f64, enabled: bool) -> Option<f64> {
+    use egui::accesskit::{Action, ActionData};
+    let sense = if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), sense);
+    resp.widget_info(|| egui::WidgetInfo::slider(enabled, deg, "Angle"));
+    let col = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+    let (c, rad) = (r.center(), 11.0);
+    ui.painter().circle_stroke(c, rad, egui::Stroke::new(1.2, col));
+    let a = deg.to_radians() as f32;
+    ui.painter().line_segment([c, c + egui::vec2(a.cos(), -a.sin()) * rad], egui::Stroke::new(1.4, col));
+    if resp.has_focus() {
+        ui.painter().circle_stroke(c, rad + 2.0, ui.visuals().selection.stroke);
     }
+    if !enabled {
+        return None;
+    }
+    ui.ctx().accesskit_node_builder(resp.id, |node| {
+        node.set_min_numeric_value(-180.0);
+        node.set_max_numeric_value(180.0);
+        node.set_numeric_value_step(1.0);
+        node.add_action(Action::SetValue);
+        node.add_action(Action::Increment);
+        node.add_action(Action::Decrement);
+    });
+    let mut next = None;
+    let mut steps = 0i64;
+    if resp.has_focus() {
+        // The arrows turn the dial instead of moving the focus.
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(resp.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() })
+        });
+        ui.input(|i| {
+            for e in &i.events {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                    let dir = match key {
+                        egui::Key::ArrowRight | egui::Key::ArrowUp => 1,
+                        egui::Key::ArrowLeft | egui::Key::ArrowDown => -1,
+                        _ => 0,
+                    };
+                    steps += dir * if modifiers.shift { 10 } else { 1 };
+                }
+            }
+        });
+    }
+    ui.input(|i| {
+        steps += i.num_accesskit_action_requests(resp.id, Action::Increment) as i64;
+        steps -= i.num_accesskit_action_requests(resp.id, Action::Decrement) as i64;
+        for request in i.accesskit_action_requests(resp.id, Action::SetValue) {
+            if let Some(ActionData::NumericValue(v)) = request.data {
+                next = Some(v);
+            }
+        }
+    });
+    if steps != 0 {
+        next = Some(deg + steps as f64);
+    }
+    if (resp.dragged() || resp.clicked())
+        && let Some(a) = resp.interact_pointer_pos().and_then(|p| dial_angle(c, p))
+    {
+        next = Some(a);
+    }
+    next.filter(|v| v.is_finite()).map(wrap_angle)
+}
+
+/// `deg` turned into the dial's range, −180 (exclusive) to 180°.
+fn wrap_angle(deg: f64) -> f64 {
+    let a = (deg + 180.0).rem_euclid(360.0) - 180.0;
+    if a <= -180.0 { 180.0 } else { a }
+}
+
+/// The angle a dial at `c` points at for the pointer at `p`, in whole degrees (−180 to 180,
+/// counter-clockwise from the right); none too close to the centre to tell.
+fn dial_angle(c: egui::Pos2, p: egui::Pos2) -> Option<f64> {
+    let d = p - c;
+    // Straight left is 180° (not −180°, which a negative zero would give).
+    (d.length() > 2.0).then(|| f64::from((-d.y).atan2(d.x)).to_degrees().round()).map(|a| if a <= -180.0 { 180.0 } else { a })
 }
 
 fn flag(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], label: &str) {
@@ -723,6 +811,52 @@ mod tests {
         assert!((app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().opacity - 0.8).abs() < 1e-6);
         app.run("edit.undo", json!({})).unwrap();
         assert!(!fx(&app).inner_shadow.on);
+    }
+
+    /// The angle dial points where the pointer is, as InDesign's: right is 0°, up 90°, left 180°,
+    /// down −90°, upper left 135°.
+    #[test]
+    fn the_angle_dial_points_at_the_pointer() {
+        let c = egui::pos2(100.0, 100.0);
+        assert_eq!(dial_angle(c, egui::pos2(120.0, 100.0)), Some(0.0));
+        assert_eq!(dial_angle(c, egui::pos2(100.0, 80.0)), Some(90.0));
+        assert_eq!(dial_angle(c, egui::pos2(80.0, 100.0)), Some(180.0));
+        assert_eq!(dial_angle(c, egui::pos2(100.0, 120.0)), Some(-90.0));
+        assert_eq!(dial_angle(c, egui::pos2(90.0, 90.0)), Some(135.0));
+        assert_eq!(dial_angle(c, egui::pos2(101.0, 100.0)), None, "too close to the centre");
+    }
+
+    /// Without a pointer: Tab focuses the dial, the arrows turn it (Shift: 10°), wrapping at 180°.
+    #[test]
+    fn the_angle_dial_turns_with_the_keyboard() {
+        let ctx = egui::Context::default();
+        let key = |key, shift| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE },
+        };
+        let mut deg = 175.0;
+        let frame = |events: Vec<egui::Event>, deg: &mut f64| {
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                if let Some(a) = angle_dial(ui, *deg, true) {
+                    *deg = a;
+                }
+            });
+            out.textures_delta.clear();
+        };
+        frame(vec![], &mut deg);
+        frame(vec![key(egui::Key::Tab, false)], &mut deg);
+        frame(vec![key(egui::Key::ArrowRight, false)], &mut deg);
+        assert_eq!(deg, 176.0);
+        frame(vec![key(egui::Key::ArrowUp, true)], &mut deg);
+        assert_eq!(deg, -174.0, "past 180° it comes round to −174°");
+        frame(vec![key(egui::Key::ArrowLeft, true)], &mut deg);
+        frame(vec![key(egui::Key::ArrowDown, false)], &mut deg);
+        assert_eq!(deg, 175.0);
+        assert_eq!(wrap_angle(-180.0), 180.0);
+        assert_eq!(wrap_angle(540.0), 180.0);
     }
 
     #[test]
