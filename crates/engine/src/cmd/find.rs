@@ -373,6 +373,9 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 (t.anchor, t.focus) = if t.anchor <= t.focus { (start, end) } else { (end, start) };
             }
+            for (range, new) in edits.iter().rev() {
+                d.adjust_text_ranges(sid, range.clone(), new.len());
+            }
             // `first` is the first match of the whole search, not of each story.
             if first_only && count > 0 {
                 break;

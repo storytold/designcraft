@@ -8,9 +8,16 @@ use crate::{Result, Session};
 
 /// Mark `r` deleted (text this session inserted while tracking is simply removed). Returns where
 /// the text after the range now starts.
+#[allow(dead_code)]
 pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
+    mark_deleted_reporting(st, r).0
+}
+
+/// Same as `mark_deleted`, but also returns the list of physically removed byte ranges (in original offsets, last first)
+/// so callers can reconcile document-level text ranges.
+pub(crate) fn mark_deleted_reporting(st: &mut Story, r: std::ops::Range<usize>) -> (usize, Vec<std::ops::Range<usize>>) {
     if r.is_empty() {
-        return r.start;
+        return (r.start, Vec::new());
     }
     // Inserted pieces inside the range go away; the rest is marked deleted.
     let mut ins: Vec<std::ops::Range<usize>> = st
@@ -20,6 +27,7 @@ pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
         .collect();
     let mut end = r.end;
     ins.sort_by_key(|x| std::cmp::Reverse(x.start));
+    let removed = ins.clone();
     for x in ins {
         st.delete(x.clone());
         end -= x.len();
@@ -27,7 +35,7 @@ pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
     if end > r.start {
         st.format_chars(r.start..end, |f| f.over.change = Some(ChangeMark::Deleted));
     }
-    end
+    (end, removed)
 }
 
 /// Ranges of `mark` in `st`, last first.

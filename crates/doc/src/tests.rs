@@ -351,3 +351,85 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     // A box with no area shows the whole page.
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }
+
+#[test]
+fn adjust_text_ranges_tracks_and_prunes_hyperlinks_and_placeholders() {
+    let mut d = doc();
+    let sid = StoryId(1);
+    d.hyperlinks.push(Hyperlink {
+        id: 10,
+        name: "Link".into(),
+        source: HyperlinkSource::Text { story: sid, start: 10, end: 20 },
+        dest: HyperlinkDest::Url("https://example.com".into()),
+    });
+    d.data_merge.placeholders.push(crate::Placeholder {
+        id: 20,
+        source_id: 1,
+        field: "Name".into(),
+        role: crate::PlaceholderRole::Text,
+        anchor: crate::PlaceholderAnchor::Text { story: sid, start: 10, end: 20 },
+    });
+
+    // 1. Insert before range (at 5, length 3) -> both move by 3: 13..23
+    d.adjust_text_ranges(sid, 5..5, 3);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 13, end: 23 });
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 13, end: 23 });
+
+    // 2. Pure insert at start (at 13, length 2) -> shifts forward: 15..25
+    d.adjust_text_ranges(sid, 13..13, 2);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 25 });
+
+    // 3. Insert inside range (at 18, length 4) -> end expands: 15..29
+    d.adjust_text_ranges(sid, 18..18, 4);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 29 });
+
+    // 4. Insert after range (at 30, length 5) -> no change
+    d.adjust_text_ranges(sid, 30..30, 5);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 29 });
+
+    // 5. Delete before range (0..5, length 0) -> shifts back by 5: 10..24
+    d.adjust_text_ranges(sid, 0..5, 0);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 10, end: 24 });
+
+    // 6. Delete inside range (12..16, length 0) -> end shrinks by 4: 10..20
+    d.adjust_text_ranges(sid, 12..16, 0);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 10, end: 20 });
+
+    // 7. Delete across start boundary (8..14, length 0) -> surviving start is 8, end is 14
+    d.adjust_text_ranges(sid, 8..14, 0);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 8, end: 14 });
+
+    // 8. Delete entire range (5..20, length 0) -> pruned
+    d.adjust_text_ranges(sid, 5..20, 0);
+    assert!(d.hyperlinks.is_empty());
+    assert!(d.data_merge.placeholders.is_empty());
+}
+
+#[test]
+fn move_text_ranges_tracks_hyperlinks_and_placeholders() {
+    let mut d = doc();
+    let sid = StoryId(1);
+    d.hyperlinks.push(Hyperlink {
+        id: 1,
+        name: "Inside".into(),
+        source: HyperlinkSource::Text { story: sid, start: 22, end: 28 },
+        dest: HyperlinkDest::Url("https://example.com/inside".into()),
+    });
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "Between".into(),
+        source: HyperlinkSource::Text { story: sid, start: 5, end: 10 },
+        dest: HyperlinkDest::Url("https://example.com/between".into()),
+    });
+
+    // Move block 20..30 to position 0 (before both links).
+    // The moved block (length 10) lands at 0..10.
+    // The link inside (22..28, relative offset +2..+8) becomes 2..8.
+    // The link originally at 5..10 shifts forward by 10 to 15..20.
+    d.move_text_ranges(sid, 20..30, 0);
+
+    let inside = d.hyperlinks.iter().find(|h| h.id == 1).unwrap();
+    let between = d.hyperlinks.iter().find(|h| h.id == 2).unwrap();
+    assert_eq!(inside.source, HyperlinkSource::Text { story: sid, start: 2, end: 8 });
+    assert_eq!(between.source, HyperlinkSource::Text { story: sid, start: 15, end: 20 });
+}

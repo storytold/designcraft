@@ -142,17 +142,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let text = super::text_param(p, "text");
                 s.edit(|d, sel| {
-                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                    let n = st.len();
-                    if a > b || b > n || !st.text.is_char_boundary(a) || !st.text.is_char_boundary(b) {
-                        let msg = format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
-                        return Err(bad("story.replaceRange", msg));
-                    }
-                    st.replace(a..b, &text);
-                    let len = st.len();
+                    let len = {
+                        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                        let n = st.len();
+                        if a > b || b > n || !st.text.is_char_boundary(a) || !st.text.is_char_boundary(b) {
+                            let msg =
+                                format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
+                            return Err(bad("story.replaceRange", msg));
+                        }
+                        st.replace(a..b, &text);
+                        st.len()
+                    };
+                    d.adjust_text_ranges(sid, a..b, text.len());
                     if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
-                        t.anchor = floor_char_boundary(&st.text, t.anchor);
-                        t.focus = floor_char_boundary(&st.text, t.focus);
+                        let st_text = d.story(sid).map(|st| st.text.as_str()).unwrap_or("");
+                        t.anchor = floor_char_boundary(st_text, t.anchor);
+                        t.focus = floor_char_boundary(st_text, t.focus);
                     }
                     Ok(json!({"length": len}))
                 })
@@ -644,18 +649,28 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
         return ok();
     }
     s.edit(|d, sel| {
-        let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-        let piece = st.extract(r.clone());
-        let mut at = b;
-        if !copy {
-            st.delete(r.clone());
-            if at > r.start {
-                at -= r.len().min(at - r.start);
+        let (piece_len, at, r) = {
+            let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+            let piece = st.extract(r.clone());
+            let mut at = b;
+            if !copy {
+                st.delete(r.clone());
+                if at > r.start {
+                    at -= r.len().min(at - r.start);
+                }
+            }
+            let end = st.insert_story(at, &piece);
+            sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
+            (piece.text.len(), at, r)
+        };
+        if cell.is_none() {
+            if copy {
+                d.adjust_text_ranges(sid, at..at, piece_len);
+            } else {
+                d.move_text_ranges(sid, r, at);
             }
         }
-        let end = st.insert_story(at, &piece);
-        sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
-        Ok(json!({"moved": piece.text.len(), "at": at}))
+        Ok(json!({"moved": piece_len, "at": at}))
     })
 }
 
@@ -690,6 +705,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         {
             r = r.start + 1..r.start + 1;
         }
+        let mut auto_edit = None;
         // Autocorrect: a word ended by a space or punctuation is looked up.
         if let Some(list) = &autocorrect
             && r.is_empty()
@@ -708,6 +724,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                         to.clone()
                     };
                     st.replace(ws..r.start, &to);
+                    auto_edit = Some((ws..r.start, to.len()));
                     r = ws + to.len()..ws + to.len();
                 }
             }
@@ -735,7 +752,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if tracking && t.cell.is_none() {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
-            let at = super::changes::mark_deleted(st, r.clone());
+            let (at, removed) = super::changes::mark_deleted_reporting(st, r.clone());
             reserve_command_text(st, text.len())?;
             let mut fmt = st.insert_format_at(at).clone();
             if let Some(f) = &typing {
@@ -745,6 +762,10 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             st.insert_with(at, &text, fmt);
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+            for rr in removed {
+                d.adjust_text_ranges(t.story, rr, 0);
+            }
+            d.adjust_text_ranges(t.story, at..at, text.len());
             return Ok(json!({"pos": pos}));
         }
         let a = floor_char_boundary(&st.text, r.start.min(st.len()));
@@ -758,6 +779,12 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+        if t.cell.is_none() {
+            if let Some((range, len)) = auto_edit {
+                d.adjust_text_ranges(t.story, range, len);
+            }
+            d.adjust_text_ranges(t.story, a..b, text.len());
+        }
         Ok(json!({"pos": pos}))
     });
     // A preview (IME marked text) leaves the typing format to the text typed in the end.
@@ -851,11 +878,22 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.delete", "no text"))?;
         let r = t.range();
+        let mut removed_ranges = Vec::new();
         if let Some(st) = d.text_story_mut(t.story, t.cell) {
             if tracking && t.cell.is_none() {
-                super::changes::mark_deleted(st, r.clone());
+                let (_, removed) = super::changes::mark_deleted_reporting(st, r.clone());
+                removed_ranges = removed;
             } else {
                 st.delete(r.clone());
+            }
+        }
+        if t.cell.is_none() {
+            if tracking {
+                for rr in removed_ranges {
+                    d.adjust_text_ranges(t.story, rr, 0);
+                }
+            } else {
+                d.adjust_text_ranges(t.story, r.clone(), 0);
             }
         }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
@@ -883,12 +921,18 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         let r = with_break_pair(&st.text, r);
         if tracking && t.cell.is_none() {
             // Marked, not removed: the caret steps over the deleted text.
-            let at = super::changes::mark_deleted(st, r.clone());
+            let (at, removed) = super::changes::mark_deleted_reporting(st, r.clone());
             let pos = if forward { at.max(r.end.min(st.len())) } else { r.start.min(at) };
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+            for rr in removed {
+                d.adjust_text_ranges(t.story, rr, 0);
+            }
             return ok();
         }
         st.delete(r.clone());
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), 0);
+        }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
@@ -2331,20 +2375,36 @@ fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
     let targets = format_targets(s);
     s.edit(|d, sel| {
         for t in &targets {
-            let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
-            let r = t.range.start.min(st.len())..t.range.end.min(st.len());
-            let mapped = case_map(st.slice(r.clone()), &case);
-            // Replace run by run (from the end) so every run keeps its formatting.
-            let segs: Vec<std::ops::Range<usize>> =
-                st.runs().map(|(rr, _)| rr.start.max(r.start)..rr.end.min(r.end)).filter(|x| x.start < x.end).collect();
-            let starts: Vec<usize> = st.slice(r.clone()).char_indices().map(|(i, _)| r.start + i).collect();
-            let mut delta: isize = 0;
-            for seg in segs.iter().rev() {
-                let old = st.slice(seg.clone()).to_string();
-                let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
-                if new != old {
-                    delta += new.len() as isize - old.len() as isize;
-                    st.replace(seg.clone(), &new);
+            let (delta, r, changes) = {
+                let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
+                let r = t.range.start.min(st.len())..t.range.end.min(st.len());
+                let mapped = case_map(st.slice(r.clone()), &case);
+                // Replace run by run (from the end) so every run keeps its formatting.
+                let segs: Vec<std::ops::Range<usize>> =
+                    st.runs().map(|(rr, _)| rr.start.max(r.start)..rr.end.min(r.end)).filter(|x| x.start < x.end).collect();
+                let starts: Vec<usize> = st.slice(r.clone()).char_indices().map(|(i, _)| r.start + i).collect();
+                let mut delta: isize = 0;
+                let mut changes = Vec::new();
+                for seg in segs.iter().rev() {
+                    let old = st.slice(seg.clone()).to_string();
+                    let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
+                    if new != old {
+                        delta += new.len() as isize - old.len() as isize;
+                        st.replace(seg.clone(), &new);
+                        // Per-character changes (back to front), so ranges inside the run keep their boundaries.
+                        for (i, (b, m)) in starts.iter().zip(&mapped).enumerate().rev().filter(|(_, (b, _))| seg.contains(b)) {
+                            let ce = starts.get(i + 1).copied().unwrap_or(r.end);
+                            if m.len() != ce - b {
+                                changes.push((*b..ce, m.len()));
+                            }
+                        }
+                    }
+                }
+                (delta, r, changes)
+            };
+            if t.cell.is_none() {
+                for (seg, new_len) in changes {
+                    d.adjust_text_ranges(t.story, seg, new_len);
                 }
             }
             if let Some(ts) = sel.text.as_mut().filter(|ts| ts.story == t.story && ts.cell == t.cell && !ts.is_caret()) {
