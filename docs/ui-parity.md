@@ -127,3 +127,6 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 | 2026-10-11 | minor | Added held Cmd+Space / Cmd+Alt+Space Zoom navigation and canvas input regression tests |
 | 2026-10-10 | minor | Threading row corrected to ✗ after checking the code (no out-port interaction, no thread command) |
 | 2026-10-10 | major | Created: measured menu coverage, 27-row interaction checklist from the code and issues |
+
+Double-clicking a section triangle in the Pages panel opens Numbering & Section Options for
+that section’s first page. It leaves parent-page editing and does not edit section data until confirmed.
