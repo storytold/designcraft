@@ -72,6 +72,21 @@
       <key>LSItemContentTypes</key>
       <array><string>ai.storyteller.designcraft.idml</string></array>
     </dict>
+    <!-- The same, by extension. When another installed app (InDesign) exports its own type for
+         .idml, files get that type instead of the one imported below, so the entry above no
+         longer matches them: Finder then won't drop them on the app's icon, and Open With leaves
+         DesignCraft out. An extension entry matches whatever type the file has. It must be a
+         dict of its own: where LSItemContentTypes is present, the extension keys are ignored. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>IDML Document (by extension)</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>idml</string></array>
+    </dict>
   </array>
 
   <!-- DesignCraft's own format: a zip package, declared as a document rather than an archive so
