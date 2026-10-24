@@ -335,7 +335,7 @@ pub fn stroke_type_out(t: &StrokeType) -> String {
     let s = match t {
         // Named custom styles are written as StripedStrokeStyle / DashedStrokeStyle elements.
         StrokeType::Style { name } => return format!("CustomStrokeStyle/{name}"),
-        StrokeType::Stripes { .. } => "StrokeStyle/$ID/Solid",
+        StrokeType::Stripes { .. } | StrokeType::Hidden { .. } => "StrokeStyle/$ID/Solid",
         StrokeType::Solid => "StrokeStyle/$ID/Solid",
         StrokeType::Dashed { .. } => "StrokeStyle/$ID/Dashed",
         StrokeType::Dotted => "StrokeStyle/$ID/Canned Dotted",
@@ -347,6 +347,13 @@ pub fn stroke_type_out(t: &StrokeType) -> String {
         StrokeType::ThickThinThick => "StrokeStyle/$ID/ThickThinThick",
         StrokeType::Wavy => "StrokeStyle/$ID/Wavy",
         StrokeType::Hashed => "StrokeStyle/$ID/Straight Hash",
+        StrokeType::Triple => "StrokeStyle/$ID/Triple_Stroke",
+        StrokeType::Dashed3x2 => "StrokeStyle/$ID/Canned Dashed 3x2",
+        StrokeType::Dashed4x4 => "StrokeStyle/$ID/Canned Dashed 4x4",
+        StrokeType::LeftSlantHash => "StrokeStyle/$ID/Left Slant Hash",
+        StrokeType::RightSlantHash => "StrokeStyle/$ID/Right Slant Hash",
+        StrokeType::WhiteDiamond => "StrokeStyle/$ID/White Diamond",
+        StrokeType::JapaneseDots => "StrokeStyle/$ID/Japanese Dots",
     };
     s.to_string()
 }
@@ -356,10 +363,17 @@ pub fn stroke_type_in(s: &str) -> StrokeType {
             return StrokeType::Style { name: name.to_string() };
         }
     }
-    let n = s.rsplit('/').next().unwrap_or(s).replace([' ', '-'], "").to_ascii_lowercase();
+    let n = s.rsplit('/').next().unwrap_or(s).replace([' ', '-', '_'], "").to_ascii_lowercase();
     match n.as_str() {
-        "dashed" | "dashed(3and2)" | "dashed(4and4)" | "canneddashed3x2" | "canneddashed4x4" => StrokeType::Dashed { pattern: vec![] },
-        "dotted" | "japanesedots" | "canneddotted" => StrokeType::Dotted,
+        "dashed" => StrokeType::Dashed { pattern: vec![] },
+        "dashed(3and2)" | "canneddashed3x2" => StrokeType::Dashed3x2,
+        "dashed(4and4)" | "canneddashed4x4" => StrokeType::Dashed4x4,
+        "dotted" | "canneddotted" => StrokeType::Dotted,
+        "japanesedots" => StrokeType::JapaneseDots,
+        "triple" | "triplestroke" => StrokeType::Triple,
+        "leftslanthash" => StrokeType::LeftSlantHash,
+        "rightslanthash" => StrokeType::RightSlantHash,
+        "whitediamond" => StrokeType::WhiteDiamond,
         "thickthin" => StrokeType::ThickThin,
         "thinthick" => StrokeType::ThinThick,
         "thinthin" => StrokeType::ThinThin,
@@ -367,7 +381,7 @@ pub fn stroke_type_in(s: &str) -> StrokeType {
         "thinthickthin" => StrokeType::ThinThickThin,
         "thickthinthick" => StrokeType::ThickThinThick,
         "wavy" => StrokeType::Wavy,
-        "straighthash" | "leftslanthash" | "rightslanthash" => StrokeType::Hashed,
+        "straighthash" => StrokeType::Hashed,
         _ => StrokeType::Solid,
     }
 }

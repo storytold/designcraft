@@ -1158,6 +1158,32 @@ impl Exporter<'_> {
             designcraft_doc::Cap::Projecting => krilla::paint::LineCap::Square,
         };
         let kind = self.doc.stroke_kind(&st.kind);
+        // A hidden stroke style: its parts, each in its colour or the stroke's (gap colour under them).
+        let hidden_arrows = matches!(kind, StrokeType::Hidden { .. }).then(|| designcraft_doc::arrow::apply(bp, st, closed)).flatten();
+        let hidden_bp = hidden_arrows.as_ref().map_or(bp, |a| &a.0);
+        if let Some(parts) = kind.painted(hidden_bp, st.weight, 0.05) {
+            s.set_stroke(None);
+            if let Some(g) = self.swatch_color(&st.gap_swatch, st.gap_tint)
+                && st.gap_swatch != designcraft_color::swatch::NONE
+            {
+                s.set_stroke(Some(Stroke { paint: g.into(), width: st.weight as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
+                s.set_fill(None);
+                s.draw_path(path);
+                s.set_stroke(None);
+            }
+            for (part, colour) in &parts {
+                let Some(p) = to_path(part) else { continue };
+                let paint: krilla::paint::Paint = match colour {
+                    Some([r, g, b]) => device(&Color::Rgb { r: *r as f32 / 255.0, g: *g as f32 / 255.0, b: *b as f32 / 255.0 }, self.rgb_only).into(),
+                    None => paint.clone(),
+                };
+                s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
+                s.draw_path(&p);
+            }
+            s.set_fill(None);
+            draw_arrowheads(s, hidden_arrows.iter().flat_map(|a| &a.1), &paint);
+            return;
+        }
         // Stripes, wavy and hash strokes: a filled outline (gap colour under it).
         if let Some(o) = kind.outline(bp, st.weight, 0.05)
             && let Some(op) = to_path(&o)
@@ -1178,27 +1204,37 @@ impl Exporter<'_> {
         }
         // Viewers expand dashes too: a degenerate pattern draws solid, as on screen.
         let length = designcraft_doc::path_length_bound(bp);
-        let dash = match &kind {
-            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
+        let dash = match kind.dashes(st.weight) {
+            Some((pattern, dots)) if StrokeType::expandable_dashes(&pattern, length) => {
                 let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
                 if pat.len() % 2 == 1 {
                     pat.extend(pat.clone());
                 }
+                if dots {
+                    cap = krilla::paint::LineCap::Round;
+                }
                 Some(StrokeDash { array: pat, offset: 0.0 })
-            }
-            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
-                cap = krilla::paint::LineCap::Round;
-                Some(StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 })
             }
             _ => None,
         };
         let arrows = designcraft_doc::arrow::apply(bp, st, closed);
         let trimmed = arrows.as_ref().and_then(|a| to_path(&a.0));
         let path = trimmed.as_ref().unwrap_or(path);
-        let aligned = closed && st.align != StrokeAlign::Center;
+        // Round dots aligned inside or outside stay whole: along the path moved half the weight
+        // that way, at the stroke's own width and unclipped, as on screen.
+        let dots = kind.draws_dots(st.weight, length);
+        let moved = (closed && dots && st.align != StrokeAlign::Center)
+            .then(|| {
+                let d = st.weight / 2.0 * if st.align == StrokeAlign::Outside { 1.0 } else { -1.0 };
+                to_path(&designcraft_geom::stroke_style::offset_outward(bp, d, 0.05))
+            })
+            .flatten();
+        let path = moved.as_ref().unwrap_or(path);
+        let aligned = closed && st.align != StrokeAlign::Center && moved.is_none();
         let width = if aligned { st.weight * 2.0 } else { st.weight };
         let mut pushes = 0;
         match st.align {
+            _ if moved.is_some() => {}
             StrokeAlign::Inside if closed => {
                 s.push_clip_path(path, &FillRule::NonZero);
                 pushes += 1;
@@ -1242,21 +1278,7 @@ impl Exporter<'_> {
         for _ in 0..pushes {
             s.pop();
         }
-        for h in arrows.iter().flat_map(|a| &a.1) {
-            let Some(p) = to_path(&h.path) else { continue };
-            match h.outline {
-                Some(w) => {
-                    s.set_stroke(Some(Stroke { paint: paint.clone(), width: w as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
-                    s.draw_path(&p);
-                    s.set_stroke(None);
-                }
-                None => {
-                    s.set_fill(Some(krilla::paint::Fill { paint: paint.clone(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
-                    s.draw_path(&p);
-                    s.set_fill(None);
-                }
-            }
-        }
+        draw_arrowheads(s, arrows.iter().flat_map(|a| &a.1), &paint);
     }
 
     /// A placed PDF as krilla embeds it. krilla refuses a PDF newer than the file it writes (the
@@ -2214,5 +2236,24 @@ mod eps_tests {
         assert_eq!(civil(-10_000_000_000_000), (-314918, 8, 13, 6, 13, 20));
         assert_eq!(civil(i64::MAX), (292277026596, 12, 4, 15, 30, 7));
         assert_eq!(civil(i64::MIN), (-292277022657, 1, 27, 8, 29, 52));
+    }
+}
+
+/// A stroke's arrowheads in its paint: outlined ones stroked, solid ones filled.
+fn draw_arrowheads<'a>(s: &mut Surface, heads: impl Iterator<Item = &'a designcraft_doc::arrow::ArrowShape>, paint: &krilla::paint::Paint) {
+    for h in heads {
+        let Some(p) = to_path(&h.path) else { continue };
+        match h.outline {
+            Some(w) => {
+                s.set_stroke(Some(Stroke { paint: paint.clone(), width: w as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
+                s.draw_path(&p);
+                s.set_stroke(None);
+            }
+            None => {
+                s.set_fill(Some(krilla::paint::Fill { paint: paint.clone(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
+                s.draw_path(&p);
+                s.set_fill(None);
+            }
+        }
     }
 }

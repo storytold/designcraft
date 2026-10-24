@@ -460,11 +460,20 @@ impl<'a> Exporter<'a> {
             StrokeType::ThickThin => "thickThin",
             StrokeType::ThinThick => "thinThick",
             StrokeType::ThinThin | StrokeType::ThickThick => "dbl",
-            StrokeType::ThinThickThin | StrokeType::ThickThinThick => "tri",
+            StrokeType::ThinThickThin | StrokeType::ThickThinThick | StrokeType::Triple => "tri",
             _ => "sng",
         };
-        if matches!(s.kind, StrokeType::Wavy | StrokeType::Hashed | StrokeType::Stripes { .. } | StrokeType::Style { .. }) {
-            self.warn("wavy, hashed, striped and custom stroke styles are exported as solid lines");
+        if matches!(
+            s.kind,
+            StrokeType::Wavy
+                | StrokeType::Hashed
+                | StrokeType::LeftSlantHash
+                | StrokeType::RightSlantHash
+                | StrokeType::WhiteDiamond
+                | StrokeType::Stripes { .. }
+                | StrokeType::Style { .. }
+        ) {
+            self.warn("wavy, hashed, diamond, striped and custom stroke styles are exported as solid lines");
         }
         let algn = match s.align {
             StrokeAlign::Inside => " algn=\"in\"",
@@ -490,7 +499,9 @@ impl<'a> Exporter<'a> {
                 d.push_str("</a:custDash>");
                 d
             }
-            StrokeType::Dotted => "<a:prstDash val=\"sysDot\"/>".into(),
+            StrokeType::Dotted | StrokeType::JapaneseDots => "<a:prstDash val=\"sysDot\"/>".into(),
+            StrokeType::Dashed3x2 => "<a:prstDash val=\"dash\"/>".into(),
+            StrokeType::Dashed4x4 => "<a:prstDash val=\"lgDash\"/>".into(),
             _ => "<a:prstDash val=\"solid\"/>".into(),
         };
         let join = match s.join {

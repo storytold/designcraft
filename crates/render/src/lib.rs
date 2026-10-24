@@ -745,14 +745,13 @@ impl Renderer {
             .with_miter_limit(st.miter_limit);
         let kind = f.doc.stroke_kind(&st.kind);
         let length = designcraft_doc::path_length_bound(bp);
-        match &kind {
-            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
-                stroke = stroke.with_dashes(0.0, pattern.iter().copied())
+        if let Some((pattern, dots)) = kind.dashes(st.weight)
+            && StrokeType::expandable_dashes(&pattern, length)
+        {
+            stroke = stroke.with_dashes(0.0, pattern);
+            if dots {
+                stroke = stroke.with_caps(kurbo::Cap::Round);
             }
-            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
-                stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round)
-            }
-            _ => {}
         }
         ctx.set_transform(f.view * xf);
         if !set_fill_paint(ctx, f.doc, &paint, bounds) {
@@ -764,8 +763,19 @@ impl Renderer {
         let bp = arrows.as_ref().map_or(bp, |a| &a.0);
         // Gap colour under dashes and dots: the whole path, undashed.
         let gap = if matches!(kind, StrokeType::Solid) { None } else { f.doc.resolve_color(&st.gap_swatch, st.gap_tint) };
+        // Round dots aligned inside or outside run along the path moved half the weight that way
+        // (they stay whole), and so does their gap colour.
+        let dots = kind.draws_dots(st.weight, length);
+        let moved = (closed && dots && st.align != StrokeAlign::Center).then(|| {
+            let d = st.weight / 2.0 * if st.align == StrokeAlign::Outside { 1.0 } else { -1.0 };
+            designcraft_geom::stroke_style::offset_outward(bp, d, 0.05 * f.px)
+        });
+        // Hidden styles are painted on the centre line whatever the alignment, over the whole gap
+        // colour (as in the PDF).
         if let Some(g) = gap
-            && !matches!(st.align, StrokeAlign::Inside | StrokeAlign::Outside if closed)
+            && (matches!(kind, StrokeType::Hidden { .. })
+                || moved.is_some()
+                || !matches!(st.align, StrokeAlign::Inside | StrokeAlign::Outside if closed))
         {
             let op = overprints(f, &st.gap_swatch, st.gap_tint, st.gap_overprint);
             if op {
@@ -780,11 +790,36 @@ impl Renderer {
                 end_cap: kurbo::Cap::Butt,
                 ..stroke.clone()
             });
-            ctx.stroke_path(bp);
+            ctx.stroke_path(moved.as_ref().unwrap_or(bp));
             if op {
                 ctx.pop_layer();
             }
             set_fill_paint(ctx, f.doc, &paint, bounds);
+        }
+        // A hidden stroke style: its parts, each in its colour or the stroke's.
+        if let Some(parts) = kind.painted(bp, st.weight, 0.05 * f.px) {
+            for (part, colour) in &parts {
+                match colour {
+                    // As ink coverage under Separations Preview, like every other colour.
+                    Some(rgb) => ctx.set_paint(screen_color(*rgb, 255)),
+                    None => {
+                        set_fill_paint(ctx, f.doc, &paint, bounds);
+                    }
+                }
+                ctx.fill_path(part);
+            }
+            // The arrowheads, in the stroke's paint: the path was shortened under them.
+            set_fill_paint(ctx, f.doc, &paint, bounds);
+            for h in arrows.iter().flat_map(|a| &a.1) {
+                match h.outline {
+                    Some(w) => {
+                        ctx.set_stroke(kurbo::Stroke::new(w).with_join(kurbo::Join::Miter));
+                        ctx.stroke_path(&h.path);
+                    }
+                    None => ctx.fill_path(&h.path),
+                }
+            }
+            return;
         }
         // Stripes, wavy and hash strokes are fills (along the path's centre line).
         if let Some(o) = kind.outline(bp, st.weight, 0.05 * f.px) {
@@ -801,6 +836,11 @@ impl Renderer {
             return;
         }
         match st.align {
+            // Round dots aligned inside or outside stay whole, as InDesign draws them.
+            _ if moved.is_some() => {
+                ctx.set_stroke(stroke);
+                ctx.stroke_path(moved.as_ref().unwrap_or(bp));
+            }
             StrokeAlign::Inside if closed => {
                 // Clip a double-width stroke to the path.
                 ctx.push_clip_layer(bp);
@@ -1771,6 +1811,36 @@ mod tests {
         let (dash, gap) = (img.pixel(106, 500), img.pixel(114, 500));
         assert!(dash[0] < 80 && dash[2] < 80, "dash {dash:?}");
         assert!(gap[0] < 80 && gap[2] > 150, "gap {gap:?}");
+    }
+
+    /// A hidden style on a closed frame aligned inside still has its gap colour under it.
+    #[test]
+    fn hidden_stroke_keeps_its_gap_colour_when_aligned() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let id = designcraft_doc::ItemId(d.alloc());
+        let mut frame =
+            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 300.0, 300.0)));
+        frame.stroke = designcraft_doc::Stroke {
+            swatch: designcraft_color::swatch::BLACK.into(),
+            weight: 12.0,
+            align: StrokeAlign::Inside,
+            kind: StrokeType::Hidden { style: designcraft_doc::HiddenStroke::Feet },
+            gap_swatch: "C=100 M=0 Y=0 K=0".into(),
+            ..Default::default()
+        };
+        d.insert_item(SpreadRef::Doc(0), frame, None).unwrap();
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let cyan = (100..300).filter(|x| {
+            (94..106).any(|y| {
+                let p = img.pixel(*x, y);
+                p[0] < 80 && p[2] > 150
+            })
+        });
+        assert!(cyan.count() > 20, "the gap colour shows between the feet");
     }
 
     #[test]

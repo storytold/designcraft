@@ -26,9 +26,8 @@ const PROXY_INSET: f32 = 8.0;
 
 const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 20.0, 30.0, 40.0, 50.0, 100.0];
 
-/// Stroke types offered for cell edges (all of them draw on table edges).
-const TYPES: &[&str] =
-    &["solid", "dashed", "dotted", "thickThin", "thinThick", "thinThin", "thickThick", "thinThickThin", "thickThinThick", "wavy", "hashed"];
+/// Stroke types offered for cell edges (all of them draw on table edges), in InDesign's order.
+const TYPES: &[&str] = &StrokeType::BUILT_IN;
 
 /// Whether the selection is table cells (or the text cursor is in a cell).
 pub fn in_cells(app: &DesignApp) -> bool {
@@ -154,16 +153,7 @@ pub fn edge_proxy(ui: &mut Ui, id: &str, edges: &mut Edges, lang: &str) -> bool 
 fn builtin(kind: &str) -> StrokeType {
     match kind {
         "dashed" => StrokeType::Dashed { pattern: Vec::new() },
-        "dotted" => StrokeType::Dotted,
-        "thickThin" => StrokeType::ThickThin,
-        "thinThick" => StrokeType::ThinThick,
-        "thinThin" => StrokeType::ThinThin,
-        "thickThick" => StrokeType::ThickThick,
-        "thinThickThin" => StrokeType::ThinThickThin,
-        "thickThinThick" => StrokeType::ThickThinThick,
-        "wavy" => StrokeType::Wavy,
-        "hashed" => StrokeType::Hashed,
-        _ => StrokeType::Solid,
+        k => serde_json::from_value(json!({ "kind": k })).unwrap_or_default(),
     }
 }
 
@@ -194,6 +184,9 @@ pub fn stroke_fields(app: &mut DesignApp, ui: &mut Ui, id: &str, v: &Value) -> O
         let shown = type_label(&lang, &v["type"]);
         egui::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
             for kind in TYPES {
+                if *kind == "dashed" {
+                    ui.separator();
+                }
                 let text = tr(&lang, builtin(kind).label());
                 if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {
                     out = Some(("type", json!(kind)));

@@ -4311,8 +4311,7 @@ fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui
 }
 
 /// Built-in stroke types of the paragraph border's Type menu (serialized `StrokeType`s).
-const BORDER_TYPES: [&str; 11] =
-    ["solid", "dashed", "dotted", "thickThin", "thinThick", "thinThin", "thickThick", "thinThickThin", "thickThinThick", "wavy", "hashed"];
+const BORDER_TYPES: [&str; 18] = designcraft_doc::StrokeType::BUILT_IN;
 
 /// The border's stroke type: a built-in type or one of the document's stroke styles.
 fn border_type_menu(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, doc: &designcraft_doc::Document) {
@@ -4324,6 +4323,9 @@ fn border_type_menu(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, d
     };
     egui::ComboBox::from_id_salt("psbordertype").selected_text(crate::rtl::widget(ui, shown)).width(160.0).show_ui(ui, |ui| {
         for k in BORDER_TYPES {
+            if k == "dashed" {
+                ui.separator();
+            }
             let ty = if k == "dashed" { json!({"kind": k, "pattern": []}) } else { json!({"kind": k}) };
             let Ok(t) = serde_json::from_value::<StrokeType>(ty.clone()) else { continue };
             let on = std::mem::discriminant(&t) == std::mem::discriminant(&cur);

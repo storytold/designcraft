@@ -200,7 +200,7 @@ impl Document {
                 .stroke_styles
                 .iter()
                 .find(|s| s.name == *name)
-                .map(|s| s.kind.clone())
+                .map(|s| crate::item::HiddenStroke::of(&s.name, &s.kind).map_or_else(|| s.kind.clone(), |style| StrokeType::Hidden { style }))
                 .filter(|k| !matches!(k, StrokeType::Style { .. }))
                 .unwrap_or(StrokeType::Solid),
             t => t.clone(),
