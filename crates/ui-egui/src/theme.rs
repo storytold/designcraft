@@ -404,6 +404,20 @@ pub(crate) fn baseline_tweak(face: &[u8], index: u32) -> egui::FontTweak {
     egui::FontTweak { y_offset_factor: if shift.is_finite() { shift.clamp(-0.5, 0.5) } else { 0.0 }, ..Default::default() }
 }
 
+/// Interface languages whose script may come only from an installed face (the built-in fonts may
+/// lack Hangul or Traditional Chinese forms): see [`language_listed`].
+const NEEDS_INSTALLED_FACE: &[&str] = &["zh-hant", "ko"];
+
+/// Whether Preferences › Interface Language lists language `code`, named `name` in its own
+/// script. A language in [`NEEDS_INSTALLED_FACE`] is listed only when the interface fonts draw its
+/// name, so a build without a Korean face (Linux without one, the web) doesn't offer an interface
+/// it would show as missing glyphs. The `current` language is always listed.
+pub fn language_listed(ctx: &egui::Context, code: &str, name: &str, current: &str) -> bool {
+    !NEEDS_INSTALLED_FACE.contains(&code)
+        || code == current
+        || ctx.fonts_mut(|f| f.has_glyphs(&egui::FontId::new(13.0, egui::FontFamily::Proportional), name))
+}
+
 /// The script whose letterforms the interface language `lang` prefers for Han characters, Kana
 /// and Hangul: "Jpan", "Hans", "Hant" or "Kore". Languages without a CJK preference use Japanese
 /// forms, the app's default CJK face.
@@ -635,6 +649,33 @@ mod japanese_font_tests {
         assert!(tweak.y_offset_factor.abs() > 0.01, "the synthetic face needs a shift: {}", tweak.y_offset_factor);
         // The UI face itself needs no shift.
         assert!(super::baseline_tweak(super::UI_FONT, 0).y_offset_factor.abs() < 1e-6);
+    }
+
+    /// Korean and Traditional Chinese are offered only when the interface fonts draw their names;
+    /// the other languages always are.
+    #[test]
+    fn languages_needing_an_installed_face_are_listed_only_with_one() {
+        let listed = |system: &[super::SystemFont], code: &str, current: &str| {
+            let mut defs = super::font_definitions(&[], "");
+            super::add_system_fallbacks(&mut defs, system, "");
+            let ctx = egui::Context::default();
+            ctx.set_fonts(defs);
+            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.textures_delta.clear();
+            let name = crate::i18n::LANGUAGES.iter().find(|(c, _)| *c == code).unwrap().1;
+            super::language_listed(&ctx, code, name, current)
+        };
+        assert!(!listed(&[], "ko", ""), "no Hangul face");
+        assert!(!listed(&[], "zh-hant", ""), "no Han face");
+        assert!(listed(&[], "ko", "ko"), "the current language stays listed");
+        for code in ["", "de", "ja", "zh", "ar", "ka"] {
+            assert!(listed(&[], code, ""), "{code} is always listed");
+        }
+        let face = |family: &str, chars: &[char], script| {
+            super::SystemFont::new(script, family.into(), designcraft_fonts::testing::font_with(family, chars).unwrap(), 0)
+        };
+        assert!(listed(&[face("DC UI Korean", &['한', '국', '어'], "Kore")], "ko", ""));
+        assert!(listed(&[face("DC UI Hant", &['繁', '體', '中', '文'], "Hant")], "zh-hant", ""));
     }
 
     /// Korean font names (the font menus show Korean families by their Hangul names) get glyphs

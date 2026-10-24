@@ -1991,7 +1991,11 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     egui::ComboBox::from_id_salt("pref_language").width(180.0).height(400.0).selected_text(crate::rtl::widget(ui, current)).show_ui(
                         ui,
                         |ui| {
-                            for (code, name) in crate::i18n::picker_languages() {
+                            let ctx = ui.ctx().clone();
+                            let listed = crate::i18n::picker_languages()
+                                .into_iter()
+                                .filter(|(code, name)| crate::theme::language_listed(&ctx, code, name, &app.ui.language));
+                            for (code, name) in listed {
                                 if ui.selectable_label(code == app.ui.language, crate::rtl::widget(ui, name)).clicked() {
                                     // Applied by `show` right after this frame, which has `&mut DesignApp`.
                                     d.fields.insert("applyLanguage".into(), json!(code));
@@ -9350,8 +9354,10 @@ mod tests {
         // Choosing a language applies it at once; the dialog stays open.
         click_dialog(&mut app, &ctx, screen, combo.center());
         let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-        for (_, name) in crate::i18n::LANGUAGES {
-            assert!(labels.iter().any(|(text, _, _)| text == name), "{name} is listed by its own name");
+        for (code, name) in crate::i18n::LANGUAGES {
+            // Korean and Traditional Chinese only with a face for their script (see `language_listed`).
+            let expected = crate::theme::language_listed(&ctx, code, name, &app.ui.language);
+            assert_eq!(labels.iter().any(|(text, _, _)| text == name), expected, "{name} is listed by its own name");
         }
         let deutsch = visible_label(&labels, screen, "Deutsch").center();
         click_dialog(&mut app, &ctx, screen, deutsch);
