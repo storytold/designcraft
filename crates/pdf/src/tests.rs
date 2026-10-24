@@ -201,6 +201,25 @@ fn standards() {
 }
 
 #[test]
+fn table_gradient_fill_exports_a_shading() {
+    let mut d = Document::new(&NewDocument::default());
+    let mut gradient = designcraft_color::Gradient::default();
+    gradient.stops[0].color = Color::rgb(1.0, 0.0, 0.0);
+    gradient.stops[1].color = Color::rgb(0.0, 0.0, 1.0);
+    d.swatches.push(Swatch { name: "Table gradient".into(), value: SwatchValue::Gradient { gradient }, locked: false, named: true, hidden: false });
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    let mut t = designcraft_doc::Table::new(1, 1, 2, 0, 0, 200.0);
+    t.rows[0].height = 40.0;
+    t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    for cell in &mut t.cells {
+        cell.fill = "Table gradient".into();
+    }
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    let pdf = uncompressed(&d, PdfOptions::default());
+    assert!(pdf.contains("/ShadingType 2") || pdf.contains("/ShadingType2"), "table fill must export a linear gradient");
+}
+
+#[test]
 fn tables_export_cell_text() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();

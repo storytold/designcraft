@@ -2162,6 +2162,43 @@ mod tests {
     }
 
     #[test]
+    fn table_gradient_fill_is_continuous_across_cells() {
+        let mut d = Document::new(&NewDocument::default());
+        let mut gradient = designcraft_color::Gradient::default();
+        gradient.stops[0].color = designcraft_color::Color::rgb(1.0, 0.0, 0.0);
+        gradient.stops[1].color = designcraft_color::Color::rgb(0.0, 0.0, 1.0);
+        d.swatches.push(designcraft_color::Swatch {
+            name: "Table gradient".into(),
+            value: designcraft_color::SwatchValue::Gradient { gradient },
+            locked: false,
+            named: true,
+            hidden: false,
+        });
+        let (_, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(1, 1, 2, 0, 0, 200.0);
+        t.rows[0].height = 40.0;
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        for cell in &mut t.cells {
+            cell.fill = "Table gradient".into();
+        }
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cache = Cache::new();
+        let rect = cache.get(&d, sid, None).frames[0].tables[0].rect;
+        let mut renderer = Renderer::new();
+        renderer.threads = 0;
+        let img = renderer.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let y = rect.center().y as u32;
+        let a = img.pixel((rect.x0 + 20.0) as u32, y);
+        let b = img.pixel((rect.x1 - 20.0) as u32, y);
+        assert!(i16::from(a[0]) - i16::from(a[2]) > 80, "red end: {a:?}");
+        assert!(i16::from(b[2]) - i16::from(b[0]) > 80, "blue end: {b:?}");
+        let left = img.pixel((rect.center().x - 2.0) as u32, y);
+        let right = img.pixel((rect.center().x + 2.0) as u32, y);
+        assert!((i16::from(left[0]) - i16::from(right[0])).abs() < 20, "no gradient restart between cells");
+    }
+
+    #[test]
     fn renders_tables() {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();

@@ -470,14 +470,16 @@ impl Renderer {
         let doc = f.doc;
         for t in &ft.tables {
             for c in &t.cells {
-                if let Some((sw, tint)) = &c.fill
-                    && let Some(col) = doc.resolve_color(sw, *tint)
-                {
+                if let Some((sw, tint)) = &c.fill {
                     ctx.set_transform(f.view * xf);
-                    ctx.set_paint(color_of(&col, 1.0));
+                    let fill = designcraft_doc::Fill { swatch: sw.clone(), tint: *tint, ..designcraft_doc::Fill::none() };
                     // Overlap neighbours by half a device pixel so adjacent fills show no seams.
                     let h = 0.5 * f.px;
-                    ctx.fill_rect(&c.rect.inflate(h, h));
+                    // All cells share the table's gradient space; it must not restart at a cell edge.
+                    if crate::set_fill_paint(ctx, doc, &fill, t.rect) {
+                        ctx.fill_rect(&c.rect.inflate(h, h));
+                    }
+                    ctx.reset_paint_transform();
                 }
             }
             for c in &t.cells {
