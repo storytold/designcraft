@@ -304,7 +304,7 @@ impl Ctx {
                     let t = Table::from_strings(self.next_table, &rows, 300.0, &ParaFormat::default(), &CharFormat::default());
                     let len = st.len();
                     st.insert_table(len, t);
-                    first = false;
+                    first = st.text.ends_with('\n');
                 }
                 "sdt" => {
                     if let Some(c) = e.child("sdtContent") {
@@ -601,6 +601,23 @@ mod tests {
         let err = parse(&nested(MAX_DEPTH + 1)).expect_err("one level more is refused");
         assert!(err.to_string().contains("nested deeper"), "{err}");
         assert!(parse(&nested(100_000)).is_err());
+    }
+
+    #[test]
+    fn table_adds_no_empty_paragraph() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t>Before</w:t></w:r></w:p>
+              <w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+              <w:p><w:r><w:t>After</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        st.check().unwrap();
+        let paras: Vec<&str> = st.para_ranges().into_iter().map(|r| &st.text[r]).collect();
+        assert_eq!(paras.len(), 3, "{paras:?}");
+        assert_eq!(paras[0], "Before");
+        assert_eq!(paras[2], "After");
     }
 
     pub(crate) fn docx(document: &str, styles: &str, footnotes: &str) -> Vec<u8> {
