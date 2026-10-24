@@ -24,6 +24,7 @@ mod object_control;
 mod page_history;
 mod panel_docking;
 pub mod panels;
+mod pdf_export;
 mod prefs;
 pub mod render_worker;
 mod rtl;
@@ -47,6 +48,7 @@ use serde_json::{Value, json};
 pub use control::{ControlRequest, ControlResponse};
 
 pub type ReadFn = Box<dyn Fn(&str) -> Result<Vec<u8>, String>>;
+pub type BackgroundWriteFn = std::sync::Arc<dyn Fn(&str, &[u8]) -> Result<(), String> + Send + Sync>;
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
 /// Context captured before any host file-picker or read await.
@@ -77,6 +79,8 @@ pub struct Services {
     pub pick_save: Option<PickFn>,
     pub read: Option<ReadFn>,
     pub write: Option<WriteFn>,
+    /// Optional thread-safe writer for native background exports.
+    pub background_write: Option<BackgroundWriteFn>,
     /// Asynchronous open dialog for a purpose (`open`, `place`); the chosen file arrives later
     /// through [`Services::inbox`]. Used when `pick_open` is unset (web).
     pub open_async: Option<OpenAsyncFn>,
@@ -577,6 +581,7 @@ pub struct Perf {
 
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    pdf_export: pdf_export::Export,
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
@@ -622,6 +627,9 @@ pub struct DesignApp {
     /// Files the operating system asked to open (macOS Finder, Dock, Open With), opened once the
     /// window is ready; see [`DesignApp::open_documents_later`].
     os_documents: Vec<String>,
+    /// Native drops waiting for fonts or a PDF export, retaining their placement position.
+    #[cfg(not(target_arch = "wasm32"))]
+    deferred_drops: Vec<(String, Option<egui::Pos2>)>,
     pub integrated_titlebar: bool,
     /// The desktop host uses our caption controls and window drag/resize regions (Windows).
     pub custom_titlebar: bool,
@@ -653,6 +661,8 @@ pub struct DesignApp {
     pub(crate) canvas_ime: bool,
     /// Quit was chosen: close the window on the next frame, as its close button does.
     quit_requested: bool,
+    /// Replay normal Quit after the active PDF export reaches a terminal result.
+    quit_after_export: bool,
     /// Close the window without asking about unsaved changes (the control channel's `app.quit`).
     pub(crate) quit_without_asking: bool,
     /// No document is discarded until every unsaved document has an up-to-date approval.
@@ -682,6 +692,7 @@ impl DesignApp {
         designcraft_fonts::FontDb::global().scan_in_background();
         DesignApp {
             pending_pdf: None,
+            pdf_export: Default::default(),
             session,
             ui: UiState::default(),
             services,
@@ -712,6 +723,8 @@ impl DesignApp {
             restyle: false,
             fonts_ready: false,
             os_documents: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            deferred_drops: Vec::new(),
             integrated_titlebar: false,
             custom_titlebar: false,
             window_maximized: false,
@@ -727,6 +740,7 @@ impl DesignApp {
             ime_discard: false,
             canvas_ime: false,
             quit_requested: false,
+            quit_after_export: false,
             quit_without_asking: false,
             quitting: None,
             cursors: cursors::Images::default(),
@@ -832,6 +846,13 @@ impl DesignApp {
 
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if self.pdf_export.busy() {
+            if id == "app.quit" {
+                self.quit_after_export = true;
+                return Ok(json!({"queued": true}));
+            }
+            return Err("Please wait for the PDF export to finish".into());
+        }
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }
@@ -1158,6 +1179,15 @@ impl DesignApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        if let Some(result) = self.pdf_export.poll(&mut self.services.write) {
+            self.status(match result {
+                Ok(v) => format!("PDF exported: {} ({} pages)", v["path"].as_str().unwrap_or(""), v["pages"]),
+                Err(e) => format!("PDF export failed: {e}"),
+            });
+            if std::mem::take(&mut self.quit_after_export) {
+                self.request_quit();
+            }
+        }
         if self.egui_ctx.is_none() {
             self.egui_ctx = Some(ctx.clone());
         }
@@ -1212,7 +1242,10 @@ impl DesignApp {
         let now = ctx.input(|i| i.time);
         // Crash recovery: unsaved documents are written to the recovery folder every 30 s.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
+        if !self.pdf_export.busy()
+            && self.session.recovery_dir.is_some()
+            && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0)
+        {
             self.last_recovery = now;
             if self.session.documents().iter().any(|d| d.is_dirty())
                 && let Err(e) = self.session.execute("file.recovery.save", &json!({}))
@@ -1227,7 +1260,7 @@ impl DesignApp {
         self.last_time = now;
         self.drain_control(ctx);
         new_document::end_stale_preview(self);
-        if self.fonts_ready {
+        if self.fonts_ready && !self.pdf_export.busy() {
             self.drain_inbox();
             self.open_os_documents();
         }
@@ -1246,7 +1279,12 @@ impl DesignApp {
             for f in dropped {
                 let p = f.path().to_string_lossy().to_string();
                 if !p.is_empty() {
-                    let _ = self.open_dropped_at(&p, pointer);
+                    self.deferred_drops.push((p, pointer));
+                }
+            }
+            if self.fonts_ready && !self.pdf_export.busy() {
+                for (path, pointer) in std::mem::take(&mut self.deferred_drops) {
+                    let _ = self.open_dropped_at(&path, pointer);
                 }
             }
         }
@@ -1265,6 +1303,11 @@ impl DesignApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if ctx.input(|i| i.viewport().close_requested()) {
+            if self.pdf_export.busy() && !self.quit_without_asking {
+                self.quit_after_export = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                return;
+            }
             if self.quit_without_asking {
                 self.quitting = None;
                 return;
@@ -1677,6 +1720,7 @@ impl DesignApp {
         dialogs::show(self, &ctx);
         about::show(self, &ctx);
         menus::palette(self, &ctx);
+        self.pdf_export.show(&ctx);
         if self.custom_titlebar {
             chrome::resize_borders(self, ui);
         }
@@ -1927,6 +1971,15 @@ mod tests {
             app.ui.dialog = Some(dialogs::Dialog::new("pdfExport", json!({})));
             app.ui.dialog.as_mut().unwrap().fields.insert("title".into(), json!("Report"));
             dialogs::confirm(app).unwrap();
+            // Native export completes on a worker; finish it before starting the next dialog.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while app.pdf_export.busy() && std::time::Instant::now() < deadline {
+                if let Some(result) = app.pdf_export.poll(&mut app.services.write) {
+                    result.unwrap();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!app.pdf_export.busy(), "the export must finish before another document is created");
         };
 
         app.run("file.new", json!({})).unwrap();

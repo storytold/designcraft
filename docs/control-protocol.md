@@ -107,3 +107,12 @@ Table panel. `ui.set` with `closePanel` closes the last explicitly opened panel;
 `dockExpanded:false` hides the root dock while floating groups remain visible.
 The icon rail can reopen a collapsed dock through any root panel. Activating a
 floating panel also raises its group. These operations change only UI layout.
+
+### Desktop PDF export jobs
+
+On native desktop, `app.exportPdf` with an explicit path starts a background job and returns
+`{path, queued:true}`. Poll `ui.inspect.pdfExport`: `busy` stays true during generation and saving;
+`last` then contains `{path, bytes, pages, warnings, seconds}` or `{error}`. A queued result is
+not a completed export. Only one job runs at a time; editing and normal Quit wait for it.
+The options dialog uses the same job path. The engine's `file.exportPdf` remains synchronous
+and returns its existing final result, as does browser export.

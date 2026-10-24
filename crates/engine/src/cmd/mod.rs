@@ -15,6 +15,8 @@ mod edit;
 mod editorial;
 mod endnotes;
 mod export;
+pub use designcraft_pdf::ExportReport as PdfExportReport;
+pub use export::export_pdf_document;
 mod file;
 pub(crate) mod find;
 pub use edit::copied_objects_text;

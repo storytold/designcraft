@@ -10056,6 +10056,14 @@ mod tests {
             d.fields.insert("title".into(), json!("Report"));
         }
         confirm(&mut app).unwrap();
+        // Native export is asynchronous; the browser still completes in confirm().
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pdf_export.busy() && std::time::Instant::now() < deadline {
+            app.logic(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.pdf_export.busy(), "the export must complete");
 
         let got = writes.lock().unwrap();
         assert_eq!(got.len(), 1, "confirming the dialog writes exactly one file");

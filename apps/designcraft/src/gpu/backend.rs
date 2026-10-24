@@ -180,7 +180,7 @@ pub fn write(path: &Path, record: &Record) -> std::io::Result<()> {
 /// See [`Fallback::backends`].
 fn instance_backends(backend: Backend, failed: &[Backend]) -> wgpu::Backends {
     let mut backends = backend.bit();
-    if !cfg!(windows) && !failed.contains(&Backend::Gl) {
+    if !cfg!(windows) && backend != Backend::Metal && !failed.contains(&Backend::Gl) {
         backends |= wgpu::Backends::GL;
     }
     backends
@@ -252,7 +252,8 @@ impl Fallback {
     }
 
     /// The backends wgpu may use: the chosen one, with OpenGL as the in-process fallback when it
-    /// has no adapter (unless OpenGL itself has failed). Not on Windows: some OpenGL drivers
+    /// has no adapter (unless OpenGL itself has failed). Metal stays Metal-only on macOS.
+    /// Not on Windows: some OpenGL drivers
     /// (AMD's) crash while the instance is created (#167), before any fallback could help, so
     /// there OpenGL is only ever tried as its own candidate.
     pub fn backends(&self) -> wgpu::Backends {
@@ -471,7 +472,7 @@ mod tests {
             assert_eq!(s.next_after(&[Backend::Gl]), Some(Backend::Vulkan));
             assert_eq!(s.next_after(&[Backend::Gl, Backend::Vulkan]), None);
         } else {
-            assert_eq!(next, None, "the first start already has OpenGL beside its backend");
+            assert_eq!(next, None, "the first start already includes all platform candidates");
         }
     }
 
@@ -493,6 +494,11 @@ mod tests {
     }
 
     #[test]
+    fn metal_never_adds_an_opengl_fallback() {
+        assert_eq!(instance_backends(Backend::Metal, &[]), wgpu::Backends::METAL);
+    }
+
+    #[test]
     fn a_start_records_its_backend_until_a_frame_is_presented() {
         let path = temp_path("startup");
         let mut s = Fallback::begin_unforced(Some(path.clone()), V, &[]).expect("candidates");
@@ -500,9 +506,9 @@ mod tests {
         assert_eq!(s.backend, first);
         assert_eq!(read(&path).trying, Some(first));
         assert!(s.backends().contains(first.bit()));
-        // OpenGL is the in-process fallback, except on Windows where it is only its own candidate
-        // (#167), and Windows never loads Vulkan drivers on its first try (#806).
-        assert_eq!(s.backends().contains(wgpu::Backends::GL), !cfg!(windows) || first == Backend::Gl);
+        // OpenGL is the Linux in-process fallback. Metal stays Metal-only; Windows tries
+        // OpenGL as its own candidate (#167) and never loads Vulkan on its first try (#806).
+        assert_eq!(s.backends().contains(wgpu::Backends::GL), (!cfg!(windows) && first != Backend::Metal) || first == Backend::Gl);
         if cfg!(windows) {
             assert_eq!(s.backends(), wgpu::Backends::DX12);
         }

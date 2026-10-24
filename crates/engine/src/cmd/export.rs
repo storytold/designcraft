@@ -720,7 +720,24 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
 
 fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
-    let opts = options(p, st.doc.page_count())?;
+    let r = export_pdf_document(&st.doc, &s.cache, p)?;
+    match str_param(p, "path") {
+        Some(path) => {
+            write_file(path, &r.bytes)?;
+            Ok(json!({"path": path, "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings}))
+        }
+        None => Ok(json!({"base64": super::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
+    }
+}
+
+/// Export an immutable document snapshot without serializing PDF bytes through JSON.
+/// Native hosts can run this on a worker using the same command pipeline.
+pub fn export_pdf_document(
+    source: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    p: &Value,
+) -> Result<designcraft_pdf::ExportReport> {
+    let opts = options(p, source.page_count())?;
     // Transparency Flattener presets: High / Medium / Low Resolution, or a ppi.
     let ppi = match p.get("flatten") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => None,
@@ -732,16 +749,16 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
             v.as_f64().filter(|v| (36.0..=1200.0).contains(v)).ok_or_else(|| bad("file.exportPdf", "`flatten`: high|medium|low or 36–1200 ppi"))?,
         ),
     };
-    let flattened = ppi.map(|ppi| flatten(&st.doc, &s.cache, ppi));
+    let flattened = ppi.map(|ppi| flatten(source, cache, ppi));
     // Placed PDFs with hidden layers go out as images showing just their visible layers.
-    let base: &designcraft_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
+    let base: &designcraft_doc::Document = flattened.as_ref().map_or(source, |f| &f.0);
     let (layered, layer_count) = rasterize_layered(base)?;
     let base2: &designcraft_doc::Document = layered.as_ref().unwrap_or(base);
-    let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache);
+    let (fx_doc, fx_count) = rasterize_effects(base2, cache);
     let doc: &designcraft_doc::Document = fx_doc.as_ref().unwrap_or(base2);
     let boxed = super::interchange::with_pdf_boxes(doc);
     let doc: &designcraft_doc::Document = &boxed;
-    let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let r = designcraft_pdf::export_pdf_with_report(doc, cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
     // Transparency Blend Space: the page group of pages with transparency.
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
@@ -815,13 +832,7 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     {
         r.warnings.push(format!("transparency flattened: {n} region(s) rasterised"));
     }
-    match str_param(p, "path") {
-        Some(path) => {
-            write_file(path, &r.bytes)?;
-            Ok(json!({"path": path, "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings}))
-        }
-        None => Ok(json!({"base64": super::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
-    }
+    Ok(r)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
