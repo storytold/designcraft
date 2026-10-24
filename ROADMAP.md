@@ -356,6 +356,9 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-10-24** · HU1: document localization lookup, Tools-panel rendering and language, menu-path and tooltip regression tests. Documentation only; runtime behavior, translation catalogs and test assertions are unchanged. No readiness percentage change.
+- 2026-10-23 (HU1): repair localization test integration after merging main: restore separate all-catalog integrity, context-caption and numeral/count tests, retaining assertions from both branches; register Hungarian in the shared language and context catalogs. Retain 17 live labels missing from the known-label test list and remove 13 unused catalog entries (1,904 entries + four context captions remain).
+
 Newest first.
 
 - **2026-10-24** · EPUB Export Options › Split Document, a dialog before File › Export EPUB… saves (`document.epubSplit`, stored with the document): off, a single paragraph style, or based on paragraph style export tags, with Paragraph Style Options › Export Tagging's Split Document flag marking those styles. A reflowable EPUB is one content file unless Split Document is on; the split before each top-level h1 from #791 is gone. A split before a list item or preformatted line no longer leaves an unclosed list or block in a content file. IDML import and export keep the setting and the flag, and Load Styles the flag. No readiness percentage change.
@@ -390,6 +393,10 @@ Newest first.
 - **2026-10-22** · macOS menu bar: the menus keep working after the interface language or Show CJK Features changes (a rebuilt menu bar lost every click, Quit included), and its key equivalents are the shortcuts in effect, so a shortcut moved in the Keyboard Shortcuts editor leaves its old menu item. No readiness percentage change.
 - **2026-10-22** · Paragraph rules: Rule Above's offset is measured from the first line's baseline to the rule's bottom edge, as in InDesign. Rules sat one ascent too high and crossed the previous paragraph's text (reported from an imported INDD document). No readiness percentage change.
 - **2026-10-21** · Ruler guides are selected like objects (#1282): a click with the Selection tools selects a guide (also where it crosses an object), Shift-click adds or removes one, a new guide from the rulers is selected, a marquee that touches no object selects the guides it crosses, and Edit › Select All Guides (⌥⌘G, `guide.selectAll`) selects every unlocked guide on the spread. Selected guides draw thicker in their layer's color, drag together (all of them shown moving), nudge with the arrow keys and go with Delete, each as one undo step (`guide.select`, `guide.deselect`, `guide.moveBy`, `guide.delete {}`). With one guide selected the Control bar's X (vertical guide) or Y (horizontal guide) field and Properties › Transform show where it is, as the rulers measure, and typing a value moves it there. No readiness percentage change.
+- **2026-10-20** · HU1: Hungarian review corrections distinguish numbers/counts and text/grid columns (four context captions), consistently use formal address, and align menu paths with visible labels. Added context and menu-path regression coverage; corrected localization documentation. No readiness percentage change.
+
+- **2026-10-17** · HU1: Hungarian (`hu` / Magyar) interface with 1,917 entries and two context captions, including tool names; AI-assisted and initially reviewed by a native DTP practitioner. Unknown/new strings remain English. Hungarian spelling and hyphenation remain follow-up work. No readiness percentage change.
+
 - **2026-10-17** · PDF/X-4 export warns about fonts drawing visible text without an embedded
   font program, including placed PDF forms; `validate-pdf` reports the font and page (#909).
   Invisible OCR text is exempt. Detection only: fonts are not embedded or outlined automatically.
