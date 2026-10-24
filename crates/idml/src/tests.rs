@@ -3698,6 +3698,7 @@ fn object_style_effects_import_by_category_and_based_on() {
     let base = fx("Base").unwrap();
     assert!(base.drop_shadow.on && base.drop_shadow.size == 9.0 && (base.drop_shadow.distance - 5.0).abs() < 1e-9);
     assert_eq!(base.feather, 0.0, "EnableFeather=false");
+    assert_eq!(base.drop_shadow.mode, designcraft_color::BlendMode::Normal, "no BlendMode: Normal, as earlier exports rendered");
     let child = fx("Child").unwrap();
     assert_eq!((child.drop_shadow.size, child.feather), (9.0, 6.0), "settings from the BasedOn style");
     assert!(fx("Off").is_none());
