@@ -1079,6 +1079,10 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.text(9.0, 10.0, "¶", 14.0);
             pen.fill(&[(14.0, 15.0), (17.0, 15.0), (15.5, 17.0)]);
         }
+        // A folder (Create New Style Group).
+        "folder" => {
+            pen.closed(&[(3.0, 6.0), (8.0, 6.0), (9.5, 7.5), (17.0, 7.5), (17.0, 15.5), (3.0, 15.5)]);
+        }
         "style-new" => {
             pen.rect(4.0, 4.0, 16.0, 16.0);
             pen.line(&[(10.0, 7.0), (10.0, 13.0)]);
