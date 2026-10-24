@@ -92,7 +92,14 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{path | text} — a set saved by InDesign's Show Set (.txt): matched commands take its Default shortcuts (or none), other commands lose keys it takes → {set, imported, changed, conflictsCleared, skipped (an earlier item whose keys a later one took), unmatched, unmatchedWithoutShortcut, unreadable}",
     ),
     ("app.findChange", "Find/Change…", Some("Cmd+F"), "{}"),
-    ("app.insertTableDialog", "Create Table…", None, "{} — Insert Table dialog (body/header/footer rows, columns)"),
+    ("app.insertTableDialog", "Insert Table…", Some("Cmd+Alt+Shift+T"), "{} — Insert Table dialog (body/header/footer rows, columns, table style)"),
+    (
+        "app.convertTextToTableDialog",
+        "Convert Text to Table…",
+        None,
+        "{} — Convert Text to Table dialog (column and row separators, number of columns, table style)",
+    ),
+    ("app.convertTableToTextDialog", "Convert Table to Text…", None, "{} — Convert Table to Text dialog (column and row separators)"),
     (
         "app.cellOptionsDialog",
         "Strokes and Fills…",
@@ -730,11 +737,16 @@ pub const MENUS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        // InDesign's order. The Table panel is in Window › Type & Tables (Shift+F9).
         "Table",
         &[
             "ui:app.insertTableDialog",
-            "cmd:table.convertFromText",
-            "cmd:table.convertToText",
+            "ui:app.convertTextToTableDialog",
+            "ui:app.convertTableToTextDialog",
+            "-",
+            ">Cell Options",
+            "ui:app.cellOptionsDialog",
+            "<",
             "-",
             ">Insert",
             "cmd:table.insertRowAbove",
@@ -753,11 +765,10 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:table.selectTable",
             "<",
             "-",
-            ">Cell Options",
-            "ui:app.cellOptionsDialog",
-            "<",
             "cmd:table.merge",
             "cmd:table.unmerge",
+            "cmd:table.splitHorizontally",
+            "cmd:table.splitVertically",
             ">Convert Cell Type",
             "ui:app.graphicCell|Convert Cell to Graphic Cell…",
             "cmd:table.textCell",
@@ -767,12 +778,9 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:table.convertRowsToBody",
             "cmd:table.convertRowsToFooter",
             "<",
-            "cmd:table.splitHorizontally",
-            "cmd:table.splitVertically",
-            "cmd:table.distributeColumns",
-            "cmd:table.distributeRows",
             "-",
-            "ui:app.tablePanel",
+            "cmd:table.distributeRows",
+            "cmd:table.distributeColumns",
         ],
     ),
     (
@@ -1268,6 +1276,20 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.findChange" => {
             app.session.reset_find_scope();
             app.ui.dialog = Some(crate::dialogs::Dialog::new("findChange", json!({})));
+            Ok(Value::Null)
+        }
+        "app.convertTextToTableDialog" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("select the text to convert to a table".into()));
+            }
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("convertTextToTable", p.clone()));
+            Ok(Value::Null)
+        }
+        "app.convertTableToTextDialog" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("place the insertion point in a table to convert it to text".into()));
+            }
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("convertTableToText", p.clone()));
             Ok(Value::Null)
         }
         "app.insertTableDialog" => {
@@ -2505,6 +2527,15 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     }
     if id == "guide.selectAll" && (!app.ui.guides || app.ui.guides_locked) {
         return false;
+    }
+    // As InDesign's: Convert Text to Table wants selected text outside a table, Convert Table to
+    // Text a table.
+    if id == "app.convertTextToTableDialog" {
+        let selected = app.session.active().and_then(|d| d.selection.text).is_some_and(|t| t.cell.is_none() && !t.is_caret());
+        return selected && enabled(app, "table.convertFromText");
+    }
+    if id == "app.convertTableToTextDialog" {
+        return enabled(app, "table.convertToText");
     }
     if ui_label(id).is_some() {
         return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.") || id.starts_with("help.");
@@ -4984,6 +5015,47 @@ mod tests {
                 assert!(ui_label(id).is_some() || designcraft_engine::find_command(id).is_some(), "context entry {label}: unknown command {id}");
             }
         }
+    }
+
+    #[test]
+    fn the_table_menu_follows_indesigns_order() {
+        // InDesign's Table menu with a text insertion point (Adobe's "How to make a table").
+        let table = menu_tree().into_iter().find(|(m, _)| *m == "Table").unwrap().1;
+        let labels: Vec<String> = table
+            .iter()
+            .map(|i| match i {
+                Item::Sep => "-".to_string(),
+                Item::Sub(n, _) => format!("{n} >"),
+                Item::Cmd { label, .. } => label.clone(),
+            })
+            .collect();
+        let expected = [
+            "Insert Table…",
+            "Convert Text to Table…",
+            "Convert Table to Text…",
+            "-",
+            "Cell Options >",
+            "-",
+            "Insert >",
+            "Delete >",
+            "Select >",
+            "-",
+            "Merge Cells",
+            "Unmerge Cells",
+            "Split Cell Horizontally",
+            "Split Cell Vertically",
+            "Convert Cell Type >",
+            "Convert Rows >",
+            "-",
+            "Distribute Rows Evenly",
+            "Distribute Columns Evenly",
+        ];
+        assert_eq!(labels, expected);
+        // Cmd+Alt+Shift+T opens the dialog, as InDesign's; the engine command has no shortcut of
+        // its own. The Table panel is in Window › Type & Tables.
+        assert_eq!(ui_label("app.insertTableDialog").and_then(|c| c.1), Some("Cmd+Alt+Shift+T"));
+        assert_eq!(designcraft_engine::find_command("table.insert").unwrap().shortcut, None);
+        assert_eq!(ui_label("app.tablePanel").and_then(|c| c.1), Some("Shift+F9"));
     }
 
     #[test]

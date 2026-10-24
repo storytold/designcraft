@@ -417,12 +417,15 @@ impl Table {
     pub fn from_strings(id: u64, data: &[Vec<String>], width: f64, para: &ParaFormat, fmt: &CharFormat) -> Table {
         let cols = data.iter().map(Vec::len).max().unwrap_or(1).max(1);
         let mut t = Table::new(id, data.len().max(1), cols, 0, 0, width);
-        for (r, row) in data.iter().enumerate() {
-            for (c, s) in row.iter().enumerate() {
+        // Every cell takes the text's format, the padding of a short row too.
+        for r in 0..t.nrows() {
+            for c in 0..t.ncols() {
                 let Some(cell) = t.cell_mut(r, c) else { continue };
                 cell.text = Story::with_text(StoryId(0), "", ParaFormat { table: None, ..para.clone() });
                 cell.text.chars[0].format = fmt.clone();
-                cell.text.insert(0, s);
+                if let Some(s) = data.get(r).and_then(|row| row.get(c)) {
+                    cell.text.insert(0, s);
+                }
             }
         }
         t
@@ -1011,14 +1014,19 @@ impl Table {
 
     /// Cell texts, rows separated by `\n`, cells by `\t` (Convert Table to Text, search, agents).
     pub fn plain_text(&self) -> String {
+        self.text_with("\t", "\n")
+    }
+
+    /// The cells' text, columns separated by `col` and rows by `row` (Convert Table to Text).
+    pub fn text_with(&self, col: &str, row: &str) -> String {
         let mut out = String::new();
         for r in 0..self.nrows() {
             if r > 0 {
-                out.push('\n');
+                out.push_str(row);
             }
             for c in 0..self.ncols() {
                 if c > 0 {
-                    out.push('\t');
+                    out.push_str(col);
                 }
                 if let Some(cell) = self.cell(r, c) {
                     out.push_str(&cell.text.text.replace('\n', " "));
@@ -1317,6 +1325,19 @@ mod tests {
         let mut right = Table::new(2, 2, 2, 0, 0, 120.0);
         right.merge(CellRange::new(0, 1, 1, 1)).unwrap();
         assert_eq!(right.selected_owners(CellRange::new(1, 0, 1, 1)), vec![(0, 1), (1, 0)], "owner order, not encounter order");
+    }
+
+    /// A short last row's padding cells take the converted text's paragraph and character format,
+    /// like the cells with text.
+    #[test]
+    fn from_strings_formats_the_padding_cells_too() {
+        let data = vec![vec!["a".to_string(), "b".to_string()], vec!["c".to_string()]];
+        let para = ParaFormat { style: "Body".into(), ..Default::default() };
+        let fmt = CharFormat { style: "Strong".into(), ..Default::default() };
+        let t = Table::from_strings(1, &data, 200.0, &para, &fmt);
+        let pad = &t.cell(1, 1).unwrap().text;
+        assert_eq!((pad.paras[0].style.as_str(), pad.chars[0].format.style.as_str()), ("Body", "Strong"));
+        assert_eq!(pad.text, "");
     }
 
     #[test]

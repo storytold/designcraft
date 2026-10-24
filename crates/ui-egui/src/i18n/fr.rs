@@ -349,7 +349,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Subscript:", "Indice :"),
     ("Superscript:", "Exposant :"),
     ("Swap Text Fill and Stroke", "Permuter le fond et le contour du texte"),
-    ("Tab", "Tabulation"),
     ("Table of Contents", "Table des matières"),
     ("Table/Convert Cell Type", "Tableau/Convertir le type de cellule"),
     ("Table/Delete", "Tableau/Supprimer"),
