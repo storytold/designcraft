@@ -193,6 +193,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Choose Image…", "Vybrat obrázek…"),
     ("Class:", "Třída:"),
     ("Color Picker", "Výběr barvy"),
+    ("Color spectrum", "Barevné spektrum"),
     ("Color Settings", "Nastavení barev"),
     ("Color:", "Barva:"),
     ("Columns", "Sloupce"),

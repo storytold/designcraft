@@ -388,6 +388,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Object Layer Options", "خيارات طبقات الكائن"),
     ("Colour Picker", "منتقي الألوان"),
     ("Color Picker", "أداة اختيار الألوان"),
+    ("Color spectrum", "طيف الألوان"),
     ("Color Settings", "إعدادات الألوان"),
     ("User Dictionary", "قاموس المستخدم"),
     ("Menu Customization", "تخصيص القوائم"),

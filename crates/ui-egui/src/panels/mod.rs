@@ -80,6 +80,19 @@ pub fn color_target(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
     Some((i.fill, sel_tint(app, false), i.stroke, sel_tint(app, true)))
 }
 
+/// [`color_target`], or with nothing selected the colours new shapes get (the Color and Swatches
+/// panels then edit those, as InDesign's do).
+pub fn color_target_or_defaults(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
+    color_target(app).or_else(|| {
+        let state = app.session.active()?;
+        if !state.selection.items.is_empty() || state.selection.text.is_some() || state.selection.cells.is_some() {
+            return None;
+        }
+        let colors = &state.doc.settings.new_object;
+        Some((colors.fill.clone(), colors.fill_tint, colors.stroke.clone(), colors.stroke_tint))
+    })
+}
+
 /// Apply a swatch (and tint) to the fill or stroke of what colour edits apply to.
 pub fn apply_swatch(app: &mut DesignApp, stroke: bool, swatch: &str, tint: Option<f32>) -> Result<Value, String> {
     remember_swatch(app, swatch);

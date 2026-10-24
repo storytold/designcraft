@@ -193,6 +193,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Choose Image…", "Выбрать изображение…"),
     ("Class:", "Класс:"),
     ("Color Picker", "Палитра цветов"),
+    ("Color spectrum", "Цветовой спектр"),
     ("Color Settings", "Настройка цветов"),
     ("Color:", "Цвет:"),
     ("Columns", "Колонки"),

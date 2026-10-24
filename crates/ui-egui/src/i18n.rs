@@ -906,6 +906,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Choose Image…", ["Choose Image…", "Choisir une image…", "Choose Image…", "Choose Image…", "选择图像…"]),
     ("Class:", ["Class:", "Classe :", "Class:", "Class:", "类别："]),
     ("Color Picker", ["Color Picker", "Sélecteur de couleurs", "Color Picker", "Color Picker", "拾色器"]),
+    ("Color spectrum", ["Farbspektrum", "Spectre de couleurs", "Espectro de color", "カラースペクトル", "色谱"]),
     ("Color Settings", ["Color Settings", "Réglages des couleurs", "Color Settings", "Color Settings", "颜色设置"]),
     ("Color:", ["Color:", "Couleur :", "Color:", "Color:", "颜色："]),
     ("Columns", ["Columns", "Colonnes", "Columns", "Columns", "栏"]),

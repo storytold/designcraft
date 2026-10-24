@@ -226,6 +226,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Choose Image…", "გამოსახულების არჩევა…"),
     ("Class:", "კლასი:"),
     ("Color Picker", "ფერის ამრჩევი"),
+    ("Color spectrum", "ფერთა სპექტრი"),
     ("Color Settings", "ფერის პარამეტრები"),
     ("Color:", "ფერი:"),
     ("Columns", "სვეტები"),
