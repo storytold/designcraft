@@ -56,6 +56,10 @@ pub fn start() {
         {
             create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
         }
+        // `?host=parent`: a same-origin page framing DesignCraft opens documents in it and stores
+        // what it saves (`host`).
+        let bridge = if crate::host::query_param(&query(), "host").as_deref() == Some("parent") { crate::host::Bridge::new() } else { None };
+        let app_bridge = bridge.clone();
         let runner = eframe::WebRunner::new();
         let creator_graphics = graphics.clone();
         let result = runner
@@ -72,11 +76,18 @@ pub fn start() {
                         });
                     }
                     let inbox: Inbox = Inbox::default();
-                    let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
-                    if has_query_flag(&query(), "sample") {
+                    let mut services = services(inbox.clone(), cc.egui_ctx.clone());
+                    if let Some(bridge) = &app_bridge {
+                        bridge.connect(&mut services, inbox.clone(), cc.egui_ctx.clone());
+                    }
+                    let mut app = DesignApp::new(Session::new(), services);
+                    if app_bridge.is_none() && has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    if let Some(bridge) = &app_bridge {
+                        bridge.post_ready();
+                    }
+                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics, bridge: app_bridge }))
                 }),
             )
             .await;
@@ -98,6 +109,9 @@ pub fn start() {
                 }
             }
             Err(e) => {
+                if let Some(bridge) = &bridge {
+                    bridge.post_failed(&format!("{e:?}"));
+                }
                 graphics_failed(
                     &graphics,
                     "DesignCraft failed to start",
@@ -345,6 +359,8 @@ struct WebShell {
     app: DesignApp,
     inbox: Inbox,
     graphics: GraphicsState,
+    /// The host page, with `?host=parent` (told about unsaved changes every frame).
+    bridge: Option<crate::host::Bridge>,
 }
 
 impl eframe::App for WebShell {
@@ -368,6 +384,9 @@ impl eframe::App for WebShell {
                 });
             }
             self.app.logic(ctx);
+            if let Some(bridge) = &self.bridge {
+                bridge.post_dirty(self.app.session.documents().iter().any(|d| d.is_dirty()));
+            }
         });
     }
 
