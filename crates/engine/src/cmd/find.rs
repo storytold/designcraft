@@ -323,18 +323,38 @@ fn replacement(p: &Value) -> String {
     if bool_or(p, "grep", false) { translate_replacement(c) } else { metachars(c) }
 }
 
+/// Repair byte validity of a text selection once against the final story, without remapping valid offsets.
+fn repair_selection(t: &mut designcraft_doc::TextSel, st: &designcraft_doc::Story) {
+    let range = t.range();
+    let start = floor_char_boundary(&st.text, range.start);
+    let mut end = range.end.min(st.len());
+    if t.is_caret() {
+        end = start;
+    } else if !st.text.is_char_boundary(end) {
+        let floor = floor_char_boundary(&st.text, end);
+        end = st.text.get(floor..).and_then(|rest| rest.chars().next()).map_or(floor, |ch| floor + ch.len_utf8());
+    }
+    (t.anchor, t.focus) = if t.anchor <= t.focus { (start, end) } else { (end, start) };
+}
+
+/// The character overrides a Change applies to every replacement, from its `attrs` object.
+fn char_overrides(attrs: Option<&Value>) -> Result<designcraft_doc::CharAttrs> {
+    let mut over = designcraft_doc::CharAttrs::default();
+    if let Some(o) = attrs.and_then(Value::as_object) {
+        for (k, v) in o {
+            over.set_json(k, v).map_err(|e| bad("find.change", e))?;
+        }
+    }
+    Ok(over)
+}
+
 fn change(s: &mut Session, p: &Value) -> Result<Value> {
     let re = build(p)?;
     let grep = bool_or(p, "grep", false);
     let rep = replacement(p);
     let first_only = bool_or(p, "first", false);
     let attrs = p.get("attrs").cloned();
-    let mut over = designcraft_doc::CharAttrs::default();
-    if let Some(o) = attrs.as_ref().and_then(Value::as_object) {
-        for (k, v) in o {
-            over.set_json(k, v).map_err(|e| bad("find.change", e))?;
-        }
-    }
+    let over = char_overrides(attrs.as_ref())?;
     super::text::validate_char_fill(&s.doc()?.doc, &over, "find.change")?;
     let targets = scope(s, p)?.targets;
     s.edit(|d, sel| {
@@ -361,17 +381,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                 count += 1;
             }
             if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == cell) {
-                // Repair byte validity once against the final story, without remapping valid offsets.
-                let range = t.range();
-                let start = floor_char_boundary(&st.text, range.start);
-                let mut end = range.end.min(st.len());
-                if t.is_caret() {
-                    end = start;
-                } else if !st.text.is_char_boundary(end) {
-                    let floor = floor_char_boundary(&st.text, end);
-                    end = st.text.get(floor..).and_then(|rest| rest.chars().next()).map_or(floor, |ch| floor + ch.len_utf8());
-                }
-                (t.anchor, t.focus) = if t.anchor <= t.focus { (start, end) } else { (end, start) };
+                repair_selection(t, st);
             }
             // `first` is the first match of the whole search, not of each story.
             if first_only && count > 0 {
