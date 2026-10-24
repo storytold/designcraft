@@ -848,7 +848,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     }
     const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 20.0, 30.0, 40.0, 50.0, 100.0];
     if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-        NumField::number("sw", Some(i.stroke_weight), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui)
+        NumField::points("sw", Some(i.stroke_weight), 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui)
     }) {
         let _ = app.run("object.stroke", json!({"weight": v}));
     }
@@ -1271,7 +1271,7 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             }
             const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0];
             if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
+                NumField::points("tsw", c["strokeWeight"].as_f64(), 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
             }) {
                 let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v}}));
             }
@@ -1324,7 +1324,7 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     let lv = if auto { size.map(|s| s * a["para"]["autoLeading"].as_f64().unwrap_or(1.2)) } else { c["leading"]["value"].as_f64() };
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "font-size", t.icon);
     if let Some(v) = place(ui, sub(b, 24.0, 0.0, half - 24.0, FIELD_H), |ui| {
-        NumField::number("csize", size, " pt", 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
+        NumField::points("csize", size, 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"size": v}}));
     }
@@ -1334,7 +1334,7 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     if let Some(v) = place(ui, sub(b, half + 34.0, 0.0, lw, FIELD_H), |ui| {
         let key = if auto { "cleadauto" } else { "clead" };
         // Auto leading is shown in parentheses, like "(14.4 pt)".
-        NumField::number(key, lshow, " pt", 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
+        NumField::points(key, lshow, 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
     }
@@ -1771,7 +1771,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let (left_w, right_w) = (caption_width(app, ui, &["Size", "Kerning", "Baseline"]), caption_width(app, ui, &["Leading", "Tracking"]));
     ui.columns(2, |cols| {
         let [left, right] = cols else { return };
-        if let Some(v) = char_field(app, left, "Size", left_w, NumField::number("pcs", c["size"].as_f64(), " pt", 2)) {
+        if let Some(v) = char_field(app, left, "Size", left_w, NumField::points("pcs", c["size"].as_f64(), 2)) {
             let _ = app.run("type.char", json!({"attrs": {"size": v}}));
         }
         left.horizontal(|ui| {
@@ -1779,11 +1779,11 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let width = (ui.available_width() - ui.spacing().item_spacing.x).max(40.0);
             kerning_control(app, ui, "pck", &c["kerning"], width);
         });
-        if let Some(v) = char_field(app, left, "Baseline", left_w, NumField::number("pcb", c["baselineShift"].as_f64(), " pt", 2)) {
+        if let Some(v) = char_field(app, left, "Baseline", left_w, NumField::points("pcb", c["baselineShift"].as_f64(), 2)) {
             let _ = app.run("type.char", json!({"attrs": {"baselineShift": v}}));
         }
         // Auto leading is shown in parentheses, as the Paragraph panel shows it.
-        if let Some(v) = char_field(app, right, "Leading", right_w, NumField::number("pcl", lv, " pt", 2).parens(auto)) {
+        if let Some(v) = char_field(app, right, "Leading", right_w, NumField::points("pcl", lv, 2).parens(auto)) {
             let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
         }
         if let Some(v) = char_field(app, right, "Tracking", right_w, NumField::number("pct", c["tracking"].as_f64(), "", 0)) {
@@ -3742,6 +3742,30 @@ mod tests {
         h.key_press(egui::Key::Enter);
         h.run_steps(3);
         assert_eq!(kerning(h.state_mut()), json!({"kind": "manual", "value": -40.0}));
+    }
+
+    /// The size field reads the unit typed, as InDesign's does: 13Q is 9.213 pt (it used to keep
+    /// the digits only and set 13 pt). A bare number is still points.
+    #[test]
+    fn character_size_field_reads_the_unit_typed() {
+        let mut h = panel_harness(text_app(), character_panel);
+        h.run_steps(3);
+        let size = |app: &mut DesignApp| text_attrs(app).unwrap()["chars"]["size"].as_f64().unwrap();
+        for (typed, pt) in [("13Q", 13.0 * designcraft_geom::units::PT_PER_Q), ("5mm", 5.0 * designcraft_geom::units::PT_PER_MM), ("14", 14.0)] {
+            let field = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .find(|n| n.value().is_some_and(|v| v.ends_with(" pt") && !v.starts_with('(') && v != "0 pt"))
+                .unwrap();
+            field.focus();
+            h.run_steps(1);
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(typed);
+            h.run_steps(1);
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+            let got = size(h.state_mut());
+            assert!((got - pt).abs() < 1e-6, "{typed}: {got} pt, want {pt}");
+        }
     }
 
     #[test]

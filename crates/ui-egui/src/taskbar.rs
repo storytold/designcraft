@@ -156,7 +156,7 @@ fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool) {
     let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
     icons::paint(ui.painter(), r, "font-size", t.icon);
     const SIZES: &[f64] = &[6.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 18.0, 24.0, 30.0, 36.0, 48.0, 60.0, 72.0];
-    if let Some(v) = NumField::number("tb_size", c["size"].as_f64(), " pt", 2).width(70.0).presets(SIZES).range(0.1, 1296.0).show(ui) {
+    if let Some(v) = NumField::points("tb_size", c["size"].as_f64(), 2).width(70.0).presets(SIZES).range(0.1, 1296.0).show(ui) {
         let _ = app.run("type.char", json!({"attrs": {"size": v}}));
     }
     sep(ui);
@@ -239,7 +239,7 @@ fn object_controls(app: &mut DesignApp, ui: &mut Ui) {
         }
     }
     const WEIGHTS: &[f64] = &[0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0];
-    if let Some(v) = NumField::number("tb_sw", Some(i.stroke_weight), " pt", 3).width(64.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui) {
+    if let Some(v) = NumField::points("tb_sw", Some(i.stroke_weight), 3).width(64.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui) {
         let _ = app.run("object.stroke", json!({"weight": v}));
     }
     sep(ui);

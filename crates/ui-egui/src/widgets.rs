@@ -28,8 +28,11 @@ fn label_font() -> egui::FontId {
 pub enum NumKind<'a> {
     /// A length in points shown in `Unit`; accepts any unit and arithmetic.
     Measure(Unit),
-    /// A plain number with a display suffix (`%`, `°`, ` pt`).
+    /// A plain number with a display suffix (`%`, `°`).
     Number { suffix: &'a str, decimals: usize },
+    /// A length in points shown as `12.5 pt` (type size, leading, stroke weight…). Like a measure
+    /// it reads any unit and arithmetic (`13Q`, `5mm`, `9pt+1H`); a bare number is points.
+    Points { decimals: usize },
 }
 
 impl NumKind<'_> {
@@ -42,6 +45,7 @@ impl NumKind<'_> {
                 let s = if s == "-0" { "0".to_string() } else { s };
                 format!("{s}{suffix}")
             }
+            NumKind::Points { decimals } => NumKind::Number { suffix: " pt", decimals }.format(v),
         }
     }
     pub fn parse(&self, s: &str) -> Option<f64> {
@@ -53,6 +57,7 @@ impl NumKind<'_> {
                     s.chars().filter(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | '*' | '/' | '(' | ')' | ' ')).collect();
                 parse_measure(cleaned.trim(), Unit::Points).ok().or_else(|| cleaned.trim().parse().ok())
             }
+            NumKind::Points { .. } => parse_measure(s, Unit::Points).ok(),
         }
     }
     /// One spinner click (points for measures).
@@ -63,7 +68,7 @@ impl NumKind<'_> {
                 Unit::Inches | Unit::InchesDecimal => 72.0 / 16.0,
                 Unit::Millimeters | Unit::Centimeters | Unit::Q | Unit::Ha => Unit::Millimeters.to_pt(1.0),
             },
-            NumKind::Number { .. } => 1.0,
+            NumKind::Number { .. } | NumKind::Points { .. } => 1.0,
         }
     }
 }
@@ -90,8 +95,17 @@ impl<'a> NumField<'a> {
     pub fn measure(id: &'a str, value: Option<f64>, unit: Unit) -> Self {
         Self::new(id, value, NumKind::Measure(unit))
     }
+    /// A number shown with `suffix` (`%`, `°`). A ` pt` suffix makes it a length in points that
+    /// reads any unit ([`Self::points`]), so no point field reads `13Q` as 13 pt.
     pub fn number(id: &'a str, value: Option<f64>, suffix: &'a str, decimals: usize) -> Self {
+        if suffix == " pt" {
+            return Self::points(id, value, decimals);
+        }
         Self::new(id, value, NumKind::Number { suffix, decimals })
+    }
+    /// A length in points (type size, leading, stroke weight…): shows `12 pt`, reads any unit.
+    pub fn points(id: &'a str, value: Option<f64>, decimals: usize) -> Self {
+        Self::new(id, value, NumKind::Points { decimals })
     }
     fn new(id: &'a str, value: Option<f64>, kind: NumKind<'a>) -> Self {
         NumField {
@@ -269,8 +283,12 @@ impl<'a> NumField<'a> {
             // whatever was typed, as in InDesign.
             let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
             let typed_over_auto = self.parens && !buf.trim_start().starts_with('(');
+            // Otherwise a field left as it shows its value commits nothing: reading the rounded
+            // text back would round the value (13Q is 9.2126 pt, shown as 9.21 pt).
+            let unchanged = !typed_over_auto && self.value.is_some_and(|old| buf.trim() == self.fmt(old).trim());
             if escaped {
             } else if let Some(v) = self.parse(&buf).map(clamp)
+                && !unchanged
                 && (typed_over_auto || self.value.is_none_or(|old| (old - v).abs() > 1e-9))
             {
                 out = Some(v);
@@ -806,6 +824,25 @@ mod tests {
         let m = NumKind::Measure(Unit::Picas);
         assert_eq!(m.parse("1p0+0p6"), Some(18.0));
         assert_eq!(m.step(), 1.0);
+    }
+
+    /// A length field in points reads the unit typed, as InDesign's do (`12pt` in a Q field shows
+    /// 16.933 Q): `13Q` is 9.213 pt, not 13 pt.
+    #[test]
+    fn points_kind_reads_any_unit() {
+        let k = NumKind::Points { decimals: 2 };
+        assert_eq!(k.format(12.5), "12.5 pt");
+        let close = |s: &str, pt: f64| (k.parse(s).unwrap() - pt).abs() < 1e-9;
+        assert!(close("12", 12.0) && close("12 pt", 12.0) && close("1p", 12.0));
+        assert!(close("13Q", 13.0 * designcraft_geom::units::PT_PER_Q), "{:?}", k.parse("13Q"));
+        assert!(close("22H", 22.0 * designcraft_geom::units::PT_PER_Q));
+        assert!(close("5mm", 5.0 * designcraft_geom::units::PT_PER_MM));
+        assert!(close("9pt+1H", 9.0 + designcraft_geom::units::PT_PER_Q));
+        assert_eq!(k.parse("13x"), None, "an unknown unit is an invalid value, not 13 pt");
+        // Every ` pt` field reads units, whichever constructor made it (the Control panel's Font
+        // Size, Leading and Baseline Shift, Character ••• Baseline Shift…).
+        assert_eq!(NumField::number("a", None, " pt", 2).kind, NumKind::Points { decimals: 2 });
+        assert_eq!(NumField::number("a", None, "%", 0).kind, NumKind::Number { suffix: "%", decimals: 0 });
     }
 }
 
