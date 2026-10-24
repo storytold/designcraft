@@ -222,6 +222,7 @@ fn build(
             Item::Sep => {
                 let _ = parent.append(&PredefinedMenuItem::separator());
             }
+            Item::Sub(_, children) if !menus::sub_shown(app, children) => {}
             Item::Sub(label, children) => {
                 let sub = Submenu::new(menu_title(app, label), true);
                 let path = format!("{path}/{label}");

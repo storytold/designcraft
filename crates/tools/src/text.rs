@@ -28,6 +28,8 @@ struct Preedit {
 pub struct TypeTool {
     /// Vertical Type Tool: frames it draws set text vertically.
     pub vertical: bool,
+    /// Horizontal / Vertical Grid Tool: frames it draws are frame grids (whole cells).
+    pub grid: bool,
     start: Option<Point>,
     selecting: Option<u64>,
     drawing: bool,
@@ -133,6 +135,10 @@ fn whole_rows_or_cols(cx: &ToolContext) -> bool {
 impl TypeTool {
     pub fn vertical() -> Self {
         TypeTool { vertical: true, ..Default::default() }
+    }
+    /// Horizontal Grid Tool (`vertical` false) or Vertical Grid Tool.
+    pub fn grid(vertical: bool) -> Self {
+        TypeTool { vertical, grid: true, ..Default::default() }
     }
 }
 
@@ -291,12 +297,14 @@ impl TypeTool {
         let mut out = vec![];
         if !self.drawing {
             self.drawing = true;
-            out.push(Action::Begin("Create Text Frame".into()));
+            out.push(Action::Begin(if self.grid { "Create Frame Grid" } else { "Create Text Frame" }.into()));
         }
-        out.push(Action::Preview(
-            "frame.create".into(),
-            json!({"spread": spread_json(sr), "shape": "rectangle", "content": "text", "rect": rect_json(r), "caret": true, "vertical": self.vertical}),
-        ));
+        let mut p = json!({"spread": spread_json(sr), "shape": "rectangle", "content": "text", "rect": rect_json(r), "caret": true, "vertical": self.vertical});
+        if self.grid {
+            // The engine fits the frame to whole cells of the document's frame grid.
+            p["grid"] = json!(true);
+        }
+        out.push(Action::Preview("frame.create".into(), p));
         out
     }
 
@@ -331,7 +339,12 @@ impl TypeTool {
 
 impl Tool for TypeTool {
     fn id(&self) -> &'static str {
-        if self.vertical { "verticalType" } else { "type" }
+        match (self.grid, self.vertical) {
+            (true, false) => "horizontalGrid",
+            (true, true) => "verticalGrid",
+            (false, true) => "verticalType",
+            (false, false) => "type",
+        }
     }
 
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {

@@ -388,14 +388,14 @@ pub fn tool_definitions() -> Vec<Value> {
             "ui_set",
             "Set UI state",
             &app_only(
-                "Change UI state: panel to open or close, brightness, status text, rulers/guides/frameEdges/baselineGrid/documentGrid/textThreads, \
+                "Change UI state: panel to open or close, brightness, status text, rulers/guides/frameEdges/frameGrids/baselineGrid/documentGrid/textThreads, \
                  Control bar, dock expanded, screenMode, zoom, page (1-based), fit (page|spread).",
             ),
             obj(
                 json!({
                     "panel": string("Panel: properties, pages, layers, swatches, paragraphStyles, characterStyles, stroke, character, paragraph, textWrap, links"),
                     "brightness": {"type": "string", "enum": ["dark", "mediumDark", "mediumLight", "light"]},
-                    "rulers": {"type": "boolean"}, "guides": {"type": "boolean"}, "frameEdges": {"type": "boolean"},
+                    "rulers": {"type": "boolean"}, "guides": {"type": "boolean"}, "frameEdges": {"type": "boolean"}, "frameGrids": {"type": "boolean"},
                     "baselineGrid": {"type": "boolean"}, "documentGrid": {"type": "boolean"}, "textThreads": {"type": "boolean"},
                     "status": string("Status bar text"),
                     "controlBar": boolean("Show the Control bar"),

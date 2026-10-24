@@ -21,6 +21,7 @@ pub mod datamerge;
 mod edit;
 pub mod endnotes;
 pub mod flex;
+pub mod framegrid;
 pub mod ids;
 pub mod index;
 pub mod item;
@@ -54,6 +55,7 @@ pub use designcraft_geom as geom;
 pub use edit::{ItemLoc, ItemPath, SpreadRef, hit_descendant, item_hit as edit_hit};
 pub use endnotes::{ENDNOTE_REF, EditorialNote, EndnoteOptions, NOTE_MARK};
 pub use flex::{FlexAlign, FlexDirection, FlexJustify, FlexLayout, FlexSize};
+pub use framegrid::{FrameGrid, GridAlignment, GridCount, GridView};
 pub use ids::*;
 pub use index::{INDEX_MARK, IndexRef};
 pub use item::*;
@@ -437,6 +439,9 @@ pub struct DocSettings {
     /// The fill and stroke new shapes are drawn with: what the Tools panel's proxy shows and sets
     /// with nothing selected (InDesign's document defaults).
     pub new_object: NewObjectColors,
+    /// The grid new frame grids get (Horizontal / Vertical Grid tools, Object › Frame Type ›
+    /// Frame Grid).
+    pub frame_grid: crate::framegrid::FrameGrid,
     /// EPUB Export Options › Split Document.
     #[serde(skip_serializing_if = "EpubSplit::is_off")]
     pub epub_split: EpubSplit,
@@ -505,6 +510,7 @@ impl Default for DocSettings {
             zero_point_locked: false,
             column_guides_locked: true,
             new_object: NewObjectColors::default(),
+            frame_grid: crate::framegrid::FrameGrid::default(),
             epub_split: EpubSplit::Off,
         }
     }
@@ -976,15 +982,25 @@ impl Document {
                 return Err(DocError::Invalid(format!("non-finite mojikumi spacing: {}", t.name)));
             }
         }
+        if !self.settings.frame_grid.is_finite() {
+            return Err(DocError::Invalid("non-finite default frame grid".into()));
+        }
         let mut ids = std::collections::HashSet::new();
         for sp in self.spreads.iter().chain(self.parents.iter()) {
             for it in &sp.items {
                 let mut dup = None;
+                let mut bad_grid = None;
                 it.walk(&mut |i| {
                     if !ids.insert(i.id.0) {
                         dup = Some(i.id);
                     }
+                    if i.text_frame().and_then(|t| t.options.frame_grid.as_ref()).is_some_and(|g| !g.is_finite()) {
+                        bad_grid = Some(i.id);
+                    }
                 });
+                if let Some(b) = bad_grid {
+                    return Err(DocError::Invalid(format!("non-finite frame grid on item {b}")));
+                }
                 if let Some(d) = dup {
                     return Err(DocError::Invalid(format!("duplicate item id {d}")));
                 }

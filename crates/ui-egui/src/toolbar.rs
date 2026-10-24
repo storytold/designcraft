@@ -50,6 +50,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             // columns, one tool of a group InDesign lays out tool by tool.
             let mut row_items: Vec<Option<(usize, Option<usize>)>> = Vec::new();
             for (gi, g) in TOOL_GROUPS.iter().enumerate() {
+                // A group of CJK-only tools (the grid tools) is left out without Show CJK Features.
+                if !g.is_empty() && g.iter().all(|tl| !crate::menus::tool_shown(app, tl.id)) {
+                    continue;
+                }
                 if g.is_empty() {
                     row_items.push(None);
                 } else if cols == 2 && SPLIT_IN_TWO_COLUMNS.contains(&g[0].id) {
