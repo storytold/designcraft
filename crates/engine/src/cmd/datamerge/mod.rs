@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, id_param, ok, str_param};
 use crate::{DocState, Result, Session};
-use fill::{FillReport, Maps, MissingImage, copy_item, fill_row, identity_map};
+use fill::{FillReport, Maps, MissingImage, Sources, copy_item, fill_row, identity_map};
 use parse::{
     Table, TileInput, extension, fingerprint_of, relative_between, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects,
     tile,
@@ -210,7 +210,8 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let row = source.rows.get((record as usize).saturating_sub(1)).cloned().unwrap_or_default();
     let data_dir = source_file(&source, st.path.as_deref().map(Path::new)).as_deref().and_then(Path::parent).map(Path::to_path_buf);
     let doc_dir = st.path.as_deref().and_then(parent_dir);
-    fill_row(&mut doc, &source.fields, &row, record as u32, &options, &maps, data_dir.as_deref(), doc_dir.as_deref());
+    let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref() };
+    fill_row(&mut doc, &source.fields, &row, record as u32, &maps, &sources);
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
     st.bump_revision();
@@ -245,10 +246,12 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     warnings.extend(table.warnings.iter().cloned());
     let mut merged = src.clone();
     let mut missing = Vec::new();
+    let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref() };
+    let mut sink = Sink { warnings: &mut warnings, missing: &mut missing, parent: false };
     if options.per_page == "multiple" {
-        tile_records(&mut merged, &src, &table, &selected, &options, data_dir.as_deref(), doc_dir.as_deref(), &mut warnings, &mut missing)?;
+        tile_records(&mut merged, &src, &table, &selected, &sources, &mut sink)?;
     } else {
-        copy_records(&mut merged, &src, &table, &selected, &options, data_dir.as_deref(), doc_dir.as_deref(), &mut warnings, &mut missing)?;
+        copy_records(&mut merged, &src, &table, &selected, &sources, &mut sink)?;
     }
     // Status is written only after every error return. The new document then becomes active,
     // so this template edit does not push an undo step. The fingerprint stays the last read.
@@ -272,25 +275,14 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
-fn copy_records(
-    dst: &mut Document,
-    src: &Document,
-    table: &Table,
-    selected: &[usize],
-    options: &MergeOptions,
-    data_dir: Option<&Path>,
-    doc_dir: Option<&Path>,
-    warnings: &mut Vec<String>,
-    missing: &mut Vec<MissingImage>,
-) -> Result<()> {
-    let mut parent = false;
+fn copy_records(dst: &mut Document, src: &Document, table: &Table, selected: &[usize], sources: &Sources, sink: &mut Sink) -> Result<()> {
     if let Some(&idx) = selected.first() {
         let maps = identity_map(dst);
-        fill_at(dst, table, idx, options, &maps, data_dir, doc_dir, warnings, missing, &mut parent);
+        fill_at(dst, table, idx, sources, &maps, sink);
     }
     for &idx in selected.iter().skip(1) {
         let maps = append_copy(dst, src)?;
-        fill_at(dst, table, idx, options, &maps, data_dir, doc_dir, warnings, missing, &mut parent);
+        fill_at(dst, table, idx, sources, &maps, sink);
     }
     Ok(())
 }
@@ -320,17 +312,8 @@ fn append_copy(dst: &mut Document, src: &Document) -> Result<Maps> {
     Ok(maps)
 }
 
-fn tile_records(
-    dst: &mut Document,
-    src: &Document,
-    table: &Table,
-    selected: &[usize],
-    options: &MergeOptions,
-    data_dir: Option<&Path>,
-    doc_dir: Option<&Path>,
-    warnings: &mut Vec<String>,
-    missing: &mut Vec<MissingImage>,
-) -> Result<()> {
+fn tile_records(dst: &mut Document, src: &Document, table: &Table, selected: &[usize], sources: &Sources, sink: &mut Sink) -> Result<()> {
+    let options = sources.options;
     let (block, ids) = block_of(src);
     let (width, height) = src.page(0).map(|p| (p.width, p.height)).unwrap_or((612.0, 792.0));
     let plan = tile(&TileInput {
@@ -344,7 +327,7 @@ fn tile_records(
         count: selected.len(),
     });
     if plan.one_per_page {
-        warnings.push("Only one record fits on the page, so each record has its own page.".into());
+        sink.warnings.push("Only one record fits on the page, so each record has its own page.".into());
     }
     if plan.pages > 1 {
         let parent = src.page(0).and_then(|p| p.parent);
@@ -356,12 +339,11 @@ fn tile_records(
             }
         }
     }
-    let mut parent = false;
     for hit in plan.hits {
         let Some(&idx) = selected.get(hit.index) else { continue };
         if hit.index == 0 && hit.page == 0 && hit.col == 0 && hit.row == 0 {
             let maps = identity_map(dst);
-            fill_at(dst, table, idx, options, &maps, data_dir, doc_dir, warnings, missing, &mut parent);
+            fill_at(dst, table, idx, sources, &maps, sink);
             continue;
         }
         let Some((dsi, _)) = dst.page_loc(hit.page) else { continue };
@@ -370,39 +352,37 @@ fn tile_records(
             let Some(it) = src.item(*id) else { continue };
             copy_item(dst, src, it, SpreadRef::Doc(dsi), Vec2::new(hit.dx, hit.dy), &mut maps)?;
         }
-        fill_at(dst, table, idx, options, &maps, data_dir, doc_dir, warnings, missing, &mut parent);
+        fill_at(dst, table, idx, sources, &maps, sink);
     }
     Ok(())
 }
 
-fn fill_at(
-    doc: &mut Document,
-    table: &Table,
-    idx: usize,
-    options: &MergeOptions,
-    maps: &Maps,
-    data_dir: Option<&Path>,
-    doc_dir: Option<&Path>,
-    warnings: &mut Vec<String>,
-    missing: &mut Vec<MissingImage>,
-    parent: &mut bool,
-) {
+fn fill_at(doc: &mut Document, table: &Table, idx: usize, sources: &Sources, maps: &Maps, sink: &mut Sink) {
     let Some(row) = table.rows.get(idx) else { return };
-    let report = fill_row(doc, &table.fields, row, (idx as u32).saturating_add(1), options, maps, data_dir, doc_dir);
-    absorb(report, warnings, missing, parent);
+    let report = fill_row(doc, &table.fields, row, (idx as u32).saturating_add(1), maps, sources);
+    sink.absorb(report);
 }
 
-fn absorb(report: FillReport, warnings: &mut Vec<String>, missing: &mut Vec<MissingImage>, parent: &mut bool) {
-    for w in report.warnings {
-        if w == PARENT_WARNING {
-            if *parent {
-                continue;
+/// Warnings and missing images collected across every record, with the parent-page warning kept to one.
+struct Sink<'a> {
+    warnings: &'a mut Vec<String>,
+    missing: &'a mut Vec<MissingImage>,
+    parent: bool,
+}
+
+impl Sink<'_> {
+    fn absorb(&mut self, report: FillReport) {
+        for w in report.warnings {
+            if w == PARENT_WARNING {
+                if self.parent {
+                    continue;
+                }
+                self.parent = true;
             }
-            *parent = true;
+            self.warnings.push(w);
         }
-        warnings.push(w);
+        self.missing.extend(report.missing);
     }
-    missing.extend(report.missing);
 }
 
 fn block_of(doc: &Document) -> (Rect, Vec<ItemId>) {
