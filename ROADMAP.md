@@ -15,6 +15,9 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - **2026-10-25** · The application bar uses craft-window's shared title-bar code. A drag that
   starts on a floating panel over the bar moves the panel, not the window, and in full screen the
   bar no longer zooms or moves the window. No readiness percentage change.
+- **2026-10-25** · Explicit story/frame targets for text export and placeholder fill no longer
+  require a text selection. Menu enablement stays selection-based; target validation still runs
+  before export writes or placeholder conversion, with conversion and fill undone together.
 - **2026-10-24** · Embedded IDML keeps independent placed-PDF layer choices in table-cell and
   footnote text. The variant rewrite reaches endnote stories too, but IDML endnote structures and
   artwork remain unsupported. External-only export continues to reject active nested choices.
@@ -382,6 +385,9 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 Newest first.
 
 - **2026-10-24** · Panels dock through the suite's shared docking (craft-libs), and on desktop a floating panel opens in its own window that can leave the main window: keys pressed there run the main window's shortcuts, clipboard and tool keys, and the canvas paints no tool cursor while another of the app's windows has the pointer. The web build keeps floating panels in the page. No readiness percentage change.
+- **2026-10-25** · Story direction, placeholder text, story queries and text export validate explicit
+  story/frame targets before using the selection. Rejected targets do not edit or convert the
+  target; valid empty-frame placeholder conversion is preserved.
 - **2026-10-24** · Story Options rejects malformed or nonexistent explicit story/frame IDs without changing the selected story, including an invalid frame alongside a valid story. Null targets remain absent; omitted targets still use the selection. No readiness percentage change.
 - **2026-10-24** · Text Frame Options explains that a custom baseline-grid increment must be a measure greater than zero when zero, a negative value or a non-measure is entered. Validation is unchanged. No readiness percentage change.
 - **2026-10-24** · Renaming a paragraph or character style, or moving it into a style group, keeps its Export Tagging under the new name, and undo puts it back under the old one. Deleting a tagged style drops its tagging and leaves the replacement style's own tagging as it was. No readiness percentage change.

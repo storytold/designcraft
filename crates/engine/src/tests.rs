@@ -208,10 +208,10 @@ fn a_command_that_fails_partway_strands_no_edits() {
     assert_eq!(s.doc().unwrap().history.undo.len(), 1);
 }
 
-/// The same for a command that fails after a command it ran changed the document: that one
-/// leaves the step to it, so it has to record one.
+/// Placeholder targets are checked before converting a frame: invalid stories must not
+/// leave a partial conversion or an undo step behind.
 #[test]
-fn a_command_that_fails_after_the_one_it_ran_can_be_undone() {
+fn placeholder_rejects_bad_story_before_converting_frame() {
     let mut s = session();
     let empty = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "unassigned"})).unwrap()["id"].clone();
     let text = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "abc"})).unwrap()["id"].clone();
@@ -220,14 +220,11 @@ fn a_command_that_fails_after_the_one_it_ran_can_be_undone() {
         let st = s.doc().unwrap();
         (st.doc.clone(), st.history.undo.len())
     };
-    // Fill with Placeholder Text turns the empty frame into a text frame, then finds no such story.
+    // The invalid story is rejected before the empty frame can become a text frame.
     assert!(s.execute("type.fillWithPlaceholder", &json!({"frame": empty, "story": 99999})).is_err());
     let st = s.doc().unwrap();
-    assert_ne!(st.doc, before, "the frame was converted");
-    assert_eq!(st.history.undo.len(), steps + 1);
-    assert_eq!(st.history.undo.last().unwrap().label, "Fill with Placeholder Text");
-    s.execute("edit.undo", &json!({})).unwrap();
-    assert_eq!(s.doc().unwrap().doc, before);
+    assert_eq!(st.doc, before, "the frame must not be converted");
+    assert_eq!(st.history.undo.len(), steps);
 }
 
 /// A script's steps still record as it runs: an Undo step takes back the step before it, not

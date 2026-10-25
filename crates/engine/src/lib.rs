@@ -607,6 +607,14 @@ impl Session {
     /// Fails with `Disabled` unless the command is enabled or names objects it can act on.
     fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
         if let Err(e) = (spec.enabled)(self) {
+            // Explicit story targets do not need an enabling selection. Keep the menu guards
+            // unchanged and let these handlers validate both ids before exporting or editing.
+            if matches!(id, "file.exportText" | "type.fillWithPlaceholder")
+                && self.active().is_some()
+                && (params.get("story").is_some_and(|v| !v.is_null()) || params.get("frame").is_some_and(|v| !v.is_null()))
+            {
+                return Ok(());
+            }
             // A command that takes `ids` acts on the objects the call names, so the selection
             // doesn't matter: with a text caret, nothing selected, or a selection the command
             // can't act on, `{"ids": [5]}` still runs.

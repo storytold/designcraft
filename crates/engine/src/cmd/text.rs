@@ -99,10 +99,10 @@ pub fn specs() -> Vec<CommandSpec> {
             "Story Column Direction",
             ["Type", "Story Column Direction"],
             None,
-            "{story?, frame?: a text frame of the story, direction: leftToRight|rightToLeft} — column progression, independent of paragraph direction",
+            "{story?: unsigned integer, frame?: unsigned integer (text frame), direction: leftToRight|rightToLeft} — both ids are validated; story wins; null means absent (default: selection). Column progression, independent of paragraph direction",
             has_doc,
             |s, p| {
-                let sid = story_of(s, p).ok_or_else(|| bad("story.setDirection", "no story"))?;
+                let sid = validated_story_of(s, p, "story.setDirection")?.ok_or_else(|| bad("story.setDirection", "no story"))?;
                 let direction: designcraft_doc::TextDirection =
                     serde_json::from_value(p.get("direction").cloned().ok_or_else(|| bad("story.setDirection", "missing direction"))?)
                         .map_err(|e| bad("story.setDirection", e.to_string()))?;
@@ -168,16 +168,24 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!(query "story.get", "Get Story", [], None, "{story? | frame?} → text, frames, paragraphs, vertical, overset", has_doc, |s, p| {
+        cmd!(query "story.get", "Get Story", [], None, "{story?: unsigned integer, frame?: unsigned integer (text frame)} — both ids are validated; story wins; null means absent (default: selection) → text, frames, paragraphs, vertical, overset", has_doc, |s, p| {
             let st = s.doc()?;
-            let sid = story_of(s, p).ok_or_else(|| bad("story.get", "no story"))?;
+            let sid = validated_story_of(s, p, "story.get")?.ok_or_else(|| bad("story.get", "no story"))?;
             let mut v = st.doc.story_summary(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             let cs = s.cache.get(&st.doc, sid, None);
             v["overset"] = json!(cs.overset_at);
             v["lines"] = json!(cs.line_count());
             Ok(v)
         }),
-        cmd!("type.fillWithPlaceholder", "Fill with Placeholder Text", ["Type"], None, "{frame?, story?}", has_text_or_frames, fill_placeholder),
+        cmd!(
+            "type.fillWithPlaceholder",
+            "Fill with Placeholder Text",
+            ["Type"],
+            None,
+            "{frame?: unsigned integer, story?: unsigned integer} — both ids are validated; story wins; null means absent (default: selection); converts a valid non-text frame to text",
+            has_text_or_frames,
+            fill_placeholder
+        ),
         cmd!(
             "type.char",
             "Character Formatting",
@@ -408,6 +416,55 @@ pub fn specs() -> Vec<CommandSpec> {
             set_features
         ),
     ]
+}
+
+/// A validated target. Only Fill with Placeholder Text may convert a non-text frame.
+enum StoryTarget {
+    Story(StoryId),
+    Frame(ItemId),
+}
+
+fn story_target(s: &Session, p: &Value, cmd: &str) -> Result<Option<StoryTarget>> {
+    let doc = &s.doc()?.doc;
+    let mut story = None;
+    let mut frame = None;
+    // Validate both supplied ids, even when story precedence will ignore the frame.
+    for key in ["story", "frame"] {
+        if let Some(value) = p.get(key).filter(|v| !v.is_null()) {
+            let id = value.as_u64().ok_or_else(|| bad(cmd, format!("`{key}` must be an unsigned integer")))?;
+            let sid = if key == "story" {
+                story = Some(StoryId(id));
+                Some(StoryId(id))
+            } else {
+                let fid = ItemId(id);
+                let item = doc.item(fid).ok_or_else(|| bad(cmd, format!("no such frame {id}")))?;
+                frame = Some(match item.text_frame() {
+                    Some(t) => StoryTarget::Story(t.story),
+                    None => StoryTarget::Frame(fid),
+                });
+                item.text_frame().map(|t| t.story)
+            };
+            if let Some(sid) = sid.filter(|sid| doc.story(*sid).is_none()) {
+                return Err(bad(cmd, format!("no such story {}", sid.0)));
+            }
+        }
+    }
+    Ok(story.map(StoryTarget::Story).or(frame).or_else(|| story_of(s, &Value::Null).map(StoryTarget::Story)))
+}
+
+pub(crate) fn validated_story_of(s: &Session, p: &Value, cmd: &str) -> Result<Option<StoryId>> {
+    match story_target(s, p, cmd)? {
+        Some(StoryTarget::Story(sid)) => {
+            // A non-text frame is invalid even when an explicit story takes precedence.
+            let doc = &s.doc()?.doc;
+            if let Some(fid) = id_param(p, "frame").filter(|fid| doc.item(*fid).is_some_and(|i| i.text_frame().is_none())) {
+                return Err(bad(cmd, format!("frame {} holds no text", fid.0)));
+            }
+            Ok(Some(sid))
+        }
+        Some(StoryTarget::Frame(fid)) => Err(bad(cmd, format!("frame {} holds no text", fid.0))),
+        None => Ok(None),
+    }
 }
 
 pub(crate) fn story_of(s: &Session, p: &Value) -> Option<StoryId> {
@@ -2325,16 +2382,21 @@ dum sidera fulgent tacito per inane meatu. Arbore sub magna ludunt pueri, linquu
 Iamque tibi rursus ponet nova carmina vates, et longas umbras quaerit sub tegmine fagi. Omnia mutantur, nihil interit.";
 
 fn fill_placeholder(s: &mut Session, p: &Value) -> Result<Value> {
-    let st = s.doc()?;
-    let frame = id_param(p, "frame").or_else(|| st.selection.items.first().copied()).or_else(|| st.selection.text.and_then(|t| t.frame));
-    let sid = match frame.and_then(|f| st.doc.item(f)).and_then(|i| i.text_frame()) {
-        Some(t) => t.story,
-        None => {
-            if let Some(f) = frame {
-                s.execute("object.content", &json!({"ids": [f.0], "type": "text"}))?;
-            }
-            story_of(s, p).ok_or_else(|| bad("type.fillWithPlaceholder", "select a text frame"))?
+    const CMD: &str = "type.fillWithPlaceholder";
+    // Validate every explicit id before converting a frame or touching a story.
+    let target = story_target(s, p, CMD)?;
+    let sid = if let Some(StoryTarget::Story(sid)) = target {
+        sid
+    } else {
+        let st = s.doc()?;
+        let frame = if let Some(StoryTarget::Frame(fid)) = target {
+            Some(fid)
+        } else {
+            st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))
         }
+        .ok_or_else(|| bad(CMD, "select a text frame"))?;
+        s.execute("object.content", &json!({"ids": [frame.0], "type": "text"}))?;
+        story_of(s, &json!({"frame": frame.0})).ok_or_else(|| bad(CMD, "select a text frame"))?
     };
     // Fill until overset with paragraphs of two to five sentences, as InDesign's placeholder text
     // comes (so a paragraph can be styled on its own).
@@ -4278,5 +4340,333 @@ mod size_bounds_tests {
             let e = s.execute(command, &params).expect_err("refused").to_string();
             assert!(e.contains("0.1 to 1296 pt"), "{command}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod story_target_tests {
+    use super::*;
+
+    fn selected() -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "Selected"})).unwrap();
+        s
+    }
+
+    fn selected_frame(s: &Session) -> ItemId {
+        let sid = story_of(s, &Value::Null).unwrap();
+        s.doc().unwrap().doc.story(sid).unwrap().frames[0]
+    }
+
+    fn rejects_malformed(command: &str) {
+        let mut s = selected();
+        let before = s.doc().unwrap().doc.clone();
+        let steps = s.doc().unwrap().history.undo.len();
+        for key in ["story", "frame"] {
+            for value in [json!("invalid"), json!("1"), json!(-1), json!(1.0), json!(1.5), json!(true), json!({}), json!([])] {
+                let mut p = if command == "story.setDirection" { json!({"direction": "rightToLeft"}) } else { json!({}) };
+                p[key] = value;
+                let result = s.execute(command, &p);
+                assert!(s.doc().unwrap().doc == before, "{command} {p} changed the selection");
+                assert!(result.is_err(), "{command} {p} read or changed the selection: {result:?}");
+                assert_eq!(s.doc().unwrap().history.undo.len(), steps);
+            }
+        }
+    }
+
+    #[test]
+    fn set_direction_rejects_malformed_targets() {
+        rejects_malformed("story.setDirection");
+    }
+    #[test]
+    fn placeholder_rejects_malformed_targets() {
+        rejects_malformed("type.fillWithPlaceholder");
+    }
+    #[test]
+    fn get_rejects_malformed_targets() {
+        rejects_malformed("story.get");
+    }
+    #[test]
+    fn export_rejects_malformed_targets() {
+        rejects_malformed("file.exportText");
+    }
+
+    #[test]
+    fn valid_targets_nulls_and_story_precedence() {
+        for command in ["story.setDirection", "type.fillWithPlaceholder", "story.get", "file.exportText"] {
+            for target in ["story", "frame", "both", "null-story", "null-frame", "omitted", "nulls", "batch-null", "text-selection"] {
+                let mut s = selected();
+                let selected_story = selected_frame(&s);
+                let a = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Explicit"})).unwrap();
+                s.execute("selection.set", &json!({"ids": [selected_story.0]})).unwrap();
+                let b = s.execute("story.get", &json!({})).unwrap();
+                let mut p = json!({"direction": "rightToLeft"});
+                let explicit = matches!(target, "story" | "frame" | "both" | "null-story" | "null-frame");
+                match target {
+                    "story" => p["story"] = a["story"].clone(),
+                    "frame" => p["frame"] = a["id"].clone(),
+                    "both" => {
+                        p["story"] = a["story"].clone();
+                        p["frame"] = json!(selected_story.0);
+                    }
+                    "null-story" => {
+                        p["story"] = Value::Null;
+                        p["frame"] = a["id"].clone();
+                    }
+                    "null-frame" => {
+                        p["story"] = a["story"].clone();
+                        p["frame"] = Value::Null;
+                    }
+                    "nulls" => {
+                        p["story"] = Value::Null;
+                        p["frame"] = Value::Null;
+                    }
+                    "batch-null" => p["story"] = crate::script::resolve(&json!("$0.story"), &[json!({"story": null})]).unwrap(),
+                    "text-selection" => {
+                        s.execute("text.select", &json!({"story": b["id"], "anchor": 0})).unwrap();
+                    }
+                    _ => {}
+                }
+                if command != "story.setDirection" {
+                    p.as_object_mut().unwrap().remove("direction");
+                }
+                let expected = if explicit { a["story"].as_u64().unwrap() } else { b["id"].as_u64().unwrap() };
+                let other = if explicit { b["id"].as_u64().unwrap() } else { a["story"].as_u64().unwrap() };
+                let before_other = s.doc().unwrap().doc.story(StoryId(other)).unwrap().clone();
+                let before = s.doc().unwrap().doc.clone();
+                let steps = s.doc().unwrap().history.undo.len();
+                let result = s.execute(command, &p).unwrap();
+                let story = s.doc().unwrap().doc.story(StoryId(expected)).unwrap();
+                match command {
+                    "story.setDirection" => assert_eq!(story.direction, designcraft_doc::TextDirection::RightToLeft),
+                    "type.fillWithPlaceholder" => assert!(!story.text.is_empty() && story.text != "Selected" && story.text != "Explicit"),
+                    _ => assert_eq!(result["text"], if explicit { "Explicit" } else { "Selected" }),
+                }
+                assert_eq!(*s.doc().unwrap().doc.story(StoryId(other)).unwrap(), before_other, "{command} {target}");
+                if command == "story.setDirection" || command == "type.fillWithPlaceholder" {
+                    assert_eq!(s.doc().unwrap().history.undo.len(), steps + 1);
+                    s.execute("edit.undo", &json!({})).unwrap();
+                    assert_eq!(s.doc().unwrap().doc, before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn missing_targets_and_ignored_bad_frames_fail_without_edits() {
+        for command in ["story.setDirection", "type.fillWithPlaceholder", "story.get", "file.exportText"] {
+            let mut s = selected();
+            let valid = s.execute("story.get", &json!({})).unwrap()["id"].clone();
+            let non_text = s.execute("frame.create", &json!({"rect": [400, 0, 500, 100], "content": "unassigned"})).unwrap()["id"].clone();
+            let text_frame = s.doc().unwrap().doc.story(StoryId(valid.as_u64().unwrap())).unwrap().frames[0];
+            s.execute("selection.set", &json!({"ids": [text_frame.0]})).unwrap();
+            let before = s.doc().unwrap().doc.clone();
+            let steps = s.doc().unwrap().history.undo.len();
+            let mut cases = vec![
+                (json!({"story": 999999}), "no such story 999999".to_string()),
+                (json!({"frame": 999999}), "no such frame 999999".to_string()),
+                (json!({"story": valid, "frame": 999999}), "no such frame 999999".to_string()),
+                (json!({"story": valid, "frame": "invalid"}), "`frame` must be an unsigned integer".to_string()),
+                (json!({"story": "invalid", "frame": non_text}), "`story` must be an unsigned integer".to_string()),
+            ];
+            if command != "type.fillWithPlaceholder" {
+                cases.push((json!({"frame": non_text}), format!("frame {non_text} holds no text")));
+                cases.push((json!({"story": valid, "frame": non_text}), format!("frame {non_text} holds no text")));
+            }
+            for (mut p, message) in cases {
+                if command == "story.setDirection" {
+                    p["direction"] = json!("rightToLeft");
+                }
+                let error = s.execute(command, &p).unwrap_err().to_string();
+                assert!(error.contains(&message), "{command} {p}: {error}, expected {message}");
+                assert_eq!(s.doc().unwrap().doc, before);
+                assert_eq!(s.doc().unwrap().history.undo.len(), steps);
+            }
+        }
+    }
+
+    #[test]
+    fn placeholder_preserves_non_text_frame_conversion() {
+        for explicit in [false, true] {
+            let mut s = selected();
+            let selected_frame = selected_frame(&s);
+            let r = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "unassigned"})).unwrap();
+            let ids = if explicit { json!([selected_frame.0]) } else { json!([r["id"], selected_frame.0]) };
+            // The existing enabled guard needs a text frame somewhere in the selection.
+            s.execute("selection.set", &json!({"ids": ids})).unwrap();
+            let before = s.doc().unwrap().doc.clone();
+            let steps = s.doc().unwrap().history.undo.len();
+            let p = if explicit { json!({"frame": r["id"]}) } else { json!({}) };
+            s.execute("type.fillWithPlaceholder", &p).unwrap();
+            let doc = &s.doc().unwrap().doc;
+            let sid = doc.item(ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+            assert!(!doc.story(sid).unwrap().text.is_empty());
+            assert_eq!(s.doc().unwrap().history.undo.len(), steps + 1);
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(s.doc().unwrap().doc, before);
+        }
+    }
+}
+
+#[cfg(test)]
+mod enablement_followup {
+    use super::*;
+    use crate::EngineError;
+
+    const COMMANDS: [&str; 2] = ["file.exportText", "type.fillWithPlaceholder"];
+
+    fn fixture(non_text_selection: bool) -> (Session, Value, Value, Value) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 100, 80], "content": "text", "text": "Explicit"})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [0, 100, 100, 180], "content": "text", "text": "Other"})).unwrap();
+        let non_text = s.execute("frame.create", &json!({"rect": [0, 200, 100, 280], "content": "unassigned"})).unwrap()["id"].clone();
+        let ids = if non_text_selection { json!([non_text]) } else { json!([]) };
+        s.execute("selection.set", &json!({"ids": ids})).unwrap();
+        (s, a, b, non_text)
+    }
+
+    fn valid_targets(command: &str) {
+        for non_text_selection in [false, true] {
+            for target in ["story", "frame", "both", "null-story", "null-frame"] {
+                let (mut s, a, b, _) = fixture(non_text_selection);
+                let p = match target {
+                    "story" => json!({"story": a["story"]}),
+                    "frame" => json!({"frame": a["id"]}),
+                    "both" => json!({"story": a["story"], "frame": b["id"]}),
+                    "null-story" => json!({"story": null, "frame": a["id"]}),
+                    _ => json!({"story": a["story"], "frame": null}),
+                };
+                // Execution may bypass this selection-only guard, but menus must not.
+                assert!((crate::find_command(command).unwrap().enabled)(&s).is_err());
+                let before = s.doc().unwrap().doc.clone();
+                let steps = s.doc().unwrap().history.undo.len();
+                let result = s.execute(command, &p).unwrap_or_else(|e| panic!("{command} {target} non-text={non_text_selection}: {e}"));
+                let doc = &s.doc().unwrap().doc;
+                let story = doc.story(StoryId(a["story"].as_u64().unwrap())).unwrap();
+                assert_eq!(doc.story(StoryId(b["story"].as_u64().unwrap())), before.story(StoryId(b["story"].as_u64().unwrap())));
+                if command == "file.exportText" {
+                    assert_eq!(result["text"], "Explicit");
+                    assert_eq!(doc, &before);
+                    assert_eq!(s.doc().unwrap().history.undo.len(), steps);
+                } else {
+                    assert!(!story.text.is_empty() && story.text != "Explicit");
+                    assert_eq!(s.doc().unwrap().history.undo.len(), steps + 1);
+                    s.execute("edit.undo", &json!({})).unwrap();
+                    assert_eq!(s.doc().unwrap().doc, before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn export_executes_explicit_targets_without_enabling_selection() {
+        valid_targets("file.exportText");
+    }
+
+    #[test]
+    fn placeholder_executes_explicit_targets_without_enabling_selection() {
+        valid_targets("type.fillWithPlaceholder");
+    }
+
+    #[test]
+    fn placeholder_converts_explicit_non_text_frame_in_one_undo() {
+        for non_text_selection in [false, true] {
+            let (mut s, _, _, frame) = fixture(non_text_selection);
+            let before = s.doc().unwrap().doc.clone();
+            let steps = s.doc().unwrap().history.undo.len();
+            s.execute("type.fillWithPlaceholder", &json!({"frame": frame})).unwrap();
+            let doc = &s.doc().unwrap().doc;
+            let sid = doc.item(ItemId(frame.as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+            assert!(!doc.story(sid).unwrap().text.is_empty());
+            assert_eq!(s.doc().unwrap().history.undo.len(), steps + 1);
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(s.doc().unwrap().doc, before);
+        }
+    }
+
+    #[test]
+    fn invalid_targets_reach_validator_before_conversion_or_export_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("untouched.txt");
+        std::fs::write(&path, "sentinel").unwrap();
+        for command in COMMANDS {
+            for non_text_selection in [false, true] {
+                let (mut s, a, _, non_text) = fixture(non_text_selection);
+                let before = s.doc().unwrap().doc.clone();
+                let steps = s.doc().unwrap().history.undo.len();
+                let mut cases = vec![
+                    (json!({"story": 999999}), "no such story 999999".to_string()),
+                    (json!({"frame": 999999}), "no such frame 999999".to_string()),
+                    (json!({"story": a["story"], "frame": 999999}), "no such frame 999999".to_string()),
+                    (json!({"story": 999999, "frame": non_text}), "no such story 999999".to_string()),
+                ];
+                for key in ["story", "frame"] {
+                    for value in [json!("bad"), json!("1"), json!(-1), json!(1.0), json!(1.5), json!(true), json!({}), json!([])] {
+                        let message = format!("`{key}` must be an unsigned integer");
+                        let mut p = json!({});
+                        p[key] = value.clone();
+                        cases.push((p, message.clone()));
+                        let mut p = json!({"story": a["story"], "frame": non_text});
+                        p[key] = value;
+                        cases.push((p, message));
+                    }
+                }
+                if command == "file.exportText" {
+                    cases.push((json!({"frame": non_text}), format!("frame {non_text} holds no text")));
+                    cases.push((json!({"story": a["story"], "frame": non_text}), format!("frame {non_text} holds no text")));
+                }
+                for (mut p, message) in cases {
+                    if command == "file.exportText" {
+                        p["path"] = json!(path);
+                    }
+                    let e = s.execute(command, &p).unwrap_err();
+                    assert!(matches!(&e, EngineError::BadParams { .. }), "{command} {p}: {e}");
+                    assert!(e.to_string().contains(&message), "{command} {p}: {e}; expected {message}");
+                    assert_eq!(s.doc().unwrap().doc, before);
+                    assert_eq!(s.doc().unwrap().history.undo.len(), steps);
+                    assert_eq!(std::fs::read_to_string(&path).unwrap(), "sentinel");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn absent_and_null_targets_keep_selection_guards() {
+        for command in COMMANDS {
+            for non_text_selection in [false, true] {
+                let (mut s, _, _, _) = fixture(non_text_selection);
+                for p in [json!({}), json!({"story": null}), json!({"frame": null}), json!({"story": null, "frame": null}), Value::Null] {
+                    assert!(matches!(s.execute(command, &p), Err(EngineError::Disabled(..))), "{command} {p}");
+                    assert!((crate::find_command(command).unwrap().enabled)(&s).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_document_cannot_bypass_selection_guards() {
+        let mut s = Session::new();
+        for command in COMMANDS {
+            for p in [json!({"story": 1}), json!({"frame": 1}), json!({"story": "bad", "frame": 1})] {
+                assert!(matches!(s.execute(command, &p), Err(EngineError::Disabled(..))), "{command} {p}");
+            }
+        }
+    }
+
+    #[test]
+    fn unrelated_commands_cannot_use_story_or_frame_bypass() {
+        let (mut s, a, _, _) = fixture(false);
+        let before = s.doc().unwrap().doc.clone();
+        let steps = s.doc().unwrap().history.undo.len();
+        // Attribute commands pass parameter-key checking but still require a text selection.
+        for command in ["type.char", "type.para"] {
+            for p in [json!({"story": a["story"]}), json!({"frame": a["id"]})] {
+                assert!(matches!(s.execute(command, &p), Err(EngineError::Disabled(..))), "{command} {p}");
+            }
+        }
+        assert_eq!(s.doc().unwrap().doc, before);
+        assert_eq!(s.doc().unwrap().history.undo.len(), steps);
     }
 }

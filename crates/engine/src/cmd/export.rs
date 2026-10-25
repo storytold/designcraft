@@ -52,7 +52,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: DesignCraft's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
         has_doc, export_pptx),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
-        "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
+        "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?: unsigned integer, frame?: unsigned integer (text frame)} — both ids are validated; story wins; null means absent (default: the story being edited or of the selected frame) → {path, bytes} (no path: {text, bytes})",
         has_story_target, export_text),
     ]
 }
@@ -181,7 +181,7 @@ fn has_story_target(s: &Session) -> std::result::Result<(), String> {
 
 fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.exportText";
-    let sid = super::text::story_of(s, p).ok_or_else(|| bad(ID, "edit text or select a text frame"))?;
+    let sid = super::text::validated_story_of(s, p, ID)?.ok_or_else(|| bad(ID, "edit text or select a text frame"))?;
     let doc = &s.doc()?.doc;
     let story = doc.stories.get(&sid).ok_or_else(|| bad(ID, format!("no story {}", sid.0)))?;
     let path = str_param(p, "path");

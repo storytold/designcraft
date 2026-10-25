@@ -24,7 +24,10 @@ A script is one command per line (`command.id {json params}`; `#` comments), JSO
 `{command, params}`, in UTF-8 with or without a byte order mark. A parameter string `"$N.path"` becomes that value
 of step N's result: N is the 0-based step index (comments and blank lines are not steps, `$last` is the previous
 step) and the path goes through result fields and array indices (`"$1.story"`, `"$3.ids.0"`); `"${N.path}"`
-interpolates inside longer strings. Any other string starting with `$` stays as written (`"$1-$2"`, `"$5 off"`), and
+interpolates inside longer strings. References preserve JSON types, including null: for commands
+where a null story/frame target means absent, a reference resolving to null also uses the selection.
+If a script requires an explicit target, its earlier result must contain an ID, not null.
+Any other string starting with `$` stays as written (`"$1-$2"`, `"$5 off"`), and
 `$$` writes a literal `$` anywhere (`"$$1"` passes `$1`, a GREP group). In text parameters `\n` starts a new paragraph and `\u2028` is a forced line
 break (`\u000b`, Word's line break, is read as one too). Most commands ignore parameters they don't know instead of rejecting them, so check names with `describe`.
 `designcraft-cli script --help` prints this reference.
