@@ -103,6 +103,9 @@ impl TableFrag {
 struct CellLayout {
     text: Arc<ComposedStory>,
     content_h: f64,
+    /// Baseline block used for vertical alignment, separately from physical fitting bounds.
+    baseline_h: f64,
+    physical_h: f64,
     line_heights: Vec<f64>,
 }
 
@@ -138,7 +141,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         page_rect: None,
     };
     let cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
-    let line_heights: Vec<f64> = cs
+    let extents: Vec<CellLineExtent> = cs
         .frames
         .first()
         .map(|f| {
@@ -152,13 +155,16 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
                     extent.bottom = extent.bottom.max(object.origin.y + object.size.1);
                 }
             }
-            extents.iter().map(|e| e.fit_height(cell.insets[2])).collect()
+            extents
         })
         .unwrap_or_default();
     // Check all lines: a large descender or lowered inline object on an earlier line can
     // extend below the final baseline when leading is fixed.
+    let line_heights: Vec<f64> = extents.iter().map(|e| e.fit_height(cell.insets[2])).collect();
     let content_h = line_heights.iter().copied().fold(0.0, f64::max);
-    CellLayout { text: Arc::new(cs), content_h, line_heights }
+    let baseline_h = extents.iter().map(|e| e.baseline).fold(0.0, f64::max);
+    let physical_h = extents.iter().map(|e| e.bottom).fold(0.0, f64::max);
+    CellLayout { text: Arc::new(cs), content_h, baseline_h, physical_h, line_heights }
 }
 
 /// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
@@ -421,11 +427,17 @@ fn emit(
             let Some(lay) = layouts.get(r * nc + c).and_then(Option::as_ref) else { continue };
             let clip = Rect::new(rect.x0 + cell.insets[1], rect.y0 + cell.insets[0], rect.x1 - cell.insets[3], rect.y1 - cell.insets[2]);
             let space = clip.height() - lay.content_h;
+            // Alignment distributes the space around the baseline block. Including the
+            // descender allowance here lifts centered text in cells with a small bottom inset.
+            // Physical bounds still limit the shift so descenders and inline objects stay inside.
+            let alignment_space = (clip.height() - lay.baseline_h).max(0.0);
+            let max_shift = (rect.y1 - clip.y0 - lay.physical_h).max(0.0);
             let dy = match cell.vj {
-                VerticalJustification::Center if space > 0.0 => space / 2.0,
-                VerticalJustification::Bottom if space > 0.0 => space,
+                VerticalJustification::Center => alignment_space / 2.0,
+                VerticalJustification::Bottom => alignment_space,
                 _ => 0.0,
-            };
+            }
+            .min(max_shift);
             let overset = space < -0.01 || lay.text.is_overset();
             let text = if overset { clip_overset(lay, clip.height()) } else { lay.text.clone() };
             cells.push(PlacedCell {
@@ -1004,6 +1016,26 @@ mod height_tests {
     }
 
     #[test]
+    fn centered_numeric_cell_uses_the_baseline_block_not_descender_fit_height() {
+        let mut cell = text_cell("123,456", 1.0);
+        cell.insets[0] = 0.0;
+        cell.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+        cell.first_baseline_min = 6.0;
+        cell.vj = VerticalJustification::Center;
+        let mut table = single_table(cell);
+        table.rows[0].mode = RowHeightMode::Exactly;
+        table.rows[0].height = 14.0;
+        let composed = compose_table(table, 200.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        // The baseline block is 6 pt in a 13 pt inset box: 3.5 pt above and below.
+        // Ordinary descenders can use the remaining physical cell space.
+        assert!((placed.origin.y - placed.clip.y0 - 3.5).abs() < 1e-6, "center shift {}", placed.origin.y - placed.clip.y0);
+        let line = &placed.text.frames[0].lines[0];
+        assert!(placed.origin.y + line.baseline + line.descent <= placed.rect.y1 + 1e-6);
+        assert!(!placed.overset);
+    }
+
+    #[test]
     fn vertical_alignment_uses_baseline_fit_without_losing_descenders() {
         for bottom in [0.0, 8.5] {
             for (vj, expected_shift) in
@@ -1013,6 +1045,13 @@ mod height_tests {
                 cell.vj = vj;
                 let layout = measure(&cell, 92.0);
                 let required = cell.insets[0] + layout.content_h + bottom;
+                // With no bottom inset, centering also distributes half the descender space;
+                // bottom alignment remains limited by the physical cell edge.
+                let expected_shift = if bottom == 0.0 && vj == VerticalJustification::Center {
+                    expected_shift + layout.text.frames[0].lines[0].descent / 2.0
+                } else {
+                    expected_shift
+                };
                 let mut table = single_table(cell);
                 table.rows[0].mode = RowHeightMode::Exactly;
                 table.rows[0].height = required + 20.0;
