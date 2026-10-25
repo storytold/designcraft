@@ -96,6 +96,12 @@ pub fn line_metrics(data: &[u8], index: u32) -> Option<(f32, f32, f32, f32)> {
     Some((f32::from(m.units_per_em.max(1)), m.ascent, m.descent, m.leading))
 }
 
+/// Whether the font at `index` of `data` maps `c` to a glyph (false when it can't be read).
+pub fn maps_char(data: &[u8], index: u32, c: char) -> bool {
+    use skrifa::MetadataProvider;
+    skrifa::FontRef::from_index(data, index).ok().and_then(|f| f.charmap().map(c)).is_some_and(|g| g.to_u32() != 0)
+}
+
 /// An OpenType feature setting: `"liga"`, `"-kern"`, `"ss01"`.
 pub fn feature(tag: &str) -> Option<Feature> {
     let (on, t) = match tag.strip_prefix('-') {

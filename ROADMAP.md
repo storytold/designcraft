@@ -381,6 +381,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-25** · The interface reads the installed faces it falls back to (Hangul, Traditional Chinese, Indic, Hebrew, Ethiopic…) the first time it shows text in their script, not at start-up, and holds each file once instead of three times: on macOS, 312 MB → 101–110 MB with no document open. The first frame that shows such text already has its glyphs. No readiness percentage change.
 - **2026-10-24** · Story Options rejects malformed or nonexistent explicit story/frame IDs without changing the selected story, including an invalid frame alongside a valid story. Null targets remain absent; omitted targets still use the selection. No readiness percentage change.
 - **2026-10-24** · Text Frame Options explains that a custom baseline-grid increment must be a measure greater than zero when zero, a negative value or a non-measure is entered. Validation is unchanged. No readiness percentage change.
 - **2026-10-24** · Renaming a paragraph or character style, or moving it into a style group, keeps its Export Tagging under the new name, and undo puts it back under the old one. Deleting a tagged style drops its tagging and leaves the replacement style's own tagging as it was. No readiness percentage change.

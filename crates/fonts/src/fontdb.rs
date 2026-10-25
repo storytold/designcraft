@@ -139,6 +139,20 @@ pub struct FontFace {
     postscript: std::sync::OnceLock<Option<String>>,
 }
 
+/// The code points `font` maps to a glyph, as sorted, merged inclusive ranges.
+fn coverage_of(font: &skrifa::FontRef<'_>) -> Vec<(u32, u32)> {
+    let mut cps: Vec<u32> = font.charmap().mappings().filter(|(_, g)| g.to_u32() != 0).map(|(cp, _)| cp).collect();
+    cps.sort_unstable();
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for cp in cps {
+        match out.last_mut() {
+            Some(last) if cp <= last.1.saturating_add(1) => last.1 = last.1.max(cp),
+            _ => out.push((cp, cp)),
+        }
+    }
+    out
+}
+
 /// A cheap `Copy` handle to a face. Faces are never unloaded, so the handle lives for the rest of
 /// the process; unlike cloning an `Arc`, copying it touches no shared reference count (which made
 /// parallel composition scale negatively).
@@ -1932,6 +1946,41 @@ impl ScopedFonts<'_> {
         None
     }
 
+    /// The code points `family`'s Regular face (else its first) maps to a glyph, as sorted, merged
+    /// inclusive ranges, without loading the family: a loaded face is asked; an installed family
+    /// that isn't loaded is read from its file, which is then let go (as [`ScopedFonts::family_kind`]
+    /// does). Empty for an unknown family or an unreadable file.
+    pub fn family_coverage(&self, family: &str) -> Vec<(u32, u32)> {
+        let styles = self.styles(family);
+        let Some(style) = styles.iter().find(|s| *s == "Regular").or(styles.first()).cloned() else { return Vec::new() };
+        if self.own().iter().chain(self.db.read_faces().iter()).any(|f| f.family.eq_ignore_ascii_case(family)) {
+            return self.find(family, &style).and_then(|f| f.skrifa().map(|s| coverage_of(&s))).unwrap_or_default();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = {
+                let cat = self.db.read_catalog();
+                let of_family = |c: &&CatalogEntry| c.family.eq_ignore_ascii_case(family);
+                let entry = cat.iter().filter(of_family).find(|c| norm(&c.style) == norm(&style)).or_else(|| cat.iter().find(of_family));
+                entry.map(|c| c.path.clone())
+            };
+            let Some(path) = path else { return Vec::new() };
+            if std::fs::metadata(&path).map_or(true, |m| m.len() > MAX_DOCUMENT_FONT_BYTES) {
+                return Vec::new();
+            }
+            let Ok(data) = std::fs::read(&path) else { return Vec::new() };
+            let found = enumerate_faces(&data);
+            let pick = found
+                .iter()
+                .find(|(_, f, st, _)| f.eq_ignore_ascii_case(family) && norm(st) == norm(&style))
+                .or_else(|| found.iter().find(|(_, f, _, _)| f.eq_ignore_ascii_case(family)));
+            let Some((index, ..)) = pick else { return Vec::new() };
+            skrifa::FontRef::from_index(&data, *index).map(|f| coverage_of(&f)).unwrap_or_default()
+        }
+        #[cfg(target_arch = "wasm32")]
+        Vec::new()
+    }
+
     /// The family and style of the face whose PostScript name is `name`, ignoring case (the
     /// document's, loaded, or installed on the system, not loading it). SVGs exported from
     /// Illustrator name fonts this way (`font-family="'MyriadPro-Regular'"`).
@@ -2252,5 +2301,27 @@ mod tests_heights {
             let face = face_of(undeclared(font_mapping("Heights", glyphs).unwrap()));
             assert_eq!((face.cap_height, face.x_height), (face.ascent * 0.72, face.ascent * 0.5), "{glyphs:?}");
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod family_coverage_tests {
+    use super::*;
+
+    /// An installed family's character map, read without loading the family into the database.
+    #[test]
+    fn family_coverage_reads_an_installed_family_without_loading_it() {
+        let dir = std::env::temp_dir().join(format!("dc-family-coverage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("coverage.ttf"), crate::testing::font_with("DC Coverage Test", &['a', 'b', 'ক']).unwrap()).unwrap();
+        let db = FontDb::with_font_dirs(vec![dir.clone()]);
+        db.load_system_fonts();
+        let ranges = db.scoped(0).family_coverage("DC Coverage Test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let has = |c: char| ranges.iter().any(|&(a, b)| (a..=b).contains(&u32::from(c)));
+        assert!(has('a') && has('b') && has('ক') && !has('c'), "{ranges:?}");
+        assert!(ranges.windows(2).all(|w| w[0].1.saturating_add(1) < w[1].0), "sorted and merged: {ranges:?}");
+        assert!(!db.read_faces().iter().any(|f| f.family == "DC Coverage Test"), "the family stays unloaded");
+        assert!(db.scoped(0).family_coverage("DC No Such Family").is_empty());
     }
 }

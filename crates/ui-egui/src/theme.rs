@@ -1,5 +1,6 @@
 //! Design tokens (InDesign's four interface brightness levels), fonts and egui style.
 
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle, Visuals};
@@ -264,16 +265,27 @@ impl Tokens {
 /// Install the UI fonts for the interface language `lang` (it orders the CJK fallbacks).
 /// Returns false while the installed fonts are still being cataloged: the built-in faces are
 /// installed without waiting, and the caller installs again once they are (see
-/// [`system_fonts_ready`]) to add the installed faces for the scripts they lack.
+/// [`system_fonts_ready`]) to add the installed faces for the scripts they lack. Of those, only
+/// the interface language's own CJK face is read here; the others are read the first time the
+/// interface paints text that needs them ([`crate::fallback_fonts`]).
 pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
+    let cataloged = set_fonts(ctx, lang);
+    ctx.add_plugin(crate::fallback_fonts::Watch::new(lang));
+    ctx.with_plugin(|w: &mut crate::fallback_fonts::Watch| lang.clone_into(&mut w.lang));
+    cataloged
+}
+
+/// [`install_fonts`] without the fallback watch (which installs the fonts again itself).
+pub(crate) fn set_fonts(ctx: &egui::Context, lang: &str) -> bool {
     let craft = designcraft_fonts::CRAFT_FONTS;
     let mut defs = font_definitions(craft, lang);
-    let system = system_ui_fonts(craft);
-    if let Some(system) = system {
+    let system = system_ui_fonts(craft, lang);
+    let cataloged = system.is_some();
+    if let Some(system) = &system {
         add_system_fallbacks(&mut defs, system, lang);
     }
     ctx.set_fonts(defs);
-    system.is_some()
+    cataloged
 }
 
 /// Whether [`install_fonts`] would find the installed fonts cataloged.
@@ -282,6 +294,7 @@ pub fn system_fonts_ready() -> bool {
 }
 
 /// An installed font the UI falls back to for a script the built-in faces lack.
+#[derive(Clone)]
 pub(crate) struct SystemFont {
     /// The ISO 15924 code of the script it is for ("Jpan", "Kore", "Taml"…).
     script: &'static str,
@@ -292,9 +305,21 @@ pub(crate) struct SystemFont {
 }
 
 impl SystemFont {
+    /// A face from font file `bytes` (tests: synthetic faces standing in for installed ones).
+    #[cfg(test)]
     pub(crate) fn new(script: &'static str, family: String, bytes: Vec<u8>, index: u32) -> Self {
         let tweak = baseline_tweak(&bytes, index);
         SystemFont { script, family, data: Arc::new(FontData { index, tweak, ..FontData::from_owned(bytes) }) }
+    }
+
+    /// An installed face of the font database, which egui borrows: the database never unloads a
+    /// face ([`designcraft_fonts::FaceRef`]), and egui 0.36 copies owned font data each time it
+    /// builds its fonts, so a copy here meant three copies of the file (the database's, this one
+    /// and egui's).
+    fn installed(script: &'static str, family: String, face: &Arc<designcraft_fonts::FontFace>) -> Self {
+        let face = designcraft_fonts::FaceRef::of(face).get();
+        let font = FontData { index: face.index(), tweak: baseline_tweak(face.data(), face.index()), ..FontData::from_static(face.data()) };
+        SystemFont { script, family, data: Arc::new(font) }
     }
 }
 
@@ -350,8 +375,11 @@ const SYSTEM_UI_FONTS: &[(&str, char, &[&str])] = &[
 /// Traditional Chinese (font names in the font menus), Indic, Southeast Asian and other scripts
 /// in any build. egui can't find system fonts itself; the document font scan (not on the web)
 /// does.
-fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont]) -> Option<&'static [SystemFont]> {
-    static FACES: std::sync::OnceLock<Vec<SystemFont>> = std::sync::OnceLock::new();
+///
+/// The faces are read when needed: the interface language's own CJK face here, the others the
+/// first time the interface paints text in their script ([`crate::fallback_fonts`]). Returns the
+/// faces read so far.
+fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont], lang: &str) -> Option<Vec<SystemFont>> {
     let db = designcraft_fonts::FontDb::global();
     // Never wait for the font scan here (the first frame): it runs in the background, and the
     // faces are read once, when it is done.
@@ -360,30 +388,239 @@ fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont]) -> Option<&'static [S
         db.scan_in_background();
         return None;
     }
-    Some(FACES.get_or_init(|| installed_ui_fonts(db, craft)))
+    // The interface language's CJK face draws its Han characters ahead of the built-in faces.
+    if let Some(i) = SYSTEM_UI_FONTS.iter().position(|(script, ..)| *script == cjk_script(lang)) {
+        read_system_font(db, craft, i);
+    }
+    Some(read_system_fonts())
 }
 
-/// The faces of [`SYSTEM_UI_FONTS`] that `db` has, for the scripts `craft` doesn't cover.
-fn installed_ui_fonts(db: &designcraft_fonts::FontDb, craft: &[designcraft_fonts::CraftFont]) -> Vec<SystemFont> {
+/// The installed face for each script of [`SYSTEM_UI_FONTS`], once read (`None`: none installed,
+/// or the craft-fonts cover the script).
+static SYSTEM_FONTS: [std::sync::OnceLock<Option<SystemFont>>; SYSTEM_UI_FONTS.len()] = [const { std::sync::OnceLock::new() }; SYSTEM_UI_FONTS.len()];
+
+/// Read the installed face for script `i` of [`SYSTEM_UI_FONTS`] (once); whether there is one.
+fn read_system_font(db: &designcraft_fonts::FontDb, craft: &[designcraft_fonts::CraftFont], i: usize) -> bool {
+    SYSTEM_FONTS.get(i).is_some_and(|slot| slot.get_or_init(|| installed_ui_font(db, craft, i)).is_some())
+}
+
+/// The faces read so far, in [`SYSTEM_UI_FONTS`] order; a family that serves several scripts is
+/// added once.
+fn read_system_fonts() -> Vec<SystemFont> {
     let mut faces: Vec<SystemFont> = Vec::new();
-    for (script, sample, families) in SYSTEM_UI_FONTS {
-        if craft.iter().any(|f| f.scripts.contains(script)) {
-            continue;
-        }
-        let found = families.iter().find_map(|family| {
-            if !db.has_family(family) {
-                return None;
-            }
-            let face = db.face(family, "Regular");
-            // `face` falls back to another family when this one can't be read: keep only the real one.
-            (face.family.eq_ignore_ascii_case(family) && !face.data().is_empty() && face.covers(*sample)).then_some((family, face))
-        });
-        let Some((family, face)) = found else { continue };
-        if !faces.iter().any(|f| f.family.eq_ignore_ascii_case(family)) {
-            faces.push(SystemFont::new(script, (*family).to_string(), face.data().to_vec(), face.index()));
+    for face in SYSTEM_FONTS.iter().filter_map(|slot| slot.get()).flatten() {
+        if !faces.iter().any(|f| f.family.eq_ignore_ascii_case(&face.family)) {
+            faces.push(face.clone());
         }
     }
     faces
+}
+
+/// The faces of [`SYSTEM_UI_FONTS`] that `db` has, for the scripts `craft` doesn't cover; a family
+/// that serves several scripts is added once.
+#[cfg(test)]
+fn installed_ui_fonts(db: &designcraft_fonts::FontDb, craft: &[designcraft_fonts::CraftFont]) -> Vec<SystemFont> {
+    let mut faces: Vec<SystemFont> = Vec::new();
+    for face in (0..SYSTEM_UI_FONTS.len()).filter_map(|i| installed_ui_font(db, craft, i)) {
+        if !faces.iter().any(|f| f.family.eq_ignore_ascii_case(&face.family)) {
+            faces.push(face);
+        }
+    }
+    faces
+}
+
+/// The face of `db` for script `i` of [`SYSTEM_UI_FONTS`]: the first listed family that is
+/// installed and covers the script's character. `None` when the craft-fonts cover the script or
+/// nothing installed does.
+fn installed_ui_font(db: &designcraft_fonts::FontDb, craft: &[designcraft_fonts::CraftFont], i: usize) -> Option<SystemFont> {
+    let (script, sample, families) = SYSTEM_UI_FONTS.get(i)?;
+    if craft.iter().any(|f| f.scripts.contains(script)) {
+        return None;
+    }
+    families.iter().find_map(|family| {
+        if !db.has_family(family) {
+            return None;
+        }
+        let face = db.face(family, "Regular");
+        // `face` falls back to another family when this one can't be read: keep only the real one.
+        (face.family.eq_ignore_ascii_case(family) && !face.data().is_empty() && face.covers(*sample))
+            .then(|| SystemFont::installed(script, (*family).to_string(), &face))
+    })
+}
+
+/// The code points of each script of [`SYSTEM_UI_FONTS`]: the text its face is read for (Han,
+/// kana and bopomofo with the CJK symbols, punctuation and full-width forms; Hangul with its
+/// enclosed and half-width forms; each other script with its extensions).
+#[allow(clippy::single_range_in_vec_init)] // one range for some scripts
+const SCRIPT_RANGES: &[(&str, &[RangeInclusive<char>])] = &[
+    (
+        "Jpan",
+        &[
+            '\u{2e80}'..='\u{2fdf}',
+            '\u{2ff0}'..='\u{303f}',
+            '\u{3190}'..='\u{319f}',
+            '\u{31c0}'..='\u{31ef}',
+            '\u{3200}'..='\u{33ff}',
+            '\u{3400}'..='\u{4dbf}',
+            '\u{4e00}'..='\u{9fff}',
+            '\u{f900}'..='\u{faff}',
+            '\u{fe30}'..='\u{fe4f}',
+            '\u{ff00}'..='\u{ffef}',
+            '\u{20000}'..='\u{3ffff}',
+            '\u{3040}'..='\u{30ff}',
+            '\u{31f0}'..='\u{31ff}',
+            '\u{1b000}'..='\u{1b16f}',
+        ],
+    ),
+    (
+        "Hans",
+        &[
+            '\u{2e80}'..='\u{2fdf}',
+            '\u{2ff0}'..='\u{303f}',
+            '\u{3190}'..='\u{319f}',
+            '\u{31c0}'..='\u{31ef}',
+            '\u{3200}'..='\u{33ff}',
+            '\u{3400}'..='\u{4dbf}',
+            '\u{4e00}'..='\u{9fff}',
+            '\u{f900}'..='\u{faff}',
+            '\u{fe30}'..='\u{fe4f}',
+            '\u{ff00}'..='\u{ffef}',
+            '\u{20000}'..='\u{3ffff}',
+            '\u{3100}'..='\u{312f}',
+            '\u{31a0}'..='\u{31bf}',
+        ],
+    ),
+    (
+        "Hant",
+        &[
+            '\u{2e80}'..='\u{2fdf}',
+            '\u{2ff0}'..='\u{303f}',
+            '\u{3190}'..='\u{319f}',
+            '\u{31c0}'..='\u{31ef}',
+            '\u{3200}'..='\u{33ff}',
+            '\u{3400}'..='\u{4dbf}',
+            '\u{4e00}'..='\u{9fff}',
+            '\u{f900}'..='\u{faff}',
+            '\u{fe30}'..='\u{fe4f}',
+            '\u{ff00}'..='\u{ffef}',
+            '\u{20000}'..='\u{3ffff}',
+            '\u{3100}'..='\u{312f}',
+            '\u{31a0}'..='\u{31bf}',
+        ],
+    ),
+    (
+        "Kore",
+        &[
+            '\u{1100}'..='\u{11ff}',
+            '\u{3130}'..='\u{318f}',
+            '\u{3200}'..='\u{321e}',
+            '\u{3260}'..='\u{327e}',
+            '\u{a960}'..='\u{a97f}',
+            '\u{ac00}'..='\u{d7ff}',
+            '\u{ffa0}'..='\u{ffdc}',
+        ],
+    ),
+    ("Taml", &['\u{b80}'..='\u{bff}', '\u{11fc0}'..='\u{11fff}']),
+    ("Deva", &['\u{900}'..='\u{97f}', '\u{a8e0}'..='\u{a8ff}', '\u{1cd0}'..='\u{1cff}']),
+    ("Beng", &['\u{980}'..='\u{9ff}']),
+    ("Gujr", &['\u{a80}'..='\u{aff}']),
+    ("Guru", &['\u{a00}'..='\u{a7f}']),
+    ("Knda", &['\u{c80}'..='\u{cff}']),
+    ("Mlym", &['\u{d00}'..='\u{d7f}']),
+    ("Telu", &['\u{c00}'..='\u{c7f}']),
+    ("Orya", &['\u{b00}'..='\u{b7f}']),
+    ("Sinh", &['\u{d80}'..='\u{dff}', '\u{111e0}'..='\u{111ff}']),
+    ("Thai", &['\u{e00}'..='\u{e7f}']),
+    ("Khmr", &['\u{1780}'..='\u{17ff}', '\u{19e0}'..='\u{19ff}']),
+    ("Laoo", &['\u{e80}'..='\u{eff}']),
+    ("Mymr", &['\u{1000}'..='\u{109f}', '\u{a9e0}'..='\u{a9ff}', '\u{aa60}'..='\u{aa7f}']),
+    ("Hebr", &['\u{590}'..='\u{5ff}', '\u{fb1d}'..='\u{fb4f}']),
+    ("Armn", &['\u{530}'..='\u{58f}', '\u{fb13}'..='\u{fb17}']),
+    ("Geor", &['\u{10a0}'..='\u{10ff}', '\u{1c90}'..='\u{1cbf}', '\u{2d00}'..='\u{2d2f}']),
+    ("Ethi", &['\u{1200}'..='\u{139f}', '\u{2d80}'..='\u{2ddf}', '\u{ab00}'..='\u{ab2f}', '\u{1e7e0}'..='\u{1e7ff}']),
+];
+
+fn script_ranges(script: &str) -> &'static [RangeInclusive<char>] {
+    SCRIPT_RANGES.iter().find(|(s, _)| *s == script).map_or(&[], |(_, ranges)| ranges)
+}
+
+/// An installed fallback face [`crate::fallback_fonts::Watch`] reads when painted text needs it:
+/// script `0` of [`SYSTEM_UI_FONTS`].
+pub(crate) struct LazyFallback(usize);
+
+impl LazyFallback {
+    /// The script's ISO 15924 code.
+    pub(crate) fn script(&self) -> &'static str {
+        SYSTEM_UI_FONTS.get(self.0).map_or("", |(script, ..)| script)
+    }
+
+    fn face(&self) -> Option<&'static SystemFont> {
+        SYSTEM_FONTS.get(self.0)?.get()?.as_ref()
+    }
+
+    /// The egui font name of the face once read.
+    pub(crate) fn font_name(&self) -> Option<String> {
+        self.face().map(|f| format!("system-{}", f.family))
+    }
+
+    /// The code points of the face this fallback would read, without reading it: the first listed
+    /// family that is installed. Looked up once.
+    fn coverage(&self) -> &'static [(u32, u32)] {
+        static COVERAGE: [std::sync::OnceLock<Vec<(u32, u32)>>; SYSTEM_UI_FONTS.len()] =
+            [const { std::sync::OnceLock::new() }; SYSTEM_UI_FONTS.len()];
+        let db = designcraft_fonts::FontDb::global();
+        let Some((slot, (_, _, families))) = COVERAGE.get(self.0).zip(SYSTEM_UI_FONTS.get(self.0)) else { return &[] };
+        if !db.system_fonts_cataloged() {
+            return &[];
+        }
+        slot.get_or_init(|| families.iter().find(|f| db.has_family(f)).map(|f| db.scoped(0).family_coverage(f)).unwrap_or_default())
+    }
+}
+
+impl crate::fallback_fonts::Candidate for LazyFallback {
+    fn in_script(&self, c: char) -> bool {
+        script_ranges(self.script()).iter().any(|r| r.contains(&c))
+    }
+    fn is_read(&self) -> bool {
+        self.face().is_some()
+    }
+    fn covers(&self, c: char) -> bool {
+        self.face().is_some_and(|f| designcraft_fonts::maps_char(&f.data.font, f.data.index, c))
+    }
+    fn read(&self) -> bool {
+        let db = designcraft_fonts::FontDb::global();
+        db.system_fonts_cataloged() && read_system_font(db, designcraft_fonts::CRAFT_FONTS, self.0)
+    }
+    fn might_cover(&self, c: char) -> bool {
+        if self.is_read() {
+            return self.covers(c);
+        }
+        let cp = u32::from(c);
+        let within = |&(a, b): &(u32, u32)| {
+            if b < cp {
+                std::cmp::Ordering::Less
+            } else if a > cp {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        };
+        self.coverage().binary_search_by(within).is_ok()
+    }
+}
+
+/// The installed faces for the interface language `lang` that are read when painted text needs
+/// them, in the order [`add_system_fallbacks`] puts them in: the CJK scripts other than the
+/// language's own (which is read with the fonts), then the other scripts.
+pub(crate) fn lazy_fallbacks(lang: &str) -> Vec<LazyFallback> {
+    const CJK: [&str; 4] = ["Jpan", "Hans", "Hant", "Kore"];
+    let first = cjk_script(lang);
+    let craft = designcraft_fonts::CRAFT_FONTS;
+    let wanted = |script: &str| script != first && !craft.iter().any(|f| f.scripts.contains(&script));
+    let index = |script: &str| SYSTEM_UI_FONTS.iter().position(|(s, ..)| *s == script);
+    let cjk = CJK.iter().filter(|s| wanted(s)).filter_map(|s| index(s));
+    let rest = SYSTEM_UI_FONTS.iter().enumerate().filter(|(_, (s, ..))| !CJK.contains(s) && wanted(s)).map(|(i, _)| i);
+    cjk.chain(rest).map(LazyFallback).collect()
 }
 
 /// The UI face every family starts with (Source Sans 3; the semibold shares its line metrics).
@@ -708,6 +945,11 @@ mod japanese_font_tests {
         let _ = std::fs::remove_dir_all(&dir);
         let picked: Vec<(&str, &str)> = system.iter().map(|f| (f.script, f.family.as_str())).collect();
         assert_eq!(picked, [("Jpan", "Noto Sans CJK JP"), ("Taml", "Nirmala UI"), ("Thai", "Noto Sans Thai")]);
+        // egui borrows the database's bytes: the font file is in memory once, not copied per install
+        for f in &system {
+            let face = db.face(&f.family, "Regular");
+            assert_eq!(f.data.font.as_ptr(), face.data().as_ptr(), "{}: egui must borrow the database's own bytes, not a copy", f.family);
+        }
 
         let mut defs = super::font_definitions(&[], "ja");
         defs.families.entry(egui::FontFamily::Proportional).or_default().push("craft-Stand-in".into());
@@ -727,6 +969,59 @@ mod japanese_font_tests {
                 assert!(fonts.has_glyph(&font, ch), "missing {ch}");
             }
         });
+    }
+
+    /// The installed faces read when painted text needs them come in the order the fonts list them:
+    /// the other CJK scripts, then the rest; not the interface language's own CJK face (read with
+    /// the fonts) nor a script the craft-fonts cover.
+    #[test]
+    fn lazy_fallbacks_follow_the_fallback_order() {
+        let scripts = |lang: &str| super::lazy_fallbacks(lang).iter().map(super::LazyFallback::script).collect::<Vec<_>>();
+        let craft = |script: &str| designcraft_fonts::CRAFT_FONTS.iter().any(|f| f.scripts.contains(&script));
+        for (lang, own) in [("en", "Jpan"), ("zh-hant", "Hant"), ("ko", "Kore")] {
+            let list = scripts(lang);
+            assert!(!list.contains(&own), "{lang}: {list:?}");
+            assert!(list.iter().all(|s| !craft(s)), "{lang}: {list:?}");
+            let cjk = list.iter().take_while(|s| matches!(**s, "Jpan" | "Hans" | "Hant" | "Kore")).count();
+            assert!(list[cjk..].iter().all(|s| !matches!(*s, "Jpan" | "Hans" | "Hant" | "Kore")), "{lang}: CJK first: {list:?}");
+            assert!(list.contains(&"Taml") && list.contains(&"Ethi"), "{lang}: {list:?}");
+        }
+    }
+
+    /// Text in a script whose installed face hasn't been read draws real glyphs on the first frame
+    /// that paints it: the face is read during that frame and the pass redone with it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_first_frame_draws_text_in_an_installed_script() {
+        let db = designcraft_fonts::FontDb::global();
+        let _ = db.load_system_fonts();
+        for (script, text) in [("Taml", "தமிழ் ஆவணம்"), ("Kore", "한국어 문서"), ("Hebr", "מסמך עברי")] {
+            let Some(i) = super::SYSTEM_UI_FONTS.iter().position(|(s, ..)| *s == script) else { panic!("{script}") };
+            let craft = designcraft_fonts::CRAFT_FONTS.iter().any(|f| f.scripts.contains(&script));
+            if !craft && super::installed_ui_font(db, designcraft_fonts::CRAFT_FONTS, i).is_none() {
+                eprintln!("SKIPPED: no installed {script} face");
+                continue;
+            }
+            let ctx = egui::Context::default();
+            super::install_fonts(&ctx, "en");
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.label(text);
+            });
+            out.textures_delta.clear();
+            let galley = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == text => Some(t.galley.clone()),
+                _ => None,
+            });
+            let Some(galley) = galley else { panic!("{script}: the label is painted") };
+            let font = galley.job.sections[0].format.font_id.clone();
+            let missing = ctx.fonts_mut(|f| f.layout_no_wrap("\u{10ffff}".into(), font, egui::Color32::WHITE).rows[0].glyphs[0].uv_rect);
+            let drawn: Vec<_> = galley.rows.iter().flat_map(|r| &r.glyphs).filter(|g| !g.uv_rect.is_nothing()).collect();
+            assert!(!drawn.is_empty(), "{script}: nothing drawn");
+            for g in drawn {
+                assert_ne!(g.uv_rect, missing, "{script}: missing {} on the first frame", g.chr);
+            }
+            ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        }
     }
 
     #[test]
