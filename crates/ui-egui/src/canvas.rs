@@ -1652,10 +1652,20 @@ fn draw_text_selection(
         let on = |p: Point| compose::PathTextMap::new(it, ft).map_or(p, |map| map.to_path(p));
         let p0 = xf.to_screen(m * on(Point::new(x, bl - asc)));
         let p1 = xf.to_screen(m * on(Point::new(x, bl + desc)));
-        let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
-        if blink {
-            painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
-        }
+        draw_caret(painter, p0, p1);
+    }
+}
+
+/// The text caret from `p0` to `p1`. It blinks while its window has focus, asking for the frames
+/// that blink it. In a window in the background it stays drawn and asks for none: it no longer
+/// redraws the whole window three times a second while another app is in front (egui's own text
+/// fields stop blinking there too).
+fn draw_caret(painter: &egui::Painter, p0: Pos2, p1: Pos2) {
+    let (focused, time) = painter.ctx().input(|i| (i.focused, i.time));
+    if !focused || (time * 1.6) as i64 % 2 == 0 {
+        painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
+    }
+    if focused {
         painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
 }
@@ -1734,11 +1744,7 @@ fn draw_cell_selection(
     {
         let m = a * doc.text_xf(it);
         let (p0, p1) = (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)));
-        let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
-        if blink {
-            painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
-        }
-        painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
+        draw_caret(painter, p0, p1);
     }
 }
 
@@ -3679,6 +3685,30 @@ mod tests {
     use egui_kittest::{Harness, kittest::Queryable};
 
     use super::*;
+
+    /// A text caret redrew the whole window three times a second while another app was in front.
+    #[test]
+    fn the_caret_blinks_only_while_its_window_has_focus() {
+        let ctx = egui::Context::default();
+        let frame = |focused: bool| {
+            let raw = egui::RawInput { focused, ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| draw_caret(ui.painter(), pos2(10.0, 10.0), pos2(10.0, 30.0)));
+            out.textures_delta.clear();
+            let drawn = out.shapes.iter().any(|c| matches!(c.shape, egui::Shape::LineSegment { .. }));
+            (drawn, out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay))
+        };
+        // Focused: it asks for the frame that blinks it.
+        let (_, delay) = frame(true);
+        assert!(delay.is_some_and(|d| d <= std::time::Duration::from_millis(330)), "{delay:?}");
+        // In the background (after the frame egui runs for the change of focus itself): drawn,
+        // steady, and no frame asked for.
+        assert!(frame(false).0);
+        for _ in 0..3 {
+            assert_eq!(frame(false), (true, Some(std::time::Duration::MAX)));
+        }
+        // Focus back: blinking again.
+        assert!(frame(true).1.is_some_and(|d| d <= std::time::Duration::from_millis(330)));
+    }
 
     #[test]
     fn a_press_after_a_drag_is_not_a_double_click() {

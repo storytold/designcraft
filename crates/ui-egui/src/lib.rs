@@ -634,6 +634,9 @@ pub struct DesignApp {
     last_time: f64,
     /// When recovery data was last written (seconds, egui time).
     pub last_recovery: f64,
+    /// The documents' (uid, revision) when the recovery timer last went off: an edit made since
+    /// asks for the frame that writes it.
+    recovery_revisions: Vec<(u64, u64)>,
     /// The egui context (set by the first frame): copied text goes to the system clipboard through it.
     egui_ctx: Option<egui::Context>,
     /// A control-channel request is being handled: commands it runs never read or write the
@@ -720,6 +723,7 @@ impl DesignApp {
             native_shortcuts: Default::default(),
             last_time: 0.0,
             last_recovery: 0.0,
+            recovery_revisions: Vec::new(),
             egui_ctx: None,
             in_control: false,
             object_clip_text: None,
@@ -781,6 +785,34 @@ impl DesignApp {
 
     pub fn status(&mut self, s: impl Into<String>) {
         self.ui.status = s.into();
+    }
+
+    /// Crash recovery: unsaved documents are written to the recovery folder every 30 s. An edit
+    /// made since the timer last went off asks for the frame that writes it when it is due, so it
+    /// is written even while nothing else draws: the timer used to wait for some other frame (the
+    /// caret's blink, a pointer move), and the caret no longer blinks in a window in the background.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn recovery_timer(&mut self, ctx: &egui::Context, now: f64) {
+        if self.session.recovery_dir.is_none() {
+            return;
+        }
+        let interval = (self.session.prefs.recovery_minutes * 60.0).max(5.0);
+        let since = now - self.last_recovery;
+        if since <= interval {
+            if self.session.documents().iter().any(|d| d.is_dirty() && !self.recovery_revisions.contains(&(d.uid, d.revision))) {
+                ctx.request_repaint_after_secs((interval - since) as f32 + 0.1);
+            }
+            return;
+        }
+        self.last_recovery = now;
+        self.recovery_revisions = self.session.documents().iter().map(|d| (d.uid, d.revision)).collect();
+        if self.session.documents().iter().any(|d| d.is_dirty())
+            && let Err(e) = self.session.execute("file.recovery.save", &json!({}))
+        {
+            // Not written: the next tick tries again.
+            self.recovery_revisions.clear();
+            self.status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e.to_string()));
+        }
     }
 
     /// The host's save dialog for `name`, started beside the active document once it has been
@@ -1210,16 +1242,8 @@ impl DesignApp {
             self.restyle = false;
         }
         let now = ctx.input(|i| i.time);
-        // Crash recovery: unsaved documents are written to the recovery folder every 30 s.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
-            self.last_recovery = now;
-            if self.session.documents().iter().any(|d| d.is_dirty())
-                && let Err(e) = self.session.execute("file.recovery.save", &json!({}))
-            {
-                self.status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e.to_string()));
-            }
-        }
+        self.recovery_timer(ctx, now);
         let dt = now - self.last_time;
         if dt > 0.0 {
             self.perf.fps = self.perf.fps * 0.9 + (1.0 / dt).min(240.0) * 0.1;
@@ -1837,6 +1861,40 @@ pub fn drop_key_name_text(raw: &mut egui::RawInput, text_input_focused: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The recovery timer ran only when some other frame did: with the caret no longer blinking in
+    /// a window in the background, an edit made there would wait for the next pointer move. An edit
+    /// since the timer last went off asks for the frame that writes it; once written, none is asked.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_edit_asks_for_the_recovery_frame_and_nothing_else_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [20, 20, 120, 120], "content": "text", "text": "edited"})).unwrap();
+        app.session.recovery_dir = Some(dir.path().to_path_buf());
+        let entry = dir.path().join(format!("{}.designcraft", app.session.active().unwrap().uid));
+        let ctx = egui::Context::default();
+        let tick = |app: &mut DesignApp, now: f64| {
+            let raw = egui::RawInput { time: Some(now), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| app.recovery_timer(ui.ctx(), now));
+            out.textures_delta.clear();
+            out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay)
+        };
+        let secs = |d: Option<std::time::Duration>| d.map(|d| d.as_secs_f64());
+        // A new context asks for frames of its own at first.
+        tick(&mut app, 9.0);
+        tick(&mut app, 9.5);
+        // 10 s after the last tick, 30 s apart: the frame is due in 20 s.
+        assert!(secs(tick(&mut app, 10.0)).is_some_and(|s| (20.0..21.0).contains(&s)));
+        // Due: written. Nothing changed since: no frame is asked for.
+        tick(&mut app, 30.5);
+        assert!(entry.exists());
+        assert_eq!(tick(&mut app, 31.0), Some(std::time::Duration::MAX));
+        // Edited again: a frame at the next tick, 30 s after the last.
+        app.run("frame.create", json!({"rect": [20, 140, 120, 240]})).unwrap();
+        assert!(secs(tick(&mut app, 40.0)).is_some_and(|s| (20.5..21.0).contains(&s)));
+    }
 
     /// The Control panel's two-row groups were centred as if they were one row tall, so the second
     /// row hung below the panel and was cut off.

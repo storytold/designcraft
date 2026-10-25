@@ -378,6 +378,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-23** · The text caret blinks only while its window has focus. In a window in the background it stays drawn and asks for no frames: it redrew the whole window three times a second while another app was in front (egui's own text fields already stop blinking there). The crash-recovery timer, which ran on those frames, now asks for its own frame when an edit is due to be written, so edits made just before switching apps are still saved for recovery. No readiness percentage change.
 - **2026-10-24** · Story Options rejects malformed or nonexistent explicit story/frame IDs without changing the selected story, including an invalid frame alongside a valid story. Null targets remain absent; omitted targets still use the selection. No readiness percentage change.
 - **2026-10-24** · Text Frame Options explains that a custom baseline-grid increment must be a measure greater than zero when zero, a negative value or a non-measure is entered. Validation is unchanged. No readiness percentage change.
 - **2026-10-24** · Renaming a paragraph or character style, or moving it into a style group, keeps its Export Tagging under the new name, and undo puts it back under the old one. Deleting a tagged style drops its tagging and leaves the replacement style's own tagging as it was. No readiness percentage change.
