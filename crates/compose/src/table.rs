@@ -179,7 +179,17 @@ pub(crate) fn place_table(
     if cur.fi >= frames.len() || table.nrows() == 0 || table.ncols() == 0 {
         return false;
     }
-    let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
+    let spanning = matches!(pp.span_columns, designcraft_doc::SpanColumns::Span(n) if n != 1);
+    let col_rect = |cur: &Cursor| {
+        let base = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
+        let col = cur.clip(base);
+        if spanning {
+            // A span clears the balanced band above it and uses the full frame height.
+            crate::span_rect(&cols[cur.fi], Rect::new(col.x0, col.y0, col.x1, base.y1), pp.span_columns)
+        } else {
+            col
+        }
+    };
     let mut col = col_rect(cur);
     // Column widths: scaled to fit the measure.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
@@ -319,7 +329,11 @@ pub(crate) fn place_table(
             first_frag = false;
         }
         let was_first = first_frag;
-        cur.next_column(cols);
+        if spanning {
+            cur.next_frame();
+        } else {
+            cur.next_column(cols);
+        }
         if cur.fi >= frames.len() {
             return false;
         }

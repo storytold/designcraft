@@ -1004,15 +1004,131 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let gone = props.change == designcraft_doc::ChangeMark::Deleted || doc.conditions_hide(&props.conditions);
             (!gone).then_some(start)
         });
-        if let Some(t) = story.para_table(pi) {
-            let start = after_break.unwrap_or(pp.start_paragraph);
+        // A paragraph set across the columns moves on to the next frame where others move on to
+        // the next column.
+        let spanning = matches!(pp.span_columns, SpanColumns::Span(n) if n != 1);
+        span_paras[pi] = spanning;
+        // Span space applies where the paragraph spans more than one column; in a one-column frame
+        // a span changes nothing.
+        let spans_in = |fi: usize| spanning && cols.get(fi).is_some_and(|c| c.len() > 1);
+        // Consecutive paragraphs with the same Split Columns settings share a split block; within
+        // it, a paragraph moves on to the next sub-column. A table ends the block, as at its end.
+        let split_cfg = if story.para_table(pi).is_some() { None } else { SplitCfg::of(&pp) };
+        split_paras[pi] = split_cfg.is_some();
+        if cur.split.is_some_and(|s| Some(s.cfg) != split_cfg) {
+            cur.split = None;
+        }
+        let next_column = |cur: &mut Cursor| {
+            if spanning {
+                cur.next_frame()
+            } else if cur.can_next_sub() {
+                cur.next_sub()
+            } else {
+                cur.next_column(&cols)
+            }
+        };
+        // A paragraph start or a break character; Next Column while a paragraph spans columns is
+        // the next frame, as above.
+        let go = |cur: &mut Cursor, start: StartParagraph| match start {
+            StartParagraph::NextColumn => {
+                let (fi, col) = (cur.fi, cur.col);
+                next_column(cur);
+                if cur.fi == fi && cur.col != col {
+                    cur.band.tail = Some((cur.pi, cur.col));
+                }
+            }
+            other => cur.start(other, &cols, frames, doc),
+        };
+        // Paragraph start options. At the top of a frame there is nothing to break away from, but
+        // an odd or even page start still has to land on a page of that parity.
+        if let Some(start) = after_break {
             if cur.last_baseline.is_some() {
-                cur.start(start, &cols, frames, doc);
+                go(&mut cur, start);
             } else {
                 cur.start_at_top(start, frames, doc);
             }
-            let at_top = cur.last_baseline.is_none();
-            let start_at = (cur.fi, cur.col);
+        }
+        if force_col[pi] {
+            next_column(&mut cur);
+        }
+        if cur.last_baseline.is_some() {
+            go(&mut cur, pp.start_paragraph);
+        } else {
+            cur.start_at_top(pp.start_paragraph, frames, doc);
+        }
+        // Text in the columns above a spanning paragraph, or a split block starting below text.
+        let mut text_above = cur.split.is_none() && split_cfg.is_some();
+        if spanning && cur.fi < frames.len() {
+            // Close the band: the paragraph goes below the deepest of its columns, which are
+            // balanced first.
+            let key = cur.band_key();
+            let deepest = out.frames[cur.fi]
+                .lines
+                .get(cur.band.line0..)
+                .unwrap_or_default()
+                .iter()
+                .map(|l| (l.baseline, l.descent))
+                .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)));
+            if let Some((baseline, descent)) = deepest {
+                let bottom = baseline + descent;
+                let multi = cols[cur.fi].len() > 1;
+                let active = trial.as_ref().is_some_and(|t| t.key == key && t.span == pi);
+                if !active && let Some(t) = trial.take() {
+                    set_limit(&mut limits, t.key, None);
+                }
+                if multi && (active || limit_of(&limits, key).is_none() && balance_runs < balance_budget) {
+                    let top = cur.clip(cols[cur.fi][0]).y0;
+                    let mut t = trial.take().unwrap_or(Trial { key, span: pi, lo: top, hi: bottom, tries: 0, done: false });
+                    // This layout fits: its bottom is the best so far.
+                    t.hi = t.hi.min(bottom);
+                    let next = if t.done { t.hi } else { t.next() };
+                    set_limit(&mut limits, key, Some(next));
+                    if !t.done {
+                        trial = Some(t);
+                        balance_runs += 1;
+                        rewind(
+                            key.1,
+                            &snaps,
+                            &note_snaps,
+                            &mut notes,
+                            &mut out,
+                            &mut cur,
+                            &mut list_counter,
+                            &mut force_col,
+                            &mut line_cap,
+                            &mut no_hyph,
+                        );
+                        pi = key.1;
+                        continue 'paras;
+                    }
+                }
+                cur.col = 0;
+                cur.last_baseline = Some(baseline);
+                cur.last_descent = descent;
+                text_above = multi;
+            } else if cur.col != 0 {
+                cur.col = 0;
+                cur.resume();
+            }
+        }
+        if cur.last_baseline.is_some() {
+            // Same style as the previous paragraph with a same-style spacing: it replaces space after + before.
+            let same_style = pi.checked_sub(1).and_then(|p| story.paras.get(p)).is_some_and(|prev| prev.style == pf.style && prev.table.is_none());
+            match pp.same_para_style_spacing {
+                Some(gap) if same_style => cur.pending = gap,
+                _ => cur.pending += if text_above { pp.space_before.max(pp.span_space_before) } else { pp.space_before },
+            }
+        }
+        if let Some(cfg) = split_cfg
+            && cur.split.is_none()
+        {
+            let start = cur.state();
+            cur.split = Some(SplitBlock { cfg, sub: 0, sub_lines: 0, part_lines: 0, line0: None, para: pi, start, top: None });
+            cur.split_part();
+        }
+        let at_top = cur.last_baseline.is_none();
+        let start_at = (cur.fi, cur.col);
+        if let Some(t) = story.para_table(pi) {
             let anchor = prange.start + story.text[prange.clone()].find(story::TABLE_ANCHOR).unwrap_or(0);
             if !table::place_table(doc, t, anchor, pi, &pp, frames, &cols, &mut cur, &mut out, opts) {
                 if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
@@ -1038,7 +1154,26 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             });
             list_counter = ListCounter::default();
             boxes[pi] = None;
-            cur.pending += pp.space_after;
+            cur.pending += if spans_in(cur.fi) { pp.space_after.max(pp.span_space_after) } else { pp.space_after };
+            if spanning && let Some(ft) = out.frames.get(cur.fi) {
+                // Every following column begins below the spanning table, including after a
+                // table continued through more than one frame.
+                if let Some(baseline) = cur.last_baseline {
+                    cur.band = Band {
+                        para: pi + 1,
+                        line0: ft.lines.len(),
+                        above: Some(Above {
+                            top: baseline + cur.last_descent,
+                            baseline,
+                            descent: cur.last_descent,
+                            reference: cur.last_reference,
+                            aki_below: cur.aki_below,
+                            pending: cur.pending,
+                        }),
+                        tail: None,
+                    };
+                }
+            }
             pi += 1;
             continue;
         }
@@ -1315,130 +1450,6 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 designcraft_doc::Leading::Points(v) => v,
             })
         });
-        // A paragraph set across the columns moves on to the next frame where others move on to
-        // the next column.
-        let spanning = matches!(pp.span_columns, SpanColumns::Span(n) if n != 1);
-        span_paras[pi] = spanning;
-        // Span space applies where the paragraph spans more than one column; in a one-column frame
-        // a span changes nothing.
-        let spans_in = |fi: usize| spanning && cols.get(fi).is_some_and(|c| c.len() > 1);
-        // Consecutive paragraphs with the same Split Columns settings share a split block; within
-        // it, a paragraph moves on to the next sub-column.
-        let split_cfg = SplitCfg::of(&pp);
-        split_paras[pi] = split_cfg.is_some();
-        if cur.split.is_some_and(|s| Some(s.cfg) != split_cfg) {
-            cur.split = None;
-        }
-        let next_column = |cur: &mut Cursor| {
-            if spanning {
-                cur.next_frame()
-            } else if cur.can_next_sub() {
-                cur.next_sub()
-            } else {
-                cur.next_column(&cols)
-            }
-        };
-        // A paragraph start or a break character; Next Column while a paragraph spans columns is
-        // the next frame, as above.
-        let go = |cur: &mut Cursor, start: StartParagraph| match start {
-            StartParagraph::NextColumn => {
-                let (fi, col) = (cur.fi, cur.col);
-                next_column(cur);
-                if cur.fi == fi && cur.col != col {
-                    cur.band.tail = Some((cur.pi, cur.col));
-                }
-            }
-            other => cur.start(other, &cols, frames, doc),
-        };
-        // Paragraph start options. At the top of a frame there is nothing to break away from, but
-        // an odd or even page start still has to land on a page of that parity.
-        if let Some(start) = after_break {
-            if cur.last_baseline.is_some() {
-                go(&mut cur, start);
-            } else {
-                cur.start_at_top(start, frames, doc);
-            }
-        }
-        if force_col[pi] {
-            next_column(&mut cur);
-        }
-        if cur.last_baseline.is_some() {
-            go(&mut cur, pp.start_paragraph);
-        } else {
-            cur.start_at_top(pp.start_paragraph, frames, doc);
-        }
-        // Text in the columns above a spanning paragraph, or a split block starting below text.
-        let mut text_above = cur.split.is_none() && split_cfg.is_some();
-        if spanning && cur.fi < frames.len() {
-            // Close the band: the paragraph goes below the deepest of its columns, which are
-            // balanced first.
-            let key = cur.band_key();
-            let deepest = out.frames[cur.fi]
-                .lines
-                .get(cur.band.line0..)
-                .unwrap_or_default()
-                .iter()
-                .map(|l| (l.baseline, l.descent))
-                .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)));
-            if let Some((baseline, descent)) = deepest {
-                let bottom = baseline + descent;
-                let multi = cols[cur.fi].len() > 1;
-                let active = trial.as_ref().is_some_and(|t| t.key == key && t.span == pi);
-                if !active && let Some(t) = trial.take() {
-                    set_limit(&mut limits, t.key, None);
-                }
-                if multi && (active || limit_of(&limits, key).is_none() && balance_runs < balance_budget) {
-                    let top = cur.clip(cols[cur.fi][0]).y0;
-                    let mut t = trial.take().unwrap_or(Trial { key, span: pi, lo: top, hi: bottom, tries: 0, done: false });
-                    // This layout fits: its bottom is the best so far.
-                    t.hi = t.hi.min(bottom);
-                    let next = if t.done { t.hi } else { t.next() };
-                    set_limit(&mut limits, key, Some(next));
-                    if !t.done {
-                        trial = Some(t);
-                        balance_runs += 1;
-                        rewind(
-                            key.1,
-                            &snaps,
-                            &note_snaps,
-                            &mut notes,
-                            &mut out,
-                            &mut cur,
-                            &mut list_counter,
-                            &mut force_col,
-                            &mut line_cap,
-                            &mut no_hyph,
-                        );
-                        pi = key.1;
-                        continue 'paras;
-                    }
-                }
-                cur.col = 0;
-                cur.last_baseline = Some(baseline);
-                cur.last_descent = descent;
-                text_above = multi;
-            } else if cur.col != 0 {
-                cur.col = 0;
-                cur.resume();
-            }
-        }
-        if cur.last_baseline.is_some() {
-            // Same style as the previous paragraph with a same-style spacing: it replaces space after + before.
-            let same_style = pi.checked_sub(1).and_then(|p| story.paras.get(p)).is_some_and(|prev| prev.style == pf.style && prev.table.is_none());
-            match pp.same_para_style_spacing {
-                Some(gap) if same_style => cur.pending = gap,
-                _ => cur.pending += if text_above { pp.space_before.max(pp.span_space_before) } else { pp.space_before },
-            }
-        }
-        if let Some(cfg) = split_cfg
-            && cur.split.is_none()
-        {
-            let start = cur.state();
-            cur.split = Some(SplitBlock { cfg, sub: 0, sub_lines: 0, part_lines: 0, line0: None, para: pi, start, top: None });
-            cur.split_part();
-        }
-        let at_top = cur.last_baseline.is_none();
-        let start_at = (cur.fi, cur.col);
         // Rule above / shading track the paragraph's first line.
         let mut g0 = 0usize;
         let mut line_no = 0usize;
