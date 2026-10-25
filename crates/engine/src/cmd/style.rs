@@ -814,7 +814,6 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
         let styles = d.styles.clone();
         let (style_para, style_chars) = styles.resolve_para_style(&name);
         for t in &targets {
-            let r = &t.range;
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
                 apply_para_in_story(st, &t.range, &name, clear, (&style_para, &style_chars), &styles);
             }
