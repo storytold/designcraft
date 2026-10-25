@@ -4205,7 +4205,7 @@ fn flex_grid_choice(f: Option<&designcraft_doc::FlexLayout>) -> ((usize, usize),
 /// the objects along the main axis); the chosen cell shows the direction's arrow.
 fn flex_grid(ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> Option<u8> {
     let t = Tokens::get(ui.ctx());
-    let resp = ui.interact(r, ui.id().with("flex_grid"), Sense::click());
+    let resp = ui.interact(r, ui.scope_id().with("flex_grid"), Sense::click());
     ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let cell = r.width() / 3.0;
     let (chosen, spread_row) = flex_grid_choice(f);
