@@ -3134,7 +3134,7 @@ fn ascent_first_baseline_uses_the_typographic_ascender() {
     assert!(close(at(FirstBaseline::Ascent, 18.0), top + 18.0));
     assert!(close(at(FirstBaseline::Ascent, 10.0), top + 14.0));
     // The other kinds don't use it.
-    assert!(close(at(FirstBaseline::CapHeight, 0.0), top + 0.660 * 20.0));
+    assert!(close(at(FirstBaseline::CapHeight, 0.0), top + 0.656 * 20.0));
     assert!(close(at(FirstBaseline::XHeight, 0.0), top + 0.486 * 20.0));
     assert!(close(at(FirstBaseline::Leading, 0.0), top + 24.0));
     assert!(close(at(FirstBaseline::Fixed, 0.0), top));
@@ -3404,11 +3404,11 @@ fn cap_height_and_x_height_first_baselines_use_the_fonts_cap_and_x_heights() {
         })
     };
     let close = |a: f64, b: f64| (a - b).abs() < 0.01;
-    // Cap height 0.5 em and x height 0.3 em of 20 pt, not 0.72 / 0.5 of the 1 em ascent.
-    assert!(close(at(FirstBaseline::CapHeight, 0.0), top + 10.0), "{}", at(FirstBaseline::CapHeight, 0.0));
+    // Physical H height 0.656 em and declared x height 0.3 em, not shares of the ascent.
+    assert!(close(at(FirstBaseline::CapHeight, 0.0), top + 13.12), "{}", at(FirstBaseline::CapHeight, 0.0));
     assert!(close(at(FirstBaseline::XHeight, 0.0), top + 6.0), "{}", at(FirstBaseline::XHeight, 0.0));
     // The minimum offset still wins when it is larger.
-    assert!(close(at(FirstBaseline::CapHeight, 12.0), top + 12.0));
+    assert!(close(at(FirstBaseline::CapHeight, 16.0), top + 16.0));
     assert!(close(at(FirstBaseline::XHeight, 5.0), top + 6.0));
     // Vertical scale and a raised baseline count, as for the ascent.
     let (mut d, sid, fid) = doc_with("Hxg Hxg", Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
@@ -3423,7 +3423,7 @@ fn cap_height_and_x_height_first_baselines_use_the_fonts_cap_and_x_heights() {
     tf.options.inset = [4.0, 0.0, 0.0, 0.0];
     tf.options.first_baseline = FirstBaseline::CapHeight;
     let first = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].baseline;
-    assert!(close(first(&d), top + 15.0 + 1.0), "{}", first(&d));
+    assert!(close(first(&d), top + 19.68 + 1.0), "{}", first(&d));
     d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.first_baseline = FirstBaseline::XHeight;
     assert!(close(first(&d), top + 9.0 + 1.0), "{}", first(&d));
 }
@@ -7884,4 +7884,15 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     let before = cache.get(&d, nsid, None);
     Arc::make_mut(&mut d.spreads[1]).pages[1].side = designcraft_doc::PageSide::Left;
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
+}
+
+#[test]
+fn cap_height_first_baseline_uses_the_capital_outline_when_the_metric_disagrees() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(test_font("CapMetricDiff", Some(&[(CAP_HEIGHT, 500)])));
+    // Source Sans 3's H reaches 656 units, despite this synthetic font declaring 500.
+    // A Cap Height first baseline must clear the actual flat capital, at any point size.
+    let actual = first_baseline_in("CapMetricDiff", |o| o.first_baseline = FirstBaseline::CapHeight);
+    assert!((actual - (40.0 + 20.0 * 0.656)).abs() < 0.001, "baseline {actual}");
 }

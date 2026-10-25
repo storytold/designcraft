@@ -3107,7 +3107,8 @@ fn line_metrics(
     if src.is_empty() {
         let face = face();
         let k = base_size / face.upem;
-        let tops = Tops { typo_ascent: face.typo_ascent * k, cap: face.cap_height * k, xh: face.x_height * k, em: em_box_top(&face, base_size) };
+        let tops =
+            Tops { typo_ascent: face.typo_ascent * k, cap: face.baseline_cap_height * k, xh: face.x_height * k, em: em_box_top(&face, base_size) };
         return (face.ascent * k, tops, face.descent * k, base_leading);
     }
     let mut asc: f64 = 0.0;
@@ -3128,7 +3129,7 @@ fn line_metrics(
             // The em box sits at the unshifted baseline: a baseline shift moves only the drawn glyphs.
             tops.em = tops.em.max(em_box_top(&g.face, g.size) + align.max(0.0));
         }
-        tops.cap = tops.cap.max(g.cap + up);
+        tops.cap = tops.cap.max(g.baseline_cap + up);
         tops.xh = tops.xh.max(g.xh + up);
         desc = desc.max(g.descent - shift.min(0.0));
         lead = lead.max(g.leading);
@@ -4001,6 +4002,7 @@ fn split_drop_cap(
         g.typo_ascent *= k;
         g.descent *= k;
         g.cap *= k;
+        g.baseline_cap *= k;
         g.xh *= k;
         g.size *= k;
         g.space *= k;
