@@ -1005,7 +1005,18 @@ fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Re
             st.paragraph.extend(missing_p);
             st.character.extend(missing_c);
         }
-        let new = super::object::duplicate_from(d, &src, &ids, to, off)?;
+        let (new, story_map) = super::object::duplicate_from_with_story_map(d, &src, &ids, to, off)?;
+        if name.to_lowercase().ends_with(".designcraft") {
+            // Reconnect stories imported together without changing their copied revisions.
+            for new_story in story_map.values() {
+                if let Some(story) = d.story_mut(*new_story)
+                    && let Some((parent, copied_rev)) = story.link
+                    && let Some(new_parent) = story_map.get(&parent)
+                {
+                    story.link = Some((*new_parent, copied_rev));
+                }
+            }
+        }
         *sel = Selection::items(new.clone());
         Ok(new)
     })?;
