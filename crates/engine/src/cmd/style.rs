@@ -816,7 +816,7 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
         for t in &targets {
             let r = &t.range;
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                apply_para_in_story(st, &t.range, &name, clear, (style_para, style_chars), &styles);
+                apply_para_in_story(st, &t.range, &name, clear, (&style_para, &style_chars), &styles);
             }
         }
         ok()
