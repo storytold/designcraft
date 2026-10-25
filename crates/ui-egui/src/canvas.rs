@@ -192,6 +192,17 @@ pub fn drop_point(app: &DesignApp, screen: Option<Pos2>) -> Option<(SpreadRef, P
     layout.spread_at(Xf::new(rect, app.view()?).to_canvas(pos))
 }
 
+/// The empty or graphic frame under a pointer over the canvas: a graphic dropped there fills it
+/// instead of becoming a new object. `None` when the pointer isn't over the canvas or over such a frame.
+pub fn drop_frame(app: &DesignApp, screen: Option<Pos2>) -> Option<designcraft_doc::ItemId> {
+    let rect = app.canvas_rect?;
+    let pos = screen.filter(|p| rect.contains(*p))?;
+    let v = app.view()?;
+    let (id, _) = item_at(app, Xf::new(rect, v).to_canvas(pos), v.zoom)?;
+    let it = app.session.active()?.doc.item(id)?;
+    matches!(it.content, designcraft_doc::Content::Unassigned | designcraft_doc::Content::Graphic(_)).then_some(id)
+}
+
 /// Absolute page index under the view centre.
 pub fn current_page(app: &DesignApp) -> Option<usize> {
     let st = app.session.active()?;

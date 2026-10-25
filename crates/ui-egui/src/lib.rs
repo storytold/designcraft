@@ -1405,8 +1405,9 @@ impl DesignApp {
         self.open_dropped_at(path, None)
     }
 
-    /// [`Self::open_dropped`] at the pointer: a graphic's top left lands where the file was
-    /// dropped on the canvas, text goes to a new frame on the document page there.
+    /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
+    /// it, elsewhere its top left lands where the file was dropped on the canvas; text goes to a
+    /// new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
@@ -1419,6 +1420,12 @@ impl DesignApp {
             return self.open_file("file.open", json!({"path": path}));
         }
         let mut params = json!({"path": path});
+        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // getting a frame of its own, so it never replaces the image in a graphic frame.
+        let frame = if designcraft_textimport::is_text_file(path) { None } else { canvas::drop_frame(self, pointer) };
+        if let (Some(frame), Some(o)) = (frame, params.as_object_mut()) {
+            o.insert("frame".into(), json!(frame.0));
+        }
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
             o.insert("spread".into(), serde_json::to_value(sr).unwrap_or(Value::Null));
             o.insert("x".into(), json!(at.x));
@@ -2655,6 +2662,41 @@ mod tests {
             assert!(doc.swatches.iter().any(|s| s.name == "Dropped Teal"), "{name}");
             assert!(doc.assets.is_empty(), "{name} isn't placed");
         }
+    }
+
+    #[test]
+    fn a_graphic_dropped_on_a_frame_fills_it() {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        let _ = app.view_mut();
+        let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
+        let st = app.session.active().unwrap();
+        let layout = designcraft_tools::CanvasLayout::new(&st.doc, false);
+        let slot = layout.slot(designcraft_doc::SpreadRef::Doc(0)).unwrap();
+        let xf = canvas::Xf::new(rect, view);
+        let inside = xf.to_screen(slot.to_canvas(designcraft_geom::Point::new(80.0, 80.0)));
+        let outside = xf.to_screen(slot.to_canvas(designcraft_geom::Point::new(300.0, 300.0)));
+        let path = std::env::temp_dir().join(format!("designcraft-ui-{}-dropframe.png", std::process::id()));
+        std::fs::write(&path, designcraft_render::Rendered { width: 10, height: 10, pixels: vec![200; 400] }.to_png()).unwrap();
+        let r = app.open_dropped_at(&path.to_string_lossy(), Some(inside));
+        let _ = std::fs::remove_file(&path);
+        let placed = r.unwrap();
+        assert_eq!(placed["id"], frame["id"], "the frame under the pointer is filled");
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+        assert!(matches!(d.item(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).unwrap().content, designcraft_doc::Content::Graphic(_)));
+        assert!(canvas::drop_frame(&app, Some(outside)).is_none(), "an empty spot on the page is no frame");
+        // Text dropped there gets a frame of its own and leaves the image in place.
+        let text = std::env::temp_dir().join(format!("designcraft-ui-{}-dropframe.txt", std::process::id()));
+        std::fs::write(&text, "Dropped words").unwrap();
+        let r = app.open_dropped_at(&text.to_string_lossy(), Some(inside));
+        let _ = std::fs::remove_file(&text);
+        r.unwrap();
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.spreads[0].items.len(), 2, "the text has a new frame");
+        assert!(matches!(d.item(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).unwrap().content, designcraft_doc::Content::Graphic(_)));
     }
 
     #[test]
