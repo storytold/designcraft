@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use designcraft_doc::{DataField, DataFieldKind, Delimiter, Fingerprint, SourceStatus};
+use designcraft_doc::{DataField, DataFieldKind, Delimiter, FilterRule, Fingerprint, SortKey, SourceFilter, SourceStatus};
 use designcraft_geom::Rect;
 use designcraft_textimport::{DATA_MERGE_MAX_COLS, DATA_MERGE_MAX_ROWS};
 use serde_json::Value;
@@ -91,14 +91,67 @@ pub fn table_from_grid(grid: Vec<Vec<String>>, delimiter: Delimiter) -> Result<T
 
 /// Inline `rows`: an array of objects. The first object's key order is the field list.
 pub fn table_from_objects(rows: &[Value]) -> Result<Table, String> {
-    if rows.is_empty() {
-        return Err("no records".into());
+    let mut ordered = Vec::with_capacity(rows.len());
+    for row in rows {
+        let obj = row.as_object().ok_or_else(|| "each row must be an object".to_string())?;
+        ordered.push(obj.iter().map(|(key, value)| (key.clone(), value.clone())).collect());
     }
+    table_from_pairs(ordered)
+}
+
+/// A top-level JSON array of objects. Key order is the order in the text, not sorted order.
+pub fn table_from_json(text: &str) -> Result<Table, String> {
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
+    let rows: Vec<JsonRow> = serde_json::from_str(text).map_err(|err| err.to_string())?;
+    table_from_pairs(rows.into_iter().map(|row| row.pairs).collect())
+}
+
+/// File bytes whose name is reported in a UTF-8 error. A leading byte-order mark is stripped.
+pub fn table_from_json_bytes(bytes: &[u8], name: &str) -> Result<Table, String> {
+    table_from_json(&decode_utf8(bytes, name)?)
+}
+
+/// One JSON object, with keys in the order they appear in the text.
+struct JsonRow {
+    pairs: Vec<(String, Value)>,
+}
+
+impl<'de> serde::Deserialize<'de> for JsonRow {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(JsonRowVisitor)
+    }
+}
+
+struct JsonRowVisitor;
+
+impl<'de> serde::de::Visitor<'de> for JsonRowVisitor {
+    type Value = JsonRow;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut pairs = Vec::new();
+        while let Some((key, value)) = map.next_entry::<String, Value>()? {
+            if let Some(slot) = pairs.iter_mut().find(|(existing, _)| existing == &key) {
+                slot.1 = value;
+            } else {
+                pairs.push((key, value));
+            }
+        }
+        Ok(JsonRow { pairs })
+    }
+}
+
+fn table_from_pairs(rows: Vec<Vec<(String, Value)>>) -> Result<Table, String> {
+    let Some(first) = rows.first() else {
+        return Err("no records".into());
+    };
     if rows.len() > DATA_MERGE_MAX_ROWS {
         return Err(format!("the file has more than {DATA_MERGE_MAX_ROWS} data rows"));
     }
-    let first = rows.first().and_then(Value::as_object).ok_or_else(|| "each row must be an object".to_string())?;
-    let keys: Vec<String> = first.keys().cloned().collect();
+    let keys: Vec<String> = first.iter().map(|(key, _)| key.clone()).collect();
     if keys.len() > DATA_MERGE_MAX_COLS {
         return Err(format!("the file has {} columns; the limit is {DATA_MERGE_MAX_COLS}", keys.len()));
     }
@@ -109,7 +162,7 @@ pub fn table_from_objects(rows: &[Value]) -> Result<Table, String> {
     let mut names = Vec::with_capacity(keys.len());
     for key in &keys {
         let (name, kind) = classify_header(key)?;
-        if names.iter().any(|n| n == &name) {
+        if names.iter().any(|existing| existing == &name) {
             return Err(format!("duplicate field name \"{name}\""));
         }
         names.push(name.clone());
@@ -118,17 +171,17 @@ pub fn table_from_objects(rows: &[Value]) -> Result<Table, String> {
     let mut out = Vec::new();
     let mut warnings = Vec::new();
     for (i, row) in rows.iter().enumerate() {
-        let obj = row.as_object().ok_or_else(|| "each row must be an object".to_string())?;
         let mut cells = Vec::with_capacity(keys.len());
         for key in &keys {
-            cells.push(cell_string(obj.get(key))?);
+            let value = row.iter().find(|(candidate, _)| candidate == key).map(|(_, value)| value);
+            cells.push(cell_string(value)?);
         }
-        for key in obj.keys() {
-            if !keys.iter().any(|k| k == key) {
+        for (key, _) in row {
+            if !keys.iter().any(|candidate| candidate == key) {
                 warnings.push(format!("Row {} has an extra field \"{key}\". It was ignored.", i + 1));
             }
         }
-        if cells.iter().all(|c| c.is_empty()) {
+        if cells.iter().all(|cell| cell.is_empty()) {
             continue;
         }
         out.push(cells);
@@ -136,7 +189,7 @@ pub fn table_from_objects(rows: &[Value]) -> Result<Table, String> {
     Ok(Table { fields, rows: out, warnings, delimiter: Delimiter::Comma })
 }
 
-fn cell_string(v: Option<&Value>) -> Result<String, String> {
+pub(super) fn cell_string(v: Option<&Value>) -> Result<String, String> {
     Ok(match v {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
@@ -214,6 +267,84 @@ fn record_index(n: u32, count: usize) -> Result<usize, String> {
         return Err(format!("record {n} is out of range"));
     }
     Ok((n as usize) - 1)
+}
+
+/// Indexes of rows that survive `filter`, in file order.
+pub fn filter_rows(fields: &[DataField], rows: &[Vec<String>], filter: &SourceFilter) -> Result<Vec<usize>, String> {
+    if filter.rules.is_empty() {
+        return Ok((0..rows.len()).collect());
+    }
+    if filter.match_mode != "all" && filter.match_mode != "any" {
+        return Err(format!("unknown match \"{}\"", filter.match_mode));
+    }
+    for rule in &filter.rules {
+        if !fields.iter().any(|field| field.name == rule.field) {
+            return Err(format!("unknown field \"{}\"", rule.field));
+        }
+        if !known_op(&rule.op) {
+            return Err(format!("unknown operator \"{}\"", rule.op));
+        }
+    }
+    let mut out = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let hits = filter.rules.iter().filter(|rule| rule_hits(fields, row, rule)).count();
+        let keep = if filter.match_mode == "any" { hits > 0 } else { hits == filter.rules.len() };
+        if keep {
+            out.push(i);
+        }
+    }
+    Ok(out)
+}
+
+fn known_op(op: &str) -> bool {
+    matches!(op, "equals" | "notEquals" | "contains" | "startsWith" | "empty" | "notEmpty")
+}
+
+fn rule_hits(fields: &[DataField], row: &[String], rule: &FilterRule) -> bool {
+    let cell = cell_at(fields, row, &rule.field);
+    match rule.op.as_str() {
+        "equals" => cell == rule.value,
+        "notEquals" => cell != rule.value,
+        "contains" => cell.contains(&rule.value),
+        "startsWith" => cell.starts_with(&rule.value),
+        "empty" => cell.is_empty(),
+        "notEmpty" => !cell.is_empty(),
+        _ => false,
+    }
+}
+
+/// Stable sort. Equal keys fall through to the next field, then to the original order.
+pub fn sort_rows(fields: &[DataField], rows: &[Vec<String>], indices: &mut [usize], keys: &[SortKey]) -> Result<(), String> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    for key in keys {
+        if !fields.iter().any(|field| field.name == key.field) {
+            return Err(format!("unknown field \"{}\"", key.field));
+        }
+        if key.direction != "asc" && key.direction != "desc" {
+            return Err(format!("unknown direction \"{}\"", key.direction));
+        }
+    }
+    indices.sort_by(|&a, &b| {
+        for key in keys {
+            let left = cell_at(fields, rows.get(a).map(Vec::as_slice).unwrap_or(&[]), &key.field);
+            let right = cell_at(fields, rows.get(b).map(Vec::as_slice).unwrap_or(&[]), &key.field);
+            let mut ord = left.cmp(right);
+            if key.direction == "desc" {
+                ord = ord.reverse();
+            }
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    Ok(())
+}
+
+fn cell_at<'a>(fields: &[DataField], row: &'a [String], name: &str) -> &'a str {
+    fields.iter().position(|field| field.name == name).and_then(|i| row.get(i)).map(String::as_str).unwrap_or("")
 }
 
 /// Slots for `count` copies of `block` on a page of the given size.

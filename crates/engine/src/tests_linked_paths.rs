@@ -74,6 +74,10 @@ fn links_to_other_computers_never_reach_the_file_system() {
         fingerprint: None,
         status: designcraft_doc::SourceStatus::Ok,
         warnings: vec![],
+        enabled: true,
+        filter: Default::default(),
+        sort: Vec::new(),
+        affixes: Vec::new(),
     });
     std::fs::write(&doc, designcraft_format::save(&d).unwrap()).unwrap();
     let mut opened = Session::new();

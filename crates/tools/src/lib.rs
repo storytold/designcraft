@@ -12,6 +12,7 @@
 mod anchors;
 pub mod catalog;
 mod corners;
+mod datagrid;
 mod frame;
 mod gradient;
 pub mod layout;
@@ -526,6 +527,7 @@ pub fn create(id: &str) -> Box<dyn Tool> {
         "gap" => Box::new(nav::GapTool::default()),
         "contentCollector" => Box::new(nav::ConveyorTool::new(false)),
         "contentPlacer" => Box::new(nav::ConveyorTool::new(true)),
+        "dataGrid" => Box::new(datagrid::DataGridTool::default()),
         other => Box::new(NoopTool(tool_info(other).map(|t| t.id).unwrap_or("selection"))),
     }
 }

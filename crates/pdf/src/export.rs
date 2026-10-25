@@ -65,7 +65,8 @@ pub(crate) fn exported_items(doc: &Document, si: usize) -> Vec<(Affine, &Item)> 
         if !item_exported(it) {
             continue;
         }
-        stack.extend(it.shown_children().map(|c| (xf * it.xf, &**c)));
+        // child_space is xf, except a data grid, whose children sit in the origin cell.
+        stack.extend(it.shown_children().map(|c| (xf * it.child_space(), &**c)));
         out.push((xf, it));
     }
     out
@@ -954,9 +955,11 @@ impl Exporter<'_> {
             return;
         }
         if !it.children().is_empty() {
+            // Same as xf unless this is a data grid (children are stored in the origin cell).
+            let into = parent * it.child_space();
             let pushes = Self::push_group(s, it.opacity, it.blend) + Self::push_isolation(s, it);
             for c in it.shown_children() {
-                self.item(s, c, xf, page);
+                self.item(s, c, into, page);
             }
             for _ in 0..pushes {
                 s.pop();

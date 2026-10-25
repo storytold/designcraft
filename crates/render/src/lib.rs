@@ -565,7 +565,9 @@ impl Renderer {
         // clipped to the frame, stroke), so its effects apply to all of it.
         if !it.children().is_empty() && !it.has_nested_items() {
             // Groups: children carry their own transforms relative to the group.
+            // A data grid stores its prototype relative to the origin cell.
             // Isolate Blending / Knockout: the group is its own layer (blend modes stop at it).
+            let into = parent * it.child_space();
             let layered = it.opacity < 0.999 || it.blend != DcBlend::Normal || it.isolate || it.knockout;
             if layered {
                 ctx.set_transform(Affine::IDENTITY);
@@ -584,17 +586,20 @@ impl Renderer {
                     if !c.hidden {
                         ctx.set_transform(Affine::IDENTITY);
                         ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
-                        ctx.set_transform(f.view * xf * c.xf);
+                        ctx.set_transform(f.view * into * c.xf);
                         ctx.set_paint(peniko::Color::BLACK);
                         ctx.fill_path(&c.path.to_bezpath());
                         ctx.pop_layer();
                     }
-                    self.draw_item(ctx, f, c, xf, page);
+                    self.draw_item(ctx, f, c, into, page);
                 }
             } else {
                 for c in it.shown_children() {
-                    self.draw_item(ctx, f, c, xf, page);
+                    self.draw_item(ctx, f, c, into, page);
                 }
+            }
+            if it.data_grid.is_some() {
+                self.draw_grid_lines(ctx, f, it, xf, true);
             }
             if feather {
                 fx::gradient_feather_mask(ctx, f, it, xf);
@@ -628,9 +633,34 @@ impl Renderer {
         } else {
             self.draw_body(ctx, f, it, &bp, xf, page);
         }
+        if it.data_grid.is_some() {
+            self.draw_grid_lines(ctx, f, it, xf, false);
+        }
         if layered {
             ctx.pop_layer();
         }
+    }
+
+    /// Cell lines for a data grid. `frame` also strokes the rectangle (a grid with children
+    /// does not go through the normal stroke path).
+    fn draw_grid_lines(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, xf: Affine, frame: bool) {
+        let Some(grid) = it.data_grid.as_ref() else { return };
+        if it.stroke.is_none() {
+            return;
+        }
+        if frame {
+            let bp = if it.corners.is_none() { it.path.to_bezpath() } else { corners::apply(&it.path, &it.corners) };
+            self.draw_stroke(ctx, f, it, &bp, xf);
+        }
+        let dividers = grid.divider_path(it.inner_bounds());
+        if dividers.is_empty() {
+            return;
+        }
+        let Some(c) = f.doc.resolve_color(&it.stroke.swatch, it.stroke.tint) else { return };
+        ctx.set_transform(f.view * xf);
+        ctx.set_paint(color_of(&c, 1.0));
+        ctx.set_stroke(kurbo::Stroke::new(it.stroke.weight.max(0.25)));
+        ctx.stroke_path(&dividers);
     }
 
     /// The composed story for a frame (memoised for the current render: the cache lookup
@@ -1731,6 +1761,45 @@ mod tests {
         // Rounded corner centred at (120, 120): ink between radii 10 and 20, paper outside the arc
         // and inside the band.
         assert!(paper(103, 103) && ink(108, 108) && paper(114, 114));
+    }
+
+    /// A data grid paints its cell lines, including when it has prototype children.
+    #[test]
+    fn grid_cell_lines_are_painted() {
+        let mut d = Document::new(&NewDocument { facing_pages: false, ..NewDocument::default() });
+        let lid = d.default_layer();
+        let rect = Rect::new(36.0, 36.0, 236.0, 236.0);
+        let mut grid =
+            Item::new(designcraft_doc::ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+        grid.stroke = designcraft_doc::Stroke::default();
+        grid.content = designcraft_doc::Content::Group { items: Vec::new() };
+        grid.data_grid = Some(designcraft_doc::DataGrid { rows: 2, columns: 2, ..designcraft_doc::DataGrid::default() });
+        d.insert_item(SpreadRef::Doc(0), grid, None).unwrap();
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let dark = |img: &Rendered, x, y| img.pixel(x, y)[0] < 180;
+        assert!(dark(&img, 136, 100), "vertical cell line: {:?}", img.pixel(136, 100));
+        assert!(dark(&img, 100, 136), "horizontal cell line: {:?}", img.pixel(100, 136));
+        assert!(!dark(&img, 80, 80), "cell interior stays paper: {:?}", img.pixel(80, 80));
+
+        let mut d = Document::new(&NewDocument { facing_pages: false, ..NewDocument::default() });
+        let lid = d.default_layer();
+        let mut grid =
+            Item::new(designcraft_doc::ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+        grid.stroke = designcraft_doc::Stroke::default();
+        let child = Item::new(
+            designcraft_doc::ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(4.0, 4.0, 24.0, 24.0)),
+        );
+        grid.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(child)] };
+        grid.data_grid = Some(designcraft_doc::DataGrid { rows: 2, columns: 2, ..designcraft_doc::DataGrid::default() });
+        d.insert_item(SpreadRef::Doc(0), grid, None).unwrap();
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        assert!(dark(&img, 136, 100), "cell line stays visible over a prototype: {:?}", img.pixel(136, 100));
     }
 
     #[test]

@@ -46,8 +46,8 @@ pub use anchored::{AnchorPosition, AnchoredObject, OBJECT_MARK};
 pub use assets::{find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
 pub use attrs::*;
 pub use datamerge::{
-    DataField, DataFieldKind, DataMerge, DataSource, Delimiter, Fingerprint, MergeOptions, Placeholder, PlaceholderAnchor, PlaceholderRole,
-    SourceStatus,
+    AffixRule, DataField, DataFieldKind, DataGrid, DataMerge, DataSource, Delimiter, FilterRule, Fingerprint, JoinLink, MERGE_INDEX_FIELD,
+    MergeOptions, Placeholder, PlaceholderAnchor, PlaceholderRole, SOURCE_FILENAME_FIELD, SortKey, SourceFilter, SourceStatus, is_virtual_field,
 };
 pub use designcraft_color as color;
 pub use designcraft_geom as geom;

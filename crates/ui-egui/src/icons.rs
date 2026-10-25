@@ -139,6 +139,11 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(15.0, 6.0), (5.0, 14.0)]);
         }
         "tool-rect" => pen.rect(3.0, 4.0, 17.0, 16.0),
+        "tool-data-grid" => {
+            pen.rect(3.0, 3.0, 17.0, 17.0);
+            pen.line(&[(10.0, 3.0), (10.0, 17.0)]);
+            pen.line(&[(3.0, 10.0), (17.0, 10.0)]);
+        }
         "tool-ellipse" => pen.ellipse(10.0, 10.0, 7.0, 6.0),
         "tool-polygon" => pen.closed(&[(10.0, 3.0), (17.0, 8.0), (14.5, 16.5), (5.5, 16.5), (3.0, 8.0)]),
         "tool-scissors" => {

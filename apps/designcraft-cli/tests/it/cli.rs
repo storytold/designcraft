@@ -1,6 +1,6 @@
 //! The agent-facing command line: scripts with references, describe, filtered command lists.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
 fn cli() -> Command {
@@ -322,18 +322,30 @@ fn raster_export_preserves_an_existing_reader_and_private_symlink_target() {
 /// cleanly, its stderr, and the stdout lines after `initialize`, one per call.
 fn mcp_session(args: &[&str], calls: &[(&str, serde_json::Value)]) -> (bool, String, Vec<serde_json::Value>) {
     let mut child = cli().arg("mcp").args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    {
-        let stdin = child.stdin.as_mut().unwrap();
-        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18"}}}}"#).unwrap();
-        for (i, (name, arguments)) in calls.iter().enumerate() {
-            let call = serde_json::json!({"jsonrpc": "2.0", "id": i + 2, "method": "tools/call", "params": {"name": name, "arguments": arguments}});
-            writeln!(stdin, "{call}").unwrap();
-        }
+    // Read both pipes while the server runs. Waiting first deadlocks once a reply fills the pipe,
+    // because the server blocks in write and this test would not read until the process exited.
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        stdout.read_to_end(&mut buf).map(|_n| buf)
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).map(|_n| buf)
+    });
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18"}}}}"#).unwrap();
+    for (i, (name, arguments)) in calls.iter().enumerate() {
+        let call = serde_json::json!({"jsonrpc": "2.0", "id": i + 2, "method": "tools/call", "params": {"name": name, "arguments": arguments}});
+        writeln!(stdin, "{call}").unwrap();
     }
-    let out = child.wait_with_output().unwrap();
-    let stdout = String::from_utf8(out.stdout).unwrap();
+    drop(stdin);
+    let status = child.wait().unwrap();
+    let stdout = String::from_utf8(stdout_thread.join().unwrap().unwrap()).unwrap();
+    let stderr = String::from_utf8(stderr_thread.join().unwrap().unwrap()).unwrap();
     let replies = stdout.lines().skip(1).map(|l| serde_json::from_str(l).unwrap()).collect();
-    (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned(), replies)
+    (status.success(), stderr, replies)
 }
 
 fn text(reply: &serde_json::Value) -> &str {

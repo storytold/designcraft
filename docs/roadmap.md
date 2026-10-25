@@ -68,7 +68,7 @@ set exists; depth gaps are in gaps.md.
 | M8 | Tables | ✅ core (table/cell styles, rotation); diagonal lines, anchored objects in cells (#163) |
 | M9 | Performance (MT composition, tiles) | in progress: parallel compose 6.7×, damage regions; incremental composition next |
 | M10 | Find/Change, spelling, Preflight | ✅ (spelling English only) |
-| M11 | Layout power features (liquid/alternate layouts, data merge) | present, shallow; Flex Layout (new in InDesign 2026) ✗ |
+| M11 | Layout power features (liquid/alternate layouts, data merge) | data merge: several sources, filters, grids, joins; liquid and alternate layouts still shallow; Flex Layout (new in InDesign 2026) ✗ |
 | M12 | Interactive & digital (EPUB, HTML, interactive PDF) | present; HTML basic (#314), fixed-layout EPUB as images |
 | M13 | Automation (scripts, batch) | ✅ own command scripts, CLI, MCP; ExtendScript/UXP compatibility ✗ |
 | M14 | 1.0 polish & packaging | packaging ✅ (macOS, Windows x64/ARM64, Linux deb/AppImage/Flatpak, FreeBSD, web); polish not started |

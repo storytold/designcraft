@@ -1505,6 +1505,9 @@ pub struct Item {
     /// Flex Layout: this frame lays out the objects nested in it (see [`crate::flex`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flex: Option<crate::flex::FlexLayout>,
+    /// Data merge grid. Children are the prototype cell. Absent on ordinary items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_grid: Option<crate::datamerge::DataGrid>,
 }
 
 fn identity() -> Affine {
@@ -1551,6 +1554,7 @@ impl Item {
             isolate: false,
             knockout: false,
             flex: None,
+            data_grid: None,
         }
     }
 
@@ -1643,8 +1647,21 @@ impl Item {
     }
 
     /// A frame with items pasted into it (Edit › Paste Into): drawn clipped to its path.
+    /// A data-merge grid is not clipped. Its children are the prototype cell.
     pub fn has_nested_items(&self) -> bool {
-        self.shape != Shape::Group && matches!(&self.content, Content::Group { items } if !items.is_empty())
+        self.data_grid.is_none() && self.shape != Shape::Group && matches!(&self.content, Content::Group { items } if !items.is_empty())
+    }
+
+    /// Transform from a child's space into the same space as [`Self::xf`].
+    /// Grid children are stored relative to the origin cell, so this includes that shift.
+    /// Ordinary items return `xf`.
+    pub fn child_space(&self) -> Affine {
+        if let Some(grid) = &self.data_grid
+            && let Some(origin) = grid.origin_point(self.inner_bounds())
+        {
+            return self.xf * Affine::translate((origin.x, origin.y));
+        }
+        self.xf
     }
 
     pub fn bounds(&self) -> Rect {
