@@ -111,6 +111,11 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         }
         z.start_file("document.json", deflate).map_err(io)?;
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
+        // What is written must load back: serde_json writes a NaN or an infinity as `null`, which
+        // a coordinate can't be read from, so a document holding one would be a file the app can
+        // no longer open. The save is refused instead of writing that file.
+        serde_json::from_slice::<Document>(&json)
+            .map_err(|e| FormatError::Io(format!("the document has a value that can't be saved: {e}")))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
         for (id, a) in &doc.assets {
             if a.data.is_empty() {
@@ -1138,5 +1143,20 @@ mod tests {
         }
         let Err(err) = load(&z.finish().unwrap().into_inner()) else { panic!("an archive with 100 001 entries loaded") };
         assert!(err.to_string().contains("entries"), "{err}");
+    }
+
+    /// A coordinate the JSON can't hold (an infinity is written as `null`) must not reach a file:
+    /// that file would no longer open. The save is refused instead.
+    #[test]
+    fn a_document_with_a_non_finite_coordinate_is_not_saved() {
+        use designcraft_doc::geom::shapes;
+        use designcraft_doc::{Item, ItemId, Shape};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let id = ItemId(d.alloc());
+        let path = shapes::rectangle(Rect::new(0.0, 0.0, f64::INFINITY, 10.0));
+        d.insert_item(SpreadRef::Doc(0), Item::new(id, lid, Shape::Rectangle, path), None).unwrap();
+        let Err(err) = save(&d) else { panic!("a document with an infinite coordinate was saved") };
+        assert!(err.to_string().contains("can't be saved"), "{err}");
     }
 }
