@@ -1,5 +1,7 @@
 # Localization parity
 
+2026-10-27: Added a Taiwan Traditional Chinese draft (`zh-TW`), with 2271 editable entries, Preferences selection and Hant font ordering. Native review and remaining captions are tracked in `docs/translating-zh-TW.md`; no release is implied.
+
 > **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-23 · **Change:** minor (missing translations are reported, never a failure; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
