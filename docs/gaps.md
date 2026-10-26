@@ -157,7 +157,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 13. Hyphenation and spelling languages (T, L)
 - **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian, Greek, German (2006 reform), French, Italian and Serbian (Cyrillic and Latin); spelling for
-  every language but English. InDesign ships dictionaries for ~40 languages.
+  every language but English without an installed Hunspell dictionary. InDesign ships dictionaries for ~40 languages.
 - **Estimate:** 30–60 h (permissively licensed patterns exist for most; spelling word lists need
   licence review). **Doc:** [typography-parity.md](typography-parity.md)
 

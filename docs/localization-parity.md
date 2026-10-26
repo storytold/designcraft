@@ -68,7 +68,7 @@ eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, 
 ## Document languages
 
 InDesign 2026 hyphenates and spell-checks ~40 languages (Hunspell and Duden dictionaries).
-DesignCraft hyphenates **English, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese, Serbian (Cyrillic and Latin) and Spanish**, plus any language whose LibreOffice `hyph_*.dic` pattern file is installed, and spell-checks **English** only. Text language
+DesignCraft hyphenates **English, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese, Serbian (Cyrillic and Latin) and Spanish**, plus any language whose LibreOffice `hyph_*.dic` pattern file is installed, and spell-checks **English**, plus any language whose Hunspell dictionary is installed. Text language
 can be set per paragraph and character (Properties, Character panel) and drives quotes and
 locale shaping. See [typography-parity.md](typography-parity.md).
 German hyphenation accepts `German: 2006 Reform`, `German: Swiss 2006 Reform` and `de` locale

@@ -23,6 +23,11 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
   paragraphs and table fragments above the footnote area. No readiness percentage change.
+- **2026-10-26** · Spelling in other languages: Hunspell dictionaries (`<locale>.aff` + `.dic`) in
+  the settings folder's `dictionaries/` (or a locale subfolder) spell-check text in their language,
+  Check Spelling and Dynamic Spelling alike, read through spellbook on first use; with Serbian's
+  Cyrillic and Latin dictionaries each word goes to the one in its script. No readiness
+  percentage change.
 - **2026-10-26** · Serbian hyphenation: Character › Language offers Serbian: Cyrillic and Serbian:
   Latin, both hyphenated by the hyph-sh-cyrl patterns (Latin text through its Cyrillic spelling).
   LibreOffice `hyph_<locale>.dic` pattern files in the settings folder's `dictionaries/` (or a

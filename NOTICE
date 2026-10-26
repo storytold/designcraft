@@ -137,6 +137,9 @@ list (author, source, license) is in ASSETS.md.
 
 Rust dependencies (vello_cpu, kurbo, skrifa, harfrust, image, egui, eframe, …) are permissively
 licensed (MIT/Apache-2.0/BSD/ISC/Zlib), fetched through crates.io or the pinned source below.
+The spellbook crate (Hunspell-compatible spell checking for installed dictionaries,
+https://github.com/helix-editor/spellbook) is under the Mozilla Public License 2.0, whose
+source-file copyleft keeps it apart from DesignCraft's own licence; its source is on crates.io.
 
 No Adobe icons, images or artwork are included.
 
