@@ -236,29 +236,15 @@ impl Exporter<'_> {
 
     /// One line's glyphs as tagged runs; a glyph that is turned or slanted gets a transform of its own.
     fn line_glyphs(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, l: &designcraft_compose::Line, story: &str) {
-        let gs = &l.glyphs;
-        let mut i = 0;
-        while i < gs.len() {
-            let g = &gs[i];
-            if !g.visible || g.sx <= 0.0 || g.sy <= 0.0 {
-                i += 1;
-                continue;
+        for (run, m) in line_runs(cs, ft, l) {
+            match m {
+                Some(m) => {
+                    s.push_transform(&crate::export::tf(m));
+                    self.tagged_run(s, cs, run, l.baseline, story);
+                    s.pop();
+                }
+                None => self.tagged_run(s, cs, run, l.baseline, story),
             }
-            // Vertical type: an upright glyph turns back a quarter about its em box centre.
-            // Shatai slants each glyph about its own em box centre first.
-            let turn = if ft.vertical { g.vertical_xf(l.baseline) } else { None };
-            let shatai = cs.styles.get(g.style as usize).and_then(|st| st.shatai_xf(g, l.baseline));
-            if turn.is_some() || shatai.is_some() {
-                let m = turn.unwrap_or(Affine::IDENTITY) * shatai.unwrap_or(Affine::IDENTITY);
-                s.push_transform(&crate::export::tf(m));
-                self.tagged_run(s, cs, &gs[i..i + 1], l.baseline, story);
-                s.pop();
-                i += 1;
-                continue;
-            }
-            let j = run_end(ft, gs, i);
-            self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
-            i = j;
         }
     }
 
@@ -483,11 +469,8 @@ impl Exporter<'_> {
         let g0 = &glyphs[0];
         let st = &cs.styles[g0.style as usize];
         let face = g0.face;
-        let size = g0.sy * face.upem;
         let hs = g0.sx / g0.sy;
-        let tan = if st.skew != 0.0 { st.skew.to_radians().tan() } else { 0.0 };
-        let skew = if st.skew != 0.0 { Affine::new([1.0, 0.0, -tan, 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
-        let origin = Affine::translate((g0.x, baseline + g0.y)) * skew * Affine::scale_non_uniform(hs, 1.0);
+        let (size, tan, origin) = run_origin(cs, g0, baseline);
         // Outside a frame (no text area), a gradient spans the run.
         let end = glyphs.last().map_or(g0.x, |g| g.x + g.adv);
         let run_area = Rect::new(g0.x, baseline - size, end.max(g0.x + 1.0), baseline + size * 0.25);
@@ -639,6 +622,79 @@ impl Exporter<'_> {
         s.set_fill(Some(solid_fill(color, 1.0)));
         s.draw_glyphs(Point::from_xy(at.0 as f32, at.1 as f32), &glyphs, font, text, size as f32, false);
         s.set_fill(None);
+    }
+}
+
+/// A run's font size, skew (the tangent of its angle) and origin (text space ← run space).
+fn run_origin(cs: &ComposedStory, g0: &PlacedGlyph, baseline: f64) -> (f64, f64, Affine) {
+    let skew = cs.styles.get(g0.style as usize).map_or(0.0, |st| st.skew);
+    let tan = if skew != 0.0 { skew.to_radians().tan() } else { 0.0 };
+    let shear = if skew != 0.0 { Affine::new([1.0, 0.0, -tan, 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
+    let origin = Affine::translate((g0.x, baseline + g0.y)) * shear * Affine::scale_non_uniform(g0.sx / g0.sy, 1.0);
+    (g0.sy * g0.face.upem, tan, origin)
+}
+
+/// A line's visible glyphs in the runs they are drawn in, each with the transform a single glyph
+/// is drawn under: vertical type turns an upright glyph back a quarter about its em box centre,
+/// and shatai slants each glyph about its own em box centre first.
+fn line_runs<'a>(cs: &ComposedStory, ft: &FrameText, l: &'a designcraft_compose::Line) -> Vec<(&'a [PlacedGlyph], Option<Affine>)> {
+    let mut runs = Vec::new();
+    let gs = &l.glyphs;
+    let mut i = 0;
+    while let Some(g) = gs.get(i) {
+        if !g.visible || g.sx <= 0.0 || g.sy <= 0.0 {
+            i += 1;
+            continue;
+        }
+        let turn = if ft.vertical { g.vertical_xf(l.baseline) } else { None };
+        let shatai = cs.styles.get(g.style as usize).and_then(|st| st.shatai_xf(g, l.baseline));
+        let (j, m) = if turn.is_some() || shatai.is_some() {
+            (i + 1, Some(turn.unwrap_or(Affine::IDENTITY) * shatai.unwrap_or(Affine::IDENTITY)))
+        } else {
+            (run_end(ft, gs, i), None)
+        };
+        let Some(run) = gs.get(i..j) else { break };
+        runs.push((run, m));
+        i = j;
+    }
+    runs
+}
+
+/// How deep notes and table cells nest in a silhouette (cells in notes in cells…).
+const MAX_SILHOUETTE_DEPTH: usize = 8;
+
+/// The outlines of a frame's visible glyphs in text space, its notes' and table cells' included,
+/// placed, turned and slanted as they are drawn: the silhouette a drop shadow on a frame without
+/// a fill casts. Rules, shading and anchored objects (drawn as items of their own) are not part
+/// of it.
+pub(crate) fn glyph_silhouette(cs: &ComposedStory, ft: &FrameText) -> BezPath {
+    let mut bp = BezPath::new();
+    add_silhouette(&mut bp, cs, ft, Affine::IDENTITY, 0);
+    bp
+}
+
+fn add_silhouette(bp: &mut BezPath, cs: &ComposedStory, ft: &FrameText, xf: Affine, depth: usize) {
+    for l in &ft.lines {
+        for (run, m) in line_runs(cs, ft, l) {
+            let Some(g0) = run.first() else { continue };
+            let (size, tan, origin) = run_origin(cs, g0, l.baseline);
+            let mut o = glyph_outlines(run, size, tan);
+            o.apply_affine(xf * m.unwrap_or(Affine::IDENTITY) * origin);
+            bp.extend(o.iter());
+        }
+    }
+    if depth >= MAX_SILHOUETTE_DEPTH {
+        return;
+    }
+    for n in &ft.notes {
+        if let Some(nft) = n.text.frames.first() {
+            add_silhouette(bp, &n.text, nft, xf * Affine::translate(n.origin.to_vec2()), depth + 1);
+        }
+    }
+    for cell in ft.tables.iter().flat_map(|t| &t.cells) {
+        if let Some(cft) = cell.text.frames.first() {
+            add_silhouette(bp, &cell.text, cft, xf * Affine::translate(cell.origin.to_vec2()), depth + 1);
+        }
     }
 }
 

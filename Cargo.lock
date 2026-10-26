@@ -1396,6 +1396,7 @@ dependencies = [
  "designcraft-pdf",
  "designcraft-pptx",
  "designcraft-render",
+ "designcraft-sla",
  "designcraft-textimport",
  "designcraft-tools",
  "hayro-cmap",
@@ -1568,6 +1569,20 @@ dependencies = [
  "thiserror 2.0.21",
  "vello_common 0.2.0",
  "vello_cpu 0.2.0",
+]
+
+[[package]]
+name = "designcraft-sla"
+version = "0.13.0"
+dependencies = [
+ "designcraft-color",
+ "designcraft-doc",
+ "designcraft-geom",
+ "designcraft-images",
+ "flate2",
+ "image",
+ "quick-xml 0.41.0",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

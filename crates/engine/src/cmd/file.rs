@@ -39,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — a DesignCraft or IDML file (recognised by its content, so the extension may be missing), or an InDesign .indd/.indt (recognised by its signature or extension, converted to IDML; its conversion warnings join `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, GREP styles whose pattern can't compile, Based on Parent links cleared and, for IDML and InDesign files, package parts missing}",
+            "{path} — a DesignCraft, IDML or Scribus (.sla) file (recognised by its content, so the extension may be missing), or an InDesign .indd/.indt (recognised by its signature or extension, converted to IDML; its conversion warnings join `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, GREP styles whose pattern can't compile, Based on Parent links cleared and, for IDML and InDesign files, package parts missing}",
             always, file_open),
         cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package or an InDesign .indd/.indt → {index, warnings}", always, file_open_bytes),
         cmd!(noundo "file.openRecent", "Open Recent File", [], None,
@@ -487,8 +487,11 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         if designcraft_idml::is_idml(&bytes) || (!native && (super::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return super::interchange::open_idml(s, p);
         }
+        if !native && (super::scribus::is_sla(&bytes) || ext == designcraft_sla::EXTENSION) {
+            return super::scribus::open_sla(s, p);
+        }
         if !native && ext != designcraft_format::EXTENSION {
-            return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
+            return Err(bad("file.open", format!("{path}: not a DesignCraft, IDML or Scribus file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
         super::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
@@ -554,6 +557,9 @@ fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     // signature (or their name).
     if designcraft_idml::is_idml(&b) || super::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return super::interchange::open_idml(s, p);
+    }
+    if super::scribus::is_sla(&b) {
+        return super::scribus::open_sla(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;
     super::datamerge::resolve_sources_on_open(&mut d, None);
@@ -2022,7 +2028,7 @@ mod extension_tests {
         std::fs::write(&notes, b"plain text").unwrap();
         assert!(!is_document(b"plain text"));
         let e = t.execute("file.open", &json!({"path": notes.to_string_lossy()})).unwrap_err();
-        assert!(e.to_string().contains("not a DesignCraft or IDML file"), "{e}");
+        assert!(e.to_string().contains("not a DesignCraft, IDML or Scribus file"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

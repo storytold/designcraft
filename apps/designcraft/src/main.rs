@@ -278,10 +278,11 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "DesignCraft, IDML or InDesign", extensions: &["designcraft", "idml", "indd", "indt"] },
+            OpenFilter { name: "DesignCraft, IDML, InDesign or Scribus", extensions: &["designcraft", "idml", "indd", "indt", "sla"] },
             OpenFilter { name: "DesignCraft", extensions: &["designcraft"] },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
             OpenFilter { name: "InDesign document or template (INDD, INDT)", extensions: &["indd", "indt"] },
+            OpenFilter { name: "Scribus document (SLA)", extensions: &["sla"] },
             // Files saved without an extension; `file.open` tells the formats apart by content.
             OpenFilter { name: "All files", extensions: &[ALL_FILES] },
         ],
@@ -668,7 +669,7 @@ mod tests {
         assert!(place.len() > 1, "the place dialog keeps a filter for each kind of file");
         assert!(place.iter().any(|filter| filter.extensions.contains(&"png")));
         let documents = super::open_filters("");
-        for ext in ["designcraft", "idml", "indd", "indt"] {
+        for ext in ["designcraft", "idml", "indd", "indt", "sla"] {
             assert!(documents.first().is_some_and(|filter| filter.extensions.contains(&ext)), "{ext} is missing from the first Open filter");
         }
         assert!(documents.last().is_some_and(|filter| filter.extensions == [super::ALL_FILES]), "files without an extension can be picked");

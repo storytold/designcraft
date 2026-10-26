@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** minor (Scribus text shadows; Scribus .sla import; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -30,6 +30,7 @@ score below).
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
 | PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
+| Scribus document | `.sla` | — | ✓ 1.5–1.7 (`designcraft-sla`; `file.open` recognises it by content, `file.openScribus`): pages and spreads, master pages, layers, colours, paragraph/character styles, threaded rich text, text shadows (a hard drop shadow on the frame), linked/embedded images, shapes, paths, groups | ✗ | Synthetic fixtures in `crates/sla/src/tests.rs` (both attribute schemas, hostile input). 254 local real files (1.5.8–1.7.2) import without error; pages compared by eye with the PDFs Scribus exported from them. Not imported (warned): tables, text on a path (plain frame), inline objects, gradients, image effects, shadows on part of a story | <1% |
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and
@@ -122,6 +123,8 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Scribus text shadows import as a hard drop shadow on the frame (its fill and stroke move to a rectangle behind it); PDF export draws hard drop shadows as vectors, and a text frame without a fill casts the shadow of its text there too. Score unchanged |
+| 2026-10-20 | minor | Scribus `.sla` (1.5–1.7) import: pages, masters, layers, colours, styles, threaded text, images, shapes and groups; tables and text on a path are reported, not imported. Weight <1%, score unchanged |
 | 2026-10-19 | minor | PDF/X-4 export and `validate-pdf` report visible unembedded fonts by name and page, including placed forms; invisible text is exempt, operation- or depth-limited checks report incompleteness, and automatic font repair remains missing (#909) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |

@@ -572,10 +572,17 @@ fn threaded(d: &designcraft_doc::Document, it: &designcraft_doc::Item) -> bool {
     it.text_frame().and_then(|t| d.story(t.story)).is_some_and(|st| st.frames.len() > 1)
 }
 
-/// Soft effects other than the gradient feather (which PDF export draws itself).
+/// Soft effects other than the gradient feather and hard drop shadows (which PDF export draws
+/// itself).
 fn raster_effects(it: &designcraft_doc::Item) -> bool {
     let e = &it.effects;
-    e.drop_shadow.on
+    // A drop shadow without blur is an offset copy of the shape, or of the text of a frame
+    // without a fill; an image's or a group's silhouette is what it paints, so those stay images.
+    let hard_shadow = e.drop_shadow.size <= 0.0
+        && !matches!(it.content, designcraft_doc::Content::Graphic(_))
+        && !it.has_nested_items()
+        && it.children().is_empty();
+    (e.drop_shadow.on && !hard_shadow)
         || e.feather > 0.0
         || e.inner_shadow.on
         || e.outer_glow.on
@@ -1552,6 +1559,27 @@ mod text_tests {
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
         let text = String::from_utf8_lossy(&super::super::file::base64_decode(r["base64"].as_str().unwrap())).to_string();
         assert_eq!(text.matches("/S/Transparency/CS/DeviceCMYK").count(), 1, "only the page with transparency");
+    }
+
+    #[test]
+    fn hard_drop_shadows_export_as_vectors() {
+        // A shadowed title (as Scribus' text shadow imports) stays text in the PDF; a blurred
+        // shadow, or a hard one on a picture (whose silhouette is its pixels), is an image.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let t = s.execute("frame.create", &json!({"rect": [36, 36, 300, 100], "content": "text", "text": "Spine", "caret": false})).unwrap()["id"]
+            .clone();
+        s.execute("object.dropShadow", &json!({"ids": [t], "on": true, "size": 0, "distance": 1.5})).unwrap();
+        let (_, n) = super::rasterize_effects(&s.doc().unwrap().doc, &s.cache, &Default::default());
+        assert_eq!(n, 0);
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![90; 4 * 4 * 4] }.to_png();
+        let g = s.execute("frame.create", &json!({"rect": [300, 400, 400, 500]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": g})).unwrap();
+        s.execute("object.dropShadow", &json!({"ids": [g], "on": true, "size": 0})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [100, 400, 200, 500]})).unwrap()["id"].clone();
+        s.execute("object.dropShadow", &json!({"ids": [b], "on": true, "size": 4})).unwrap();
+        let (_, n) = super::rasterize_effects(&s.doc().unwrap().doc, &s.cache, &Default::default());
+        assert_eq!(n, 2);
     }
 
     #[test]

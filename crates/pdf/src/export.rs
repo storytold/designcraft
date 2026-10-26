@@ -1039,7 +1039,9 @@ impl Exporter<'_> {
         if frame_art {
             s.start_tagged(ContentTag::Artifact(Artifact::new(ArtifactType::Other, None)));
         }
-        // Drop shadow: its coverage mask when one was rendered, else a simple offset silhouette.
+        // Drop shadow: its coverage mask when one was rendered, else a simple offset silhouette
+        // (like the renderer): the shape when the object paints its area, else the text and the
+        // stroke.
         if ds.on
             && let Some(mask) = self.opts.shadows.get(&it.id)
             && let Some(c) = self.swatch_color(&ds.color, 1.0)
@@ -1055,8 +1057,26 @@ impl Exporter<'_> {
             let off = Vec2::new(-a.cos() * ds.distance, a.sin() * ds.distance);
             s.push_transform(&tf(Affine::translate(off) * xf));
             s.set_stroke(None);
-            s.set_fill(Some(solid_fill(c, ds.opacity)));
-            s.draw_path(p);
+            s.set_fill(Some(solid_fill(c.clone(), ds.opacity)));
+            match &it.content {
+                Content::Text(tfr) if it.fill.is_none() => {
+                    if let Some(text) = to_path(&self.text_silhouette(it, tfr, &bp, page)) {
+                        s.draw_path(&text);
+                    }
+                    s.set_fill(None);
+                    if !it.stroke.is_none() {
+                        s.set_stroke(Some(krilla::paint::Stroke {
+                            paint: c.into(),
+                            width: it.stroke.weight as f32,
+                            opacity: norm(ds.opacity),
+                            ..Default::default()
+                        }));
+                        s.draw_path(p);
+                        s.set_stroke(None);
+                    }
+                }
+                _ => s.draw_path(p),
+            }
             s.set_fill(None);
             s.pop();
         }
@@ -1146,6 +1166,22 @@ impl Exporter<'_> {
                 self.frame_objects(s, ft, xf * doc.text_local(it), page);
             }
         }
+    }
+
+    /// A text frame's glyphs as outlines in its inner space (`bp` is its path).
+    fn text_silhouette(&mut self, it: &Item, tfr: &designcraft_doc::TextFrame, bp: &BezPath, page: Option<usize>) -> BezPath {
+        let cs = self.cache.get(self.doc, tfr.story, page);
+        let Some(ft) = cs.frame(it.id) else { return BezPath::new() };
+        let mut out = BezPath::new();
+        if let Some(pt) = &tfr.options.path {
+            for (_, gp) in designcraft_compose::path_glyphs(&cs, ft, bp, pt) {
+                out.extend(gp.iter());
+            }
+        } else {
+            out = crate::text::glyph_silhouette(&cs, ft);
+            out.apply_affine(self.doc.text_local(it));
+        }
+        out
     }
 
     /// Draw embedded page items after restoring the surface, retaining spread-space
