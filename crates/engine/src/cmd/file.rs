@@ -234,7 +234,7 @@ fn new_document_settings(s: &Session, p: &Value) -> Result<NewDocument> {
 /// A document as `file.new` makes it. Its Basic Paragraph doesn't hyphenate capitalized words, a
 /// paragraph's last word or across a column. Opened and imported files keep their own values,
 /// which is why `ParaProps` keeps the IDML defaults (on).
-fn new_document(nd: &NewDocument) -> Document {
+pub(crate) fn new_document(nd: &NewDocument) -> Document {
     let mut d = Document::new(nd);
     if let Some(st) = Arc::make_mut(&mut d.styles).para_mut(designcraft_doc::BASIC_PARAGRAPH) {
         st.para.hyph_capitalized = Some(false);

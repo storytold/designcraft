@@ -1380,6 +1380,7 @@ name = "designcraft-engine"
 version = "0.13.0"
 dependencies = [
  "caseless",
+ "chrono",
  "craft-atomic",
  "craft-docpath",
  "craft-prepress",

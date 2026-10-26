@@ -12,6 +12,7 @@ workspace = true
 craft-print = { workspace = true }
 craft-docpath = { workspace = true }
 designcraft-images = { workspace = true }
+chrono = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }

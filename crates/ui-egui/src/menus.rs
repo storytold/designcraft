@@ -17,6 +17,18 @@ pub fn shown(app: &DesignApp, id: &str) -> bool {
 /// UI commands: (id, label, shortcut, params).
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
+    (
+        "app.newCalendar",
+        "New Calendar…",
+        None,
+        "{} — the New Calendar dialog, with a style gallery and live preview (file.newCalendar does the work)",
+    ),
+    (
+        "app.insertCalendar",
+        "Insert Calendar…",
+        None,
+        "{} — the Insert Calendar dialog: a calendar on the page in view or in the selected empty frame (layout.insertCalendar does the work)",
+    ),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{}"),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{}"),
@@ -394,6 +406,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
         "File",
         &[
             "ui:app.newDocumentDialog",
+            "ui:app.newCalendar",
             "ui:app.openDialog",
             ">Open Recent",
             "cmd:file.clearRecent",
@@ -492,6 +505,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "cmd:layout.marginsAndColumns",
             "cmd:layout.createGuides",
+            "ui:app.insertCalendar",
             "cmd:layout.createAlternate",
             "-",
             "ui:view.firstPage",
@@ -1129,6 +1143,14 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.newDocumentDialog" => {
             app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", json!({})));
+            Ok(Value::Null)
+        }
+        "app.newCalendar" => {
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("newCalendar", json!({})));
+            Ok(Value::Null)
+        }
+        "app.insertCalendar" => {
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("newCalendar", json!({"mode": "insert", "months": "1"})));
             Ok(Value::Null)
         }
         "app.openDialog" => app.pick_and_open("open"),
@@ -2646,6 +2668,9 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     }
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
+    }
+    if id == "app.insertCalendar" {
+        return enabled(app, "layout.insertCalendar");
     }
     if id == "guide.selectAll" && (!app.ui.guides || app.ui.guides_locked) {
         return false;
@@ -6374,7 +6399,8 @@ mod tests {
     fn open_recent_lists_the_files_then_clear() {
         let tree = menu_tree();
         let file = &tree.iter().find(|(m, _)| *m == "File").unwrap().1;
-        let Some(Item::Sub(name, children)) = file.get(2) else { panic!("Open Recent after Open…: {:?}", file.get(2)) };
+        let open = file.iter().position(|i| matches!(i, Item::Cmd { id, .. } if id == "app.openDialog")).unwrap();
+        let Some(Item::Sub(name, children)) = file.get(open + 1) else { panic!("Open Recent after Open…: {:?}", file.get(open + 1)) };
         assert_eq!(format!("File/{name}"), OPEN_RECENT);
         assert!(matches!(children.as_slice(), [Item::Cmd { id, .. }] if id == "file.clearRecent"));
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

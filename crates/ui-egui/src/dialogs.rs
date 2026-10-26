@@ -9,6 +9,7 @@ use serde_json::{Map, Value, json};
 use crate::DesignApp;
 use crate::theme::semibold;
 
+mod calendar;
 mod options;
 mod style_cjk;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
@@ -34,6 +35,7 @@ impl Dialog {
             "goToPage" => json!({"page": "1"}),
             "epubExport" => json!({"split": false, "mode": "style", "style": designcraft_doc::BASIC_PARAGRAPH}),
             "qrCode" => json!({"type": "url", "content": "https://", "color": "[Black]"}),
+            calendar::ID => calendar::defaults("new"),
             "insertTable" => json!({"bodyRows": 4, "columns": 4, "headerRows": 0, "footerRows": 0}),
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
@@ -2243,6 +2245,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "loadStyles" => crate::i18n::tr(&app.ui.language, "Load Styles"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
+        calendar::ID => crate::i18n::tr(&app.ui.language, calendar::title(&d)),
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
@@ -2269,7 +2272,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
             "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" => 380.0,
-            "newDocument" => 960.0,
+            "newDocument" | calendar::ID => 960.0,
             "hyphenation" => 560.0,
             "numberingSection" => 560.0,
             crate::effects_dialog::ID => 720.0,
@@ -2896,6 +2899,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             ui.end_row();
                         });
                     }
+                    calendar::ID => calendar::body(app, ui, &mut d),
                     "qrCode" => {
                         let cur = d.s("type");
                         ui.horizontal(|ui| {
@@ -3768,6 +3772,17 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 json!({"autoFit": d.b("autoFit"), "fitting": d.s("fitting"), "align": d.n("align").unwrap_or(4.0) as u64,
                     "crop": [m("cropTop"), m("cropLeft"), m("cropBottom"), m("cropRight")]}),
             )
+        }
+        calendar::ID => {
+            // A refused calendar keeps the dialog and its settings open, with the reason.
+            let result = calendar::confirm(app, &d);
+            if let Err(error) = &result {
+                app.status(error.clone());
+                let mut d = d;
+                d.fields.insert("status".into(), json!(error));
+                app.ui.dialog = Some(d);
+            }
+            result
         }
         "qrCode" => {
             let mut p = Value::Object(d.fields.clone());

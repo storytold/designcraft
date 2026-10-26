@@ -5,6 +5,7 @@ pub mod anchors;
 mod articles;
 pub mod book;
 mod buttons;
+pub mod calendar;
 pub(crate) mod captions;
 pub(crate) mod changes;
 mod color_theme;
@@ -172,6 +173,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(|| {
         let mut v = Vec::new();
         v.extend(file::specs());
+        v.extend(calendar::specs());
         v.extend(file_info::specs());
         v.extend(interchange::specs());
         v.extend(export::specs());
