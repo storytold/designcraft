@@ -1983,6 +1983,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 dock_expanded: u.dock_expanded,
                 open_panel: u.open_panel.clone(),
                 floating: u.floating.clone(),
+                panel_sizes: Some(u.panel_sizes.clone()),
                 docking: u.docking.clone(),
                 docking_hidden: u.docking_hidden.clone(),
                 icon_groups: u.icon_groups.clone(),
@@ -2030,6 +2031,11 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 app.ui.dock_expanded = w.dock_expanded;
                 app.ui.open_panel = w.open_panel;
                 app.ui.floating = w.floating;
+                // An older workspace file has no sizes: the panels keep the ones they have. A newer
+                // one brings its own, even none.
+                if let Some(sizes) = w.panel_sizes {
+                    app.ui.panel_sizes = sizes;
+                }
                 app.ui.docking = w.docking;
                 app.ui.docking_hidden = w.docking_hidden;
                 app.ui.icon_groups = w.icon_groups;

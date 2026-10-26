@@ -1279,3 +1279,23 @@ fn a_document_dropped_on_a_floating_panel_window_opens() {
     open_window_drops(&mut app, &[files]);
     assert_eq!(app.session.documents().len(), 1, "the dropped document opens");
 }
+
+/// A floating panel resized, then docked and floated again, comes back at the size it was left
+/// at, not at its fixed default; the size goes with saved preferences and workspaces.
+#[test]
+fn a_floating_panel_comes_back_at_the_size_it_was_left_at() {
+    let mut app = app();
+    let rect = |app: &DesignApp, p: &str| app.ui.docking.as_ref().unwrap().floating.iter().find(|w| w.contains(p)).unwrap().rect;
+    app.run("window.panel.float", json!({"panel":"properties"})).unwrap();
+    app.run("window.panel.layout", json!({"action":{"MoveFloating":{"panel":"properties","rect":[44,66,360,450]}}})).unwrap();
+    assert_eq!(app.ui.panel_sizes.get("properties"), Some(&[360.0, 450.0]));
+    app.run("window.panel.dock", json!({"panel":"properties"})).unwrap();
+    app.run("window.panel.float", json!({"panel":"properties"})).unwrap();
+    let r = rect(&app, "properties");
+    assert_eq!([r[2], r[3]], [360.0, 450.0], "floated again at the size it was left at: {r:?}");
+    // Saved and loaded with the preferences, and kept by a saved workspace.
+    let saved: crate::UiState = serde_json::from_str(&serde_json::to_string(&app.ui).unwrap()).unwrap();
+    assert_eq!(saved.panel_sizes.get("properties"), Some(&[360.0, 450.0]));
+    let old: crate::UiState = serde_json::from_str("{}").unwrap();
+    assert!(old.panel_sizes.is_empty(), "a file from before loads");
+}

@@ -177,7 +177,8 @@ pub(crate) fn default_layout(ui: &crate::UiState) -> Layout<String> {
             // The layout is rebuilt every frame, so each window keeps an id of its panel's (a
             // native window lives as long as its id).
             let window = default_window_id(&id);
-            floating.push(Floating::single(vec![id], 0, [at[0], at[1], 280.0, 360.0]).with_id(window));
+            let size = remembered_size(ui, &id).unwrap_or(egui::vec2(280.0, 360.0));
+            floating.push(Floating::single(vec![id], 0, [at[0], at[1], size.x, size.y]).with_id(window));
         }
     }
     let mut columns = Vec::new();
@@ -674,7 +675,7 @@ fn float_space(app: &DesignApp) -> FloatSpace<String> {
     crate::dock::DOCK_TABS
         .iter()
         .chain(crate::dock::ICON_PANELS)
-        .fold(space, |space, (id, _, _)| space.with_panel_size((*id).to_owned(), floating_size(id)))
+        .fold(space, |space, (id, _, _)| space.with_panel_size((*id).to_owned(), floating_size_for(&app.ui, id)))
 }
 
 /// A change to the layout in use, committed only when every step succeeded.
@@ -820,6 +821,7 @@ impl Transaction {
         if app.ui.docking_focused.as_deref().is_some_and(|panel| panel != CANVAS && place(&before, panel) != place(&layout, panel)) {
             app.ui.docking_focused = None;
         }
+        remember_sizes(app, &layout);
         app.ui.docking = Some(layout);
         app.ui.docking_hidden = hidden;
         release_closed(app, &closed);
@@ -944,7 +946,8 @@ fn open_floating_group(app: &mut DesignApp, params: &Value) -> Option<Result<Val
         return None;
     }
     let layout = layout_of(app);
-    let (w, h) = (290.0, 340.0);
+    let size = floating_size_for(&app.ui, panel);
+    let (w, h) = (size.x, size.y);
     let (x, y) = app.canvas_rect.map_or((400.0, 140.0), |r| ((r.right() - w - 24.0).max(r.left()), r.top() + 96.0));
     let icon_group = dock_columns(&layout)
         .iter()
@@ -1251,6 +1254,33 @@ fn dock_panel_item(app: &mut DesignApp, ui: &mut egui::Ui, panel: &str) {
     }
 }
 
+/// The size a panel floats at: the size it last floated at, else its own ([`floating_size`]).
+fn floating_size_for(ui: &crate::UiState, panel: &str) -> egui::Vec2 {
+    remembered_size(ui, panel).unwrap_or_else(|| floating_size(panel))
+}
+
+/// The size `panel` last floated at, if it has floated (and the number is usable).
+fn remembered_size(ui: &crate::UiState, panel: &str) -> Option<egui::Vec2> {
+    ui.panel_sizes.get(panel).filter(|s| s.iter().all(|v| v.is_finite() && *v >= 40.0)).map(|s| egui::vec2(s[0], s[1]))
+}
+
+/// Remembers the size of every floating window's panels (its own OS window's size when it has
+/// one), so a panel docked and floated again, or floated in another workspace, comes back at it.
+/// A minimized window keeps the size it had.
+fn remember_sizes(app: &mut DesignApp, layout: &Layout<String>) {
+    for window in layout.floating.iter().filter(|w| !w.minimized) {
+        let [_, _, w, h] = window.native.unwrap_or(window.rect);
+        if !(w.is_finite() && h.is_finite() && w >= 40.0 && h >= 40.0) {
+            continue;
+        }
+        for panel in window.panels() {
+            if app.ui.panel_sizes.get(panel) != Some(&[w, h]) {
+                app.ui.panel_sizes.insert(panel.clone(), [w, h]);
+            }
+        }
+    }
+}
+
 /// The size a panel floats at (tab strip included), whatever the size of the dock it left.
 fn floating_size(panel: &str) -> egui::Vec2 {
     match panel {
@@ -1302,7 +1332,7 @@ impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
         craft_ui::docking::PanelLimits { min, ..Default::default() }
     }
     fn floating_size(&self, id: &String) -> Option<egui::Vec2> {
-        Some(floating_size(id))
+        Some(floating_size_for(&self.app.ui, id))
     }
     fn paint_icon(&mut self, painter: &egui::Painter, rect: egui::Rect, id: &String, color: egui::Color32) -> bool {
         let Some(icon) = panel_icon(id) else { return false };

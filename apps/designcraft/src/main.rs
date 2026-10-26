@@ -199,10 +199,22 @@ fn load_prefs(app: &mut DesignApp) {
     }
 }
 
+/// The application window as the saved UI state left it, read before the window opens.
+fn saved_window() -> Option<designcraft_ui_egui::WindowState> {
+    if no_prefs() {
+        return None;
+    }
+    let bytes = std::fs::read(prefs_path()?).ok()?;
+    let window = designcraft_ui_egui::UiState::from_preferences_json(&bytes).ok()?.window;
+    log::info!("window: saved state {window:?}");
+    window
+}
+
 fn save_prefs(app: &DesignApp) {
     if no_prefs() {
         return;
     }
+    log::info!("window: saving state {:?}", app.ui.window);
     if let Some(p) = prefs_path() {
         let _ = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new(".")));
         if !KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed)
@@ -441,10 +453,16 @@ fn main() -> std::process::ExitCode {
             Err(e) => log::warn!("no log file: {e}"),
         }
     }
+    // The window as it was left: its size, maximized or full screen.
+    let window = saved_window();
+    let size =
+        window.and_then(|w| w.size).filter(|s| s.iter().all(|v| v.is_finite())).map_or([1440.0, 900.0], |s| [s[0].max(900.0), s[1].max(560.0)]);
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DesignCraft")
-            .with_inner_size([1440.0, 900.0])
+            .with_inner_size(size)
+            .with_maximized(window.is_some_and(|w| w.maximized))
+            .with_fullscreen(window.is_some_and(|w| w.fullscreen))
             .with_min_inner_size([900.0, 560.0])
             .with_decorations(!cfg!(target_os = "windows"))
             .with_drag_and_drop(true)
