@@ -328,3 +328,101 @@ fn a_guide_dragged_out_of_a_ruler_snaps() {
     drag(&mut h, ruler, dest);
     assert_eq!(positions(&h), [200.0, 300.0, 400.0, 400.0]);
 }
+
+/// A slow frame brings a whole drag at once: the press in the ruler, the moves and the release.
+/// The guide still lands (the input is paced to one button change per frame); without that, the
+/// drag never started and the guide was lost, like other drags and clicks on a slow canvas.
+#[test]
+fn a_guide_dragged_out_of_a_ruler_lands_when_the_whole_drag_comes_in_one_frame() {
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0));
+    let frame = |app: &mut DesignApp, events: Vec<Event>, paced: bool| {
+        let mut raw = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        if paced {
+            app.raw_input_hook(&ctx, &mut raw);
+        }
+        let mut out = ctx.run_ui(raw, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    };
+    let guides = |app: &DesignApp| app.session.active().unwrap().doc.spreads[0].pages[0].guides.len();
+    for paced in [false, true] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        for _ in 0..6 {
+            frame(&mut app, vec![], paced);
+        }
+        let rect = app.canvas_rect.unwrap();
+        let (from, to) = (pos2(rect.center().x, rect.min.y - crate::canvas::RULER / 2.0), rect.center());
+        let press = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        let gesture = vec![
+            Event::PointerMoved(from),
+            press(from, true),
+            Event::PointerMoved(from + (to - from) * 0.5),
+            Event::PointerMoved(to),
+            press(to, false),
+        ];
+        frame(&mut app, gesture, paced);
+        for _ in 0..4 {
+            frame(&mut app, vec![], paced);
+        }
+        assert_eq!(guides(&app), usize::from(paced), "paced {paced}: the guide lands only when the input is paced");
+        assert!(app.held_input.is_empty());
+    }
+}
+
+/// The pacing holds back everything from the second button change on, in order.
+#[test]
+fn input_is_paced_to_one_button_change_per_frame() {
+    let ctx = egui::Context::default();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let p = |x: f32| pos2(x, 10.0);
+    let button = |x: f32, pressed| Event::PointerButton { pos: p(x), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    let all = vec![
+        Event::PointerMoved(p(1.0)),
+        button(1.0, true),
+        Event::PointerMoved(p(2.0)),
+        button(2.0, false),
+        Event::PointerMoved(p(3.0)),
+        button(3.0, true),
+        button(3.0, false),
+    ];
+    let mut frames = Vec::new();
+    let mut next = all.clone();
+    for _ in 0..5 {
+        let mut raw = egui::RawInput { events: std::mem::take(&mut next), ..Default::default() };
+        app.raw_input_hook(&ctx, &mut raw);
+        frames.push(raw.events);
+    }
+    assert_eq!(frames[0], all[..3]);
+    assert_eq!(frames[1], all[3..5]);
+    assert_eq!(frames[2], all[5..6]);
+    assert_eq!(frames[3], all[6..7]);
+    assert!(frames[4].is_empty());
+    // Held input comes before what the next frame brings.
+    let mut raw = egui::RawInput { events: vec![button(4.0, true), button(4.0, false)], ..Default::default() };
+    app.raw_input_hook(&ctx, &mut raw);
+    let mut later = egui::RawInput { events: vec![Event::PointerMoved(p(5.0))], ..Default::default() };
+    app.raw_input_hook(&ctx, &mut later);
+    assert_eq!(later.events, vec![button(4.0, false), Event::PointerMoved(p(5.0))]);
+}
+
+/// An injected button change (control channel, scripts) waits a pass when the user's own (or one
+/// held back) is already in this pass: no pass sees two.
+#[test]
+fn an_injected_button_change_waits_for_a_pass_without_one() {
+    let ctx = egui::Context::default();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let button = |x: f32, pressed| Event::PointerButton { pos: pos2(x, 10.0), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    app.synthetic.push(button(5.0, true));
+    let buttons = |raw: &egui::RawInput| raw.events.iter().filter(|e| matches!(e, Event::PointerButton { .. })).count();
+    let mut raw = egui::RawInput { events: vec![button(1.0, true)], ..Default::default() };
+    app.raw_input_hook(&ctx, &mut raw);
+    assert_eq!(buttons(&raw), 1, "only the user's");
+    assert_eq!(app.synthetic.len(), 1, "the injected one waits");
+    let mut next = egui::RawInput::default();
+    app.raw_input_hook(&ctx, &mut next);
+    assert_eq!(next.events, vec![button(5.0, true)], "and comes in the next pass");
+}
