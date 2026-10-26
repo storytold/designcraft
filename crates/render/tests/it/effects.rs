@@ -374,3 +374,105 @@ fn feather_choke_and_corners() {
     let rounded = render(&d);
     assert!(lum(sharp.pixel(41, 41)) + 20 < lum(rounded.pixel(41, 41)), "{:?} vs {:?}", sharp.pixel(41, 41), rounded.pixel(41, 41));
 }
+
+/// A 160 × 160 pt frame without fill at (0, 0) holding a 16 × 16 px image, 10 pt a pixel, that
+/// is transparent apart from a black square in its middle (pt 60..100).
+fn transparent_image_frame(d: &mut Document) -> ItemId {
+    use image::ImageEncoder;
+    let px: Vec<u8> =
+        (0..16 * 16).flat_map(|i| if (6..10).contains(&(i % 16)) && (6..10).contains(&(i / 16)) { [0, 0, 0, 255] } else { [0, 0, 0, 0] }).collect();
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(std::io::Cursor::new(&mut png)).write_image(&px, 16, 16, image::ExtendedColorType::Rgba8).unwrap();
+    let aid = designcraft_doc::AssetId(d.alloc());
+    d.assets.insert(
+        aid,
+        std::sync::Arc::new(designcraft_doc::Asset {
+            page: 0,
+            id: aid,
+            name: "a".into(),
+            mime: "image/png".into(),
+            link: None,
+            data: std::sync::Arc::new(png),
+            pixels: Some((16, 16)),
+            pdf_crop: Default::default(),
+            pdf_box: None,
+        }),
+    );
+    let id = rect_item(d, Rect::new(0.0, 0.0, 160.0, 160.0), "[None]");
+    d.item_mut(id).unwrap().content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
+        asset: aid,
+        size: (160.0, 160.0),
+        xf: Affine::IDENTITY,
+        clip: None,
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Fill::none(),
+    });
+    id
+}
+
+/// Spread grows the shadow of what an image paints, not of its frame: the transparent rest of
+/// the image casts nothing, in single- and multithreaded rendering alike.
+#[test]
+fn spread_grows_what_an_image_paints_not_its_frame() {
+    let mut d = doc();
+    let id = transparent_image_frame(&mut d);
+    let ds = &mut d.item_mut(id).unwrap().effects.drop_shadow;
+    ds.on = true;
+    ds.color = "[Black]".into();
+    ds.distance = 0.0;
+    ds.size = 20.0;
+    ds.spread = 100.0;
+    ds.opacity = 1.0;
+    for threads in [0, 3] {
+        let img = render_with(&d, threads);
+        assert!(lum(img.pixel(110, 80)) < 100, "{threads} threads: the square's shadow grows past it: {:?}", img.pixel(110, 80));
+        for (x, y) in [(5, 80), (150, 80), (80, 5), (80, 155), (5, 5)] {
+            assert_eq!(lum(img.pixel(x, y)), WHITE, "{threads} threads: no shadow along the frame at ({x}, {y})");
+        }
+    }
+}
+
+/// A group's drop shadow and outer glow are cast by its objects together, offset as set.
+#[test]
+fn a_groups_drop_shadow_is_cast_by_its_objects() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let kid = |d: &mut Document, r: Rect| {
+        std::sync::Arc::new(Item {
+            fill: Fill::swatch("C=100 M=0 Y=0 K=0"),
+            ..Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(r))
+        })
+    };
+    let items = vec![kid(&mut d, Rect::new(20.0, 20.0, 60.0, 60.0)), kid(&mut d, Rect::new(90.0, 20.0, 130.0, 60.0))];
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, shapes::rectangle(Rect::new(20.0, 20.0, 130.0, 60.0)));
+    g.content = designcraft_doc::Content::Group { items };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    let plain = render(&d);
+    let ds = &mut d.item_mut(gid).unwrap().effects.drop_shadow;
+    ds.on = true;
+    ds.color = "[Black]".into();
+    // Straight down by 40 pt, hard.
+    ds.angle = 90.0;
+    ds.distance = 40.0;
+    ds.size = 0.0;
+    ds.opacity = 1.0;
+    for threads in [0, 3] {
+        let img = render_with(&d, threads);
+        assert_eq!(lum(plain.pixel(40, 80)), WHITE);
+        assert!(lum(img.pixel(40, 80)) < 120, "{threads} threads: under the first object: {:?}", img.pixel(40, 80));
+        assert!(lum(img.pixel(110, 80)) < 120, "{threads} threads: under the second object: {:?}", img.pixel(110, 80));
+        assert_eq!(lum(img.pixel(75, 80)), WHITE, "{threads} threads: not between them");
+        assert_eq!(img.pixel(40, 40), plain.pixel(40, 40), "{threads} threads: the objects stay on top");
+    }
+    let e = &mut d.item_mut(gid).unwrap().effects;
+    e.drop_shadow.on = false;
+    e.outer_glow = designcraft_doc::OuterGlow { on: true, color: "[Black]".into(), opacity: 1.0, size: 10.0, spread: 100.0 };
+    let img = render(&d);
+    assert!(lum(img.pixel(65, 40)) < 120, "the glow surrounds the objects: {:?}", img.pixel(65, 40));
+    assert_eq!(lum(img.pixel(75, 40)), WHITE, "and stops {} pt from them", 10);
+}

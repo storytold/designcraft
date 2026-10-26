@@ -563,6 +563,13 @@ impl Renderer {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
         }
+        // Drop shadow and outer glow: cast by the group's objects together.
+        if f.opts.quality != DisplayQuality::Fast && (it.effects.drop_shadow.on || it.effects.outer_glow.on) {
+            let mut stroke: f64 = 0.0;
+            it.walk(&mut |i| stroke = stroke.max(if i.stroke.is_none() { 0.0 } else { i.stroke.extent() }));
+            let reach = xf.transform_rect_bbox(it.feather_bounds()).inflate(stroke + 1.0, stroke + 1.0);
+            self.draw_below(ctx, f, it, &it.path.to_bezpath(), xf, page, reach);
+        }
         // Gradient feather: the group's objects drawn together, then faded as one.
         let feather = it.effects.gradient_feather.on && f.opts.quality != DisplayQuality::Fast;
         if feather {

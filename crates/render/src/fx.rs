@@ -8,9 +8,10 @@
 //! itself and the clip to its shape stay at full resolution.
 //!
 //! - Drop shadow / outer glow: the object's silhouette (everything it paints: fill, image, text,
-//!   stroke) in a `DropShadowOnly` layer under the object. `size` sets the blur (σ = size / 2),
-//!   `spread`/`choke` (percent of size) grow the silhouette instead of blurring it. The shadow's
-//!   opacity rides on the filter colour's alpha.
+//!   stroke; a group's objects together) in a `DropShadowOnly` layer under the object. `size`
+//!   sets the blur (σ = size / 2). `spread` (percent) hardens it: the blurred coverage is raised
+//!   by 1 / (1 − spread), so the silhouette of what is painted grows solid, never the frame of a
+//!   transparent image. The shadow's opacity rides on the filter colour's alpha.
 //! - Inner shadow: the inverse of the offset shape, blurred, clipped to the shape, on top.
 //! - Inner glow, bevel and emboss, satin: built like the inner shadow (an offset inverse of the
 //!   shape, blurred and clipped) with screen / multiply blending; satin XORs two offset copies.
@@ -89,16 +90,13 @@ pub(crate) fn gradient_feather_mask(ctx: &mut RenderContext, f: &Frame, it: &Ite
 }
 
 impl Renderer {
-    /// Draw an item with soft effects: below-effects, the (feathered) body, inner shadow.
-    pub(crate) fn draw_item_fx(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn) {
+    /// Drop shadow and outer glow, below the object (or the group: its objects together). Spread
+    /// grows the silhouette of what the object paints, so a transparent part of an image or an
+    /// empty frame casts nothing along its frame.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_below(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn, reach: Rect) {
         let doc = f.doc;
         let e = &it.effects;
-        let sw = if it.stroke.is_none() { 0.0 } else { it.stroke.extent() };
-        // Spread-space reach of what the object paints.
-        let reach = xf.transform_rect_bbox(bp.bounding_box()).inflate(sw + 1.0, sw + 1.0);
-        // The silhouette is the shape when the object paints its area (fill / image); text frames
-        // without a fill cast the shadow of their text only, which can't be grown.
-        let solid = !it.fill.is_none() || matches!(it.content, designcraft_doc::Content::Graphic(_)) || it.has_nested_items();
         let mut below = vec![];
         if e.outer_glow.on {
             let g = &e.outer_glow;
@@ -115,20 +113,81 @@ impl Renderer {
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
             let r = (reach + off).inflate(grow, grow);
+            let grown = if grow > 0.0 { self.grown_silhouette(ctx, f, it, bp, xf, page, reach, off, grow) } else { None };
+            if grow > 0.0 && grown.is_none() {
+                continue;
+            }
             self.with_filters(ctx, f, r, sigma, None, |me, c, fr| {
-                let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
+                let moved = moved_frame(fr, off, sigma);
                 c.set_transform(moved.view);
                 c.push_layer(None, None, None, None, Some(filter));
-                me.draw_body(c, &moved, it, bp, xf, page);
-                if grow > 0.0 && solid {
-                    c.set_transform(moved.view * xf);
-                    c.set_paint(peniko::Color::BLACK);
-                    c.set_stroke(kurbo::Stroke::new(grow * 2.0).with_join(kurbo::Join::Round));
-                    c.stroke_path(bp);
+                if let Some((mask, at)) = &grown {
+                    // `at` places the mask on the device; this frame's view replaces `f.view`.
+                    let to_frame = if f.view.determinant().abs() > 1e-12 { fr.view * f.view.inverse() } else { Affine::IDENTITY };
+                    c.set_transform(to_frame * *at);
+                    c.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(mask.clone()), sampler: peniko::ImageSampler::default() });
+                    c.fill_rect(&Rect::new(0.0, 0.0, f64::from(mask.width()), f64::from(mask.height())));
+                } else {
+                    me.draw_silhouette(c, &moved, it, bp, xf, page);
                 }
                 c.pop_layer();
             });
         }
+    }
+
+    /// What casts the object's shadow: its objects for a group, else the object itself.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_silhouette(&mut self, c: &mut RenderContext, fr: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn) {
+        if it.is_group() {
+            for child in it.shown_children() {
+                self.draw_item(c, fr, child, xf, page);
+            }
+        } else {
+            self.draw_body(c, fr, it, bp, xf, page);
+        }
+    }
+
+    /// The silhouette moved by `off` and grown by `grow` (spread space) around what it paints, as
+    /// black coverage on the device grid: a transparent part of an image or an empty frame grows
+    /// nothing. Returns the image and where it goes on the device, or `None` when none of it shows.
+    #[allow(clippy::too_many_arguments)]
+    fn grown_silhouette(
+        &mut self,
+        ctx: &RenderContext,
+        f: &Frame,
+        it: &Item,
+        bp: &BezPath,
+        xf: Affine,
+        page: ShownOn,
+        reach: Rect,
+        off: Vec2,
+        grow: f64,
+    ) -> Option<(std::sync::Arc<vello_cpu::Pixmap>, Affine)> {
+        let o = offscreen(f.view.transform_rect_bbox(reach + off), grow / f.px + 2.0, ctx.width(), ctx.height())?;
+        let mut c = RenderContext::new_with(o.width, o.height, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
+        let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -o.y0)) * f.view;
+        let shifted = Frame { mt: false, view, px: f.px * o.scale, ..*f };
+        let moved = moved_frame(&shifted, off, grow);
+        self.draw_silhouette(&mut c, &moved, it, bp, xf, page);
+        c.flush();
+        let mut pm = vello_cpu::Pixmap::new(o.width, o.height);
+        c.render(&mut pm, &mut self.resources);
+        let coverage: Vec<u8> = pm.data().iter().map(|p| p.a).collect();
+        let grown = dilate(&coverage, usize::from(o.width), usize::from(o.height), grow / shifted.px);
+        for (p, a) in pm.data_mut().iter_mut().zip(grown) {
+            *p = vello_cpu::color::PremulRgba8 { r: 0, g: 0, b: 0, a };
+        }
+        Some((std::sync::Arc::new(pm), Affine::translate((o.x0, o.y0)) * Affine::scale(o.scale)))
+    }
+
+    /// Draw an item with soft effects: below-effects, the (feathered) body, inner shadow.
+    pub(crate) fn draw_item_fx(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn) {
+        let e = &it.effects;
+        let doc = f.doc;
+        let sw = if it.stroke.is_none() { 0.0 } else { it.stroke.extent() };
+        // Spread-space reach of what the object paints.
+        let reach = xf.transform_rect_bbox(bp.bounding_box()).inflate(sw + 1.0, sw + 1.0);
+        self.draw_below(ctx, f, it, bp, xf, page, reach);
         // Gradient feather: the object (feathered or not) drawn in its own layer, then kept as
         // much as the opacity gradient says.
         let gf = &e.gradient_feather;
@@ -442,6 +501,86 @@ fn offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscr
     let side = |len: f64| (len / scale).ceil().min(crate::MAX_SIDE as f64);
     let (w, h) = (side(r.x1.ceil() - x0), side(r.y1.ceil() - y0));
     (w >= 1.0 && h >= 1.0).then_some(Offscreen { x0, y0, scale, width: w as u16, height: h as u16 })
+}
+
+/// `fr` with its view moved by `off` (spread space), and its visible area widened to take in
+/// what a blur of `sigma` brings into view from there.
+fn moved_frame<'a>(fr: &Frame<'a>, off: Vec2, sigma: f64) -> Frame<'a> {
+    let pad = sigma.max(0.0) * 3.0;
+    Frame { view: fr.view * Affine::translate(off), visible: (fr.visible - off).inflate(pad, pad), ..*fr }
+}
+
+/// `coverage` (`w` × `h`, row-major) grown by `radius` pixels: each pixel covers as much as its
+/// distance to the nearest edge allows (antialiased over one pixel), and never less than it did. Exact Euclidean distances (Felzenszwalb and Huttenlocher's transform).
+fn dilate(coverage: &[u8], w: usize, h: usize, radius: f64) -> Vec<u8> {
+    const FAR: f64 = 1e20;
+    // A pixel's centre lies (0.5 − coverage) outside the edge when less than half covered.
+    let seed = |a: u8| match a {
+        0 => FAR,
+        1..128 => (0.5 - f64::from(a) / 255.0).powi(2),
+        _ => 0.0,
+    };
+    let mut d: Vec<f64> = coverage.iter().map(|&a| seed(a)).collect();
+    let mut line = vec![0.0; w.max(h)];
+    let mut out = vec![0.0; w.max(h)];
+    let (mut v, mut z) = (vec![0usize; w.max(h)], vec![0.0; w.max(h) + 1]);
+    for x in 0..w {
+        for y in 0..h {
+            line[y] = d[y * w + x];
+        }
+        distance_1d(&line[..h], &mut out[..h], &mut v, &mut z);
+        for y in 0..h {
+            d[y * w + x] = out[y];
+        }
+    }
+    for y in 0..h {
+        line[..w].copy_from_slice(&d[y * w..(y + 1) * w]);
+        distance_1d(&line[..w], &mut out[..w], &mut v, &mut z);
+        d[y * w..(y + 1) * w].copy_from_slice(&out[..w]);
+    }
+    coverage
+        .iter()
+        .zip(d)
+        .map(|(&a, d2)| {
+            let grown = (radius + 0.5 - d2.sqrt()).clamp(0.0, 1.0);
+            a.max((grown * 255.0).round() as u8)
+        })
+        .collect()
+}
+
+/// Squared distance transform of one line (`f`: 0 at sources, huge elsewhere) into `out`.
+fn distance_1d(f: &[f64], out: &mut [f64], v: &mut [usize], z: &mut [f64]) {
+    let n = f.len();
+    if n == 0 {
+        return;
+    }
+    let sq = |q: usize| (q * q) as f64;
+    let mut k = 0usize;
+    v[0] = 0;
+    z[0] = f64::NEG_INFINITY;
+    z[1] = f64::INFINITY;
+    let meet = |q: usize, p: usize| ((f[q] + sq(q)) - (f[p] + sq(p))) / (2.0 * (q as f64 - p as f64));
+    for q in 1..n {
+        // z[0] is -∞, so this stops at k = 0 at the latest.
+        let mut s = meet(q, v[k]);
+        while k > 0 && s <= z[k] {
+            k -= 1;
+            s = meet(q, v[k]);
+        }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = f64::INFINITY;
+    }
+    k = 0;
+    for (q, o) in out.iter_mut().enumerate() {
+        while z[k + 1] < q as f64 {
+            k += 1;
+        }
+        let p = v[k];
+        let dq = q as f64 - p as f64;
+        *o = dq * dq + f[p];
+    }
 }
 
 #[cfg(test)]
