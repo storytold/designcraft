@@ -122,6 +122,8 @@ fn discard_marked_text() {
 /// Orderly OS termination can bypass egui's cancelable close event. Finish only a complete,
 /// current quit plan; otherwise preserve every live document, including edits after the timer.
 fn preserve_documents_on_exit(app: &mut DesignApp) -> Result<(), String> {
+    // A timed recovery save still being written finishes first.
+    app.finish_recovery();
     app.finish_confirmed_quit()?;
     if app.session.documents().is_empty() {
         return Ok(());

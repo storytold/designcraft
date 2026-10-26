@@ -63,7 +63,14 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
 
 /// [`save`], plus `preview` (PNG bytes) as `preview.png`.
 pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
-    save_with_large_entries_from(doc, preview, LARGE_ENTRY)
+    save_with_large_entries_from(doc, preview, LARGE_ENTRY, false)
+}
+
+/// [`save`] with every asset stored as it is, none compressed: for crash-recovery checkpoints,
+/// written every few minutes while the user works, where a large TIFF or PSD took seconds to
+/// deflate. Any reader opens it like any other package.
+pub fn save_uncompressed_assets(doc: &Document) -> Result<Vec<u8>, FormatError> {
+    save_with_large_entries_from(doc, None, LARGE_ENTRY, true)
 }
 
 /// Asset entries this size or larger are written with zip64 sizes. Zip rejects an entry over
@@ -85,7 +92,7 @@ fn required_version(doc: &Document) -> u32 {
     if doc.assets.values().any(|a| designcraft_images::is_eps(&a.data)) { 3 } else { 2 }
 }
 
-fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize, store_assets: bool) -> Result<Vec<u8>, FormatError> {
     // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
@@ -117,7 +124,8 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
                 continue;
             }
             // Already-compressed images are stored as-is.
-            let opts = if matches!(a.mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") { stored } else { deflate };
+            let opts =
+                if store_assets || matches!(a.mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") { stored } else { deflate };
             let opts = opts.large_file(a.data.len() >= large_entry);
             z.start_file(format!("assets/{}.{}", id.0, ext_for(&a.mime)), opts).map_err(io)?;
             z.write_all(&a.data).map_err(|e| FormatError::Io(e.to_string()))?;
@@ -736,10 +744,29 @@ mod tests {
         let aid = png_asset(&mut d, &[5; 64]);
         place(&mut d, aid, 0.0);
         let normal = save(&d).unwrap();
-        assert_eq!(normal, save_with_large_entries_from(&d, None, 65).unwrap(), "an asset under the threshold is unchanged");
-        let large = save_with_large_entries_from(&d, None, 64).unwrap();
+        assert_eq!(normal, save_with_large_entries_from(&d, None, 65, false).unwrap(), "an asset under the threshold is unchanged");
+        let large = save_with_large_entries_from(&d, None, 64, false).unwrap();
         assert!(large.len() > normal.len(), "the asset entry carries zip64 sizes");
         assert_eq!(*load(&large).unwrap().assets[&aid].data, vec![5; 64]);
+    }
+
+    /// Recovery checkpoints store every asset as it is (a TIFF is deflated in a normal save) and
+    /// open like any other package.
+    #[test]
+    fn uncompressed_asset_saves_store_every_asset_and_open_again() {
+        let mut d = Document::new(&NewDocument::default());
+        let aid = png_asset(&mut d, &[7; 4096]);
+        Arc::make_mut(d.assets.get_mut(&aid).unwrap()).mime = "image/tiff".into();
+        place(&mut d, aid, 0.0);
+        let method = |bytes: &[u8]| {
+            let mut z = zip::ZipArchive::new(Cursor::new(bytes.to_vec())).unwrap();
+            let name = (0..z.len()).map(|i| z.by_index(i).unwrap().name().to_string()).find(|n| n.starts_with("assets/")).unwrap();
+            z.by_name(&name).unwrap().compression()
+        };
+        assert_eq!(method(&save(&d).unwrap()), zip::CompressionMethod::Deflated);
+        let fast = save_uncompressed_assets(&d).unwrap();
+        assert_eq!(method(&fast), zip::CompressionMethod::Stored);
+        assert_eq!(*load(&fast).unwrap().assets[&aid].data, vec![7; 4096]);
     }
 
     #[test]

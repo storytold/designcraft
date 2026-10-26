@@ -815,6 +815,9 @@ pub struct DesignApp {
     last_time: f64,
     /// When recovery data was last written (seconds on the monotonic clock; see [`now_ms`]).
     pub last_recovery: f64,
+    /// The recovery save being written on its own thread (see `ui_frame_end`).
+    #[cfg(not(target_arch = "wasm32"))]
+    recovery_job: Option<std::thread::JoinHandle<designcraft_engine::recovery::WrittenSave>>,
     /// The egui context (set by the first UI pass): copied text goes to the system clipboard through it.
     egui_ctx: Option<egui::Context>,
     /// A control-channel request is being handled: commands it runs never read or write the
@@ -942,6 +945,8 @@ impl DesignApp {
             shortcut_answers: Default::default(),
             last_time: now,
             last_recovery: now,
+            #[cfg(not(target_arch = "wasm32"))]
+            recovery_job: None,
             egui_ctx: None,
             in_control: false,
             object_clip_text: None,
@@ -1066,6 +1071,12 @@ impl DesignApp {
 
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // Recovery data saved or opened by command (control channel, a script) while the timed
+        // save is being written: that one is recorded first, so an older snapshot can't land last.
+        #[cfg(not(target_arch = "wasm32"))]
+        if id.starts_with("file.recovery.") {
+            self.finish_recovery();
+        }
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }
@@ -1527,14 +1538,41 @@ impl DesignApp {
     /// uses the monotonic clock, so a wall-clock/NTP jump cannot postpone or advance it.
     fn ui_frame_end(&mut self, ctx: &egui::Context) {
         let now = now_ms() / 1000.0;
-        // Crash recovery: unsaved documents are written to the recovery folder every 30 s.
+        // Crash recovery: unsaved documents are written to the recovery folder on a timer. The
+        // packing and writing run on their own thread: with large images they took seconds, and
+        // the UI stood still (clicks were lost) every time.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
-            self.last_recovery = now;
-            if self.session.documents().iter().any(|d| d.is_dirty())
-                && let Err(e) = self.session.execute("file.recovery.save", &json!({}))
+        {
+            if self.recovery_job.as_ref().is_some_and(std::thread::JoinHandle::is_finished) {
+                self.finish_recovery();
+            }
+            if self.recovery_job.is_none()
+                && let Some(dir) = self.session.recovery_dir.clone()
+                && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0)
             {
-                self.status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e.to_string()));
+                self.last_recovery = now;
+                if self.session.documents().iter().any(|d| d.is_dirty()) {
+                    let started =
+                        designcraft_engine::recovery::begin_tracked(&mut self.session, &dir).map_err(|e| e.to_string()).and_then(|pending| {
+                            if pending.is_empty() {
+                                return Ok(None);
+                            }
+                            std::thread::Builder::new()
+                                .name("designcraft-recovery".into())
+                                .spawn(move || pending.write())
+                                .map(Some)
+                                .map_err(|e| e.to_string())
+                        });
+                    match started {
+                        Ok(job) => self.recovery_job = job,
+                        Err(e) => self.recovery_failed(&e),
+                    }
+                }
+            }
+            // An idle app draws no frame on its own: ask for one, so a finished save is recorded
+            // (and a document saved meanwhile loses its checkpoint) without waiting for input.
+            if self.recovery_job.is_some() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
             }
         }
         let dt = now - self.last_time;
@@ -1646,6 +1684,10 @@ impl DesignApp {
     /// terminate before egui receives its queued Close; an unfinished/stale plan leaves every
     /// document live so the host can preserve its recovery data instead.
     pub fn finish_confirmed_quit(&mut self) -> Result<(), String> {
+        // A recovery save still being written finishes first: closing a document discards its
+        // checkpoint, which the writer must not publish again afterwards.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.finish_recovery();
         let approved =
             self.quitting.as_ref().is_some_and(|q| q.pending.is_none()) && self.ui.dialog.is_none() && self.next_unapproved_document().is_none();
         if !approved {
@@ -2084,6 +2126,25 @@ impl DesignApp {
             }
             canvas::show(self, ui);
         }
+    }
+
+    /// Wait for the recovery save being written, if any, and record it (a quit preserves the
+    /// documents only after it, so the two never write the same files at once).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn finish_recovery(&mut self) {
+        let Some(job) = self.recovery_job.take() else { return };
+        let result = match job.join() {
+            Ok(written) => designcraft_engine::recovery::finish_tracked(&mut self.session, written).map_err(|e| e.to_string()),
+            Err(_) => Err("the recovery writer stopped".to_string()),
+        };
+        if let Err(e) = result {
+            self.recovery_failed(&e);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn recovery_failed(&mut self, error: &str) {
+        self.status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", error));
     }
 
     /// Lay out the whole window.
@@ -2748,6 +2809,53 @@ mod tests {
         app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap();
         assert!(app.session.documents()[0].is_dirty());
         app
+    }
+
+    /// The timed recovery save is written on its own thread: the frame that starts it doesn't
+    /// wait for it, and a later frame records it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_timed_recovery_save_is_written_on_its_own_thread() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_unsaved_document();
+        let directory = tempfile::tempdir().unwrap();
+        app.session.recovery_dir = Some(directory.path().to_path_buf());
+        app.last_recovery = -1e9;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.ui_frame_end(ui.ctx()));
+        out.textures_delta.clear();
+        assert!(app.recovery_job.is_some(), "the save runs on a thread");
+        // An idle app asks for a frame while the save runs, so it is recorded without input.
+        let repaint = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay);
+        assert!(repaint.is_some_and(|d| d <= std::time::Duration::from_millis(250)), "{repaint:?}");
+        app.finish_recovery();
+        assert!(app.recovery_job.is_none());
+        assert_eq!(designcraft_engine::recovery::list(directory.path()).len(), 1, "the checkpoint is written and recorded");
+        // Recorded as this document's: closing it removes the checkpoint again.
+        app.session.close_document(0);
+        assert!(designcraft_engine::recovery::list(directory.path()).is_empty());
+    }
+
+    /// A recovery save by command while the timed one is being written waits for it, so the
+    /// command's newer snapshot is the one left on disk.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_recovery_save_by_command_waits_for_the_timed_one() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_unsaved_document();
+        let directory = tempfile::tempdir().unwrap();
+        app.session.recovery_dir = Some(directory.path().to_path_buf());
+        app.last_recovery = -1e9;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.ui_frame_end(ui.ctx()));
+        out.textures_delta.clear();
+        assert!(app.recovery_job.is_some());
+        app.run("frame.create", json!({"rect": [10, 10, 50, 50]})).unwrap();
+        app.run("file.recovery.save", json!({})).unwrap();
+        assert!(app.recovery_job.is_none(), "the timed save was recorded first");
+        let saved = designcraft_engine::recovery::list(directory.path());
+        assert_eq!(saved.len(), 1);
+        let bytes = std::fs::read(directory.path().join(format!("{}.designcraft", saved[0].0))).unwrap();
+        let doc = designcraft_engine::cmd::from_bytes(&bytes).unwrap();
+        assert_eq!(doc.spreads[0].items.len(), app.session.active().unwrap().doc.spreads[0].items.len(), "the newer snapshot is on disk");
     }
 
     /// File ▸ Close (and its shortcut) closed a document with unsaved changes without asking, and

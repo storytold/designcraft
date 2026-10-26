@@ -23,8 +23,11 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
+
+use designcraft_doc::Document;
 
 use crate::{DocState, EngineError, Result, Session};
 
@@ -537,6 +540,39 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
 /// Command-path checkpointing also records explicitly selected directories, without configuring
 /// automatic recovery. The immutable public helper remains available for fixtures and callers.
 pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
+    let pending = begin_tracked(s, dir)?;
+    let written = pending.write();
+    finish_tracked(s, written)
+}
+
+/// A recovery save whose slow part, packing and writing the documents, can run on another thread
+/// ([`PendingSave::write`]) while the user goes on working: a document with large images took
+/// seconds, and the UI waited. [`begin_tracked`] makes it on the session's thread,
+/// [`finish_tracked`] records what was written there.
+pub struct PendingSave {
+    dir: PathBuf,
+    access: Access,
+    entries: Vec<PendingEntry>,
+}
+
+struct PendingEntry {
+    uid: u64,
+    /// The document as it was when the save began (a cheap shared copy).
+    doc: Arc<Document>,
+    metadata: Value,
+    replace: bool,
+}
+
+/// What a [`PendingSave`] wrote.
+pub struct WrittenSave {
+    dir: PathBuf,
+    written: Vec<u64>,
+    error: Option<EngineError>,
+}
+
+/// Begin a recovery save of the unsaved documents into `dir`: the checks, and the clean
+/// documents' checkpoints dropped, here; the writing in [`PendingSave::write`].
+pub fn begin_tracked(s: &mut Session, dir: &Path) -> Result<PendingSave> {
     // Reject the complete batch before writing rather than silently losing old ownership records.
     for document in &s.docs {
         if document.is_dirty() && !has_checkpoint(document, dir) && document.recovery_entries.len() >= MAX_RECOVERY_ENTRIES {
@@ -546,8 +582,8 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
         }
     }
     let access = prepare_save(s, dir)?;
-    let mut n = 0;
     let preview = s.new_document_preview();
+    let mut entries = Vec::new();
     for index in 0..s.docs.len() {
         // New Document's preview is never written, so it has no checkpoint to discard either.
         if s.docs.get(index).is_some_and(|document| preview == Some(document.uid)) {
@@ -557,29 +593,76 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
             discard_document(s, index, Some(dir));
             continue;
         }
-        let Some(document) = s.docs.get_mut(index) else { continue };
-        let (doc, meta) = files(dir, document.uid);
-        let bytes = designcraft_format::save(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()))
-            .map_err(|e| EngineError::Other(e.to_string()))?;
-        // An entry this run did not write is never replaced, even one made since it checked.
-        let replace = access.owns(document.uid);
-        publish_recovery_file(&doc, &bytes, replace)?;
-        access.record(document.uid);
-        // The primary is useful even if optional metadata fails next. Track it immediately.
-        if !has_checkpoint(document, dir) {
-            document.recovery_entries.push((dir.to_path_buf(), document.uid));
-        }
-        let metadata = json!({"path": document.path, "title": document.title(), "saved": designcraft_doc::vars::now()});
-        publish_recovery_file(&meta, metadata.to_string().as_bytes(), replace)?;
-        n += 1;
+        let Some(document) = s.docs.get(index) else { continue };
+        entries.push(PendingEntry {
+            uid: document.uid,
+            doc: document.preview_stash.clone().unwrap_or_else(|| document.doc.clone()),
+            metadata: json!({"path": document.path, "title": document.title(), "saved": designcraft_doc::vars::now()}),
+            // An entry this run did not write is never replaced, even one made since it checked.
+            replace: access.owns(document.uid),
+        });
     }
-    Ok(n)
+    Ok(PendingSave { dir: dir.to_path_buf(), access, entries })
+}
+
+impl PendingSave {
+    /// Whether there is nothing to write.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Pack and write every document (any thread). Assets are stored, not compressed: a
+    /// checkpoint is written every few minutes and only read after a crash.
+    pub fn write(self) -> WrittenSave {
+        let mut written = Vec::new();
+        let mut error = None;
+        for e in &self.entries {
+            let (doc, meta) = files(&self.dir, e.uid);
+            let result = designcraft_format::save_uncompressed_assets(&e.doc)
+                .map_err(|err| EngineError::Other(err.to_string()))
+                .and_then(|bytes| publish_recovery_file(&doc, &bytes, e.replace));
+            if let Err(err) = result {
+                error = Some(err);
+                break;
+            }
+            self.access.record(e.uid);
+            // The primary is useful even if optional metadata fails next. Track it immediately.
+            written.push(e.uid);
+            if let Err(err) = publish_recovery_file(&meta, e.metadata.to_string().as_bytes(), e.replace) {
+                error = Some(err);
+                break;
+            }
+        }
+        WrittenSave { dir: self.dir, written, error }
+    }
+}
+
+/// Record what a [`PendingSave`] wrote: each document's checkpoint, or, for a document saved or
+/// closed while it was being written, the checkpoint removed again. Returns how many were
+/// written, or the error that stopped the writing.
+pub fn finish_tracked(s: &mut Session, w: WrittenSave) -> Result<usize> {
+    for uid in &w.written {
+        match s.docs.iter_mut().find(|d| d.uid == *uid) {
+            Some(document) if document.is_dirty() => {
+                if !has_checkpoint(document, &w.dir) {
+                    document.recovery_entries.push((w.dir.clone(), *uid));
+                }
+            }
+            // Saved or closed meanwhile: a checkpoint would bring back a document that is safe.
+            _ => discard(&w.dir, *uid),
+        }
+    }
+    match w.error {
+        Some(e) => Err(e),
+        None => Ok(w.written.len()),
+    }
 }
 
 /// Publish a document's recovery entry before its optional metadata.
 fn write_entry(access: &Access, dir: &Path, d: &DocState) -> Result<()> {
     let (doc, meta) = files(dir, d.uid);
-    let bytes = designcraft_format::save(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref())).map_err(|e| EngineError::Other(e.to_string()))?;
+    let bytes = designcraft_format::save_uncompressed_assets(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()))
+        .map_err(|e| EngineError::Other(e.to_string()))?;
     let replace = access.owns(d.uid);
     publish_recovery_file(&doc, &bytes, replace)?;
     access.record(d.uid);
@@ -918,6 +1001,32 @@ mod tests {
         assert_eq!(texts(&recovered_again), ["edits preserved after a second crash"]);
         assert!(recovered_again.documents().iter().all(DocState::is_dirty));
         assert_eq!(list(dir.path()).len(), 1);
+    }
+
+    /// The background save writes what the documents held when it began, and a document saved
+    /// or closed while it was being written leaves no checkpoint behind.
+    #[test]
+    fn a_save_begun_here_and_written_elsewhere_records_its_checkpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = unsaved("written on another thread");
+        let pending = begin_tracked(&mut s, dir.path()).unwrap();
+        assert!(!pending.is_empty());
+        // Edits after the begin don't reach this checkpoint (the next one has them).
+        s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap();
+        let written = std::thread::spawn(move || pending.write()).join().unwrap();
+        assert_eq!(finish_tracked(&mut s, written).unwrap(), 1);
+        assert_eq!(list(dir.path()).len(), 1);
+        let mut reopened = Session::new();
+        assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+        assert_eq!(texts(&reopened), ["written on another thread"]);
+        // Closed while a save was being written: its checkpoint goes again.
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = unsaved("closed meanwhile");
+        let pending = begin_tracked(&mut s, dir.path()).unwrap();
+        let written = pending.write();
+        s.close_document(0);
+        assert_eq!(finish_tracked(&mut s, written).unwrap(), 1);
+        assert!(list(dir.path()).is_empty(), "no checkpoint of a closed document");
     }
 
     #[test]
