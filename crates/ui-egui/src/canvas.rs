@@ -1407,13 +1407,22 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
     }
     let mut union: Option<Rect> = None;
     let mut color = Color32::from_rgb(79, 153, 255);
+    // One turned object: its box and handles turn with it (screen corners of its own box).
+    let mut turned: Option<[Pos2; 8]> = None;
     for id in &sel.items {
         let (Some(it), Some((a, _))) = (doc.item(*id), item_canvas_xf(doc, layout, *id)) else { continue };
         color = layer_color(doc, it);
         for poly in path_screen(it, xf, a) {
             painter.add(egui::Shape::line(poly, Stroke::new(1.0, color)));
         }
-        if sel.items.len() == 1 && sel.text.is_none() {
+        let own = (sel.items.len() == 1 && !sel.content).then(|| designcraft_tools::select::turned_box(it, a * it.xf)).flatten();
+        if let Some(r) = own {
+            let hs = designcraft_tools::select::handles(r).map(|h| xf.to_screen(a * it.xf * h));
+            if sel.text.is_none() {
+                painter.add(egui::Shape::closed_line(vec![hs[0], hs[2], hs[4], hs[6]], Stroke::new(1.0, color)));
+            }
+            turned = Some(hs);
+        } else if sel.items.len() == 1 && sel.text.is_none() {
             // InDesign draws a 1 pt bounding box around the selection.
             painter.rect_stroke(xf.rect(a.transform_rect_bbox(it.bounds())), 0.0, Stroke::new(1.0, color), StrokeKind::Middle);
         } else if sel.key == Some(*id) {
@@ -1477,15 +1486,17 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
         }
         let hs = 6.5;
         // Centre point. The Selection tool draws the live-corner widget as an overlay.
-        painter.rect_filled(Rect::from_center_size(u.center(), vec2(3.5, 3.5)), 0.0, color);
+        let centre = turned.map_or(u.center(), |h| pos2((h[0].x + h[4].x) / 2.0, (h[0].y + h[4].y) / 2.0));
+        painter.rect_filled(Rect::from_center_size(centre, vec2(3.5, 3.5)), 0.0, color);
         // A selected placed graphic has its own handles instead of the frame's.
         let graphic_selected =
             sel.content && sel.items.len() == 1 && doc.item(sel.items[0]).is_some_and(|i| matches!(i.content, Content::Graphic(_)));
-        for h in designcraft_tools::select::handles(DRect::new(u.min.x as f64, u.min.y as f64, u.max.x as f64, u.max.y as f64))
-            .into_iter()
-            .filter(|_| !graphic_selected)
-        {
-            let r = Rect::from_center_size(pos2(h.x as f32, h.y as f32), vec2(hs, hs));
+        let box_handles = turned.unwrap_or_else(|| {
+            designcraft_tools::select::handles(DRect::new(u.min.x as f64, u.min.y as f64, u.max.x as f64, u.max.y as f64))
+                .map(|h| pos2(h.x as f32, h.y as f32))
+        });
+        for h in box_handles.into_iter().filter(|_| !graphic_selected) {
+            let r = Rect::from_center_size(h, vec2(hs, hs));
             painter.rect_filled(r, 0.0, Color32::WHITE);
             painter.rect_stroke(r, 0.0, Stroke::new(hair(painter), color), StrokeKind::Inside);
         }

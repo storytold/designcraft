@@ -1966,3 +1966,41 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
     assert_eq!(cx2.hit_text_frame(q).map(|(_, i)| i), None, "no text frame in that group");
     assert_eq!(t2.cursor(&cx2, q, Mods::default()), Cursor::NotAllowed);
 }
+
+/// A turned object's handles sit on its own (turned) box, not on the bounding box around it; a
+/// drag on one resizes it along its own axes (`transform.resize` with `own`).
+#[test]
+fn a_turned_objects_handles_turn_with_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 150.0));
+    let turn = designcraft_geom::Affine::translate((150.0, 125.0))
+        * designcraft_geom::Affine::rotate(30f64.to_radians())
+        * designcraft_geom::Affine::translate((-150.0, -125.0));
+    d.item_mut(id).unwrap().xf = turn;
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let m = l.xf(SpreadRef::Doc(0)) * turn;
+    // The corner of the bounding box around the turned rect is no handle.
+    let bbox = m.transform_rect_bbox(Rect::new(100.0, 100.0, 200.0, 150.0));
+    let mut t = create("selection");
+    let down = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, bbox.x1, bbox.y1));
+    assert_ne!(down, vec![Action::Begin("Resize".into())]);
+    // The turned bottom right corner is.
+    let mut t = create("selection");
+    let br = m * Point::new(200.0, 150.0);
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, br.x, br.y)), vec![Action::Begin("Resize".into())]);
+    // Dragged 50 pt further along its own x axis: 50 pt wider, the same height.
+    let to = m * Point::new(250.0, 150.0);
+    match &t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.x, to.y))[0] {
+        Action::Preview(cmd, p) => {
+            assert_eq!(cmd, "transform.resize");
+            assert_eq!(p["own"], true);
+            assert_eq!(p["ids"], serde_json::json!([id.0]));
+            let r: Vec<f64> = p["to"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            let want = [100.0, 100.0, 250.0, 150.0];
+            assert!(r.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{r:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}

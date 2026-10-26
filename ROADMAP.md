@@ -12,6 +12,10 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-26** · A turned object's selection turns with it: one box on the object's own
+  outline with its handles on the turned corners, instead of a second, upright box around it; a
+  handle drag resizes it along its own axes (`transform.resize` with `own`), and the rotate zone
+  sits outside the turned corners. No readiness percentage change.
 - **2026-10-25** · The application bar uses craft-window's shared title-bar code. A drag that
   starts on a floating panel over the bar moves the panel, not the window, and in full screen the
   bar no longer zooms or moves the window. No readiness percentage change.

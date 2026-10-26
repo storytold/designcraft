@@ -48,6 +48,15 @@ enum Drag {
         from: Rect,
         spread: SpreadRef,
     },
+    /// Resizing one turned object along its own axes (see [`turned_box`]): `from` is its box in
+    /// its own space, `to_inner` maps spread points there.
+    ResizeTurned {
+        id: ItemId,
+        handle: usize,
+        from: Rect,
+        to_inner: Affine,
+        spread: SpreadRef,
+    },
     /// Resizing a selected placed graphic by its own bounding-box handles (`from`: its bounds on
     /// the spread at pointer down).
     ContentResize {
@@ -426,20 +435,56 @@ fn content_handle_at(cx: &ToolContext, p: Point) -> Option<(ItemId, usize)> {
     handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol).map(|h| (id, h))
 }
 
+/// The box of `it` in its own space when `m` (its own space to the canvas) turns it off the
+/// canvas axes (rotated other than by quarter turns, or skewed), so its bounding box on the canvas
+/// is not its own box. Groups keep the canvas box.
+pub fn turned_box(it: &Item, m: Affine) -> Option<Rect> {
+    let [a, b, c, d, _, _] = m.as_coeffs();
+    let scale = (a.abs() + b.abs() + c.abs() + d.abs()).max(1e-12);
+    // Both the diagonal and the off-diagonal take part: neither upright nor a quarter turn.
+    let off_axes = (a.abs() + d.abs()).min(b.abs() + c.abs()) / scale > 1e-9;
+    if it.is_group() || !off_axes || m.determinant().abs() < 1e-12 {
+        return None;
+    }
+    let r = it.inner_bounds();
+    (r.width() > 0.0 && r.height() > 0.0 && [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite())).then_some(r)
+}
+
+/// The one selected object when it is turned: its id, its box in its own space and the map from
+/// there to the canvas.
+fn selected_turned(cx: &ToolContext) -> Option<(ItemId, Rect, Affine)> {
+    let [id] = cx.selection.items.as_slice() else { return None };
+    let it = cx.doc.item(*id)?;
+    let m = cx.item_canvas_xf(*id)? * it.xf;
+    Some((*id, turned_box(it, m)?, m))
+}
+
+/// The selection's handles on the canvas: on a turned object's own box, else on the bounding box.
+fn selection_handles(cx: &ToolContext) -> Option<[Point; 8]> {
+    if let Some((_, r, m)) = selected_turned(cx) {
+        return Some(handles(r).map(|h| m * h));
+    }
+    Some(handles(cx.selection_bounds()?))
+}
+
 fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
     // With a placed graphic selected, the handles are the graphic's, not the frame's.
     if selected_graphic(cx).is_some() {
         return None;
     }
-    let b = cx.selection_bounds()?;
     let tol = cx.tol(5.0);
-    handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol)
+    selection_handles(cx)?.iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol)
 }
 
-/// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes.
+/// Side handles are drawn on the canvas bounding box (a turned object's on its own box); fitting
+/// uses the frame's local axes.
 fn fitting_axis(cx: &ToolContext, handle: usize) -> &'static str {
     if handle.is_multiple_of(2) {
         return "both";
+    }
+    // A turned object's handles sit on its own box: top and bottom set its height.
+    if selected_turned(cx).is_some() {
+        return if matches!(handle, 1 | 5) { "height" } else { "width" };
     }
     let canvas_height = matches!(handle, 1 | 5);
     let local_width_is_vertical = cx
@@ -458,9 +503,19 @@ fn fitting_axis(cx: &ToolContext, handle: usize) -> &'static str {
 
 /// Just outside a corner handle of the selection → rotate.
 fn rotate_zone(cx: &ToolContext, p: Point) -> Option<Point> {
-    let b = cx.selection_bounds()?;
     let inner = cx.tol(5.0);
     let outer = cx.tol(18.0);
+    // A turned object: just outside a corner of its own box.
+    if let Some((_, r, m)) = selected_turned(cx) {
+        let local = m.inverse() * p;
+        let outside = local.x < r.x0 || local.x > r.x1 || local.y < r.y0 || local.y > r.y1;
+        let near = [Point::new(r.x0, r.y0), Point::new(r.x1, r.y0), Point::new(r.x1, r.y1), Point::new(r.x0, r.y1)].iter().any(|c| {
+            let d = (m * *c - p).hypot();
+            d > inner && d <= outer
+        });
+        return (outside && near).then(|| m * r.center());
+    }
+    let b = cx.selection_bounds()?;
     for c in [Point::new(b.x0, b.y0), Point::new(b.x1, b.y0), Point::new(b.x1, b.y1), Point::new(b.x0, b.y1)] {
         let d = (c - p).hypot();
         let outside = p.x < b.x0 || p.x > b.x1 || p.y < b.y0 || p.y > b.y1;
@@ -785,6 +840,15 @@ impl Tool for SelectionTool {
                     self.drag = Drag::Rotate { center, start_angle: (p - center).atan2(), start_rotation: crate::snap::reference_rotation(cx) };
                     return vec![Action::Begin("Rotate".into())];
                 }
+                // A turned object resizes along its own axes.
+                if let Some(h) = handle_at(cx, p).filter(|_| !self.direct)
+                    && let Some((id, from, _)) = selected_turned(cx)
+                    && let (Some(loc), Some(it)) = (cx.doc.find(id), cx.doc.item(id))
+                {
+                    let to_inner = (cx.doc.parent_xf(&loc) * it.xf).inverse();
+                    self.drag = Drag::ResizeTurned { id, handle: h, from, to_inner, spread: loc.spread };
+                    return vec![Action::Begin("Resize".into())];
+                }
                 if let Some(h) = handle_at(cx, p).filter(|_| !self.direct)
                     && let (Some(b), Some(first)) = (cx.selection_bounds(), cx.selection.items.first())
                     && let Some(loc) = cx.doc.find(*first)
@@ -1029,6 +1093,14 @@ impl Tool for SelectionTool {
                         json!({"from": rect_json(from), "to": rect_json(to), "content": ev.mods.cmd, "distribute": distribute}),
                     )]
                 }
+                Drag::ResizeTurned { id, handle, from, to_inner, spread } => {
+                    let to = resize_rect(from, handle, to_inner * cx.layout.to_spread(spread, p), ev.mods);
+                    self.guides.clear();
+                    vec![Action::Preview(
+                        "transform.resize".into(),
+                        json!({"ids": [id.0], "from": rect_json(from), "to": rect_json(to), "own": true, "content": ev.mods.cmd}),
+                    )]
+                }
                 Drag::ContentResize { id, handle, from, spread } => {
                     let to = resize_rect(from, handle, cx.layout.to_spread(spread, p), ev.mods);
                     vec![Action::Preview("transform.set".into(), json!({"ids": [id.0], "content": true, "bounds": rect_json(to)}))]
@@ -1138,6 +1210,7 @@ impl Tool for SelectionTool {
                 match d {
                     Drag::Move { .. }
                     | Drag::Resize { .. }
+                    | Drag::ResizeTurned { .. }
                     | Drag::ContentResize { .. }
                     | Drag::Anchor { .. }
                     | Drag::Rotate { .. }
@@ -1229,7 +1302,7 @@ impl Tool for SelectionTool {
                 v.extend(self.guides.iter().cloned());
                 v
             }
-            Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
+            Drag::Move { .. } | Drag::Resize { .. } | Drag::ResizeTurned { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
             // The whole graphic shows while it's resized, outside the frame too.
             Drag::ContentResize { id, .. } => vec![Overlay::ContentGhost(*id)],
             Drag::None | Drag::Bracket { .. } => brackets(cx),
@@ -1273,7 +1346,7 @@ impl Tool for SelectionTool {
         }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
-            Drag::Resize { handle, .. } => return handle_cursor(handle),
+            Drag::Resize { handle, .. } | Drag::ResizeTurned { handle, .. } => return handle_cursor(handle),
             Drag::Rotate { .. } => return Cursor::Rotate,
             Drag::Corner { .. } => return Cursor::Arrow,
             _ => {}
