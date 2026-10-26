@@ -1445,27 +1445,29 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     .filter_map(|w| st.doc.resolve_color(&w.name, 1.0).map(|c| (w.name.as_str(), c)))
                     .collect();
                 let current = colors.iter().find(|(_, c)| *c == s.color).map_or(crate::i18n::tr(&lang, "Custom"), |(n, _)| *n);
-                egui::ComboBox::from_id_salt("grad_stop_swatch").selected_text(crate::rtl::widget(ui, current)).width(120.0).show_ui(ui, |ui| {
-                    for (name, c) in &colors {
-                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(140.0), 20.0), Sense::click());
-                        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, *c == s.color, *name));
-                        if resp.hovered() {
-                            ui.painter().rect_filled(r, 0.0, t.hover);
-                        }
-                        let chip = egui::Rect::from_min_size(r.min + vec2(4.0, 3.0), vec2(14.0, 14.0));
-                        ui.painter().rect_filled(chip, 0.0, color32(c, 1.0));
-                        ui.painter().rect_stroke(chip, 0.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                        ui.painter().text(r.min + vec2(24.0, 10.0), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(12.5), t.text);
-                        if resp.clicked() {
-                            let mut stops = stops_json(&g);
-                            if let Some(o) = stops.get_mut(i).and_then(serde_json::Value::as_object_mut) {
-                                o.insert("swatch".to_string(), json!(name));
-                                o.remove("color");
+                let combo =
+                    egui::ComboBox::from_id_salt("grad_stop_swatch").selected_text(crate::rtl::widget(ui, current)).width(120.0).show_ui(ui, |ui| {
+                        for (name, c) in &colors {
+                            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(140.0), 20.0), Sense::click());
+                            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, *c == s.color, *name));
+                            if resp.hovered() {
+                                ui.painter().rect_filled(r, 0.0, t.hover);
                             }
-                            send = Some(json!({"stops": stops}));
+                            let chip = egui::Rect::from_min_size(r.min + vec2(4.0, 3.0), vec2(14.0, 14.0));
+                            ui.painter().rect_filled(chip, 0.0, color32(c, 1.0));
+                            ui.painter().rect_stroke(chip, 0.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+                            ui.painter().text(r.min + vec2(24.0, 10.0), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(12.5), t.text);
+                            if resp.clicked() {
+                                let mut stops = stops_json(&g);
+                                if let Some(o) = stops.get_mut(i).and_then(serde_json::Value::as_object_mut) {
+                                    o.insert("swatch".to_string(), json!(name));
+                                    o.remove("color");
+                                }
+                                send = Some(json!({"stops": stops}));
+                            }
                         }
-                    }
-                });
+                    });
+                let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&lang, "Color"));
                 let [r, gg, bb] = s.color.to_rgb();
                 let mut rgb = [(r * 255.0) as u8, (gg * 255.0) as u8, (bb * 255.0) as u8];
                 if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).on_hover_text(crate::i18n::tr(&lang, "Stop Color:")).changed() {
