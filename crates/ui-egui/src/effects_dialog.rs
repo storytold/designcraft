@@ -246,15 +246,15 @@ fn swatch(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, path: &[&str]) {
         }
         v.as_str().unwrap_or("[Black]").to_string()
     };
-    let names: Vec<String> = app
-        .session
-        .active()
-        .map_or_else(Vec::new, |st| st.doc.swatches.iter().filter(|w| !w.hidden || w.name == cur).map(|w| w.name.clone()).collect());
-    egui::ComboBox::from_id_salt(("fx_swatch", path.join("."))).selected_text(&cur).width(150.0).show_ui(ui, |ui| {
-        for n in names {
-            if ui.selectable_label(n == cur, &n).clicked() {
-                set(d, path, json!(n));
-            }
+    let Some(doc) = app.session.active().map(|st| &st.doc) else { return };
+    // The colour itself beside its name, and a chip per swatch in the menu, as the swatch menus
+    // elsewhere: a list of bare names hid what the shadow was coloured with.
+    ui.horizontal(|ui| {
+        let (c, g) = crate::widgets::swatch_colors(doc, &cur, 1.0);
+        let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+        crate::widgets::paint_chip(ui.painter(), r, c, g);
+        if let Some(n) = crate::dialogs::swatch_menu(ui, doc, ("fx_swatch", path.join(".")), &cur, 128.0) {
+            set(d, path, json!(n));
         }
     });
 }
@@ -765,6 +765,44 @@ mod tests {
         assert!((app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().opacity - 0.8).abs() < 1e-6);
         app.run("edit.undo", json!({})).unwrap();
         assert!(!fx(&app).inner_shadow.on);
+    }
+
+    #[test]
+    fn the_shadow_colour_shows_its_swatch_beside_the_name() {
+        let (mut app, _) = app_with_frame();
+        app.run("swatch.create", json!({"name": "Shade", "color": "#12ab34"})).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let shade = crate::widgets::swatch_colors(&app.session.doc().unwrap().doc, "Shade", 1.0).0.unwrap();
+        // Does the dialog, once faded in, paint a chip of the colour `c`?
+        let mut time = 0.0;
+        let mut painted = |app: &mut DesignApp, c: egui::Color32| {
+            let mut found = false;
+            for _ in 0..20 {
+                time += 0.1;
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    time: Some(time),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| crate::dialogs::show(app, ui.ctx()));
+                out.textures_delta.clear();
+                fn walk(s: &egui::epaint::Shape, c: egui::Color32) -> bool {
+                    match s {
+                        egui::epaint::Shape::Rect(r) => r.fill == c,
+                        egui::epaint::Shape::Vec(v) => v.iter().any(|s| walk(s, c)),
+                        _ => false,
+                    }
+                }
+                found = out.shapes.iter().any(|s| walk(&s.shape, c));
+            }
+            found
+        };
+        open(&mut app, "dropShadow");
+        assert!(!painted(&mut app, shade), "not the shadow's colour yet");
+        set(app.ui.dialog.as_mut().unwrap(), &["dropShadow", "color"], json!("Shade"));
+        assert!(painted(&mut app, shade), "the chosen swatch's colour is shown, not only its name");
+        assert_eq!(params(app.ui.dialog.as_ref().unwrap())["effects"]["dropShadow"]["color"], "Shade");
     }
 
     #[test]

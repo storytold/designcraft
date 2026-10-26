@@ -4535,7 +4535,7 @@ fn para_sides(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &s
 
 /// A swatch menu with a colour chip per swatch (hidden swatches left out); returns the swatch
 /// picked.
-fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
+pub(crate) fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
     let mut picked = None;
     egui::ComboBox::from_id_salt(id).selected_text(current).width(width).show_ui(ui, |ui| {
         for w in doc.swatches.iter().filter(|w| !w.hidden) {
