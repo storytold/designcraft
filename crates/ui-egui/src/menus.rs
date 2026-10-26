@@ -2996,7 +2996,8 @@ const CONTEXT_OBJECT: &[&str] = &[
 ];
 /// Added to the object menu when a graphic frame is selected.
 const CONTEXT_GRAPHIC_FRAME: &[&str] = &["menu:Object/Fitting"];
-const CONTEXT_OBJECT_TAIL: &[&str] = &["menu:Object/Content", "menu:Object/Effects"];
+/// Generate QR Code… fills the selected frame (an empty one, or a QR code to edit it).
+const CONTEXT_OBJECT_TAIL: &[&str] = &["menu:Object/Content", "menu:Object/Effects", "ui:app.qrCode"];
 /// Added to the object menu when a text frame is selected.
 const CONTEXT_TEXT_FRAME: &[&str] = &["-", "cmd:type.fillWithPlaceholder", "cmd:object.textFrameOptions"];
 const CONTEXT_TEXT: &[&str] = &[
