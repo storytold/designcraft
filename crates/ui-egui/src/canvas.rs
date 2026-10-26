@@ -333,7 +333,6 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     if let Some(r) = sel_rect
         && !preview
-        && r.intersects(screen)
     {
         crate::taskbar::show(app, &ui.ctx().clone(), r, screen);
     }
@@ -640,6 +639,7 @@ fn baseline_grid_lines(start: f64, increment: f64, height: f64) -> impl Iterator
 
 fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout, t: &Tokens) {
     let s = &doc.settings;
+    let selected = selected_guide(app, painter.ctx()).map(|(g, _, _)| g);
     for slot in &layout.slots {
         let Some(sp) = doc.spread(slot.spread) else { continue };
         // Everything below is in spread coordinates, placed through the slot (which may be turned).
@@ -658,7 +658,7 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
             painter.rect_stroke(rect(br), 0.0, Stroke::new(hair(painter), c32(s.bleed_color)), StrokeKind::Middle);
         }
         let pasteboard = m.inverse().transform_rect_bbox(layout.pasteboard);
-        for p in &sp.pages {
+        for (pi, p) in sp.pages.iter().enumerate() {
             let pr = p.bounds();
             if !app.ui.guides {
                 continue;
@@ -687,7 +687,7 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
                     }
                 }
             }
-            for g in p.guides.iter().filter(|g| g.visible_in(doc)) {
+            for (gi, g) in p.guides.iter().enumerate().filter(|(_, g)| g.visible_in(doc)) {
                 // Spread guides cross the pasteboard; page guides their page.
                 let span = if g.spread { pasteboard } else { pr };
                 let (a, bb) = match g.orientation {
@@ -697,7 +697,11 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
                         (Point::new(g.position, span.y0), Point::new(g.position, span.y1))
                     }
                 };
-                let stroke = Stroke::new(hair(painter), Color32::from_rgb(74, 227, 255));
+                let is_selected = selected.as_ref().is_some_and(|g| g.spread == slot.spread && g.page == pi && g.index == gi);
+                let stroke = Stroke::new(
+                    if is_selected { 2.0 * hair(painter) } else { hair(painter) },
+                    if is_selected { t.smart_guide } else { Color32::from_rgb(74, 227, 255) },
+                );
                 if g.liquid {
                     // Liquid guides are dashed.
                     painter.extend(egui::Shape::dashed_line(&[pt(a), pt(bb)], stroke, 6.0, 3.0));
@@ -1706,9 +1710,39 @@ fn hair(painter: &egui::Painter) -> f32 {
 
 const GUIDE_DRAG: &str = "canvas_guide_drag";
 
+/// Transient guide selection is scoped to a document revision, so deletion/undo cannot
+/// accidentally make a stale index edit a different guide.
+#[derive(Clone, Debug)]
+pub(crate) struct SelectedGuide {
+    uid: u64,
+    revision: u64,
+    pub spread: designcraft_doc::SpreadRef,
+    pub page: usize,
+    pub index: usize,
+}
+const GUIDE_SELECTION: &str = "canvas_selected_guide";
+pub(crate) fn select_guide(app: &DesignApp, ctx: &egui::Context, spread: designcraft_doc::SpreadRef, page: usize, index: usize) {
+    if let Some(st) = app.session.active() {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(GUIDE_SELECTION), SelectedGuide { uid: st.uid, revision: st.revision, spread, page, index }));
+    }
+}
+pub(crate) fn selected_guide(app: &DesignApp, ctx: &egui::Context) -> Option<(SelectedGuide, designcraft_doc::Orientation, f64)> {
+    let selected = ctx.data(|d| d.get_temp::<SelectedGuide>(egui::Id::new(GUIDE_SELECTION)))?;
+    let st = app.session.active()?;
+    if selected.uid != st.uid || selected.revision != st.revision || !app.ui.guides || app.ui.guides_locked {
+        return None;
+    }
+    let g = st.doc.spread(selected.spread)?.pages.get(selected.page)?.guides.get(selected.index)?;
+    if g.locked || !g.visible_in(&st.doc) {
+        return None;
+    }
+    Some((selected, g.orientation, g.position))
+}
+
 /// A ruler guide being dragged: out of a ruler (`from` None) or an existing one.
 #[derive(Clone, Debug)]
 struct GuideDrag {
+    start: Pos2,
     orientation: designcraft_doc::Orientation,
     from: Option<(designcraft_doc::SpreadRef, usize, usize)>,
     /// Pointer position (screen).
@@ -1751,6 +1785,9 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
     let (pressed, released, origin, latest) =
         ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos()));
     let mut drag: Option<GuideDrag> = ui.data(|d| d.get_temp(id));
+    if pressed && origin.is_some_and(|p| rect.contains(p)) {
+        ui.data_mut(|d| d.remove::<SelectedGuide>(egui::Id::new(GUIDE_SELECTION)));
+    }
     if drag.is_none() && pressed && resp.hovered() && app.ui.guides && !app.ui.guides_locked {
         let Some(o) = origin else { return false };
         let full = resp.rect;
@@ -1764,7 +1801,7 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
                 None
             };
             if let Some(orientation) = orientation {
-                drag = Some(GuideDrag { orientation, from: None, at: Some(o) });
+                drag = Some(GuideDrag { start: o, orientation, from: None, at: Some(o) });
             }
         } else if rect.contains(o)
             && matches!(app.session.tool_id(), "selection" | "directSelection")
@@ -1779,7 +1816,7 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
                 })
             });
             if !over_item {
-                drag = Some(GuideDrag { orientation, from: Some((r, pi, gi)), at: Some(o) });
+                drag = Some(GuideDrag { start: o, orientation, from: Some((r, pi, gi)), at: Some(o) });
             }
         }
     }
@@ -1819,7 +1856,12 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
             let _ = app.run("guide.delete", json!({"spread": r, "page": pi, "index": gi}));
         }
         (Some((r, pi, gi)), true, Some((tr, sp, _))) if tr == r => {
-            let _ = app.run("guide.move", json!({"spread": r, "page": pi, "index": gi, "position": pos_of(sp)}));
+            // A click selects without nudging the guide to the nearest screen pixel.
+            let click_only = g.start.distance(p) < 3.0;
+            if click_only || app.run("guide.move", json!({"spread": r, "page": pi, "index": gi, "position": pos_of(sp)})).is_ok() {
+                let _ = app.run("selection.set", json!({"ids":[]}));
+                select_guide(app, ui.ctx(), r, pi, gi);
+            }
         }
         (None, true, Some((r, sp, on_page))) => {
             let mut params = json!({"spread": r, "orientation": orient, "position": pos_of(sp), "at": sp.x, "spreadGuide": on_page.is_none()});
@@ -2108,5 +2150,28 @@ mod tests {
         assert_eq!(lines(-30.0, 12.0, 30.0), [6.0, 18.0], "a start above the page keeps its rhythm");
         assert_eq!(lines(f64::NAN, 12.0, 792.0), [0.0; 0]);
         assert_eq!(baseline_grid_lines(0.0, 12.0, f64::INFINITY).count(), MAX_BASELINES);
+    }
+}
+
+#[cfg(test)]
+mod selected_guide_tests {
+    use super::*;
+    #[test]
+    fn guide_selection_is_scoped_to_document_revision() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("guide.add", json!({"page":0,"orientation":"vertical","position":72})).unwrap();
+        let ctx = egui::Context::default();
+        select_guide(&app, &ctx, designcraft_doc::SpreadRef::Doc(0), 0, 0);
+        assert_eq!(selected_guide(&app, &ctx).unwrap().2, 72.0);
+        app.run("guide.move", json!({"page":0,"index":0,"position":144})).unwrap();
+        assert!(selected_guide(&app, &ctx).is_none());
+        select_guide(&app, &ctx, designcraft_doc::SpreadRef::Doc(0), 0, 0);
+        assert_eq!(selected_guide(&app, &ctx).unwrap().2, 144.0);
+        app.ui.guides_locked = true;
+        assert!(selected_guide(&app, &ctx).is_none());
+        app.ui.guides_locked = false;
+        app.run("file.new", json!({})).unwrap();
+        assert!(selected_guide(&app, &ctx).is_none());
     }
 }

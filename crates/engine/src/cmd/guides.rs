@@ -25,6 +25,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             add
         ),
+        cmd!("guide.copy", "Copy Guide to Position", [], None, "{spread?, page, index, position}", has_doc, copy_guide),
         cmd!("guide.move", "Move Guide", [], None, "{spread?, page, index, position}", has_doc, move_guide),
         cmd!("guide.delete", "Delete Guide", [], None, "{spread?, page, index}", has_doc, delete),
         cmd!("guide.deleteAll", "Delete All Guides on Spread", ["View", "Grids & Guides"], None, "{spread?}", has_doc, |s, p| {
@@ -146,6 +147,20 @@ fn move_guide(s: &mut Session, p: &Value) -> Result<Value> {
             .ok_or_else(|| bad("guide.move", "no such guide"))?;
         g.position = pos;
         Ok(Value::Null)
+    })
+}
+
+fn copy_guide(s: &mut Session, p: &Value) -> Result<Value> {
+    let (r, pi, i) = guide_ref(p, "guide.copy")?;
+    let pos = finite_number(p, "position", "guide.copy")?.ok_or_else(|| bad("guide.copy", "missing position"))?;
+    s.edit(|d, _| {
+        check_editable(d, r, pi, i, "guide.copy")?;
+        let page = d.spread_mut(r).and_then(|sp| sp.pages.get_mut(pi)).ok_or_else(|| bad("guide.copy", "no such page"))?;
+        let mut copy = page.guides.get(i).cloned().ok_or_else(|| bad("guide.copy", "no such guide"))?;
+        copy.position = pos;
+        let index = page.guides.len();
+        page.guides.push(copy);
+        Ok(json!({"page":pi,"index":index}))
     })
 }
 
@@ -386,5 +401,23 @@ mod layer_tests {
         s.execute("layer.set", &json!({"id": l, "visible": true, "locked": true})).unwrap();
         let d = s.doc().unwrap().doc.clone();
         assert!(g(&s).visible_in(&d) && !g(&s).editable_in(&d));
+    }
+    #[test]
+    fn guide_copy_preserves_original_orientation_and_undo() {
+        for orientation in ["horizontal", "vertical"] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("guide.add", &json!({"page":0,"orientation":orientation,"position":72,"spreadGuide":true})).unwrap();
+            let result = s.execute("guide.copy", &json!({"page":0,"index":0,"position":144})).unwrap();
+            assert_eq!(result["index"], 1);
+            let guides = s.execute("guide.list", &json!({})).unwrap();
+            assert_eq!(guides[0]["position"], 72.0);
+            assert_eq!(guides[1]["position"], 144.0);
+            assert_eq!(guides[1]["orientation"], orientation);
+            assert_eq!(guides[1]["spread"], true);
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(s.execute("guide.list", &json!({})).unwrap().as_array().unwrap().len(), 1);
+            assert!(s.execute("guide.copy", &json!({"page":0,"index":99,"position":144})).is_err());
+        }
     }
 }

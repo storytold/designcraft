@@ -62,6 +62,17 @@ pub struct Imported {
 
 /// Import with a custom reader for linked files, reporting the problems that did not stop it.
 pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Imported> {
+    import_idml_report_with_previews(bytes, read_link, &HashMap::new())
+}
+
+/// [`import_idml_report`], with stand-in images for graphics whose file neither the package nor
+/// `read_link` provides: `previews` maps a graphic's `Self` to an image (an InDesign document's
+/// screen preview of a linked file). The graphic keeps its link, so relinking replaces it.
+pub fn import_idml_report_with_previews(
+    bytes: &[u8],
+    read_link: &dyn Fn(&str) -> Option<Vec<u8>>,
+    previews: &HashMap<String, Vec<u8>>,
+) -> Result<Imported> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
     let mut files: HashMap<String, Vec<u8>> = HashMap::new();
     // Normalised part name → entry name, first entry wins (zip order, so the choice is stable).
@@ -105,7 +116,7 @@ pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u
             top.push(c.clone());
         }
     }
-    let mut im = Importer::new(read_link);
+    let mut im = Importer::new(read_link, previews);
     im.run(&root, &top)?;
     let document = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
@@ -159,6 +170,8 @@ struct ItemCtx {
 
 struct Importer<'r> {
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
+    /// Graphic `Self` → stand-in image for a linked file that can't be read.
+    previews: &'r HashMap<String, Vec<u8>>,
     next_id: u64,
     settings: DocSettings,
     default_margins: Option<(Margins, Columns)>,
@@ -262,7 +275,7 @@ fn tint(v: Option<f64>) -> Option<f32> {
 }
 
 impl<'r> Importer<'r> {
-    fn new(read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>) -> Self {
+    fn new(read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>, previews: &'r HashMap<String, Vec<u8>>) -> Self {
         let specials: Vec<Swatch> = designcraft_color::default_swatches().into_iter().filter(|s| s.locked).collect();
         let mut swatch_names = HashMap::new();
         swatch_names.insert("Swatch/None".to_string(), swatch::NONE.to_string());
@@ -274,6 +287,7 @@ impl<'r> Importer<'r> {
         styles.paragraph.iter_mut().for_each(|s| s.based_on = None);
         Importer {
             read_link,
+            previews,
             next_id: 0,
             settings: DocSettings::default(),
             default_margins: None,
@@ -2347,6 +2361,12 @@ impl<'r> Importer<'r> {
                 data = d;
                 read_from = Some(p.clone());
             }
+        }
+        // A linked file that can't be read shows the document's preview of it, if it has one.
+        if data.is_empty()
+            && let Some(preview) = g.get("Self").and_then(|s| self.previews.get(s))
+        {
+            data = preview.clone();
         }
         let (mime, px) = sniff_image(&data);
         let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {

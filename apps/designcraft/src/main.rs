@@ -110,6 +110,12 @@ fn load_prefs(app: &mut DesignApp) {
     {
         app.ui = ui;
     }
+    if !app.ui.control_bar_upgrade_seen {
+        app.ui.control_bar = true;
+        app.ui.task_bar = true;
+        app.ui.task_bar_pin = None;
+        app.ui.control_bar_upgrade_seen = true;
+    }
     // Engine preferences (Preferences dialog, favourites…) live beside the UI state.
     if let Some(p) = prefs_path().map(|p| p.with_file_name("prefs.json"))
         && let Ok(bytes) = std::fs::read(&p)
@@ -191,9 +197,10 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "DesignCraft or IDML", extensions: &["designcraft", "idml"] },
+            OpenFilter { name: "DesignCraft, IDML or InDesign", extensions: &["designcraft", "idml", "indd", "indt"] },
             OpenFilter { name: "DesignCraft", extensions: &["designcraft"] },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
+            OpenFilter { name: "InDesign document or template (INDD, INDT)", extensions: &["indd", "indt"] },
         ],
     }
 }
@@ -383,7 +390,9 @@ mod tests {
         assert!(place.len() > 1, "the place dialog keeps a filter for each kind of file");
         assert!(place.iter().any(|filter| filter.extensions.contains(&"png")));
         let documents = super::open_filters("");
-        assert!(documents.iter().any(|filter| filter.extensions.contains(&"designcraft")));
+        for ext in ["designcraft", "idml", "indd", "indt"] {
+            assert!(documents.first().is_some_and(|filter| filter.extensions.contains(&ext)), "{ext} is missing from the first Open filter");
+        }
     }
 }
 

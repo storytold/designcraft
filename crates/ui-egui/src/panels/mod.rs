@@ -57,6 +57,10 @@ pub fn colors_affect_text(app: &DesignApp) -> bool {
 /// Fill and stroke swatches and tints of what colour edits apply to: the text (see
 /// [`colors_affect_text`]) or the first selected object.
 pub fn color_target(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
+    if crate::toolbar::no_color_selection(app) {
+        let (fill, stroke) = app.session.drawing_colors.clone().unwrap_or_default();
+        return Some((fill.swatch, fill.tint, stroke.swatch, stroke.tint));
+    }
     if colors_affect_text(app) {
         let a = text_attrs(app)?;
         let c = &a["chars"];
@@ -69,6 +73,21 @@ pub fn color_target(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
 
 /// Apply a swatch (and tint) to the fill or stroke of what colour edits apply to.
 pub fn apply_swatch(app: &mut DesignApp, stroke: bool, swatch: &str, tint: Option<f32>) -> Result<Value, String> {
+    if crate::toolbar::no_color_selection(app) {
+        let (mut fill, mut outline) = app.session.drawing_colors.clone().unwrap_or_default();
+        if stroke {
+            outline.swatch = swatch.into();
+            outline.tint = tint.unwrap_or(1.0);
+            if swatch != "[None]" && outline.weight <= 0.0 {
+                outline.weight = 1.0;
+            }
+        } else {
+            fill.swatch = swatch.into();
+            fill.tint = tint.unwrap_or(1.0);
+        }
+        app.session.drawing_colors = Some((fill, outline));
+        return Ok(json!({"defaults":true}));
+    }
     if colors_affect_text(app) {
         let (k, kt) = if stroke { ("stroke", "strokeTint") } else { ("fill", "fillTint") };
         let mut attrs = json!({k: swatch});

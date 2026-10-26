@@ -284,6 +284,8 @@ pub struct Session {
     pub book: Option<cmd::book::Book>,
     /// Content Collector conveyor: collected objects as snippets (name, bytes).
     pub conveyor: Vec<(String, Vec<u8>)>,
+    /// Application-session drawing colours chosen with no object selected.
+    pub drawing_colors: Option<(designcraft_doc::Fill, designcraft_doc::Stroke)>,
 }
 
 impl Default for Session {
@@ -312,6 +314,7 @@ impl Session {
             typing_format: None,
             library: None,
             conveyor: Vec::new(),
+            drawing_colors: None,
             book: None,
             untitled: 0,
         }

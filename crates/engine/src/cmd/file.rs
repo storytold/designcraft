@@ -18,9 +18,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
         cmd!(query "file.presets", "Document Presets", [], None, "{}", always, |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default())),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — .designcraft or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped (and, for .idml, package parts missing)}",
+            "{path} — .designcraft, .idml, or an InDesign .indd/.indt (converted to IDML; its conversion warnings join `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: conversion warnings, font files skipped and, for .idml, .indd and .indt, package parts missing}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON or an IDML package", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package or an InDesign .indd/.indt", always, file_open_bytes),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
@@ -161,7 +161,7 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        if path.to_ascii_lowercase().ends_with(".idml") {
+        if path.to_ascii_lowercase().ends_with(".idml") || super::interchange::has_indd_extension(path) {
             return super::interchange::open_idml(s, p);
         }
         let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -220,8 +220,9 @@ fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
 
 fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
-    // IDML packages are recognised by their stored `mimetype` first entry.
-    if designcraft_idml::is_idml(&b) {
+    // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
+    // signature (or their name).
+    if designcraft_idml::is_idml(&b) || super::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return super::interchange::open_idml(s, p);
     }
     let mut d = from_bytes(&b)?;

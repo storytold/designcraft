@@ -216,7 +216,7 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
     {
         let _ = app.run("color.defaultFillStroke", json!({}));
     }
-    let swap = egui::Rect::from_min_size(egui::pos2(x0 + 19.0, row.min.y), vec2(11.0, 11.0));
+    let swap = egui::Rect::from_min_size(egui::pos2(x0 + 17.0, row.min.y - 3.0), vec2(16.0, 16.0));
     icons::paint(ui.painter(), swap, "swap", t.icon);
     if ui
         .interact(swap, ui.id().with("proxy_swap_btn"), Sense::click())
@@ -234,9 +234,12 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
     let stroke_r = egui::Rect::from_min_size(egui::pos2(x0 + 10.0, r.min.y + 10.0), vec2(19.5, 19.5));
     let (fc, fg) = match &doc {
         Some(d) => crate::widgets::swatch_colors(d, &fill_sw, 1.0),
-        None => (None, None),
+        None => (if fill_sw == "[Black]" { Some(Color32::BLACK) } else { None }, None),
     };
-    let sc = doc.as_ref().and_then(|d| crate::widgets::swatch_colors(d, &stroke_sw, 1.0).0);
+    let sc = doc
+        .as_ref()
+        .and_then(|d| crate::widgets::swatch_colors(d, &stroke_sw, 1.0).0)
+        .or_else(|| if doc.is_none() && stroke_sw == "[Black]" { Some(Color32::BLACK) } else { None });
     let p = ui.painter();
     let paint_stroke = |p: &egui::Painter| {
         match sc {
@@ -320,24 +323,26 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
         }
     }
     ui.add_space(5.0);
-    // Apply None well (flyout: Apply Color / Gradient / None).
-    let (row, _) = ui.allocate_exact_size(vec2(width, 21.0), Sense::hover());
-    let well = egui::Rect::from_center_size(egui::pos2(row.min.x + width / 2.0, row.center().y), vec2(28.0, 21.0));
-    let resp = ui.interact(well, ui.id().with("proxy_apply"), Sense::click()).on_hover_ui(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Apply None (/)"));
-    });
-    ui.painter().rect(well, 2.0, t.well, Stroke::new(1.0, t.well_rim), StrokeKind::Outside);
-    let chip = egui::Rect::from_center_size(well.center(), vec2(14.0, 14.0));
-    crate::widgets::paint_chip(ui.painter(), chip, None, None);
-    flyout_triangle(ui.painter(), well, t.icon);
-    if resp.clicked() {
-        let _ = app.run("color.applyNone", json!({}));
-    }
-    egui::Popup::context_menu(&resp).show(|ui| {
-        for (label, sw) in [("Apply Color", "[Black]"), ("Apply None", "[None]")] {
-            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                let _ = crate::panels::apply_swatch(app, stroke_front, sw, None);
-                ui.close();
+    // Direct Apply Color / Gradient / None controls, including the previously absent gradient shortcut.
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let size = ((width - 12.0) / 3.0).clamp(8.0, 18.0);
+        for (icon, label, action) in [("format-container", "Apply Color", 0), ("tool-gradient", "Apply Gradient Fill", 1), ("none", "Apply None", 2)]
+        {
+            let enabled = action != 1 || (!text_mode && !stroke_front && app.session.active().is_some_and(|st| !st.selection.items.is_empty()));
+            let response = ui.add_enabled_ui(enabled, |ui| icons::button(ui, icon, size, false, label));
+            if response.inner.clicked() {
+                match action {
+                    0 => {
+                        let _ = crate::panels::apply_swatch(app, stroke_front, "[Black]", None);
+                    }
+                    1 => {
+                        let _ = app.run("object.gradient", json!({}));
+                    }
+                    _ => {
+                        let _ = app.run("color.applyNone", json!({}));
+                    }
+                }
             }
         }
     });
@@ -350,32 +355,27 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
         }
     });
     separator(ui, &t);
-    // Screen Mode well with flyout.
-    let (row, _) = ui.allocate_exact_size(vec2(width, 22.0), Sense::hover());
-    let well = egui::Rect::from_center_size(egui::pos2(row.min.x + width / 2.0, row.center().y), vec2(28.0, 21.0));
-    let resp = ui.interact(well, ui.id().with("screen_mode"), Sense::click());
-    ui.painter().rect(well, 2.0, t.well, Stroke::new(1.0, t.well_rim), StrokeKind::Outside);
-    let preview = app.ui.screen_mode == crate::ScreenMode::Preview;
-    icons::paint(
-        ui.painter(),
-        egui::Rect::from_center_size(well.center(), vec2(15.0, 15.0)),
-        if preview { "screen-preview" } else { "screen-normal" },
-        t.text_strong,
-    );
-    flyout_triangle(ui.painter(), well, t.icon);
-    let resp = resp.on_hover_ui(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, if preview { "Preview (W)" } else { "Normal (W)" }));
-    });
-    if resp.clicked() {
-        let _ = app.run("view.togglePreview", json!({}));
-    }
-    egui::Popup::context_menu(&resp).show(|ui| {
-        for (label, mode) in [("Normal", "normal"), ("Preview", "preview"), ("Bleed", "bleed"), ("Slug", "slug"), ("Presentation", "presentation")] {
-            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                let _ = app.run("view.screenMode", json!({"mode": mode}));
-                ui.close();
-            }
+    // Keep Normal and Preview visible side by side, with additional modes on the flyout.
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space((width - 52.0).max(0.0) / 2.0);
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let normal = tool_button(ui, "screen-normal", app.ui.screen_mode == crate::ScreenMode::Normal, "Normal screen mode");
+        if normal.clicked() {
+            let _ = app.run("view.screenMode", json!({"mode": "normal"}));
         }
+        let preview = tool_button(ui, "screen-preview", app.ui.screen_mode == crate::ScreenMode::Preview, "Preview screen mode (W)");
+        flyout_triangle(ui.painter(), preview.rect, t.icon);
+        if preview.clicked() {
+            let _ = app.run("view.screenMode", json!({"mode": "preview"}));
+        }
+        egui::Popup::context_menu(&preview).show(|ui| {
+            for (label, mode) in [("Preview", "preview"), ("Bleed", "bleed"), ("Slug", "slug"), ("Presentation", "presentation")] {
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                    let _ = app.run("view.screenMode", json!({"mode": mode}));
+                    ui.close();
+                }
+            }
+        });
     });
 }
 
@@ -426,6 +426,10 @@ fn tool_button(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::
 
 /// Default Fill and Stroke (D): no fill, a black stroke.
 pub(crate) fn default_fill_stroke(app: &mut DesignApp) -> Result<Value, String> {
+    if no_color_selection(app) {
+        app.session.drawing_colors = Some((designcraft_doc::Fill::default(), designcraft_doc::Stroke::default()));
+        return Ok(json!({"defaults":true}));
+    }
     if crate::panels::colors_affect_text(app) {
         app.run("type.char", json!({"fill": "[Black]", "fillTint": 1.0, "stroke": "[None]", "strokeTint": 1.0}))
     } else {
@@ -434,7 +438,21 @@ pub(crate) fn default_fill_stroke(app: &mut DesignApp) -> Result<Value, String> 
 }
 
 /// Swap Fill and Stroke (Shift+X): each selected object's fill and stroke trade places.
+pub(crate) fn no_color_selection(app: &DesignApp) -> bool {
+    app.session.active().is_none_or(|st| st.selection.items.is_empty() && st.selection.text.is_none())
+}
+
 pub(crate) fn swap_fill_stroke(app: &mut DesignApp) -> Result<Value, String> {
+    if no_color_selection(app) {
+        let (mut fill, mut stroke) = app.session.drawing_colors.clone().unwrap_or_default();
+        std::mem::swap(&mut fill.swatch, &mut stroke.swatch);
+        std::mem::swap(&mut fill.tint, &mut stroke.tint);
+        if stroke.swatch != "[None]" && stroke.weight <= 0.0 {
+            stroke.weight = 1.0;
+        }
+        app.session.drawing_colors = Some((fill, stroke));
+        return Ok(json!({"defaults":true}));
+    }
     if crate::panels::colors_affect_text(app) { app.run("type.swapFillStroke", json!({})) } else { app.run("object.swapFillStroke", json!({})) }
 }
 
@@ -667,5 +685,28 @@ mod text_color_tests {
         let doc = &h.state().session.doc().unwrap().doc;
         assert_eq!(doc.item(ItemId(f["id"].as_u64().unwrap())).unwrap().fill, before);
         assert!(doc.story(StoryId(f["story"].as_u64().unwrap())).unwrap().format_after(0).over.fill.is_some());
+    }
+}
+
+#[cfg(test)]
+mod swap_defaults_tests {
+    use super::*;
+    #[test]
+    fn swap_without_selection_updates_proxy_and_next_drawn_shape() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        swap_fill_stroke(&mut app).unwrap();
+        let c = crate::panels::color_target(&mut app).unwrap();
+        assert_eq!((&*c.0, &*c.2), ("[Black]", "[None]"));
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect":[50,50,100,100],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap();
+        let item = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap();
+        assert_eq!(item.fill.swatch, "[Black]");
+        assert_eq!(item.stroke.swatch, "[None]");
+        swap_fill_stroke(&mut app).unwrap();
+        let item = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap();
+        assert_eq!(item.fill.swatch, "[None]");
+        assert_eq!(item.stroke.swatch, "[Black]");
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().fill.swatch, "[Black]");
     }
 }

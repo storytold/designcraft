@@ -167,6 +167,7 @@ impl Default for PdfExportSettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiState {
+    pub control_bar_upgrade_seen: bool,
     pub brightness: theme::Brightness,
     pub screen_mode: ScreenMode,
     pub frame_edges: bool,
@@ -303,6 +304,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         UiState {
+            control_bar_upgrade_seen: false,
             brightness: theme::Brightness::MediumDark,
             screen_mode: ScreenMode::Normal,
             frame_edges: true,
@@ -337,7 +339,7 @@ impl Default for UiState {
             rich_black: false,
             overprint_preview: false,
             shortcuts: Default::default(),
-            control_bar: false,
+            control_bar: true,
             tools_double_column: false,
             dock_tab: "properties".into(),
             open_panel: None,
@@ -1364,11 +1366,11 @@ impl DesignApp {
     }
 }
 
-/// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft
-/// and IDML.
+/// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
+/// IDML, and InDesign documents and templates (converted to IDML on open).
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    [".designcraft", ".idml"].iter().any(|ext| n.ends_with(ext))
+    [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext))
 }
 
 pub fn now_ms() -> f64 {
@@ -1994,10 +1996,10 @@ mod tests {
 
     #[test]
     fn dropped_documents_open_and_the_rest_is_placed() {
-        for name in ["a.designcraft", "B.IDML"] {
+        for name in ["a.designcraft", "B.IDML", "c.indd", "D.INDT"] {
             assert!(opens_as_document(name), "{name}");
         }
-        for name in ["a.png", "b.pdf", "idml.txt", "c.idml.zip"] {
+        for name in ["a.png", "b.pdf", "idml.txt", "c.idml.zip", "e.indd.zip"] {
             assert!(!opens_as_document(name), "{name}");
         }
     }
@@ -2024,6 +2026,18 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let e = r.unwrap_err();
         assert_eq!(alert(&app), ("Can't Place the File".to_string(), e));
+    }
+
+    #[test]
+    fn a_dropped_indd_file_the_converter_rejects_alerts() {
+        let path = unreadable_file("brochure.indd");
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        let r = app.open_dropped(&path.to_string_lossy());
+        let _ = std::fs::remove_file(&path);
+        let e = r.unwrap_err();
+        assert!(e.contains("InDesign file"), "{e}");
+        assert_eq!(alert(&app), ("Can't Open the File".to_string(), e));
+        assert!(app.session.documents().is_empty());
     }
 
     #[test]

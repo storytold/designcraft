@@ -66,6 +66,9 @@ krilla = { version = "0.8", features = ["pdf"] }
 hayro = "0.7"
 quick-xml = "0.38"
 zip = { version = "3", default-features = false, features = ["deflate"] }
+# INDD/INDT → IDML conversion for File › Open: storytold/indd-utils, pinned by rev like the
+# craft-libs crates (MIT OR Apache-2.0, no dependencies, builds for wasm).
+indd = { git = "https://github.com/storytold/indd-utils", rev = "7f3060e5bce78d21ea70e0d5eacb96edce15dfbe" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.

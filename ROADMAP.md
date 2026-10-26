@@ -209,3 +209,7 @@ Newest first.
 | 2026-10-10 | major | Restructured to the progress-docs standard; full re-measure; the "Working today" inventory moved to docs/target-app-parity.md, milestones to docs/roadmap.md, the CLI/MCP section left to docs/agents.md (which already covered it) |
 | 2026-10-04 | major | Parity estimate: breadth 99%, depth ~83%, ~170 h |
 | 2026-10-01 | major | First roadmap: status, milestones |
+
+## Community fork — 2026-10-26
+
+Public-only INDD/INDT import integration, toolbox colour controls, top/contextual bar visibility and selected guide position/copy controls. See `docs/public-fork-changes.md` for scope and validation.

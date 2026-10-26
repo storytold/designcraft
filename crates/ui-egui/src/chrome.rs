@@ -182,7 +182,9 @@ pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ui.horizontal_top(|ui| {
                     let text_mode =
                         matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
-                    if text_mode {
+                    if let Some((guide, orientation, position)) = crate::canvas::selected_guide(app, ui.ctx()) {
+                        control_guide(app, ui, guide, orientation, position);
+                    } else if text_mode {
                         control_text(app, ui);
                     } else {
                         control_object(app, ui);
@@ -198,6 +200,37 @@ fn icon_caption(ui: &mut egui::Ui, icon: &str, tip: &str) {
     icons::paint(ui.painter(), r, icon, Tokens::get(ui.ctx()).icon);
     resp.on_hover_ui(|ui| {
         crate::rtl::label(ui, tip);
+    });
+}
+
+fn control_guide(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    guide: crate::canvas::SelectedGuide,
+    orientation: designcraft_doc::Orientation,
+    position: f64,
+) {
+    let vertical = orientation == designcraft_doc::Orientation::Vertical;
+    let units =
+        app.session.active().map(|s| if vertical { s.doc.settings.horizontal_units } else { s.doc.settings.vertical_units }).unwrap_or(Unit::Picas);
+    ui.vertical(|ui| {
+        ui.strong(if vertical { "Vertical guide" } else { "Horizontal guide" });
+        ui.horizontal(|ui| {
+            caption(ui, if vertical { "X:" } else { "Y:" });
+            if let Some(value) = measure(ui, "guide_position", Some(position), units, 100.0)
+                && app.run("guide.move", json!({"spread":guide.spread,"page":guide.page,"index":guide.index,"position":value})).is_ok()
+            {
+                crate::canvas::select_guide(app, ui.ctx(), guide.spread, guide.page, guide.index);
+            }
+            caption(ui, "Copy to:");
+            if let Some(value) = measure(ui, "guide_copy_position", None, units, 100.0)
+                && let Ok(result) = app.run("guide.copy", json!({"spread":guide.spread,"page":guide.page,"index":guide.index,"position":value}))
+                && let Some(index) = result.get("index").and_then(|v| v.as_u64()).and_then(|v| usize::try_from(v).ok())
+            {
+                crate::canvas::select_guide(app, ui.ctx(), guide.spread, guide.page, index);
+            }
+            ui.small("Enter a destination to duplicate · spread coordinates");
+        });
     });
 }
 

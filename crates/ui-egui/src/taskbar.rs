@@ -44,7 +44,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
             if y + HEIGHT > canvas.max.y - 4.0 {
                 y = canvas.max.y - HEIGHT - 8.0;
             }
-            pos2(x, y)
+            inside(pos2(x, y), w, canvas)
         }
     };
     // A shared persisted pin is relative to each canvas. The transient pin target belongs
@@ -52,7 +52,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
     if app.pane == app.focus_pane {
         app.ui.task_bar_at = Some([at.x - canvas.min.x, at.y - canvas.min.y]);
     }
-    egui::Area::new(id).order(egui::Order::Middle).fixed_pos(at).show(ctx, |ui| {
+    egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         egui::Frame::NONE
             .fill(t.panel)
             .stroke(Stroke::new(1.0, t.border))
@@ -352,6 +352,16 @@ mod tests {
     fn more(h: &mut Harness<'static, Window>) {
         let b = bar(h);
         click_at(h, pos2(b.max.x - 19.0, b.center().y));
+    }
+
+    #[test]
+    fn taskbar_stays_visible_when_selected_frame_is_offscreen() {
+        let (mut h, _) = window();
+        h.state_mut().app.ui.task_bar_pin = Some([-10000.0, -10000.0]);
+        h.run_steps(4);
+        let rect = bar(&h);
+        assert!(rect.min.x >= 0.0 && rect.min.y >= 0.0, "bar must stay on screen: {rect:?}");
+        assert_eq!(h.ctx.memory(|m| m.area_rect(egui::Id::new(("task_bar", h.ctx.viewport_id(), h.state().app.pane)))), Some(rect));
     }
 
     #[test]

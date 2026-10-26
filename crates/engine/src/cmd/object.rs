@@ -880,6 +880,7 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
     let sides = p.get("sides").and_then(Value::as_u64).map_or(s.prefs.polygon_sides, |v| v as u32).clamp(3, 100);
     let inset = p.get("starInset").and_then(Value::as_f64).map_or(s.prefs.star_inset, |v| v / 100.0).clamp(0.0, 1.0);
     let rect = Rect::new(rect.x0, rect.y0, rect.x1.max(rect.x0 + 0.5), rect.y1.max(rect.y0 + 0.5));
+    let drawing_colors = s.drawing_colors.clone();
     s.edit(|d, sel| {
         if d.spread(sr).is_none() {
             return Err(bad("frame.create", "no such spread"));
@@ -910,6 +911,15 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             // Shapes drawn with Rectangle/Ellipse/Polygon get the default 1 pt black stroke.
             it.stroke = Stroke::default();
+        }
+        if let Some((fill, stroke)) = &drawing_colors {
+            // A session colour from another document may not exist here.
+            if d.swatch(&fill.swatch).is_some() {
+                it.fill = fill.clone();
+            }
+            if d.swatch(&stroke.swatch).is_some() {
+                it.stroke = stroke.clone();
+            }
         }
         d.insert_item(sr, it, None)?;
         *sel = Selection::items(vec![id]);

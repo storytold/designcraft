@@ -2169,3 +2169,19 @@ fn frame_preference_property_color_resolves_for_frames_and_object_styles() {
     assert_eq!(colors, vec!["Near", "Near", "Far", designcraft_color::swatch::NONE]);
     assert_eq!(d.styles.object_style("Child").unwrap().text_frame.as_ref().unwrap().column_rule_color, "Near");
 }
+
+#[test]
+fn missing_linked_graphics_show_their_preview_and_keep_their_link() {
+    // InDesign's preview of the missing photo (a PNG header is all the importer reads: 4 × 3).
+    let png: Vec<u8> = [b"\x89PNG\r\n\x1a\n".as_slice(), &[0, 0, 0, 13], b"IHDR", &4u32.to_be_bytes(), &3u32.to_be_bytes()].concat();
+    let previews = std::collections::HashMap::from([("im".to_string(), png.clone())]);
+    let d = crate::import_idml_report_with_previews(&fixture(), &|_| None, &previews).unwrap().document;
+    let img = d.spreads.iter().flat_map(|sp| sp.items.iter()).find(|i| i.graphic().is_some()).unwrap();
+    let a = &d.assets[&img.graphic().unwrap().asset];
+    assert_eq!(a.data.as_slice(), png.as_slice(), "the preview shows");
+    assert_eq!(a.mime, "image/png");
+    assert_eq!(a.link.as_deref(), Some("/definitely/missing dir/photo.jpg"), "relinking still finds the file");
+    // Without a preview it stays empty, as before.
+    let d = import_idml(&fixture()).unwrap();
+    assert!(d.assets.values().all(|a| a.data.is_empty() || a.link.is_none()));
+}

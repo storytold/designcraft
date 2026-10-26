@@ -466,7 +466,8 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     let story = app.run("frame.create", json!({"rect":[72,72,300,200],"content":"text","text":"Story editor overlay fixture"})).unwrap()["story"]
         .as_u64()
         .unwrap();
-    app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
+    // Keep the floating tab clear of the Story Editor's automatic placement.
+    app.run("window.panel.float", json!({"panel":"layers","x":1050,"y":600,"width":300,"height":250})).unwrap();
     let doc = serde_json::to_value(&app.session.active().unwrap().doc).unwrap();
     let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
     let tab = egui::Id::new("designcraft-panel-docking").with(("tab", &"properties".to_string()));
@@ -483,7 +484,8 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     let frame_before = h.ctx.cumulative_frame_nr();
     h.state_mut().app.run("app.storyEditor", json!({"story":story})).unwrap();
     // The unmeasured first frame blocks the full content, even outside the eventual editor.
-    let release = egui::pos2(150.0, 150.0);
+    // Use the bottom of the viewport: the visible Control bar changes automatic window placement.
+    let release = h.ctx.content_rect().left_bottom() + vec2(80.0, -80.0);
     h.input_mut().events.extend([
         Event::PointerMoved(release),
         Event::PointerButton { pos: release, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
@@ -504,6 +506,7 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     let before_outside = h.state().app.ui.docking.clone();
     let tab = egui::Id::new("designcraft-panel-docking").with(("tab", &"layers".to_string()));
     let from = h.ctx.read_response(tab).unwrap().rect.center();
+    assert!(!editor.contains(from), "fixture needs an unobscured floating tab");
     h.event(Event::PointerMoved(from));
     h.run_steps(1);
     h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });

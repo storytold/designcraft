@@ -1,3 +1,43 @@
+# DesignCraft — INDD import, tool controls and guide improvements
+
+Independent community fork by [Heatcoder](https://github.com/heatcoder), based on [DesignCraft](https://github.com/storytold/designcraft) release 0.8.0 (`11a51d5b`). This fork is free to use and build. No serial number, registration, trial, activation server or payment is required for the features below.
+
+| Feature | What it does |
+| --- | --- |
+| INDD / INDT opening | Opens supported documents and templates through File → Open or drag and drop. Converts them to IDML in memory, then uses DesignCraft's importer. |
+| Missing-link previews | Uses embedded graphic previews when available and the original linked image cannot be loaded. |
+| Top Control bar | Enables the bar on first use of this fork; displays existing object position and size controls. Window → Control can hide it again. |
+| Contextual task bar | Keeps the bar within the canvas and draws it above the document. |
+| Fill/stroke toolbox | Enlarges the swap target, preserves chosen drawing colours for the next shape, and exposes colour, gradient, None and screen-mode buttons. |
+| Guide selection and position | Highlights a selected guide in green. Vertical guides use X; horizontal guides use Y. Clicking a guide selects it without nudging it. |
+| Copy to | Creates a parallel guide at an absolute destination while leaving the original unchanged. Moving and copying support Undo. |
+
+**Example:** Select a vertical guide at X = 100 pt, enter `200 pt` in **Copy to**, then press Return. The original stays at 100 pt and the new guide appears at 200 pt. Enter `25 mm` to use an explicit unit. Values without units use the document's units; positions are spread coordinates.
+
+This fork does not include the separate Malayalam typing, Manglish, InScript, FML conversion or Thiyaara Effects additions. It retains the original editor's ordinary text and font facilities.
+
+## Import limits and attribution
+
+INDD conversion is provided by [storytold/indd-utils](https://github.com/storytold/indd-utils), pinned to `7f3060e5bce78d21ea70e0d5eacb96edce15dfbe`. Credit belongs to that library's authors and contributors; this fork integrates its conversion with DesignCraft's document opening, preview and warning paths.
+
+Import is not a promise of identical rendering or support for every document. Check conversion warnings, fonts, linked images and layout after opening. Embedded previews may be lower resolution than the original graphics. Imported documents start unsaved in DesignCraft's native format so opening does not overwrite the source INDD file. Keep your original files.
+
+## Build
+
+Use the Rust toolchain and platform prerequisites described in the upstream instructions below. From this checkout:
+
+```sh
+cargo build --release -p designcraft --locked
+```
+
+No commercial feature flag or activation configuration is needed. The optional upstream `CRAFT_FONTS_DIR` build input is described below; no separately licensed Malayalam font collection is included here.
+
+See [public changes and validation](docs/public-fork-changes.md) for the source map and test status. The original MIT / Apache-2.0 notices and third-party asset notices remain in place. This community fork is not an official ArtCraft release.
+
+---
+
+## Upstream project documentation
+
 <p align="center">
   <a href="https://getartcraft.com/">
     <picture>
