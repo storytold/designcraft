@@ -12,6 +12,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-26** · Text-frame context menus reuse Object › Fitting, including Fit Frame to Content (#1852); mixed text/graphic selections show it once. No readiness percentage change.
 - **2026-10-25** · The application bar uses craft-window's shared title-bar code. A drag that
   starts on a floating panel over the bar moves the panel, not the window, and in full screen the
   bar no longer zooms or moves the window. No readiness percentage change.

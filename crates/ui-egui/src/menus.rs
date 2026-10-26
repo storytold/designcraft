@@ -2994,8 +2994,8 @@ const CONTEXT_OBJECT: &[&str] = &[
     "cmd:object.showAll",
     "-",
 ];
-/// Added to the object menu when a graphic frame is selected.
-const CONTEXT_GRAPHIC_FRAME: &[&str] = &["menu:Object/Fitting"];
+/// Added once to the object menu when a graphic or text frame is selected.
+const CONTEXT_FITTING: &[&str] = &["menu:Object/Fitting"];
 const CONTEXT_OBJECT_TAIL: &[&str] = &["menu:Object/Content", "menu:Object/Effects"];
 /// Added to the object menu when a text frame is selected.
 const CONTEXT_TEXT_FRAME: &[&str] = &["-", "cmd:type.fillWithPlaceholder", "cmd:object.textFrameOptions"];
@@ -3049,8 +3049,8 @@ fn context_entries(app: &DesignApp, kind: ContextMenu) -> Vec<&'static str> {
                 (items().any(|it| matches!(it.content, designcraft_doc::Content::Graphic(_))), items().any(|it| it.is_text_frame()))
             });
             let mut v = CONTEXT_OBJECT.to_vec();
-            if graphic {
-                v.extend(CONTEXT_GRAPHIC_FRAME);
+            if graphic || text {
+                v.extend(CONTEXT_FITTING);
             }
             v.extend(CONTEXT_OBJECT_TAIL);
             if text {
@@ -5691,7 +5691,7 @@ mod tests {
     #[test]
     fn context_menus_hold_commands_and_menu_bar_submenus() {
         let tree = menu_tree();
-        for entries in [CONTEXT_OBJECT, CONTEXT_GRAPHIC_FRAME, CONTEXT_OBJECT_TAIL, CONTEXT_TEXT_FRAME, CONTEXT_TEXT, CONTEXT_CANVAS] {
+        for entries in [CONTEXT_OBJECT, CONTEXT_FITTING, CONTEXT_OBJECT_TAIL, CONTEXT_TEXT_FRAME, CONTEXT_TEXT, CONTEXT_CANVAS] {
             for path in entries.iter().filter_map(|e| e.strip_prefix("menu:")) {
                 assert!(menu_bar_submenu(&tree, path).is_some(), "no menu bar submenu {path}");
             }
@@ -5703,6 +5703,70 @@ mod tests {
                 assert!(ui_label(id).is_some() || designcraft_engine::find_command(id).is_some(), "context entry {label}: unknown command {id}");
             }
         }
+    }
+
+    #[test]
+    fn frame_context_menus_share_the_existing_fitting_submenu() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = app.run("frame.create", json!({"rect": [36, 36, 200, 100], "content": "text", "caret": false})).unwrap()["id"].clone();
+        let graphic = app.run("frame.create", json!({"rect": [236, 36, 400, 100]})).unwrap()["id"].clone();
+        let png = designcraft_render::Rendered { width: 1, height: 1, pixels: vec![200; 4] }.to_png();
+        app.run("file.place", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "a.png", "frame": graphic})).unwrap();
+        let mut expected = Vec::new();
+        walk(&[menu_bar_submenu(&menu_tree(), "Object/Fitting").unwrap()], &mut expected);
+        for (ids, has_text) in [(json!([text]), true), (json!([graphic]), false), (json!([text, graphic]), true), (json!([graphic, text]), true)] {
+            app.run("selection.set", json!({"ids": ids})).unwrap();
+            let entries = context_entries(&app, ContextMenu::Object);
+            assert_eq!(entries.iter().filter(|e| **e == "menu:Object/Fitting").count(), 1);
+            assert_eq!(entries.contains(&"cmd:type.fillWithPlaceholder"), has_text);
+            assert_eq!(entries.contains(&"cmd:object.textFrameOptions"), has_text);
+            let runs = context_parse(&entries);
+            let fitting: Vec<_> = runs
+                .iter()
+                .flat_map(|(_, items)| items)
+                .filter_map(|item| if let Item::Sub(name, children) = item { (name == "Fitting").then_some(children) } else { None })
+                .collect();
+            assert_eq!(fitting.len(), 1);
+            let fitting = fitting.first().unwrap();
+            let mut commands = Vec::new();
+            walk(fitting, &mut commands);
+            assert_eq!(commands, expected);
+            assert_eq!(commands.iter().filter(|(_, id, _)| id == "fit.frameToContent").count(), 1);
+            let fit = fitting.iter().find_map(|item| match item {
+                Item::Cmd { label, id, params, shortcut } if id == "fit.frameToContent" => Some((label.as_str(), params, *shortcut)),
+                _ => None,
+            });
+            assert_eq!(fit, Some(("Fit Frame to Content", &Value::Null, Some("Cmd+Alt+C"))));
+            assert_eq!(ui_label("fit.frameToContent"), Some(("Fit Frame to Content", Some("Cmd+Alt+C"))));
+            assert_eq!(shortcut_of(&app, "fit.frameToContent").as_deref(), Some("Cmd+Alt+C"));
+            assert_eq!(menu_enabled(&app, "fit.frameToContent"), enabled(&app, "object.fit"));
+        }
+    }
+
+    #[test]
+    fn context_menus_without_selected_frames_have_no_frame_actions() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let check = |app: &DesignApp| {
+            for kind in [ContextMenu::Object, ContextMenu::Canvas] {
+                let entries = context_entries(app, kind);
+                assert!(!entries.contains(&"menu:Object/Fitting"));
+                assert!(!entries.contains(&"cmd:type.fillWithPlaceholder"));
+                assert!(!entries.contains(&"cmd:object.textFrameOptions"));
+                let mut commands = Vec::new();
+                for (_, items) in context_parse(&entries) {
+                    walk(&items, &mut commands);
+                }
+                assert!(!commands.iter().any(|(_, id, _)| id == "fit.frameToContent"));
+            }
+        };
+        check(&app); // No document.
+        app.run("file.new", json!({})).unwrap();
+        check(&app); // Empty selection.
+        app.run("frame.create", json!({"rect": [36, 36, 200, 100], "content": "unassigned"})).unwrap();
+        check(&app); // A selected shape without text or graphic content.
+        app.session.doc_mut().unwrap().selection.items = vec![designcraft_doc::ItemId(u64::MAX)];
+        check(&app); // A stale selection must not expose frame actions.
     }
 
     #[test]
