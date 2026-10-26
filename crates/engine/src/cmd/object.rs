@@ -68,7 +68,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Resize",
             [],
             None,
-            "{from: rect, to: rect, content?: bool (scale content), distribute?: bool (Live Distribute: objects keep their size, their centres spread with the bounds), ids?}",
+            "{from: rect, to: rect, content?: bool (scale content), distribute?: bool (Live Distribute: objects keep their size, their centres spread with the bounds), own?: bool (from and to are in each object's own space, before its rotation: a turned object resizes along its own axes), ids?}",
             has_selection,
             transform_resize
         ),
@@ -1436,7 +1436,8 @@ fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
     let sy = ratio(to.height(), from.height());
     let sx = if sx.abs() < 1e-3 { 1e-3f64.copysign(sx) } else { sx };
     let sy = if sy.abs() < 1e-3 { 1e-3f64.copysign(sy) } else { sy };
-    let m = Affine::translate((to.x0, to.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-from.x0, -from.y0));
+    let own = bool_or(p, "own", false);
+    let rect_map = Affine::translate((to.x0, to.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-from.x0, -from.y0));
     let strokes = s.prefs.scale_strokes;
     s.edit(|d, _| {
         for id in &ids {
@@ -1444,6 +1445,8 @@ fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
             if it.locked {
                 continue;
             }
+            // In its own space the map applies before the object's transform.
+            let m = if own && it.xf.determinant().abs() > 1e-12 { it.xf * rect_map * it.xf.inverse() } else { rect_map };
             if distribute {
                 let c = it.bounds().center();
                 it.xf = Affine::translate(m * c - c) * it.xf;
@@ -1451,7 +1454,9 @@ fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
                 scale_object(d, *id, m, (sx * sy).abs().sqrt(), strokes);
             } else if it.flex.is_some() {
                 resize_container(it, m);
-            } else if matches!(it.content, Content::Group { .. }) {
+            } else if it.is_group() || (!own && matches!(it.content, Content::Group { .. })) {
+                // A turned frame with pasted-in objects resizes its path below, as any frame:
+                // what is inside keeps its size.
                 it.xf = m * it.xf;
             } else {
                 // Resize the frame's path (in inner space); content keeps its size (InDesign's
@@ -4586,6 +4591,52 @@ mod reference_point_tests {
 #[cfg(test)]
 mod again_tests {
     use super::*;
+
+    /// `own`: a turned frame resizes along its own axes: its path grows, its rotation stays.
+    #[test]
+    fn a_turned_frame_resizes_along_its_own_axes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 150]})).unwrap()["id"].as_u64().unwrap());
+        s.execute("transform.rotate", &json!({"angle": 30})).unwrap();
+        let before = s.doc().unwrap().doc.item(id).unwrap().clone();
+        let own = before.inner_bounds();
+        let wider = designcraft_geom::Rect::new(own.x0, own.y0, own.x0 + own.width() * 2.0, own.y1);
+        let r = |r: designcraft_geom::Rect| json!([r.x0, r.y0, r.x1, r.y1]);
+        s.execute("transform.resize", &json!({"from": r(own), "to": r(wider), "own": true})).unwrap();
+        let it = s.doc().unwrap().doc.item(id).unwrap().clone();
+        assert_eq!(it.xf, before.xf, "the rotation (and position) stay");
+        let b = it.inner_bounds();
+        assert!((b.width() - own.width() * 2.0).abs() < 1e-6 && (b.height() - own.height()).abs() < 1e-6, "{b:?}");
+        // The fixed side stays where it was on the spread.
+        let p = designcraft_geom::Point::new;
+        assert!(((it.xf * p(b.x0, b.y0)) - (before.xf * p(own.x0, own.y0))).hypot() < 1e-6);
+    }
+
+    /// `own` on a turned frame holding pasted-in objects: the frame resizes, they keep their size.
+    #[test]
+    fn a_turned_frame_with_pasted_in_objects_resizes_its_path_only() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let inside = s.execute("frame.create", &json!({"rect": [120, 110, 160, 140]})).unwrap()["id"].as_u64().unwrap();
+        let id = ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 150]})).unwrap()["id"].as_u64().unwrap());
+        s.execute("selection.set", &json!({"ids": [inside]})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+        s.execute("edit.pasteInto", &json!({})).unwrap();
+        s.execute("transform.rotate", &json!({"angle": 30})).unwrap();
+        let before = s.doc().unwrap().doc.item(id).unwrap().clone();
+        let child = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().children().first().unwrap().bounds();
+        let child_before = child(&s);
+        let own = before.inner_bounds();
+        let wider = designcraft_geom::Rect::new(own.x0, own.y0, own.x0 + own.width() * 2.0, own.y1);
+        let r = |r: designcraft_geom::Rect| json!([r.x0, r.y0, r.x1, r.y1]);
+        s.execute("transform.resize", &json!({"from": r(own), "to": r(wider), "own": true})).unwrap();
+        let it = s.doc().unwrap().doc.item(id).unwrap().clone();
+        assert_eq!(it.xf, before.xf, "the frame's transform stays");
+        assert!((it.inner_bounds().width() - own.width() * 2.0).abs() < 1e-6, "{:?}", it.inner_bounds());
+        assert_eq!(child(&s), child_before, "the pasted-in object keeps its size and place");
+    }
 
     #[test]
     fn transform_again_sequence_and_clear() {

@@ -2616,3 +2616,59 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
     let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
     assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }
+
+/// A turned object's handles sit on its own (turned) box, not on the bounding box around it; a
+/// drag on one resizes it along its own axes (`transform.resize` with `own`).
+#[test]
+fn a_turned_objects_handles_turn_with_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 150.0));
+    let turn = designcraft_geom::Affine::translate((150.0, 125.0))
+        * designcraft_geom::Affine::rotate(30f64.to_radians())
+        * designcraft_geom::Affine::translate((-150.0, -125.0));
+    d.item_mut(id).unwrap().xf = turn;
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let m = l.xf(SpreadRef::Doc(0)) * turn;
+    // The corner of the bounding box around the turned rect is no handle.
+    let bbox = m.transform_rect_bbox(Rect::new(100.0, 100.0, 200.0, 150.0));
+    let mut t = create("selection");
+    let down = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, bbox.x1, bbox.y1));
+    assert_ne!(down, vec![Action::Begin("Resize".into())]);
+    // The turned bottom right corner is.
+    let mut t = create("selection");
+    let br = m * Point::new(200.0, 150.0);
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, br.x, br.y)), vec![Action::Begin("Resize".into())]);
+    // Dragged 50 pt further along its own x axis: 50 pt wider, the same height.
+    let to = m * Point::new(250.0, 150.0);
+    match &t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.x, to.y))[0] {
+        Action::Preview(cmd, p) => {
+            assert_eq!(cmd, "transform.resize");
+            assert_eq!(p["own"], true);
+            assert_eq!(p["ids"], serde_json::json!([id.0]));
+            let r: Vec<f64> = p["to"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            let want = [100.0, 100.0, 250.0, 150.0];
+            assert!(r.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{r:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// With its content selected a turned object shows the upright box, so its handles are there too.
+#[test]
+fn a_turned_objects_content_selection_keeps_the_upright_handles() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 150.0));
+    let turn = designcraft_geom::Affine::translate((150.0, 125.0))
+        * designcraft_geom::Affine::rotate(30f64.to_radians())
+        * designcraft_geom::Affine::translate((-150.0, -125.0));
+    d.item_mut(id).unwrap().xf = turn;
+    let s = Selection { items: vec![id], content: true, ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let m = l.xf(SpreadRef::Doc(0)) * turn;
+    let bbox = m.transform_rect_bbox(Rect::new(100.0, 100.0, 200.0, 150.0));
+    let mut t = create("selection");
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, bbox.x1, bbox.y1)), vec![Action::Begin("Resize".into())]);
+}

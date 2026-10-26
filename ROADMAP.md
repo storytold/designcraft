@@ -14,6 +14,10 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-21** · A turned object's selection turns with it: one box on the object's own
+  outline with its handles on the turned corners, instead of a second, upright box around it; a
+  handle drag resizes it along its own axes (`transform.resize` with `own`), and the rotate zone
+  sits outside the turned corners. No readiness percentage change.
 - **2026-11-15** · Story targets are checked before they are used: `story.setDirection`, `story.get`,
   `type.fillWithPlaceholder` and `file.exportText` refuse a `story` or `frame` the document doesn't have instead
   of acting on the selected frame's story, so an edit can no longer land on the wrong story and an export cannot
