@@ -1,6 +1,6 @@
 # DesignCraft roadmap (detail)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (text threads by hand; the gate waits on the Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (.indd and .indt open through indd-utils; text threads by hand; the gate waits on the Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026 (21.6)
 
 Forward-looking plan. The one-page summary is [ROADMAP.md](../ROADMAP.md); numbers are in
 [target-app-parity.md](target-app-parity.md); the work list is [gaps.md](gaps.md). Hours are
@@ -25,7 +25,8 @@ but are next in line.
 | Export a print-ready PDF (bleed, marks, CMYK and spot, PDF/X-4) | yes | krilla export with subset fonts, Separations, marks and bleed, PDF/X-4 with validator; 53 PDF tests | 0 |
 
 Exchanging files with InDesign users (open INDD, round-trip IDML) is a beta requirement, not part
-of the alpha gate: IDML works both ways today and INDD is gap 2.
+of the alpha gate: IDML works both ways today, INDD opens through indd-utils, and measuring both
+on real files is gaps 2 and 3.
 
 **Distance to alpha:** ~5–7 h (the threading row: Primary Text Frame page fixes). Ready for real work (~47%) is already above
 the ~40% alpha bar.
@@ -40,8 +41,9 @@ In order. Each closes a beta blocker from [gaps.md](gaps.md).
    macOS, Windows and Linux. 30–50 h.
 2. **CI on pull requests** (gap 7): `cargo xtask ci` on every PR, at least macOS and Linux;
    Windows smoke start. 4–8 h. Needs the owner to make it a required check.
-3. **Open INDD** (gap 2): decide with the owner how to bring in the clean-room converter
-   (#114 indd-utils, #98), then INDD → IDML → existing importer, warnings shown. 20–60 h.
+3. **INDD real-file corpus** (gap 2): `.indd` and `.indt` open through storytold/indd-utils
+   (INDD → IDML in memory → existing importer, warnings in the open result); a pinned corpus and
+   a metric show what survives. 10–30 h.
 4. **IDML real-file corpus** (gap 3): a pinned corpus, a survival metric, and fixes for #193,
    #338, #339, #340. 60–100 h.
 5. **Composition oracle** (gap 4): synthetic stories set in InDesign 2026 vs DesignCraft;
@@ -56,12 +58,12 @@ set exists; depth gaps are in gaps.md.
 | # | Milestone | State |
 |---|---|---|
 | M0 | Skeleton + vertical slice | ✅ |
-| M1 | Selection, transform, layers, pages, MCP | ✅ core; handle and snapping issues (#186, #188, #337) |
-| M2 | Type I (Type tool, threading, Character/Paragraph, composer) | partial: Type tool, composer and threading ✅; Primary Text Frame pages (#165, alpha blocker); caret formatting (#289); no IME (#322) |
+| M1 | Selection, transform, layers, pages, MCP | ✅ core; handle and snapping issues (#188, #337) |
+| M2 | Type I (Type tool, threading, Character/Paragraph, composer) | partial: Type tool, composer and threading ✅; Primary Text Frame pages (#165, alpha blocker); caret formatting (#289); IME not checked by hand (#322) |
 | M3 | Styles (nested/GREP, bullets, keeps, span columns) | ✅; style editing reliability (#169) |
 | M4 | Color & effects | ✅ core; colour management depth |
 | M5 | Graphics & links | ✅ core; EPS preview only |
-| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | IDML ✅, PDF ✅ (X-4, A-2b, tagged); INDD ✗; PDF/X-1a/X-3 and presets ✗ |
+| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | IDML ✅, PDF ✅ (X-4, A-2b, tagged); INDD read ✅ (via indd-utils); PDF/X-1a ✅; PDF/X-3 and presets ✗ |
 | M7 | Long documents (sections, TOC, index, footnotes, books) | ✅ except Books (shallow) |
 | M8 | Tables | ✅ core (table/cell styles, rotation); diagonal lines, anchored objects in cells (#163) |
 | M9 | Performance (MT composition, tiles) | in progress: parallel compose 6.7×, damage regions; incremental composition next |
@@ -81,7 +83,7 @@ that is ~28 points and **420–750 h** (~120–200 wall-clock hours with four to
 | Work | Gap | Hours |
 |---|---|---|
 | Basic editing on every platform | 1 | 30–50 |
-| INDD import | 2 | 20–60 |
+| INDD real-file corpus | 2 | 10–30 |
 | IDML real-file corpus and fixes | 3 | 60–100 |
 | Composition oracle and fixes | 4, 13 | 80–140 |
 | Start-up robustness, fonts | 5, 6 | 25–50 |
@@ -109,7 +111,13 @@ output intent · EPS place") is done except Books depth and EPS (preview only).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | INDD and INDT open through storytold/indd-utils; focus item 3 shrinks to a real-file corpus (10–30 h) |
 | 2026-10-12 | minor | Threading row: threading by hand works; the gate waits on the Primary Text Frame page fixes (#165), 5–7 h |
 | 2026-10-10 | trivial | Ready figure 42% → 47% (method aligned with the standard); beta distance 28 points |
 | 2026-10-10 | minor | Alpha gate table added (6 core workflows); gate fails on manual threading, stage pre-alpha; A1 milestone and focus item 0 |
 | 2026-10-10 | major | Created: milestones moved from ROADMAP.md and re-assessed; Current focus and the beta plan from the full re-measure |
+
+
+### Windows installer unification — release preparation, 2026-10-12
+
+The shared craft-installer UI preserves this revision's install options and provides persistent installation, repair and Windows Settings removal completion screens. Silent modes stay unattended. Earlier Windows acceptance is recorded in packaging/windows/README.md; normal CI and production-profile upgrade qualification against pinned current releases are in progress. No release or PR has been published.

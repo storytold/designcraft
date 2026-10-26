@@ -31,6 +31,11 @@ real_name = "Philipp Krüger"
 [people.emanuelebonaventura]
 display_name = "insanityxoff"
 
+[people.lewandowskit]
+real_name = "Tomasz Lewandowski"
+display_name = "Tomasz Lewandowski"
+sync_github_name = false
+
 [people.moppeeer]
 sync_github_name = true
 
@@ -40,10 +45,29 @@ display_name = "PiMinusMax"
 [people.thaynej]
 real_name = "Jeffrey Thayne"
 
+[people.Losminek]
+sync_github_name = true
+
 [people.webdevtodayjason]
 display_name = "Jason Brashear"
+
+[people.switch87]
+real_name = "Gert Pellin"
+display_name = "Gert Pellin"
+sync_github_name = false
 
 [people.Nmarello]
 real_name = "Nick Marello"
 display_name = "Nick Marello"
 sync_github_name = false
+
+[people.marcoarnulfo]
+real_name = "Marco Arnulfo"
+display_name = "Marco Arnulfo"
+sync_github_name = false
+
+[people.4waymedia]
+real_name = "Paul Gemignani"
+
+[people.skylartaylor]
+display_name = "skylartaylor"

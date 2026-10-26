@@ -17,24 +17,32 @@
 //! ## Supported subset
 //! Swatches (process/spot CMYK, RGB and Lab colours, tints, linear/radial gradients), paragraph,
 //! character and object styles (with `BasedOn` and style groups), fonts, document preferences
-//! (page size, facing pages, bleed/slug, margins and columns, units, grids), layers, sections,
+//! (page size, facing pages, bleed/slug, margins and columns including dragged column positions,
+//! units, grids), ruler guides, layers, sections,
 //! parent (master) spreads and applied parents, spreads and pages, page items (`TextFrame`,
 //! `Rectangle`, `Oval`, `Polygon`, `GraphicLine`, `Group`) with fill/stroke, corner options, text
 //! frame options (with column rules), text wrap, transparency (opacity, blend mode, drop shadow,
-//! feather), images (embedded `Contents` or linked), stories with paragraph/character style ranges and local overrides, special
-//! characters and breaks, and text threading.
+//! feather, gradient feather, directional feather), images (embedded `Contents` or linked), stories with paragraph/character style ranges and local overrides, special
+//! characters and breaks, text threading, ruler and liquid guides, and stored page liquid rules.
 //!
 //! ## TODO (ignored on import / not written on export)
 //! - Tables, footnotes, anchored/inline objects, notes, tracked changes, hyperlinks, index and
 //!   cross-reference markers, text variables, conditions, XML structure (`XML/*` parts).
-//! - Guides, page-item overrides of parent items (only the page's `OverrideList` is read),
-//!   parent-of-parent page mapping beyond `AppliedMaster`, alternate layouts, liquid layout.
+//! - Page-item overrides of parent items (only the page's `OverrideList` is read),
+//!   parent-of-parent page mapping beyond `AppliedMaster`, alternate layouts, liquid object constraints.
 //! - Nested/GREP/line styles, bullets & numbering details (bullet glyph, number format), OpenType
 //!   feature flags, paragraph borders, grid alignment, custom dashed stroke styles; column rule
 //!   stroke type and overprint.
-//! - Mixed inks, gradient stop opacity and gradient feathers, effects other than drop shadow and
-//!   basic feather, EPS/PDF/AI placed graphics (imported as images when the data is available),
+//! - Mixed inks, gradient stop opacity, gradient feather stops between the first and last, its
+//!   midpoints and highlight, directional feather angle, noise, choke and shape mode, other effects
+//!   than drop shadow and the feathers, stroke/fill/content transparency, EPS/PDF/AI placed graphics (imported as images when the data is available),
 //!   clipping paths, compound-path fill rules.
+//! - Placed PDFs: the page (`PageNumber`) and crop choice (`PDFCrop`) round-trip, and
+//!   `GraphicBounds` span the chosen box. Where that box sits on the page needs the PDF parsed,
+//!   which this crate doesn't do: the engine finds it after import (`file.openIdml`), and when the
+//!   PDF's data isn't available the page's crop box fills `GraphicBounds`. The content crops
+//!   (`CropContentVisibleLayers`, `CropContentAllLayers`) are the bounds of what the page draws:
+//!   its paths, text and images, each cut to the clip in force.
 //! - Unknown elements are ignored; nothing is preserved opaquely for round-trip yet.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -43,13 +51,14 @@ mod cjk;
 mod export;
 mod import;
 mod names;
+mod ruby;
 mod xml;
 
 #[cfg(test)]
 mod tests;
 
 pub use export::{ExportOptions, export_idml, export_idml_with};
-pub use import::{Imported, import_idml, import_idml_report, import_idml_with};
+pub use import::{Imported, import_idml, import_idml_report, import_idml_report_with_previews, import_idml_with};
 
 /// The IDML package mimetype (content of the first, stored `mimetype` entry).
 pub const MIMETYPE: &str = "application/vnd.adobe.indesign-idml-package";
@@ -118,8 +127,11 @@ pub(crate) fn base64_decode(s: &str) -> Vec<u8> {
     out
 }
 
-/// Sniff an image's MIME type and pixel size from its header (PNG, JPEG, GIF, WebP, TIFF).
+/// Sniff an image's MIME type and pixel size (PNG, JPEG, GIF, WebP, TIFF, PDF, EPS).
 pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>) {
+    if designcraft_images::is_eps(b) {
+        return (Some("application/postscript"), designcraft_images::eps_pixel_size(b));
+    }
     let be32 = |i: usize| b.get(i..i + 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]));
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
         return (Some("image/png"), be32(16).zip(be32(20)));

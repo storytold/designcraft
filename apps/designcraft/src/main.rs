@@ -6,13 +6,18 @@
 //! `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
 //! See `designcraft_ui_egui::control` for the methods.
 //!
-//! The graphics backend (DirectX 12, Vulkan, Metal or OpenGL) is chosen in `gpu` before the window
-//! exists, with a fallback for a driver that crashes at start-up; `WGPU_BACKEND` overrides it.
+//! The graphics backend (DirectX 12, Vulkan, Metal or OpenGL) and the adapter that draws the
+//! window are chosen in `gpu`, with a fallback for a driver or adapter that fails at start-up;
+//! `WGPU_BACKEND`, `WGPU_POWER_PREF` and `WGPU_ADAPTER_NAME` override them. Why the app stopped
+//! is logged (`logging`), also when the window never opened.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(target_os = "macos")]
+mod apple_events;
 mod control_server;
 mod gpu;
+mod gpu_limits;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
@@ -25,50 +30,92 @@ struct App {
     app: DesignApp,
     #[cfg(target_os = "macos")]
     menu: Option<native_menu::NativeMenu>,
-    /// The graphics start in progress (`gpu.json`) until a frame has been presented; see `gpu`.
-    startup: Option<gpu::Startup>,
+    /// The window's start: the adapter and backend chosen for it; see `gpu`.
+    startup: std::sync::Arc<gpu::Startup>,
+    /// Documents and quit requests from Finder, the Dock and Open With.
+    #[cfg(target_os = "macos")]
+    apple_events: fmv_macos_events::Inbox,
+    /// The window's `movable` flag as last set; see `craft_window::title_bar`.
+    #[cfg(target_os = "macos")]
+    movable: Option<bool>,
     /// Frames begun so far.
     frames: u32,
+    /// The device whose uncaptured errors are logged once the window is past its start-up frames
+    /// (`gpu_limits::log_uncaptured_errors`). Until then wgpu's default handler panics, so a
+    /// failing adapter still makes `gpu` start again on the next one.
+    log_errors_after_startup: Option<eframe::wgpu::Device>,
 }
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // The third call: two frames went through `ui`, so the first was presented and the driver
-        // survived it (a fault at the first present is what the fallback in `gpu` is for).
-        if self.frames >= 2
-            && let Some(s) = self.startup.as_mut()
-        {
-            s.presented();
-            self.startup = None;
-        }
-        self.frames = self.frames.saturating_add(1);
-        #[cfg(target_os = "macos")]
-        {
-            if self.menu.is_none() && std::env::var_os("DESIGNCRAFT_NO_NATIVE_MENU").is_none() {
-                self.menu = Some(native_menu::NativeMenu::install(&mut self.app, ctx));
-            }
-            if let Some(m) = &mut self.menu {
-                m.poll(&mut self.app, ctx);
-            }
-        }
+        self.startup.enter();
+        // Queue/deadline work only. A hidden `run_logic` tick also reports pass index zero, so
+        // startup counters and native-menu polling must not live here.
         self.app.logic(ctx);
+        self.startup.leave();
     }
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.app.raw_input_hook(raw);
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.app.raw_input_hook(ctx, raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.startup.enter();
+        // `App::ui` is the only signal that a real layout pass ran. A discarded multipass first
+        // pass reports index 0 once, so these once-per-frame counters/menu polls still run once.
+        if ui.ctx().current_pass_index() == 0 {
+            if let Some(note) = self.startup.take_notice() {
+                self.app.status(note);
+            }
+            // The third UI callback: two frames went through `ui`, so the first was presented and
+            // the driver survived it (a fault at the first present is what `gpu` falls back for).
+            if self.frames == 2 {
+                self.startup.presented();
+            }
+            self.frames = self.frames.saturating_add(1);
+            if u64::from(self.frames) >= gpu::STARTUP_FRAMES
+                && let Some(device) = self.log_errors_after_startup.take()
+            {
+                gpu_limits::log_uncaptured_errors(&device);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                if self.menu.is_none() && std::env::var_os("DESIGNCRAFT_NO_NATIVE_MENU").is_none() {
+                    self.menu = Some(native_menu::NativeMenu::install(&mut self.app, ui.ctx()));
+                }
+                if let Some(m) = &mut self.menu {
+                    m.poll(&mut self.app, ui.ctx());
+                }
+                // Noted for a start again after a graphics failure, which reopens them (`gpu::restart`).
+                self.startup.opening(apple_events::poll(&self.apple_events, &mut self.app, ui.ctx()));
+            }
+        }
         self.app.ui(ui);
+        self.startup.leave();
+        #[cfg(target_os = "macos")]
+        if self.app.take_ime_discard() {
+            discard_marked_text();
+        }
+        #[cfg(target_os = "macos")]
+        craft_window::title_bar::sync_movable(ui.ctx(), &mut self.movable);
     }
     fn on_exit(&mut self) {
         // A normal exit before the third frame is not a crash.
-        if let Some(s) = self.startup.as_mut() {
-            s.presented();
-        }
+        self.startup.presented();
         if let Err(e) = preserve_documents_on_exit(&mut self.app) {
             log::error!("Couldn't preserve documents on exit: {e}");
             eprintln!("designcraft: couldn't preserve documents on exit: {e}");
         }
         save_prefs(&self.app);
+    }
+}
+
+/// Tell the macOS input method to drop its composition (the Type tool kept the marked text as
+/// typed). winit's IME toggle only clears its own copy, so the IME would type it again.
+#[cfg(target_os = "macos")]
+fn discard_marked_text() {
+    if let Some(mtm) = objc2::MainThreadMarker::new()
+        && let Some(ic) = objc2_app_kit::NSTextInputContext::currentInputContext(mtm)
+    {
+        ic.discardMarkedText();
     }
 }
 
@@ -100,15 +147,48 @@ fn prefs_path() -> Option<std::path::PathBuf> {
     profile::config_dir().map(|b| b.join("ui.json"))
 }
 
+/// Set when `ui.json` could not be read in full and no copy of it could be kept: the file is
+/// then left as it is rather than overwritten.
+static KEEP_UI_PREFS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Copy an unreadable (or partly unreadable) `ui.json` beside it, as `ui.unreadable.json` or the
+/// first free `ui.unreadable-N.json`, before the next save replaces it. A newer DesignCraft may
+/// have written it.
+fn keep_unreadable_prefs(path: &std::path::Path, bytes: &[u8]) {
+    use std::io::Write as _;
+    for n in 1..100u32 {
+        let name = if n == 1 { "ui.unreadable.json".to_string() } else { format!("ui.unreadable-{n}.json") };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(path.with_file_name(name)) {
+            Ok(mut file) => {
+                if file.write_all(bytes).is_ok() {
+                    return;
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => break,
+        }
+    }
+    KEEP_UI_PREFS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn load_prefs(app: &mut DesignApp) {
     if no_prefs() {
         return;
     }
     if let Some(p) = prefs_path()
         && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(ui) = designcraft_ui_egui::UiState::from_preferences_json(&bytes)
     {
-        app.ui = ui;
+        match designcraft_ui_egui::UiState::read_preferences(&bytes) {
+            Ok(read) => {
+                app.ui = read.ui;
+                if !read.intact {
+                    keep_unreadable_prefs(&p, &bytes);
+                }
+            }
+            Err(_) => keep_unreadable_prefs(&p, &bytes),
+        }
+        app.sync_keymap();
     }
     // Engine preferences (Preferences dialog, favourites…) live beside the UI state.
     if let Some(p) = prefs_path().map(|p| p.with_file_name("prefs.json"))
@@ -125,7 +205,9 @@ fn save_prefs(app: &DesignApp) {
     }
     if let Some(p) = prefs_path() {
         let _ = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new(".")));
-        if let Ok(bytes) = serde_json::to_vec_pretty(&app.ui) {
+        if !KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed)
+            && let Ok(bytes) = serde_json::to_vec_pretty(&app.ui)
+        {
             let _ = std::fs::write(&p, bytes);
         }
         if let Ok(bytes) = serde_json::to_vec_pretty(&app.session.prefs) {
@@ -144,10 +226,15 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
     match purpose {
         "swatches" => &[OpenFilter { name: "Swatch Exchange (ASE)", extensions: &["ase"] }],
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
+        "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text)", extensions: &["json", "txt"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],
         "library" => &[OpenFilter { name: "Object Library", extensions: &["dclib"] }],
+        "relink" => &[OpenFilter {
+            name: "Graphics",
+            extensions: &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"],
+        }],
         "dataMerge" => &[OpenFilter { name: "Data source (CSV, TSV, text, Excel)", extensions: &["csv", "tsv", "tab", "txt", "xlsx"] }],
         "place" => &[
             OpenFilter {
@@ -191,11 +278,83 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "DesignCraft or IDML", extensions: &["designcraft", "idml"] },
+            OpenFilter { name: "DesignCraft, IDML or InDesign", extensions: &["designcraft", "idml", "indd", "indt"] },
             OpenFilter { name: "DesignCraft", extensions: &["designcraft"] },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
+            OpenFilter { name: "InDesign document or template (INDD, INDT)", extensions: &["indd", "indt"] },
+            // Files saved without an extension; `file.open` tells the formats apart by content.
+            OpenFilter { name: "All files", extensions: &[ALL_FILES] },
         ],
     }
+}
+
+/// The "All files" pattern. The macOS panel merges every filter into one list of allowed types,
+/// which takes type identifiers as well as extensions: `public.data` admits any file.
+const ALL_FILES: &str = if cfg!(target_os = "macos") { "public.data" } else { "*" };
+
+/// The extension of the file name a save dialog suggests (`Brochure.designcraft`), if it has one.
+/// The dialog filters on it, so the macOS and Windows dialogs add it to a name typed without it.
+fn suggested_extension(name: &str) -> Option<&str> {
+    std::path::Path::new(name).extension().and_then(std::ffi::OsStr::to_str).filter(|e| !e.is_empty() && !e.contains(char::is_whitespace))
+}
+
+/// The file a save dialog's answer writes: `picked` with the suggested extension added when it has
+/// none (Linux dialogs don't add it). A document always ends in `.designcraft`, as `file.save`
+/// writes it.
+fn picked_save_path(picked: std::path::PathBuf, ext: Option<&str>) -> std::path::PathBuf {
+    let Some(ext) = ext else { return picked };
+    if ext.eq_ignore_ascii_case("designcraft") {
+        let p = picked.to_string_lossy();
+        return designcraft_engine::cmd::with_document_extension(&p).into();
+    }
+    if picked.extension().is_some() || picked.file_name().is_none() {
+        return picked;
+    }
+    let mut s = picked.into_os_string();
+    s.push(".");
+    s.push(ext);
+    s.into()
+}
+
+/// The folder a save dialog starts in and the name it suggests. A suggestion with a folder in
+/// front (the document's, or the last one used) starts there while that folder still exists;
+/// otherwise the system picks, as it did before.
+fn save_dialog_start(suggested: &str) -> (Option<std::path::PathBuf>, String) {
+    let path = std::path::Path::new(suggested);
+    let name = path.file_name().map_or_else(|| suggested.to_string(), |n| n.to_string_lossy().to_string());
+    let folder = path.parent().filter(|f| !f.as_os_str().is_empty() && f.is_dir()).map(std::path::Path::to_path_buf);
+    (folder, name)
+}
+
+/// The save dialog: the suggested name's extension as its filter, and the extension added to a
+/// name typed without it. Adding it names another file than the one the dialog checked, so
+/// replacing an existing one asks again.
+fn pick_save(suggested: &str) -> Option<String> {
+    let (folder, name) = save_dialog_start(suggested);
+    let name = name.as_str();
+    let ext = suggested_extension(name);
+    let mut dialog = rfd::FileDialog::new().set_file_name(name);
+    if let Some(folder) = folder {
+        dialog = dialog.set_directory(folder);
+    }
+    if let Some(ext) = ext {
+        dialog = dialog.add_filter(ext.to_ascii_uppercase(), &[ext]);
+    }
+    let picked = dialog.save_file()?;
+    let path = picked_save_path(picked.clone(), ext);
+    if path != picked && path.exists() {
+        let file = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Replace File?")
+            .set_description(format!("“{file}” already exists. Do you want to replace it?"))
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show();
+        if answer != rfd::MessageDialogResult::Yes {
+            return None;
+        }
+    }
+    Some(path.to_string_lossy().to_string())
 }
 
 fn services() -> Services {
@@ -207,7 +366,7 @@ fn services() -> Services {
             }
             dialog.pick_file().map(|p| p.to_string_lossy().to_string())
         })),
-        pick_save: Some(Box::new(|name: &str| rfd::FileDialog::new().set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string()))),
+        pick_save: Some(Box::new(pick_save)),
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::atomic::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string()))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
@@ -239,13 +398,19 @@ fn control_port_from(source: &str, value: Option<String>) -> Option<u16> {
     port
 }
 
-fn main() -> eframe::Result {
+fn main() -> std::process::ExitCode {
+    // Windows: the update helper is a copy of this program started with `--finish-update`.
+    #[cfg(windows)]
+    if let Some(result) = craft_update::self_update::finish(&craft_update::suite::DESIGNCRAFT, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        std::process::exit(i32::from(result.is_err()));
+    }
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Session) is captured; see `logging`.
     let logger = logging::install();
     let mut control_port = control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok());
     let mut files = Vec::new();
     let mut sample = false;
+    let mut skip = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -253,11 +418,20 @@ fn main() -> eframe::Result {
             "--sample" => sample = true,
             "--version" => {
                 println!("designcraft {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
+                return std::process::ExitCode::SUCCESS;
             }
-            _ => files.push(a),
+            _ => match gpu::skip_arg(&a) {
+                Some(list) => skip = list,
+                None => files.push(a),
+            },
         }
     }
+    // A portable.txt whose DesignCraftData folder cannot be written: the platform folders are used
+    // instead (see `profile`), and the user is told, in the log and in the status bar.
+    let portable_note = profile::unwritable_portable_dir().map(|dir| {
+        log::warn!("portable mode is off: {} cannot be written; settings and recovery use the usual folders", dir.display());
+        format!("Portable mode is off: {} cannot be written, so settings are kept in the usual place.", dir.display())
+    });
     // The log file lives under the settings directory; opened after the arguments, so `--version`
     // leaves no file behind. Records logged until now are written to it first.
     if let (Some(logger), Some(dir)) = (logger, profile::config_dir()) {
@@ -272,32 +446,55 @@ fn main() -> eframe::Result {
             .with_title("DesignCraft")
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 560.0])
+            .with_decorations(!cfg!(target_os = "windows"))
             .with_drag_and_drop(true)
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
             .with_title_shown(false),
+        // DesignCraft's own FontDb supplies script-specific system fallbacks; egui's system-font
+        // provider would put its discovery ahead of that order and change line metrics.
+        system_font_fallback: false,
         ..Default::default()
     };
     options.viewport = options.viewport.with_app_id(APP_ID);
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
+    // The adapter's largest texture side instead of eframe's 8192, so a window across several
+    // monitors keeps its surface (see `gpu_limits`).
+    gpu_limits::request_adapter_texture_size(&mut options);
     // The graphics backend, decided before the window exists: a driver that faults takes the
-    // process down before any Rust code can catch it (see `gpu`).
-    let gpu = gpu::Startup::begin(if no_prefs() { None } else { profile::config_dir().map(|d| d.join(gpu::FILE)) }, env!("CARGO_PKG_VERSION"));
-    if let Some(s) = &gpu
-        && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
-    {
-        create.instance_descriptor.backends = s.backends();
+    // process down before any Rust code can catch it (see `gpu::backend`).
+    let fallback = gpu::backend::Fallback::begin(
+        if no_prefs() { None } else { profile::config_dir().map(|d| d.join(gpu::backend::FILE)) },
+        env!("CARGO_PKG_VERSION"),
+        &gpu::backend::skipped_backends(&skip),
+    );
+    let instance_backends = fallback.as_ref().map(gpu::backend::Fallback::backends);
+    let startup = std::sync::Arc::new(gpu::Startup::new(fallback, skip.clone()));
+    // The adapter: the GPU that drives the (primary) display unless `WGPU_POWER_PREF` chooses a
+    // kind; a GPU without a monitor reset its driver and took every monitor down. Logged first:
+    // the first question in every black-window report.
+    let power_env = eframe::wgpu::PowerPreference::from_env();
+    let power = gpu::power_preference(power_env);
+    let displays = gpu::preferred_displays(power_env);
+    let chosen_gpu = !gpu::automatic(power_env);
+    if chosen_gpu {
+        log::info!("graphics processor chosen by WGPU_POWER_PREF ({power:?}): which GPU drives the display isn't considered");
+    } else {
+        let listed: Vec<String> = displays.iter().map(ToString::to_string).collect();
+        log::info!("display GPUs (PCI vendor:device): {}", if listed.is_empty() { "unknown".to_string() } else { listed.join(", ") });
     }
-    // Nothing draws or dispatches indirectly, so wgpu's check of indirect arguments only costs a
-    // compute shader when the device is created, one that Metal can't compile on an Intel Iris
-    // Pro: the device is lost and the window never opens. `WGPU_VALIDATION_INDIRECT_CALL=1` turns
-    // the check back on.
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup {
-        create.instance_descriptor.flags =
-            create.instance_descriptor.flags.difference(eframe::wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL).with_env();
+        if let Some(backends) = instance_backends {
+            create.instance_descriptor.backends = backends;
+        }
+        create.instance_descriptor.flags = gpu::instance_flags();
+        // Only adapters that can show the window, in the order `gpu` gives.
+        create.native_adapter_selector = Some(gpu::selector(power, displays, startup.clone()));
     }
+    gpu::watch_panics();
+    gpu::watch_first_frame(startup.clone());
     // winit has no file drag-and-drop on Wayland (only on X11), so dropping images from the file
     // manager showed a "no" cursor. Run through XWayland when it's there; DESIGNCRAFT_WAYLAND=1
     // keeps the native Wayland backend.
@@ -317,58 +514,138 @@ fn main() -> eframe::Result {
             builder.with_close_requested_on_terminate(true);
         }));
     }
-    eframe::run_native(
-        "DesignCraft",
-        options,
-        Box::new(move |cc| {
-            let mut gpu = gpu;
-            if let Some(rs) = &cc.wgpu_render_state {
-                // What a bug report needs to know about the graphics driver.
-                let info = rs.adapter.get_info();
-                log::info!("graphics: {} on {:?} ({:?}; driver {} {})", info.name, info.backend, info.device_type, info.driver, info.driver_info);
-                if let (Some(s), Some(backend)) = (gpu.as_mut(), gpu::Backend::of(info.backend)) {
-                    s.started_with(backend);
+    // Registered before the event loop starts, so it catches the Finder event that launched the app
+    // as well as later ones. Lives until the event loop returns; the app creator only borrows it.
+    #[cfg(target_os = "macos")]
+    let apple_events = apple_events::AppleEvents::install();
+    #[cfg(target_os = "macos")]
+    let events = &apple_events;
+    let created = startup.clone();
+    // A panic that ends the window (egui-wgpu's own) is caught here: never a crash.
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
+            "DesignCraft",
+            options,
+            Box::new(move |cc| {
+                let mut restarted = None;
+                let mut device = None;
+                if let Some(rs) = &cc.wgpu_render_state {
+                    device = Some(rs.device.clone());
+                    // What a bug report needs to know about the graphics driver.
+                    let info = rs.adapter.get_info();
+                    log::info!(
+                        "graphics: {} on {:?} ({:?}; driver {} {}; power preference {power:?})",
+                        info.name,
+                        info.backend,
+                        info.device_type,
+                        info.driver,
+                        info.driver_info
+                    );
+                    created.started_with(info.backend);
+                    created.created(&cc.egui_ctx);
+                    if !skip.is_empty() {
+                        // A processor chosen by `WGPU_POWER_PREF` can be the one that can't show the window.
+                        let hint = if chosen_gpu { " (without WGPU_POWER_PREF it uses the one that drives your display)" } else { "" };
+                        restarted = Some(format!(
+                            "The graphics processor tried first couldn't show the window, so DesignCraft started again on {} ({:?}, {:?}){hint}.",
+                            info.name.trim(),
+                            info.backend,
+                            info.device_type
+                        ));
+                    }
                 }
-            }
-            let mut session = Session::new();
-            // Crash recovery: reopen what a previous run left unsaved, then keep it current.
-            session.recovery_dir = profile::recovery_dir();
-            let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
-            let mut app = DesignApp::new(session, services());
-            if let Some(line) = gpu.as_ref().and_then(gpu::Startup::status_line) {
-                app.status(line);
-            }
-            // Recovered documents matter more than the graphics note; both are in the log.
-            if let Some(n) = recovered.as_ref().and_then(|r| r["opened"].as_array()).map(Vec::len).filter(|n| *n > 0) {
-                app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
-            }
-            load_prefs(&mut app);
-            app.integrated_titlebar = cfg!(target_os = "macos");
-            if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
-                app = app.with_control(rx);
-            }
-            if sample {
-                let _ = app.run("file.newSample", serde_json::json!({}));
-            }
-            for f in files {
-                if let Err(e) = app.open_file("file.open", serde_json::json!({"path": f})) {
-                    eprintln!("designcraft: {f}: {e}");
+                let mut session = Session::new();
+                // Crash recovery: reopen what a previous run left unsaved, then keep it current.
+                session.recovery_dir = profile::recovery_dir();
+                let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
+                let mut app = DesignApp::new(session, services());
+                app.set_startup_update_check(true);
+                if let Some(line) = restarted.or_else(|| created.status_line()) {
+                    app.status(line);
                 }
-            }
-            Ok(Box::new(App {
-                app,
-                #[cfg(target_os = "macos")]
-                menu: None,
-                startup: gpu,
-                frames: 0,
-            }))
-        }),
-    )
+                // Recovered documents matter more than the graphics note; both are in the log.
+                if let Some(n) = recovered.as_ref().and_then(|r| r["opened"].as_array()).map(Vec::len).filter(|n| *n > 0) {
+                    app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
+                }
+                load_prefs(&mut app);
+                // After `load_prefs`, which replaces the UI state and with it the status line.
+                if let Some(note) = portable_note {
+                    app.status(note);
+                }
+                app.integrated_titlebar = cfg!(target_os = "macos");
+                app.custom_titlebar = cfg!(target_os = "windows");
+                if let Some(port) = control_port {
+                    let rx = control_server::start(port, cc.egui_ctx.clone());
+                    app = app.with_control(rx);
+                }
+                if sample {
+                    let _ = app.run("file.newSample", serde_json::json!({}));
+                }
+                for f in files {
+                    if let Err(e) = app.open_file("file.open", serde_json::json!({"path": f})) {
+                        log::warn!("{f}: {e}");
+                    }
+                }
+                // The first frame is due from now (`gpu::watch_first_frame`).
+                created.ready();
+                Ok(Box::new(App {
+                    app,
+                    #[cfg(target_os = "macos")]
+                    menu: None,
+                    startup: created,
+                    #[cfg(target_os = "macos")]
+                    apple_events: events.connect(&cc.egui_ctx),
+                    #[cfg(target_os = "macos")]
+                    movable: None,
+                    frames: 0,
+                    log_errors_after_startup: device,
+                }))
+            }),
+        )
+    }))
+    .map_err(|payload| designcraft_engine::guard::panic_message(payload.as_ref()));
+    // The window's end, or a graphics failure that starts the app again. A failure is logged:
+    // standard error and the log file, since a Windows start has no console to show it.
+    // Documents that arrived after the last frame, for a start again to open too.
+    #[cfg(target_os = "macos")]
+    startup.opening(apple_events.queued());
+    match gpu::finish(run, &startup) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            log::error!("DesignCraft stopped: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unreadable_ui_json_is_kept_beside_it() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("designcraft-ui-prefs-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("ui.json");
+        super::keep_unreadable_prefs(&path, b"{\"docking\": {\"root\": {\"FutureLayout\": {}}}}");
+        super::keep_unreadable_prefs(&path, b"not json");
+        let first = std::fs::read(dir.join("ui.unreadable.json")).unwrap();
+        let second = std::fs::read(dir.join("ui.unreadable-2.json")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(first.starts_with(b"{\"docking\""), "the first copy is not replaced");
+        assert_eq!(second, b"not json");
+        assert!(!super::KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed), "ui.json can be saved once a copy is kept");
+    }
+
+    #[test]
+    fn relink_open_dialog_lists_graphics() {
+        let filters = super::open_filters("relink");
+        let exts: Vec<&str> = filters.iter().flat_map(|filter| filter.extensions.iter().copied()).collect();
+        for ext in ["png", "jpg", "tif", "psd", "svg", "pdf", "ai", "eps"] {
+            assert!(exts.contains(&ext), "{ext} is missing from the relink dialog: {exts:?}");
+        }
+        assert!(!exts.contains(&"designcraft") && !exts.contains(&"idml"));
+    }
+
     #[test]
     fn control_port_values_that_are_not_ports_are_ignored() {
         assert_eq!(super::control_port_from("--control", Some("7979".into())), Some(7979));
@@ -391,7 +668,33 @@ mod tests {
         assert!(place.len() > 1, "the place dialog keeps a filter for each kind of file");
         assert!(place.iter().any(|filter| filter.extensions.contains(&"png")));
         let documents = super::open_filters("");
-        assert!(documents.iter().any(|filter| filter.extensions.contains(&"designcraft")));
+        for ext in ["designcraft", "idml", "indd", "indt"] {
+            assert!(documents.first().is_some_and(|filter| filter.extensions.contains(&ext)), "{ext} is missing from the first Open filter");
+        }
+        assert!(documents.last().is_some_and(|filter| filter.extensions == [super::ALL_FILES]), "files without an extension can be picked");
+    }
+
+    #[test]
+    fn save_dialog_answers_get_the_suggested_extension() {
+        use std::path::PathBuf;
+        let save = |picked: &str, name: &str| super::picked_save_path(PathBuf::from(picked), super::suggested_extension(name));
+        assert_eq!(save("/d/Brochure", "Untitled.designcraft"), PathBuf::from("/d/Brochure.designcraft"));
+        assert_eq!(save("/d/Brochure.idml", "Untitled.designcraft"), PathBuf::from("/d/Brochure.idml.designcraft"));
+        assert_eq!(save("/d/Brochure.designcraft", "Untitled.designcraft"), PathBuf::from("/d/Brochure.designcraft"));
+        assert_eq!(save("/d/Brochure", "Untitled.pdf"), PathBuf::from("/d/Brochure.pdf"));
+        assert_eq!(save("/d/Brochure.txt", "Untitled.rtf"), PathBuf::from("/d/Brochure.txt"), "another export format is kept");
+        assert_eq!(save("/d/Package", "Untitled 1.2 Folder"), PathBuf::from("/d/Package"), "a folder has no extension");
+    }
+
+    /// #1653: the save dialog opens in the folder the suggestion names, unless it is gone.
+    #[test]
+    fn save_dialog_starts_in_the_suggested_folder_while_it_exists() {
+        let folder = std::env::temp_dir();
+        let suggested = folder.join("Brochure.pdf");
+        assert_eq!(super::save_dialog_start(&suggested.to_string_lossy()), (Some(folder.clone()), "Brochure.pdf".to_string()));
+        let gone = folder.join(format!("designcraft-gone-{}", std::process::id())).join("Brochure.pdf");
+        assert_eq!(super::save_dialog_start(&gone.to_string_lossy()), (None, "Brochure.pdf".to_string()), "a folder deleted since: the system's own");
+        assert_eq!(super::save_dialog_start("Untitled 1.2 Folder"), (None, "Untitled 1.2 Folder".to_string()), "a bare name: the system's own");
     }
 }
 

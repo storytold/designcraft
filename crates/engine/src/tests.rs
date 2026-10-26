@@ -26,6 +26,20 @@ fn create_frame_type_and_undo() {
 }
 
 #[test]
+fn undo_restores_the_selection_from_before_the_command() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [36, 36, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200, 36, 300, 100]})).unwrap()["id"].as_u64().unwrap();
+    let sel = |s: &Session| s.doc().unwrap().selection.items.iter().map(|i| i.0).collect::<Vec<_>>();
+    assert_eq!(sel(&s), vec![b]);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(sel(&s), vec![a]);
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(sel(&s), vec![b]);
+}
+
+#[test]
 fn smart_quotes_and_formatting() {
     let mut s = session();
     s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
@@ -39,6 +53,68 @@ fn smart_quotes_and_formatting() {
     assert_eq!(a["chars"]["size"], 24.0);
     s.execute("type.para", &json!({"attrs": {"align": "center"}})).unwrap();
     assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"], "center");
+}
+
+/// Issue #919: with Cmd held, a press with the Type (or any drawing) tool selects and drags like
+/// the Selection tool, and the chosen tool stays.
+#[test]
+fn cmd_held_press_borrows_the_selection_tool_for_one_gesture() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind};
+    let mut s = session();
+    let v = ViewInfo::at_zoom(1.0);
+    let r = s.execute("frame.create", &json!({"rect": [100, 100, 300, 200], "content": "text", "text": "Hello"})).unwrap();
+    let fid = r["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": []})).unwrap();
+    s.set_tool("type");
+    let cmd = Mods { cmd: true, ..Mods::default() };
+    // Cmd-press on the frame selects it as an object (no caret) and a Cmd-drag moves it.
+    s.pointer(&PointerEvent::new(PointerKind::Down, 150.0, 150.0).with_mods(cmd), v).unwrap();
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(fid)]);
+    assert!(s.doc().unwrap().selection.text.is_none(), "no caret: the Selection tool was borrowed");
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 170.0, 150.0).with_mods(cmd), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 200.0, 150.0).with_mods(cmd), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 200.0, 150.0).with_mods(cmd), v).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(fid)).unwrap().bounds().x0, 150.0, "moved by the drag");
+    assert_eq!(s.tool_id(), "type", "the chosen tool stays");
+    assert!(s.temp_tool.is_none(), "the borrowed tool is gone on release");
+    // The next plain press is the Type tool's again: a caret in the frame.
+    s.pointer(&PointerEvent::new(PointerKind::Down, 200.0, 150.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 200.0, 150.0), v).unwrap();
+    assert!(s.doc().unwrap().selection.text.is_some(), "a plain press places the caret");
+    // Cmd with the Selection tool itself borrows nothing (Cmd-click selects through, as before).
+    s.set_tool("selection");
+    s.pointer(&PointerEvent::new(PointerKind::Down, 200.0, 150.0).with_mods(cmd), v).unwrap();
+    assert!(s.temp_tool.is_none());
+    s.pointer(&PointerEvent::new(PointerKind::Up, 200.0, 150.0).with_mods(cmd), v).unwrap();
+    s.set_tool("pen");
+    s.pointer(&PointerEvent::new(PointerKind::Down, 200.0, 150.0).with_mods(cmd), v).unwrap();
+    assert_eq!(s.temp_tool.as_ref().map(|t| t.id()), Some("selection"));
+    s.pointer(&PointerEvent::new(PointerKind::Up, 200.0, 150.0).with_mods(cmd), v).unwrap();
+    assert_eq!(s.tool_id(), "pen");
+}
+
+/// Cmd borrows whichever selection tool was chosen last, whatever the chosen tool is.
+#[test]
+fn cmd_borrows_the_last_used_selection_tool() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind};
+    let mut s = session();
+    let v = ViewInfo::at_zoom(1.0);
+    let cmd = Mods { cmd: true, ..Mods::default() };
+    let borrowed = |s: &mut Session| {
+        s.pointer(&PointerEvent::new(PointerKind::Down, 400.0, 400.0).with_mods(cmd), v).unwrap();
+        let id = s.temp_tool.as_ref().map(|t| t.id());
+        s.pointer(&PointerEvent::new(PointerKind::Up, 400.0, 400.0).with_mods(cmd), v).unwrap();
+        id
+    };
+    s.set_tool("directSelection");
+    s.set_tool("rectangle");
+    assert_eq!(borrowed(&mut s), Some("directSelection"));
+    s.set_tool("selection");
+    s.set_tool("rectangle");
+    assert_eq!(borrowed(&mut s), Some("selection"));
+    s.set_tool("directSelection");
+    s.set_tool("pen");
+    assert_eq!(borrowed(&mut s), Some("directSelection"));
 }
 
 #[test]
@@ -73,6 +149,111 @@ fn tool_gesture_creates_one_undo_step() {
     // The visible edge lands on the 36 pt margin.
     let it = &s.doc().unwrap().doc.spreads[0].items[0];
     assert!((it.visible_bounds().x0 - 36.0).abs() < 1e-6, "visible {:?} path {:?}", it.visible_bounds(), it.bounds());
+}
+
+/// A command that runs another one (Cut runs Clear) recorded an undo step for each, so the
+/// second Undo did nothing. One command is one step, whatever it runs inside.
+#[test]
+fn a_command_that_runs_another_is_one_undo_step() {
+    let mut s = session();
+    let one_step = |s: &mut Session, id: &str, p: Value, label: &str| {
+        let (before, steps) = {
+            let st = s.doc().unwrap();
+            (st.doc.clone(), st.history.undo.len())
+        };
+        s.execute(id, &p).unwrap();
+        let st = s.doc().unwrap();
+        assert_ne!(st.doc, before, "{id} changes the document");
+        assert_eq!(st.history.undo.len(), steps + 1, "{id}");
+        assert_eq!(st.history.undo.last().unwrap().label, label);
+        let after = st.doc.clone();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before, "one Undo takes {id} back");
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, after, "one Redo brings {id} back");
+        s.execute("edit.undo", &json!({})).unwrap();
+    };
+    // Pasting text runs Type.
+    let story = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+    s.execute("text.select", &json!({"story": story, "anchor": 2})).unwrap();
+    one_step(&mut s, "edit.paste", json!({"text": "c"}), "Paste");
+    let a = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].clone();
+    s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap();
+    for (id, label) in
+        [("edit.duplicate", "Duplicate"), ("object.bringToFront", "Bring to Front"), ("edit.cut", "Cut"), ("edit.pasteInPlace", "Paste in Place")]
+    {
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        one_step(&mut s, id, json!({}), label);
+    }
+    // A script that runs Cut is three commands deep and still one step.
+    let script = format!("selection.set {{\"ids\": [{a}]}}\nedit.cut {{}}");
+    one_step(&mut s, "script.run", json!({"text": script}), "Run Script");
+}
+
+/// A command that fails partway strands no edits without an undo step: a script that stops at
+/// a bad step rolls its earlier steps back (#709). A command that leaves its partial edit in the
+/// document records an undo step for it (next test).
+#[test]
+fn a_command_that_fails_partway_strands_no_edits() {
+    let mut s = session();
+    let before = s.doc().unwrap().doc.clone();
+    let script = "frame.create {\"rect\": [36, 36, 136, 136]}\nnope.command";
+    assert!(s.execute("script.run", &json!({"text": script})).is_err());
+    let st = s.doc().unwrap();
+    assert_eq!(st.doc, before, "the first step was rolled back");
+    assert!(st.history.undo.is_empty());
+    assert!(s.execute("edit.undo", &json!({})).is_err(), "nothing was left to undo");
+    // The next command records its step as usual.
+    s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap();
+    assert_eq!(s.doc().unwrap().history.undo.len(), 1);
+}
+
+/// The same for a command that fails after a command it ran changed the document: that one
+/// leaves the step to it, so it has to record one.
+#[test]
+fn a_command_that_fails_after_the_one_it_ran_can_be_undone() {
+    let mut s = session();
+    let empty = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "unassigned"})).unwrap()["id"].clone();
+    let text = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "abc"})).unwrap()["id"].clone();
+    s.execute("selection.set", &json!({"ids": [text]})).unwrap();
+    let (before, steps) = {
+        let st = s.doc().unwrap();
+        (st.doc.clone(), st.history.undo.len())
+    };
+    // Fill with Placeholder Text turns the empty frame into a text frame, then finds no such story.
+    assert!(s.execute("type.fillWithPlaceholder", &json!({"frame": empty, "story": 99999})).is_err());
+    let st = s.doc().unwrap();
+    assert_ne!(st.doc, before, "the frame was converted");
+    assert_eq!(st.history.undo.len(), steps + 1);
+    assert_eq!(st.history.undo.last().unwrap().label, "Fill with Placeholder Text");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc, before);
+}
+
+/// A script's steps still record as it runs: an Undo step takes back the step before it, not
+/// what was done before the script. The script stays one step.
+#[test]
+fn a_script_that_undoes_its_own_step_is_one_undo_step() {
+    let mut s = session();
+    s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap();
+    let script = "frame.create {\"rect\": [200, 36, 300, 136]}\nframe.create {\"rect\": [400, 36, 500, 136]}\nedit.undo {}";
+    s.execute("script.run", &json!({"text": script})).unwrap();
+    let st = s.doc().unwrap();
+    assert_eq!(st.doc.spreads[0].items.len(), 2, "the frame from before the script and the script's first");
+    assert_eq!(st.history.undo.len(), 2);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.spreads[0].items.len(), 1);
+}
+
+/// A command that is no undo step itself (placing the caret) leaves the steps of the commands
+/// it runs alone: turning the empty frame into a text frame can be undone.
+#[test]
+fn a_command_without_an_undo_step_keeps_the_steps_of_those_it_runs() {
+    let mut s = session();
+    let id = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "unassigned"})).unwrap()["id"].clone();
+    s.execute("text.placeCaret", &json!({"frame": id, "point": [50, 50]})).unwrap();
+    let labels: Vec<&str> = s.doc().unwrap().history.undo.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(labels, ["Create Frame", "Content"]);
 }
 
 #[test]
@@ -113,8 +294,9 @@ fn cmd_move_does_not_snap() {
 fn cmd_resize_still_snaps_to_a_guide() {
     use designcraft_tools::{PointerEvent, PointerKind};
     let mut s = session();
-    s.execute("frame.create", &json!({"rect": [100.0, 100.0, 200.0, 180.0], "content": "unassigned"})).unwrap();
+    // The new guide is selected: the frame created after it is the selection.
     s.execute("guide.add", &json!({"orientation": "vertical", "position": 250.0, "page": 0})).unwrap();
+    s.execute("frame.create", &json!({"rect": [100.0, 100.0, 200.0, 180.0], "content": "unassigned"})).unwrap();
     s.set_tool("selection");
     let v = ViewInfo::at_zoom(1.0);
     let b0 = s.doc().unwrap().doc.spreads[0].items[0].bounds();
@@ -173,7 +355,7 @@ fn sample_document_is_valid_and_composes() {
     let i = s.execute("document.inspect", &json!({})).unwrap();
     assert!(i["stories"].as_array().unwrap().len() >= 8);
     // Save/load round trip.
-    let bytes = cmd::file_bytes(&s.doc().unwrap().doc);
+    let bytes = cmd::file_bytes(&s.doc().unwrap().doc).unwrap();
     let back = cmd::file_from(&bytes).unwrap();
     assert_eq!(back.page_count(), 4);
     assert_eq!(back.assets.len(), s.doc().unwrap().doc.assets.len());
@@ -326,7 +508,7 @@ fn hyperlinks_and_bookmarks_reach_the_pdf() {
     let pdf = hayro_syntax::Pdf::new(bytes).expect("valid pdf");
     assert_eq!(pdf.pages().len(), 4);
     // Round trip through the native format keeps them.
-    let back = cmd::file_from(&cmd::file_bytes(&s.doc().unwrap().doc)).unwrap();
+    let back = cmd::file_from(&cmd::file_bytes(&s.doc().unwrap().doc).unwrap()).unwrap();
     assert_eq!(back.hyperlinks.len(), 2);
     assert_eq!(back.bookmarks.len(), 2);
 }
@@ -338,7 +520,7 @@ fn serialized_document_opens_again() {
     s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Saved on the web"})).unwrap();
     let r = s.execute("file.serialize", &json!({})).unwrap();
     let bytes = cmd::base64_decode(r["base64"].as_str().expect("base64"));
-    assert_eq!(bytes, cmd::to_bytes(&s.doc().unwrap().doc));
+    assert_eq!(bytes, cmd::to_bytes(&s.doc().unwrap().doc).unwrap());
     s.execute("file.openBytes", &json!({"name": "copy", "base64": r["base64"]})).unwrap();
     let d = s.execute("document.inspect", &json!({})).unwrap();
     assert_eq!(d["stories"][0]["preview"], "Saved on the web");
@@ -438,6 +620,110 @@ fn object_styles_create_and_apply() {
     assert_eq!(ib.object_style, "Magenta Box");
 }
 
+#[test]
+fn object_style_effects_follow_the_style_until_overridden() {
+    use designcraft_doc::{BASIC_GRAPHICS_FRAME, ItemId};
+    let mut s = session();
+    let frame = |s: &mut Session, x: f64| {
+        let r = s.execute("frame.create", &json!({"rect": [x, 36, x + 100.0, 136], "content": "unassigned"})).unwrap();
+        r["id"].as_u64().unwrap()
+    };
+    let item = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().clone();
+    let shadow = |s: &Session, id: u64| item(s, id).effects.drop_shadow;
+    let a = frame(&mut s, 36.0);
+    s.execute("object.dropShadow", &json!({"on": true, "distance": 0, "size": 12, "opacity": 0.28, "ids": [a]})).unwrap();
+    s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+    s.execute("style.object.create", &json!({"name": "Photo", "fromSelection": true})).unwrap();
+    let b = frame(&mut s, 200.0);
+    let c = frame(&mut s, 360.0);
+    s.execute("style.object.apply", &json!({"name": "Photo", "ids": [a, b, c]})).unwrap();
+    assert_eq!(shadow(&s, b), shadow(&s, a));
+    assert!(shadow(&s, b).on && shadow(&s, b).size == 12.0);
+    s.execute("object.dropShadow", &json!({"on": true, "size": 30, "ids": [c]})).unwrap();
+
+    // Editing the style updates the items that follow it; `c`'s local shadow stays.
+    let r = s.execute("style.object.edit", &json!({"name": "Photo", "dropShadow": {"size": 20}})).unwrap();
+    assert_eq!(r["updated"], 2);
+    assert_eq!((shadow(&s, a).size, shadow(&s, b).size, shadow(&s, c).size), (20.0, 20.0, 30.0));
+    assert_eq!(shadow(&s, a).opacity, 0.28);
+    s.execute("style.object.clearOverrides", &json!({"ids": [c]})).unwrap();
+    assert_eq!(shadow(&s, c), shadow(&s, a));
+
+    // Saved and opened again, the style keeps its effects.
+    let bytes = s.execute("file.serialize", &json!({})).unwrap();
+    let mut back = Session::new();
+    back.execute("file.openBytes", &json!({"name": "copy", "base64": bytes["base64"]})).unwrap();
+    let d = &back.doc().unwrap().doc;
+    assert_eq!(d.styles.object_style("Photo").unwrap().effects.as_ref().unwrap().drop_shadow.size, 20.0);
+    assert!(d.styles.object_style(BASIC_GRAPHICS_FRAME).unwrap().effects.is_none());
+
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(shadow(&s, c).size, 30.0);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((shadow(&s, a).size, shadow(&s, b).size), (12.0, 12.0));
+    assert_eq!(s.doc().unwrap().doc.styles.object_style("Photo").unwrap().effects.as_ref().unwrap().drop_shadow.size, 12.0);
+
+    // A style that didn't set effects gives them to the items using it that have no effects of
+    // their own, and to new frames that get it by default; `null` stops setting them.
+    let e = frame(&mut s, 36.0);
+    let f = frame(&mut s, 200.0);
+    s.execute("style.object.apply", &json!({"name": BASIC_GRAPHICS_FRAME, "ids": [e, f]})).unwrap();
+    s.execute("object.dropShadow", &json!({"on": true, "ids": [e]})).unwrap();
+    let r = s.execute("style.object.edit", &json!({"name": BASIC_GRAPHICS_FRAME, "feather": 4})).unwrap();
+    assert_eq!(r["updated"], 1);
+    assert!(item(&s, e).effects.drop_shadow.on && item(&s, e).effects.feather == 0.0);
+    assert_eq!(item(&s, f).effects, designcraft_doc::Effects { feather: 4.0, ..Default::default() });
+    let g = s.execute("frame.create", &json!({"rect": [36, 300, 136, 400], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    assert_eq!((item(&s, g).object_style.as_str(), item(&s, g).effects.feather), (BASIC_GRAPHICS_FRAME, 4.0));
+    s.execute("style.object.edit", &json!({"name": BASIC_GRAPHICS_FRAME, "effects": null})).unwrap();
+    assert!(s.doc().unwrap().doc.styles.object_style(BASIC_GRAPHICS_FRAME).unwrap().effects.is_none());
+    assert_eq!(item(&s, f).effects.feather, 4.0);
+
+    // Nothing to change: no edit, no undo step.
+    let rev = s.doc().unwrap().revision;
+    s.execute("style.object.edit", &json!({"name": BASIC_GRAPHICS_FRAME, "effects": null})).unwrap();
+    s.execute("style.object.clearOverrides", &json!({"ids": [a, b]})).unwrap();
+    assert_eq!(s.doc().unwrap().revision, rev);
+}
+
+#[test]
+fn object_style_effects_reach_grouped_and_anchored_items() {
+    use designcraft_doc::ItemId;
+    let mut s = session();
+    let frame = |s: &mut Session, x: f64| {
+        s.execute("frame.create", &json!({"rect": [x, 36, x + 50.0, 86], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap()
+    };
+    let (a, b, c) = (frame(&mut s, 36.0), frame(&mut s, 100.0), frame(&mut s, 200.0));
+    s.execute("style.object.create", &json!({"name": "Photo", "fromSelection": false, "dropShadow": {"on": true}})).unwrap();
+    s.execute("style.object.apply", &json!({"name": "Photo", "ids": [a, b, c]})).unwrap();
+    s.execute("object.group", &json!({"ids": [a, b]})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [36, 200, 400, 400], "content": "text", "text": "Before after."})).unwrap();
+    let sid = s.doc().unwrap().doc.item(ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    s.execute("anchored.insert", &json!({"ids": [c], "story": sid.0, "pos": 7})).unwrap();
+
+    let r = s.execute("style.object.edit", &json!({"name": "Photo", "dropShadow": {"size": 25}})).unwrap();
+    assert_eq!(r["updated"], 3);
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.item(ItemId(a)).unwrap().effects.drop_shadow.size, 25.0);
+    assert_eq!(d.story(sid).unwrap().objects[0].item.effects.drop_shadow.size, 25.0);
+
+    // Values that aren't finite numbers are refused (an f32 opacity of 1e39 is infinite); the
+    // others are clamped, and the document still saves and opens.
+    assert!(s.execute("style.object.edit", &json!({"name": "Photo", "dropShadow": {"opacity": 1e39}})).is_err());
+    assert!(s.execute("object.dropShadow", &json!({"opacity": 1e39, "ids": [b]})).is_err());
+    assert!(s.execute("style.object.edit", &json!({"name": "Photo", "dropShadow": {"size": "big"}})).is_err());
+    s.execute("style.object.edit", &json!({"name": "Photo", "dropShadow": {"opacity": 3, "size": -5}})).unwrap();
+    s.execute("object.innerShadow", &json!({"on": true, "distance": -2, "ids": [b]})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let ds = &d.styles.object_style("Photo").unwrap().effects.as_ref().unwrap().drop_shadow;
+    assert_eq!((ds.opacity, ds.size), (1.0, 0.0));
+    assert_eq!(d.item(ItemId(b)).unwrap().effects.inner_shadow.distance, 0.0);
+    let bytes = s.execute("file.serialize", &json!({})).unwrap();
+    let mut back = Session::new();
+    back.execute("file.openBytes", &json!({"name": "copy", "base64": bytes["base64"]})).unwrap();
+    assert_eq!(back.doc().unwrap().doc.styles.object_style("Photo").unwrap().effects.as_ref().unwrap().drop_shadow.opacity, 1.0);
+}
+
 /// Unicode text per page, through hayro's interpreter (ToUnicode / ActualText).
 fn pdf_text(bytes: &[u8]) -> Vec<String> {
     use hayro_interpret::font::Glyph;
@@ -519,6 +805,72 @@ fn object_set_flags_and_wrap_invert() {
     s.execute("selection.set", &json!({"ids": [id]})).unwrap();
     s.execute("object.textWrap", &json!({"mode": "boundingBox", "invert": true})).unwrap();
     assert!(item(&s).wrap.invert);
+    // Side and contour type keep the mode; contour types that need the image aren't accepted.
+    s.execute("object.textWrap", &json!({"mode": "contour"})).unwrap();
+    s.execute("object.textWrap", &json!({"side": "largestArea", "contour": "graphicFrame"})).unwrap();
+    let w = item(&s).wrap;
+    assert_eq!(
+        (w.mode, w.side, w.contour),
+        (designcraft_doc::WrapMode::Contour, designcraft_doc::WrapSide::LargestArea, designcraft_doc::ContourType::GraphicFrame)
+    );
+    assert!(s.execute("object.textWrap", &json!({"contour": "detectEdges"})).is_err());
+    assert!(s.execute("object.textWrap", &json!({"side": "middle"})).is_err());
+}
+
+#[test]
+fn text_wrap_on_selected_content_sets_the_graphic_wrap() {
+    let mut s = session();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = s.execute("frame.create", &json!({"rect": [300, 300, 400, 400], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png)})).unwrap();
+    s.execute("place.drop", &json!({"frame": f})).unwrap();
+    let item = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).cloned().unwrap();
+    s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "boundingBox", "offset": 4})).unwrap();
+    let it = item(&s);
+    assert_eq!(it.wrap.mode, designcraft_doc::WrapMode::None, "the frame keeps no wrap");
+    let g = it.graphic().unwrap();
+    assert_eq!((g.wrap.mode, g.wrap.offsets), (designcraft_doc::WrapMode::BoundingBox, [4.0; 4]));
+    // The frame selected: the frame's own wrap.
+    s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "jumpObject"})).unwrap();
+    let it = item(&s);
+    assert_eq!((it.wrap.mode, it.graphic().unwrap().wrap.mode), (designcraft_doc::WrapMode::JumpObject, designcraft_doc::WrapMode::BoundingBox));
+}
+
+#[test]
+fn custom_wrap_path_follows_resize_and_yields_to_offsets() {
+    let mut s = session();
+    let r = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "boundingBox"})).unwrap();
+    let inner = s.doc().unwrap().doc.item(id).unwrap().path.clone();
+    let custom = designcraft_geom::PathData::single(designcraft_geom::SubPath::polyline(
+        &[designcraft_geom::Point::new(0.0, 0.0), designcraft_geom::Point::new(40.0, 0.0), designcraft_geom::Point::new(0.0, 100.0)],
+        true,
+    ));
+    s.edit(|d, _| {
+        if let Some(it) = d.item_mut(id) {
+            it.wrap.path = Some(custom.clone());
+        }
+        Ok(())
+    })
+    .unwrap();
+    let wrap_path = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().wrap.path.clone();
+    // Side and mode keep the boundary.
+    s.execute("object.textWrap", &json!({"side": "rightSide"})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "contour"})).unwrap();
+    assert_eq!(wrap_path(&s), Some(custom.clone()));
+    // Resizing scales it with the frame's path.
+    let b = inner.bounds().unwrap();
+    let to = [b.x0, b.y0, b.x0 + 2.0 * b.width(), b.y1];
+    s.execute("transform.resize", &json!({"from": [b.x0, b.y0, b.x1, b.y1], "to": to})).unwrap();
+    let w = wrap_path(&s).unwrap().bounds().unwrap();
+    assert!((w.width() - 80.0).abs() < 1e-6 && (w.height() - 100.0).abs() < 1e-6, "{w:?}");
+    // An offset rebuilds the wrap from the frame.
+    s.execute("object.textWrap", &json!({"offset": 6})).unwrap();
+    assert_eq!(wrap_path(&s), None);
 }
 
 #[test]
@@ -567,6 +919,154 @@ fn commands_take_non_object_params_without_panicking() {
     for p in [json!([1, 2]), json!("text"), json!(3), Value::Null] {
         let r = s.execute("file.exportFixedEpub", &p);
         assert!(r.is_ok(), "{p}: {r:?}");
+    }
+}
+
+/// Load the text from a frame's out port with the Selection tool and click on the pasteboard:
+/// a new frame is threaded there and the overset text flows into it.
+#[test]
+fn threading_with_the_loaded_text_cursor_on_the_sample() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = Session::new();
+    s.execute("file.newSample", &json!({})).unwrap();
+    let d = s.doc().unwrap().doc.clone();
+    let (sid, first) = d.stories.values().find(|st| st.frames.len() >= 2).map(|st| (st.id, st.frames[0])).expect("a threaded story");
+    // Break the thread so the first frame is overset, and select it.
+    s.execute("text.unthread", &json!({"frame": first.0})).unwrap();
+    assert!(s.cache.get(&s.doc().unwrap().doc, sid, None).is_overset());
+    s.execute("selection.set", &json!({"ids": [first.0]})).unwrap();
+    s.set_tool("selection");
+    let v = ViewInfo::at_zoom(1.0);
+    let layout = s.layout();
+    let port = designcraft_tools::thread::port_center(&s.doc().unwrap().doc, &layout, first, true, v.zoom).unwrap();
+    let ev = |k, p: designcraft_geom::Point| PointerEvent::new(k, p.x, p.y);
+    s.pointer(&ev(PointerKind::Down, port), v).unwrap();
+    s.pointer(&ev(PointerKind::Up, port), v).unwrap();
+    assert_eq!(s.cursor(port + designcraft_geom::Vec2::new(-2000.0, 0.0), Default::default(), v), designcraft_tools::Cursor::LoadedText);
+    // On the pasteboard left of the first spread.
+    let b = layout.slots[0].bounds;
+    let at = designcraft_geom::Point::new(b.x0 - 300.0, b.y0 + 100.0);
+    let undo = s.doc().unwrap().history.undo.len();
+    s.pointer(&ev(PointerKind::Down, at), v).unwrap();
+    s.pointer(&ev(PointerKind::Up, at), v).unwrap();
+    let st = s.doc().unwrap();
+    assert_eq!(st.history.undo.len(), undo + 1, "one undo step");
+    let frames = st.doc.story(sid).unwrap().frames.clone();
+    assert_eq!(frames.len(), 2);
+    let new = frames[1];
+    assert_eq!(st.selection.items, [new]);
+    let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+    assert!(cs.frames.iter().any(|f| f.frame == new && !f.range.is_empty()), "the text flows into the new frame");
+    let nb = s.doc().unwrap().doc.item(new).unwrap().bounds();
+    assert!((nb.y0 - layout.to_spread(designcraft_doc::SpreadRef::Doc(0), at).y).abs() < 1e-6, "{nb:?}");
+}
+
+/// Drag a selection handle of item 0 on spread 0 from the edge point `at` by `by` (canvas units).
+fn drag_handle(s: &mut Session, at: designcraft_geom::Point, by: designcraft_geom::Vec2, v: ViewInfo) {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let p = s.layout().to_canvas(designcraft_doc::SpreadRef::Doc(0), at);
+    s.pointer(&PointerEvent::new(PointerKind::Down, p.x, p.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, p.x + by.x / 2.0, p.y + by.y / 2.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, p.x + by.x, p.y + by.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, p.x + by.x, p.y + by.y), v).unwrap();
+}
+
+#[test]
+fn text_frame_resize_snaps_to_the_margins() {
+    use designcraft_geom::{Point, Vec2};
+    for zoom in [1.0, 0.5] {
+        let mut s = Session::new();
+        s.execute("file.newSample", &json!({})).unwrap();
+        let margin = s.doc().unwrap().doc.spreads[0].pages[0].margin_rect();
+        let (x0, y0) = (margin.x0 + 40.0, margin.y0 + 40.0);
+        s.execute("frame.create", &json!({"rect": [x0, y0, x0 + 200.0, y0 + 200.0], "content": "text"})).unwrap();
+        s.set_tool("selection");
+        let v = ViewInfo::at_zoom(zoom);
+        let b0 = s.doc().unwrap().doc.spreads[0].items.last().unwrap().bounds();
+        // Right handle to 1.5 pt short of the right margin.
+        drag_handle(&mut s, Point::new(b0.x1, b0.center().y), Vec2::new(margin.x1 - 1.5 - b0.x1, 0.0), v);
+        let b = s.doc().unwrap().doc.spreads[0].items.last().unwrap().bounds();
+        assert!((b.x1 - margin.x1).abs() < 1e-6, "zoom {zoom}: right edge {} not on the margin {}", b.x1, margin.x1);
+        // Bottom handle to 1.5 pt past the bottom margin.
+        drag_handle(&mut s, Point::new(b.center().x, b.y1), Vec2::new(0.0, margin.y1 + 1.5 - b.y1), v);
+        let b = s.doc().unwrap().doc.spreads[0].items.last().unwrap().bounds();
+        assert!((b.y1 - margin.y1).abs() < 1e-6, "zoom {zoom}: bottom edge {} not on the margin {}", b.y1, margin.y1);
+        // Top-left corner handle onto the top and left margins.
+        drag_handle(&mut s, Point::new(b.x0, b.y0), Vec2::new(margin.x0 + 1.0 - b.x0, margin.y0 - 1.0 - b.y0), v);
+        let b = s.doc().unwrap().doc.spreads[0].items.last().unwrap().bounds();
+        assert!((b.x0 - margin.x0).abs() < 1e-6 && (b.y0 - margin.y0).abs() < 1e-6, "zoom {zoom}: corner {b:?} not on the margins {margin:?}");
+    }
+}
+
+#[test]
+fn type_tool_frames_snap_to_the_margins() {
+    use designcraft_geom::Point;
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = session();
+    let margin = s.doc().unwrap().doc.spreads[0].pages[0].margin_rect();
+    s.set_tool("type");
+    let v = ViewInfo::at_zoom(1.0);
+    let c = |s: &Session, x: f64, y: f64| s.layout().to_canvas(designcraft_doc::SpreadRef::Doc(0), Point::new(x, y));
+    // From 1.5 pt off the top-left margin corner to 1.5 pt off the right margin.
+    let a = c(&s, margin.x0 + 1.5, margin.y0 + 1.5);
+    let b = c(&s, margin.x1 - 1.5, margin.y0 + 101.5);
+    let before = s.doc().unwrap().doc.spreads[0].items.len();
+    s.pointer(&PointerEvent::new(PointerKind::Down, a.x, a.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, (a.x + b.x) / 2.0, b.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, b.x, b.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, b.x, b.y), v).unwrap();
+    let items = &s.doc().unwrap().doc.spreads[0].items;
+    assert_eq!(items.len(), before + 1, "a frame was drawn");
+    let r = items.last().unwrap().bounds();
+    assert!((r.x0 - margin.x0).abs() < 1e-6 && (r.y0 - margin.y0).abs() < 1e-6, "press point {r:?} vs {margin:?}");
+    assert!((r.x1 - margin.x1).abs() < 1e-6, "right edge {} vs {}", r.x1, margin.x1);
+}
+
+#[test]
+fn preflight_distinguishes_unplaced_stories_and_locates_footnote_overset() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, ParaFormat, SpreadRef, Story, StoryId};
+    use designcraft_geom::Rect;
+    let mut s = session();
+    let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+    let layer = doc.default_layer();
+    let (host, body) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 400.0, 600.0), layer, "Body", ParaFormat::default()).unwrap();
+    let (frame, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 5.0, 2.0), layer, "Overflow", ParaFormat::default()).unwrap();
+    let item = doc.item(frame).unwrap().clone();
+    doc.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != frame);
+    let story = doc.story_mut(body).unwrap();
+    story.insert_note(4, "Note", ParaFormat::default());
+    Arc::make_mut(&mut story.notes[0]).text.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+    let unplaced = StoryId(doc.alloc());
+    doc.stories.insert(unplaced, Arc::new(Story::with_text(unplaced, "Unplaced", ParaFormat::default())));
+    doc.check().unwrap();
+    let issues = s.execute("preflight.run", &json!({})).unwrap();
+    let issues = issues["issues"].as_array().unwrap();
+    let overset: Vec<_> = issues.iter().filter(|i| i["kind"] == "overset").collect();
+    assert_eq!(overset.len(), 1, "{issues:?}");
+    assert_eq!(overset[0]["item"], host.0);
+    assert_eq!(overset[0]["page"], 0);
+    let unplaced = issues.iter().find(|i| i["kind"] == "unplacedStory").unwrap();
+    assert_eq!(unplaced["severity"], "warning");
+    assert!(unplaced.get("page").is_none());
+}
+
+#[test]
+fn preflight_mojikumi_uses_the_same_supported_rules_as_composition() {
+    let mut s = session();
+    s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "中文 A1"})).unwrap();
+    let story = s.doc().unwrap().doc.stories.keys().next().unwrap().0;
+    s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 1})).unwrap();
+    for (name, unsupported) in [
+        ("SimpChineseDefault", false),
+        ("LineEndAllOneHalfEmEnum", false),
+        ("LineEndAllOneEmEnum", false),
+        ("UnknownPreset", true),
+        ("Nothing", false),
+    ] {
+        s.execute("type.para", &json!({"attrs": {"mojikumi": name, "kinsokuType": "KinsokuPushInFirst"}})).unwrap();
+        let result = s.execute("preflight.run", &json!({})).unwrap();
+        let warnings: Vec<_> = result["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "unsupportedTypography").collect();
+        assert_eq!(!warnings.is_empty(), unsupported, "{name}: {warnings:?}");
     }
 }
 
@@ -679,6 +1179,147 @@ fn character_style_delete_rejects_builtin_styles() {
     let mut s = session();
     let r = s.execute("style.character.delete", &json!({"name": designcraft_doc::NO_CHAR_STYLE}));
     assert!(r.is_err(), "built-in styles can't be deleted");
+}
+
+#[test]
+fn direct_selection_drag_and_arrow_keys_move_placed_content() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, SnapView, ToolKey};
+    let mut s = session();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png)})).unwrap();
+    s.execute("place.drop", &json!({"frame": f})).unwrap();
+    let xfs = |s: &Session| {
+        let it = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().clone();
+        (it.xf, it.graphic().unwrap().xf.translation())
+    };
+    let (frame0, g0) = xfs(&s);
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let at = s.layout().to_canvas(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Point::new(150.0, 150.0));
+    s.set_tool("directSelection");
+    s.pointer(&PointerEvent::new(PointerKind::Down, at.x, at.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, at.x + 20.0, at.y + 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, at.x + 30.0, at.y + 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, at.x + 30.0, at.y + 10.0), v).unwrap();
+    assert!(s.doc().unwrap().selection.content);
+    let (frame1, g1) = xfs(&s);
+    assert_eq!(frame1, frame0, "the frame stays");
+    assert_eq!(g1 - g0, designcraft_geom::Vec2::new(30.0, 10.0));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(xfs(&s).1, g0, "one undo step");
+    // Arrow keys nudge the selected content; Shift nudges ten times as far.
+    s.set_tool("selection");
+    s.tool_key(ToolKey::Right, Mods::default(), v).unwrap();
+    s.tool_key(ToolKey::Down, Mods { shift: true, ..Default::default() }, v).unwrap();
+    let (frame2, g2) = xfs(&s);
+    assert_eq!(frame2, frame0);
+    assert_eq!(g2 - g0, designcraft_geom::Vec2::new(1.0, 10.0));
+}
+
+#[test]
+fn preflight_notes_an_assumed_mojikumi_base_set_without_calling_the_table_unapplied() {
+    let mut s = session();
+    s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "中文 A1"})).unwrap();
+    let story = s.doc().unwrap().doc.stories.keys().next().unwrap().0;
+    let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+    std::sync::Arc::make_mut(&mut d.styles)
+        .mojikumi_tables
+        .push(designcraft_doc::cjk::MojikumiTable { name: "Baseless".into(), ..Default::default() });
+    s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 1})).unwrap();
+    s.execute("type.para", &json!({"attrs": {"mojikumi": "MojikumiTable/Baseless"}})).unwrap();
+    let result = s.execute("preflight.run", &json!({})).unwrap();
+    let messages: Vec<_> =
+        result["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "unsupportedTypography").filter_map(|i| i["message"].as_str()).collect();
+    assert!(messages.iter().any(|m| m.contains("Baseless") && m.contains("no base set")), "{messages:?}");
+    assert!(!messages.iter().any(|m| m.contains("not applied")), "{messages:?}");
+}
+
+#[test]
+fn live_corner_gestures_are_one_undo_step_each() {
+    use designcraft_geom::corners::CornerShape;
+    use designcraft_tools::{Mods, PointerEvent, PointerKind};
+    let mut s = session();
+    s.execute("frame.create", &json!({"rect": [100, 100, 300, 250], "content": "graphic"})).unwrap();
+    let id = s.doc().unwrap().doc.spreads[0].items[0].id;
+    s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+    s.set_tool("selection");
+    let v = ViewInfo::at_zoom(1.0);
+    let undo = |s: &Session| s.doc().unwrap().history.undo.len();
+    let corners = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().corners.corners;
+    let before = undo(&s);
+    // Click the widget, then drag the top-left diamond 20 pt toward the centre.
+    s.pointer(&PointerEvent::new(PointerKind::Down, 300.0, 111.5), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 300.0, 111.5), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Down, 112.0, 100.0), v).unwrap();
+    for x in [116.0, 124.0, 132.0] {
+        s.pointer(&PointerEvent::new(PointerKind::Drag, x, 100.0), v).unwrap();
+    }
+    s.pointer(&PointerEvent::new(PointerKind::Up, 132.0, 100.0), v).unwrap();
+    assert_eq!(undo(&s), before + 1);
+    assert!(corners(&s).iter().all(|c| c.shape == CornerShape::Rounded && (c.size - 20.0).abs() < 1e-9), "{:?}", corners(&s));
+    // Alt-click the top-left diamond, now 20 pt along the edge.
+    let alt = Mods { alt: true, ..Default::default() };
+    s.pointer(&PointerEvent::new(PointerKind::Down, 120.0, 100.0).with_mods(alt), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 120.0, 100.0).with_mods(alt), v).unwrap();
+    assert_eq!(undo(&s), before + 2);
+    assert_eq!(corners(&s)[0].shape, CornerShape::InverseRounded);
+    assert_eq!(corners(&s)[1].shape, CornerShape::Rounded);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(corners(&s)[0].shape, CornerShape::Rounded);
+    // Malformed per-corner parameters are errors, not silent defaults.
+    let c = json!({"shape": "rounded", "size": 5});
+    assert!(s.execute("object.cornerOptions", &json!({"corners": [c, c, c]})).is_err());
+    assert!(s.execute("object.cornerOptions", &json!({"corners": [c, c, c, {"shape": "rounded", "size": -1}]})).is_err());
+    assert!(s.execute("object.cornerOptions", &json!({"corners": "rounded"})).is_err());
+}
+
+#[test]
+fn alt_arrows_kern_at_the_caret_and_track_a_selection() {
+    use designcraft_doc::{Kerning, StoryId};
+    use designcraft_tools::{Mods, ToolKey};
+    let mut s = session();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Hello world"})).unwrap();
+    let sid = r["story"].as_u64().unwrap();
+    s.set_tool("type");
+    let v = ViewInfo::at_zoom(1.0);
+    let alt = Mods { alt: true, ..Default::default() };
+    let story = |s: &Session| s.doc().unwrap().doc.story(StoryId(sid)).unwrap().clone();
+    let caret = |s: &mut Session, at: usize| s.execute("text.select", &json!({"story": sid, "anchor": at, "focus": at})).unwrap();
+    // Caret between "e" and "l": Alt+Right kerns the pair by the increment; the caret stays.
+    caret(&mut s, 2);
+    assert!(s.tool_key(ToolKey::Right, alt, v).unwrap());
+    assert_eq!(story(&s).format_after(1).over.kerning, Some(Kerning::Manual(20.0)));
+    assert_eq!(s.doc().unwrap().selection.text.unwrap().focus, 2);
+    s.tool_key(ToolKey::Right, alt, v).unwrap();
+    assert_eq!(story(&s).format_after(1).over.kerning, Some(Kerning::Manual(40.0)));
+    // One undo step per press.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(story(&s).format_after(1).over.kerning, Some(Kerning::Manual(20.0)));
+    // Alt+Cmd (Alt+Ctrl elsewhere) steps five increments.
+    caret(&mut s, 4);
+    s.tool_key(ToolKey::Left, Mods { cmd: true, ..alt }, v).unwrap();
+    assert_eq!(story(&s).format_after(3).over.kerning, Some(Kerning::Manual(-100.0)));
+    // The increment is the document's Kerning/Tracking preference.
+    s.execute("document.preferences", &json!({"kerningIncrement": 10})).unwrap();
+    caret(&mut s, 2);
+    s.tool_key(ToolKey::Right, alt, v).unwrap();
+    assert_eq!(story(&s).format_after(1).over.kerning, Some(Kerning::Manual(30.0)));
+    // A selection: tracking of the selected text.
+    s.execute("text.select", &json!({"story": sid, "anchor": 6, "focus": 11})).unwrap();
+    s.tool_key(ToolKey::Right, alt, v).unwrap();
+    let st = story(&s);
+    assert_eq!((st.format_after(6).over.tracking, st.format_after(10).over.tracking), (Some(10.0), Some(10.0)));
+    assert_eq!(st.format_after(4).over.tracking, None);
+    s.tool_key(ToolKey::Left, Mods { cmd: true, ctrl: true, ..alt }, v).unwrap();
+    assert_eq!(story(&s).format_after(8).over.tracking, Some(-40.0));
+    // Words: Cmd+Right (Ctrl+Right elsewhere); Alt+Shift+Right extends by a word.
+    caret(&mut s, 0);
+    s.tool_key(ToolKey::Right, Mods { cmd: true, ..Default::default() }, v).unwrap();
+    assert_eq!(s.doc().unwrap().selection.text.unwrap().focus, 5);
+    caret(&mut s, 0);
+    s.tool_key(ToolKey::Right, Mods { alt: true, shift: true, ..Default::default() }, v).unwrap();
+    let t = s.doc().unwrap().selection.text.unwrap();
+    assert_eq!((t.anchor, t.focus), (0, 5));
 }
 
 #[test]
@@ -903,132 +1544,6 @@ fn page_tool_pins_and_locks_objects_on_object_based_pages() {
 }
 
 #[test]
-fn duplicating_a_page_keeps_its_own_size_rule_guides_and_objects() {
-    // Chris Cicchino's Page Tool video (2:06): the letterhead page is duplicated, then resized.
-    let mut s = Session::new();
-    s.execute("file.new", &json!({"width": 252, "height": 144, "facingPages": false})).unwrap();
-    s.execute("layout.pages.insert", &json!({"count": 1})).unwrap();
-    s.execute("layout.pageSize", &json!({"pages": [2], "width": 612, "height": 792})).unwrap();
-    s.execute("liquid.pageRule", &json!({"rule": "scale", "pages": [2]})).unwrap();
-    s.execute("guide.add", &json!({"spread": 1, "page": 0, "orientation": "vertical", "position": 300})).unwrap();
-    s.execute("frame.create", &json!({"spread": 1, "rect": [100, 100, 200, 200]})).unwrap();
-    let r = s.execute("layout.pages.duplicateSpread", &json!({"spread": 1})).unwrap();
-    assert_eq!(r["page"], 2);
-    let d = s.doc().unwrap().doc.clone();
-    let (si, pi) = d.page_loc(2).unwrap();
-    let pg = &d.spreads[si].pages[pi];
-    assert_eq!((pg.width, pg.height, pg.liquid), (612.0, 792.0, designcraft_doc::LiquidRule::Scale));
-    assert_eq!(pg.guides.len(), 1);
-    assert_eq!(d.spreads[si].items.len(), 1);
-    // At the end of the document (the New Page button): the business card, not the last page's size.
-    let r = s.execute("layout.pages.duplicateSpread", &json!({"spread": 0, "atEnd": true})).unwrap();
-    assert_eq!(r["page"], 3);
-    let d = s.doc().unwrap().doc.clone();
-    let (si, pi) = d.page_loc(3).unwrap();
-    assert_eq!((d.spreads[si].pages[pi].width, d.spreads[si].pages[pi].height), (252.0, 144.0));
-}
-
-/// Load the text from a frame's out port with the Selection tool and click on the pasteboard:
-/// a new frame is threaded there and the overset text flows into it.
-#[test]
-fn threading_with_the_loaded_text_cursor_on_the_sample() {
-    use designcraft_tools::{PointerEvent, PointerKind};
-    let mut s = Session::new();
-    s.execute("file.newSample", &json!({})).unwrap();
-    let d = s.doc().unwrap().doc.clone();
-    let (sid, first) = d.stories.values().find(|st| st.frames.len() >= 2).map(|st| (st.id, st.frames[0])).expect("a threaded story");
-    // Break the thread so the first frame is overset, and select it.
-    s.execute("text.unthread", &json!({"frame": first.0})).unwrap();
-    assert!(s.cache.get(&s.doc().unwrap().doc, sid, None).is_overset());
-    s.execute("selection.set", &json!({"ids": [first.0]})).unwrap();
-    s.set_tool("selection");
-    let v = ViewInfo::at_zoom(1.0);
-    let layout = s.layout();
-    let port = designcraft_tools::thread::port_center(&s.doc().unwrap().doc, &layout, first, true, v.zoom).unwrap();
-    let ev = |k, p: designcraft_geom::Point| PointerEvent::new(k, p.x, p.y);
-    s.pointer(&ev(PointerKind::Down, port), v).unwrap();
-    s.pointer(&ev(PointerKind::Up, port), v).unwrap();
-    assert_eq!(s.cursor(port + designcraft_geom::Vec2::new(-2000.0, 0.0), Default::default(), v), designcraft_tools::Cursor::LoadedText);
-    // On the pasteboard left of the first spread.
-    let b = layout.slots[0].bounds;
-    let at = designcraft_geom::Point::new(b.x0 - 300.0, b.y0 + 100.0);
-    let undo = s.doc().unwrap().history.undo.len();
-    s.pointer(&ev(PointerKind::Down, at), v).unwrap();
-    s.pointer(&ev(PointerKind::Up, at), v).unwrap();
-    let st = s.doc().unwrap();
-    assert_eq!(st.history.undo.len(), undo + 1, "one undo step");
-    let frames = st.doc.story(sid).unwrap().frames.clone();
-    assert_eq!(frames.len(), 2);
-    let new = frames[1];
-    assert_eq!(st.selection.items, [new]);
-    let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
-    assert!(cs.frames.iter().any(|f| f.frame == new && !f.range.is_empty()), "the text flows into the new frame");
-    let nb = s.doc().unwrap().doc.item(new).unwrap().bounds();
-    assert!((nb.y0 - layout.to_spread(designcraft_doc::SpreadRef::Doc(0), at).y).abs() < 1e-6, "{nb:?}");
-}
-
-/// Drag a selection handle of item 0 on spread 0 from the edge point `at` by `by` (canvas units).
-fn drag_handle(s: &mut Session, at: designcraft_geom::Point, by: designcraft_geom::Vec2, v: ViewInfo) {
-    use designcraft_tools::{PointerEvent, PointerKind};
-    let p = s.layout().to_canvas(designcraft_doc::SpreadRef::Doc(0), at);
-    s.pointer(&PointerEvent::new(PointerKind::Down, p.x, p.y), v).unwrap();
-    s.pointer(&PointerEvent::new(PointerKind::Drag, p.x + by.x / 2.0, p.y + by.y / 2.0), v).unwrap();
-    s.pointer(&PointerEvent::new(PointerKind::Drag, p.x + by.x, p.y + by.y), v).unwrap();
-    s.pointer(&PointerEvent::new(PointerKind::Up, p.x + by.x, p.y + by.y), v).unwrap();
-}
-
-#[test]
-fn text_frame_resize_snaps_to_the_margins() {
-    use designcraft_geom::{Point, Vec2};
-    for zoom in [1.0, 0.5] {
-        let mut s = Session::new();
-        s.execute("file.newSample", &json!({})).unwrap();
-        let margin = s.doc().unwrap().doc.spreads[0].pages[0].margin_rect();
-        let (x0, y0) = (margin.x0 + 40.0, margin.y0 + 40.0);
-        s.execute("frame.create", &json!({"rect": [x0, y0, x0 + 200.0, y0 + 200.0], "content": "text"})).unwrap();
-        s.set_tool("selection");
-        let v = ViewInfo::at_zoom(zoom);
-        let b0 = s.doc().unwrap().doc.spreads[0].items.last().unwrap().bounds();
-        // Right handle to 1.5 pt short of the right margin.
-        drag_handle(&mut s, Point::new(b0.x1, b0.center().y), Vec2::new(margin.x1 - 1.5 - b0.x1, 0.0), v);
-        let b = s.doc().unwrap().doc.spreads[0].items.last().unwrap().bounds();
-        assert!((b.x1 - margin.x1).abs() < 1e-6, "zoom {zoom}: right edge {} not on the margin {}", b.x1, margin.x1);
-        // Bottom handle to 1.5 pt past the bottom margin.
-        drag_handle(&mut s, Point::new(b.center().x, b.y1), Vec2::new(0.0, margin.y1 + 1.5 - b.y1), v);
-        let b = s.doc().unwrap().doc.spreads[0].items.last().unwrap().bounds();
-        assert!((b.y1 - margin.y1).abs() < 1e-6, "zoom {zoom}: bottom edge {} not on the margin {}", b.y1, margin.y1);
-        // Top-left corner handle onto the top and left margins.
-        drag_handle(&mut s, Point::new(b.x0, b.y0), Vec2::new(margin.x0 + 1.0 - b.x0, margin.y0 - 1.0 - b.y0), v);
-        let b = s.doc().unwrap().doc.spreads[0].items.last().unwrap().bounds();
-        assert!((b.x0 - margin.x0).abs() < 1e-6 && (b.y0 - margin.y0).abs() < 1e-6, "zoom {zoom}: corner {b:?} not on the margins {margin:?}");
-    }
-}
-
-#[test]
-fn type_tool_frames_snap_to_the_margins() {
-    use designcraft_geom::Point;
-    use designcraft_tools::{PointerEvent, PointerKind};
-    let mut s = session();
-    let margin = s.doc().unwrap().doc.spreads[0].pages[0].margin_rect();
-    s.set_tool("type");
-    let v = ViewInfo::at_zoom(1.0);
-    let c = |s: &Session, x: f64, y: f64| s.layout().to_canvas(designcraft_doc::SpreadRef::Doc(0), Point::new(x, y));
-    // From 1.5 pt off the top-left margin corner to 1.5 pt off the right margin.
-    let a = c(&s, margin.x0 + 1.5, margin.y0 + 1.5);
-    let b = c(&s, margin.x1 - 1.5, margin.y0 + 101.5);
-    let before = s.doc().unwrap().doc.spreads[0].items.len();
-    s.pointer(&PointerEvent::new(PointerKind::Down, a.x, a.y), v).unwrap();
-    s.pointer(&PointerEvent::new(PointerKind::Drag, (a.x + b.x) / 2.0, b.y), v).unwrap();
-    s.pointer(&PointerEvent::new(PointerKind::Drag, b.x, b.y), v).unwrap();
-    s.pointer(&PointerEvent::new(PointerKind::Up, b.x, b.y), v).unwrap();
-    let items = &s.doc().unwrap().doc.spreads[0].items;
-    assert_eq!(items.len(), before + 1, "a frame was drawn");
-    let r = items.last().unwrap().bounds();
-    assert!((r.x0 - margin.x0).abs() < 1e-6 && (r.y0 - margin.y0).abs() < 1e-6, "press point {r:?} vs {margin:?}");
-    assert!((r.x1 - margin.x1).abs() < 1e-6, "right edge {} vs {}", r.x1, margin.x1);
-}
-
-#[test]
 fn duplicating_a_page_to_an_index_is_one_undo_step() {
     let mut s = Session::new();
     s.execute("file.new", &json!({"facingPages": false})).unwrap();
@@ -1054,6 +1569,32 @@ fn duplicating_a_page_to_an_index_is_one_undo_step() {
     // Past the end: refused, nothing changes.
     assert!(s.execute("layout.pages.duplicateSpread", &json!({"spread": 0, "to": 4})).is_err());
     assert_eq!(widths(&s), [300.0, 400.0, 500.0]);
+}
+
+#[test]
+fn duplicating_a_page_keeps_its_own_size_rule_guides_and_objects() {
+    // Chris Cicchino's Page Tool video (2:06): the letterhead page is duplicated, then resized.
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"width": 252, "height": 144, "facingPages": false})).unwrap();
+    s.execute("layout.pages.insert", &json!({"count": 1})).unwrap();
+    s.execute("layout.pageSize", &json!({"pages": [2], "width": 612, "height": 792})).unwrap();
+    s.execute("liquid.pageRule", &json!({"rule": "scale", "pages": [2]})).unwrap();
+    s.execute("guide.add", &json!({"spread": 1, "page": 0, "orientation": "vertical", "position": 300})).unwrap();
+    s.execute("frame.create", &json!({"spread": 1, "rect": [100, 100, 200, 200]})).unwrap();
+    let r = s.execute("layout.pages.duplicateSpread", &json!({"spread": 1})).unwrap();
+    assert_eq!(r["page"], 2);
+    let d = s.doc().unwrap().doc.clone();
+    let (si, pi) = d.page_loc(2).unwrap();
+    let pg = &d.spreads[si].pages[pi];
+    assert_eq!((pg.width, pg.height, pg.liquid), (612.0, 792.0, designcraft_doc::LiquidRule::Scale));
+    assert_eq!(pg.guides.len(), 1);
+    assert_eq!(d.spreads[si].items.len(), 1);
+    // At the end of the document (the New Page button): the business card, not the last page's size.
+    let r = s.execute("layout.pages.duplicateSpread", &json!({"spread": 0, "atEnd": true})).unwrap();
+    assert_eq!(r["page"], 3);
+    let d = s.doc().unwrap().doc.clone();
+    let (si, pi) = d.page_loc(3).unwrap();
+    assert_eq!((d.spreads[si].pages[pi].width, d.spreads[si].pages[pi].height), (252.0, 144.0));
 }
 
 #[test]
@@ -1109,4 +1650,109 @@ fn a_line_fits_when_its_baseline_does() {
     // descent (about 25 pt more) doesn't.
     assert!(!overset(&mut s, 78.5), "the line is set; its descenders hang below the frame");
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
+}
+
+/// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key
+/// object, and Align to Key Object leaves it in place. A second click on it drops the key.
+#[test]
+fn a_click_in_the_selection_makes_the_key_object() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 120.0, 300.0, 170.0], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.set_tool("selection");
+    let v = ViewInfo::at_zoom(1.0);
+    // On the part of the key object that the aligned object never covers, away from the handles.
+    let click = |s: &mut Session| {
+        s.pointer(&PointerEvent::new(PointerKind::Down, 280.0, 160.0), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Up, 280.0, 160.0), v).unwrap();
+    };
+    click(&mut s);
+    assert_eq!(s.doc().unwrap().selection.items.len(), 2, "the click keeps both selected");
+    // The key is the right-hand object, so aligning left edges to the selection would move it.
+    s.execute("object.align", &json!({"edge": "left", "to": "keyObject"})).unwrap();
+    let x0 = |s: &Session, id: u64| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds().x0;
+    assert!((x0(&s, b) - 200.0).abs() < 1e-6, "the key object moved to {}", x0(&s, b));
+    assert!((x0(&s, a) - 200.0).abs() < 1e-6, "the other object is at {}", x0(&s, a));
+    // The Align panel and the Control panel send no target: the key object is the default one.
+    s.execute("object.align", &json!({"edge": "top"})).unwrap();
+    let y0 = |s: &Session, id: u64| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds().y0;
+    assert!((y0(&s, b) - 120.0).abs() < 1e-6, "the key object moved to {}", y0(&s, b));
+    assert!((y0(&s, a) - 120.0).abs() < 1e-6, "the other object is at {}", y0(&s, a));
+    click(&mut s);
+    assert_eq!(s.doc().unwrap().selection.key, None, "a click on the key object drops the key");
+}
+
+/// Dragging one of several selected objects moves them all and makes no key object.
+#[test]
+fn dragging_the_selection_makes_no_key_object() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 100.0, 260.0, 150.0], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.set_tool("selection");
+    let v = ViewInfo::at_zoom(1.0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, 230.0, 125.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 250.0, 135.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 250.0, 135.0), v).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, None);
+}
+
+/// Shift-clicking the key object out of the selection drops the key.
+#[test]
+fn deselecting_the_key_object_drops_the_key() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 100.0, 260.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.execute("selection.key", &json!({"id": b})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, Some(designcraft_doc::ItemId(b)));
+    s.execute("selection.toggle", &json!({"id": b})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, None);
+}
+
+/// A key object needs another object to align to: with one object selected there is nothing to key
+/// against, and the stored key would turn that object into the target as soon as a second one joins.
+#[test]
+fn a_single_selected_object_cannot_be_the_key_object() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 120.0, 300.0, 170.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+    assert!(s.execute("selection.key", &json!({"id": a})).is_err());
+    assert_eq!(s.doc().unwrap().selection.key, None);
+    s.execute("selection.toggle", &json!({"id": b})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, None, "the second object joining must not find a key already set");
+}
+
+/// With the selection down to the key object alone, Align no longer has a key object: a single
+/// object aligns to the page, as before.
+#[test]
+fn a_lone_key_object_aligns_to_the_page() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 120.0, 300.0, 170.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.execute("selection.key", &json!({"id": b})).unwrap();
+    s.execute("selection.toggle", &json!({"id": a})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, None);
+    s.execute("object.align", &json!({"edge": "left"})).unwrap();
+    let x0 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds().x0;
+    assert!(x0.abs() < 1e-6, "the object is at {x0}, not at the page's left edge");
+}
+
+/// Aligning one object alone (`ids`) while it is the key object of a larger selection also takes
+/// the page.
+#[test]
+fn aligning_the_key_object_alone_takes_the_page() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 120.0, 300.0, 170.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.execute("selection.key", &json!({"id": b})).unwrap();
+    s.execute("object.align", &json!({"edge": "left", "ids": [b]})).unwrap();
+    let x0 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds().x0;
+    assert!(x0.abs() < 1e-6, "the object is at {x0}, not at the page's left edge");
 }

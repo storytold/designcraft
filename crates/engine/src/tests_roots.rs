@@ -23,7 +23,7 @@ fn folders(name: &str) -> (PathBuf, Arc<AutomationRoots>) {
     for d in ["in", "out", "outside"] {
         std::fs::create_dir_all(base.join(d)).unwrap();
     }
-    let roots = AutomationRoots::new(Some(&base.join("in")), Some(&base.join("out"))).unwrap().unwrap();
+    let roots = AutomationRoots::new(&[&base.join("in")], &[&base.join("out")]).unwrap().unwrap();
     (base, roots)
 }
 
@@ -71,9 +71,10 @@ fn idml_links_are_read_through_the_roots() {
     // Linked, not embedded: opening the package has to read the file its link names.
     let idml = base64_idml(&mut s);
     let linked = |doc: &designcraft_doc::Document| doc.assets.values().filter(|a| !a.data.is_empty()).count();
-    let unconfined = cmd::interchange::import_idml_confined(&idml).unwrap();
+    let package = base.join("outside/x.idml");
+    let unconfined = cmd::interchange::import_idml_confined(&idml, Some(&package)).unwrap();
     assert_eq!(linked(&unconfined), 1, "without roots the link is followed");
-    let confined = confine(Some(&roots), || cmd::interchange::import_idml_confined(&idml)).unwrap();
+    let confined = confine(Some(&roots), || cmd::interchange::import_idml_confined(&idml, Some(&package))).unwrap();
     assert_eq!(linked(&confined), 0, "with roots a link outside the read root is not read");
     // The same through the commands that open or place a package.
     let b64 = cmd::base64_encode(&idml);
@@ -143,8 +144,10 @@ fn a_book_writes_its_chapters_only_inside_the_write_root() {
         s.execute("book.new", &json!({"path": p(&base.join("out/b.dcbook"))})).unwrap();
         s.execute("book.add", &json!({"path": p(&chapter)})).unwrap();
         s.execute("book.add", &json!({"path": p(&second)})).unwrap();
-        for command in ["book.paginate", "book.syncStyles", "book.exportPdf"] {
-            let r = s.execute(command, &json!({"path": p(&base.join("outside/book.pdf"))}));
+        // Paginate and Synchronize rewrite the chapters (in the read root); Export writes `path`.
+        let outside_pdf = json!({"path": p(&base.join("outside/book.pdf"))});
+        for (command, params) in [("book.paginate", json!({})), ("book.syncStyles", json!({})), ("book.exportPdf", outside_pdf)] {
+            let r = s.execute(command, &params);
             let e = r.unwrap_err().to_string();
             assert!(e.contains("outside the write root"), "{command}: {e}");
         }

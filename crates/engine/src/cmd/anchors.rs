@@ -78,69 +78,85 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// The first open subpath (two anchors or more) of an item.
+fn first_open_subpath(d: &Document, id: ItemId) -> Option<usize> {
+    d.item(id).and_then(|it| it.path.subpaths.iter().position(|sp| !sp.closed && sp.anchors.len() > 1))
+}
+
+/// Close every open subpath of one path.
+fn close_open_subpaths(d: &mut Document, id: ItemId) -> Result<Value> {
+    let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+    let mut closed = 0;
+    for sp in it.path.subpaths.iter_mut().filter(|sp| !sp.closed && sp.anchors.len() > 1) {
+        sp.closed = true;
+        closed += 1;
+    }
+    if closed == 0 {
+        return Err(bad("path.join", "the path is already closed"));
+    }
+    as_path(&mut it.shape);
+    Ok(json!({"id": id.0, "closed": closed}))
+}
+
+/// Join the open subpaths of two paths at their nearest ends, into the first path.
+fn join_open_pair(d: &mut Document, sel: &mut designcraft_doc::Selection, a: ItemId, b: ItemId) -> Result<Value> {
+    let (Some(sa), Some(sb)) = (first_open_subpath(d, a), first_open_subpath(d, b)) else {
+        return Err(bad("path.join", "select two open paths"));
+    };
+    // b's path in a's space.
+    let inv_a = to_inner(d, a).ok_or(designcraft_doc::DocError::NoItem(a))?;
+    let xf_b = to_inner(d, b).ok_or(designcraft_doc::DocError::NoItem(b))?.inverse();
+    let m = inv_a * xf_b;
+    let mut pb = d.item(b).and_then(|it| it.path.subpaths.get(sb).cloned()).ok_or(designcraft_doc::DocError::NoItem(b))?;
+    for an in &mut pb.anchors {
+        *an = Anchor { p: m * an.p, h_in: m * an.h_in, h_out: m * an.h_out, kind: an.kind };
+    }
+    let ita = d.item_mut(a).ok_or(designcraft_doc::DocError::NoItem(a))?;
+    let pa = ita.path.subpaths.get_mut(sa).ok_or_else(|| bad("path.join", "no such subpath"))?;
+    // The pair of ends nearest each other; then a's end meets b's start.
+    let ends = |sp: &designcraft_geom::SubPath| (sp.anchors.first().map(|x| x.p), sp.anchors.last().map(|x| x.p));
+    let ((Some(a0), Some(a1)), (Some(b0), Some(b1))) = (ends(pa), ends(&pb)) else {
+        return Err(bad("path.join", "select two open paths"));
+    };
+    let pairs = [(a1, b0, false, false), (a1, b1, false, true), (a0, b0, true, false), (a0, b1, true, true)];
+    let Some(&(_, _, rev_a, rev_b)) = pairs.iter().min_by(|x, y| (x.0 - x.1).hypot().total_cmp(&(y.0 - y.1).hypot())) else {
+        return Err(bad("path.join", "select two open paths"));
+    };
+    if rev_a {
+        pa.reverse();
+    }
+    if rev_b {
+        pb.reverse();
+    }
+    let mut rest = pb.anchors.into_iter();
+    if let Some(first) = rest.next() {
+        match pa.anchors.last_mut() {
+            Some(last) if (last.p - first.p).hypot() < 0.01 => *last = Anchor::with_handles(last.p, last.h_in, first.h_out),
+            _ => pa.anchors.push(first),
+        }
+    }
+    pa.anchors.extend(rest);
+    as_path(&mut ita.shape);
+    d.remove_item(b)?;
+    *sel = designcraft_doc::Selection::items(vec![a]);
+    Ok(json!({"id": a.0}))
+}
+
 /// Join Path: close one open path, or join two open paths at their nearest ends.
 fn join_paths(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = super::targets(s, p)?;
     s.edit(|d, sel| {
-        let ids: Vec<ItemId> =
-            ids.iter().copied().filter(|id| d.item(*id).is_some_and(|it| !it.locked && !it.is_group() && it.text_frame().is_none())).collect();
-        let open = |d: &Document, id: ItemId| d.item(id).and_then(|it| it.path.subpaths.iter().position(|sp| !sp.closed && sp.anchors.len() > 1));
+        let paths: Vec<ItemId> = ids.iter().copied().filter(|id| d.item(*id).is_some_and(|it| !it.is_group() && it.text_frame().is_none())).collect();
+        let ids: Vec<ItemId> = paths.iter().copied().filter(|id| path_editable(d, *id, "path.join").is_ok()).collect();
+        // A request for two paths never falls back to closing the one that is editable.
+        if ids.len() < paths.len().min(2) {
+            for id in &paths {
+                path_editable(d, *id, "path.join")?;
+            }
+        }
         match ids.as_slice() {
-            [id] => {
-                let it = d.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
-                let mut closed = 0;
-                for sp in it.path.subpaths.iter_mut().filter(|sp| !sp.closed && sp.anchors.len() > 1) {
-                    sp.closed = true;
-                    closed += 1;
-                }
-                if closed == 0 {
-                    return Err(bad("path.join", "the path is already closed"));
-                }
-                as_path(&mut it.shape);
-                Ok(json!({"id": id.0, "closed": closed}))
-            }
-            [a, b] => {
-                let (Some(sa), Some(sb)) = (open(d, *a), open(d, *b)) else {
-                    return Err(bad("path.join", "select two open paths"));
-                };
-                // b's path in a's space.
-                let inv_a = to_inner(d, *a).ok_or(designcraft_doc::DocError::NoItem(*a))?;
-                let xf_b = to_inner(d, *b).ok_or(designcraft_doc::DocError::NoItem(*b))?.inverse();
-                let m = inv_a * xf_b;
-                let mut pb = d.item(*b).and_then(|it| it.path.subpaths.get(sb).cloned()).ok_or(designcraft_doc::DocError::NoItem(*b))?;
-                for an in &mut pb.anchors {
-                    *an = Anchor { p: m * an.p, h_in: m * an.h_in, h_out: m * an.h_out, kind: an.kind };
-                }
-                let ita = d.item_mut(*a).ok_or(designcraft_doc::DocError::NoItem(*a))?;
-                let pa = ita.path.subpaths.get_mut(sa).ok_or_else(|| bad("path.join", "no such subpath"))?;
-                // The pair of ends nearest each other; then a's end meets b's start.
-                let ends = |sp: &designcraft_geom::SubPath| (sp.anchors.first().map(|x| x.p), sp.anchors.last().map(|x| x.p));
-                let ((Some(a0), Some(a1)), (Some(b0), Some(b1))) = (ends(pa), ends(&pb)) else {
-                    return Err(bad("path.join", "select two open paths"));
-                };
-                let pairs = [(a1, b0, false, false), (a1, b1, false, true), (a0, b0, true, false), (a0, b1, true, true)];
-                let Some(&(_, _, rev_a, rev_b)) = pairs.iter().min_by(|x, y| (x.0 - x.1).hypot().total_cmp(&(y.0 - y.1).hypot())) else {
-                    return Err(bad("path.join", "select two open paths"));
-                };
-                if rev_a {
-                    pa.reverse();
-                }
-                if rev_b {
-                    pb.reverse();
-                }
-                let mut rest = pb.anchors.into_iter();
-                if let Some(first) = rest.next() {
-                    match pa.anchors.last_mut() {
-                        Some(last) if (last.p - first.p).hypot() < 0.01 => *last = Anchor::with_handles(last.p, last.h_in, first.h_out),
-                        _ => pa.anchors.push(first),
-                    }
-                }
-                pa.anchors.extend(rest);
-                as_path(&mut ita.shape);
-                d.remove_item(*b)?;
-                *sel = designcraft_doc::Selection::items(vec![*a]);
-                Ok(json!({"id": a.0}))
-            }
+            [id] => close_open_subpaths(d, *id),
+            [a, b] => join_open_pair(d, sel, *a, *b),
             _ => Err(bad("path.join", "select one or two open paths")),
         }
     })
@@ -162,11 +178,16 @@ fn convert_points(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.edit(|d, _| {
         let mut converted = 0;
+        let mut refused = None;
         for (id, si, ai) in &points {
-            let Some(it) = d.item_mut(*id) else { continue };
-            if it.locked || it.is_group() {
+            if d.item(*id).is_none_or(|it| it.is_group()) {
                 continue;
             }
+            if let Err(e) = path_editable(d, *id, "path.convertPoints") {
+                refused.get_or_insert(e);
+                continue;
+            }
+            let Some(it) = d.item_mut(*id) else { continue };
             let Some(sp) = it.path.subpaths.get_mut(*si) else { continue };
             let Some(a) = sp.anchors.get(*ai).copied() else { continue };
             let auto = smooth_auto(&sp.anchors, *ai, sp.closed);
@@ -193,6 +214,9 @@ fn convert_points(s: &mut Session, p: &Value) -> Result<Value> {
                 converted += 1;
             }
             as_path(&mut it.shape);
+        }
+        if let (0, Some(e)) = (converted, refused) {
+            return Err(e);
         }
         Ok(json!({"converted": converted}))
     })

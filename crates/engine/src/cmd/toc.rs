@@ -3,7 +3,9 @@
 //! chosen per style. Update Table of Contents regenerates the same story after edits.
 
 use designcraft_compose::{ComposeOptions, caret, compose_story};
-use designcraft_doc::{Align, Document, ParaAttrs, ParaFormat, ParagraphStyle, SpreadRef, StoryId, TabAlign, TabStop, Toc, TocEntry, TocPageNumber};
+use designcraft_doc::{
+    Align, Document, NO_CHAR_STYLE, ParaAttrs, ParaFormat, ParagraphStyle, SpreadRef, StoryId, TabAlign, TabStop, Toc, TocEntry, TocPageNumber,
+};
 use designcraft_geom::Rect;
 use serde_json::{Value, json};
 
@@ -17,7 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Table of Contents…",
             ["Layout"],
             None,
-            "{entries: [{style, level?: 1 (1-9), entryStyle?: paragraph style of its entries (default \"TOC Level n\"), pageNumber?: \"after\"|\"before\"|\"none\", separator?: text between entry and number (default a tab)}] | styles: [names] (levels 1, 2, …), title?: \"Contents\", titleStyle?: paragraph style of the title (default \"TOC Title\"), pageNumbers?: true, replace?: true (regenerate the existing table of contents in place; false makes a new frame), page?: 1-based page for a new frame (its margins), rect?: [x0,y0,x1,y1] (spread coords)} → {story, entries}",
+            "{entries: [{style, level?: 1 (1-9), entryStyle?: paragraph style of its entries (default \"TOC Level n\"), pageNumber?: \"after\"|\"before\"|\"none\", separator?: text between entry and number (default a tab), pageNumberStyle?: character style of the page number, separatorStyle?: character style of the separator, sort?: bool (Sort Entries in Alphabetical Order: among their siblings, each with the entries under it)}] | styles: [names] (levels 1, 2, …), title?: \"Contents\", titleStyle?: paragraph style of the title (default \"TOC Title\"), pageNumbers?: true, replace?: true (regenerate the existing table of contents in place; false makes a new frame), page?: 1-based page for a new frame (its margins), rect?: [x0,y0,x1,y1] (spread coords)} → {story, entries}",
             has_doc,
             generate
         ),
@@ -32,7 +34,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let entries = entries_param(p)?;
             let d = &s.doc()?.doc;
             let skip = d.toc.as_ref().map(|t| t.story);
-            Ok(json!(collect(d, &entries, skip).into_iter().map(|e| json!({"level": e.level, "text": e.text, "page": e.page})).collect::<Vec<_>>()))
+            let found = sort_entries(collect(d, &entries, skip), &entries);
+            Ok(json!(found.into_iter().map(|e| json!({"level": e.level, "text": e.text, "page": e.page})).collect::<Vec<_>>()))
         }),
     ]
 }
@@ -67,7 +70,8 @@ fn entries_param(p: &Value) -> Result<Vec<TocEntry>> {
         if !(1..=9).contains(&e.level) {
             return Err(bad("toc.generate", format!("level {} of `{}` is not 1–9", e.level, e.style)));
         }
-        if e.style.chars().count() > MAX_NAME || e.entry_style.as_ref().is_some_and(|n| n.chars().count() > MAX_NAME) {
+        let names = [&e.entry_style, &e.page_number_style, &e.separator_style];
+        if e.style.chars().count() > MAX_NAME || names.iter().any(|n| n.as_ref().is_some_and(|n| n.chars().count() > MAX_NAME)) {
             return Err(bad("toc.generate", format!("style names are at most {MAX_NAME} characters")));
         }
         if let Some(sep) = &mut e.separator {
@@ -83,6 +87,11 @@ fn entries_param(p: &Value) -> Result<Vec<TocEntry>> {
         if e.separator.as_deref() == Some("\t") {
             e.separator = None;
         }
+        for n in [&mut e.page_number_style, &mut e.separator_style] {
+            if n.as_deref().is_some_and(|n| n.is_empty() || n == NO_CHAR_STYLE) {
+                *n = None;
+            }
+        }
     }
     Ok(entries)
 }
@@ -97,6 +106,48 @@ fn para_style_exists(d: &Document, name: &str) -> Result<()> {
         Some(_) => Ok(()),
         None => Err(bad("toc.generate", format!("no paragraph style `{name}`"))),
     }
+}
+
+fn char_style_exists(d: &Document, name: &str) -> Result<()> {
+    match d.styles.char_style(name) {
+        Some(_) => Ok(()),
+        None => Err(bad("toc.generate", format!("no character style `{name}`"))),
+    }
+}
+
+/// Sort Entries in Alphabetical Order: the entries of sorted styles change places with each
+/// other among their siblings (entries under the same entry of a higher level), each taking the
+/// lower-level entries under it along. Other entries keep their places.
+fn sort_entries(found: Vec<Found>, entries: &[TocEntry]) -> Vec<Found> {
+    if !entries.iter().any(|e| e.sort) {
+        return found;
+    }
+    // Siblings: each entry with the deeper entries that follow it.
+    let mut blocks: Vec<Vec<Found>> = Vec::new();
+    for f in found {
+        match blocks.last_mut() {
+            Some(b) if b.first().is_some_and(|head| f.level > head.level) => b.push(f),
+            _ => blocks.push(vec![f]),
+        }
+    }
+    // Children first; a child is always deeper than its head, so this stops after nine levels.
+    let mut blocks: Vec<Vec<Found>> = blocks
+        .into_iter()
+        .map(|mut b| {
+            let children = b.split_off(1.min(b.len()));
+            b.extend(sort_entries(children, entries));
+            b
+        })
+        .collect();
+    let sorted = |b: &Vec<Found>| b.first().and_then(|h| entries.get(h.entry)).is_some_and(|e| e.sort);
+    let slots: Vec<usize> = (0..blocks.len()).filter(|&i| sorted(&blocks[i])).collect();
+    let mut moved: Vec<Vec<Found>> = slots.iter().map(|&i| std::mem::take(&mut blocks[i])).collect();
+    let key = |b: &Vec<Found>| b.first().map(|h| (h.text.to_lowercase(), h.text.clone())).unwrap_or_default();
+    moved.sort_by_cached_key(key);
+    for (i, b) in slots.into_iter().zip(moved) {
+        blocks[i] = b;
+    }
+    blocks.into_iter().flatten().collect()
 }
 
 pub struct Found {
@@ -196,8 +247,14 @@ fn fill(d: &mut Document, toc: &Toc, width: Option<f64>) -> Result<usize> {
     for name in toc.entries.iter().filter_map(|e| e.entry_style.as_deref()).chain(toc.title_style.as_deref()) {
         para_style_exists(d, name)?;
     }
+    for name in toc.entries.iter().flat_map(|e| [e.page_number_style.as_deref(), e.separator_style.as_deref()]).flatten() {
+        char_style_exists(d, name)?;
+    }
+    let found = sort_entries(found, &toc.entries);
     let mut text = String::new();
     let mut styles = Vec::new();
+    // Character styles of page numbers and separators: (byte range, style).
+    let mut spans: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     if !toc.title.is_empty() {
         text.push_str(&toc.title);
         styles.push(toc.title_style.clone().unwrap_or_else(|| "TOC Title".into()));
@@ -208,15 +265,23 @@ fn fill(d: &mut Document, toc: &Toc, width: Option<f64>) -> Result<usize> {
             text.push('\n');
         }
         let sep = e.separator.as_deref().unwrap_or("\t");
+        let mut push = |text: &mut String, s: &str, style: Option<&str>| {
+            let start = text.len();
+            text.push_str(s);
+            if let Some(style) = style {
+                spans.push((start..text.len(), style.to_string()));
+            }
+        };
+        let (number, between) = (e.page_number_style.as_deref(), e.separator_style.as_deref());
         match e.page_number {
             TocPageNumber::After if toc.page_numbers => {
                 text.push_str(&f.text);
-                text.push_str(sep);
-                text.push_str(&f.page);
+                push(&mut text, sep, between);
+                push(&mut text, &f.page, number);
             }
             TocPageNumber::Before if toc.page_numbers => {
-                text.push_str(&f.page);
-                text.push_str(sep);
+                push(&mut text, &f.page, number);
+                push(&mut text, sep, between);
                 text.push_str(&f.text);
             }
             _ => text.push_str(&f.text),
@@ -226,6 +291,12 @@ fn fill(d: &mut Document, toc: &Toc, width: Option<f64>) -> Result<usize> {
     let st = d.story_mut(toc.story).ok_or(designcraft_doc::DocError::NoStory(toc.story))?;
     let len = st.len();
     st.replace(0..len, &text);
+    // The text takes the format of the old first character: its character style would spread
+    // over the whole table (a page number before the first entry, without a title).
+    st.format_chars(0..st.len(), |f| f.style = NO_CHAR_STYLE.into());
+    for (r, style) in spans {
+        st.format_chars(r, |f| f.style.clone_from(&style));
+    }
     for (pi, r) in st.para_ranges().into_iter().enumerate() {
         if let Some(name) = styles.get(pi) {
             st.format_paras(r.start..r.start, |f| *f = ParaFormat { style: name.clone(), ..Default::default() });
@@ -389,6 +460,10 @@ mod tests {
             json!({"entries": [{"style": "Headline", "pageNumber": "sideways"}]}),
             json!({"entries": [{"style": "No Such Style"}]}),
             json!({"entries": [{"style": "Headline", "entryStyle": "No Such Style"}]}),
+            json!({"entries": [{"style": "Headline", "pageNumberStyle": "No Such Style"}]}),
+            json!({"entries": [{"style": "Headline", "separatorStyle": "No Such Style"}]}),
+            json!({"entries": [{"style": "Headline", "pageNumberStyle": long}]}),
+            json!({"entries": [{"style": "Headline", "sort": "yes"}]}),
             json!({"entries": [{"style": "Headline", "separator": long}]}),
             json!({"entries": [{"style": long}]}),
             json!({"entries": many}),
@@ -405,6 +480,162 @@ mod tests {
             assert_eq!(s.doc().unwrap().revision, rev, "{p}");
             assert!(s.doc().unwrap().doc.toc.is_none());
         }
+    }
+
+    /// A one-page document whose one story has `paras` (text, paragraph style; the styles are
+    /// made here), and an empty second page for the table of contents.
+    fn doc_with(paras: &[(&str, &str)]) -> (Session, usize) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let mut names: Vec<&str> = paras.iter().map(|(_, st)| *st).collect();
+        names.dedup();
+        for n in names {
+            if s.doc().unwrap().doc.styles.para(n).is_none() {
+                s.execute("style.paragraph.create", &json!({"name": n})).unwrap();
+            }
+        }
+        let text = paras.iter().map(|(t, _)| *t).collect::<Vec<_>>().join("\n");
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": text})).unwrap();
+        let mut at = 0;
+        for (t, st) in paras {
+            s.execute("text.select", &json!({"story": r["story"], "anchor": at, "focus": at})).unwrap();
+            s.execute("style.paragraph.apply", &json!({"name": st})).unwrap();
+            at += t.len() + 1;
+        }
+        s.execute("layout.pages.insert", &json!({"count": 1})).unwrap();
+        (s, 2)
+    }
+
+    /// The table of contents' character runs as (text, character style), merged by style.
+    fn toc_runs(s: &Session) -> Vec<(String, String)> {
+        let d = &s.doc().unwrap().doc;
+        let st = d.story(d.toc.as_ref().unwrap().story).unwrap();
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (r, f) in st.runs() {
+            match out.last_mut() {
+                Some(last) if last.1 == f.style => last.0.push_str(&st.text[r]),
+                _ => out.push((st.text[r].to_string(), f.style.clone())),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn page_number_and_separator_character_styles_are_applied_and_survive_update() {
+        let (mut s, page) = doc_with(&[("Apples", "Head"), ("Pears", "Head")]);
+        s.execute("style.character.create", &json!({"name": "Number", "chars": {"fontStyle": "Bold"}})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Dots", "chars": {"fill": "[Registration]"}})).unwrap();
+        let none = designcraft_doc::NO_CHAR_STYLE.to_string();
+        s.execute(
+            "toc.generate",
+            &json!({"page": page, "title": "", "entries": [
+                {"style": "Head", "pageNumberStyle": "Number", "separatorStyle": "Dots", "separator": " … "},
+            ]}),
+        )
+        .unwrap();
+        let want = |n: &str| -> Vec<(String, String)> {
+            vec![
+                ("Apples".into(), none.clone()),
+                (" … ".into(), "Dots".into()),
+                ("1".into(), "Number".into()),
+                (format!("\n{n}"), none.clone()),
+                (" … ".into(), "Dots".into()),
+                ("1".into(), "Number".into()),
+            ]
+        };
+        assert_eq!(toc_runs(&s), want("Pears"));
+        let e = &s.doc().unwrap().doc.toc.as_ref().unwrap().entries[0];
+        assert_eq!((e.page_number_style.as_deref(), e.separator_style.as_deref()), (Some("Number"), Some("Dots")));
+        s.execute("toc.update", &json!({})).unwrap();
+        assert_eq!(toc_runs(&s), want("Pears"));
+
+        // Before the entry, without a title: the first character is a styled page number, and
+        // regenerating doesn't spread its style over the rest of the story.
+        s.execute(
+            "toc.generate",
+            &json!({"page": page, "title": "", "entries": [{"style": "Head", "pageNumber": "before", "pageNumberStyle": "Number"}]}),
+        )
+        .unwrap();
+        s.execute("toc.update", &json!({})).unwrap();
+        assert_eq!(
+            toc_runs(&s),
+            vec![
+                ("1".to_string(), "Number".to_string()),
+                ("\tApples\n".into(), none.clone()),
+                ("1".into(), "Number".into()),
+                ("\tPears".into(), none.clone()),
+            ]
+        );
+        // Without styles everything is [None].
+        s.execute("toc.generate", &json!({"page": page, "entries": [{"style": "Head"}]})).unwrap();
+        assert!(toc_runs(&s).iter().all(|(_, st)| *st == none), "{:?}", toc_runs(&s));
+    }
+
+    #[test]
+    fn sorted_styles_list_their_entries_alphabetically_and_keep_their_children() {
+        let (mut s, page) = doc_with(&[
+            ("Zucchini", "Chapter"),
+            ("Zest", "Section"),
+            ("Bake", "Section"),
+            ("apricot", "Chapter"),
+            ("Mix", "Section"),
+            ("Bread", "Chapter"),
+        ]);
+        let lines = |s: &Session| toc_lines(s).into_iter().skip(1).map(|(t, _)| t.split('\t').next().unwrap().to_string()).collect::<Vec<_>>();
+        // Chapters sorted (case-insensitively), sections stay in page order under their chapter.
+        s.execute(
+            "toc.generate",
+            &json!({"page": page, "entries": [{"style": "Chapter", "level": 1, "sort": true}, {"style": "Section", "level": 2}]}),
+        )
+        .unwrap();
+        assert_eq!(lines(&s), ["apricot", "Mix", "Bread", "Zucchini", "Zest", "Bake"]);
+        assert!(s.doc().unwrap().doc.toc.as_ref().unwrap().entries[0].sort);
+        // Sections sorted within each chapter only.
+        s.execute(
+            "toc.generate",
+            &json!({"page": page, "entries": [{"style": "Chapter", "level": 1}, {"style": "Section", "level": 2, "sort": true}]}),
+        )
+        .unwrap();
+        assert_eq!(lines(&s), ["Zucchini", "Bake", "Zest", "apricot", "Mix", "Bread"]);
+        s.execute("toc.update", &json!({})).unwrap();
+        assert_eq!(lines(&s), ["Zucchini", "Bake", "Zest", "apricot", "Mix", "Bread"]);
+        // The preview lists them as they will be set.
+        let preview = s.execute("toc.entries", &json!({"entries": [{"style": "Chapter", "level": 1, "sort": true}]})).unwrap();
+        let texts: Vec<&str> = preview.as_array().unwrap().iter().map(|e| e["text"].as_str().unwrap()).collect();
+        assert_eq!(texts, ["apricot", "Bread", "Zucchini"]);
+        // Unsorted: page order.
+        s.execute("toc.generate", &json!({"page": page, "styles": ["Chapter", "Section"]})).unwrap();
+        assert_eq!(lines(&s), ["Zucchini", "Zest", "Bake", "apricot", "Mix", "Bread"]);
+    }
+
+    #[test]
+    fn renaming_or_deleting_a_character_style_updates_the_toc_definition() {
+        let (mut s, page) = doc_with(&[("Apples", "Head")]);
+        s.execute("style.character.create", &json!({"name": "Number"})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Dots"})).unwrap();
+        s.execute("toc.generate", &json!({"page": page, "entries": [{"style": "Head", "pageNumberStyle": "Number", "separatorStyle": "Dots"}]}))
+            .unwrap();
+        s.execute("style.character.edit", &json!({"name": "Number", "rename": "Folio"})).unwrap();
+        s.execute("style.character.delete", &json!({"name": "Dots"})).unwrap();
+        let e = s.doc().unwrap().doc.toc.as_ref().unwrap().entries[0].clone();
+        assert_eq!((e.page_number_style.as_deref(), e.separator_style), (Some("Folio"), None));
+        s.execute("toc.update", &json!({})).unwrap();
+        assert!(toc_runs(&s).iter().any(|(t, st)| t == "1" && st == "Folio"), "{:?}", toc_runs(&s));
+    }
+
+    #[test]
+    fn toc_entry_options_round_trip_through_the_native_format() {
+        let mut e = TocEntry::new("Head", 2);
+        e.page_number_style = Some("Number".into());
+        e.separator_style = Some("Dots".into());
+        e.sort = true;
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!((&v["pageNumberStyle"], &v["separatorStyle"], &v["sort"]), (&json!("Number"), &json!("Dots"), &json!(true)));
+        assert_eq!(serde_json::from_value::<TocEntry>(v).unwrap(), e);
+        // Files written before these options read with none of them.
+        let old: TocEntry = serde_json::from_value(json!({"style": "Head", "level": 1, "pageNumber": "after"})).unwrap();
+        assert_eq!(old, TocEntry::new("Head", 1));
+        assert!(serde_json::to_value(&old).unwrap().get("sort").is_none());
     }
 
     /// `p` with the TOC page added when it is an object and has none.

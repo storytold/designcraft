@@ -2,7 +2,10 @@
 //! Liang patterns compiled into `hypher`, one cargo feature per language: Spanish is Javier Bezos's
 //! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
 //! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
-//! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE).
+//! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
+//! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
+//! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
+//! polytonic text hyphenates by them as well.
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list

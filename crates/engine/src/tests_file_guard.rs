@@ -158,7 +158,7 @@ fn offenders(crates_dir: &Path) -> (Vec<String>, usize) {
     for path in files {
         let rel = path.strip_prefix(crates_dir).unwrap_or(&path).to_string_lossy().replace('\\', "/");
         // `crates/<name>/src/...` only: build scripts, benches and `tests/` are not shipped code.
-        if !rel.split('/').nth(1).is_some_and(|d| d == "src") || is_test_file(&rel) || ALLOWED.iter().any(|(allowed, _)| *allowed == rel) {
+        if rel.split('/').nth(1).is_none_or(|d| d != "src") || is_test_file(&rel) || ALLOWED.iter().any(|(allowed, _)| *allowed == rel) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else { continue };

@@ -1,8 +1,36 @@
 use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Align, Document, ParaAttrs, ParaFormat, SpreadRef};
+use designcraft_doc::{Align, Composer, Document, ParaAttrs, ParaFormat, SpreadRef};
 use designcraft_geom::Rect;
 
 use super::*;
+
+#[test]
+fn long_wrapped_paragraph_rechecks_width_after_estimated_slots_end() {
+    let text="Distinctive shapes and warm colours set the rhythm of the page. The story flows around the illustration while the frame keeps its original dimensions. ".repeat(14);
+    let (mut d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 576.0, 756.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("Source Serif 4".into());
+        f.over.size = Some(13.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(17.0));
+    });
+    add_wrap_objects(&mut d, &[(Rect::new(180.0, 135.0, 440.0, 568.3333333333334), [13.5; 4], WrapMode::Contour)]);
+    let composed = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &composed.frames[0].lines;
+    assert!(lines.iter().any(|l| l.baseline > 450.0 && l.baseline < 560.0));
+    for line in lines {
+        for glyph in line.glyphs.iter().filter(|g| g.visible && text.as_bytes().get(g.byte).is_some_and(|b| !b.is_ascii_whitespace())) {
+            assert!(
+                glyph.x + glyph.adv <= line.x1 + 0.5,
+                "glyph {} ends at {} outside the segment {}..{} on baseline {}",
+                glyph.byte,
+                glyph.x + glyph.adv,
+                line.x0,
+                line.x1,
+                line.baseline
+            );
+        }
+    }
+}
 
 const LOREM: &str = "Typography is the art and technique of arranging type to make written language legible, readable and appealing when displayed. \
 The arrangement of type involves selecting typefaces, point sizes, line lengths, line spacing, and letter spacing, and adjusting the space between pairs of letters.";
@@ -144,6 +172,94 @@ fn wrap_pushes_text_aside() {
     assert!(first.x0 >= 126.0 - 1e-6, "{}", first.x0);
     let below = cs.frames[0].lines.iter().find(|l| l.baseline - l.ascent > 66.0).unwrap();
     assert!(below.x0 < 1.0);
+}
+
+/// A small frame holding one character (a tombstone at the end of an article: a 7.6 pt symbol in
+/// a 10.5 pt box), in a paragraph whose style is 14 pt, with a text-wrap object on the spread at
+/// `wrap`.
+fn tombstone(frame: Rect, wrap: Rect) -> (Document, StoryId) {
+    let (mut d, sid, _) = doc_with("X", frame, ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    st.paras[0].chars = designcraft_doc::CharAttrs { size: Some(14.0), ..Default::default() };
+    st.format_chars(0..1, |f| f.over.size = Some(7.6));
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(wrap));
+    it.wrap.mode = WrapMode::BoundingBox;
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    (d, sid)
+}
+
+/// A text-wrap object elsewhere on the spread doesn't affect a frame it doesn't overlap: the small
+/// frame's one character is set (it was overset: every frame took every wrap object on the
+/// spread, and then no gap narrower than 1.5 em of the paragraph's size was used).
+#[test]
+fn small_single_character_frame_sets_beside_unrelated_text_wrap() {
+    let (d, sid) = tombstone(Rect::new(300.0, 300.0, 310.5, 310.5), Rect::new(0.0, 0.0, 120.0, 60.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "the tombstone is set");
+    assert_eq!(cs.line_count(), 1);
+}
+
+/// A narrow frame that a text-wrap object overlaps further down sets the lines the object doesn't
+/// reach: the minimum gap width only applies to gaps a wrap object cuts.
+#[test]
+fn narrow_frame_sets_lines_no_wrap_object_reaches() {
+    let (d, sid) = tombstone(Rect::new(300.0, 300.0, 310.5, 340.0), Rect::new(290.0, 330.0, 330.0, 360.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "the first line is above the wrap object");
+    assert_eq!(cs.line_count(), 1);
+    let (top, baseline) = (cs.frames[0].columns[0].y0, cs.frames[0].lines[0].baseline);
+    assert!(baseline - top < 20.0, "on the first line: {baseline} (text area from {top})");
+}
+
+/// A wrap object that cuts a narrow frame leaves the sliver beside it (under 1.5 em) empty: no
+/// line is set beside the object, and the text continues below it.
+#[test]
+fn a_wrap_object_cutting_a_narrow_frame_leaves_its_sliver_empty() {
+    let text = ["of"; 400].join(" ");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 60.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.size = Some(6.0));
+    // An 8 pt sliver at 6 pt: narrower than 1.5 em (9 pt), wide enough for a word.
+    add_wrap_objects(&mut d, &[(Rect::new(0.0, 50.0, 52.0, 120.0), [0.0; 4], WrapMode::BoundingBox)]);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!(lines.iter().all(|l| l.baseline <= 50.0 + 1e-6 || l.baseline - l.ascent >= 120.0 - 1e-6), "a line beside the object");
+    assert!(lines.iter().any(|l| l.baseline - l.ascent >= 120.0 - 1e-6), "no text below the object");
+}
+
+/// A wrap object beside the second column of a two-column frame leaves the first column, narrower
+/// than 1.5 em, set in full.
+#[test]
+fn a_wrap_object_beside_column_two_leaves_a_narrow_column_one_set() {
+    let (mut d, sid, fid) = doc_with(&["X"; 12].join(" "), Rect::new(0.0, 0.0, 46.0, 100.0), ParaAttrs::default());
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = 2;
+    o.gutter = 12.0;
+    // 17 pt columns at 14 pt: narrower than 1.5 em (21 pt).
+    d.story_mut(sid).unwrap().format_chars(0..23, |f| f.over.size = Some(14.0));
+    add_wrap_objects(&mut d, &[(Rect::new(35.0, 0.0, 60.0, 100.0), [0.0; 4], WrapMode::BoundingBox)]);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let first = all_lines(&cs).iter().filter(|l| l.column == 0).count();
+    assert!(first >= 4, "{first} lines in column 1");
+}
+
+/// In a frame of narrow columns, a wrap object beside column 2 leaves column 1 alone: only a gap
+/// the object cuts in its own column is held to the minimum width (it was dropped, as the object
+/// overlapped the line's band, and the text went past column 1).
+#[test]
+fn wrap_object_beside_one_narrow_column_leaves_the_other_alone() {
+    // Two 18 pt columns (12 pt gutter): narrower than 1.5 em of the 14 pt paragraph.
+    let (mut d, sid) = tombstone(Rect::new(300.0, 300.0, 348.0, 340.0), Rect::new(336.0, 300.0, 380.0, 340.0));
+    let fid = d.spreads[0].items.iter().find(|i| i.text_frame().is_some_and(|t| t.story == sid)).unwrap().id;
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let f = &cs.frames[0];
+    assert_eq!(f.columns.len(), 2);
+    assert!(f.columns[0].width() < 21.0, "column 1 is narrower than 1.5 em: {}", f.columns[0].width());
+    assert!(!cs.is_overset());
+    let l = &f.lines[0];
+    assert_eq!(l.column, 0, "set in column 1");
+    assert!(l.baseline - f.columns[0].y0 < 20.0, "on its first line: {}", l.baseline);
 }
 
 /// Insert rectangles with wrap, given as (bounds, [top, left, bottom, right] offsets, mode).
@@ -358,11 +474,34 @@ fn jump_object_keeps_grid_aligned_lines_on_the_grid() {
     assert!((l.baseline - want).abs() < 1e-6, "{} vs {want}", l.baseline);
 }
 
+/// An automatic page number wider than its frame stays on one line and hangs out, as in InDesign
+/// ("136" in a frame made for two digits); breaking it put "13" over "4".
+#[test]
+fn page_number_wider_than_its_frame_stays_whole() {
+    let text = designcraft_doc::story::PAGE_NUMBER.to_string();
+    let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 10.0, 40.0), ParaAttrs::default());
+    let mut specs = frame_specs(&d, sid);
+    specs[0].page_name = Some("136".into());
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(!cs.is_overset());
+    // A word of ordinary letters that doesn't fit still breaks where it must.
+    let (d, sid, _) = doc_with("Wordwiderthanframe", Rect::new(0.0, 0.0, 30.0, 200.0), ParaAttrs::default());
+    assert!(all_lines(&compose_story(&d, sid, &ComposeOptions::default())).len() > 1);
+}
+
 #[test]
 fn hostile_wrap_geometry_terminates() {
     let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &[]);
     let mut specs = frame_specs(&d, sid);
-    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion { rect: Rect::new(x0, y0, x1, y1), mode };
+    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion {
+        rect: Rect::new(x0, y0, x1, y1),
+        mode,
+        side: WrapSide::BothSides,
+        contour: None,
+        after: None,
+    };
     let f = &mut specs[0];
     f.exclusions.push(ex(f64::NAN, f64::NAN, f64::NAN, f64::NAN, WrapMode::JumpObject));
     f.exclusions.push(ex(-1e308, 300.0, 1e308, f64::INFINITY, WrapMode::JumpObject));
@@ -381,61 +520,279 @@ fn hostile_wrap_geometry_terminates() {
     }
 }
 
-/// A small frame holding one character (a tombstone at the end of an article: a 7.6 pt symbol in
-/// a 10.5 pt box), in a paragraph whose style is 14 pt, with a text-wrap object on the spread at
-/// `wrap`.
-fn tombstone(frame: Rect, wrap: Rect) -> (Document, StoryId) {
-    let (mut d, sid, _) = doc_with("X", frame, ParaAttrs::default());
-    let st = d.story_mut(sid).unwrap();
-    st.paras[0].chars = designcraft_doc::CharAttrs { size: Some(14.0), ..Default::default() };
-    st.format_chars(0..1, |f| f.over.size = Some(7.6));
+/// A text frame (0,0)-(300,800) with an ellipse (110,100)-(190,200) wrapped as `mode`/`side`.
+fn doc_with_ellipse(mode: WrapMode, side: WrapSide) -> (Document, StoryId) {
+    let (mut d, sid, _) = doc_with(&[LOREM; 4].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
     let lid = d.default_layer();
-    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(wrap));
-    it.wrap.mode = WrapMode::BoundingBox;
+    let id = ItemId(d.alloc());
+    let mut it =
+        designcraft_doc::Item::new(id, lid, designcraft_doc::Shape::Oval, designcraft_geom::shapes::ellipse(Rect::new(110.0, 100.0, 190.0, 200.0)));
+    it.wrap.mode = mode;
+    it.wrap.side = side;
+    it.wrap.offsets = [4.0; 4];
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
     (d, sid)
 }
 
-/// A text-wrap object elsewhere on the spread doesn't affect a frame it doesn't overlap: the small
-/// frame's one character is set (it was overset: every frame took every wrap object on the
-/// spread, and then no gap narrower than 1.5 em of the paragraph's size was used).
 #[test]
-fn small_single_character_frame_sets_beside_unrelated_text_wrap() {
-    let (d, sid) = tombstone(Rect::new(300.0, 300.0, 310.5, 310.5), Rect::new(0.0, 0.0, 120.0, 60.0));
+fn wrap_on_both_sides_sets_text_left_then_right_of_the_object() {
+    let (d, sid) = doc_with_ellipse(WrapMode::Contour, WrapSide::BothSides);
     let cs = compose_story(&d, sid, &ComposeOptions::default());
-    assert!(!cs.is_overset(), "the tombstone is set");
-    assert_eq!(cs.line_count(), 1);
-}
-
-/// A narrow frame that a text-wrap object overlaps further down sets the lines the object doesn't
-/// reach: the minimum gap width only applies to gaps a wrap object cuts.
-#[test]
-fn narrow_frame_sets_lines_no_wrap_object_reaches() {
-    let (d, sid) = tombstone(Rect::new(300.0, 300.0, 310.5, 340.0), Rect::new(290.0, 330.0, 330.0, 360.0));
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    assert!(!cs.is_overset(), "the first line is above the wrap object");
-    assert_eq!(cs.line_count(), 1);
-    let (top, baseline) = (cs.frames[0].columns[0].y0, cs.frames[0].lines[0].baseline);
-    assert!(baseline - top < 20.0, "on the first line: {baseline} (text area from {top})");
-}
-
-/// In a frame of narrow columns, a wrap object beside column 2 leaves column 1 alone: only a gap
-/// the object cuts in its own column is held to the minimum width (it was dropped, as the object
-/// overlapped the line's band, and the text went past column 1).
-#[test]
-fn wrap_object_beside_one_narrow_column_leaves_the_other_alone() {
-    // Two 18 pt columns (12 pt gutter): narrower than 1.5 em of the 14 pt paragraph.
-    let (mut d, sid) = tombstone(Rect::new(300.0, 300.0, 348.0, 340.0), Rect::new(336.0, 300.0, 380.0, 340.0));
-    let fid = d.spreads[0].items.iter().find(|i| i.text_frame().is_some_and(|t| t.story == sid)).unwrap().id;
-    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let f = &cs.frames[0];
-    assert_eq!(f.columns.len(), 2);
-    assert!(f.columns[0].width() < 21.0, "column 1 is narrower than 1.5 em: {}", f.columns[0].width());
+    let lines = &cs.frames[0].lines;
+    let pairs: Vec<(&Line, &Line)> = lines.windows(2).filter(|w| w[0].baseline == w[1].baseline).map(|w| (&w[0], &w[1])).collect();
+    assert!(pairs.len() >= 4, "{} lines share a baseline", pairs.len());
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    for (l, r) in &pairs {
+        // Left segment, then the right one; the text runs on from one to the other.
+        assert!(l.x1 < 150.0 && r.x0 > 150.0, "{} {}", l.x1, r.x0);
+        assert_eq!(l.range.end, r.range.start);
+        // No glyph inside the wrapped outline at its line.
+        let (a, b) = ex.contour.as_ref().unwrap().band_extent(l.baseline - l.ascent, l.baseline).unwrap();
+        let n = l.glyphs.len().saturating_sub(1);
+        // The left segment's last glyph may be the space the line breaks at.
+        for g in l.glyphs.iter().take(n).chain(&r.glyphs).filter(|g| g.visible) {
+            assert!(g.x + g.adv <= a + 0.5 || g.x >= b - 0.5, "glyph at {}..{} in {a}..{b}", g.x, g.x + g.adv);
+        }
+    }
+    // Lines beside the narrow top of the ellipse reach closer to its centre than those at its middle.
+    let mid = pairs.iter().map(|(l, _)| l.x1).fold(f64::INFINITY, f64::min);
+    let top = pairs.first().unwrap().0.x1;
+    assert!(top > mid + 5.0, "top {top}, middle {mid}");
     assert!(!cs.is_overset());
-    let l = &f.lines[0];
-    assert_eq!(l.column, 0, "set in column 1");
-    assert!(l.baseline - f.columns[0].y0 < 20.0, "on its first line: {}", l.baseline);
+}
+
+/// Same As Clipping follows a placed graphic's clipping path: beside a triangle that widens
+/// downwards, text reaches further in at the narrow top than at the wide bottom.
+#[test]
+fn same_as_clipping_wrap_follows_the_clipping_path() {
+    use designcraft_geom::{PathData, Point, SubPath};
+    let (mut d, sid, _) = doc_with(&[LOREM; 4].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let mut it = designcraft_doc::Item::new(
+        id,
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(150.0, 100.0, 300.0, 300.0)),
+    );
+    let triangle = PathData::single(SubPath::polyline(&[Point::new(75.0, 0.0), Point::new(150.0, 200.0), Point::new(0.0, 200.0)], true));
+    it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
+        asset: designcraft_doc::AssetId(1),
+        size: (150.0, 200.0),
+        xf: designcraft_geom::Affine::translate((150.0, 100.0)),
+        clip: Some(std::sync::Arc::new(designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::DetectEdges, triangle))),
+        auto_fit: Default::default(),
+        fit_align: 0,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::LeftSide;
+    it.wrap.contour = designcraft_doc::ContourType::SameAsClipping;
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let beside: Vec<&Line> = cs.frames[0].lines.iter().filter(|l| l.baseline - l.ascent > 100.0 && l.baseline + l.descent < 300.0).collect();
+    let (top, bottom) = (beside.first().unwrap().x1, beside.last().unwrap().x1);
+    assert!(top > bottom + 40.0, "top {top}, bottom {bottom}");
+    assert!(bottom < 160.0, "the bottom lines stop near the triangle's base: {bottom}");
+}
+
+/// LOREM beside an ellipse wrapped on both sides along its contour that leaves a sliver (about
+/// 20 pt at its middle) between it and the frame's right edge.
+fn sliver_wrap(para: ParaAttrs) -> (Document, StoryId, String) {
+    let text = [LOREM; 4].join(" ");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 800.0), para);
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let mut it =
+        designcraft_doc::Item::new(id, lid, designcraft_doc::Shape::Oval, designcraft_geom::shapes::ellipse(Rect::new(150.0, 100.0, 276.0, 220.0)));
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::BothSides;
+    it.wrap.offsets = [4.0; 4];
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    (d, sid, text)
+}
+
+#[test]
+fn words_stay_whole_beside_a_wrap_sliver() {
+    for align in [Align::Left, Align::LeftJustified] {
+        for hyphenate in [true, false] {
+            let (d, sid, text) = sliver_wrap(ParaAttrs { align: Some(align), hyphenate: Some(hyphenate), ..Default::default() });
+            let ex = &frame_specs(&d, sid)[0].exclusions[0];
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let lines = all_lines(&cs);
+            let word = |i: usize| text.as_bytes().get(i).is_some_and(u8::is_ascii_alphanumeric);
+            let mut empty_slivers = 0;
+            for (i, l) in lines.iter().enumerate() {
+                let line = &text[l.range.clone()];
+                // A line ends inside a word only at a hyphenation point.
+                assert!(l.hyphenated || !(word(l.range.end - 1) && word(l.range.end)), "{align:?} {hyphenate}: split word in {line:?}");
+                // Every word fits its segment whole.
+                for g in l.glyphs.iter().filter(|g| g.visible) {
+                    assert!(g.x + g.adv <= l.x1 + 0.5, "{align:?} {hyphenate}: {line:?} overflows its {}..{} segment", l.x0, l.x1);
+                }
+                // A left segment beside the object whose sliver stays empty: the next word doesn't fit it.
+                let Some((_, b)) = ex.contour.as_ref().unwrap().band_extent(l.baseline - l.ascent, l.baseline) else { continue };
+                let next = lines.get(i + 1);
+                if l.x1 > b || 300.0 - b < 18.0 || next.is_some_and(|n| n.baseline == l.baseline) {
+                    continue;
+                }
+                let Some(next) = next else { continue };
+                let first = text[next.range.clone()].split(' ').next().unwrap_or_default();
+                let w: f64 = next.glyphs.iter().filter(|g| g.byte < next.range.start + first.len()).map(|g| g.adv).sum();
+                assert!(w > 300.0 - b, "{align:?} {hyphenate}: {first:?} ({w}) fits the {} pt sliver beside {line:?}", 300.0 - b);
+                empty_slivers += 1;
+            }
+            if !hyphenate {
+                assert!(empty_slivers > 0, "{align:?}: no sliver stays empty");
+            }
+            assert!(!cs.is_overset());
+        }
+    }
+}
+
+#[test]
+fn one_sided_wrap_leaves_the_other_side_empty() {
+    for (side, right) in [(WrapSide::RightSide, true), (WrapSide::LeftSide, false), (WrapSide::LargestArea, false)] {
+        let (d, sid) = doc_with_ellipse(WrapMode::BoundingBox, side);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let beside: Vec<&Line> = cs.frames[0].lines.iter().filter(|l| l.baseline - l.ascent < 200.0 && l.baseline + l.descent > 100.0).collect();
+        assert!(!beside.is_empty());
+        let mut rows: Vec<f64> = beside.iter().map(|l| l.baseline).collect();
+        rows.dedup();
+        assert_eq!(rows.len(), beside.len(), "{side:?}: one segment per line");
+        for l in beside {
+            assert!(if right { l.x0 >= 194.0 - 1e-6 } else { l.x1 <= 106.0 + 1e-6 }, "{side:?}: {}..{}", l.x0, l.x1);
+        }
+    }
+}
+
+#[test]
+fn contour_wrap_follows_the_outline_band_by_band() {
+    let (d, sid) = doc_with_ellipse(WrapMode::Contour, WrapSide::BothSides);
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    let c = ex.contour.as_ref().unwrap();
+    let width = |y0: f64, y1: f64| c.band_extent(y0, y1).map_or(0.0, |(a, b)| b - a);
+    let (top, mid, bottom) = (width(100.0, 104.0), width(146.0, 154.0), width(196.0, 200.0));
+    // 80 wide plus the 4 pt offset each side at the middle; much narrower at the ends.
+    assert!((mid - 88.0).abs() < 0.5, "{mid}");
+    assert!(top < mid - 20.0 && bottom < mid - 20.0, "{top} {mid} {bottom}");
+    // The band is the line's height, not its baseline: a band reaching the middle is full width.
+    assert!((width(120.0, 150.0) - 88.0).abs() < 0.5);
+    // Outside the outline and its offset: no block.
+    assert!(c.band_extent(205.0, 210.0).is_none());
+    // A bounding-box wrap blocks the rectangle at every band.
+    let (d, sid) = doc_with_ellipse(WrapMode::BoundingBox, WrapSide::BothSides);
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    assert!(ex.contour.is_none());
+    assert_eq!(ex.rect, Rect::new(106.0, 96.0, 194.0, 204.0));
+}
+
+/// A contour wrap with a slanted right edge, x = 100 + 2(y − 50) for y in 50..100, text to its right.
+fn doc_with_slant(contour: designcraft_geom::path::PathData) -> (Document, StoryId) {
+    let (mut d, sid, _) = doc_with(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, contour);
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::RightSide;
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    (d, sid)
+}
+
+#[test]
+fn a_line_meets_the_wrap_from_its_top_to_its_baseline() {
+    let pts = [Point::new(0.0, 50.0), Point::new(100.0, 50.0), Point::new(200.0, 100.0), Point::new(0.0, 100.0)];
+    let path = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(&pts, true));
+    let (d, sid) = doc_with_slant(path);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let beside: Vec<&Line> = cs.frames[0].lines.iter().filter(|l| l.baseline - l.ascent > 50.0 && l.baseline < 100.0).collect();
+    assert!(beside.len() >= 2, "{} lines beside the slant", beside.len());
+    for l in beside {
+        // The edge at the baseline, not at the bottom of the descenders (about 6 pt further out).
+        let edge = 100.0 + 2.0 * (l.baseline - 50.0);
+        assert!((l.x0 - edge).abs() < 0.5, "line at {} starts at {}, edge {edge}", l.baseline, l.x0);
+    }
+}
+
+#[test]
+fn an_image_contour_stops_at_its_frame() {
+    let (mut d, sid, _) = doc_with(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    // An L-shaped frame: its right edge is at x = 150 down to y = 150, then at 250 below.
+    let pts = [(0.0, 50.0), (150.0, 50.0), (150.0, 150.0), (250.0, 150.0), (250.0, 200.0), (0.0, 200.0)].map(|(x, y)| Point::new(x, y));
+    let frame = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(&pts, true));
+    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Polygon, frame);
+    // The image overhangs the frame on every side.
+    it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
+        asset: designcraft_doc::AssetId(d.alloc()),
+        size: (300.0, 250.0),
+        xf: designcraft_geom::Affine::IDENTITY,
+        clip: None,
+        auto_fit: designcraft_doc::Fitting::None,
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::RightSide;
+    it.wrap.contour = designcraft_doc::ContourType::BoundingBox;
+    it.wrap.offsets = [4.0; 4];
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let beside: Vec<&Line> = cs.frames[0].lines.iter().filter(|l| l.baseline - l.ascent > 54.0 && l.baseline < 146.0).collect();
+    assert!(beside.len() >= 3, "{} lines beside the frame", beside.len());
+    for l in beside {
+        assert!((l.x0 - 154.0).abs() < 0.5, "line at {} starts at {}", l.baseline, l.x0);
+    }
+    // Below the step the frame is wider.
+    let low = cs.frames[0].lines.iter().find(|l| l.baseline - l.ascent > 154.0 && l.baseline < 196.0).unwrap();
+    assert!((low.x0 - 254.0).abs() < 0.5, "{}", low.x0);
+}
+
+/// A clipping path (Detect Edges with a large inset) that overhangs its frame: a Same As
+/// Clipping wrap follows it only within the frame.
+#[test]
+fn a_clipping_path_contour_stops_at_its_frame() {
+    let (mut d, sid, _) = doc_with(&[LOREM; 4].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(150.0, 100.0, 300.0, 300.0)),
+    );
+    // The clip path reaches 100 pt left of the frame.
+    let wide = designcraft_geom::path::PathData::single(designcraft_geom::path::SubPath::polyline(
+        &[Point::new(-100.0, 0.0), Point::new(150.0, 0.0), Point::new(150.0, 200.0), Point::new(-100.0, 200.0)],
+        true,
+    ));
+    it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
+        asset: designcraft_doc::AssetId(1),
+        size: (150.0, 200.0),
+        xf: designcraft_geom::Affine::translate((150.0, 100.0)),
+        clip: Some(std::sync::Arc::new(designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::DetectEdges, wide))),
+        auto_fit: Default::default(),
+        fit_align: 0,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::LeftSide;
+    it.wrap.contour = designcraft_doc::ContourType::SameAsClipping;
+    it.wrap.offsets = [4.0; 4];
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let beside: Vec<&Line> = cs.frames[0].lines.iter().filter(|l| l.baseline - l.ascent > 104.0 && l.baseline < 296.0).collect();
+    assert!(beside.len() >= 5, "{} lines beside the frame", beside.len());
+    for l in beside {
+        assert!(l.x1 > 140.0 && l.x1 <= 146.0 + 1e-6, "line at {} ends at {}", l.baseline, l.x1);
+    }
 }
 
 #[test]
@@ -552,6 +909,73 @@ fn glyph_scaling_and_letter_spacing_are_applied() {
     assert!(wide(0.5) > wide(0.0) + 10.0 * 0.5 * 2.0);
 }
 
+/// Width of `text` set at 48 pt with `kerning`, and the advance of each visible glyph.
+fn set_with_kerning(text: &str, kerning: designcraft_doc::Kerning) -> (f64, Vec<(char, f64)>) {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 200.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.size = Some(48.0);
+        f.over.kerning = Some(kerning);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let advs = l.glyphs.iter().filter(|g| g.visible).map(|g| (text[g.byte..].chars().next().unwrap_or(' '), g.adv)).collect();
+    (l.end_x - l.x0, advs)
+}
+
+#[test]
+fn optical_kerning_closes_open_pairs_and_leaves_stems() {
+    use designcraft_doc::Kerning;
+    // `AV` and `To` set tighter than unkerned; `nn`, the reference pair, stays as the font set it.
+    for pair in ["AV", "To", "r."] {
+        let (none, _) = set_with_kerning(pair, Kerning::None);
+        let (optical, _) = set_with_kerning(pair, Kerning::Optical);
+        assert!(optical < none - 0.5, "{pair}: optical {optical:.2} vs none {none:.2}");
+    }
+    let (none, _) = set_with_kerning("nn", Kerning::None);
+    let (optical, _) = set_with_kerning("nn", Kerning::Optical);
+    assert!((none - optical).abs() < 48.0 * 0.02, "nn: optical {optical:.2} vs none {none:.2}");
+    // Optical is measured, not the font's pairs: `HH` has no kern pair but its gap is wider
+    // than `nn`'s, so it closes up under Optical and not under Metrics.
+    let (metrics, _) = set_with_kerning("HH", Kerning::Metrics);
+    let (optical, _) = set_with_kerning("HH", Kerning::Optical);
+    assert!(optical < metrics - 0.5, "HH: optical {optical:.2} vs metrics {metrics:.2}");
+}
+
+#[test]
+fn optical_kerning_is_bounded_and_skips_spaces() {
+    use designcraft_doc::Kerning;
+    let text = "Sphinx of black quartz, judge my vow. 1997 “Park” AWAY";
+    let (_, none) = set_with_kerning(text, Kerning::None);
+    let (_, optical) = set_with_kerning(text, Kerning::Optical);
+    assert_eq!(none.len(), optical.len());
+    for ((c, a), (_, b)) in none.iter().zip(&optical) {
+        let em = (b - a) / 48.0;
+        assert!((-0.12 - 1e-6..=0.06 + 1e-6).contains(&em), "{c:?}: {em:.3} em");
+        if c.is_whitespace() {
+            assert!((a - b).abs() < 1e-9, "space before a word keeps its width");
+        }
+    }
+    // The glyph before a space is not kerned against it either.
+    let (_, none) = set_with_kerning("r ", Kerning::None);
+    let (_, optical) = set_with_kerning("r ", Kerning::Optical);
+    assert!((none[0].1 - optical[0].1).abs() < 1e-9);
+}
+
+#[test]
+fn optical_kerning_leaves_dash_pairs_alone() {
+    use designcraft_doc::Kerning;
+    // Two bars end to end have a near-zero ink gap; pulling them towards the stem gap would
+    // break `--` and the double em dash `——` that Chinese sets as one continuous rule.
+    for text in ["--", "\u{2014}\u{2014}", "a--b", "\u{2013}\u{2013}"] {
+        let (none_w, none) = set_with_kerning(text, Kerning::None);
+        let (optical_w, optical) = set_with_kerning(text, Kerning::Optical);
+        assert!((none_w - optical_w).abs() < 1e-9, "{text:?}: optical {optical_w:.3} vs none {none_w:.3}");
+        for ((c, a), (_, b)) in none.iter().zip(&optical) {
+            assert!((a - b).abs() < 1e-9, "{text:?} {c:?}: {a:.3} vs {b:.3}");
+        }
+    }
+}
+
 #[test]
 fn hyphen_limit_is_a_hard_constraint() {
     let text = CORPUS.join(" ");
@@ -590,6 +1014,92 @@ fn hyphenation_zone_limits_ragged_hyphens() {
     let c = designcraft_doc::Composer::Paragraph;
     let (free, zoned, huge) = (count(0.0, c), count(36.0, c), count(1000.0, c));
     assert!(free > 0 && zoned == free && huge == free, "{c:?}: {free} {zoned} {huge}");
+}
+
+#[test]
+fn hyphenate_across_column_off_ends_no_column_with_a_hyphen() {
+    let text = CORPUS.join(" ");
+    // Column-end lines that are hyphenated, over frame heights that end the first column at each
+    // line in turn.
+    let ends = |across: bool, composer: designcraft_doc::Composer| {
+        let mut ends = 0;
+        let mut lines = 0;
+        for h in (30..400).step_by(3) {
+            let para = ParaAttrs {
+                align: Some(Align::Left),
+                hyph_weight: Some(0.0),
+                hyph_across_column: Some(across),
+                composer: Some(composer),
+                ..Default::default()
+            };
+            let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 240.0, h as f64), para);
+            d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let col0: Vec<&Line> = all_lines(&cs).into_iter().filter(|l| l.column == 0).collect();
+            ends += usize::from(col0.last().is_some_and(|l| l.hyphenated));
+            lines += col0.len();
+            // The frame's last line too, when the text goes on (overset).
+            let last = all_lines(&cs).into_iter().last();
+            ends += usize::from(cs.is_overset() && last.is_some_and(|l| l.hyphenated && !l.last_in_para));
+        }
+        (ends, lines)
+    };
+    for c in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+        let (on, lines_on) = ends(true, c);
+        let (off, lines_off) = ends(false, c);
+        // With it on, columns do end in hyphens here; with it off, none does, and the columns
+        // still fill.
+        assert!(on > 3, "{c:?}: {on}");
+        assert_eq!(off, 0, "{c:?}");
+        assert!(lines_off * 10 >= lines_on * 9, "{c:?}: {lines_off} {lines_on}");
+    }
+}
+
+#[test]
+fn hyphenate_across_column_off_keeps_nested_line_styles_on_their_lines() {
+    // The first line in a character style of another colour (the same widths): when its hyphen is
+    // left out at a column end, the style still covers exactly the first line as set.
+    let text = CORPUS.join(" ");
+    let compose = |w: f64, h: f64, across: bool| {
+        let para = ParaAttrs {
+            align: Some(Align::Left),
+            hyph_weight: Some(0.0),
+            hyph_across_column: Some(across),
+            nested_line_styles: Some(vec![designcraft_doc::NestedLineStyle { style: "Lead".into(), lines: 1 }]),
+            ..Default::default()
+        };
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, w, h), para);
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        let chars = designcraft_doc::CharAttrs { fill: Some("[Registration]".into()), ..Default::default() };
+        std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+            name: "Lead".into(),
+            based_on: None,
+            chars,
+            shortcut: String::new(),
+        });
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let mut checked = 0;
+    for w in (160..320).step_by(10) {
+        for h in (12..40).step_by(2) {
+            // Where, with the setting on, a hyphenated first line ends column 1.
+            let on = compose(w as f64, h as f64, true);
+            let lines = all_lines(&on);
+            if !(lines.iter().filter(|l| l.column == 0).count() == 1 && lines[0].hyphenated) {
+                continue;
+            }
+            let cs = compose(w as f64, h as f64, false);
+            let lines = all_lines(&cs);
+            assert!(!lines[0].hyphenated, "{w}×{h}");
+            let lead = |l: &Line| {
+                l.glyphs.iter().filter(|g| g.len > 0 && g.visible).map(|g| cs.styles[g.style as usize].fill == "[Registration]").collect::<Vec<_>>()
+            };
+            assert!(lead(lines[0]).iter().all(|&r| r), "{w}×{h}: first line");
+            assert!(lead(lines[1]).iter().all(|&r| !r), "{w}×{h}: second line");
+            checked += 1;
+        }
+    }
+    assert!(checked > 3, "{checked}");
 }
 
 #[test]
@@ -729,7 +1239,7 @@ fn nonbreaking_space_alone_fills_a_justified_line() {
 /// Story of `n` one-line filler paragraphs followed by `extra` paragraphs, in a 2-column frame.
 fn keep_doc(fillers: usize, extra: &[&str], height: f64) -> (Document, StoryId, Vec<usize>) {
     let mut parts: Vec<String> = (0..fillers).map(|k| format!("Filler {k}")).collect();
-    parts.extend(extra.iter().map(|s| s.to_string()));
+    parts.extend(extra.iter().map(ToString::to_string));
     let text = parts.join("\n");
     let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, height), ParaAttrs::default());
     d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
@@ -849,6 +1359,111 @@ fn optical_margin_hangs_punctuation() {
     let lines = all_lines(&hung);
     assert!(lines[..lines.len() - 1].iter().any(|l| l.end_x > l.x1 + 0.5), "no line hangs");
     assert!(lines.iter().all(|l| l.end_x <= l.x1 + 12.0));
+}
+
+#[test]
+fn optical_margin_hangs_the_edges_of_lines_with_tabs() {
+    // Both line breakers let the edge glyphs of a line hang, tab or not, so layout hangs them
+    // too: a line that fits only because its period hangs is not squeezed into the measure or
+    // set past it. The left hang leaves tab stops where they are.
+    let stop = designcraft_doc::TabStop { position: 40.0, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
+    let rest = "right here. More words follow it on the next line.";
+    let cases = [
+        ("tab", format!("“A”\tsits {rest}"), Align::LeftJustified),
+        ("no tab", format!("“A” sits {rest}"), Align::LeftJustified),
+        ("right indent tab", format!("“A” sits{}{rest}", story::RIGHT_INDENT_TAB), Align::Left),
+    ];
+    for (name, text, align) in &cases {
+        let ch = |g: &PlacedGlyph| text.get(g.byte..).and_then(|s| s.chars().next()).unwrap_or(' ');
+        let edge_glyphs = |l: &Line| -> Vec<PlacedGlyph> { l.glyphs.iter().filter(|g| g.visible && !ch(g).is_whitespace()).cloned().collect() };
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            let mut ending = 0;
+            for w in 100..=240 {
+                let para = ParaAttrs {
+                    align: Some(*align),
+                    optical_margin: Some(true),
+                    hyphenate: Some(false),
+                    composer: Some(composer),
+                    tabs: Some(vec![stop.clone()]),
+                    ..Default::default()
+                };
+                let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, f64::from(w), 1000.0), para);
+                let cs = compose_story(&d, sid, &ComposeOptions::default());
+                let lines = all_lines(&cs);
+                for (i, l) in lines.iter().enumerate() {
+                    let Some(last) = edge_glyphs(l).last().cloned() else { continue };
+                    let hang = breaker::hang(ch(&last)).1 * last.adv;
+                    let end = last.x + last.adv;
+                    assert!(end <= l.x1 + hang + 0.01, "{name}, {composer:?}, width {w}: line {i} ends at {end}, past {} and its hang {hang}", l.x1);
+                }
+                let glyphs = edge_glyphs(lines[0]);
+                let (x0, x1) = (lines[0].x0, lines[0].x1);
+                let first = &glyphs[0];
+                assert!((first.x + first.adv - x0).abs() < 0.01, "{name}, {composer:?}, width {w}: the opening quote is at {}", first.x);
+                if *name == "tab" {
+                    let s = glyphs.iter().find(|g| ch(g) == 's').unwrap();
+                    assert!((s.x - (x0 + 40.0)).abs() < 0.01, "{composer:?}, width {w}: the text after the tab starts at {}", s.x);
+                }
+                // Line 0 ends with the period of "here.": the period hangs past the measure.
+                let last = glyphs.last().unwrap();
+                if text.get(last.byte..).is_some_and(|s| s.starts_with(". More")) {
+                    ending += 1;
+                    assert!((last.x - x1).abs() < 0.01, "{name}, {composer:?}, width {w}: the period starts at {}, not at {x1}", last.x);
+                }
+            }
+            assert!(ending > 3, "{name}, {composer:?}: line 0 ends with the period at {ending} widths");
+        }
+    }
+}
+
+/// How far the opening quote of a one-line paragraph at `text_size` hangs into the left margin,
+/// with the story's Optical Margin Alignment `story` (on, size) and the paragraph's attributes.
+fn quote_hang(text_size: f64, story: Option<f64>, para: ParaAttrs) -> f64 {
+    let text = "“Quoted” words.";
+    let first_x = |story: Option<f64>, para: ParaAttrs| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 400.0, 200.0), para);
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..text.len(), |f| f.over.size = Some(text_size));
+        if let Some(size) = story {
+            st.optical_margin = designcraft_doc::OpticalMargin { on: true, size };
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 1);
+        lines[0].glyphs[0].x
+    };
+    first_x(None, ParaAttrs::default()) - first_x(story, para)
+}
+
+#[test]
+fn story_optical_margin_hang_scales_with_its_size() {
+    let at12 = quote_hang(12.0, Some(12.0), ParaAttrs::default());
+    let at24 = quote_hang(12.0, Some(24.0), ParaAttrs::default());
+    assert!(at12 > 1.0, "{at12}");
+    assert!((at24 - 2.0 * at12).abs() < 0.01, "{at12} {at24}");
+    // The size is the type size the hang is set for: 24 pt text at 24 hangs like 12 at 12, twice as far.
+    let big = quote_hang(24.0, Some(24.0), ParaAttrs::default());
+    assert!((big - 2.0 * at12).abs() < 0.01, "{at12} {big}");
+}
+
+#[test]
+fn ignore_optical_margin_paragraph_does_not_hang() {
+    let ignored = ParaAttrs { ignore_optical_margin: Some(true), optical_margin: Some(true), ..Default::default() };
+    assert_eq!(quote_hang(12.0, Some(12.0), ignored.clone()), 0.0);
+    assert_eq!(quote_hang(12.0, None, ignored), 0.0);
+}
+
+#[test]
+fn paragraph_optical_margin_hangs_at_the_text_size() {
+    // Documents saved before the story setting existed: the paragraph's switch hangs each
+    // character by its own size, not the story's default 12 pt.
+    let own = ParaAttrs { optical_margin: Some(true), ..Default::default() };
+    let at24 = quote_hang(24.0, None, own.clone());
+    assert!((at24 - quote_hang(24.0, Some(24.0), ParaAttrs::default())).abs() < 0.01);
+    assert!((at24 - 2.0 * quote_hang(12.0, None, own)).abs() < 0.01);
+    // The story setting, when on, sets the size.
+    let story = quote_hang(24.0, Some(12.0), ParaAttrs { optical_margin: Some(true), ..Default::default() });
+    assert!((story - at24 / 2.0).abs() < 0.01, "{story} {at24}");
 }
 
 // ---------- golden paragraph corpus ----------
@@ -1669,6 +2284,43 @@ fn digits_option_draws_figures_in_another_script() {
 }
 
 #[test]
+fn page_numbers_take_the_digits_option() {
+    use designcraft_fonts::testing::font_mapping;
+    // Draws ١ as X, every other character as itself.
+    let glyphs = [('N', 'N'), ('o', 'o'), ('.', '.'), (' ', ' '), ('1', '1'), ('\u{661}', 'X')];
+    designcraft_fonts::FontDb::global().add_font(font_mapping("DC Test Page Digits", &glyphs).unwrap());
+    // The glyph drawn at byte 4: the page number, or a typed Arabic-Indic one.
+    let fourth = |text: &str| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(100.0, 100.0, 400.0, 200.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Page Digits".into());
+            f.over.digits = Some(designcraft_doc::Digits::Hindi);
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 4).map(|g| g.gid).unwrap()
+    };
+    assert_eq!(fourth(&format!("No. {}", story::PAGE_NUMBER)), fourth("No. \u{661}"));
+}
+
+#[test]
+fn digits_option_draws_page_numbers_and_list_numbers_in_that_script() {
+    use designcraft_doc::{Digits, ListType};
+    let gids = |text: &str, list: Option<ListType>, digits: Option<Digits>| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs { list_type: list, ..Default::default() });
+        if let Some(dg) = digits {
+            let n = text.len();
+            d.story_mut(sid).unwrap().format_chars(0..n, |f| f.over.digits = Some(dg));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].glyphs.iter().map(|g| g.gid).collect::<Vec<_>>()
+    };
+    let pn = story::PAGE_NUMBER.to_string();
+    assert_ne!(gids(&pn, None, None), gids(&pn, None, Some(Digits::Farsi)), "page number marker");
+    // Digits set on the text (not on the paragraph style) reach the list number too.
+    assert_ne!(gids("Item", Some(ListType::Numbers), None), gids("Item", Some(ListType::Numbers), Some(Digits::Farsi)), "list number");
+}
+
+#[test]
 fn ruby_and_kenten_sit_over_their_text() {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
     let lid = d.default_layer();
@@ -1694,6 +2346,195 @@ fn ruby_and_kenten_sit_over_their_text() {
     let dot = l.glyphs.last().unwrap();
     let de = &l.glyphs[2];
     assert!((dot.x + dot.adv / 2.0 - (de.x + de.adv / 2.0)).abs() < 1.0 && dot.y < 0.0);
+}
+
+/// `text` on one line, composed plain and then with the ruby attributes `set` on `range`: the
+/// plain glyphs, and the ruby line (its ruby glyphs follow the text's) with its story.
+fn ruby_compose(text: &str, range: std::ops::Range<usize>, set: impl Fn(&mut designcraft_doc::CharAttrs)) -> (Vec<PlacedGlyph>, Line, ComposedStory) {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+    let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    d.story_mut(sid).unwrap().format_chars(range, |f| set(&mut f.over));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = cs.frames[0].lines[0].clone();
+    (plain, line, cs)
+}
+
+#[test]
+fn group_ruby_spreads_1_2_1_over_the_word_and_mono_ruby_sits_over_each_character() {
+    let kanji = 0.."漢字".len();
+    // Group: three kana over two kanji, half a gap at each end (JIS 1-2-1).
+    let (plain, l, _) = ruby_compose("漢字です", kanji.clone(), |a| a.ruby = Some("かんじ".into()));
+    let ruby = &l.glyphs[plain.len()..];
+    assert_eq!(ruby.len(), 3);
+    let (x0, x1) = (l.glyphs[0].x, l.glyphs[1].x + l.glyphs[1].adv);
+    let w: f64 = ruby.iter().map(|g| g.adv).sum();
+    assert!(w < x1 - x0);
+    let gap = (x1 - x0 - w) / 3.0;
+    let mut x = x0 + gap / 2.0;
+    for g in ruby {
+        assert!((g.x - x).abs() < 1e-6, "{} != {x}", g.x);
+        x += g.adv + gap;
+    }
+    // Mono: かん over 漢 and じ centred on 字; the U+3000 separator isn't drawn.
+    let (plain, l, _) = ruby_compose("漢字です", kanji, |a| {
+        a.ruby = Some("かん\u{3000}じ".into());
+        a.ruby_type = Some(designcraft_doc::ruby::RubyType::PerCharacter);
+    });
+    let ruby = &l.glyphs[plain.len()..];
+    assert_eq!(ruby.len(), 3);
+    let (kan, ji) = (&l.glyphs[0], &l.glyphs[1]);
+    assert!((ruby[0].x - kan.x).abs() < 1e-6 && ruby[1].x + ruby[1].adv <= ji.x + 1e-6);
+    assert!((ruby[2].x + ruby[2].adv / 2.0 - (ji.x + ji.adv / 2.0)).abs() < 1e-6);
+}
+
+#[test]
+fn longer_ruby_overhangs_kana_and_spaces_out_kanji() {
+    let ji = "漢".len().."漢字".len();
+    // Over 字 before a kana: the ruby starts flush with 字 (never over the kanji before it) and
+    // hangs over で by one ruby character, so nothing moves.
+    let (plain, l, _) = ruby_compose("漢字で", ji.clone(), |a| a.ruby = Some("かんじ".into()));
+    let ruby = &l.glyphs[plain.len()..];
+    let w: f64 = ruby.iter().map(|g| g.adv).sum();
+    let parent = &l.glyphs[1];
+    assert!(w > parent.adv);
+    assert!((ruby[0].x - parent.x).abs() < 1e-6, "{} != {}", ruby[0].x, parent.x);
+    assert!((l.glyphs[2].x - plain[2].x).abs() < 1e-6, "で stays");
+    assert!(ruby[2].x + ruby[2].adv > l.glyphs[2].x, "over で");
+    // Between kanji there is nothing to overhang: 字 gets the difference as space on both sides
+    // and the ruby spans it.
+    let (plain, l, _) = ruby_compose("漢字漢", ji, |a| a.ruby = Some("かんじ".into()));
+    let ruby = &l.glyphs[plain.len()..];
+    let w: f64 = ruby.iter().map(|g| g.adv).sum();
+    let grow = l.glyphs[2].x - plain[2].x;
+    assert!((grow - (w - plain[1].adv)).abs() < 1e-6, "{grow} vs {w}");
+    assert!((l.glyphs[1].dx - grow / 2.0).abs() < 1e-6);
+    assert!((ruby[0].x - (l.glyphs[1].x - l.glyphs[1].dx)).abs() < 1e-6);
+}
+
+#[test]
+fn ruby_is_half_size_by_default_and_can_sit_below_in_its_own_colour() {
+    let kanji = 0.."漢字".len();
+    let (plain, l, cs) = ruby_compose("漢字です", kanji.clone(), |a| {
+        a.ruby = Some("かんじ".into());
+        a.ruby_position = Some(designcraft_doc::ruby::RubyPosition::BelowLeft);
+    });
+    let ruby = &l.glyphs[plain.len()..];
+    let size = cs.styles[l.glyphs[0].style as usize].size;
+    assert!(ruby.iter().all(|g| g.y > size * 0.12), "below the parent's em box");
+    assert!(ruby.iter().all(|g| (g.sy - l.glyphs[0].sy * 0.5).abs() < 1e-9), "half size");
+    assert!((cs.styles[ruby[0].style as usize].size - size * 0.5).abs() < 1e-9);
+    // Its own size and fill; the parent keeps its colour.
+    let (plain, l, cs) = ruby_compose("漢字です", kanji, |a| {
+        a.ruby = Some("かんじ".into());
+        a.ruby_font_size = Some(Some(4.0));
+        a.ruby_fill = Some("[Paper]".into());
+    });
+    let r = &l.glyphs[plain.len()];
+    assert!(r.y < -size * 0.8);
+    assert!((r.sy - l.glyphs[0].sy * 4.0 / size).abs() < 1e-9);
+    assert_eq!(cs.styles[r.style as usize].fill, "[Paper]");
+    assert_eq!(cs.styles[l.glyphs[0].style as usize].fill, "[Black]");
+}
+
+#[test]
+fn ruby_moves_out_past_kenten_on_the_same_side() {
+    use designcraft_doc::cjk_settings::KentenPosition;
+    use designcraft_doc::ruby::RubyPosition;
+    let kanji = 0.."漢字".len();
+    // The ruby glyphs' baseline, and the outer edge of the kenten's em box (y down).
+    let compose = |ruby: RubyPosition, kenten: Option<KentenPosition>| {
+        let (plain, l, cs) = ruby_compose("漢字です", kanji.clone(), |a| {
+            a.ruby = Some("かんじ".into());
+            a.ruby_position = Some(ruby);
+            if let Some(k) = kenten {
+                a.kenten = Some(true);
+                a.kenten_size = Some(Some(6.0));
+                a.kenten_distance = Some(1.0);
+                a.kenten_position = Some(k);
+            }
+        });
+        let parent = &l.glyphs[0];
+        let marks = cs.styles[parent.style as usize].kenten_mark.as_ref().map(|m| m.style);
+        let ruby: Vec<PlacedGlyph> = l.glyphs[plain.len()..].iter().filter(|g| Some(g.style) != marks).cloned().collect();
+        assert_eq!(ruby.len(), 3);
+        let (top, bottom) = parent.face.em_box();
+        let edge = match kenten {
+            Some(KentenPosition::BelowLeft) => parent.y - bottom * parent.sy + 1.0 + 6.0,
+            _ => parent.y - top * parent.sy - 1.0 - 6.0,
+        };
+        (ruby, edge)
+    };
+    for (position, kenten) in [(RubyPosition::AboveRight, KentenPosition::AboveRight), (RubyPosition::BelowLeft, KentenPosition::BelowLeft)] {
+        let (alone, _) = compose(position, None);
+        let (ruby, edge) = compose(position, Some(kenten));
+        for (r, a) in ruby.iter().zip(&alone) {
+            let (top, bottom) = r.face.em_box();
+            if position == RubyPosition::AboveRight {
+                assert!(r.y - bottom * r.sy <= edge + 1e-6, "the ruby's em box ends where the marks' starts");
+                assert!(r.y < a.y, "moved up");
+            } else {
+                assert!(r.y - top * r.sy >= edge - 1e-6, "the ruby's em box starts where the marks' ends");
+                assert!(r.y > a.y, "moved down");
+            }
+        }
+    }
+    // Kenten on the other side leave the ruby where it was.
+    let (alone, _) = compose(RubyPosition::AboveRight, None);
+    let (ruby, _) = compose(RubyPosition::AboveRight, Some(KentenPosition::BelowLeft));
+    assert!(ruby.iter().zip(&alone).all(|(r, a)| (r.y - a.y).abs() < 1e-9));
+}
+
+#[test]
+fn ruby_and_kenten_overprint_their_own_run_styles() {
+    use designcraft_doc::cjk_settings::AdornmentOverprint as O;
+    let kanji = 0.."漢字".len();
+    let (plain, l, cs) = ruby_compose("漢字です", kanji, |a| {
+        a.ruby = Some("かんじ".into());
+        a.ruby_overprint_stroke = Some(O::On);
+        a.kenten = Some(true);
+        a.kenten_overprint_fill = Some(O::On);
+    });
+    let parent = &cs.styles[l.glyphs[0].style as usize];
+    assert!(!parent.overprint_fill && !parent.overprint_stroke, "the text itself doesn't overprint");
+    let marks = parent.kenten_mark.as_ref().unwrap().style;
+    let mark = &cs.styles[marks as usize];
+    assert!(mark.overprint_fill && !mark.overprint_stroke);
+    let ruby = l.glyphs[plain.len()..].iter().find(|g| g.style != marks).unwrap();
+    let ruby = &cs.styles[ruby.style as usize];
+    assert!(!ruby.overprint_fill && ruby.overprint_stroke);
+}
+
+#[test]
+fn longer_ruby_never_overhangs_a_line_edge_or_more_than_its_neighbours_take() {
+    // Four 6 pt ruby characters over one 12 pt kanji: 12 pt longer, which the kana on each side
+    // take (one ruby character, 6 pt, each). A line edge takes none, so the group stays on the
+    // line of each kana it overhangs.
+    let text = "かな字".repeat(12);
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 190.0, 500.0), lid, &text, ParaFormat::default()).unwrap();
+    for (k, _) in text.match_indices('字') {
+        d.story_mut(sid).unwrap().format_chars(k..k + "字".len(), |f| f.over.ruby = Some("じじじじ".into()));
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!(lines.len() > 2, "the text wraps");
+    for l in lines {
+        let parents: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len > 0 && g.visible).collect();
+        let x0 = parents.iter().map(|g| g.x - g.dx).fold(f64::MAX, f64::min);
+        let x1 = parents.iter().map(|g| g.x - g.dx + g.adv).fold(f64::MIN, f64::max);
+        for p in parents.iter().filter(|g| text.get(g.byte..).is_some_and(|t| t.starts_with('字'))) {
+            let ruby: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len == 0 && g.byte == p.byte).collect();
+            assert_eq!(ruby.len(), 4);
+            let r0 = ruby.iter().map(|g| g.x).fold(f64::MAX, f64::min);
+            let r1 = ruby.iter().map(|g| g.x + g.adv).fold(f64::MIN, f64::max);
+            assert!(r0 >= x0 - 1e-6 && r1 <= x1 + 1e-6, "inside the line: {r0}..{r1} in {x0}..{x1}");
+            let (p0, p1) = (p.x - p.dx, p.x - p.dx + p.adv);
+            assert!(p0 - r0 <= 6.0 + 1e-6 && r1 - p1 <= 6.0 + 1e-6, "at most one ruby character over each kana: {r0}..{r1} over {p0}..{p1}");
+        }
+    }
 }
 
 #[test]
@@ -2000,6 +2841,211 @@ fn only_english_text_gets_english_hyphenation() {
     let n = st.len();
     st.format_chars(0..n, |f| f.over.language = Some("French".into()));
     assert_eq!(hyphenated(&d2, sid), 0, "French isn't hyphenated with English rules");
+}
+
+// A text frame's bottom inset constrains its last baseline. The full font descent
+// still belongs to the line metrics, caret geometry and measured content height.
+fn baseline_fit_doc(text: &str, height: f64) -> (Document, StoryId, ItemId) {
+    let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 200.0, height), ParaAttrs::default());
+    let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+    tf.options.first_baseline = FirstBaseline::Fixed;
+    tf.options.first_baseline_min = 10.0;
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("Source Serif 4".into());
+        f.over.size = Some(8.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(11.0));
+    });
+    (d, sid, fid)
+}
+
+#[test]
+fn horizontal_text_fits_its_baseline_at_the_bottom_inset() {
+    // Include spaces, a nonprinting anchor and real descenders, rather than only capitals.
+    let text = format!("{}Map gaps ", designcraft_doc::ANCHOR_MARK);
+    let (d, sid, _) = baseline_fit_doc(&text, 10.0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let line = &cs.frames[0].lines[0];
+    assert_eq!(line.baseline, 10.0);
+    assert!(line.descent > 0.0);
+    assert!(cs.frames[0].content_height > 10.0, "measured content must retain descenders");
+    assert!(line.glyphs.iter().any(|g| g.visible && text[g.byte..].starts_with('g')));
+}
+
+#[test]
+fn bottom_baseline_fit_preserves_leading_and_paragraph_spacing() {
+    let text = "Heading\nFirst line\u{2028}Second line\u{2028}Last line.";
+    let (mut d, sid, fid) = baseline_fit_doc(text, 65.5);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.inset = [9.0; 4];
+    d.story_mut(sid).unwrap().paras[0].para.space_after = Some(4.5);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].lines.iter().map(|l| l.baseline).collect::<Vec<_>>(), [19.0, 34.5, 45.5, 56.5]);
+    assert_eq!(cs.frames[0].columns[0].y1, 56.5);
+    assert_eq!(cs.frames[0].range.end, text.len());
+}
+
+#[test]
+fn baseline_beyond_bottom_still_oversets_and_threads() {
+    let text = "First\u{2028}Second";
+    let (mut d, sid, f1) = baseline_fit_doc(text, 20.75);
+    let before = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(before.line_count(), 1);
+    assert_eq!(before.overset_at, Some("First\u{2028}".len()));
+    let lid = d.default_layer();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 50.0, 200.0, 60.0), lid, "", ParaFormat::default()).unwrap();
+    let options = d.item(f1).unwrap().text_frame().unwrap().options.clone();
+    d.item_mut(f2).unwrap().text_frame_mut().unwrap().options = options;
+    d.thread(f1, f2).unwrap();
+    let after = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!after.is_overset());
+    assert_eq!(after.frames.iter().map(|f| f.lines.len()).collect::<Vec<_>>(), [1, 1]);
+    assert_eq!(after.frames[0].lines[0].baseline, before.frames[0].lines[0].baseline);
+}
+
+#[test]
+fn vertical_text_keeps_its_full_cross_line_extent() {
+    let (mut d, sid, fid) = baseline_fit_doc("Map", 200.0);
+    let it = d.item_mut(fid).unwrap();
+    it.path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 200.0));
+    d.story_mut(sid).unwrap().vertical = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.is_overset());
+    assert_eq!(cs.line_count(), 0);
+}
+
+#[test]
+fn inline_objects_still_clear_the_bottom_edge() {
+    let (mut d, sid, _) = baseline_fit_doc("Text", 10.0);
+    let it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 6.0, 6.0)),
+    );
+    d.story_mut(sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, designcraft_doc::AnchorPosition::Inline { y_offset: -3.0 }));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.is_overset());
+    assert_eq!(cs.line_count(), 0);
+}
+
+#[test]
+fn custom_anchors_do_not_change_bottom_baseline_fitting() {
+    let (mut d, sid, _) = baseline_fit_doc("Text", 10.0);
+    let it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 6.0, 6.0)),
+    );
+    let pos = designcraft_doc::AnchorPosition::Custom {
+        x_relative: Default::default(),
+        y_relative: Default::default(),
+        x_offset: 0.0,
+        y_offset: 0.0,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: false,
+        spine_relative: false,
+    };
+    d.story_mut(sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, pos));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.line_count(), 1);
+    assert_eq!(cs.frames[0].objects.len(), 1);
+}
+
+#[test]
+fn baseline_shift_keeps_its_metrics_and_glyph_offset_at_bottom() {
+    let (mut d, sid, _) = baseline_fit_doc("Map", 10.0);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().format_chars(0..3, |f| f.over.baseline_shift = Some(-3.0));
+    let shifted = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!plain.is_overset() && !shifted.is_overset());
+    let (p, s) = (&plain.frames[0].lines[0], &shifted.frames[0].lines[0]);
+    assert_eq!(p.baseline, s.baseline);
+    assert!((s.descent - p.descent - 3.0).abs() < 1e-6);
+    assert!((s.glyphs[0].y - p.glyphs[0].y - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn path_text_keeps_the_original_vertical_fit_limit() {
+    // A path's synthetic layout area is not an ordinary text frame: admitting a
+    // second line would paint both lines on the same path, regardless of leading.
+    for separator in ['\n', designcraft_doc::story::FORCED_LINE_BREAK] {
+        for leading in [8.0, 10.0] {
+            let text = format!("HELLO{separator}WORLD");
+            let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+            let it = d.item_mut(fid).unwrap();
+            it.shape = designcraft_doc::Shape::Path;
+            it.path = designcraft_geom::shapes::line(Point::ZERO, Point::new(200.0, 0.0));
+            it.text_frame_mut().unwrap().options.path =
+                Some(designcraft_doc::PathType { start: 0.0, end: None, flip: false, align: designcraft_doc::PathAlign::Baseline });
+            d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+                f.over.font_family = Some("Source Serif 4".into());
+                f.over.size = Some(20.0);
+                f.over.leading = Some(designcraft_doc::Leading::Points(leading));
+            });
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert_eq!(cs.line_count(), 1, "{separator:?}, leading {leading}");
+            assert_eq!(cs.overset_at, Some("HELLO".len() + separator.len_utf8()));
+        }
+    }
+}
+
+/// A path whose length is NaN (a NaN point from a damaged file) composes without panicking on the
+/// end bracket's clamp.
+#[test]
+fn path_text_with_a_nan_length_composes() {
+    let (mut d, sid, fid) = doc_with("HELLO", Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+    let it = d.item_mut(fid).unwrap();
+    it.shape = designcraft_doc::Shape::Path;
+    it.path = designcraft_geom::shapes::line(Point::ZERO, Point::new(f64::NAN, 0.0));
+    it.text_frame_mut().unwrap().options.path =
+        Some(designcraft_doc::PathType { start: 0.0, end: Some(50.0), flip: false, align: designcraft_doc::PathAlign::Baseline });
+    let _ = compose_story(&d, sid, &ComposeOptions::default());
+}
+
+fn two_keep_frames(text: &str) -> (Document, StoryId, ItemId, ItemId) {
+    let (mut d, sid, first) = baseline_fit_doc(text, 48.0);
+    d.item_mut(first).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 75.0, 48.0));
+    let lid = d.default_layer();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 0.0, 210.0, 69.0), lid, "", ParaFormat::default()).unwrap();
+    let options = d.item(first).unwrap().text_frame().unwrap().options.clone();
+    d.item_mut(second).unwrap().text_frame_mut().unwrap().options = options;
+    d.thread(first, second).unwrap();
+    (d, sid, first, second)
+}
+
+#[test]
+fn keep_chain_spanning_frames_does_not_empty_its_top_column() {
+    let a = "One\u{2028}Two\u{2028}Three\u{2028}Four\u{2028}Five\u{2028}Six";
+    let b = "Seven\u{2028}Eight\u{2028}Nine\u{2028}Ten";
+    let text = format!("{a}\n{b}\nEnd");
+    let (mut d, sid, first, second) = two_keep_frames(&text);
+    let paras = &mut d.story_mut(sid).unwrap().paras;
+    paras[0].para.keep_with_next = Some(2);
+    paras[0].para.space_after = Some(2.0);
+    paras[1].para.keep_with_next = Some(2);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // The keep chain cannot fit in either column. Fall back to flowing it, rather
+    // than moving a paragraph already at a column top and throwing that column away.
+    assert_eq!(cs.frame(first).unwrap().lines.len(), 4);
+    assert_eq!(cs.frame(second).unwrap().lines.len(), 6);
+    assert_eq!(cs.overset_at, Some(a.len() + b.len() + 2));
+}
+
+#[test]
+fn satisfiable_keep_chain_still_moves_together_to_the_next_frame() {
+    let text = "One\u{2028}Two\nHeading\nSubheading\nBody";
+    let (mut d, sid, first, second) = two_keep_frames(text);
+    let paras = &mut d.story_mut(sid).unwrap().paras;
+    paras[1].para.keep_with_next = Some(1);
+    paras[2].para.keep_with_next = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frame(first).unwrap().lines.len(), 2);
+    assert_eq!(cs.frame(second).unwrap().lines.iter().map(|l| l.para).collect::<Vec<_>>(), [1, 2, 3]);
 }
 
 /// OS/2 field offsets: sTypoAscender, sTypoDescender, the high half of ulCodePageRange1, sxHeight,
@@ -2481,6 +3527,59 @@ fn drop_cap_spans_lines_and_indents_them() {
 }
 
 #[test]
+fn tab_beside_a_drop_cap_is_measured_from_the_drop_cap() {
+    // The line breaker measures a tab from where the line starts, which beside a drop cap is
+    // after the drop cap: measured from the frame edge, the tab looks wider and the line breaks
+    // a word early.
+    let stop = designcraft_doc::TabStop { position: 100.0, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
+    let para = ParaAttrs { tabs: Some(vec![stop]), hyphenate: Some(false), ..drop_cap(3, 1) };
+    let text = format!("Wort\t{LOREM}");
+    let (d, sid, _) = drop_doc(&text, para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let space = |g: &PlacedGlyph| g.len > 0 && text.get(g.byte..).and_then(|s| s.chars().next()).is_some_and(char::is_whitespace);
+    let right = lines[0].glyphs.iter().filter(|g| g.visible && !space(g)).map(|g| g.x + g.adv).fold(0.0, f64::max);
+    assert!(right <= lines[0].x1 + 0.01, "line 1 ends at {right}, past {}", lines[0].x1);
+    let word: f64 = lines[1].glyphs.iter().filter(|g| g.len > 0).take_while(|g| !space(g)).map(|g| g.adv).sum();
+    assert!(right + word + 4.0 > lines[0].x1, "line 2's first word ({word} pt) fits after line 1's end at {right} (edge {})", lines[0].x1);
+}
+
+#[test]
+fn warichu_on_a_drop_cap_line_leaves_the_drop_cap_alone() {
+    let text = format!("WABCDEFGH {LOREM}");
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(3, 1));
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let plain_dc = plain.frames[0].lines[0].glyphs[0].clone();
+    // A plain drop cap line has no stacked rows: one selection band, caret on the line.
+    let pl = &plain.frames[0].lines[0];
+    assert_eq!(highlight_quads(pl, 0, 12, false).len(), 1);
+    assert_eq!(caret(&plain, 1).map(|c| (c.2, c.3)), Some((pl.baseline, pl.ascent)));
+    d.story_mut(sid).unwrap().format_chars(1..9, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let dc = &l.glyphs[0];
+    assert_eq!((dc.byte, dc.x, dc.y, dc.sy), (0, plain_dc.x, plain_dc.y, plain_dc.sy), "the drop cap is not part of the note");
+    let at = |byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).unwrap();
+    let (top, bot, after) = (at(1), at(5), at(10));
+    assert!(bot.y - top.y > 1.0, "the note is stacked in two rows");
+    assert!(top.x >= dc.x + dc.adv - 1e-6, "the note starts after the drop cap");
+    assert!((after.x - (at(8).x + at(8).adv + at(9).adv)).abs() < 1e-3, "the line closes up after the note");
+    // The caret: in the drop cap as tall as it, on a note row that row's baseline, after the
+    // note the parent line's.
+    let dc_box = l.drop_cap.unwrap();
+    assert_eq!(caret(&cs, 0).map(|c| c.2), Some(dc_box.baseline));
+    assert!((caret(&cs, 1).unwrap().2 - (l.baseline + top.y)).abs() < 1e-6);
+    assert_eq!(caret(&cs, 10).map(|c| (c.2, c.3)), Some((l.baseline, l.ascent)));
+    let click = |g: &PlacedGlyph| hit(&cs, 0, designcraft_geom::Point::new(g.x + g.adv * 0.25, l.baseline + g.y)).unwrap();
+    assert_eq!((click(top), click(bot), click(after)), (1, 5, 10));
+    // Selecting the drop cap and the note: the drop cap's band and one per row.
+    assert_eq!(highlight_quads(l, 0, 9, false).len(), 3);
+}
+
+#[test]
 fn drop_cap_of_two_characters_as_a_local_override() {
     let (d, sid, _) = drop_doc(LOREM, drop_cap(2, 2));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
@@ -2759,6 +3858,37 @@ fn right_to_left_drop_cap_sets_its_tabs_from_the_right_edge() {
     assert!(right <= 260.0 + 1e-6 && right > 255.0, "text ends at {right}");
 }
 
+/// The cap's point size scales it, as in InDesign: at the body's size (10 pt) it fills its lines
+/// exactly; set larger or smaller it is scaled by its size over the body's, keeping its baseline,
+/// so it rises above the first line (or falls short of it). The body's lines don't move, and the
+/// cap's box (highlight, caret) reaches the top of a cap that rises above its line.
+#[test]
+fn drop_cap_scales_with_its_point_size() {
+    let set = |size: f64| {
+        let (mut d, sid, _) = drop_doc(&[LOREM; 2].join(" "), drop_cap(3, 1));
+        d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(size));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).into_iter().cloned().collect::<Vec<Line>>()
+    };
+    let base = set(10.0);
+    let (b0, b2) = (base[0].baseline, base[2].baseline);
+    let body = base[0].glyphs.iter().find(|g| g.byte == 1).unwrap();
+    let fitted = cap_of(&base[0].glyphs[0]);
+    assert!((b2 - fitted - (b0 - cap_of(body))).abs() < 0.01, "at the body's size the cap fills its lines");
+    for (size, scale) in [(15.0, 1.5), (7.5, 0.75)] {
+        let l = set(size);
+        let dc = &l[0].glyphs[0];
+        for (a, b) in l.iter().zip(&base) {
+            assert!((a.baseline - b.baseline).abs() < 1e-6, "{size} pt: the lines stay where they were");
+        }
+        assert!((l[0].baseline + dc.y - b2).abs() < 1e-6, "{size} pt: the cap sits on line 3's baseline");
+        assert!((cap_of(dc) - fitted * scale).abs() < 0.01, "{size} pt: cap height {} vs {}", cap_of(dc), fitted * scale);
+        let top = (l[0].baseline - l[0].ascent).min(b2 - cap_of(dc));
+        assert!((l[0].drop_cap.unwrap().rect.y0 - top).abs() < 1e-6, "{size} pt: the box starts at the line's or the cap's top");
+    }
+    assert!(b2 - fitted * 1.5 < b0 - base[0].ascent, "a 15 pt cap rises above the first line");
+}
+
 /// A rule in Text Color takes the colour of the paragraph's text: the first character's for the
 /// rule above, the last character's for the rule below. A swatch colour is used as is.
 #[test]
@@ -2843,6 +3973,107 @@ fn caret_follows_spaces_typed_at_the_end() {
         let mid = text.find("  ").unwrap() + 1;
         assert!(caret(&cs, mid).unwrap().1 > l0.end_x, "between the trailing spaces");
     }
+}
+
+#[test]
+fn colour_change_keeps_kerning_and_ligatures_keep_colour() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 200.0), lid, "ayay", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.font_style = Some("Bold".into()));
+    let line = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].clone();
+    let xs = |l: &Line| l.glyphs.iter().map(|g| (g.x, g.adv)).collect::<Vec<_>>();
+    let kerned = line(&d);
+    // The font kerns "ay" (otherwise this test proves nothing).
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::None));
+    assert_ne!(xs(&line(&d)), xs(&kerned), "Source Serif 4 Bold kerns a–y");
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::Metrics));
+    // Colour the first "a": positions are unchanged, only its style differs.
+    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.fill = Some("Cyan".into()));
+    let coloured = line(&d);
+    assert_eq!(xs(&coloured), xs(&kerned), "a colour change must not change spacing");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let fill = |l: &Line, i: usize| cs.styles[l.glyphs[i].style as usize].fill.clone();
+    assert_eq!(fill(&coloured, 0), "Cyan");
+    assert_ne!(fill(&coloured, 1), "Cyan");
+
+    // A ligature never swallows a differently coloured letter: the "i" of "fi" keeps its colour.
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 300.0, 400.0, 400.0), lid, "fifi", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.fill = Some("Cyan".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let at = |b: usize| l.glyphs.iter().find(|g| g.len > 0 && g.byte <= b && b < g.byte + g.len).map(|g| cs.styles[g.style as usize].fill.clone());
+    assert_eq!(at(1).as_deref(), Some("Cyan"));
+    assert_ne!(at(2).as_deref(), Some("Cyan"));
+}
+
+/// The emphasis mark drawn over the text only paints: a change of kenten character keeps the
+/// kerning across it.
+#[test]
+fn kenten_character_change_keeps_kerning() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 200.0), lid, "ayay", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| {
+        f.over.font_style = Some("Bold".into());
+        f.over.kenten = Some(true);
+    });
+    let xs = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().filter(|g| g.len > 0).map(|g| (g.byte, g.x, g.adv)).collect::<Vec<_>>()
+    };
+    let kerned = xs(&d);
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::None));
+    assert_ne!(xs(&d), kerned, "Source Serif 4 Bold kerns a–y");
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::Metrics));
+    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.kenten_character = Some("●".into()));
+    assert_eq!(xs(&d), kerned, "a kenten character change must not change spacing");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let mark = |b: usize| {
+        cs.frames[0].lines[0]
+            .glyphs
+            .iter()
+            .find(|g| g.len > 0 && g.byte == b)
+            .and_then(|g| cs.styles[g.style as usize].kenten_mark.as_ref().map(|m| m.text.clone()))
+    };
+    // The default kind (sesame dot) draws a stored character, else its own mark.
+    assert_eq!((mark(0).as_deref(), mark(1).as_deref()), (Some("●"), Some("\u{FE45}")));
+}
+
+#[test]
+fn empty_paragraph_takes_its_marks_format() {
+    // Paragraph style text is 12 pt (auto leading 14.4); every character, including the empty
+    // paragraph's mark, is 6 pt with 8 pt leading: the empty line must advance 8, not 14.4.
+    let text = "One\n\nTwo";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 200.0, 200.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.size = Some(6.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(8.0));
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 3);
+    assert!((lines[1].baseline - lines[0].baseline - 8.0).abs() < 1e-6, "{} {}", lines[0].baseline, lines[1].baseline);
+    assert!((lines[2].baseline - lines[1].baseline - 8.0).abs() < 1e-6, "{} {}", lines[1].baseline, lines[2].baseline);
+}
+
+#[test]
+fn empty_paragraph_uses_its_own_mark_not_the_previous_one() {
+    // "One\n" is 20 pt; the empty paragraph's mark (byte 4) and "Two" are 6 pt with 8 pt leading.
+    // The format run boundary sits exactly at the empty paragraph's start: its line must take the
+    // 8 pt leading of its own mark, not the previous paragraph's 20 pt (auto 24) mark.
+    let text = "One\n\nTwo";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 200.0, 200.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    st.format_chars(0..4, |f| f.over.size = Some(20.0));
+    st.format_chars(4..text.len(), |f| {
+        f.over.size = Some(6.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(8.0));
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 3);
+    assert!((lines[1].baseline - lines[0].baseline - 8.0).abs() < 1e-6, "{} {}", lines[0].baseline, lines[1].baseline);
 }
 
 #[test]
@@ -3000,38 +4231,149 @@ fn cjk_custom_kinsoku_disables_selected_breaks() {
     assert_eq!(all_lines(&cs).len(), 1);
 }
 
+fn japanese() -> ParaAttrs {
+    ParaAttrs { composer: Some(Composer::Japanese), ..Default::default() }
+}
+
 #[test]
 fn cjk_center_leading_measures_em_centers_across_different_sizes() {
-    let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
-    d.story_mut(sid).unwrap().format_chars(0..3, |f| {
-        f.over.leading = Some(designcraft_doc::Leading::Points(30.0));
-        f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::Center);
-    });
-    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let lines = all_lines(&cs);
+    let lines_with = |para: ParaAttrs| {
+        let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        d.story_mut(sid).unwrap().format_chars(0..3, |f| {
+            f.over.leading = Some(designcraft_doc::Leading::Points(30.0));
+            f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::Center);
+        });
+        d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).into_iter().cloned().collect::<Vec<_>>()
+    };
+    let lines = lines_with(japanese());
     assert_eq!(lines.len(), 2);
     let center = |l: &Line| {
         let g = &l.glyphs[0];
         let (a, b) = g.face.vertical_metrics();
         l.baseline + (b - a) / (2.0 * (a + b)) * g.face.units_per_em() * g.sy
     };
-    assert!((center(lines[1]) - center(lines[0]) - 30.0).abs() < 1e-6);
+    assert!((center(&lines[1]) - center(&lines[0]) - 30.0).abs() < 1e-6);
     assert!((lines[1].baseline - lines[0].baseline - 30.0).abs() > 0.1);
+    // The other composers set lines baseline to baseline.
+    let lines = lines_with(ParaAttrs::default());
+    assert!((lines[1].baseline - lines[0].baseline - 30.0).abs() < 1e-6);
+}
+
+#[test]
+fn cjk_aki_below_sets_the_upper_lines_leading_below_it() {
+    let lines_with = |para: ParaAttrs| {
+        let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..3, |f| f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::AkiBelow));
+        st.format_chars(0..2, |f| {
+            f.over.size = Some(24.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(40.0));
+        });
+        st.format_chars(2..3, |f| {
+            f.over.size = Some(12.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(20.0));
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).into_iter().cloned().collect::<Vec<_>>()
+    };
+    let lines = lines_with(japanese());
+    assert_eq!(lines.len(), 2);
+    // Aki Below measures from the em box tops: the lower line's sits the upper line's leading
+    // below the upper line's.
+    let em_top = |l: &Line| {
+        let g = &l.glyphs[0];
+        let (a, b) = g.face.vertical_metrics();
+        l.baseline - a / (a + b) * g.face.units_per_em() * g.sy
+    };
+    let gap = em_top(&lines[1]) - em_top(&lines[0]);
+    assert!((gap - 40.0).abs() < 1e-6, "{gap}");
+    // The other composers advance by the lower line's leading, baseline to baseline.
+    let lines = lines_with(ParaAttrs::default());
+    assert!((lines[1].baseline - lines[0].baseline - 20.0).abs() < 1e-6);
+}
+
+#[test]
+fn cjk_aki_below_measures_em_tops_and_aki_above_em_bottoms() {
+    use designcraft_doc::cjk::LeadingModel;
+    for (model, top) in [(LeadingModel::AkiBelow, true), (LeadingModel::AkiAbove, false)] {
+        let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), japanese());
+        d.story_mut(sid).unwrap().format_chars(0..3, |f| {
+            f.over.leading = Some(designcraft_doc::Leading::Points(30.0));
+            f.over.leading_model = Some(model);
+        });
+        d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 2);
+        // The em box edge below the baseline (y down): its top, or its bottom one em lower.
+        let edge = |l: &Line| {
+            let g = &l.glyphs[0];
+            let (a, b) = g.face.vertical_metrics();
+            let em = g.face.units_per_em() * g.sy;
+            let em_top = l.baseline - em * a / (a + b);
+            if top { em_top } else { em_top + em }
+        };
+        assert!((edge(lines[1]) - edge(lines[0]) - 30.0).abs() < 1e-6, "{model:?}");
+    }
 }
 
 #[test]
 fn cjk_em_center_alignment_moves_small_characters() {
-    let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
-    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
-    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.character_alignment = Some(designcraft_doc::cjk::CharacterAlignment::EmCenter));
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let line = &cs.frames[0].lines[0];
+    let line_with = |para: ParaAttrs| {
+        let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
+        d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.character_alignment = Some(designcraft_doc::cjk::CharacterAlignment::EmCenter));
+        compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].clone()
+    };
+    let line = line_with(japanese());
+    // Em box centre (y down): the font's BASE em box, else 0.88/-0.12 em.
     let center = |g: &PlacedGlyph| {
-        let (a, b) = g.face.vertical_metrics();
-        g.y + (b - a) / (2.0 * (a + b)) * g.face.units_per_em() * g.sy
+        let upem = g.face.units_per_em();
+        let (top, bottom) = g.face.declared_em_box().unwrap_or((upem * 0.88, upem * -0.12));
+        g.y - (top + bottom) / 2.0 * g.sy
     };
     assert!((center(&line.glyphs[0]) - center(&line.glyphs[1])).abs() < 1e-6);
+    // The other composers keep every character on the baseline.
+    let line = line_with(ParaAttrs::default());
+    assert!(line.glyphs.iter().all(|g| g.y.abs() < 1e-9), "{:?}", line.glyphs.iter().map(|g| g.y).collect::<Vec<_>>());
+}
+
+#[test]
+fn smaller_cjk_run_aligns_to_the_line_em_box_centre() {
+    use designcraft_doc::cjk::CharacterAlignment;
+    let text = "Ab 甲乙 cd";
+    let run = "Ab ".len().."Ab 甲乙".len();
+    // Em box centre (y down) of a placed glyph: its font's BASE em box, else 0.88/-0.12 em.
+    let centre = |l: &Line, g: &PlacedGlyph| {
+        let upem = g.face.units_per_em();
+        let (top, bottom) = g.face.declared_em_box().unwrap_or((upem * 0.88, upem * -0.12));
+        l.baseline + g.y - (top + bottom) / 2.0 * g.sy
+    };
+    for alignment in [CharacterAlignment::EmCenter, CharacterAlignment::Baseline] {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), japanese());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.size = Some(10.0);
+            f.over.character_alignment = Some(alignment);
+        });
+        d.story_mut(sid).unwrap().format_chars(run.clone(), |f| f.over.size = Some(6.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = &cs.frames[0].lines[0];
+        let latin = &line.glyphs[0];
+        let cjk: Vec<&PlacedGlyph> = line.glyphs.iter().filter(|g| run.contains(&g.byte)).collect();
+        assert_eq!(cjk.len(), 2);
+        assert!(latin.y.abs() < 1e-9);
+        for g in cjk {
+            match alignment {
+                CharacterAlignment::EmCenter => {
+                    assert!((centre(line, g) - centre(line, latin)).abs() < 0.01, "{} vs {}", centre(line, g), centre(line, latin));
+                    assert!(g.y < -1.0, "a 6 pt run rises in a 10 pt line: {}", g.y);
+                }
+                _ => assert!(g.y.abs() < 1e-9, "Roman baseline keeps the run on the baseline: {}", g.y),
+            }
+        }
+    }
 }
 
 #[test]
@@ -3386,6 +4728,32 @@ fn missing_glyphs_are_the_fonts_box_unless_fallback_is_on() {
     let (face, gid, _) = glyph_at(&d, 1);
     assert_ne!(face.family, designcraft_fonts::DEFAULT_FAMILY);
     assert_ne!(gid, 0, "a fallback font draws it");
+}
+
+/// A missing font's substitute draws what it lacks from fallback fonts whatever the setting, also
+/// in text shaped as one piece across a colour change.
+#[test]
+fn a_missing_fonts_substitute_takes_fallback_fonts() {
+    use designcraft_fonts::testing::font_with;
+    designcraft_fonts::FontDb::global().add_font(font_with("DC Test Missing Glyph Helper", &['語']).unwrap());
+    let text = "a語b語";
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+    {
+        let s = d.story_mut(sid).unwrap();
+        s.format_chars(0..text.len(), |f| {
+            f.over.language = Some("Japanese".into());
+            f.over.font_family = Some("DC Test No Such Family".into());
+        });
+        s.format_chars("a語".len()..text.len(), |f| f.over.fill = Some("Red".into()));
+    }
+    assert!(!d.settings.glyph_fallback);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let glyphs: Vec<&PlacedGlyph> = all_lines(&cs).into_iter().flat_map(|l| l.glyphs.iter()).filter(|g| text[g.byte..].starts_with('語')).collect();
+    assert_eq!(glyphs.len(), 2);
+    for g in glyphs {
+        assert_ne!(g.face.family, designcraft_fonts::DEFAULT_FAMILY, "byte {}", g.byte);
+        assert_ne!(g.gid, 0, "byte {}: a fallback font draws it", g.byte);
+    }
 }
 
 #[test]
@@ -3788,153 +5156,534 @@ fn drop_cap_in_a_document_font_aligns_its_left_edge() {
     let _ = std::fs::remove_dir_all(&folder);
 }
 
-/// Lines of `text` set in a frame `width` wide, with `tracking` on every character.
-fn tracked_lines(text: &str, width: f64, para: ParaAttrs, tracking: f64) -> Vec<Line> {
-    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 4000.0), para);
-    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.tracking = Some(tracking));
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    assert!(!cs.is_overset(), "overset at width {width}");
-    all_lines(&cs).into_iter().cloned().collect()
+#[test]
+fn embedded_text_frames_compose_and_footnotes_retain_object_sources() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    let (mut d, body, _) = doc_with("Body", Rect::new(20.0, 20.0, 400.0, 600.0), ParaAttrs::default());
+    let (fid, child) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 40.0), d.default_layer(), "Embedded", ParaFormat::default()).unwrap();
+    let item = d.item(fid).unwrap().clone();
+    d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+    let story = d.story_mut(body).unwrap();
+    story.insert_note(4, "Note", ParaFormat::default());
+    Arc::make_mut(&mut story.notes[0]).text.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+    d.check().unwrap();
+    let child_cs = compose_story(&d, child, &ComposeOptions::default());
+    assert!(!child_cs.is_overset());
+    assert!(!child_cs.frame(fid).unwrap().lines.is_empty());
+    let cs = compose_story(&d, body, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let note = &cs.frames[0].notes[0];
+    assert_eq!(note.text.story, StoryId(0));
+    assert_eq!(note.text.frames[0].objects[0].object.item.id, fid);
+
+    let cache = Cache::new();
+    assert!(!cache.get(&d, child, None).is_overset());
+    let note = Arc::make_mut(&mut d.story_mut(body).unwrap().notes[0]);
+    let anchor = Arc::make_mut(&mut note.text.objects[0]);
+    let original_path = anchor.item.path.clone();
+    anchor.item.path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 80.0, 1.0));
+    assert!(cache.get(&d, child, None).is_overset(), "embedded frame geometry must invalidate cached composition");
+    Arc::make_mut(&mut Arc::make_mut(&mut d.story_mut(body).unwrap().notes[0]).text.objects[0]).item.path = original_path;
+
+    // A reference back into the owning story must be rejected before rendering.
+    let mut cycle = d.anchored_item(fid).unwrap().clone();
+    cycle.id = ItemId(d.alloc());
+    cycle.text_frame_mut().unwrap().story = body;
+    d.story_mut(body).unwrap().frames.push(cycle.id);
+    d.story_mut(child).unwrap().insert_object(0, AnchoredObject::new(cycle, AnchorPosition::Inline { y_offset: 0.0 }));
+    assert!(d.check().unwrap_err().to_string().contains("cyclic"));
 }
 
 #[test]
-fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
-    use designcraft_doc::Composer;
-    let word = "n".repeat(60);
-    let long = format!("Then {word} and on");
-    for tracking in [0.0, 740.0] {
-        // Natural advances, from one unbroken line.
-        let natural: HashMap<usize, f64> =
-            tracked_lines(&long, 1e5, ParaAttrs::default(), tracking)[0].glyphs.iter().map(|g| (g.byte, g.adv)).collect();
-        for composer in [Composer::Paragraph, Composer::SingleLine] {
-            for align in [Align::Left, Align::LeftJustified] {
-                let para = ParaAttrs { composer: Some(composer), align: Some(align), hyphenate: Some(false), ..Default::default() };
-                let lines = tracked_lines(&long, 72.0, para, tracking);
-                let what = format!("{composer:?} {align:?} tracking {tracking}");
-                assert!(lines.len() >= 4, "{what}: {} lines", lines.len());
-                for l in &lines {
-                    let ink: Vec<_> = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).collect();
-                    let right = ink.iter().map(|g| g.x + g.adv.min(natural[&g.byte])).fold(l.x0, f64::max);
-                    assert!(l.end_x <= l.x1 + 0.02 && right <= l.x1 + 0.02, "{what}: line {:?} ends at {} past {}", l.range, l.end_x, l.x1);
-                    for w in ink.windows(2) {
-                        assert!(w[1].x >= w[0].x + natural[&w[0].byte] - 1e-6, "{what}: glyphs overlap at {}", w[1].byte);
-                    }
-                }
-            }
-        }
-    }
+fn inline_object_only_line_does_not_reserve_phantom_font_descent() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, Item, Shape};
+    let (mut d, sid, _) = doc_with("", Rect::new(0.0, 0.0, 10.0, 15.0), ParaAttrs::default());
+    let item = Item::new(ItemId(d.alloc()), d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 7.0, 9.0)));
+    d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 5.0 }));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].objects.len(), 1);
+    assert_eq!(cs.frames[0].lines[0].descent, 0.0);
+    // Genuine geometric overflow must still be reported.
+    d.story_mut(sid).unwrap().objects[0] =
+        Arc::new(AnchoredObject::new(cs.frames[0].objects[0].object.item.clone(), AnchorPosition::Inline { y_offset: 7.0 }));
+    assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset());
 }
 
 #[test]
-fn a_line_that_exactly_fills_the_measure_fits() {
-    use designcraft_doc::Composer;
-    let text = "#knowyourplastic";
-    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
-    // The measure a rounding error short of the natural width.
-    let width = one.end_x - one.x0 - 0.005;
-    for composer in [Composer::Paragraph, Composer::SingleLine] {
-        for align in [Align::Left, Align::LeftJustified] {
-            let para = ParaAttrs { composer: Some(composer), align: Some(align), ..Default::default() };
-            let lines = tracked_lines(text, width, para, 0.0);
-            assert_eq!(lines.len(), 1, "{composer:?} {align:?}: {:?}", lines.iter().map(|l| l.range.clone()).collect::<Vec<_>>());
-        }
-    }
+fn composite_metrics_and_character_mappings_apply_inside_footnotes() {
+    use designcraft_doc::cjk::{CompositeFont, CompositeFontEntry};
+    let (mut d, sid, _) = doc_with("Body", Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+    d.styles_mut().composite_fonts.push(CompositeFont {
+        name: "Mixed".into(),
+        entries: vec![
+            CompositeFontEntry { family: "Source Serif 4".into(), ..Default::default() },
+            CompositeFontEntry {
+                characters: "12".into(),
+                family: "Source Sans 3".into(),
+                relative_size: 0.8,
+                horizontal_scale: 0.9,
+                vertical_scale: 1.1,
+                baseline_shift: 0.1,
+                scale_option: false,
+                ..Default::default()
+            },
+            CompositeFontEntry { characters: "2".into(), family: "Inter".into(), ..Default::default() },
+        ],
+    });
+    let story = d.story_mut(sid).unwrap();
+    story.insert_note(4, "A12", ParaFormat::default());
+    let note = Arc::make_mut(&mut story.notes[0]);
+    note.text.format_chars(0..3, |f| f.over.font_family = Some("CompositeFont/Mixed".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let note = &cs.frames[0].notes[0];
+    let glyphs = &note.text.frames[0].lines[0].glyphs;
+    let a = glyphs.iter().find(|g| g.byte == 0 && g.len > 0).unwrap();
+    let one = glyphs.iter().find(|g| g.byte == 1 && g.len > 0).unwrap();
+    let two = glyphs.iter().find(|g| g.byte == 2 && g.len > 0).unwrap();
+    assert_eq!(a.face.family, "Source Serif 4");
+    assert_eq!(one.face.family, "Source Sans 3");
+    assert_eq!(two.face.family, "Inter");
+    let style = &note.text.styles[one.style as usize];
+    assert!((style.size - 9.6).abs() < 1e-8);
+    assert!(!note.text.styles.iter().any(|s| s.missing_font));
 }
 
 #[test]
-fn justified_line_with_a_tab_justifies_the_text_after_its_last_tab() {
-    // InDesign justifies only the text after a line's last (left) tab; tab stops stay aligned.
-    let stop = |align| designcraft_doc::TabStop { position: 100.0, align, leader: String::new(), align_on: String::new() };
-    let text = "Name\t42 and some words\u{2028}more";
-    let x_of = |l: &Line, byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).map(|g| g.x).unwrap();
-    let left = ParaAttrs { align: Some(Align::LeftJustified), tabs: Some(vec![stop(TabAlign::Left)]), ..Default::default() };
-    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), left.clone());
+fn generated_note_labels_resolve_composite_components_and_keep_one_anchor() {
+    use designcraft_doc::cjk::{CompositeFont, CompositeFontEntry};
+    let (mut d, sid, _) = doc_with("Body", Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+    d.styles_mut().composite_fonts.push(CompositeFont {
+        name: "Generated Mixed".into(),
+        entries: vec![
+            CompositeFontEntry { family: "Source Serif 4".into(), ..Default::default() },
+            CompositeFontEntry { characters: "[]".into(), family: "Inter".into(), relative_size: 0.8, ..Default::default() },
+        ],
+    });
+    d.footnote_options.affix_in = designcraft_doc::notes::AffixIn::Both;
+    d.footnote_options.prefix = "[".into();
+    d.footnote_options.suffix = "]".into();
+    let story = d.story_mut(sid).unwrap();
+    story.insert_note(4, "Note", ParaFormat::default());
+    story.format_chars(4..7, |f| f.over.font_family = Some("Generated Mixed".into()));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let l = all_lines(&cs)[0];
-    assert!((l.end_x - l.x1).abs() < 0.6, "line with a left tab ends at {} not {}", l.end_x, l.x1);
-    assert!((x_of(l, 5) - 100.0).abs() < 0.5, "text after the tab starts at the stop: {}", x_of(l, 5));
-    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs { align: Some(Align::Left), ..left });
-    let ragged = compose_story(&d, sid, &ComposeOptions::default());
-    let r = all_lines(&ragged)[0];
-    for byte in 0..4 {
-        assert!((x_of(l, byte) - x_of(r, byte)).abs() < 1e-6, "text before the tab keeps its natural position");
-    }
-
-    // After a right tab the line stays as set.
-    let right = ParaAttrs { align: Some(Align::LeftJustified), tabs: Some(vec![stop(TabAlign::Right)]), ..Default::default() };
-    let (d, sid, _) = doc_with("Name\t42\u{2028}more", Rect::new(0.0, 0.0, 300.0, 100.0), right);
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let l = all_lines(&cs)[0];
-    assert!((l.end_x - 100.0).abs() < 0.5, "right-tab line ends at its stop: {}", l.end_x);
-
-    // A footnote's number and tab separator: its first line is justified like the others.
-    let (mut d, sid, fid) = doc_with("Body text.", Rect::new(0.0, 0.0, 200.0, 400.0), ParaAttrs::default());
-    let note = ParaFormat { para: ParaAttrs { align: Some(Align::LeftJustified), ..Default::default() }, ..Default::default() };
-    d.story_mut(sid).unwrap().insert_note(4, LOREM, note);
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let n = &cs.frame(fid).unwrap().notes[0];
-    let lines = all_lines(&n.text);
-    assert!(lines.len() > 2);
-    for l in &lines[..lines.len() - 1] {
-        assert!((l.end_x - l.x1).abs() < 0.6, "footnote line ends at {} not {}", l.end_x, l.x1);
-    }
-    assert!((x_of(lines[0], 0) - 36.0).abs() < 0.5, "note text starts at the default tab stop: {}", x_of(lines[0], 0));
+    let glyphs: Vec<_> = cs.frames[0].lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.byte == 4).collect();
+    assert_eq!(glyphs.iter().filter(|g| g.len > 0).count(), 1);
+    assert_eq!(glyphs.iter().map(|g| g.rendered_char).collect::<String>(), "[1]");
+    assert!(glyphs.iter().all(|g| g.gid != 0));
+    assert!(glyphs.iter().filter(|g| matches!(g.rendered_char, '[' | ']')).all(|g| g.face.family == "Inter"));
+    assert_eq!(glyphs.iter().find(|g| g.rendered_char == '1').unwrap().face.family, "Source Serif 4");
+    assert_eq!(cs.frames[0].notes.len(), 1);
 }
 
 #[test]
-fn list_first_line_wraps_at_the_column_edge_after_its_label() {
-    use designcraft_doc::{ListType, TabStop};
-    // A hanging indent (left 18, first line −18): the label sits at the column start, a tab
-    // after it reaches the left indent (an implicit stop when no explicit stop comes first), and
-    // the first line wraps at the same right edge as the others.
-    let right_edge = |l: &Line, source: &str| {
-        let space = |g: &&PlacedGlyph| g.len > 0 && source.get(g.byte..).and_then(|s| s.chars().next()).is_some_and(char::is_whitespace);
-        l.glyphs.iter().filter(|g| g.visible && !space(g)).map(|g| g.x + g.adv).fold(0.0, f64::max)
-    };
-    let text_start = |l: &Line| l.glyphs.iter().find(|g| g.len > 0 && g.visible).map_or(f64::NAN, |g| g.x);
-    let stop = |position: f64| TabStop { position, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
-    let text = format!("{LOREM}\n{LOREM}");
-    // (list, separator, explicit tab stops, where line 0's text starts past the column start:
-    // None = right after the label, wherever that is).
-    let cases = [
-        (ListType::Bullets, "\t", None, Some(18.0)),
-        (ListType::Numbers, "\t", None, Some(18.0)),
-        (ListType::Numbers, "\t", Some(vec![stop(12.0)]), Some(12.0)),
-        (ListType::Numbers, "\t", Some(vec![stop(30.0)]), Some(18.0)),
-        (ListType::Bullets, " ", None, None),
-        (ListType::Numbers, "\u{2003}", None, None),
-    ];
-    for (list, sep, tabs, first_at) in cases {
-        let para = ParaAttrs {
-            list_type: Some(list),
-            list_separator: Some(sep.into()),
-            left_indent: Some(18.0),
-            first_line_indent: Some(-18.0),
-            tabs: tabs.clone(),
+fn generated_note_labels_use_coverage_fallback() {
+    let font = designcraft_fonts::testing::font_with("Generated Label Coverage", &['\u{E888}']).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let (mut d, sid, _) = doc_with("Body", Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+    d.footnote_options.affix_in = designcraft_doc::notes::AffixIn::Both;
+    d.footnote_options.prefix = "\u{E888}".into();
+    d.footnote_options.suffix = "".into();
+    d.settings.glyph_fallback = true;
+    d.story_mut(sid).unwrap().insert_note(4, "Note", ParaFormat::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let glyph = cs.frames[0].lines.iter().flat_map(|l| &l.glyphs).find(|g| g.rendered_char == '\u{E888}').unwrap();
+    assert_ne!(glyph.gid, 0);
+    assert_eq!(glyph.face.family, "Generated Label Coverage");
+}
+
+#[test]
+fn mojikumi_custom_pairs_change_positions_and_breaks_without_font_scaling() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with(
+        "A1A1A1",
+        Rect::new(0.0, 0.0, 55.0, 300.0),
+        ParaAttrs { hyphenate: Some(false), composer: Some(Composer::SingleLine), ..Default::default() },
+    );
+    let before = compose_story(&d, sid, &ComposeOptions::default());
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Synthetic".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![
+            MojikumiAki { target_class: 18, side_class: 25, after: true, minimum: 1.0, desired: 1.0, maximum: 1.0, ..Default::default() },
+            MojikumiAki { target_class: 25, side_class: 18, after: true, minimum: 1.0, desired: 1.0, maximum: 1.0, ..Default::default() },
+        ],
+    });
+    d.story_mut(sid).unwrap().paras[0].para.mojikumi = Some("MojikumiTable/Synthetic".into());
+    let after = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(all_lines(&after).len() > all_lines(&before).len());
+    let a = &all_lines(&after)[0].glyphs;
+    let b = &all_lines(&before)[0].glyphs;
+    assert!((a[1].x - b[1].x - 12.0).abs() < 0.001);
+    assert_eq!(a[0].sx, b[0].sx);
+    assert!(all_lines(&after).iter().all(|l| l.end_x <= l.x1 + 0.01));
+}
+
+#[test]
+fn mojikumi_paragraph_indent_adds_to_paragraph_settings_and_rounds_no_glyphs() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with(
+        "ABC",
+        Rect::new(0.0, 0.0, 200.0, 100.0),
+        ParaAttrs { first_line_indent: Some(7.0), mojikumi: Some("MojikumiTable/Indent".into()), ..Default::default() },
+    );
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Indent".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 18,
+            side_class: 23,
+            after: false,
+            minimum: 2.0,
+            desired: 2.0,
+            maximum: 2.0,
             ..Default::default()
-        };
-        let (d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 300.0, 400.0), para);
-        let cs = compose_story(&d, sid, &ComposeOptions::default());
-        let col = cs.frames[0].columns[0];
-        let lines = &cs.frames[0].lines;
-        let what = format!("{list:?} {sep:?} {tabs:?}");
-        assert!(lines.len() >= 6, "{what}: {} lines", lines.len());
-        for (i, l) in lines.iter().enumerate() {
-            let right = right_edge(l, &text);
-            assert!(right <= col.x1 + 0.01, "{what}: line {i} ends at {right}, past the column's {}", col.x1);
-            let start = text_start(l) - col.x0;
-            if !l.first_in_para {
-                assert!((start - 18.0).abs() < 0.01, "{what}: line {i} text starts at {start}, not the left indent");
-            } else if let Some(at) = first_at {
-                assert!((start - at).abs() < 0.01, "{what}: line {i} text starts at {start}, not {at}");
-            } else {
-                assert!(start > 0.0, "{what}: line {i} text starts at {start}");
-            }
-            if l.first_in_para {
-                assert!(l.glyphs.first().is_some_and(|g| g.len == 0 && (g.x - col.x0).abs() < 0.01), "{what}: the label leads line {i}");
-            }
+        }],
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    assert!((line.glyphs[0].x - 31.0).abs() < 0.001, "{}", line.glyphs[0].x);
+    assert_eq!(line.glyphs.len(), 3);
+}
+
+#[test]
+fn mojikumi_justifies_cjk_without_spaces_and_respects_fixed_spacing() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with(
+        "A1A1",
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+        ParaAttrs { align: Some(Align::FullyJustified), mojikumi: Some("MojikumiTable/Elastic".into()), ..Default::default() },
+    );
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Elastic".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 18,
+            side_class: 25,
+            after: true,
+            minimum: 0.0,
+            desired: 0.0,
+            maximum: 5.0,
+            priority: 1,
+            ..Default::default()
+        }],
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!((all_lines(&cs)[0].end_x - 100.0).abs() < 0.001, "{}", all_lines(&cs)[0].end_x);
+}
+
+#[test]
+fn mojikumi_fixed_pairs_are_not_stretched_by_single_word_justification() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with(
+        "A1A1",
+        Rect::new(0.0, 0.0, 150.0, 100.0),
+        ParaAttrs { align: Some(Align::FullyJustified), mojikumi: Some("MojikumiTable/Fixed".into()), ..Default::default() },
+    );
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Fixed".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: [(18, 25), (25, 18)]
+            .into_iter()
+            .map(|(target_class, side_class)| MojikumiAki {
+                target_class,
+                side_class,
+                after: true,
+                minimum: 0.25,
+                desired: 0.25,
+                maximum: 0.25,
+                ..Default::default()
+            })
+            .collect(),
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    assert!(line.end_x < 100.0, "Fixed spacing was stretched: {}", line.end_x);
+    d.story_mut(sid).unwrap().paras[0].para.align = Some(Align::Left);
+    let ragged = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(line.end_x, all_lines(&ragged)[0].end_x);
+}
+
+#[test]
+fn mojikumi_kinsoku_push_in_and_push_out_select_different_legal_breaks() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let text = "甲乙丙丁戊己庚辛";
+    let (mut d, sid, _) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 45.0, 300.0),
+        ParaAttrs {
+            composer: Some(Composer::SingleLine),
+            mojikumi: Some("MojikumiTable/Compress".into()),
+            kinsoku_type: Some("KinsokuPushInFirst".into()),
+            ..Default::default()
+        },
+    );
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Compress".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 12,
+            side_class: 12,
+            after: true,
+            minimum: 0.0,
+            desired: 1.0,
+            maximum: 1.0,
+            priority: 1,
+            ..Default::default()
+        }],
+    });
+    let inside = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().paras[0].para.kinsoku_type = Some("KinsokuPushOutFirst".into());
+    let outside = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(all_lines(&inside)[0].range.end > all_lines(&outside)[0].range.end);
+    for cs in [&inside, &outside] {
+        assert!(all_lines(cs).iter().all(|l| l.end_x <= l.x1 + 0.01));
+    }
+}
+
+#[test]
+fn mojikumi_priority_and_elastic_line_start_are_used_in_placement() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with("A1B2", Rect::new(0.0, 0.0, 45.0, 100.0), ParaAttrs::default());
+    let natural = compose_story(&d, sid, &ComposeOptions::default());
+    let middle_gap = all_lines(&natural)[0].glyphs[2].x - all_lines(&natural)[0].glyphs[1].x;
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Priority".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![
+            MojikumiAki {
+                target_class: 18,
+                side_class: 25,
+                after: true,
+                minimum: 0.0,
+                desired: 0.0,
+                maximum: 10.0,
+                priority: 1,
+                ..Default::default()
+            },
+            MojikumiAki {
+                target_class: 25,
+                side_class: 18,
+                after: true,
+                minimum: 0.0,
+                desired: 0.0,
+                maximum: 10.0,
+                priority: 2,
+                ..Default::default()
+            },
+        ],
+    });
+    let para = &mut d.story_mut(sid).unwrap().paras[0].para;
+    para.mojikumi = Some("MojikumiTable/Priority".into());
+    para.align = Some(Align::FullyJustified);
+    let result = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&result)[0];
+    assert!((line.end_x - 45.0).abs() < 0.001);
+    assert!((line.glyphs[2].x - line.glyphs[1].x - middle_gap).abs() < 0.001, "Priority 2 was used before priority 1 was exhausted");
+
+    let (mut d, sid, _) = doc_with(
+        "A",
+        Rect::new(0.0, 0.0, 30.0, 100.0),
+        ParaAttrs { mojikumi: Some("MojikumiTable/Start".into()), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Start".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 18,
+            side_class: 23,
+            after: false,
+            minimum: 0.0,
+            desired: 0.0,
+            maximum: 5.0,
+            priority: 1,
+            ..Default::default()
+        }],
+    });
+    let result = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&result)[0];
+    assert!((line.end_x - 30.0).abs() < 0.001);
+    assert!(line.glyphs[0].x > 10.0, "Leading gap must move the first outline too");
+}
+
+#[test]
+fn mojikumi_equal_priority_shares_leading_and_internal_space() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with("A1", Rect::new(0.0, 0.0, 40.0, 100.0), ParaAttrs::default());
+    let natural = compose_story(&d, sid, &ComposeOptions::default());
+    let old = all_lines(&natural)[0];
+    let extra = 40.0 - old.end_x;
+    let old_second = old.glyphs[1].x;
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Shared".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: [(18, 23, false), (18, 25, true)]
+            .into_iter()
+            .map(|(target_class, side_class, after)| MojikumiAki {
+                target_class,
+                side_class,
+                after,
+                maximum: 10.0,
+                priority: 1,
+                ..Default::default()
+            })
+            .collect(),
+    });
+    let para = &mut d.story_mut(sid).unwrap().paras[0].para;
+    para.mojikumi = Some("MojikumiTable/Shared".into());
+    para.align = Some(Align::FullyJustified);
+    let result = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&result)[0];
+    assert!((line.glyphs[0].x - extra / 2.0).abs() < 0.001);
+    assert!((line.glyphs[1].x - old_second - extra).abs() < 0.001);
+    assert!((line.end_x - 40.0).abs() < 0.001);
+}
+
+#[test]
+fn mojikumi_nonfloating_and_leading_only_compression_fit_ragged_lines() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    for composer in [Composer::SingleLine, Composer::Paragraph] {
+        for leading in [true, false] {
+            let (mut d, sid, _) = doc_with(
+                "A",
+                Rect::new(0.0, 0.0, 15.0, 100.0),
+                ParaAttrs { composer: Some(composer), mojikumi: Some("MojikumiTable/Endpoint".into()), ..Default::default() },
+            );
+            Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+                name: "Endpoint".into(),
+                based_on: "SimpChineseDefault".into(),
+                overrides: vec![MojikumiAki {
+                    target_class: 18,
+                    side_class: if leading { 23 } else { 22 },
+                    after: !leading,
+                    minimum: 0.0,
+                    desired: 1.0,
+                    maximum: 1.0,
+                    priority: 1,
+                    does_not_float: true,
+                }],
+            });
+            let result = compose_story(&d, sid, &ComposeOptions::default());
+            let line = all_lines(&result)[0];
+            assert!(line.end_x <= 15.0, "{composer:?}, leading={leading}: {}", line.end_x);
+            assert!(line.glyphs[0].x.abs() < 0.001, "Discrete leading gap must reach its endpoint");
         }
     }
+}
+
+// ---------- span columns ----------
+
+/// A story of `before` body paragraphs, a heading spanning all columns, and `after` body
+/// paragraphs, in a three-column frame. Returns the heading's paragraph index.
+fn span_doc(before: usize, after: usize, rect: Rect) -> (Document, StoryId, ItemId, usize) {
+    let mut paras: Vec<&str> = vec![LOREM; before];
+    paras.push("A heading across the columns");
+    paras.extend(vec![LOREM; after]);
+    let (mut d, sid, fid) = doc_with(&paras.join("\n"), rect, ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 3;
+    d.story_mut(sid).unwrap().paras[before].para.span_columns = Some(SpanColumns::Span(0));
+    (d, sid, fid, before)
+}
+
+/// The line's leading slot (glyph ascent and descent may reach into the neighbouring lines).
+fn line_box(l: &Line) -> (f64, f64) {
+    (l.baseline - 0.75 * l.leading, l.baseline + 0.25 * l.leading)
+}
+
+/// No two lines of a frame share any area.
+fn assert_no_overlap(ft: &FrameText) {
+    for (i, a) in ft.lines.iter().enumerate() {
+        for b in &ft.lines[i + 1..] {
+            let ((at, ab), (bt, bb)) = (line_box(a), line_box(b));
+            let x_overlap = a.x0 < b.x1 - 0.5 && b.x0 < a.x1 - 0.5;
+            let y_overlap = at < bb - 0.5 && bt < ab - 0.5;
+            assert!(
+                !(x_overlap && y_overlap),
+                "lines overlap: para {} col {} y {:.1}..{:.1} and para {} col {} y {:.1}..{:.1}",
+                a.para,
+                a.column,
+                at,
+                ab,
+                b.para,
+                b.column,
+                bt,
+                bb
+            );
+        }
+    }
+}
+
+#[test]
+fn mojikumi_places_custom_gap_after_combining_marks() {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with("A\u{0323}\u{0301}1", Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+    let natural = compose_story(&d, sid, &ComposeOptions::default());
+    let old = &all_lines(&natural)[0].glyphs;
+    assert!(old.len() >= 3, "Exercise a cluster with a separate combining glyph");
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Clusters".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 18,
+            side_class: 25,
+            after: true,
+            minimum: 1.0,
+            desired: 1.0,
+            maximum: 1.0,
+            ..Default::default()
+        }],
+    });
+    d.story_mut(sid).unwrap().paras[0].para.mojikumi = Some("MojikumiTable/Clusters".into());
+    let result = compose_story(&d, sid, &ComposeOptions::default());
+    let new = &all_lines(&result)[0].glyphs;
+    assert_eq!(new.len(), old.len());
+    for (before, after) in old.iter().zip(new) {
+        let expected = if before.rendered_char == '1' { 12.0 } else { 0.0 };
+        assert!((after.x - before.x - expected).abs() < 0.001, "Glyph {:?} moved incorrectly", before.rendered_char);
+    }
+}
+
+#[test]
+fn mojikumi_does_not_restore_fullwidth_blanks_to_narrow_tracked_punctuation() {
+    let family = "Mojikumi Narrow Body";
+    let font = designcraft_fonts::testing::font_mapping(family, &[('（', 'i'), ('A', 'A')]).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let (mut d, sid, _) = doc_with("（A", Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0.."（A".len(), |f| {
+        f.over.font_family = Some(family.into());
+        f.over.tracking = Some(1000.0);
+    });
+    let natural = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().paras[0].para.mojikumi = Some("SimpChineseDefault".into());
+    let result = compose_story(&d, sid, &ComposeOptions::default());
+    for (a, b) in all_lines(&natural)[0].glyphs.iter().zip(&all_lines(&result)[0].glyphs) {
+        assert!((a.x - b.x).abs() < 0.001);
+        assert!((a.adv - b.adv).abs() < 0.001);
+    }
+}
+
+#[test]
+fn mojikumi_one_em_line_end_set_sets_closing_punctuation_full_width_at_line_end() {
+    let family = "Mojikumi Full Stop";
+    let font = designcraft_fonts::testing::font_mapping(family, &[('（', '‰'), ('一', '‰'), ('。', '‰')]).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let text = "（一。";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(family.into()));
+    // Advances of the opening bracket at line start and the full stop at line end.
+    let mut edges = |set: &str| {
+        d.story_mut(sid).unwrap().paras[0].para.mojikumi = Some(set.into());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = all_lines(&cs)[0];
+        let adv = |c| line.glyphs.iter().find(|g| g.rendered_char == c).map(|g| (g.adv, g.face.units_per_em() * g.sx)).unwrap();
+        (adv('（').0, adv('。').0, adv('。').1)
+    };
+    let (open, stop, em) = edges("Nothing");
+    let half = edges("LineEndAllOneHalfEmEnum");
+    let one = edges("LineEndAllOneEmEnum");
+    assert!((open - half.0 - em * 0.5).abs() < 0.01 && (stop - half.1 - em * 0.5).abs() < 0.01, "half-em set: {half:?} of {open}/{stop}");
+    assert!((open - one.0 - em * 0.5).abs() < 0.01 && (stop - one.1).abs() < 0.01, "one-em set: {one:?} of {open}/{stop}");
 }
 
 fn ruled(text: &str, rect: Rect, columns: u32, edit: impl FnOnce(&mut Document, StoryId)) -> (Document, ItemId, Vec<Rect>) {
@@ -4054,48 +5803,6 @@ fn column_rules_take_their_offset_insets_and_tint() {
     assert!(rules.is_empty(), "{rules:?}");
 }
 
-// ---------- span columns ----------
-
-/// A story of `before` body paragraphs, a heading spanning all columns, and `after` body
-/// paragraphs, in a three-column frame. Returns the heading's paragraph index.
-fn span_doc(before: usize, after: usize, rect: Rect) -> (Document, StoryId, ItemId, usize) {
-    let mut paras: Vec<&str> = vec![LOREM; before];
-    paras.push("A heading across the columns");
-    paras.extend(vec![LOREM; after]);
-    let (mut d, sid, fid) = doc_with(&paras.join("\n"), rect, ParaAttrs::default());
-    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 3;
-    d.story_mut(sid).unwrap().paras[before].para.span_columns = Some(SpanColumns::Span(0));
-    (d, sid, fid, before)
-}
-
-/// The line's leading slot (glyph ascent and descent may reach into the neighbouring lines).
-fn line_box(l: &Line) -> (f64, f64) {
-    (l.baseline - 0.75 * l.leading, l.baseline + 0.25 * l.leading)
-}
-
-/// No two lines of a frame share any area.
-fn assert_no_overlap(ft: &FrameText) {
-    for (i, a) in ft.lines.iter().enumerate() {
-        for b in &ft.lines[i + 1..] {
-            let ((at, ab), (bt, bb)) = (line_box(a), line_box(b));
-            let x_overlap = a.x0 < b.x1 - 0.5 && b.x0 < a.x1 - 0.5;
-            let y_overlap = at < bb - 0.5 && bt < ab - 0.5;
-            assert!(
-                !(x_overlap && y_overlap),
-                "lines overlap: para {} col {} y {:.1}..{:.1} and para {} col {} y {:.1}..{:.1}",
-                a.para,
-                a.column,
-                at,
-                ab,
-                b.para,
-                b.column,
-                bt,
-                bb
-            );
-        }
-    }
-}
-
 /// The heading spans the frame; text before it sits above it and text after it below it.
 fn assert_span_layout(ft: &FrameText, h: usize) {
     let heading: Vec<&Line> = ft.lines.iter().filter(|l| l.para == h).collect();
@@ -4208,6 +5915,225 @@ fn spanning_paragraph_in_rtl_and_vertical_frames() {
     assert!(!cs.frames[0].lines.is_empty());
     assert_no_overlap(&cs.frames[0]);
     assert!(cs.frames[0].lines.iter().any(|l| l.para == h));
+}
+
+/// A heading spanning the columns mid-frame: text above it is balanced over the columns, text
+/// after it flows below it, and each gutter's rule stops above the heading and resumes below it.
+#[test]
+fn column_rules_break_around_a_spanning_paragraph_between_bands() {
+    let (mut d, sid, fid, h) = span_doc(2, 4, Rect::new(0.0, 0.0, 450.0, 700.0));
+    {
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.column_rule = true;
+        o.column_rule_weight = 1.0;
+        o.column_rule_color = "[Black]".into();
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    let span: Vec<&Line> = ft.lines.iter().filter(|l| l.para == h).collect();
+    assert!(!span.is_empty());
+    let top = span.iter().map(|l| l.baseline - l.ascent).fold(f64::INFINITY, f64::min);
+    let bottom = span.iter().map(|l| l.baseline + l.descent).fold(f64::NEG_INFINITY, f64::max);
+    assert!(ft.lines.iter().any(|l| l.para < h), "text above the heading");
+    assert!(ft.lines.iter().any(|l| l.para > h && l.column > 0 && l.baseline > bottom), "text after the heading flows below it");
+    let rules: Vec<Rect> = ft.decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect).collect();
+    let mut gutters: Vec<f64> = rules.iter().map(|r| r.center().x).collect();
+    gutters.sort_by(f64::total_cmp);
+    gutters.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    assert_eq!(gutters.len(), 2, "{rules:?}");
+    for x in gutters {
+        let here: Vec<&Rect> = rules.iter().filter(|r| (r.center().x - x).abs() < 1e-6).collect();
+        assert!(here.iter().all(|r| r.y1 <= top + 1e-9 || r.y0 >= bottom - 1e-9), "a rule cuts the heading {top}..{bottom}: {here:?}");
+        assert!(here.iter().any(|r| r.y1 <= top + 1e-9), "rule above the heading at {x}: {here:?}");
+        assert!(here.iter().any(|r| (r.y0 - bottom).abs() < 1e-9), "rule resumes below the heading at {x}: {here:?}");
+    }
+}
+
+#[test]
+fn justified_line_with_a_tab_justifies_the_text_after_its_last_tab() {
+    // InDesign justifies only the text after a line's last (left) tab; tab stops stay aligned.
+    let stop = |align| designcraft_doc::TabStop { position: 100.0, align, leader: String::new(), align_on: String::new() };
+    let text = "Name\t42 and some words\u{2028}more";
+    let x_of = |l: &Line, byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).map(|g| g.x).unwrap();
+    let left = ParaAttrs { align: Some(Align::LeftJustified), tabs: Some(vec![stop(TabAlign::Left)]), ..Default::default() };
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), left.clone());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    assert!((l.end_x - l.x1).abs() < 0.6, "line with a left tab ends at {} not {}", l.end_x, l.x1);
+    assert!((x_of(l, 5) - 100.0).abs() < 0.5, "text after the tab starts at the stop: {}", x_of(l, 5));
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs { align: Some(Align::Left), ..left });
+    let ragged = compose_story(&d, sid, &ComposeOptions::default());
+    let r = all_lines(&ragged)[0];
+    for byte in 0..4 {
+        assert!((x_of(l, byte) - x_of(r, byte)).abs() < 1e-6, "text before the tab keeps its natural position");
+    }
+
+    // After a right tab the line stays as set.
+    let right = ParaAttrs { align: Some(Align::LeftJustified), tabs: Some(vec![stop(TabAlign::Right)]), ..Default::default() };
+    let (d, sid, _) = doc_with("Name\t42\u{2028}more", Rect::new(0.0, 0.0, 300.0, 100.0), right);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    assert!((l.end_x - 100.0).abs() < 0.5, "right-tab line ends at its stop: {}", l.end_x);
+
+    // A footnote's number and tab separator: its first line is justified like the others.
+    let (mut d, sid, fid) = doc_with("Body text.", Rect::new(0.0, 0.0, 200.0, 400.0), ParaAttrs::default());
+    let note = ParaFormat { para: ParaAttrs { align: Some(Align::LeftJustified), ..Default::default() }, ..Default::default() };
+    d.story_mut(sid).unwrap().insert_note(4, LOREM, note);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let n = &cs.frame(fid).unwrap().notes[0];
+    let lines = all_lines(&n.text);
+    assert!(lines.len() > 2);
+    for l in &lines[..lines.len() - 1] {
+        assert!((l.end_x - l.x1).abs() < 0.6, "footnote line ends at {} not {}", l.end_x, l.x1);
+    }
+    assert!((x_of(lines[0], 0) - 36.0).abs() < 0.5, "note text starts at the default tab stop: {}", x_of(lines[0], 0));
+}
+
+#[test]
+fn mojikumi_justification_after_a_tab_keeps_the_text_before_it() {
+    // Justification (mojikumi included) adjusts only the text after a line's last tab.
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let stop = designcraft_doc::TabStop { position: 100.0, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
+    let compose = |align| {
+        let para =
+            ParaAttrs { align: Some(align), mojikumi: Some("MojikumiTable/Elastic".into()), tabs: Some(vec![stop.clone()]), ..Default::default() };
+        let (mut d, sid, _) = doc_with("A1A1\tA1A1", Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+            name: "Elastic".into(),
+            based_on: "SimpChineseDefault".into(),
+            overrides: vec![MojikumiAki {
+                target_class: 18,
+                side_class: 25,
+                after: true,
+                minimum: 0.0,
+                desired: 0.0,
+                maximum: 5.0,
+                priority: 1,
+                ..Default::default()
+            }],
+        });
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let justified = compose(Align::FullyJustified);
+    let ragged = compose(Align::Left);
+    let (l, r) = (all_lines(&justified)[0], all_lines(&ragged)[0]);
+    assert!(l.end_x > r.end_x + 1.0, "the text after the tab stretches: {} vs {}", l.end_x, r.end_x);
+    let x_of = |l: &Line, byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).map(|g| g.x).unwrap();
+    for byte in 0..5 {
+        assert!((x_of(l, byte) - x_of(r, byte)).abs() < 1e-6, "byte {byte} before the tab moved: {} vs {}", x_of(l, byte), x_of(r, byte));
+    }
+}
+
+#[test]
+fn list_first_line_wraps_at_the_column_edge_after_its_label() {
+    use designcraft_doc::{ListType, TabStop};
+    // A hanging indent (left 18, first line −18): the label sits at the column start, a tab
+    // after it reaches the left indent (an implicit stop when no explicit stop comes first), and
+    // the first line wraps at the same right edge as the others.
+    let right_edge = |l: &Line, source: &str| {
+        let space = |g: &&PlacedGlyph| g.len > 0 && source.get(g.byte..).and_then(|s| s.chars().next()).is_some_and(char::is_whitespace);
+        l.glyphs.iter().filter(|g| g.visible && !space(g)).map(|g| g.x + g.adv).fold(0.0, f64::max)
+    };
+    let text_start = |l: &Line| l.glyphs.iter().find(|g| g.len > 0 && g.visible).map_or(f64::NAN, |g| g.x);
+    let stop = |position: f64| TabStop { position, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
+    let text = format!("{LOREM}\n{LOREM}");
+    // (list, separator, explicit tab stops, where line 0's text starts past the column start:
+    // None = right after the label, wherever that is).
+    let cases = [
+        (ListType::Bullets, "\t", None, Some(18.0)),
+        (ListType::Numbers, "\t", None, Some(18.0)),
+        (ListType::Numbers, "\t", Some(vec![stop(12.0)]), Some(12.0)),
+        (ListType::Numbers, "\t", Some(vec![stop(30.0)]), Some(18.0)),
+        (ListType::Bullets, " ", None, None),
+        (ListType::Numbers, "\u{2003}", None, None),
+    ];
+    // Justified too: only the text after the tab stretches (#284).
+    for (align, (list, sep, tabs, first_at)) in [Align::Left, Align::LeftJustified].into_iter().flat_map(|a| cases.clone().map(|c| (a, c))) {
+        let para = ParaAttrs {
+            align: Some(align),
+            list_type: Some(list),
+            list_separator: Some(sep.into()),
+            left_indent: Some(18.0),
+            first_line_indent: Some(-18.0),
+            tabs: tabs.clone(),
+            ..Default::default()
+        };
+        let (d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 300.0, 400.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let col = cs.frames[0].columns[0];
+        let lines = &cs.frames[0].lines;
+        let what = format!("{align:?} {list:?} {sep:?} {tabs:?}");
+        assert!(lines.len() >= 6, "{what}: {} lines", lines.len());
+        for (i, l) in lines.iter().enumerate() {
+            let right = right_edge(l, &text);
+            assert!(right <= col.x1 + 0.01, "{what}: line {i} ends at {right}, past the column's {}", col.x1);
+            let start = text_start(l) - col.x0;
+            if !l.first_in_para {
+                assert!((start - 18.0).abs() < 0.01, "{what}: line {i} text starts at {start}, not the left indent");
+            } else if let Some(at) = first_at {
+                assert!((start - at).abs() < 0.01, "{what}: line {i} text starts at {start}, not {at}");
+            } else {
+                assert!(start > 0.0, "{what}: line {i} text starts at {start}");
+            }
+            if l.first_in_para {
+                assert!(l.glyphs.first().is_some_and(|g| g.len == 0 && (g.x - col.x0).abs() < 0.01), "{what}: the label leads line {i}");
+            }
+        }
+    }
+}
+
+/// Lines of `text` set in a frame `width` wide, with `tracking` on every character.
+fn tracked_lines(text: &str, width: f64, para: ParaAttrs, tracking: f64) -> Vec<Line> {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 4000.0), para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.tracking = Some(tracking));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "overset at width {width}");
+    all_lines(&cs).into_iter().cloned().collect()
+}
+
+#[test]
+fn a_word_longer_than_the_line_breaks_at_the_column_edge() {
+    use designcraft_doc::Composer;
+    let word = "n".repeat(60);
+    let long = format!("Then {word} and on");
+    for tracking in [0.0, 740.0] {
+        // Natural advances, from one unbroken line.
+        let natural: HashMap<usize, f64> =
+            tracked_lines(&long, 1e5, ParaAttrs::default(), tracking)[0].glyphs.iter().map(|g| (g.byte, g.adv)).collect();
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            for align in [Align::Left, Align::LeftJustified] {
+                let para = ParaAttrs { composer: Some(composer), align: Some(align), hyphenate: Some(false), ..Default::default() };
+                let lines = tracked_lines(&long, 72.0, para, tracking);
+                let what = format!("{composer:?} {align:?} tracking {tracking}");
+                assert!(lines.len() >= 4, "{what}: {} lines", lines.len());
+                for l in &lines {
+                    let ink: Vec<_> = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).collect();
+                    let right = ink.iter().map(|g| g.x + g.adv.min(natural[&g.byte])).fold(l.x0, f64::max);
+                    assert!(l.end_x <= l.x1 + 0.02 && right <= l.x1 + 0.02, "{what}: line {:?} ends at {} past {}", l.range, l.end_x, l.x1);
+                    for w in ink.windows(2) {
+                        assert!(w[1].x >= w[0].x + natural[&w[0].byte] - 1e-6, "{what}: glyphs overlap at {}", w[1].byte);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_line_that_exactly_fills_the_measure_fits() {
+    use designcraft_doc::Composer;
+    let text = "#knowyourplastic";
+    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    // The measure a rounding error short of the natural width.
+    let width = one.end_x - one.x0 - 0.005;
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for align in [Align::Left, Align::LeftJustified] {
+            let para = ParaAttrs { composer: Some(composer), align: Some(align), ..Default::default() };
+            let lines = tracked_lines(text, width, para, 0.0);
+            assert_eq!(lines.len(), 1, "{composer:?} {align:?}: {:?}", lines.iter().map(|l| l.range.clone()).collect::<Vec<_>>());
+        }
+    }
 }
 
 // ---------- split columns ----------
@@ -4381,6 +6307,1147 @@ fn empty_paragraphs_get_no_bullet_or_number() {
 }
 
 #[test]
+fn tight_word_spacing_does_not_isolate_a_word() {
+    // A narrow word-spacing range (100–105%) with some letter spacing and glyph scaling, no
+    // hyphenation: lines that need more stretch must open their word spaces, not letter-space a
+    // single word across the measure.
+    let para = ParaAttrs {
+        align: Some(Align::LeftJustified),
+        hyphenate: Some(false),
+        first_line_indent: Some(9.0),
+        word_space_min: Some(1.0),
+        word_space_desired: Some(1.03),
+        word_space_max: Some(1.05),
+        letter_space_min: Some(-0.05),
+        letter_space_max: Some(0.05),
+        glyph_scale_min: Some(0.99),
+        glyph_scale_max: Some(1.01),
+        ..Default::default()
+    };
+    // Short words: any two fit on a line together.
+    let text = CORPUS[..2].join(" ");
+    for w in (200..=320).step_by(5) {
+        let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, w as f64, 20000.0), para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        for l in &lines[..lines.len() - 1] {
+            let words = text[l.range.clone()].split_whitespace().count();
+            assert!(words > 1, "width {w}: a single-word line {:?}", &text[l.range.clone()]);
+        }
+    }
+}
+
+#[test]
+fn fixed_width_spaces_do_not_stretch_on_justified_lines() {
+    // Long words in a narrow column: lines stretch past the maximum word spacing. Only the word
+    // spaces take that stretch; em, en and thin spaces keep their width.
+    let words = ["characteristically", "misunderstanding", "unquestionably", "responsibility", "administration", "photographer"];
+    let seps = [" ", "\u{2003}", " ", "\u{2002}", " ", "\u{2009}"];
+    let text: String = (0..60).map(|i| format!("{}{}", words[i % words.len()], seps[i % seps.len()])).collect();
+    let text = text.trim_end().to_string();
+    let fixed = |c: char| matches!(c, '\u{2003}' | '\u{2002}' | '\u{2009}');
+    // (character, advance) of each fixed space, per line, and whether the line ends the paragraph.
+    let spaces = |align: Align, w: f64| -> Vec<(Vec<(char, f64)>, bool)> {
+        let para = ParaAttrs { align: Some(align), hyphenate: Some(false), ..Default::default() };
+        let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, w, 20000.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)
+            .iter()
+            .map(|l| {
+                let found = l.glyphs.iter().filter_map(|g| text[g.byte..].chars().next().filter(|&c| fixed(c)).map(|c| (c, g.adv))).collect();
+                (found, l.last_in_para)
+            })
+            .collect()
+    };
+    let mut checked = 0;
+    for w in [190.0, 230.0, 270.0] {
+        let natural: Vec<(char, f64)> = spaces(Align::Left, w).into_iter().flat_map(|l| l.0).collect();
+        for (found, last) in spaces(Align::LeftJustified, w) {
+            if last {
+                continue;
+            }
+            for (c, a) in found {
+                let Some(&(_, n)) = natural.iter().find(|x| x.0 == c) else { continue };
+                assert!((a - n).abs() < 1e-6, "width {w}: U+{:04X} is {a:.2} wide, not {n:.2}", c as u32);
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 5, "{checked} fixed spaces on justified lines");
+}
+
+#[test]
+fn grep_style_in_the_documents_dialect_keeps_short_words_with_the_next() {
+    // `\l` (lowercase letter) and `\h` (horizontal space) aren't Rust regex syntax; the style used
+    // to be skipped silently.
+    let text = "Мы и он в доме и в саду, а она у окна и с книгой в руках у стола.";
+    let para = ParaAttrs {
+        align: Some(Align::Left),
+        grep_styles: Some(vec![designcraft_doc::GrepStyle { style: "nobreak".into(), pattern: r"\b\l{1,2}\h".into() }]),
+        ..Default::default()
+    };
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 70.0, 1000.0), para);
+    let chars = designcraft_doc::CharAttrs { no_break: Some(true), ..Default::default() };
+    std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+        name: "nobreak".into(),
+        based_on: None,
+        chars,
+        shortcut: String::new(),
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 3);
+    let short = |w: &str| w.chars().count() <= 2 && w.chars().all(char::is_lowercase);
+    for l in &lines[..lines.len() - 1] {
+        let last = text[l.range.clone()].split_whitespace().last().unwrap_or("");
+        assert!(!short(last), "line ends with a short word: {:?}", &text[l.range.clone()]);
+    }
+}
+
+// ---------- paragraph border and shading ----------
+
+fn bordered(text: &str, rect: Rect, para: ParaAttrs) -> ComposedStory {
+    let para = ParaAttrs { border_on: Some(true), border_weights: Some([1.0; 4]), ..para };
+    let (d, sid, _) = doc_with(text, rect, para);
+    compose_story(&d, sid, &ComposeOptions::default())
+}
+
+fn has_curves(bp: &designcraft_geom::BezPath) -> bool {
+    bp.elements().iter().any(|e| matches!(e, designcraft_geom::PathEl::CurveTo(..) | designcraft_geom::PathEl::QuadTo(..)))
+}
+
+#[test]
+fn rounded_border_corners_are_curves_and_dotted_borders_paint_their_gap_first() {
+    use designcraft_geom::corners::{Corner, CornerShape};
+    let rounded = [Corner { shape: CornerShape::Rounded, size: 6.0 }; 4];
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs { border_corners: Some(rounded), ..Default::default() });
+    let paths: Vec<_> = cs.frames[0].decos.iter().filter_map(|dc| dc.path.as_ref()).collect();
+    assert_eq!(paths.len(), 1, "one stroked outline");
+    assert!(has_curves(paths[0]));
+    // Square corners: plain edges, no curves.
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
+    assert!(cs.frames[0].decos.iter().all(|dc| dc.path.is_none()));
+    // A dotted border with a gap colour: the gap under the dots.
+    let dotted = ParaAttrs { border_type: Some(designcraft_doc::StrokeType::Dotted), border_gap_color: Some("[Paper]".into()), ..Default::default() };
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), dotted);
+    let colors: Vec<&str> = cs.frames[0].decos.iter().filter(|dc| dc.path.is_some()).map(|dc| dc.color.as_str()).collect();
+    assert_eq!(colors, ["[Paper]", "[Black]"]);
+}
+
+/// The width of the widest border edge (the top and bottom edges span the box).
+fn border_width(cs: &ComposedStory) -> f64 {
+    cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect.width()).fold(0.0, f64::max)
+}
+
+#[test]
+fn a_text_width_border_is_narrower_than_a_column_width_one() {
+    let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+    let column = border_width(&bordered("Short", rect, ParaAttrs::default()));
+    let text = border_width(&bordered("Short", rect, ParaAttrs { border_width: Some(designcraft_doc::BoxWidth::Text), ..Default::default() }));
+    assert!((column - 302.0).abs() < 1e-6, "column and both side strokes: {column}");
+    assert!(text > 2.0 && text < 60.0, "text: {text}");
+}
+
+/// Edges of a plain border by frame column: (column, count).
+fn edges_per_column(cs: &ComposedStory) -> Vec<usize> {
+    let cols = &cs.frames[0].columns;
+    cols.iter()
+        .map(|c| {
+            cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]" && dc.rect.center().x > c.x0 - 2.0 && dc.rect.center().x < c.x1 + 2.0).count()
+        })
+        .collect()
+}
+
+#[test]
+fn a_split_paragraph_closes_its_border_in_each_column_only_when_set_to() {
+    let text = format!("{LOREM} {LOREM}");
+    let compose = |display: bool| {
+        let para = ParaAttrs { border_on: Some(true), border_weights: Some([1.0; 4]), border_display_if_splits: Some(display), ..Default::default() };
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 90.0), para);
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let open = compose(false);
+    assert!(open.frames[0].lines.iter().any(|l| l.column == 1), "the paragraph reaches the second column");
+    // Open at the split: top and sides in the first column, sides and bottom in the second.
+    assert_eq!(edges_per_column(&open), [3, 3]);
+    assert_eq!(edges_per_column(&compose(true)), [4, 4]);
+}
+
+#[test]
+fn consecutive_paragraphs_with_the_same_border_share_one_box() {
+    let compose = |merge: bool| {
+        let para = ParaAttrs { space_after: Some(10.0), border_merge: Some(merge), ..Default::default() };
+        bordered("One\nTwo\nThree", Rect::new(0.0, 0.0, 300.0, 300.0), para)
+    };
+    let merged = compose(true);
+    let edges: Vec<Rect> = merged.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect).collect();
+    assert_eq!(edges.len(), 4, "one box: {edges:?}");
+    let lines = &merged.frames[0].lines;
+    let (first, last) = (&lines[0], &lines[lines.len() - 1]);
+    let left = edges.iter().find(|r| r.height() > r.width()).unwrap();
+    assert!((left.y0 - (first.baseline - first.ascent)).abs() < 1e-6 && (left.y1 - (last.baseline + last.descent)).abs() < 1e-6, "{left:?}");
+    assert_eq!(compose(false).frames[0].decos.iter().filter(|dc| dc.color == "[Black]").count(), 12, "a box each");
+}
+
+#[test]
+fn shading_clips_to_the_frame_and_can_stay_off_print() {
+    let para = ParaAttrs {
+        shading_on: Some(true),
+        shading_offsets: Some([50.0; 4]),
+        shading_clip: Some(true),
+        shading_nonprinting: Some(true),
+        ..Default::default()
+    };
+    let (d, sid, _) = doc_with("Shaded", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let area = cs.frames[0].columns[0];
+    let shade = &cs.frames[0].decos[0];
+    assert!(shade.nonprinting);
+    assert!(shade.rect.x0 >= area.x0 - 1e-6 && shade.rect.y0 >= area.y0 - 1e-6 && shade.rect.x1 <= area.x1 + 1e-6, "{:?} in {area:?}", shade.rect);
+}
+
+// ---------- span space, bullets and numbering ----------
+
+#[test]
+fn space_before_and_after_a_span_moves_the_span_and_the_text_below() {
+    let at = |before: f64, after: f64| {
+        let (mut d, sid, _, h) = span_doc(1, 1, Rect::new(0.0, 0.0, 600.0, 800.0));
+        let p = &mut d.story_mut(sid).unwrap().paras[h].para;
+        p.span_space_before = Some(before);
+        p.span_space_after = Some(after);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let first = |pi: usize| cs.frames[0].lines.iter().find(|l| l.para == pi).map(|l| l.baseline).unwrap();
+        (first(h), first(h + 1))
+    };
+    let (span0, below0) = at(0.0, 0.0);
+    let (span1, below1) = at(24.0, 0.0);
+    assert!((span1 - span0 - 24.0).abs() < 0.01, "{span0} → {span1}");
+    assert!((below1 - below0 - 24.0).abs() < 0.01, "the text below moves with it");
+    let (span2, below2) = at(0.0, 18.0);
+    assert!((span2 - span0).abs() < 0.01 && (below2 - below0 - 18.0).abs() < 0.01, "{below0} → {below2}");
+}
+
+#[test]
+fn span_space_applies_only_where_the_paragraph_spans_columns() {
+    // Every paragraph spans with 12 pt span space after; the frame has `columns` columns.
+    let tops = |columns: u32, span: bool| {
+        let (mut d, sid, fid) = doc_with("One\nTwo\nThree", Rect::new(0.0, 0.0, 400.0, 400.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = columns;
+        for p in &mut d.story_mut(sid).unwrap().paras {
+            if span {
+                p.para.span_columns = Some(SpanColumns::Span(0));
+            }
+            p.para.span_space_after = Some(12.0);
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        first_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let plain = tops(1, false);
+    assert_eq!(plain.len(), 3);
+    assert_eq!(tops(1, true), plain, "a span in a one-column frame adds no space");
+    let spread = tops(3, true);
+    let gap = |v: &[f64], i: usize| v[i + 1] - v[i];
+    assert!((gap(&spread, 0) - gap(&plain, 0) - 12.0).abs() < 0.01, "{spread:?} vs {plain:?}");
+}
+
+/// The first line of each paragraph.
+fn first_lines(cs: &ComposedStory) -> Vec<&Line> {
+    all_lines(cs).into_iter().filter(|l| l.first_in_para).collect()
+}
+
+#[test]
+fn a_right_aligned_number_ends_at_the_line_start() {
+    use designcraft_doc::{ListAlign, ListType};
+    let compose = |align: ListAlign| {
+        let para = ParaAttrs {
+            list_type: Some(ListType::Numbers),
+            number_align: Some(align),
+            left_indent: Some(36.0),
+            first_line_indent: Some(-18.0),
+            ..Default::default()
+        };
+        let (d, sid, _) = doc_with("Item", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    // The label "1.\t": its first two glyphs are the number and the full stop.
+    let cs = compose(ListAlign::Left);
+    let col = cs.frames[0].columns[0];
+    let l = first_lines(&cs)[0];
+    assert!((l.glyphs[0].x - (col.x0 + 18.0)).abs() < 0.01, "left: starts at the line start");
+    let text_x = l.glyphs.iter().find(|g| g.len > 0).unwrap().x;
+    let cs = compose(ListAlign::Right);
+    let l = first_lines(&cs)[0];
+    let end = l.glyphs[1].x + l.glyphs[1].adv;
+    assert!((end - (col.x0 + 18.0)).abs() < 0.01, "right: ends at the line start ({end})");
+    assert!((l.glyphs.iter().find(|g| g.len > 0).unwrap().x - text_x).abs() < 0.01, "the text stays at the tab stop");
+}
+
+#[test]
+fn level_two_numbering_restarts_after_level_one() {
+    let para = numbered(designcraft_doc::NumberStyle::Arabic, "^1.^#");
+    let (mut d, sid, _) = doc_with("A\nB\nC\nD\nE", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+    for (p, level) in d.story_mut(sid).unwrap().paras.iter_mut().zip([1, 2, 2, 1, 2]) {
+        p.para.list_level = Some(level);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // `^1` is level 1's number, `^#` the paragraph's own level.
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.1", "1.1", "1.2", "2.2", "2.1"]);
+    // Without the restart, level 2 carries on.
+    for p in &mut d.story_mut(sid).unwrap().paras {
+        p.para.restart_numbers = Some(false);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.1", "1.1", "1.2", "2.2", "2.3"]);
+}
+
+#[test]
+fn the_tab_position_places_the_text_after_the_label() {
+    use designcraft_doc::ListType;
+    let compose = |tab: Option<f64>| {
+        let para = ParaAttrs { list_type: Some(ListType::Bullets), list_tab: Some(tab), ..Default::default() };
+        let (d, sid, _) = doc_with("Item", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let col = cs.frames[0].columns[0];
+        first_lines(&cs)[0].glyphs.iter().find(|g| g.len > 0).unwrap().x - col.x0
+    };
+    assert!((compose(Some(50.0)) - 50.0).abs() < 0.01);
+    assert!((compose(None) - 36.0).abs() < 0.01, "the default tab stop");
+}
+
+#[test]
+fn paragraph_mark_size_counts_in_its_line_auto_leading() {
+    let gaps = |mark_size: f64| {
+        let (mut d, sid, _) = doc_with("One\nTwo\nThree", Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(7..8, |f| f.over.size = Some(mark_size));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let b: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+        assert_eq!(b.len(), 3);
+        (b[1] - b[0], b[2] - b[1])
+    };
+    // A 12 pt line ending in a 14 pt return: 14 × 120% above it, the next line unchanged.
+    let (above, below) = gaps(14.0);
+    assert!((above - 16.8).abs() < 1e-6, "{above}");
+    assert!((below - 14.4).abs() < 1e-6, "{below}");
+    let (above, below) = gaps(12.0);
+    assert!((above - 14.4).abs() < 1e-6, "{above}");
+    assert!((below - 14.4).abs() < 1e-6, "{below}");
+}
+
+// Kenten settings, shatai, auto tate-chu-yoko, rotate roman, roman word break and grid settings.
+
+/// The centre of a placed glyph's ink, relative to its line's baseline.
+fn ink_centre(g: &PlacedGlyph) -> Point {
+    let r = designcraft_geom::Shape::bounding_box(&*FontDb::global().outline(&g.face, g.gid));
+    Point::new(g.x + (r.x0 + r.x1) / 2.0 * g.sx, g.y + (r.y0 + r.y1) / 2.0 * g.sy)
+}
+
+#[test]
+fn kenten_sit_above_or_below_at_their_size_and_distance() {
+    use designcraft_doc::cjk_settings::{KentenKind, KentenPosition};
+    let (mut d, sid, _) = doc_with("AB", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.len();
+    let set = |d: &mut Document, position: KentenPosition| {
+        d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+            f.over.kenten = Some(true);
+            f.over.kenten_kind = Some(KentenKind::BlackCircle);
+            f.over.kenten_size = Some(Some(8.0));
+            f.over.kenten_x_scale = Some(1.5);
+            f.over.kenten_distance = Some(2.0);
+            f.over.kenten_position = Some(position);
+        });
+    };
+    for position in [KentenPosition::AboveRight, KentenPosition::BelowLeft] {
+        set(&mut d, position);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines[0];
+        let marks = &l.glyphs[plain..];
+        assert_eq!(marks.len(), 2, "one mark per character");
+        for (b, m) in l.glyphs[..plain].iter().zip(marks) {
+            // 8 pt, 150% wide, in a run style of its own.
+            assert!((m.sx - 8.0 / m.face.units_per_em() * 1.5).abs() < 1e-9 && (m.sy - 8.0 / m.face.units_per_em()).abs() < 1e-9);
+            assert_ne!(m.style, b.style);
+            assert_eq!(cs.styles[m.style as usize].size, 8.0);
+            let (top, bottom) = b.face.em_box();
+            let want_y = match position {
+                KentenPosition::AboveRight => b.y - top * b.sy - 2.0 - 4.0,
+                KentenPosition::BelowLeft => b.y - bottom * b.sy + 2.0 + 4.0,
+            };
+            let c = ink_centre(m);
+            assert!((c.y - want_y).abs() < 1e-6, "{position:?}: {} vs {want_y}", c.y);
+            assert!((c.x - (b.x + b.adv / 2.0)).abs() < 1e-6, "centred on its character");
+        }
+    }
+}
+
+#[test]
+fn kenten_colour_is_its_own_run_style() {
+    let (mut d, sid, _) = doc_with("AB", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+        f.over.kenten = Some(true);
+        f.over.kenten_fill = Some("[Registration]".into());
+        f.over.kenten_fill_tint = Some(Some(0.5));
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let mark = l.glyphs.last().unwrap();
+    let st = &cs.styles[mark.style as usize];
+    assert_eq!((st.fill.as_str(), st.fill_tint), ("[Registration]", 0.5));
+    assert!(st.kenten_mark.is_none() && !st.underline);
+    assert_eq!(cs.styles[l.glyphs[0].style as usize].fill, "[Black]", "the text keeps its colour");
+}
+
+#[test]
+fn shatai_matches_the_measured_matrices() {
+    use crate::shatai::Shatai;
+    let close = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
+    let plain = Shatai { magnification: 0.2, angle: 60.0, adjust_rotation: false, adjust_tsume: false };
+    assert!(close(plain.linear(true), [0.850, 0.0866, 0.0866, 0.950]), "{:?}", plain.linear(true));
+    let turned = Shatai { magnification: 0.1, angle: 60.0, adjust_rotation: true, adjust_tsume: false };
+    assert!(close(turned.linear(true), [0.9222, 0.0843, 0.0, 0.9759]), "{:?}", turned.linear(true));
+    // In horizontal text the turn keeps the glyph's horizontal axis horizontal.
+    assert!(turned.linear(false)[1].abs() < 1e-12);
+}
+
+#[test]
+fn shatai_slants_glyphs_about_their_em_centre_and_fits_the_advance() {
+    let (mut d, sid, _) = doc_with("AB", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+    let glyph = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        let l = cs.frames[0].lines[0].clone();
+        (cs.styles[l.glyphs[0].style as usize].clone(), l.glyphs[0].clone(), l.baseline)
+    };
+    let (_, before, _) = glyph(&d);
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+        f.over.shatai_magnification = Some(20.0);
+        f.over.shatai_angle = Some(60.0);
+        f.over.shatai_adjust_tsume = Some(false);
+    });
+    let (style, g, baseline) = glyph(&d);
+    assert!((g.adv - before.adv).abs() < 1e-9, "without Adjust Tsume the advance stays");
+    let xf = style.shatai_xf(&g, baseline).unwrap();
+    // y down: the off-diagonal terms change sign.
+    let [a, b, c, dd, _, _] = xf.as_coeffs();
+    assert!((a - 0.85).abs() < 1e-3 && (b + 0.0866).abs() < 1e-3 && (c + 0.0866).abs() < 1e-3 && (dd - 0.95).abs() < 1e-3);
+    let (top, bottom) = g.face.em_box();
+    let centre = Point::new(g.x + g.face.advance(g.gid) * g.sx / 2.0, baseline + g.y - (top + bottom) / 2.0 * g.sy);
+    assert!((xf * centre - centre).hypot() < 1e-9, "the em box centre stays put");
+    // Adjust Tsume: the advance becomes the compressed em box's width.
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.shatai_adjust_tsume = Some(true));
+    let (style, fitted, _) = glyph(&d);
+    let sh = style.shatai.unwrap();
+    let w = g.face.advance(g.gid) * g.sx;
+    let want = before.adv + w * (sh.extent(false, w, (top - bottom) * g.sy) - 1.0);
+    assert!((fitted.adv - want).abs() < 1e-9, "{} vs {want}", fitted.adv);
+    // No shatai without magnification.
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.shatai_magnification = Some(0.0));
+    assert!(glyph(&d).0.shatai.is_none());
+}
+
+#[test]
+fn auto_tate_chu_yoko_takes_short_digit_runs_in_vertical_text() {
+    let text = "令和12年と1234年と123";
+    let (mut d, sid, _) = doc_with(text, Rect::new(100.0, 100.0, 200.0, 400.0), ParaAttrs { auto_tcy: Some(3), ..Default::default() });
+    let glyphs = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    assert!(glyphs(&d).iter().all(|g| g.tcy.is_none()), "horizontal text has none");
+    d.story_mut(sid).unwrap().vertical = true;
+    let gs = glyphs(&d);
+    let at = |s: &str| text.find(s).unwrap();
+    let tcy: Vec<&PlacedGlyph> = gs.iter().filter(|g| g.tcy.is_some()).collect();
+    let two = at("12年");
+    let three = text.rfind("123").unwrap();
+    assert_eq!(tcy.iter().map(|g| g.byte).collect::<Vec<_>>(), [two, two + 1, three, three + 1, three + 2], "2 and 3 digits, not 4");
+    // Each group takes one em along the line; three digits are narrowed to fit across it.
+    let em = tcy[0].tcy.unwrap()[2];
+    assert!((tcy[..2].iter().map(|g| g.adv).sum::<f64>() - em).abs() < 1e-6);
+    let plain = gs.iter().find(|g| g.byte == at("1234")).unwrap();
+    assert!(tcy[2].sx < plain.sx, "{} {}", tcy[2].sx, plain.sx);
+    let [_, left, _] = tcy[2].tcy.unwrap();
+    assert!(left >= -em / 2.0 - 1e-6, "the narrowed group stays within the em");
+    // Roman letters too, with Include Roman.
+    let text2 = "縦AB横";
+    let (mut d, sid, _) = doc_with(text2, Rect::new(100.0, 100.0, 200.0, 400.0), ParaAttrs { auto_tcy: Some(2), ..Default::default() });
+    d.story_mut(sid).unwrap().vertical = true;
+    let count = |d: &Document| compose_story(d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.iter().filter(|g| g.tcy.is_some()).count();
+    assert_eq!(count(&d), 0);
+    d.story_mut(sid).unwrap().paras[0].para.auto_tcy_include_roman = Some(true);
+    assert_eq!(count(&d), 2);
+}
+
+#[test]
+fn rotate_roman_stands_half_width_characters_upright() {
+    let (mut d, sid, _) = doc_with("縦書きLatin", Rect::new(100.0, 100.0, 200.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().vertical = true;
+    let latin_upright = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().filter(|g| g.len > 0 && g.byte >= "縦書き".len()).all(|g| g.upright)
+    };
+    assert!(!latin_upright(&d));
+    d.story_mut(sid).unwrap().paras[0].para.rotate_roman = Some(true);
+    assert!(latin_upright(&d));
+}
+
+#[test]
+fn roman_word_break_breaks_inside_words_without_hyphens() {
+    let para = ParaAttrs { composer: Some(designcraft_doc::Composer::SingleLine), hyphenate: Some(false), ..Default::default() };
+    let first_line = |rwb: bool| {
+        let (d, sid, _) = doc_with("ab cdefghijklm", Rect::new(0.0, 0.0, 40.0, 300.0), ParaAttrs { roman_word_break: Some(rwb), ..para.clone() });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert!(lines.iter().all(|l| !l.hyphenated && l.end_x <= l.x1 + 0.5));
+        lines[0].range.clone()
+    };
+    assert_eq!(first_line(false), 0..3, "the word moves down whole");
+    assert!(first_line(true).end > 3, "the line fills with part of the word");
+}
+
+/// Composed lines of a story in a frame with a 12 pt baseline grid; returns them and the grid.
+fn grid_doc(text: &str, para: ParaAttrs, edit: impl FnOnce(&mut Document, StoryId)) -> (Vec<Line>, (f64, f64)) {
+    let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), para);
+    if let Some(tf) = d.item_mut(fid).and_then(|i| i.text_frame_mut()) {
+        tf.options.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(0.0, 12.0));
+    }
+    edit(&mut d, sid);
+    // Vertical frames have no baseline grid.
+    let grid = frame_specs(&d, sid)[0].grid.unwrap_or((0.0, 12.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    (all_lines(&cs).into_iter().cloned().collect(), grid)
+}
+
+/// The em box centre of a line's first glyph (as the composer measures it), y down.
+fn em_centre(l: &Line) -> f64 {
+    let g = &l.glyphs[0];
+    let (a, b) = g.face.vertical_metrics();
+    l.baseline + g.y + (b - a) / (2.0 * (a + b)) * g.face.units_per_em() * g.sy
+}
+
+fn on_grid(y: f64, (start, inc): (f64, f64)) -> bool {
+    let n = (y - start) / inc;
+    (n - n.round()).abs() < 1e-6
+}
+
+#[test]
+fn grid_alignment_puts_the_chosen_point_on_the_grid() {
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    let para = |r: R| ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), grid_reference: Some(r), ..Default::default() };
+    let (roman, grid) = grid_doc("AB\nCD", para(R::Baseline), |_, _| {});
+    assert!(roman.iter().all(|l| on_grid(l.baseline, grid)));
+    let (centred, grid) = grid_doc("AB\nCD", para(R::EmCenter), |_, _| {});
+    assert!(centred.iter().all(|l| on_grid(em_centre(l), grid)));
+    assert!(!on_grid(centred[0].baseline, grid), "the baseline moves off the grid by the em centre's offset");
+    let offset = em_centre(&centred[0]) - centred[0].baseline;
+    let shift = centred[0].baseline - roman[0].baseline;
+    assert!(on_grid(shift + offset, (0.0, grid.1)), "{shift} {offset}");
+}
+
+#[test]
+fn gyoudori_two_lines_centres_a_heading_in_two_grid_lines() {
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    let para = ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), grid_reference: Some(R::EmCenter), ..Default::default() };
+    let (lines, grid) = grid_doc("Head\nBody text", para, |d, sid| {
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..4, |f| f.over.size = Some(18.0));
+        st.format_paras(0..4, |p| p.para.grid_gyoudori = Some(2));
+    });
+    let (head, body) = (em_centre(&lines[0]), em_centre(&lines[1]));
+    assert!(on_grid(head - grid.1 / 2.0, grid), "midway between two grid lines: {head}");
+    assert!(on_grid(body, grid));
+    assert!((body - head - 1.5 * grid.1).abs() < 1e-6, "the body takes the grid line after the heading's two: {head} {body}");
+}
+
+#[test]
+fn paragraph_gyoudori_centres_the_whole_paragraph() {
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    let para = ParaAttrs {
+        grid_align: Some(designcraft_doc::GridAlign::AllLines),
+        grid_reference: Some(R::EmCenter),
+        grid_gyoudori: Some(4),
+        paragraph_gyoudori: Some(true),
+        ..Default::default()
+    };
+    let (lines, grid) = grid_doc("One\u{2028}Two\nNext", para, |d, sid| {
+        d.story_mut(sid).unwrap().format_paras(10..14, |p| {
+            p.para.grid_gyoudori = Some(0);
+            p.para.paragraph_gyoudori = Some(false);
+        });
+    });
+    let firsts: Vec<f64> = lines.iter().map(em_centre).collect();
+    assert_eq!(lines.len(), 3, "{firsts:?}");
+    // Two lines a leading apart, centred as a block in four grid lines; the next paragraph on the fifth.
+    let middle = (firsts[0] + firsts[1]) / 2.0;
+    assert!(on_grid(middle - 1.5 * grid.1, grid), "{firsts:?}");
+    assert!((firsts[2] - (middle - 1.5 * grid.1) - 4.0 * grid.1).abs() < 1e-6, "{firsts:?}");
+}
+
+#[test]
+fn hostile_cjk_settings_compose_without_panicking() {
+    let para = ParaAttrs {
+        auto_tcy: Some(u32::MAX),
+        auto_tcy_include_roman: Some(true),
+        rotate_roman: Some(true),
+        roman_word_break: Some(true),
+        grid_align: Some(designcraft_doc::GridAlign::AllLines),
+        grid_reference: Some(designcraft_doc::cjk::CharacterAlignment::IcfBottom),
+        grid_gyoudori: Some(u32::MAX),
+        paragraph_gyoudori: Some(true),
+        ..Default::default()
+    };
+    for vertical in [false, true] {
+        let (_, _) = grid_doc("縦12AB書き\nmore text here", para.clone(), |d, sid| {
+            let st = d.story_mut(sid).unwrap();
+            st.vertical = vertical;
+            let len = st.len();
+            st.format_chars(0..len, |f| {
+                f.over.kenten = Some(true);
+                f.over.kenten_kind = Some(designcraft_doc::cjk_settings::KentenKind::Custom);
+                f.over.kenten_character = Some("★".repeat(100_000));
+                f.over.kenten_font = Some("No Such Font".into());
+                f.over.kenten_size = Some(Some(1e308));
+                f.over.kenten_x_scale = Some(-1e308);
+                f.over.kenten_y_scale = Some(f64::NAN);
+                f.over.kenten_distance = Some(f64::INFINITY);
+                f.over.kenten_fill_tint = Some(Some(f32::NAN));
+                f.over.kenten_stroke_weight = Some(Some(-1e308));
+                f.over.shatai_magnification = Some(1e308);
+                f.over.shatai_angle = Some(f64::NEG_INFINITY);
+            });
+        });
+    }
+}
+
+/// A 100×60 rectangle anchored at `at` in `sid`, custom-positioned with its top-left at
+/// (`x`, `y`) from the top-left of the anchor's frame (`y_rel`: from the anchor's baseline).
+fn anchor_box(d: &mut Document, sid: StoryId, at: usize, x: f64, y: f64, y_rel: bool, wrap: WrapMode) {
+    use designcraft_doc::anchored::AnchorRelative as R;
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 60.0)),
+    );
+    it.wrap.mode = wrap;
+    let position = designcraft_doc::AnchorPosition::Custom {
+        x_relative: R::TextFrame,
+        y_relative: if y_rel { R::Anchor } else { R::TextFrame },
+        x_offset: x,
+        y_offset: y,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: false,
+        spine_relative: false,
+    };
+    d.story_mut(sid).unwrap().insert_object(at, designcraft_doc::AnchoredObject::new(it, position));
+}
+
+/// Lines whose band (top to baseline) meets `y0..y1`.
+fn lines_in_band(cs: &ComposedStory, y0: f64, y1: f64) -> Vec<&Line> {
+    all_lines(cs).into_iter().filter(|l| l.baseline - l.ascent < y1 && l.baseline > y0).collect()
+}
+
+fn line_layout(cs: &ComposedStory) -> Vec<(Range<usize>, u64, u64, u64)> {
+    all_lines(cs).iter().map(|l| (l.range.clone(), l.baseline.to_bits(), l.x0.to_bits(), l.x1.to_bits())).collect()
+}
+
+#[test]
+fn anchored_object_wraps_another_storys_text() {
+    let long = [LOREM; 3].join(" ");
+    let (mut d, a, fa) = doc_with("Anchor here.", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    let plain = compose_story(&d, b, &ComposeOptions::default());
+    let left = all_lines(&plain)[0].x0;
+    // Over the left part of B's frame, 100–160 pt down.
+    let area = d.item(fa).unwrap().text_area();
+    anchor_box(&mut d, a, 0, left - area.x0, 100.0 - area.y0, false, WrapMode::BoundingBox);
+    let cs = compose_story(&d, b, &ComposeOptions::default());
+    let band = lines_in_band(&cs, 100.0, 160.0);
+    assert!(!band.is_empty());
+    assert!(band.iter().all(|l| l.x0 >= left + 100.0 - 1e-6), "{:?}", band.iter().map(|l| l.x0).collect::<Vec<_>>());
+    assert!(lines_in_band(&cs, 0.0, 80.0).iter().all(|l| (l.x0 - left).abs() < 1e-6));
+    // The cache composes the same, and follows the object when it moves.
+    let cache = Cache::new();
+    assert_eq!(line_layout(&cache.get(&d, b, None)), line_layout(&cs));
+    anchor_box(&mut d, a, 0, left - area.x0, 200.0 - area.y0, false, WrapMode::BoundingBox);
+    let st = d.story_mut(a).unwrap();
+    st.delete(OBJECT_LEN..2 * OBJECT_LEN);
+    let moved = cache.get(&d, b, None);
+    assert_eq!(line_layout(&moved), line_layout(&compose_story(&d, b, &ComposeOptions::default())));
+    assert!(lines_in_band(&moved, 100.0, 160.0).iter().any(|l| (l.x0 - left).abs() < 1e-6));
+    assert!(lines_in_band(&moved, 200.0, 260.0).iter().all(|l| l.x0 >= left + 100.0 - 1e-6));
+}
+
+/// An anchored object's wrap is built as a page item's: a contour on both sides of an oval sets
+/// text left and right of it, closer in where the oval narrows.
+#[test]
+fn anchored_object_wraps_with_its_contour_and_side() {
+    use designcraft_doc::anchored::AnchorRelative as R;
+    let long = [LOREM; 4].join(" ");
+    let (mut d, a, fa) = doc_with("Anchor here.", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    let left = all_lines(&compose_story(&d, b, &ComposeOptions::default()))[0].x0;
+    let area = d.item(fa).unwrap().text_area();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Oval,
+        designcraft_geom::shapes::ellipse(Rect::new(0.0, 0.0, 100.0, 100.0)),
+    );
+    it.wrap.mode = WrapMode::Contour;
+    it.wrap.side = WrapSide::BothSides;
+    let position = designcraft_doc::AnchorPosition::Custom {
+        x_relative: R::TextFrame,
+        y_relative: R::TextFrame,
+        x_offset: left + 100.0 - area.x0,
+        y_offset: 100.0 - area.y0,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: false,
+        spine_relative: false,
+    };
+    d.story_mut(a).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, position));
+    let cs = compose_story(&d, b, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let pairs: Vec<(&Line, &Line)> = lines.windows(2).filter(|w| w[0].baseline == w[1].baseline).map(|w| (w[0], w[1])).collect();
+    assert!(pairs.len() >= 3, "{} lines share a baseline", pairs.len());
+    let centre = left + 150.0;
+    assert!(pairs.iter().all(|(l, r)| l.x1 < centre && r.x0 > centre), "text on both sides");
+    let top = pairs.first().unwrap().0.x1;
+    let mid = pairs.iter().map(|(l, _)| l.x1).fold(f64::INFINITY, f64::min);
+    assert!(top > mid + 5.0, "top {top}, middle {mid}");
+}
+
+/// Relative to Spine: a marginal note set up for a left-hand page (its right edge 12 pt left of
+/// the column) mirrors on the right-hand page (its left edge 12 pt right of the column), so the
+/// notes of a story that runs across a spread all sit in the outside margin. Placed as on a
+/// left-hand page, the right page's note sat in the inside margin and reached across the spine.
+#[test]
+fn spine_relative_anchored_notes_stay_in_the_outside_margin_on_both_pages() {
+    use designcraft_doc::anchored::AnchorRelative as R;
+    let compose_spread = |spine_relative: bool| {
+        let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+        let lid = d.default_layer();
+        let sp = &d.spreads[1];
+        let (l, r) = (sp.pages[0].clone(), sp.pages[1].clone());
+        assert_eq!((l.side, r.side), (designcraft_doc::PageSide::Left, designcraft_doc::PageSide::Right));
+        // Body frames leave a 120 pt outside margin for the notes.
+        let left_rect = Rect::new(l.x + 120.0, 36.0, l.x + l.width - 36.0, 120.0);
+        let right_rect = Rect::new(r.x + 36.0, 36.0, r.x + r.width - 120.0, 600.0);
+        let text = [LOREM; 3].join(" ");
+        let (lf, sid) = d.add_text_frame(SpreadRef::Doc(1), left_rect, lid, &text, ParaFormat::default()).unwrap();
+        let (rf, _) = d.add_text_frame(SpreadRef::Doc(1), right_rect, lid, "", ParaFormat::default()).unwrap();
+        d.thread(lf, rf).unwrap();
+        let plain = compose_story(&d, sid, &ComposeOptions::default());
+        let second_line = |fid| plain.frame(fid).unwrap().lines[1].range.start;
+        let (at_left, at_right) = (second_line(lf), second_line(rf));
+        // Top-right corner of the note 12 pt left of the column's top-left, on the anchor's baseline.
+        let position = designcraft_doc::AnchorPosition::Custom {
+            x_relative: R::ColumnEdge,
+            y_relative: R::Anchor,
+            x_offset: -12.0,
+            y_offset: 0.0,
+            object_point: 2,
+            ref_point: 0,
+            keep_within_column: false,
+            spine_relative,
+        };
+        for at in [at_right, at_left] {
+            let note = designcraft_doc::Item::new(
+                ItemId(d.alloc()),
+                lid,
+                designcraft_doc::Shape::Rectangle,
+                designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 72.0, 40.0)),
+            );
+            d.story_mut(sid).unwrap().insert_object(at, designcraft_doc::AnchoredObject::new(note, position.clone()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        // Per page: the note's left and right edges, the column, and the page's left and right edges.
+        let placed = |fid, page: &designcraft_doc::Page| {
+            let ft = cs.frame(fid).unwrap();
+            assert_eq!(ft.objects.len(), 1);
+            let o = &ft.objects[0];
+            ((o.origin.x, o.origin.x + o.size.0), ft.columns[0], (page.x, page.x + page.width))
+        };
+        (placed(lf, &l), placed(rf, &r))
+    };
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+
+    let (((lx0, lx1), lcol, (lp0, _)), ((rx0, rx1), rcol, (_, rp1))) = compose_spread(true);
+    assert!(near(lx1, lcol.x0 - 12.0) && lx0 >= lp0, "left page: note {lx0}..{lx1}, column {lcol:?}");
+    assert!(near(rx0, rcol.x1 + 12.0) && rx1 <= rp1, "right page: note {rx0}..{rx1}, column {rcol:?}");
+
+    // Without Relative to Spine both pages take the settings as written.
+    let (_, ((rx0, rx1), rcol, _)) = compose_spread(false);
+    assert!(near(rx1, rcol.x0 - 12.0), "right page as written: note {rx0}..{rx1}, column {rcol:?}");
+}
+
+const OBJECT_LEN: usize = designcraft_doc::OBJECT_MARK.len_utf8();
+
+#[test]
+fn anchored_object_wraps_its_own_storys_later_lines() {
+    let text = [LOREM; 4].join(" ");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 600.0), ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let left = all_lines(&plain)[0].x0;
+    // Anchored in the third line, hanging from its baseline over the lines below.
+    let at = all_lines(&plain)[2].range.start + 3;
+    anchor_box(&mut d, sid, at, 0.0, 0.0, true, WrapMode::BoundingBox);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let (li, anchor_line) = lines.iter().enumerate().find(|(_, l)| l.range.contains(&at)).unwrap();
+    let top = anchor_line.baseline;
+    // The anchor line and those above it keep the full measure; the lines under the object move right.
+    assert!(lines[..=li].iter().all(|l| (l.x0 - left).abs() < 1e-6));
+    let under: Vec<_> = lines[li + 1..].iter().filter(|l| l.baseline - l.ascent < top + 60.0).collect();
+    assert!(under.len() >= 2);
+    assert!(under.iter().all(|l| l.x0 >= left + 100.0 - 1e-6), "{:?}", under.iter().map(|l| l.x0).collect::<Vec<_>>());
+    assert!(lines.iter().filter(|l| l.baseline - l.ascent > top + 61.0).all(|l| (l.x0 - left).abs() < 1e-6));
+    // Settled: the object is where the final pass wrapped the text around.
+    let o = &cs.frames[0].objects[0];
+    assert!((o.origin.y - top).abs() < 1e-6);
+}
+
+#[test]
+fn anchored_object_without_wrap_leaves_layout_unchanged() {
+    let long = [LOREM; 3].join(" ");
+    let (mut d, a, _) = doc_with(&long, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    anchor_box(&mut d, a, 40, 330.0, 0.0, true, WrapMode::None);
+    for sid in [a, b] {
+        let direct = compose(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default());
+        assert_eq!(line_layout(&compose_story(&d, sid, &ComposeOptions::default())), line_layout(&direct));
+    }
+}
+
+#[test]
+fn anchored_wrap_that_moves_its_own_anchor_terminates() {
+    // Jump Object pushes the lines after the anchor below the object; vertical centring then moves
+    // every line, the anchor's too, and the object with it.
+    let text = [LOREM; 2].join(" ");
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 500.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Center;
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let at = all_lines(&plain)[1].range.start + 2;
+    anchor_box(&mut d, sid, at, 0.0, -20.0, true, WrapMode::JumpObject);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.line_count() > 0);
+    assert_eq!(cs.frames[0].objects.len(), 1);
+}
+
+#[test]
+fn same_para_style_spacing_replaces_space_between_same_style_paragraphs() {
+    let rect = Rect::new(0.0, 0.0, 300.0, 700.0);
+    let base = ParaAttrs { space_before: Some(5.0), space_after: Some(10.0), ..Default::default() };
+    // `other_last`: the last paragraph gets a different paragraph style.
+    let baselines = |para: ParaAttrs, other_last: bool| {
+        let (mut d, sid, _) = doc_with("A\n\nB", rect, para);
+        if other_last && let Some(st) = d.stories.get_mut(&sid) {
+            std::sync::Arc::make_mut(st).paras[2].style = "Other".into();
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let tight_attrs = ParaAttrs { same_para_style_spacing: Some(Some(0.0)), ..base.clone() };
+    let normal = baselines(base.clone(), false);
+    let tight = baselines(tight_attrs.clone(), false);
+    let wide = baselines(ParaAttrs { same_para_style_spacing: Some(Some(20.0)), ..base }, false);
+    let mixed = baselines(tight_attrs, true);
+    assert_eq!(normal.len(), 3);
+    // Ordinary spacing: space after (10) + space before (5) between each pair, empty paragraph included.
+    assert!((normal[1] - normal[0] - 14.4 - 15.0).abs() < 1e-6, "{normal:?}");
+    assert!((tight[1] - tight[0] - 14.4).abs() < 1e-6 && (tight[2] - tight[1] - 14.4).abs() < 1e-6, "{tight:?}");
+    assert!((wide[2] - wide[1] - 14.4 - 20.0).abs() < 1e-6, "{wide:?}");
+    // A different style keeps the ordinary spacing at its boundary.
+    assert!((mixed[1] - mixed[0] - 14.4).abs() < 1e-6 && (mixed[2] - mixed[1] - 14.4 - 15.0).abs() < 1e-6, "{mixed:?}");
+}
+
+// ---------- balance columns ----------
+
+/// A story of `paras` body paragraphs in one frame of `columns` columns, Balance Columns `on`.
+fn balance_doc(paras: usize, columns: u32, rect: Rect, on: bool) -> (Document, StoryId, ItemId) {
+    let (mut d, sid, fid) = doc_with(&vec![LOREM; paras].join("\n"), rect, ParaAttrs::default());
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = columns;
+    o.balance_columns = on;
+    (d, sid, fid)
+}
+
+fn column_line_counts(ft: &FrameText) -> Vec<usize> {
+    (0..ft.columns.len() as u32).map(|c| ft.lines.iter().filter(|l| l.column == c).count()).collect()
+}
+
+/// The baseline of each column's last line.
+fn column_ends(ft: &FrameText) -> Vec<f64> {
+    (0..ft.columns.len() as u32).map(|c| ft.lines.iter().filter(|l| l.column == c).map(|l| l.baseline).fold(f64::NEG_INFINITY, f64::max)).collect()
+}
+
+#[test]
+fn balance_columns_evens_out_the_columns_the_story_ends_in() {
+    let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let (d, sid, _) = balance_doc(3, 2, rect, false);
+    let off = compose_story(&d, sid, &ComposeOptions::default());
+    let counts = column_line_counts(&off.frames[0]);
+    assert!(counts[1] > 0 && counts[0] > counts[1] + 2, "fills the first column: {counts:?}");
+
+    let (d, sid, _) = balance_doc(3, 2, rect, true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    let on = column_line_counts(ft);
+    assert_eq!(on.iter().sum::<usize>(), counts.iter().sum::<usize>(), "the same lines");
+    assert!(on[0] >= on[1] && on[0] - on[1] <= 1, "{on:?}");
+    let ends = column_ends(ft);
+    assert!((ends[0] - ends[1]).abs() <= 14.4 + 1e-6, "{ends:?}");
+    assert_eq!(all_lines(&cs).last().unwrap().range.end, d.story(sid).unwrap().text.len());
+
+    // A paragraph kept together stays in one column while the columns still balance.
+    let (mut d, sid, _) = balance_doc(3, 2, rect, true);
+    let p = &mut d.story_mut(sid).unwrap().paras[1].para;
+    p.keep_lines_together = Some(true);
+    p.keep_all_lines = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let kept: Vec<u32> = cs.frames[0].lines.iter().filter(|l| l.para == 1).map(|l| l.column).collect();
+    assert!(kept.iter().all(|&c| c == kept[0]), "{kept:?}");
+    let c = column_line_counts(&cs.frames[0]);
+    assert!(c[1] > 0 && c[0].max(c[1]) < counts[0], "{c:?} vs {counts:?}");
+
+    // Three columns: the first two are equal, the last at most two lines shorter.
+    let (d, sid, _) = balance_doc(3, 3, Rect::new(0.0, 0.0, 540.0, 500.0), true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let c = column_line_counts(&cs.frames[0]);
+    let total: usize = c.iter().sum();
+    assert_eq!(c[0], total.div_ceil(3), "{c:?}");
+    assert!(c[1] <= c[0] && c[2] <= c[1] && c[0] - c[2] <= 2 && c[2] > 0, "{c:?}");
+    assert_no_overlap(&cs.frames[0]);
+
+    // Vertical stories balance their columns too (bands across the turned frame).
+    let (mut d, sid, _) = balance_doc(2, 2, Rect::new(0.0, 0.0, 400.0, 400.0), true);
+    d.story_mut(sid).unwrap().vertical = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let c = column_line_counts(&cs.frames[0]);
+    assert!(c[1] > 0 && c[0].abs_diff(c[1]) <= 1, "{c:?}");
+}
+
+#[test]
+fn balance_columns_leaves_a_frame_the_text_runs_on_from() {
+    let rect = Rect::new(0.0, 0.0, 400.0, 150.0);
+    let layout = |on: bool| {
+        let (mut d, sid, f1) = balance_doc(4, 2, rect, on);
+        let lid = d.default_layer();
+        let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 300.0, 400.0, 700.0), lid, "", ParaFormat::default()).unwrap();
+        let o = &mut d.item_mut(f2).unwrap().text_frame_mut().unwrap().options;
+        o.columns = 2;
+        o.balance_columns = on;
+        d.thread(f1, f2).unwrap();
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let (off, on) = (layout(false), layout(true));
+    assert!(!on.is_overset());
+    let first = |cs: &ComposedStory| cs.frames[0].lines.iter().map(|l| (l.column, l.baseline, l.range.clone())).collect::<Vec<_>>();
+    assert_eq!(first(&on), first(&off), "the first frame fills normally");
+    let c = column_line_counts(&on.frames[1]);
+    assert!(c[1] > 0 && c[0] - c[1] <= 1, "the frame the story ends in is balanced: {c:?}");
+}
+
+#[test]
+fn balance_columns_starts_after_a_column_break() {
+    // The first paragraph ends with a column break: the first column holds it alone and the
+    // other two share the rest.
+    let text = format!("{LOREM}{}\n{}", designcraft_doc::story::COLUMN_BREAK, [LOREM; 3].join("\n"));
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 540.0, 500.0), ParaAttrs::default());
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = 3;
+    o.balance_columns = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    assert!(ft.lines.iter().filter(|l| l.column == 0).all(|l| l.para == 0));
+    assert!(ft.lines.iter().filter(|l| l.para == 0).all(|l| l.column == 0));
+    let c = column_line_counts(ft);
+    assert!(c[2] > 0 && c[1] >= c[2] && c[1] - c[2] <= 1, "{c:?}");
+}
+
+fn shaped_doc(path: designcraft_geom::PathData, rect: Rect, inset: f64) -> (Document, StoryId, ItemId) {
+    let (mut d, sid, fid) = doc_with(&[LOREM; 4].join(" "), rect, ParaAttrs::default());
+    let it = d.item_mut(fid).unwrap();
+    it.path = path;
+    it.text_frame_mut().unwrap().options.inset = [inset; 4];
+    (d, sid, fid)
+}
+
+/// The corners of a line's band (slot ends from its top to its bottom).
+fn line_corners(l: &Line) -> [(f64, f64); 4] {
+    let (t, b) = (l.baseline - l.ascent, l.baseline + l.descent);
+    [(l.x0, t), (l.x1, t), (l.x0, b), (l.x1, b)]
+}
+
+/// Is `p` inside the ellipse in `r` (allowing for the Bézier bulge)?
+fn in_ellipse(r: Rect, p: (f64, f64)) -> bool {
+    let (c, a, b) = (r.center(), r.width() / 2.0, r.height() / 2.0);
+    ((p.0 - c.x) / a).powi(2) + ((p.1 - c.y) / b).powi(2) <= 1.001
+}
+
+/// Distance from `p` inside the ellipse in `r` to its outline (sampled).
+fn ellipse_clearance(r: Rect, p: (f64, f64)) -> f64 {
+    let (c, a, b) = (r.center(), r.width() / 2.0, r.height() / 2.0);
+    let inside = ((p.0 - c.x) / a).powi(2) + ((p.1 - c.y) / b).powi(2) <= 1.0 + 1e-9;
+    let d = (0..7200)
+        .map(|k| {
+            let t = k as f64 / 7200.0 * std::f64::consts::TAU;
+            (c.x + a * t.cos() - p.0).hypot(c.y + b * t.sin() - p.1)
+        })
+        .fold(f64::INFINITY, f64::min);
+    if inside { d } else { -d }
+}
+
+#[test]
+fn oval_frame_sets_lines_inside_the_ellipse() {
+    let r = Rect::new(0.0, 0.0, 300.0, 200.0);
+    let (d, sid, _) = shaped_doc(designcraft_geom::shapes::ellipse(r), r, 0.0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() >= 8, "{}", lines.len());
+    for l in &lines {
+        for p in line_corners(l) {
+            assert!(in_ellipse(r, p), "line corner {p:?} outside the oval");
+        }
+        assert!(l.end_x <= l.x1 + 0.5, "line overflows its slot: {} > {}", l.end_x, l.x1);
+    }
+    let w = |l: &Line| l.x1 - l.x0;
+    let widest = lines.iter().map(|l| w(l)).fold(0.0, f64::max);
+    assert!(w(lines[0]) < widest - 50.0, "first {} widest {widest}", w(lines[0]));
+    // Bands where the oval is narrower than 1.5 em hold no line.
+    assert!(lines.iter().all(|l| w(l) >= 18.0 - 1e-6));
+}
+
+#[test]
+fn oval_frame_keeps_lines_an_inset_inside_the_outline() {
+    let r = Rect::new(0.0, 0.0, 300.0, 240.0);
+    let (d, sid, _) = shaped_doc(designcraft_geom::shapes::ellipse(r), r, 10.0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() >= 6, "{}", lines.len());
+    for l in &lines {
+        for p in line_corners(l) {
+            assert!(ellipse_clearance(r, p) >= 10.0 - 0.1, "line corner {p:?} closer than the inset: {}", ellipse_clearance(r, p));
+        }
+    }
+}
+
+#[test]
+fn triangle_frame_lines_widen_downward() {
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    let r = Rect::new(0.0, 0.0, 300.0, 300.0);
+    let tri = [Point::new(150.0, 0.0), Point::new(300.0, 300.0), Point::new(0.0, 300.0)];
+    let path = PathData::single(SubPath { anchors: tri.iter().map(|&p| Anchor::corner(p)).collect(), closed: true });
+    let (d, sid, _) = shaped_doc(path, r, 0.0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() >= 8, "{}", lines.len());
+    for w in lines.windows(2) {
+        assert!(w[1].x1 - w[1].x0 > w[0].x1 - w[0].x0, "{} then {}", w[0].x1 - w[0].x0, w[1].x1 - w[1].x0);
+    }
+    // Every slot end lies inside the triangle: |x - 150| ≤ y / 2 over the whole band.
+    for l in &lines {
+        for (x, y) in line_corners(l) {
+            assert!((x - 150.0).abs() <= y / 2.0 + 1e-6, "({x}, {y}) outside the triangle");
+        }
+    }
+}
+
+#[test]
+fn rectangular_frame_paths_keep_the_rectangular_layout() {
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    let r = Rect::new(20.0, 30.0, 260.0, 400.0);
+    let (d, sid, _) = doc_with(&[LOREM; 4].join(" "), r, ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    // The same rectangle drawn with an extra anchor on its top edge.
+    let pts = [(20.0, 30.0), (100.0, 30.0), (260.0, 30.0), (260.0, 400.0), (20.0, 400.0)];
+    let path = PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true });
+    let (d2, sid2, _) = shaped_doc(path, r, 0.0);
+    assert!(frame_specs(&d2, sid2)[0].outline.is_none());
+    assert!(frame_specs(&d, sid)[0].outline.is_none());
+    let redrawn = compose_story(&d2, sid2, &ComposeOptions::default());
+    let key = |cs: &ComposedStory| all_lines(cs).iter().map(|l| (l.range.clone(), l.baseline, l.x0, l.x1)).collect::<Vec<_>>();
+    assert_eq!(key(&plain), key(&redrawn));
+}
+
+#[test]
+fn resizing_an_oval_frame_reflows_its_lines() {
+    let r = Rect::new(0.0, 0.0, 240.0, 200.0);
+    let (mut d, sid, fid) = shaped_doc(designcraft_geom::shapes::ellipse(r), r, 0.0);
+    let cache = Cache::new();
+    let small = cache.get(&d, sid, None);
+    let big_r = Rect::new(0.0, 0.0, 400.0, 300.0);
+    d.item_mut(fid).unwrap().path = designcraft_geom::shapes::ellipse(big_r);
+    let big = cache.get(&d, sid, None);
+    let (ls, lb) = (all_lines(&small), all_lines(&big));
+    assert!(lb.len() > ls.len(), "{} vs {}", lb.len(), ls.len());
+    for l in &lb {
+        for p in line_corners(l) {
+            assert!(in_ellipse(big_r, p), "line corner {p:?} outside the resized oval");
+        }
+    }
+    assert!(lb.iter().map(|l| l.x1 - l.x0).fold(0.0, f64::max) > 300.0);
+}
+
+#[test]
+fn vertical_oval_frame_sets_columns_inside_the_turned_ellipse() {
+    let r = Rect::new(0.0, 0.0, 300.0, 200.0);
+    let (mut d, sid, _) = shaped_doc(designcraft_geom::shapes::ellipse(r), r, 0.0);
+    d.story_mut(sid).unwrap().vertical = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(!lines.is_empty());
+    // The turned box is 200 wide and 300 tall; the ellipse turns with it.
+    let turned = Rect::new(0.0, 0.0, 200.0, 300.0);
+    for l in &lines {
+        for p in line_corners(l) {
+            assert!(in_ellipse(turned, p), "line corner {p:?} outside the turned oval");
+        }
+    }
+}
+
+#[test]
+fn oval_frame_columns_each_follow_the_outline() {
+    let r = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let (mut d, sid, fid) = shaped_doc(designcraft_geom::shapes::ellipse(r), r, 0.0);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.iter().any(|l| l.column == 1));
+    for l in &lines {
+        for p in line_corners(l) {
+            assert!(in_ellipse(r, p), "line corner {p:?} outside the oval");
+        }
+    }
+}
+
+#[test]
+fn degenerate_frame_outlines_compose_without_panicking() {
+    use designcraft_geom::{Anchor, PathData, Point, SubPath};
+    let tri = |pts: [(f64, f64); 3]| {
+        PathData::single(SubPath { anchors: pts.iter().map(|&(x, y)| Anchor::corner(Point::new(x, y))).collect(), closed: true })
+    };
+    let r = Rect::new(0.0, 0.0, 200.0, 200.0);
+    for path in [
+        tri([(0.0, 0.0), (100.0, 100.0), (200.0, 200.0)]),
+        tri([(0.0, 0.0), (f64::NAN, 100.0), (200.0, 200.0)]),
+        designcraft_geom::shapes::ellipse(Rect::new(-1e15, -1e15, 1e15, 1e15)),
+    ] {
+        let (d, sid, _) = shaped_doc(path, r, 1e300);
+        let _ = compose_story(&d, sid, &ComposeOptions::default());
+    }
+}
+
+#[test]
 fn cache_recomposes_when_the_baseline_grid_changes() {
     let para = ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() };
     let (mut d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 600.0), para);
@@ -4391,6 +7458,158 @@ fn cache_recomposes_when_the_baseline_grid_changes() {
     assert!(!Arc::ptr_eq(&a, &b));
     let (la, lb) = (&a.frames[0].lines[1], &b.frames[0].lines[1]);
     assert!((la.baseline - lb.baseline).abs() > 1.0, "{} {}", la.baseline, lb.baseline);
+}
+
+/// Two single pages 618 pt tall, top margins 36 and 48, each with an overset 11/13 story aligned
+/// to a baseline grid (start 0, increment 13) and a frame filling its margin box (bottom 582).
+fn grid_margin_doc(relative_to: designcraft_doc::GridRelative) -> (Document, [StoryId; 2]) {
+    let mut d = Document::new(&NewDocument {
+        height: 618.0,
+        pages: 2,
+        facing_pages: false,
+        margins: designcraft_doc::Margins::uniform(36.0),
+        ..Default::default()
+    });
+    Arc::make_mut(&mut d.spreads[1]).pages[0].margins.top = 48.0;
+    Arc::make_mut(&mut d.spreads[1]).pages[0].local_margins = true;
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 13.0;
+    d.settings.baseline_grid.relative_to = relative_to;
+    let lid = d.default_layer();
+    let para = ParaFormat { para: ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, ..Default::default() };
+    let text = [LOREM; 12].join(" ");
+    let mut sids = Vec::new();
+    for (si, top) in [(0, 36.0), (1, 48.0)] {
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(si), Rect::new(36.0, top, 336.0, 582.0), lid, &text, para.clone()).unwrap();
+        let st = d.story_mut(sid).unwrap();
+        st.paras[0].chars =
+            designcraft_doc::CharAttrs { size: Some(11.0), leading: Some(designcraft_doc::Leading::Points(13.0)), ..Default::default() };
+        sids.push(sid);
+    }
+    (d, [sids[0], sids[1]])
+}
+
+/// Page y of a frame's baselines (the frame's inner space is its page's: it has no transform).
+fn page_baselines(d: &Document, sid: StoryId) -> Vec<f64> {
+    let cs = compose_story(d, sid, &ComposeOptions::default());
+    assert!(cs.is_overset());
+    cs.frames[0].lines.iter().map(|l| l.baseline).collect()
+}
+
+#[test]
+fn baseline_grid_relative_to_the_top_margin_starts_at_each_pages_margin() {
+    use designcraft_doc::GridRelative;
+    let (d, [p1, p2]) = grid_margin_doc(GridRelative::TopMargin);
+    // Grid lines at 36 + 13n on page 1: 42 lines from 49 to 582.
+    let lines = page_baselines(&d, p1);
+    assert!((lines[0] - 49.0).abs() < 1e-6, "{lines:?}");
+    assert!(lines.iter().enumerate().all(|(n, y)| (y - (49.0 + 13.0 * n as f64)).abs() < 1e-6), "{lines:?}");
+    assert_eq!(lines.len(), 42);
+    // Page 2's own margin: lines at 48 + 13n.
+    let lines = page_baselines(&d, p2);
+    assert!((lines[0] - 61.0).abs() < 1e-6, "{lines:?}");
+    // From the top of the page the lines are at 13n: the first at 52, and one line fewer.
+    let (d, [p1, _]) = grid_margin_doc(GridRelative::TopOfPage);
+    let lines = page_baselines(&d, p1);
+    assert!((lines[0] - 52.0).abs() < 1e-6, "{lines:?}");
+    assert_eq!(lines.len(), 41);
+}
+
+/// A frame's custom grid (start 10, increment 13) measured from the page top, the top margin
+/// (36), the frame top (100) or the top inset (6 below it).
+#[test]
+fn frame_baseline_grid_relative_to_page_margin_frame_or_inset() {
+    use designcraft_doc::{FrameBaselineGrid, FrameGridRelative as R};
+    let first_baseline = |relative_to: Option<R>| {
+        let mut d = Document::new(&NewDocument { margins: designcraft_doc::Margins::uniform(36.0), ..Default::default() });
+        let lid = d.default_layer();
+        let para = ParaFormat { para: ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, ..Default::default() };
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 100.0, 336.0, 400.0), lid, "Grid", para).unwrap();
+        let st = d.story_mut(sid).unwrap();
+        st.paras[0].chars =
+            designcraft_doc::CharAttrs { size: Some(11.0), leading: Some(designcraft_doc::Leading::Points(13.0)), ..Default::default() };
+        let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+        tf.options.inset = [6.0, 0.0, 0.0, 0.0];
+        tf.options.baseline_grid = relative_to.map(|r| FrameBaselineGrid { relative_to: r, ..FrameBaselineGrid::new(10.0, 13.0) });
+        // A document grid that matches none of the frame grids.
+        d.settings.baseline_grid.start = 0.0;
+        d.settings.baseline_grid.increment = 0.0;
+        compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].baseline
+    };
+    // Without a grid the first baseline sits an ascent below the top inset.
+    let natural = first_baseline(None);
+    assert!(natural > 106.0 && natural < 120.0, "{natural}");
+    for (r, origin) in [(R::TopOfPage, 10.0), (R::TopMargin, 46.0), (R::TopOfFrame, 110.0), (R::TopInset, 116.0)] {
+        let want = (0..).map(|n| origin + 13.0 * f64::from(n)).find(|y| *y >= natural - 1e-9).unwrap();
+        let got = first_baseline(Some(r));
+        assert!((got - want).abs() < 1e-6, "{r:?}: first baseline {got}, want {want} (natural {natural})");
+    }
+}
+
+/// A group's transform moves a frame from the left page of a spread to the right one: the grid
+/// starts at the right page's top margin.
+#[test]
+fn baseline_grid_follows_a_grouped_frame_to_its_page() {
+    use designcraft_doc::{Content, GridRelative, Item, ItemId, Shape};
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, margins: designcraft_doc::Margins::uniform(36.0), ..Default::default() });
+    Arc::make_mut(&mut d.spreads[1]).pages[1].margins.top = 48.0;
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 13.0;
+    d.settings.baseline_grid.relative_to = GridRelative::TopMargin;
+    let lid = d.default_layer();
+    let para = ParaFormat { para: ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, ..Default::default() };
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 336.0, 582.0), lid, LOREM, para).unwrap();
+    let sp = Arc::make_mut(&mut d.spreads[1]);
+    let at = sp.items.iter().position(|it| it.id == fid).unwrap();
+    let frame = sp.items.remove(at);
+    let right = sp.pages[1].x;
+    let mut g = Item::new(ItemId(d.alloc()), lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = Content::Group { items: vec![frame] };
+    g.xf = designcraft_geom::Affine::translate((right, 0.0));
+    Arc::make_mut(&mut d.spreads[1]).items.push(Arc::new(g));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let first = cs.frames[0].lines[0].baseline;
+    assert!((first - 61.0).abs() < 1e-6, "{first}");
+}
+
+#[test]
+fn cache_recomposes_when_the_grid_reference_or_a_top_margin_changes() {
+    use designcraft_doc::GridRelative;
+    let (mut d, [p1, _]) = grid_margin_doc(GridRelative::TopOfPage);
+    let cache = Cache::new();
+    let a = cache.get(&d, p1, None);
+    d.settings.baseline_grid.relative_to = GridRelative::TopMargin;
+    let b = cache.get(&d, p1, None);
+    assert!(!Arc::ptr_eq(&a, &b));
+    assert!((a.frames[0].lines[0].baseline - b.frames[0].lines[0].baseline).abs() > 1.0);
+    Arc::make_mut(&mut d.spreads[0]).pages[0].margins.top = 40.0;
+    let c = cache.get(&d, p1, None);
+    assert!(!Arc::ptr_eq(&b, &c));
+    assert!((b.frames[0].lines[0].baseline - c.frames[0].lines[0].baseline).abs() > 1.0);
+}
+
+/// Pages trading places under a frame: the frame is on the other page, with its top margin.
+#[test]
+fn cache_recomposes_when_the_page_under_a_frame_changes() {
+    use designcraft_doc::GridRelative;
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, margins: designcraft_doc::Margins::uniform(36.0), ..Default::default() });
+    Arc::make_mut(&mut d.spreads[1]).pages[1].margins.top = 48.0;
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 13.0;
+    d.settings.baseline_grid.relative_to = GridRelative::TopMargin;
+    let lid = d.default_layer();
+    let para = ParaFormat { para: ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, ..Default::default() };
+    let x = d.spreads[1].pages[0].x;
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(x + 36.0, 36.0, x + 336.0, 582.0), lid, LOREM, para).unwrap();
+    let cache = Cache::new();
+    let a = cache.get(&d, sid, None);
+    let sp = Arc::make_mut(&mut d.spreads[1]);
+    let (x0, x1) = (sp.pages[0].x, sp.pages[1].x);
+    (sp.pages[0].x, sp.pages[1].x) = (x1, x0);
+    let b = cache.get(&d, sid, None);
+    assert!(!Arc::ptr_eq(&a, &b));
+    assert_eq!(b.frames[0].lines[0].baseline, compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].baseline);
+    assert!((a.frames[0].lines[0].baseline - b.frames[0].lines[0].baseline).abs() > 1.0);
 }
 
 #[test]
@@ -4453,4 +7672,216 @@ fn an_empty_last_paragraph_isnt_overset() {
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset());
     let (d, sid, _) = doc_with("One\nTwo\n\n", Rect::new(0.0, 0.0, 200.0, 35.0), ParaAttrs::default());
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset(), "an empty paragraph before the last one is text");
+}
+
+#[test]
+fn greek_text_gets_greek_hyphenation() {
+    // Greek had no hyphenation at all: `hypher`'s Greek patterns were not among the features
+    // the crate asks for, so `Lang::for_language` found nothing and Greek text set unhyphenated
+    // however narrow the column (#1008).
+    let text = "δημοκρατια ανθρωπος πολιτισμος δημοκρατια ανθρωπος πολιτισμος";
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 76.0, 700.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    let n = st.len();
+    st.format_chars(0..n, |f| f.over.language = Some("Greek".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let breaks: Vec<&str> = all_lines(&cs).into_iter().filter(|l| l.hyphenated).map(|l| text[l.range.clone()].trim_end()).collect();
+    assert!(!breaks.is_empty(), "Greek text is hyphenated");
+    // Every break the composer took is a break the patterns give for that word.
+    for b in breaks {
+        let tail = b.rsplit(' ').next().unwrap_or(b);
+        let whole = text[text.find(b).unwrap() + b.len() - tail.len()..].split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+        let el = hyphen::Lang::for_language("Greek").unwrap();
+        let pts = hyphen::hyphen_points_in(whole, &hyphen::Limits::default(), el);
+        assert!(pts.contains(&tail.chars().count()), "break {tail}- in {whole} is a hyph-el point");
+    }
+    // The language is reached by name and by tag, as the other languages are.
+    for name in ["Greek", "Greek: Greece", "el", "el-GR"] {
+        assert!(hyphen::Lang::for_language(name).is_some(), "{name} has hyphenation");
+    }
+    // αν-θρω-πος, the syllables hyph-el gives.
+    let el = hyphen::Lang::for_language("Greek").unwrap();
+    assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
+}
+
+/// Rule Above's offset runs from the first line's baseline up to the rule's bottom edge, as in
+/// InDesign: a rule set clear of the cap height sits between the rows, not across the row above
+/// (an INDD project list whose rules crossed the previous paragraph's text).
+#[test]
+fn rule_above_offset_is_measured_from_the_baseline() {
+    use designcraft_doc::Rule;
+    let rule = Rule { on: true, weight: 1.5, offset: 10.0, ..Default::default() };
+    let para = ParaAttrs { rule_above: Some(rule), ..Default::default() };
+    let (d, sid, fid) = doc_with("Row one\nRow two", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let (first, second) = (lines[0], lines[1]);
+    let mut decos: Vec<Rect> = cs.frame(fid).unwrap().decos.iter().map(|dc| dc.rect).collect();
+    decos.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    let rule = decos[1];
+    assert!((rule.y1 - (second.baseline - 10.0)).abs() < 1e-6, "{rule:?}, baseline {}", second.baseline);
+    assert!((rule.height() - 1.5).abs() < 1e-6);
+    assert!(rule.y0 > first.baseline, "the rule stays below the row above: {rule:?}, its baseline {}", first.baseline);
+}
+
+#[test]
+fn parent_page_frames_know_which_side_of_the_spine_they_are_on() {
+    // Folios on a facing-pages parent: towards/away from spine must differ between its left and right page.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let w = d.parents[0].pages[0].width;
+    let para = ParaFormat { para: ParaAttrs { align: Some(Align::TowardsSpine), ..Default::default() }, ..Default::default() };
+    let (_, left_story) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(36.0, 700.0, w - 36.0, 730.0), lid, "7", para.clone()).unwrap();
+    let (_, right_story) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(w + 36.0, 700.0, 2.0 * w - 36.0, 730.0), lid, "8", para).unwrap();
+    assert!(frame_specs(&d, left_story)[0].left_page);
+    assert!(!frame_specs(&d, right_story)[0].left_page);
+}
+
+#[test]
+fn a_grouped_frame_takes_the_side_of_the_page_its_group_moves_it_to() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    let lid = d.default_layer();
+    let (l, r) = (d.spreads[1].pages[0].clone(), d.spreads[1].pages[1].clone());
+    let rect = Rect::new(l.x + 36.0, 36.0, l.x + l.width - 36.0, 300.0);
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(1), rect, lid, "Text", ParaFormat::default()).unwrap();
+    // The frame's own coordinates are on the left page; its group's transform puts it on the right one.
+    let mut g = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Group, designcraft_geom::PathData::default());
+    g.xf = designcraft_geom::Affine::translate((r.x - l.x, 0.0));
+    let sp = Arc::make_mut(&mut d.spreads[1]);
+    let at = sp.items.iter().position(|it| it.id == fid).unwrap();
+    g.content = designcraft_doc::Content::Group { items: vec![sp.items.remove(at)] };
+    sp.items.push(Arc::new(g));
+    let spec = &frame_specs(&d, sid)[0];
+    assert!(spec.right_page && !spec.left_page);
+    assert_eq!(spec.page, Some(2));
+}
+
+/// A right-to-left paragraph's first-line indent belongs at its start side, the right. Applied on
+/// the left it moved the first line the wrong way — out of the frame for the hanging indent a
+/// numbered list uses (right indent 10 mm, first line −10 mm), while the wrapped lines sat where
+/// the first line should have been (#1448).
+#[test]
+fn an_rtl_first_line_indent_is_at_the_right_edge() {
+    const MM: f64 = 72.0 / 25.4;
+    // Latin text in a right-to-left paragraph: the direction is the paragraph's, and it is the
+    // placement that is being measured, so no Arabic font has to be present.
+    let text = LOREM;
+    let rect = Rect::new(0.0, 0.0, 200.0, 300.0);
+    let para = |dir, align, first, left, right| ParaAttrs {
+        direction: Some(dir),
+        align: Some(align),
+        first_line_indent: Some(first),
+        left_indent: Some(left),
+        right_indent: Some(right),
+        ..Default::default()
+    };
+    // The hanging indent of a numbered list, right to left.
+    let (d, sid, _) = doc_with(text, rect, para(designcraft_doc::TextDirection::RightToLeft, Align::Right, -10.0 * MM, 0.0, 10.0 * MM));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() >= 2, "the text wraps: {}", lines.len());
+    let right_edge = |l: &Line| l.glyphs.iter().filter(|g| g.visible).map(|g| g.x + g.adv).fold(f64::MIN, f64::max);
+    let left_edge = |l: &Line| l.glyphs.iter().filter(|g| g.visible).map(|g| g.x).fold(f64::MAX, f64::min);
+    // The first line reaches the frame's right edge; the wrapped lines stop 10 mm short of it.
+    assert!((right_edge(lines[0]) - rect.x1).abs() < 1.0, "first line at the edge: {}", right_edge(lines[0]));
+    assert!((right_edge(lines[1]) - (rect.x1 - 10.0 * MM)).abs() < 1.0, "wrapped line indented: {}", right_edge(lines[1]));
+    // And nothing leaves the frame on the left, which is where the first line used to go.
+    for (i, l) in lines.iter().enumerate() {
+        assert!(left_edge(l) >= rect.x0 - 0.01, "line {i} starts inside the frame: {}", left_edge(l));
+    }
+
+    // The same paragraph left to right is unchanged: the first line hangs on the left.
+    let (d, sid, _) = doc_with(text, rect, para(designcraft_doc::TextDirection::LeftToRight, Align::Left, -10.0 * MM, 10.0 * MM, 0.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!((left_edge(lines[0]) - rect.x0).abs() < 1.0, "left to right, first line at the edge: {}", left_edge(lines[0]));
+    assert!((left_edge(lines[1]) - (rect.x0 + 10.0 * MM)).abs() < 1.0, "left to right, wrapped line indented: {}", left_edge(lines[1]));
+}
+
+/// A marginal note (an anchored text frame, Only Align First Line to Grid, 9/10) hangs 15 pt
+/// above its anchor's baseline on a right-hand page. It composes against the document grid where
+/// it is placed: its first line moves down onto the grid line, the second follows 10 pt below,
+/// and its page is the host's. Composed where it was stored, it snapped to a grid measured from
+/// its own top edge and sat on no page.
+#[test]
+fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
+    use designcraft_doc::anchored::AnchorRelative as R;
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    d.settings.baseline_grid.start = 36.0;
+    d.settings.baseline_grid.increment = 10.0;
+    let lid = d.default_layer();
+    let page = d.spreads[1].pages[1].clone();
+    assert_eq!(page.side, designcraft_doc::PageSide::Right);
+    // Body lines at 46, 56, 66, … (on the grid) while the frame top is at 36.
+    let body = "One.\nTwo.\nThree.\nFour.";
+    let rect = Rect::new(page.x + 108.0, 36.0, page.x + page.width - 36.0, 400.0);
+    let (bf, sid) = d.add_text_frame(SpreadRef::Doc(1), rect, lid, body, ParaFormat::default()).unwrap();
+    d.item_mut(bf).unwrap().text_frame_mut().unwrap().options.first_baseline = FirstBaseline::Leading;
+    let nine_ten = |f: &mut designcraft_doc::story::CharFormat| {
+        f.over.size = Some(9.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(10.0));
+    };
+    d.story_mut(sid).unwrap().format_chars(0..body.len(), nine_ten);
+    // The note: its own story in a 60 × 40 frame anchored in the third line.
+    let (nid, nsid) = (ItemId(d.alloc()), StoryId(d.alloc()));
+    let text = "Note one\u{2028}note two";
+    let para = ParaFormat { para: ParaAttrs { grid_align: Some(GridAlign::FirstLineOnly), ..Default::default() }, ..Default::default() };
+    let mut story = Story::with_text(nsid, text, para);
+    story.format_chars(0..text.len(), nine_ten);
+    story.frames.push(nid);
+    d.stories.insert(nsid, Arc::new(story));
+    let mut note =
+        designcraft_doc::Item::new(nid, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 40.0)));
+    note.content = Content::Text(designcraft_doc::TextFrame { story: nsid, options: Default::default() });
+    let position = designcraft_doc::AnchorPosition::Custom {
+        x_relative: R::TextFrame,
+        y_relative: R::Anchor,
+        x_offset: -72.0,
+        y_offset: -15.0,
+        object_point: 0,
+        ref_point: 0,
+        keep_within_column: false,
+        spine_relative: false,
+    };
+    let at = body.find("Three").unwrap();
+    d.story_mut(sid).unwrap().insert_object(at, designcraft_doc::AnchoredObject::new(note, position));
+
+    let cache = Cache::new();
+    let on_grid = |y: f64| on_grid(y, (36.0, 10.0));
+    // (anchor line baseline, note baselines), in spread space.
+    let baselines = |d: &Document, cs: &ComposedStory| {
+        let host = compose_story(d, sid, &ComposeOptions::default());
+        let ft = host.frame(bf).unwrap();
+        let o = &ft.objects[0];
+        let fxf = d.item(bf).unwrap().xf;
+        let anchor = (fxf * Point::new(0.0, ft.lines[o.line].baseline)).y;
+        let nxf = fxf * Affine::translate(o.origin.to_vec2()) * d.anchored_item(nid).unwrap().xf;
+        (anchor, all_lines(cs).iter().map(|l| (nxf * Point::new(0.0, l.baseline)).y).collect::<Vec<_>>())
+    };
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+
+    let (anchor, lines) = baselines(&d, &cache.get(&d, nsid, None));
+    assert!(near(anchor, 66.0), "anchor baseline {anchor}");
+    assert_eq!(lines.len(), 2);
+    assert!(near(lines[0], anchor) && near(lines[1], anchor + 10.0), "note baselines {lines:?}, anchor {anchor}");
+    assert_eq!(baselines(&d, &compose_story(&d, nsid, &ComposeOptions::default())).1, lines);
+    // The note is on the host's right-hand page, with that page's rectangle.
+    let placed = placed::placements(&d, nsid, &mut |h| Arc::new(compose_story(&d, h, &ComposeOptions::default())));
+    let spec = &frame_specs_placed(&d, nsid, &placed)[0];
+    assert_eq!((spec.page, spec.right_page, spec.left_page), (Some(2), true, false));
+    assert!(spec.page_rect.is_some());
+
+    // Host moved down 5 pt: the anchor is off the grid, and the note's first line moves down from
+    // 10 pt above it onto the grid line 5 pt above it. The cache composes the note again.
+    let xf = d.item(bf).unwrap().xf;
+    d.item_mut(bf).unwrap().xf = Affine::translate((0.0, 5.0)) * xf;
+    let (anchor, lines) = baselines(&d, &cache.get(&d, nsid, None));
+    assert!(near(anchor, 71.0), "anchor baseline {anchor}");
+    assert!(on_grid(lines[0]) && near(lines[0], anchor - 5.0) && near(lines[1], lines[0] + 10.0), "note baselines {lines:?}, anchor {anchor}");
+    assert_eq!(baselines(&d, &compose_story(&d, nsid, &ComposeOptions::default())).1, lines);
+
+    // The host's page turns into a left-hand page: the note is composed again for that side.
+    let before = cache.get(&d, nsid, None);
+    Arc::make_mut(&mut d.spreads[1]).pages[1].side = designcraft_doc::PageSide::Left;
+    assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
 }

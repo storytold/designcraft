@@ -78,3 +78,118 @@ pub(crate) fn kenten_character(v: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+// Kenten, shatai, auto tate-chu-yoko and grid settings.
+
+use designcraft_doc::cjk_settings::{AdornmentOverprint, KentenAlignment, KentenKind, KentenPosition};
+
+/// `KentenKind`. `None`, `KentenSesameDot` and `KentenSmallBlackCircle` are confirmed names; the
+/// others follow their pattern. `KentenBlackBullseye` / `KentenWhiteBullseye` are read as well.
+pub(crate) fn kenten_kind_in(v: &str) -> Option<KentenKind> {
+    Some(match v.trim() {
+        "KentenSesameDot" => KentenKind::SesameDot,
+        "KentenWhiteSesameDot" => KentenKind::WhiteSesameDot,
+        "KentenFisheye" | "KentenBlackBullseye" => KentenKind::Fisheye,
+        "KentenBlackCircle" => KentenKind::BlackCircle,
+        "KentenSmallBlackCircle" => KentenKind::SmallBlackCircle,
+        "KentenBullseye" | "KentenWhiteBullseye" => KentenKind::Bullseye,
+        "KentenBlackTriangle" => KentenKind::BlackTriangle,
+        "KentenWhiteTriangle" => KentenKind::WhiteTriangle,
+        "KentenWhiteCircle" => KentenKind::WhiteCircle,
+        "KentenSmallWhiteCircle" => KentenKind::SmallWhiteCircle,
+        "Custom" => KentenKind::Custom,
+        _ => return None,
+    })
+}
+
+pub(crate) fn kenten_kind_out(k: KentenKind) -> &'static str {
+    match k {
+        KentenKind::SesameDot => "KentenSesameDot",
+        KentenKind::WhiteSesameDot => "KentenWhiteSesameDot",
+        KentenKind::Fisheye => "KentenFisheye",
+        KentenKind::BlackCircle => "KentenBlackCircle",
+        KentenKind::SmallBlackCircle => "KentenSmallBlackCircle",
+        KentenKind::Bullseye => "KentenBullseye",
+        KentenKind::BlackTriangle => "KentenBlackTriangle",
+        KentenKind::WhiteTriangle => "KentenWhiteTriangle",
+        KentenKind::WhiteCircle => "KentenWhiteCircle",
+        KentenKind::SmallWhiteCircle => "KentenSmallWhiteCircle",
+        KentenKind::Custom => "Custom",
+    }
+}
+
+pub(crate) fn kenten_position_in(v: &str) -> Option<KentenPosition> {
+    match v.trim() {
+        "AboveRight" => Some(KentenPosition::AboveRight),
+        "BelowLeft" => Some(KentenPosition::BelowLeft),
+        _ => None,
+    }
+}
+
+pub(crate) fn kenten_position_out(v: KentenPosition) -> &'static str {
+    match v {
+        KentenPosition::AboveRight => "AboveRight",
+        KentenPosition::BelowLeft => "BelowLeft",
+    }
+}
+
+/// `KentenAlignment`: `AlignKentenCenter` is confirmed, `AlignKentenLeft` (肩付き) is a guess.
+pub(crate) fn kenten_alignment_in(v: &str) -> Option<KentenAlignment> {
+    match v.trim() {
+        "AlignKentenCenter" => Some(KentenAlignment::Center),
+        "AlignKentenLeft" | "AlignKentenStart" => Some(KentenAlignment::Start),
+        _ => None,
+    }
+}
+
+pub(crate) fn kenten_alignment_out(v: KentenAlignment) -> &'static str {
+    match v {
+        KentenAlignment::Center => "AlignKentenCenter",
+        KentenAlignment::Start => "AlignKentenLeft",
+    }
+}
+
+/// Adornment overprint: `Auto` is confirmed, `OverprintOn` / `OverprintOff` are guesses.
+pub(crate) fn overprint_in(v: &str) -> Option<AdornmentOverprint> {
+    match v.trim() {
+        "Auto" => Some(AdornmentOverprint::Auto),
+        "OverprintOn" | "true" => Some(AdornmentOverprint::On),
+        "OverprintOff" | "false" => Some(AdornmentOverprint::Off),
+        _ => None,
+    }
+}
+
+pub(crate) fn overprint_out(v: AdornmentOverprint) -> &'static str {
+    match v {
+        AdornmentOverprint::Auto => "Auto",
+        AdornmentOverprint::On => "OverprintOn",
+        AdornmentOverprint::Off => "OverprintOff",
+    }
+}
+
+/// `GridAlignment` other than `None`: the grid reference. Both `ICF` spellings are read; unknown
+/// values align the roman baseline.
+pub(crate) fn grid_reference_in(v: &str) -> A {
+    match v.trim() {
+        "AlignEmTop" => A::EmTop,
+        "AlignEmCenter" => A::EmCenter,
+        "AlignEmBottom" => A::EmBottom,
+        "AlignICFTop" | "AlignIcfTop" => A::IcfTop,
+        "AlignICFBottom" | "AlignIcfBottom" => A::IcfBottom,
+        _ => A::Baseline,
+    }
+}
+
+pub(crate) fn grid_reference_out(v: A) -> &'static str {
+    match v {
+        A::Baseline => "AlignBaseline",
+        A::EmTop => "AlignEmTop",
+        A::EmCenter => "AlignEmCenter",
+        A::EmBottom => "AlignEmBottom",
+        A::IcfTop => "AlignICFTop",
+        A::IcfBottom => "AlignICFBottom",
+    }
+}
+
+/// IDML writes `ShataiDegreeAngle` in hundredths of a degree (`4500` = 45°).
+pub(crate) const SHATAI_ANGLE_UNITS: f64 = 100.0;

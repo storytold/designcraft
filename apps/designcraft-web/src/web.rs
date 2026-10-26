@@ -6,7 +6,7 @@ use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["designcraft", "idml"];
+const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
     "jpg",
@@ -350,9 +350,14 @@ struct WebShell {
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let graphics = self.graphics.clone();
-        let _ = graphics.run_if_healthy(|| {
-            let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
-            for f in dropped {
+        let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let _ = self.graphics.run_if_healthy(|| {
+            // Dropped files belong to this host iteration's raw input, not to stale logic input:
+            // read them here once, before the batch is saved as pending for a hidden pass.
+            for f in std::mem::take(&mut raw.dropped_files) {
                 let request = self.app.import_request("drop");
                 let inbox = self.inbox.clone();
                 let ctx = ctx.clone();
@@ -367,14 +372,8 @@ impl eframe::App for WebShell {
                     }
                 });
             }
-            self.app.logic(ctx);
-        });
-    }
-
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
-        let _ = self.graphics.run_if_healthy(|| {
-            designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused());
-            self.app.raw_input_hook(raw);
+            designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused() || self.app.canvas_ime());
+            self.app.raw_input_hook(ctx, raw);
         });
     }
 
@@ -395,10 +394,12 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             let ctx = ctx.clone();
             let dialog = if request.purpose == "swatches" {
                 rfd::AsyncFileDialog::new().add_filter("Swatch Exchange (ASE)", &["ase"])
+            } else if request.purpose == "shortcuts" {
+                rfd::AsyncFileDialog::new().add_filter("Shortcut set (JSON, InDesign text)", &["json", "txt"])
             } else if request.purpose == "place" {
                 rfd::AsyncFileDialog::new().add_filter("Graphics", IMAGE_EXTS)
             } else {
-                rfd::AsyncFileDialog::new().add_filter("DesignCraft", DOC_EXTS)
+                rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML or InDesign", DOC_EXTS)
             };
             wasm_bindgen_futures::spawn_local(async move {
                 let Some(file) = dialog.pick_file().await else {
@@ -412,11 +413,7 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
         // Exports ask for a name; the browser decides where the download goes.
         pick_save: Some(Box::new(|name: &str| Some(name.to_string()))),
         write: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
-        download: Some(Box::new(|name: &str, bytes: &[u8]| {
-            if let Err(e) = download(name, bytes) {
-                log::error!("download of {name} failed: {e}");
-            }
-        })),
+        download: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
         inbox: Some(inbox),
         ..Default::default()
     }
@@ -445,6 +442,9 @@ fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
     let revoke = wasm_bindgen::closure::Closure::once_into_js(move || {
         web_sys::Url::revoke_object_url(&url).ok();
     });
-    window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 10_000).map_err(js)?;
+    // The download has started; a missed revoke only keeps the blob until the page closes.
+    if let Err(e) = window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 10_000) {
+        log::warn!("could not schedule revoking the download URL: {}", js(e));
+    }
     Ok(())
 }

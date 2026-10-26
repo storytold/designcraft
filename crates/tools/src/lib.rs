@@ -11,6 +11,7 @@
 
 mod anchors;
 pub mod catalog;
+mod corners;
 mod frame;
 mod gradient;
 pub mod layout;
@@ -30,8 +31,11 @@ use designcraft_geom::{Affine, BezPath, Point, Rect, Unit, Vec2};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use catalog::{SPLIT_IN_TWO_COLUMNS, TOOL_GROUPS, ToolInfo, tool_for_shortcut, tool_info};
-pub use layout::CanvasLayout;
+pub use catalog::{SPLIT_IN_TWO_COLUMNS, TOOL_GROUPS, ToolInfo, tool_info};
+pub use layout::{CanvasLayout, SpreadSlot};
+pub use nav::ZoomTool;
+/// The exact text an IME commit types (see [`Tool::ime_commit`]).
+pub use text::ime_commit_text;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mods {
@@ -119,6 +123,8 @@ pub enum Action {
     SwitchTool(String),
     /// Ask the UI to pan/zoom: `{"pan":[dx,dy]}` (screen px) or `{"zoomAt":[x,y], "factor":f}` (canvas).
     View(Value),
+    /// The tool used the event for its own state; the engine has nothing to do.
+    Handled,
 }
 
 /// Which snap categories are on, and the snap zone in screen pixels.
@@ -136,6 +142,9 @@ pub struct SnapView {
     pub smart_dimensions: bool,
     pub smart_spacing: bool,
     pub zone_px: f64,
+    /// View › Grids & Guides › Lock Guides: ruler guides can't be selected or moved.
+    #[serde(default)]
+    pub guides_locked: bool,
 }
 
 impl SnapView {
@@ -149,6 +158,7 @@ impl SnapView {
         smart_dimensions: true,
         smart_spacing: true,
         zone_px: 4.0,
+        guides_locked: false,
     };
     pub const OFF: Self = Self {
         snap_to_guides: false,
@@ -160,6 +170,7 @@ impl SnapView {
         smart_dimensions: false,
         smart_spacing: false,
         zone_px: 4.0,
+        guides_locked: false,
     };
 
     /// Guides, the document grid, or smart guides are on.
@@ -182,6 +193,9 @@ pub enum Gesture {
     Create,
     Rotate,
     Point,
+    /// A ruler guide being dragged: one line on one axis, with no size or spacing to match and
+    /// no pull from the baseline grid.
+    Guide,
 }
 
 pub struct SnapRequest<'a> {
@@ -193,6 +207,8 @@ pub struct SnapRequest<'a> {
     /// Top, center, bottom.
     pub y_edges: [bool; 3],
     pub exclude: &'a [ItemId],
+    /// Ruler guides that are not targets: the ones being dragged.
+    pub exclude_guides: &'a [designcraft_doc::GuideSel],
     pub copying: bool,
     /// Proposed width and height for the dimensions pass. None when that length is not being set.
     pub lengths: [Option<f64>; 2],
@@ -232,6 +248,19 @@ impl ToolContext<'_> {
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
+    /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
+    /// group, so a loaded text cursor over a text frame in a group found nothing to thread into
+    /// (gaps 27); InDesign threads into it.
+    pub fn hit_text_frame(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
+        let (sr, id) = self.hit(p)?;
+        let it = self.doc.item(id)?;
+        if it.is_text_frame() {
+            return Some((sr, id));
+        }
+        let (_, sp) = self.layout.spread_at(p)?;
+        designcraft_doc::hit_descendant(it, sp, self.tol(4.0), &|c| c.is_text_frame()).map(|f| (sr, f))
+    }
+
     /// The parent item showing (not yet overridden) on the document page under `p`:
     /// (absolute page, parent item).
     pub fn hit_parent_on_page(&self, p: Point) -> Option<(usize, ItemId)> {
@@ -239,16 +268,33 @@ impl ToolContext<'_> {
         let spread = self.doc.spreads.get(si)?;
         let pi = spread.page_at_x(sp.x)?;
         let page = self.doc.first_page_of_spread(si) + pi;
-        let (ppi, ppg) = self.doc.parent_page_for(page)?;
-        let parent = &self.doc.parents[ppi];
-        let pg = &spread.pages[pi];
-        let at = sp - designcraft_geom::Vec2::new(pg.x - parent.pages[ppg].x, 0.0);
-        parent
-            .items
-            .iter()
+        let pg = spread.pages.get(pi)?;
+        if !pg.show_parent_items {
+            return None;
+        }
+        // What the renderer draws on this page, in its order: by layer, then the parent's bases
+        // before the parent. The last hit is the topmost.
+        let mut shown = Vec::new();
+        for (ppi, ppg) in self.doc.shown_parent_pages(SpreadRef::Doc(si), pi) {
+            let Some(parent) = self.doc.parents.get(ppi) else { continue };
+            let Some(parent_page) = parent.pages.get(ppg) else { continue };
+            let off = designcraft_geom::Vec2::new(pg.x - parent_page.x, 0.0);
+            for it in &parent.items {
+                if pg.overridden.contains(&it.id) || parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg) {
+                    continue;
+                }
+                shown.push((it, off));
+            }
+        }
+        shown.sort_by_key(|(it, _)| self.doc.layer_rank(it.layer));
+        shown
+            .into_iter()
             .rev()
-            .find(|it| !it.locked && !pg.overridden.contains(&it.id) && designcraft_doc::edit_hit(it, at, self.tol(4.0)))
-            .map(|it| (page, it.id))
+            .find(|(it, off)| {
+                let layer = self.doc.layer(it.layer);
+                !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && designcraft_doc::edit_hit(it, sp - *off, self.tol(4.0))
+            })
+            .map(|(it, _)| (page, it.id))
     }
 
     fn hit_parent(&self, sr: SpreadRef, sp: Point) -> Option<(SpreadRef, ItemId)> {
@@ -325,6 +371,13 @@ pub enum Overlay {
         b: Point,
         label: String,
     },
+    /// The whole content of this frame drawn faintly, the part outside the frame included (while
+    /// the content moves inside it).
+    ContentGhost(ItemId),
+    /// The live-corner widget (yellow square): clicking it starts corner editing.
+    LiveCornerWidget(Point),
+    /// A live-corner diamond: dragging it sets the corner size.
+    LiveCornerDiamond(Point),
     /// A page selected with the Page tool (canvas rect): its outline and eight handles.
     PageHandles(Rect),
     /// A small tag whose bottom-left is at `p` (the Page tool's liquid page rule; English, the UI
@@ -419,6 +472,30 @@ pub trait Tool: Send {
     fn wants_text(&self, _cx: &ToolContext) -> bool {
         false
     }
+    /// IME composition (marked text) at the text caret: `text` replaces the previous marked text
+    /// (or the selected text when a composition starts); an empty `text` ends the composition with
+    /// nothing typed. `active_chars` is the clause being converted (empty: the IME's cursor), in
+    /// characters of `text`. The result arrives through [`Tool::ime_commit`].
+    fn ime_preedit(&mut self, _cx: &ToolContext, _text: &str, _active_chars: Option<std::ops::Range<usize>>) -> Vec<Action> {
+        vec![]
+    }
+    /// The IME committed `text`: it replaces the marked text and is typed as one step.
+    fn ime_commit(&mut self, _cx: &ToolContext, _text: &str) -> Vec<Action> {
+        vec![]
+    }
+    /// End a composition from outside the IME (a click, another command): the marked text stays
+    /// as typed.
+    fn ime_end(&mut self, _cx: &ToolContext) -> Vec<Action> {
+        vec![]
+    }
+    /// Is uncommitted IME text being shown? Keys, shortcuts and Undo wait while it is.
+    fn composing(&self) -> bool {
+        false
+    }
+    /// Where the IME candidate window goes: a caret line (top, bottom) in canvas space.
+    fn ime_caret(&self, _cx: &ToolContext) -> Option<(Point, Point)> {
+        None
+    }
 }
 
 pub fn create(id: &str) -> Box<dyn Tool> {
@@ -442,6 +519,7 @@ pub fn create(id: &str) -> Box<dyn Tool> {
         "scale" => Box::new(xform::XformTool::new("scale")),
         "shear" => Box::new(xform::XformTool::new("shear")),
         "eyedropper" => Box::new(xform::EyedropperTool),
+        "colorTheme" => Box::new(xform::ColorThemeTool),
         "hand" => Box::new(nav::HandTool::default()),
         "placeGun" => Box::new(nav::PlaceGun::default()),
         "zoom" => Box::new(nav::ZoomTool::default()),

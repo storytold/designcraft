@@ -164,6 +164,20 @@ fn spreads_and_ranges() {
 }
 
 #[test]
+fn pdfx4_xmp_has_metadata_date_and_version_id() {
+    let d = doc_with_text("Print me");
+    let opts = PdfOptions { standard: Standard::PdfX4, created: Some(1_700_000_000), ..Default::default() };
+    let r = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    let text = String::from_utf8_lossy(&r.bytes).to_string();
+    assert!(text.contains("<xmp:MetadataDate>2023-11-14T22:13:20Z</xmp:MetadataDate>"), "metadata date");
+    assert!(text.contains("<xmpMM:VersionID>1</xmpMM:VersionID>"), "version id");
+    assert!(crate::check_pdfx4(&r.bytes).is_empty());
+    // Without the two entries the check says so.
+    let stripped = text.replace("xmp:MetadataDate", "xmp:Other").replace("xmpMM:VersionID", "xmpMM:Other");
+    assert_eq!(crate::check_pdfx4(stripped.as_bytes()).iter().filter(|i| i.contains("xmp")).count(), 2);
+}
+
+#[test]
 fn standards() {
     let d = doc_with_text("Archive me");
     let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, created: Some(1_700_000_000), ..Default::default() });
@@ -174,14 +188,34 @@ fn standards() {
     // Output intent, identification and checks all in place; the update still reads.
     assert!(r.warnings.is_empty(), "{:?}", r.warnings);
     assert!(crate::check_pdfx4(&r.bytes).is_empty());
-    let text = String::from_utf8_lossy(&r.bytes).to_string();
-    assert!(text.contains("/OutputIntents[") && text.contains("DesignCraft Generic CMYK"));
+    // The default working CMYK space is the built-in Coated FOGRA39.
+    let intent = crate::print_tests::output_intent(&r.bytes).expect("output intent");
+    assert_eq!((intent.identifier.as_str(), intent.condition.as_str()), ("FOGRA39", "Coated FOGRA39 (fitted, craft-cms)"));
     // A plain export fails the checks; both read with the same pages.
     let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
     assert_eq!(hayro_syntax::Pdf::new(r.bytes.clone()).unwrap().pages().len(), hayro_syntax::Pdf::new(plain.clone()).unwrap().pages().len());
     assert!(crate::check_pdfx4(&plain).len() >= 3);
     assert_eq!(Standard::parse("PDF/X-4"), Some(Standard::PdfX4));
     assert_eq!(Standard::parse("pdfa-2b"), Some(Standard::PdfA2b));
+}
+
+#[test]
+fn table_gradient_fill_exports_a_shading() {
+    let mut d = Document::new(&NewDocument::default());
+    let mut gradient = designcraft_color::Gradient::default();
+    gradient.stops[0].color = Color::rgb(1.0, 0.0, 0.0);
+    gradient.stops[1].color = Color::rgb(0.0, 0.0, 1.0);
+    d.swatches.push(Swatch { name: "Table gradient".into(), value: SwatchValue::Gradient { gradient }, locked: false, named: true, hidden: false });
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    let mut t = designcraft_doc::Table::new(1, 1, 2, 0, 0, 200.0);
+    t.rows[0].height = 40.0;
+    t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    for cell in &mut t.cells {
+        cell.fill = "Table gradient".into();
+    }
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    let pdf = uncompressed(&d, PdfOptions::default());
+    assert!(pdf.contains("/ShadingType 2") || pdf.contains("/ShadingType2"), "table fill must export a linear gradient");
 }
 
 #[test]
@@ -232,22 +266,25 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
             id: asset,
             name: "scan.tif".into(),
             mime,
-            link: None,
             data: data.into(),
             pixels: Some(px),
-            page: 0,
+            ..Default::default()
         }),
     );
     let lid = d.default_layer();
     let id = ItemId(d.alloc());
     let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(72.0, 72.0, 272.0, 172.0)));
     it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset,
         size: (px.0 as f64, px.1 as f64),
         xf: designcraft_geom::Affine::translate((72.0, 72.0)) * designcraft_geom::Affine::scale(50.0),
+        clip: None,
         auto_fit: designcraft_doc::Fitting::FillProportionally,
         fit_align: 4,
         crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
     });
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
 }
@@ -320,6 +357,26 @@ fn cmyk_tiff_keeps_its_inks() {
         assert_eq!(images, vec![("DeviceCMYK".to_string(), px.clone())], "{standard:?}");
         assert_eq!(images[0].1[..4], [0, 0, 0, 255], "K only");
     }
+}
+
+/// A placed greyscale TIFF went into PDFs as DeviceRGB, unlike a greyscale PNG or JPEG (#1426):
+/// a page holding only a black-and-white scan declared colour.
+#[test]
+fn grey_tiff_exports_as_device_gray() {
+    let px: Vec<u8> = vec![0, 64, 128, 255, 255, 128, 64, 0];
+    let mut tif = Vec::new();
+    tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut tif)).unwrap().write_image::<tiff::encoder::colortype::Gray8>(4, 2, &px).unwrap();
+    let mut d = doc_with_text("x");
+    place(&mut d, tif, (4, 2));
+    for standard in [Standard::None, Standard::PdfX4] {
+        let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard, ..Default::default() }).unwrap();
+        assert!(r.warnings.is_empty(), "{standard:?}: {:?}", r.warnings);
+        assert_eq!(image_xobjects(&r.bytes), vec![("DeviceGray".to_string(), px.clone())], "{standard:?}");
+    }
+    // Recompressed, it stays a grey JPEG.
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images: true, compress: false, ..Default::default() }).unwrap();
+    let s = String::from_utf8_lossy(&r.bytes);
+    assert!(s.contains("/DCTDecode") && s.contains("/DeviceGray") && !s.contains("/DeviceRGB"), "a grey JPEG");
 }
 
 /// An 8×8 raster encoded as `fmt`; `alpha` gives it a transparent corner.
@@ -439,6 +496,7 @@ fn paint_order(bytes: &[u8]) -> Vec<(String, f32)> {
                 GlyphDrawMode::Fill => ("fill text".into(), 0.0),
                 GlyphDrawMode::Stroke(p) => ("stroke text".into(), p.line_width),
                 GlyphDrawMode::Invisible => ("invisible text".into(), 0.0),
+                GlyphDrawMode::Clip => ("clip text".into(), 0.0),
             });
         }
         fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
@@ -526,6 +584,35 @@ fn missing_glyphs_print_as_boxes() {
 }
 
 #[test]
+fn exports_embedded_text_from_footnotes() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    use std::sync::Arc;
+    let mut d = doc_with_text("Body");
+    let body = *d.stories.keys().next().unwrap();
+    let (fid, _) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), d.default_layer(), "Embedded", ParaFormat::default()).unwrap();
+    let item = d.item(fid).unwrap().clone();
+    d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+    let story = d.story_mut(body).unwrap();
+    story.insert_note(4, "Note", ParaFormat::default());
+    Arc::make_mut(&mut story.notes[0]).text.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+    d.check().unwrap();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let text = extract_text(&bytes).join("");
+    assert!(text.contains("Embedded"), "{text}");
+}
+
+#[test]
+fn fills_open_contours_without_changing_strokes() {
+    let mut d = Document::new(&NewDocument::default());
+    add_box(&mut d, Rect::new(40.0, 50.0, 62.0, 67.0), designcraft_color::swatch::BLACK);
+    let id = d.spreads[0].items[0].id;
+    d.item_mut(id).unwrap().path.subpaths[0].closed = false;
+    let (_, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+    assert!(paths.iter().any(|r| (r.width() - 22.0).abs() < 0.01 && (r.height() - 17.0).abs() < 0.01), "{paths:?}");
+}
+
+#[test]
 fn column_rules_are_drawn() {
     let rules = |on: bool| {
         let mut d = doc_with_text("Column text");
@@ -544,6 +631,164 @@ fn column_rules_are_drawn() {
     assert_eq!(xs.len(), 2, "{xs:?}");
     assert!((xs[0] - 214.0).abs() < 0.01 && (xs[1] - 398.0).abs() < 0.01, "{xs:?}");
     assert!(rules(false).is_empty());
+}
+
+#[test]
+fn small_caps_and_small_cap_figures_extract_as_typed() {
+    // Source Sans 3 substitutes letters and figures under `smcp` / `c2sc` (`one` → `one.s`),
+    // in typed text, in a page number and in a list label alike (each with its own figures, so
+    // one's mapping can't stand in for another's).
+    use designcraft_doc::{Capitalization, ListType, story::PAGE_NUMBER};
+    for caps in [Capitalization::SmallCaps, Capitalization::OpenTypeAllSmallCaps] {
+        let text = format!("Abc 234 x{PAGE_NUMBER}\nItem");
+        let mut d = doc_with_text(&text);
+        let sid = *d.stories.keys().next().unwrap();
+        let st = d.story_mut(sid).unwrap();
+        st.format_paras(0..text.len(), |f| {
+            f.chars.font_family = Some("Source Sans 3".into());
+            f.chars.capitalization = Some(caps);
+        });
+        st.format_paras(text.len() - 1..text.len(), |f| {
+            f.para.list_type = Some(ListType::Numbers);
+            f.para.start_at = Some(Some(5));
+        });
+        let got = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap()).concat();
+        assert!(!got.contains('\u{FFFD}'), "{caps:?}: {got:?}");
+        assert_eq!(got.split_whitespace().collect::<Vec<_>>(), ["Abc", "234", "x15.Item"], "{caps:?}: {got:?}");
+    }
+    // All small caps draws `A` and `a` with one glyph, which one ToUnicode entry can't cover: the
+    // second spelling goes out as ActualText (which this extractor doesn't read).
+    let mut d = doc_with_text("Aa");
+    let sid = *d.stories.keys().next().unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+        f.over.font_family = Some("Source Sans 3".into());
+        f.over.capitalization = Some(Capitalization::OpenTypeAllSmallCaps);
+    });
+    assert!(uncompressed(&d, PdfOptions::default()).contains("/ActualText"));
+}
+
+/// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
+#[test]
+fn clipping_path_clips_the_image() {
+    let png = |d: &mut Document| {
+        let mut b = Vec::new();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png)
+            .unwrap();
+        place(d, b, (4, 4));
+    };
+    let clips = |s: &str| s.lines().filter(|l| matches!(l.trim(), "W" | "W*")).count();
+    let mut d = doc_with_text("x");
+    png(&mut d);
+    let plain = uncompressed(&d, PdfOptions::default());
+    let id = d.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().id;
+    let triangle = designcraft_geom::PathData::single(designcraft_geom::path::SubPath::polyline(
+        &[designcraft_geom::Point::new(0.0, 4.0), designcraft_geom::Point::new(2.0, 0.0), designcraft_geom::Point::new(4.0, 4.0)],
+        true,
+    ));
+    let mut clip = designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::DetectEdges, triangle);
+    let set = |d: &mut Document, c: &designcraft_doc::ClippingPath| {
+        if let Some(designcraft_doc::Content::Graphic(g)) = d.item_mut(id).map(|it| &mut it.content) {
+            g.clip = Some(std::sync::Arc::new(c.clone()));
+        }
+    };
+    set(&mut d, &clip);
+    let clipped = uncompressed(&d, PdfOptions::default());
+    assert_eq!(clips(&clipped), clips(&plain) + 1, "{clipped}");
+    // The triangle's apex: graphic (2, 0) → page (172, 72) → PDF y = page height − 72.
+    let apex_y = d.spreads[0].pages[0].height - 72.0;
+    assert!(clipped.contains(&format!("172 {apex_y} l")), "{clipped}");
+    clip.invert = true;
+    set(&mut d, &clip);
+    assert!(uncompressed(&d, PdfOptions::default()).lines().any(|l| l.trim() == "W*"), "an inverted clip is even-odd");
+}
+
+/// A page whose parent B is based on A carries A's items, then B's.
+#[test]
+fn based_on_parent_items_export_base_first() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..NewDocument::default() });
+    d.swatches.push(Swatch::color("Base Cyan", Color::cmyk(1.0, 0.0, 0.0, 0.0)));
+    d.swatches.push(Swatch::color("Parent Magenta", Color::cmyk(0.0, 1.0, 0.0, 0.0)));
+    let a = d.parents[0].id;
+    let b = d.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    std::sync::Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    d.apply_parent(&[0], Some(b)).unwrap();
+    let lid = d.default_layer();
+    for (pi, swatch, r) in [(0, "Base Cyan", Rect::new(36.0, 36.0, 136.0, 136.0)), (1, "Parent Magenta", Rect::new(200.0, 36.0, 300.0, 136.0))] {
+        let mut it = Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+        it.fill = Fill::swatch(swatch);
+        d.insert_item(SpreadRef::Parent(pi), it, None).unwrap();
+    }
+    let s = uncompressed(&d, PdfOptions::default());
+    let (cyan, magenta) = (s.find("1 0 0 0 k"), s.find("0 1 0 0 k"));
+    assert!(cyan.is_some() && magenta.is_some(), "both parents' items are on the page");
+    assert!(cyan < magenta, "the base parent's item is drawn first");
+}
+
+/// Form fields and buttons that don't print stay out of the PDF: inside a hidden group, on a
+/// hidden or non-printing layer, or non-printing themselves (#726).
+#[test]
+fn only_printed_fields_and_buttons_export() {
+    use designcraft_doc::{ButtonAction, Content, FieldKind, FormField, LayerId, Shape};
+    use designcraft_geom::shapes::rectangle;
+    fn control(d: &mut Document, layer: LayerId, y: f64, name: &str, button: bool) -> Item {
+        let r = Rect::new(if button { 300.0 } else { 72.0 }, y, if button { 400.0 } else { 250.0 }, y + 24.0);
+        let mut it = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, rectangle(r));
+        if button {
+            it.button = Some(ButtonAction::GoToUrl { url: format!("https://example.com/{name}") });
+        } else {
+            it.form_field = Some(FormField {
+                kind: FieldKind::TextField,
+                name: name.into(),
+                value: String::new(),
+                options: Vec::new(),
+                multiline: false,
+                required: false,
+                font_size: 0.0,
+            });
+        }
+        it
+    }
+    let export = |unprinted: bool| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        for b in [false, true] {
+            let it = control(&mut d, lid, 72.0, "shown", b);
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        }
+        if unprinted {
+            let mut layers = Vec::new();
+            for (visible, printable) in [(false, true), (true, false)] {
+                let mut l = d.layers[0].clone();
+                l.id = LayerId(d.alloc());
+                l.visible = visible;
+                l.printable = printable;
+                d.layers.push(l.clone());
+                layers.push(l.id);
+            }
+            for (i, layer) in layers.into_iter().enumerate() {
+                for b in [false, true] {
+                    let it = control(&mut d, layer, 120.0 + 48.0 * i as f64, &format!("unprinted-layer-{i}"), b);
+                    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+                }
+            }
+            for b in [false, true] {
+                let mut it = control(&mut d, lid, 240.0, "unprinted-item", b);
+                it.nonprinting = true;
+                d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+            }
+            let children: Vec<_> = [false, true].map(|b| std::sync::Arc::new(control(&mut d, lid, 288.0, "unprinted-group", b))).into();
+            let mut group = Item::new(ItemId(d.alloc()), lid, Shape::Group, rectangle(Rect::new(72.0, 288.0, 400.0, 312.0)));
+            group.content = Content::Group { items: children };
+            group.hidden = true;
+            d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        }
+        uncompressed(&d, PdfOptions::default())
+    };
+    let (shown, all) = (export(false), export(true));
+    assert_eq!(all.matches("/Subtype/Widget").count(), 1, "one field");
+    assert!(all.contains("(shown)") && !all.contains("unprinted"), "only the shown field and button");
+    assert_eq!(all.matches("/Link").count(), shown.matches("/Link").count(), "only the shown button");
 }
 
 #[test]
@@ -567,4 +812,81 @@ fn empty_and_populated_export_metadata_preserve_key_presence() {
         assert!(s.contains(key), "missing populated metadata {key}");
     }
     assert!(s.contains("Synthetic title") && s.contains("Test author"));
+}
+
+/// File › File Info goes into the PDF's document information and XMP; the export options' title
+/// and author replace File Info's, and PDF/X-4 and Print Booklet keep them.
+#[test]
+fn file_info_is_written_into_the_pdf_metadata() {
+    let mut d = doc_with_text("Body");
+    d.title = "flyer-v3".into();
+    d.file_info.document_title = "Spring Catalog".into();
+    d.file_info.author = "Ana Ruiz".into();
+    d.file_info.description = "Shoes for the spring season".into();
+    d.file_info.keywords = vec!["spring".into(), "shoes".into()];
+    let s = uncompressed(&d, PdfOptions::default());
+    for want in ["/Title(Spring Catalog)", "/Author(Ana Ruiz)", "/Subject(Shoes for the spring season)", "/Keywords(spring, shoes)"] {
+        assert!(s.contains(want), "missing {want}");
+    }
+    for want in ["<dc:title>", "<dc:creator>", "<dc:description>", "spring, shoes</pdf:Keywords>"] {
+        assert!(s.contains(want), "XMP missing {want}");
+    }
+    assert!(!s.contains("flyer-v3"), "the document's name is not the title");
+    let s = uncompressed(&d, PdfOptions { title: Some("Proof".into()), author: Some("Studio".into()), ..Default::default() });
+    assert!(s.contains("/Title(Proof)") && s.contains("/Author(Studio)") && !s.contains("Ana Ruiz"), "the options win");
+    let s = uncompressed(&d, PdfOptions { standard: Standard::PdfX4, ..Default::default() });
+    assert!(s.contains("GTS_PDFXVersion"), "PDF/X-4");
+    let booklet = export_booklet(&d, &Cache::new(), &BookletOptions::default()).unwrap();
+    let b = String::from_utf8_lossy(&booklet.bytes);
+    for (name, s) in [("PDF/X-4", s.as_str()), ("Print Booklet", &*b)] {
+        for want in ["/Title(Spring Catalog)", "/Author(Ana Ruiz)", "/Subject(Shoes for the spring season)", "/Keywords(spring, shoes)"] {
+            assert!(s.contains(want), "{name} missing {want}");
+        }
+        assert!(s.contains("<dc:description>") && s.contains("spring, shoes</pdf:Keywords>"), "{name} XMP");
+    }
+}
+
+/// A swatch applied to a placed greyscale image colours it (#1094): the image's darkness is the
+/// coverage of the swatch, so a spot swatch prints on its own plate. A colour image, or a swatch
+/// that no longer exists, exports as the image itself.
+#[test]
+fn a_swatch_colours_a_greyscale_image() {
+    let encode = |px: &[u8], ct: image::ExtendedColorType| {
+        let mut b = Vec::new();
+        image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut b), px, 3, 1, ct).unwrap();
+        b
+    };
+    let grey = encode(&[0, 64, 255], image::ExtendedColorType::L8);
+    let rgb = encode(&[0, 0, 0, 200, 40, 40, 255, 255, 255], image::ExtendedColorType::Rgb8);
+    let export = |file: &[u8], swatch: Option<&str>| {
+        let mut d = doc_with_text("x");
+        d.swatches.push(Swatch {
+            name: "PANTONE Test".into(),
+            value: SwatchValue::Color { color: Color::cmyk(0.0, 0.5, 1.0, 0.0), color_type: ColorType::Spot },
+            locked: false,
+            named: true,
+            hidden: false,
+        });
+        place(&mut d, file.to_vec(), (3, 1));
+        if let Some(sw) = swatch {
+            let id = d.spreads[0].items.last().unwrap().id;
+            if let designcraft_doc::Content::Graphic(g) = &mut d.item_mut(id).unwrap().content {
+                g.fill = Fill::swatch(sw);
+            }
+        }
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { compress: false, ..Default::default() }).unwrap();
+        (String::from_utf8_lossy(&bytes).into_owned(), image_xobjects(&bytes))
+    };
+    let (plain, plain_images) = export(&grey, None);
+    assert!(!plain.contains("PANTONE#20Test"), "the spot is used by nothing else");
+    let (s, images) = export(&grey, Some("PANTONE Test"));
+    assert!(s.contains("/Separation") && s.contains("/PANTONE#20Test"), "the image prints on the spot plate");
+    // The swatch is painted through the image's coverage: black is full ink, white none.
+    assert!(images.contains(&("DeviceGray".to_string(), vec![255, 191, 0])), "{images:?}");
+
+    let (gone, gone_images) = export(&grey, Some("Gone"));
+    assert_eq!(gone_images, plain_images, "a deleted swatch: the image as it is");
+    assert!(!gone.contains("/SMask"), "nothing painted through it");
+    let (s, _) = export(&rgb, Some("PANTONE Test"));
+    assert!(!s.contains("PANTONE#20Test"), "a colour image keeps its colours");
 }

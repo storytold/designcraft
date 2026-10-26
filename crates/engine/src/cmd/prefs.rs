@@ -11,6 +11,7 @@ const DOC_KEYS: &[&str] = &[
     "horizontalUnits",
     "verticalUnits",
     "keyboardIncrement",
+    "kerningIncrement",
     "baselineGrid",
     "grid",
     "pasteboard",
@@ -21,6 +22,7 @@ const DOC_KEYS: &[&str] = &[
     "advancedType",
     "overprintBlack",
     "glyphFallback",
+    "rulerOrigin",
 ];
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -48,13 +50,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "Preferences",
             [],
             None,
-            "{showHiddenCharacters?, typographersQuotes?, polygonSides?, starInset?, scaleStrokes?, dimensionsIncludeStroke?, transformationsAreTotals?, absolutePageNumbers?, highlightHj?, highlightKeeps?, highlightCustomTracking?, highlightSubstitutedFonts?, richBlackOutput?, favoriteFonts?: [family], showFontNamesInEnglish?, linkTextFiles? (Create Links When Placing Text Files)} → all application preferences",
+            "{showHiddenCharacters?, typographersQuotes?, polygonSides?, starInset?, scaleStrokes?, dimensionsIncludeStroke?, transformationsAreTotals?, absolutePageNumbers?, highlightHj?, highlightKeeps?, highlightCustomTracking?, highlightSubstitutedFonts?, richBlackOutput?, favoriteFonts?: [family], recentFonts?: [family], showFontNamesInEnglish?, smartTextReflow?, autocorrect?, autocorrectList?: [[word, correction]], showAddedText?, showNoteAnchors?, cjkFeatures?: bool|null (CJK-only menu items and dialogs shown; null follows the interface language), linkTextFiles? (Create Links When Placing Text Files), recoveryMinutes?, recentFilesMax?: 0–100} → all application preferences",
             super::always,
             |s, p| {
                 let cur = serde_json::to_value(&s.prefs).map_err(|e| bad("prefs.set", e.to_string()))?;
                 let new = merge("prefs.set", cur, p, None)?;
-                s.prefs = serde_json::from_value(new.clone()).map_err(|e| bad("prefs.set", e.to_string()))?;
-                Ok(new)
+                s.prefs = serde_json::from_value(new).map_err(|e| bad("prefs.set", e.to_string()))?;
+                s.prefs.trim_recent_files();
+                serde_json::to_value(&s.prefs).map_err(|e| bad("prefs.set", e.to_string()))
             }
         ),
         cmd!(
@@ -62,7 +65,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Preferences",
             [],
             None,
-            "{horizontalUnits?, verticalUnits?: points|picas|inches|millimeters|…, keyboardIncrement? (pt), baselineGrid?: {start, increment, relativeTo, color, viewThreshold}, grid?: {horizontal, vertical, subdivisions, color, inBack}, pasteboard?: [h, v], marginColor?, columnColor?, bleedColor?, slugColor?: [r, g, b], advancedType?: {superscriptSize, superscriptPosition, subscriptSize, subscriptPosition} (%), overprintBlack?, glyphFallback? (draw characters the font lacks from fallback fonts; off: as the font's missing-glyph box)} → those settings",
+            "{horizontalUnits?, verticalUnits?: points|picas|inches|millimeters|…, keyboardIncrement? (pt), kerningIncrement? (1/1000 em: Alt+Left/Right in text), baselineGrid?: {start, increment, relativeTo, color, viewThreshold}, grid?: {horizontal, vertical, subdivisions, color, inBack}, pasteboard?: [h, v], marginColor?, columnColor?, bleedColor?, slugColor?: [r, g, b], advancedType?: {superscriptSize, superscriptPosition, subscriptSize, subscriptPosition} (%), overprintBlack?, glyphFallback? (draw characters the font lacks from fallback fonts; off: as the font's missing-glyph box), rulerOrigin?: spread|page|spine (what rulers and X/Y measure from, with the zero point)} → those settings",
             has_doc,
             |s, p| {
                 let cur = serde_json::to_value(&s.doc()?.doc.settings).map_err(|e| bad("document.preferences", e.to_string()))?;

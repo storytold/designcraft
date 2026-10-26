@@ -7,8 +7,44 @@ use std::ops::Range;
 
 use designcraft_doc::{GrepStyle, NestedStyle, NestedUntil};
 
+use crate::grep::{Grep, GrepOptions};
+
+/// Patterns kept compiled at once. A document's GREP styles are few; the cache grew without
+/// bound across every pattern a session ever composed (#1598).
+const MAX_CACHED_PATTERNS: usize = 64;
+
 thread_local! {
-    static PATTERNS: RefCell<HashMap<String, Option<regex::Regex>>> = RefCell::new(HashMap::new());
+    /// Compiled GREP styles by pattern, with the tick they were last used at; `None` for one that
+    /// doesn't compile or gave up on a search. Bounded to [`MAX_CACHED_PATTERNS`], least recently
+    /// used evicted first.
+    static PATTERNS: RefCell<HashMap<String, (Option<Grep>, u64)>> = RefCell::new(HashMap::new());
+    /// Counts cache uses, so the least recently used entry can be found.
+    static TICK: RefCell<u64> = const { RefCell::new(0) };
+}
+
+/// The compiled pattern for `pattern`, compiling it on first use and evicting the least recently
+/// used entry once the cache is full. `f` is given `None` when the pattern does not compile.
+fn with_pattern<R>(pattern: &str, f: impl FnOnce(&mut Option<Grep>) -> R) -> R {
+    let now = TICK.with(|t| {
+        let mut t = t.borrow_mut();
+        *t += 1;
+        *t
+    });
+    PATTERNS.with(|p| {
+        let mut p = p.borrow_mut();
+        if !p.contains_key(pattern)
+            && p.len() >= MAX_CACHED_PATTERNS
+            && let Some(oldest) = p.iter().min_by_key(|(_, (_, used))| *used).map(|(k, _)| k.clone())
+        {
+            p.remove(&oldest);
+        }
+        let slot = p.entry(pattern.to_string()).or_insert_with(|| {
+            let re = Grep::new(pattern, GrepOptions::default()).map_err(|e| log::warn!("GREP style {pattern:?} skipped: {e}")).ok();
+            (re, now)
+        });
+        slot.1 = now;
+        f(&mut slot.0)
+    })
 }
 
 fn is_event(u: &NestedUntil, c: char, prev: Option<char>, next: Option<char>) -> bool {
@@ -68,14 +104,18 @@ pub(crate) fn overlays(text: &str, range: Range<usize>, nested: &[NestedStyle], 
         if g.style.is_empty() || g.pattern.is_empty() {
             continue;
         }
-        PATTERNS.with(|p| {
-            let mut p = p.borrow_mut();
-            let re = p.entry(g.pattern.clone()).or_insert_with(|| regex::Regex::new(&g.pattern).ok());
-            if let Some(re) = re {
-                for m in re.find_iter(&text[range.start..end]) {
-                    if !m.is_empty() {
-                        out.push((range.start + m.start()..range.start + m.end(), g.style.clone()));
+        with_pattern(&g.pattern, |slot| {
+            let Some(re) = slot else { return };
+            match re.find_nonempty(text.get(range.start..end).unwrap_or(""), crate::grep::MAX_MATCHES_PER_PARAGRAPH) {
+                Ok(ms) => {
+                    if ms.len() == crate::grep::MAX_MATCHES_PER_PARAGRAPH {
+                        log::warn!("GREP style {:?} matched more than {} times in one paragraph; the rest are not styled", g.pattern, ms.len());
                     }
+                    out.extend(ms.into_iter().filter(|m| !m.is_empty()).map(|m| (range.start + m.start..range.start + m.end, g.style.clone())));
+                }
+                Err(e) => {
+                    log::warn!("GREP style {:?} disabled: {e}", g.pattern);
+                    *slot = None;
                 }
             }
         });
@@ -86,6 +126,40 @@ pub(crate) fn overlays(text: &str, range: Range<usize>, nested: &[NestedStyle], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pattern that can match nothing still styles a paragraph longer than the cap: empty
+    /// matches don't count toward it.
+    #[test]
+    fn empty_matches_do_not_use_up_the_grep_cap() {
+        let text = format!("{}a", "b".repeat(crate::grep::MAX_MATCHES_PER_PARAGRAPH + 100));
+        let o = overlays(&text, 0..text.len(), &[], &[GrepStyle { style: "A".into(), pattern: "a*".into() }], 0);
+        assert_eq!(o.len(), 1, "the one non-empty match at the end is styled");
+    }
+
+    /// A GREP style's scan is bounded two ways (#1598): the matches one paragraph can take, and
+    /// the patterns kept compiled at once.
+    #[test]
+    fn a_grep_scan_and_the_pattern_cache_are_bounded() {
+        // More matches in one paragraph than the cap: the scan stops with what it has instead of
+        // paying the backtrack limit again for each one.
+        let text = "a ".repeat(crate::grep::MAX_MATCHES_PER_PARAGRAPH + 500);
+        let o = overlays(&text, 0..text.len(), &[], &[GrepStyle { style: "A".into(), pattern: "a".into() }], 0);
+        assert_eq!(o.len(), crate::grep::MAX_MATCHES_PER_PARAGRAPH, "the scan stops at the cap");
+
+        // The cache holds at most MAX_CACHED_PATTERNS, and the one just used is not the one
+        // dropped: a document's own styles stay compiled however many patterns a session saw.
+        PATTERNS.with(|p| p.borrow_mut().clear());
+        for i in 0..MAX_CACHED_PATTERNS + 20 {
+            let pattern = format!("x{i}y");
+            overlays("x1y", 0..3, &[], &[GrepStyle { style: "S".into(), pattern }], 0);
+        }
+        let (len, has_last) = PATTERNS.with(|p| {
+            let p = p.borrow();
+            (p.len(), p.contains_key(&format!("x{}y", MAX_CACHED_PATTERNS + 19)))
+        });
+        assert_eq!(len, MAX_CACHED_PATTERNS, "the cache is bounded");
+        assert!(has_last, "the most recently used pattern is still cached");
+    }
 
     #[test]
     fn nested_and_grep_ranges() {
@@ -108,5 +182,23 @@ mod tests {
         assert!(overlays(&text, 0..text.len(), &[d(true)], &[], 0).is_empty());
         // A bad pattern is ignored.
         assert!(overlays(&text, 0..text.len(), &[], &[GrepStyle { style: "X".into(), pattern: "(".into() }], 0).is_empty());
+    }
+
+    #[test]
+    fn grep_style_in_the_documents_dialect() {
+        // Short Russian words kept with the next one: `\l` lowercase letter, `\h` horizontal space.
+        let text = "Мы и он в доме.\n".to_string();
+        let o = overlays(&text, 0..text.len(), &[], &[GrepStyle { style: "nobreak".into(), pattern: r"\b\l{1,2}\h".into() }], 0);
+        let got: Vec<&str> = o.iter().map(|(r, _)| &text[r.clone()]).collect();
+        assert_eq!(got, ["и ", "он ", "в "]);
+    }
+
+    #[test]
+    fn grep_style_with_lookbehind() {
+        // Polish one-letter words kept with the next one; the space before is not styled.
+        let text = "Ala i kot w domu.\n".to_string();
+        let o = overlays(&text, 0..text.len(), &[], &[GrepStyle { style: "nobreak".into(), pattern: r"(?<=\s)[aiouwzAIOUWZ]\s".into() }], 0);
+        let got: Vec<&str> = o.iter().map(|(r, _)| &text[r.clone()]).collect();
+        assert_eq!(got, ["i ", "w "]);
     }
 }

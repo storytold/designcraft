@@ -1,4 +1,5 @@
-//! Glyphs panel: every character of a font in a grid; click to insert it at the text cursor.
+//! Glyphs panel: every character of a font in a grid; click to insert it at the text cursor. The
+//! grid also picks a list's bullet character.
 
 use egui::{Sense, vec2};
 use serde_json::json;
@@ -20,7 +21,7 @@ struct State {
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let id = egui::Id::new("glyphs_panel");
+    let id = egui::Id::unique("glyphs_panel");
     let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     // Default to the font at the text cursor.
     if st.family.is_empty() {
@@ -34,32 +35,24 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let (db, scope) = (super::fonts(app), super::font_scope(app));
     ui.horizontal(|ui| {
         if let Some(f) = super::font_combo(app, ui, "glyph_family", &st.family, 140.0) {
-            st.style = db.styles(&f).into_iter().next().unwrap_or_else(|| "Regular".into());
-            st.family = f;
+            st.style = f.style.clone().or_else(|| db.styles(&f.family).into_iter().next()).unwrap_or_else(|| "Regular".into());
+            st.family = f.family;
         }
-        egui::ComboBox::from_id_salt("glyph_style").selected_text(&st.style).width(80.0).show_ui(ui, |ui| {
+        let combo = egui::ComboBox::from_id_salt("glyph_style").selected_text(&st.style).width(80.0).show_ui(ui, |ui| {
             for s in db.styles(&st.family) {
                 if ui.selectable_label(s == st.style, &s).clicked() {
                     st.style = s;
                 }
             }
         });
+        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Font Style"));
     });
     ui.add(
         egui::TextEdit::singleline(&mut st.query)
             .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Search: character or U+code")))
             .desired_width(f32::INFINITY),
     );
-    let face = db.face(&st.family, &st.style);
     let q = st.query.trim().to_string();
-    let code = q.strip_prefix("U+").or_else(|| q.strip_prefix("u+")).and_then(|h| u32::from_str_radix(h, 16).ok());
-    let mut chars: Vec<char> = face.chars().into_iter().map(|(c, _)| c).filter(|c| !c.is_control()).collect();
-    chars.sort();
-    chars.dedup();
-    if !q.is_empty() {
-        chars.retain(|c| Some(*c as u32) == code || q.contains(*c) || format!("{:04X}", *c as u32).contains(&q.to_ascii_uppercase()));
-    }
-    chars.truncate(MAX);
     let mut insert: Option<char> = None;
     if !st.recent.is_empty() {
         ui.horizontal_wrapped(|ui| {
@@ -71,6 +64,52 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         });
     }
+    let (picked, count) = grid(ui, &db, scope, &st.family, &st.style, &q, 320.0);
+    insert = insert.or(picked);
+    if let Some(c) = insert {
+        match app.run("text.insert", json!({"text": c.to_string(), "raw": true})) {
+            Ok(_) => {
+                st.recent.retain(|x| *x != c);
+                st.recent.insert(0, c);
+                st.recent.truncate(12);
+            }
+            Err(e) => app.status_error("Glyphs", e),
+        }
+    }
+    crate::rtl::label(
+        ui,
+        egui::RichText::new(
+            crate::i18n::tr(&app.ui.language, "{count} glyphs — click to insert at the text cursor").replace("{count}", &count.to_string()),
+        )
+        .size(10.5)
+        .color(t.text_dim),
+    );
+    ui.data_mut(|d| d.insert_temp(id, st));
+}
+
+/// The characters of font `family` `style` in a grid (those matching `query`, a character or
+/// U+code, when it isn't empty), at most `max_height` tall and scrolling: the character clicked,
+/// and how many are shown.
+pub fn grid(
+    ui: &mut egui::Ui,
+    db: &designcraft_fonts::ScopedFonts<'_>,
+    scope: u32,
+    family: &str,
+    style: &str,
+    query: &str,
+    max_height: f32,
+) -> (Option<char>, usize) {
+    let t = Tokens::get(ui.ctx());
+    let face = db.face(family, style);
+    let q = query.trim();
+    let code = q.strip_prefix("U+").or_else(|| q.strip_prefix("u+")).and_then(|h| u32::from_str_radix(h, 16).ok());
+    let mut chars: Vec<char> = face.chars().into_iter().map(|(c, _)| c).filter(|c| !c.is_control()).collect();
+    chars.sort();
+    chars.dedup();
+    if !q.is_empty() {
+        chars.retain(|c| Some(*c as u32) == code || q.contains(*c) || format!("{:04X}", *c as u32).contains(&q.to_ascii_uppercase()));
+    }
+    chars.truncate(MAX);
     // The scroll bar floats over the grid's right edge: leave it room.
     let scroll = &ui.spacing().scroll;
     let bar = scroll.bar_inner_margin + scroll.bar_width + scroll.bar_outer_margin;
@@ -82,11 +121,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let max_rows = (ui.ctx().input(|i| i.max_texture_side) as u32 / cell_px).max(1);
     chars.truncate((max_rows * cols) as usize);
     let ink = t.text_strong;
-    let key = egui::Id::new(("glyph_grid", &st.family, &st.style, scope, &q, cols, cell_px, ink.to_array()));
+    let key = egui::Id::unique(("glyph_grid", family, style, scope, q, cols, cell_px, ink.to_array()));
     let tex: egui::TextureHandle = match ui.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
         Some(t) => t,
         None => {
-            let img = designcraft_render::glyphs::glyph_grid(&db, &st.family, &st.style, &chars, cols, cell_px, ink.to_array());
+            let img = designcraft_render::glyphs::glyph_grid(db, family, style, &chars, cols, cell_px, ink.to_array());
             let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
             let h = crate::widgets::load_texture(ui.ctx(), "glyph_grid", ci, egui::TextureOptions::LINEAR);
             ui.data_mut(|d| d.insert_temp(key, h.clone()));
@@ -94,7 +133,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     };
     let rows = (chars.len() as u32).div_ceil(cols);
-    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+    let mut picked = None;
+    egui::ScrollArea::vertical().id_salt(("glyph_scroll", family, style)).max_height(max_height).show(ui, |ui| {
         let size = vec2(cols as f32 * CELL, rows as f32 * CELL);
         let (r, resp) = ui.allocate_exact_size(size, Sense::click());
         ui.painter().rect_filled(r, 0.0, t.input);
@@ -122,28 +162,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         if resp.clicked()
             && let Some(c) = resp.interact_pointer_pos().and_then(cell_at)
         {
-            insert = Some(c);
+            picked = Some(c);
         }
     });
-    if let Some(c) = insert {
-        match app.run("text.insert", json!({"text": c.to_string(), "raw": true})) {
-            Ok(_) => {
-                st.recent.retain(|x| *x != c);
-                st.recent.insert(0, c);
-                st.recent.truncate(12);
-            }
-            Err(e) => app.status(format!("Glyphs: {e}")),
-        }
-    }
-    crate::rtl::label(
-        ui,
-        egui::RichText::new(
-            crate::i18n::tr(&app.ui.language, "{count} glyphs — click to insert at the text cursor").replace("{count}", &chars.len().to_string()),
-        )
-        .size(10.5)
-        .color(t.text_dim),
-    );
-    ui.data_mut(|d| d.insert_temp(id, st));
+    (picked, chars.len())
 }
 
 #[cfg(test)]

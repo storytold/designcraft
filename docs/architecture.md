@@ -25,7 +25,7 @@ lines of Rust, 1,122 tests (2026-10-10). Pure Rust, no C dependencies by default
 | L3 | `idml` | IDML import and export (designmap, spreads, parents, stories, styles, graphics, preferences; CJK and Arabic attributes) | 8.0k |
 | L3 | `epub` | EPUB 3 reflowable and fixed-layout export | 0.9k |
 | L3 | `textimport` | Word (.docx), RTF, Excel (.xlsx), Tagged Text import; text export | 1.8k |
-| L3 | `format` | the native `.designcraft` zip (`document.json`, `assets/`, `meta.json`), versioned | 0.3k |
+| L3 | `format` | the native `.designcraft` zip (`document.json`, `assets/`, `meta.json`, optional `preview.png`), versioned | 0.3k |
 | L4 | `tools` | tool state machines: pointer events and modifiers to commands and overlays; snapping and smart guides | 5.9k |
 | L5 | `engine` | `Session`: documents, history, selection, the command registry (446 commands in `cmd/`), compose cache, preflight, find/change, scripts, recovery, links | 29.3k |
 | L6 | `ui-egui` | the InDesign-style egui frontend: menus, Control panel, Tools, dock and panels, dialogs, canvas, theme tokens, i18n, the control channel | 33.4k |
@@ -75,7 +75,9 @@ lines with positioned glyph runs, decorations, anchors and overset. The canvas r
 background worker with vello_cpu into tiles; after an edit only frames whose composition changed
 are re-rendered and patched (damage regions, pixel-identical to a full render). The GPU (wgpu:
 Metal, DirectX 12, Vulkan, OpenGL; WebGPU/WebGL2 on the web) only presents; the backend is chosen
-before the window exists, with a start-up fallback list in `gpu.json`.
+before the window exists, with a start-up fallback list in `gpu.json`, and the adapter (the GPU
+that drives the display first) by the app, which starts again on the next one when an adapter
+fails or hangs at start-up (`apps/designcraft/src/gpu.rs`).
 
 ## File I/O
 
@@ -111,3 +113,5 @@ builds (on manifest changes), packaging lint and the release workflow; `xtask ci
 | 2026-10-12 | minor | Documented cancelable Dock Quit through the native event-loop boundary |
 | 2026-10-12 | minor | Documented orderly native exit recovery and the remaining cancelable Dock Quit gap |
 | 2026-10-10 | major | Created from the code on main (92649ff) and `plan/architecture.md` |
+
+PDF parsing and placed-page rasterization use the pinned `craft-pdf` reader. DesignCraft retains document, placement, layer and export policy; dependency checks and bounds are described in [pdf-backend.md](pdf-backend.md).

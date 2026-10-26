@@ -13,7 +13,7 @@ use crate::{EngineError, Result, Session};
 pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown panic".into())
 }
@@ -39,8 +39,8 @@ impl Session {
         // selection, which one is active, and the journal (nested commands journal too).
         let docs = self.docs.clone();
         let active = self.active;
-        let revision = self.active().map_or(0, |d| d.revision);
         let journal = self.journal.len();
+        let in_undo_step = self.in_undo_step;
         match catch_unwind(AssertUnwindSafe(|| f(self))) {
             Ok(r) => r,
             Err(payload) => {
@@ -53,13 +53,15 @@ impl Session {
                 self.journal.truncate(journal);
                 if let Some(st) = self.active_mut() {
                     st.interaction = None;
-                    st.revision = revision.max(st.revision).saturating_add(1);
+                    st.bump_revision();
                 }
                 if let Some(dir) = self.recovery_dir.clone()
                     && let Err(e) = crate::recovery::save(self, &dir)
                 {
                     log::error!("crash recovery save after `{id}` failed: {e}");
                 }
+                // The command never got to say that it is done; a command that ran it goes on.
+                self.in_undo_step = in_undo_step;
                 log::error!("command `{id}` panicked: {msg}");
                 Err(EngineError::Internal(id.to_string(), msg))
             }
@@ -91,6 +93,41 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&st.doc, &before), "the document is the one from before the command");
         // The session keeps working.
         s.execute("frame.create", &json!({"rect": [36, 236, 200, 400]})).unwrap();
+    }
+
+    /// An undoable command that panics is no longer running: the next command records its own
+    /// undo step.
+    #[test]
+    fn a_panicking_command_does_not_swallow_later_undo_steps() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let panicked = s.guarded("test.panic", |s| {
+            s.in_undo_step = true;
+            panic!("boom");
+        });
+        assert!(panicked.is_err());
+        s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
+        assert_eq!(s.active().unwrap().history.undo.len(), 1);
+    }
+
+    /// A command that panics inside an undoable one leaves that one running: what it runs next
+    /// is still part of its undo step.
+    #[test]
+    fn a_panic_in_a_command_run_by_another_leaves_the_outer_undo_step() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // An undoable command that runs one that panics, carries on and runs another.
+        s.guarded("test.outer", |s| {
+            s.in_undo_step = true;
+            assert!(s.guarded("test.panic", |_| panic!("boom")).is_err());
+            let made = s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]}));
+            s.in_undo_step = false;
+            made
+        })
+        .unwrap();
+        let st = s.active().unwrap();
+        assert_eq!(st.doc.spreads[0].items.len(), 1);
+        assert_eq!(st.history.undo.len(), 0, "the frame is left to the outer command's step");
     }
 
     /// A nested edit that succeeded before the panic is rolled back with its history entry, and

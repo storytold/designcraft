@@ -133,8 +133,9 @@ fn new_lock(dir: &Path) -> std::io::Result<std::fs::File> {
         new.mode(0o600);
     }
     let mut file = new.open(dir.join(LOCK))?;
-    // A marker distinguishes the held handle from a replacement at the same pathname on
-    // platforms without portable file-identity metadata. Empty older-version locks remain valid.
+    // A marker supplements Unix inode validation and identifies locks on other platforms.
+    // Windows uses live handle identity because its exclusive lock prevents separate-handle reads.
+    // Empty older-version locks remain valid.
     static NEXT_LOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?.as_nanos();
     let marker = format!("{}:{}:{now}", std::process::id(), NEXT_LOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
@@ -165,6 +166,18 @@ fn validate_lock(dir: &Path, lock: &std::fs::File) -> Result<()> {
     }
     #[cfg(not(unix))]
     let _ = (held, current);
+    // Windows locks prevent reads through separately opened handles, even in this process.
+    // Compare the held and named file identities without releasing the recovery lock.
+    #[cfg(windows)]
+    let held_identity = {
+        let held = same_file::Handle::from_file(lock.try_clone().map_err(|_| fail())?).map_err(|_| fail())?;
+        let current = same_file::Handle::from_file(named.try_clone().map_err(|_| fail())?).map_err(|_| fail())?;
+        if held != current {
+            return Err(fail());
+        }
+        held
+    };
+    #[cfg(not(windows))]
     if lock_marker(lock).map_err(|_| fail())? != lock_marker(&named).map_err(|_| fail())? {
         return Err(fail());
     }
@@ -179,10 +192,18 @@ fn validate_lock(dir: &Path, lock: &std::fs::File) -> Result<()> {
             return Err(fail());
         }
     }
+    #[cfg(windows)]
+    {
+        let after_named = std::fs::File::open(&path).map_err(|_| fail())?;
+        let after_identity = same_file::Handle::from_file(after_named).map_err(|_| fail())?;
+        if held_identity != after_identity {
+            return Err(fail());
+        }
+    }
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
 fn lock_marker(file: &std::fs::File) -> std::io::Result<Vec<u8>> {
     use std::io::{Read, Seek};
     let mut file = file.try_clone()?;
@@ -387,7 +408,7 @@ fn remove_emptied(dir: &Path) {
         let path = e.path();
         let name = e.file_name();
         let name = name.to_string_lossy();
-        let numbered = path.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.parse::<u64>().is_ok());
+        let numbered = path.file_stem().and_then(std::ffi::OsStr::to_str).is_some_and(|s| s.parse::<u64>().is_ok());
         // Metadata whose document has gone, and a file a crash left half written.
         if (numbered && name.ends_with(".json")) || (name.starts_with(".designcraft-recovery-") && name.ends_with(".tmp")) {
             left.push(path);
@@ -488,7 +509,9 @@ fn prepare_save(s: &Session, dir: &Path) -> Result<Access> {
     protect_retained_sources(s, dir)?;
     let created = secure_recovery_dir(dir)?;
     let access = access(dir, created)?;
-    for document in s.docs.iter().filter(|d| d.is_dirty()) {
+    // New Document's preview is never written.
+    let preview = s.new_document_preview();
+    for document in s.docs.iter().filter(|d| d.is_dirty() && preview != Some(d.uid)) {
         access.check_free(dir, document.uid)?;
     }
     Ok(access)
@@ -500,7 +523,8 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
     let access = prepare_save(s, dir)?;
     let mut n = 0;
     for d in &s.docs {
-        if !d.is_dirty() {
+        // New Document's preview is not a document until Create makes it one.
+        if !d.is_dirty() || s.new_document_preview() == Some(d.uid) {
             discard(dir, d.uid);
             continue;
         }
@@ -523,7 +547,12 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
     }
     let access = prepare_save(s, dir)?;
     let mut n = 0;
+    let preview = s.new_document_preview();
     for index in 0..s.docs.len() {
+        // New Document's preview is never written, so it has no checkpoint to discard either.
+        if s.docs.get(index).is_some_and(|document| preview == Some(document.uid)) {
+            continue;
+        }
         if s.docs.get(index).is_some_and(|document| !document.is_dirty()) {
             discard_document(s, index, Some(dir));
             continue;
@@ -697,8 +726,8 @@ fn occupied_uids(dir: &Path) -> Result<std::collections::HashSet<u64>> {
     for entry in entries {
         let entry = entry.map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
         let path = entry.path();
-        if matches!(path.extension().and_then(|s| s.to_str()), Some("json" | "designcraft"))
-            && let Some(uid) = path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse().ok())
+        if matches!(path.extension().and_then(std::ffi::OsStr::to_str), Some("json" | "designcraft"))
+            && let Some(uid) = path.file_stem().and_then(std::ffi::OsStr::to_str).and_then(|s| s.parse().ok())
         {
             ids.insert(uid);
         }
@@ -727,10 +756,10 @@ pub fn list(dir: &Path) -> Vec<(u64, Value)> {
     let Ok(rd) = std::fs::read_dir(dir) else { return out };
     for e in rd.flatten() {
         let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("designcraft") {
+        if p.extension().and_then(std::ffi::OsStr::to_str) != Some("designcraft") {
             continue;
         }
-        let Some(uid) = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) else { continue };
+        let Some(uid) = p.file_stem().and_then(std::ffi::OsStr::to_str).and_then(|s| s.parse::<u64>().ok()) else { continue };
         // Metadata is a file on disk: anything but an object (corrupt, hand-edited) counts as none.
         let meta = std::fs::read_to_string(p.with_extension("json"))
             .ok()
@@ -797,7 +826,7 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         st.fonts = fonts;
         // Unsaved: the copy on disk (if any) is older than what was recovered.
         st.saved_doc = std::sync::Arc::new((*st.doc).clone());
-        st.revision += 1;
+        st.bump_revision();
         let index = s.add_document(st);
         opened.push(index);
         // New uids are published without replacement, and the original is consumed only after
@@ -857,8 +886,16 @@ mod tests {
         let st = s2.doc().unwrap();
         assert!(st.is_dirty());
         assert_eq!(st.doc.spreads[0].items.len(), 1);
-        assert_eq!(list(&dir).iter().map(|e| e.0).collect::<Vec<_>>(), [st.uid], "the entry follows its reopened document");
-        discard(&dir, st.uid);
+        // The entry moved to the reopened document: a session that ends before its first
+        // recovery save (a restart, another crash) still leaves it to recover.
+        let entries = list(&dir);
+        assert_eq!(entries.iter().map(|e| e.0).collect::<Vec<_>>(), [st.uid]);
+        let mut s3 = Session::new();
+        assert_eq!(open(&mut s3, &dir).unwrap().len(), 1);
+        assert_eq!(s3.doc().unwrap().doc.spreads[0].items.len(), 1);
+        assert!(s3.doc().unwrap().is_dirty());
+        assert_eq!(list(&dir).len(), 1, "recovering twice never duplicates an entry");
+        discard(&dir, s3.doc().unwrap().uid);
         // Saving a document drops its entry.
         s.recovery_dir = Some(dir.clone());
         assert_eq!(save(&s, &dir).unwrap(), 1);
@@ -1322,6 +1359,50 @@ mod tests {
         replacement.try_lock().unwrap();
         assert!(save(&dirty_session(), &own).is_err());
         assert!(list(&own).is_empty(), "another owner's folder must not receive our recovery data");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_exclusively_locked_windows_recovery_file_validates() {
+        let root = tempfile::tempdir().unwrap();
+        let lock = new_lock(root.path()).unwrap();
+        lock.try_lock().unwrap();
+        validate_lock(root.path(), &lock).unwrap();
+        let named = std::fs::File::open(root.path().join(LOCK)).unwrap();
+        assert!(matches!(named.try_lock(), Err(std::fs::TryLockError::WouldBlock)), "validation must retain the exclusive lock");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_rejects_a_replacement_with_the_same_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let lock = new_lock(root.path()).unwrap();
+        let marker = std::fs::read(root.path().join(LOCK)).unwrap();
+        lock.try_lock().unwrap();
+        let moved = root.path().join("original-lock");
+        std::fs::rename(root.path().join(LOCK), &moved).unwrap();
+        std::fs::write(root.path().join(LOCK), marker).unwrap();
+        assert!(validate_lock(root.path(), &lock).is_err(), "matching marker bytes do not make another file our lock");
+        std::fs::remove_file(root.path().join(LOCK)).unwrap();
+        assert!(validate_lock(root.path(), &lock).is_err(), "a missing lock must not validate");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_does_not_write_or_discard_a_replacement_runs_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let own = run_dir(root.path()).unwrap();
+        std::fs::rename(own.join(LOCK), own.join("original-lock")).unwrap();
+        let replacement = new_lock(&own).unwrap();
+        replacement.try_lock().unwrap();
+        let session = dirty_session();
+        let (doc, meta) = files(&own, session.docs[0].uid);
+        std::fs::write(&doc, b"another owner's document").unwrap();
+        std::fs::write(&meta, b"{}").unwrap();
+        assert!(save(&session, &own).is_err());
+        discard(&own, session.docs[0].uid);
+        assert_eq!(std::fs::read(&doc).unwrap(), b"another owner's document");
+        assert_eq!(std::fs::read(&meta).unwrap(), b"{}");
     }
 
     /// A blocked attempt to recreate a run's lock must stop the save before it writes documents.

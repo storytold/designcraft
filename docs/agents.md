@@ -26,7 +26,7 @@ of step N's result: N is the 0-based step index (comments and blank lines are no
 step) and the path goes through result fields and array indices (`"$1.story"`, `"$3.ids.0"`); `"${N.path}"`
 interpolates inside longer strings. Any other string starting with `$` stays as written (`"$1-$2"`, `"$5 off"`), and
 `$$` writes a literal `$` anywhere (`"$$1"` passes `$1`, a GREP group). In text parameters `\n` starts a new paragraph and `\u2028` is a forced line
-break. Most commands ignore parameters they don't know instead of rejecting them, so check names with `describe`.
+break (`\u000b`, Word's line break, is read as one too). Most commands ignore parameters they don't know instead of rejecting them, so check names with `describe`.
 `designcraft-cli script --help` prints this reference.
 
 ```sh
@@ -49,6 +49,29 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `run` works through its arguments in order. `--page`, `--scale` and `--pdf-options` apply to the `--export` /
 `--all-pages` that follow them, so one run can write several sizes
 (`run --sample --scale 0.5 --export small.png --scale 2 --export large.png`); one with no export after it is an error.
+
+`--export` writes the file type its extension names: `.png` or `.jpg` (a page), `.pdf`, `.designcraft`, `.idml`,
+`.epub`, `.html`, and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
+is a PNG of the page; another extension is an error, and nothing runs.
+
+## Color themes
+
+`color.extractTheme {id?}` previews up to five RGB colours from a placed raster image (or the selected image).
+`swatch.addColorTheme {colors, name?}` adds that palette as a colour group in one undo step.
+Extraction samples the whole source image on a bounded grid, weights partial transparency, and ignores fully transparent pixels.
+The image must contain at most 16 million pixels. PDF/SVG graphics are unsupported. This is local median-cut extraction,
+not Adobe's palette algorithm. In the UI, click an image with the Color Theme Tool (Shift+I), or choose Color Theme…
+in the Swatches panel menu with one image selected. Cancel keeps the document unchanged.
+
+## PDF/X-4 validation
+
+`designcraft-cli validate-pdf FILE.pdf` prints JSON with `valid` and `issues`, and exits non-zero
+when a built-in check fails. Checks cover PDF version, output intent and profile, Info and XMP
+identification, image interpolation, encryption, trim boxes, Type 3 fonts, device RGB under a CMYK
+output intent, and unembedded fonts drawing visible text (including placed PDF forms). Render
+mode 3 (invisible OCR text) is exempt from the font-embedding check. PDF/X-4 export reports these
+issues as warnings; it does not embed or outline placed fonts. These checks are not a complete
+external PDF/X certification.
 
 ## Data merge
 
@@ -74,3 +97,12 @@ designcraft-cli app --method ui.screenshot '{"path": "/tmp/w.png"}' # any contro
 
 `ui.menu.invoke {command}` without params acts like choosing the menu item: a command labelled "…" opens its
 dialog, which `ui.dialog.set` / `ui.dialog.confirm` fill in and close like a user would.
+
+## Parent pages
+
+In the Pages panel, right-click a parent row and choose **Delete Parent**. The equivalent
+command is `layout.parents.delete {id}`, using the parent spread's numeric ID. It deletes that
+parent's shared artwork and clears its assignments from document pages and other parents.
+Local override copies remain as ordinary editable objects; document pages and their own content
+remain. Undo restores the parent and its relationships in one step. Deleting the last parent
+returns the canvas to document pages. Parent navigation is a separate operation.

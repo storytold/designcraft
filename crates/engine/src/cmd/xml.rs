@@ -438,7 +438,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             fresh.frames = frames;
-            fresh.rev = st.rev + 1;
+            fresh.rev = st.rev.wrapping_add(1);
             *st = fresh;
         }
         Ok(json!({"placed": placed, "unmatched": unmatched}))

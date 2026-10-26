@@ -176,8 +176,13 @@ pub fn tool_definitions() -> Vec<Value> {
                     "columns": {"type": "integer", "minimum": 1, "description": "Column count"},
                     "gutter": num("Column gutter (pt)"),
                     "margins": {"description": "Uniform margin (pt) or {top, bottom, inside, outside}", "anyOf": [{"type": "number"}, {"type": "object"}]},
-                    "bleed": num("Bleed on all sides (pt)"),
+                    "bleed": {"description": "Bleed on all sides (pt) or [top, bottom, inside, outside]", "anyOf": [{"type": "number"}, {"type": "array", "items": {"type": "number"}}]},
                     "title": string("Document title"),
+                    "intent": {"type": "string", "enum": ["print", "web", "mobile"], "description": "Document intent"},
+                    "units": string("Ruler units, e.g. \"points\", \"picas\", \"millimeters\""),
+                    "startPage": {"type": "integer", "minimum": 1, "description": "Number of the first page"},
+                    "slug": {"description": "Slug on all sides (pt) or [top, bottom, inside, outside]", "anyOf": [{"type": "number"}, {"type": "array", "items": {"type": "number"}}]},
+                    "primaryTextFrame": boolean("Put a primary text frame on the parent page"),
                     "sample": boolean("Open the sample magazine instead"),
                 }),
                 &[],
@@ -313,6 +318,25 @@ pub fn tool_definitions() -> Vec<Value> {
             false,
         ),
         tool(
+            "ime",
+            "Input method",
+            "Input method (IME) events at the Type tool's caret, as a system IME sends them: `preedit` is the marked text \
+             (shown in place, no undo step; an empty string cancels the composition), `active` the clause being converted \
+             in characters of it, `commit` the text the IME types in its place (one undo step). Example, Japanese: \
+             {preedit:\"にほん\", active:[3,3]} then {preedit:\"日本\", active:[0,2]} then {commit:\"日本\"}. Returns \
+             whether a composition is still open.",
+            obj(
+                json!({
+                    "preedit": string("Marked text (replaces the previous marked text; empty = cancel)"),
+                    "active": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2,
+                               "description": "[start, end] of the clause being converted, in characters of preedit (start = end: the IME's cursor)"},
+                    "commit": string("Committed text, typed in place of the marked text"),
+                }),
+                &[],
+            ),
+            false,
+        ),
+        tool(
             "click",
             "Click",
             &app_only(
@@ -338,7 +362,8 @@ pub fn tool_definitions() -> Vec<Value> {
                 json!({
                     "x": num("Start x"), "y": num("Start y"), "toX": num("End x"), "toY": num("End y"),
                     "steps": {"type": "integer", "minimum": 1, "description": "Intermediate moves (default 8)"},
-                    "shift": {"type": "boolean"}, "alt": {"type": "boolean"}, "cmd": {"type": "boolean"},
+                    "button": {"type": "string", "enum": ["left", "right"], "description": "Default left"},
+                    "shift": {"type": "boolean"}, "alt": {"type": "boolean"}, "cmd": {"type": "boolean"}, "ctrl": {"type": "boolean"},
                 }),
                 &["x", "y", "toX", "toY"],
             ),
@@ -363,14 +388,19 @@ pub fn tool_definitions() -> Vec<Value> {
             "ui_set",
             "Set UI state",
             &app_only(
-                "Change UI state: panel to open, brightness, rulers/guides/frameEdges/baselineGrid/textThreads, screenMode, zoom, page (1-based), fit (page|spread).",
+                "Change UI state: panel to open or close, brightness, status text, rulers/guides/frameEdges/baselineGrid/documentGrid/textThreads, \
+                 Control bar, dock expanded, screenMode, zoom, page (1-based), fit (page|spread).",
             ),
             obj(
                 json!({
                     "panel": string("Panel: properties, pages, layers, swatches, paragraphStyles, characterStyles, stroke, character, paragraph, textWrap, links"),
                     "brightness": {"type": "string", "enum": ["dark", "mediumDark", "mediumLight", "light"]},
                     "rulers": {"type": "boolean"}, "guides": {"type": "boolean"}, "frameEdges": {"type": "boolean"},
-                    "baselineGrid": {"type": "boolean"}, "textThreads": {"type": "boolean"},
+                    "baselineGrid": {"type": "boolean"}, "documentGrid": {"type": "boolean"}, "textThreads": {"type": "boolean"},
+                    "status": string("Status bar text"),
+                    "controlBar": boolean("Show the Control bar"),
+                    "closePanel": boolean("Close the panel that is showing"),
+                    "dockExpanded": boolean("Expand the panel dock (false: icons only)"),
                     "screenMode": {"type": "string", "enum": ["normal", "preview", "bleed", "slug", "presentation"]},
                     "zoom": num("1.0 = 100%"),
                     "page": {"type": "integer", "minimum": 1, "description": "Go to page (1-based)"},
@@ -573,10 +603,15 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Args) -> Result<ToolResult, Str
             j(b.call("ui.key", pick(a, &["key", "shift", "alt", "cmd", "ctrl"]))?)
         }
         "type_text" => j(b.call("ui.text", json!({"text": req_str(a, "text")?}))?),
+        "ime" => j(b.call("ui.ime", pick(a, &["preedit", "active", "commit"]))?),
         "click" | "drag" => {
             need_ui(b, name)?;
-            let keys: &[&str] = &["x", "y", "toX", "toY", "steps", "button", "count", "shift", "alt", "cmd", "ctrl"];
-            j(b.call(if name == "click" { "ui.click" } else { "ui.drag" }, pick(a, keys))?)
+            let (method, keys): (_, &[&str]) = if name == "click" {
+                ("ui.click", &["x", "y", "button", "count", "shift", "alt", "cmd", "ctrl"])
+            } else {
+                ("ui.drag", &["x", "y", "toX", "toY", "steps", "button", "shift", "alt", "cmd", "ctrl"])
+            };
+            j(b.call(method, pick(a, keys))?)
         }
         "menu_list" => {
             need_ui(b, name)?;

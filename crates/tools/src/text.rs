@@ -1,11 +1,29 @@
 //! Type tool (T): click in a frame to place the caret, drag in a frame to select text, drag on
 //! empty canvas to draw a new text frame. Keys move the caret / delete; typing goes through
-//! `text.insert` (sent by the UI as text input).
+//! `text.insert` (sent by the UI as text input). Dragging a table's row or column border resizes
+//! it (`table.resizeBorder`).
+//!
+//! IME: the marked text of a composition is a preview of `text.insert` at the caret (so it lays
+//! out in place like typed text), underlined, until the IME commits it (one `text.insert`, one
+//! undo step) or clears it (the preview goes, leaving no undo step). A delete-surrounding batch
+//! is one `text.deleteSurrounding` instead; the engine runs it through the command pipeline.
 
-use designcraft_geom::Point;
+use std::ops::Range;
+
+use designcraft_compose as compose;
+use designcraft_doc::{ItemId, TextSel};
+use designcraft_geom::{Affine, Point, Vec2};
 use serde_json::json;
 
 use crate::{Action, Cursor, Mods, Overlay, PointerEvent, PointerKind, Tool, ToolContext, ToolKey, frame::snapped_drag_rect, rect_json, spread_json};
+
+/// IME marked text shown at the caret through a preview of `text.insert`, not yet typed.
+#[derive(Clone, Debug, PartialEq)]
+struct Preedit {
+    text: String,
+    /// The clause being converted (empty: the IME's cursor), in bytes of `text`.
+    active: Option<Range<usize>>,
+}
 
 #[derive(Default)]
 pub struct TypeTool {
@@ -19,8 +37,90 @@ pub struct TypeTool {
     cell_drag: Option<(u64, Point)>,
     /// Snap guides while drawing a frame.
     guides: Vec<Overlay>,
-    /// The press selected a word, line, paragraph or story (several clicks): drags keep it.
-    unit_selected: bool,
+    /// The press selected a word, line, paragraph or story (several clicks): a drag extends the
+    /// selection by that unit (#981).
+    unit: Option<&'static str>,
+    preedit: Option<Preedit>,
+    /// A press on a table row or column border: a drag resizes it.
+    border: Option<BorderDrag>,
+}
+
+/// A table border under the pointer, and the frame's canvas → inner-space mapping.
+#[derive(Clone, Copy)]
+struct BorderDrag {
+    frame: u64,
+    story: u64,
+    hit: compose::BorderHit,
+    /// Canvas → frame inner space (through rotations, scaling and turned spreads).
+    inv: Affine,
+    /// Press point in frame inner space.
+    start: Point,
+    begun: bool,
+    /// The border runs vertically on the canvas (column borders on an unrotated frame).
+    horizontal_drag: bool,
+}
+
+/// The row or column border of a table near canvas point `pos`, in an unlocked text frame.
+fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
+    let (_, id) = cx.hit(pos)?;
+    let it = cx.doc.item(id)?;
+    if it.locked {
+        return None;
+    }
+    let sid = it.text_frame()?.story;
+    let story = cx.doc.story(sid)?;
+    if story.tables.is_empty() {
+        return None;
+    }
+    let xf = cx.item_canvas_xf(id)? * cx.doc.text_xf(it);
+    let det = xf.determinant().abs();
+    if !(det.is_finite() && det > 1e-12) {
+        return None;
+    }
+    let inv = xf.inverse();
+    let start = inv * pos;
+    let cs = cx.cache.get(cx.doc, sid, None);
+    let fi = cs.frames.iter().position(|f| f.frame == id)?;
+    let hit = compose::hit_border(&cs, fi, &story.tables, start, cx.tol(4.0) / det.sqrt())?;
+    let axis = if hit.column { Point::new(1.0, 0.0) } else { Point::new(0.0, 1.0) };
+    let v = (xf * axis) - (xf * Point::ORIGIN);
+    Some(BorderDrag { frame: id.0, story: sid.0, hit, inv, start, begun: false, horizontal_drag: v.x.abs() >= v.y.abs() })
+}
+
+impl BorderDrag {
+    fn cursor(&self) -> Cursor {
+        if self.horizontal_drag { Cursor::ResizeH } else { Cursor::ResizeV }
+    }
+
+    /// Begin (once) and preview the resize for the pointer at canvas `pos`.
+    fn drag(&mut self, pos: Point, keep: bool) -> Vec<Action> {
+        let d = (self.inv * pos) - self.start;
+        let mut delta = if self.hit.column { d.x } else { d.y };
+        if self.hit.mirrored {
+            delta = -delta;
+        }
+        if !delta.is_finite() {
+            return vec![];
+        }
+        let mut out = vec![];
+        if !self.begun {
+            self.begun = true;
+            out.push(Action::Begin(if self.hit.column { "Resize Column" } else { "Resize Row" }.into()));
+        }
+        out.push(Action::Preview(
+            "table.resizeBorder".into(),
+            json!({
+                "frame": self.frame,
+                "story": self.story,
+                "table": self.hit.table,
+                "axis": if self.hit.column { "column" } else { "row" },
+                "index": self.hit.index,
+                "delta": delta,
+                "keepTableSize": keep,
+            }),
+        ));
+        out
+    }
 }
 
 /// Are whole rows or whole columns of a table selected?
@@ -37,6 +137,206 @@ impl TypeTool {
     }
 }
 
+/// The text an IME commit types: `\r` becomes a paragraph break, and other control characters
+/// are dropped (Tab and the line break stay). The engine and the UI share this so a commit's
+/// exact accepted text is known without inspecting the document.
+pub fn ime_commit_text(text: &str) -> String {
+    text.chars().map(|c| if c == '\r' { '\n' } else { c }).filter(|c| !c.is_control() || matches!(c, '\n' | '\t')).collect()
+}
+
+/// Byte range in `s` of the characters `r` (IME ranges count characters; carets count bytes).
+/// `None` when `r` runs past the end of `s` or backwards.
+fn char_range_to_bytes(s: &str, r: Range<usize>) -> Option<Range<usize>> {
+    let n = s.chars().count();
+    let byte = |c: usize| if c == n { Some(s.len()) } else { s.char_indices().nth(c).map(|(i, _)| i) };
+    let (a, b) = (byte(r.start)?, byte(r.end)?);
+    (a <= b).then_some(a..b)
+}
+
+/// Text space → canvas for frame `fid` (with the quarter turn of a vertical frame).
+fn text_canvas_xf(cx: &ToolContext, fid: ItemId) -> Option<Affine> {
+    Some(cx.item_canvas_xf(fid)? * cx.doc.text_xf(cx.doc.item(fid)?))
+}
+
+/// Where the marked text starts: the preview typed it just before the caret.
+fn marked_start(cx: &ToolContext, ts: TextSel, p: &Preedit) -> usize {
+    let text = cx.doc.text_story(ts.story, ts.cell).map_or("", |s| s.text.as_str());
+    designcraft_doc::story::floor_char_boundary(text, ts.focus.saturating_sub(p.text.len()))
+}
+
+/// The caret line (top, bottom) at byte `pos` of the selection's text, in canvas space; `None`
+/// when `pos` isn't composed (overset).
+fn caret_line(cx: &ToolContext, ts: TextSel, pos: usize) -> Option<(Point, Point)> {
+    let cs = cx.cache.get(cx.doc, ts.story, None);
+    let (fi, x, bl, asc, desc) = match ts.cell {
+        Some(c) => match c.footnote_id() {
+            Some(id) => compose::note_caret(&cs, id, pos)?,
+            None => compose::cell_caret(&cs, c.table, c.row, c.col, pos)?,
+        },
+        None => compose::caret(&cs, pos)?,
+    };
+    let ft = cs.frames.get(fi)?;
+    let m = text_canvas_xf(cx, ft.frame)?;
+    // Type on a path: the caret stands across the path where it is along it.
+    let map = cx.doc.item(ft.frame).filter(|_| ts.cell.is_none()).and_then(|it| compose::PathTextMap::new(it, ft));
+    let on = |p: Point| map.as_ref().map_or(p, |map| map.to_path(p));
+    Some((m * on(Point::new(x, bl - asc)), m * on(Point::new(x, bl + desc))))
+}
+
+/// Underlines (start, end in canvas space) under bytes `r` of the selection's text.
+fn underlines(cx: &ToolContext, ts: TextSel, r: Range<usize>) -> Vec<(Point, Point)> {
+    let mut out = Vec::new();
+    let mut add = |lines: &[compose::Line], m: Affine| {
+        for l in lines {
+            let (s, e) = (r.start.max(l.range.start), r.end.min(l.range.end));
+            if s < e {
+                out.extend(compose::highlight_quads(l, s, e, false).into_iter().map(|q| (m * q[3], m * q[2])));
+            }
+        }
+    };
+    let cs = cx.cache.get(cx.doc, ts.story, None);
+    match ts.cell {
+        // A cell's or footnote's text is composed on its own and placed in the frame.
+        Some(c) => {
+            let found = match c.footnote_id() {
+                Some(id) => compose::find_note(&cs, id).map(|(fi, n)| (fi, n.origin, n.text.clone())),
+                None => compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())),
+            };
+            if let Some((fi, origin, text)) = found
+                && let Some(m) = cs.frames.get(fi).and_then(|ft| text_canvas_xf(cx, ft.frame))
+                && let Some(ft) = text.frames.first()
+            {
+                add(&ft.lines, m * Affine::translate(origin.to_vec2()));
+            }
+        }
+        None => {
+            for ft in &cs.frames {
+                if let Some(m) = text_canvas_xf(cx, ft.frame) {
+                    add(&ft.lines, m);
+                }
+            }
+        }
+    }
+    out
+}
+
+impl TypeTool {
+    fn pointer_down(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        self.start = Some(ev.pos);
+        self.drawing = false;
+        self.selecting = None;
+        self.cell_drag = None;
+        self.unit = None;
+        self.border = None;
+        if ev.kind == PointerKind::Down
+            && let Some(b) = border_at(cx, ev.pos)
+        {
+            self.border = Some(b);
+            return vec![];
+        }
+        // Text frames take the caret (locked ones too, as in InDesign); an empty frame
+        // becomes one, unless it's locked: then the press draws a new text frame over it.
+        if let Some((_, id)) = cx.hit(ev.pos)
+            && let Some(it) = cx.doc.item(id)
+            && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
+            && (it.is_text_frame() || !it.locked)
+        {
+            let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+            let clicks = ev.click_count();
+            // Whole rows/columns selected: wait to see whether this is a drag.
+            if clicks == 1 && !ev.mods.shift && whole_rows_or_cols(cx) {
+                self.cell_drag = Some((id.0, sp));
+                return vec![];
+            }
+            self.selecting = Some(id.0);
+            // Two presses select a word (or a run of spaces), three a line, four a
+            // paragraph, five the story.
+            if clicks >= 2 {
+                let unit = match clicks {
+                    2 => "word",
+                    3 => "line",
+                    4 => "paragraph",
+                    _ => "story",
+                };
+                self.unit = Some(unit);
+                return vec![Action::Exec("text.selectAt".into(), json!({"frame": id.0, "point": [sp.x, sp.y], "unit": unit}))];
+            }
+            let cmd = if ev.mods.shift { "text.extendTo" } else { "text.placeCaret" };
+            return vec![Action::Exec(cmd.into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))];
+        }
+        vec![]
+    }
+
+    fn pointer_drag(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        let Some(a) = self.start else { return vec![] };
+        if let Some(b) = self.border.as_mut() {
+            // A click with a little wobble must not resize.
+            if !b.begun && (ev.pos - a).hypot() < cx.tol(3.0) {
+                return vec![];
+            }
+            return b.drag(ev.pos, ev.mods.shift);
+        }
+        if self.cell_drag.is_some() {
+            return vec![];
+        }
+        if let Some(fid) = self.selecting {
+            let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+            let mut p = json!({"frame": fid, "point": [sp.x, sp.y]});
+            // After several clicks the drag grows the selection by whole units.
+            if let Some(unit) = self.unit {
+                p["unit"] = json!(unit);
+            }
+            return vec![Action::Exec("text.extendTo".into(), p)];
+        }
+        if (ev.pos - a).hypot() < cx.tol(3.0) && !self.drawing {
+            return vec![];
+        }
+        let Some((sr, sa)) = cx.layout.spread_at(a) else { return vec![] };
+        // Drawn like the frame tools: the press point and the moving edges snap.
+        let sa = if cx.snap.any() { crate::snap::snap_point(cx, sr, sa).0 } else { sa };
+        let (r, guides) = snapped_drag_rect(cx, sr, sa, cx.layout.to_spread(sr, ev.pos), ev.mods);
+        self.guides = guides;
+        let mut out = vec![];
+        if !self.drawing {
+            self.drawing = true;
+            out.push(Action::Begin("Create Text Frame".into()));
+        }
+        out.push(Action::Preview(
+            "frame.create".into(),
+            json!({"spread": spread_json(sr), "shape": "rectangle", "content": "text", "rect": rect_json(r), "caret": true, "vertical": self.vertical}),
+        ));
+        out
+    }
+
+    fn pointer_up(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        self.guides.clear();
+        let start = self.start.take();
+        if let Some(b) = self.border.take() {
+            return if b.begun { vec![Action::Commit] } else { vec![] };
+        }
+        if let Some((fid, from)) = self.cell_drag.take() {
+            let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+            let moved = start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0));
+            return if moved {
+                vec![Action::Exec("table.dropCells".into(), json!({"frame": fid, "from": [from.x, from.y], "to": [sp.x, sp.y]}))]
+            } else {
+                vec![Action::Exec("text.placeCaret".into(), json!({"frame": fid, "point": [from.x, from.y]}))]
+            };
+        }
+        if std::mem::take(&mut self.drawing) {
+            self.selecting = None;
+            return vec![Action::Commit];
+        }
+        // Ends a press in text: drops dragged text, or is ignored by the engine.
+        if let Some(fid) = self.selecting.take() {
+            let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
+            let moved = start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0));
+            return vec![Action::Exec("text.release".into(), json!({"frame": fid, "point": [sp.x, sp.y], "moved": moved, "copy": ev.mods.alt}))];
+        }
+        vec![]
+    }
+}
+
 impl Tool for TypeTool {
     fn id(&self) -> &'static str {
         if self.vertical { "verticalType" } else { "type" }
@@ -44,111 +344,37 @@ impl Tool for TypeTool {
 
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
-            PointerKind::Down | PointerKind::DoubleClick => {
-                self.start = Some(ev.pos);
-                self.drawing = false;
-                self.selecting = None;
-                self.cell_drag = None;
-                self.unit_selected = false;
-                // Text frames take the caret (locked ones too, as in InDesign); an empty frame
-                // becomes one, unless it's locked: then the press draws a new text frame over it.
-                if let Some((_, id)) = cx.hit(ev.pos)
-                    && let Some(it) = cx.doc.item(id)
-                    && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
-                    && (it.is_text_frame() || !it.locked)
-                {
-                    let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
-                    let clicks = ev.click_count();
-                    // Whole rows/columns selected: wait to see whether this is a drag.
-                    if clicks == 1 && !ev.mods.shift && whole_rows_or_cols(cx) {
-                        self.cell_drag = Some((id.0, sp));
-                        return vec![];
-                    }
-                    self.selecting = Some(id.0);
-                    // Two presses select a word (or a run of spaces), three a line, four a
-                    // paragraph, five the story.
-                    if clicks >= 2 {
-                        self.unit_selected = true;
-                        let unit = match clicks {
-                            2 => "word",
-                            3 => "line",
-                            4 => "paragraph",
-                            _ => "story",
-                        };
-                        return vec![Action::Exec("text.selectAt".into(), json!({"frame": id.0, "point": [sp.x, sp.y], "unit": unit}))];
-                    }
-                    let cmd = if ev.mods.shift { "text.extendTo" } else { "text.placeCaret" };
-                    return vec![Action::Exec(cmd.into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))];
-                }
-                vec![]
-            }
-            PointerKind::Drag => {
-                let Some(a) = self.start else { return vec![] };
-                if self.cell_drag.is_some() || self.unit_selected {
-                    return vec![];
-                }
-                if let Some(fid) = self.selecting {
-                    let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
-                    return vec![Action::Exec("text.extendTo".into(), json!({"frame": fid, "point": [sp.x, sp.y]}))];
-                }
-                if (ev.pos - a).hypot() < cx.tol(3.0) && !self.drawing {
-                    return vec![];
-                }
-                let Some((sr, sa)) = cx.layout.spread_at(a) else { return vec![] };
-                // Drawn like the frame tools: the press point and the moving edges snap.
-                let sa = if cx.snap.any() { crate::snap::snap_point(cx, sr, sa).0 } else { sa };
-                let (r, guides) = snapped_drag_rect(cx, sr, sa, cx.layout.to_spread(sr, ev.pos), ev.mods);
-                self.guides = guides;
-                let mut out = vec![];
-                if !self.drawing {
-                    self.drawing = true;
-                    out.push(Action::Begin("Create Text Frame".into()));
-                }
-                out.push(Action::Preview(
-                    "frame.create".into(),
-                    json!({"spread": spread_json(sr), "shape": "rectangle", "content": "text", "rect": rect_json(r), "caret": true, "vertical": self.vertical}),
-                ));
-                out
-            }
-            PointerKind::Up => {
-                self.guides.clear();
-                let start = self.start.take();
-                if let Some((fid, from)) = self.cell_drag.take() {
-                    let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
-                    let moved = start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0));
-                    return if moved {
-                        vec![Action::Exec("table.dropCells".into(), json!({"frame": fid, "from": [from.x, from.y], "to": [sp.x, sp.y]}))]
-                    } else {
-                        vec![Action::Exec("text.placeCaret".into(), json!({"frame": fid, "point": [from.x, from.y]}))]
-                    };
-                }
-                if std::mem::take(&mut self.drawing) {
-                    self.selecting = None;
-                    return vec![Action::Commit];
-                }
-                // Ends a press in text: drops dragged text, or is ignored by the engine.
-                if let Some(fid) = self.selecting.take() {
-                    let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
-                    let moved = start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0));
-                    return vec![Action::Exec(
-                        "text.release".into(),
-                        json!({"frame": fid, "point": [sp.x, sp.y], "moved": moved, "copy": ev.mods.alt}),
-                    )];
-                }
-                vec![]
-            }
+            PointerKind::Down | PointerKind::DoubleClick => self.pointer_down(cx, ev),
+            PointerKind::Drag => self.pointer_drag(cx, ev),
+            PointerKind::Up => self.pointer_up(cx, ev),
             PointerKind::Move => vec![],
         }
     }
 
     fn key(&mut self, cx: &ToolContext, key: ToolKey, mods: Mods) -> Vec<Action> {
-        if cx.selection.text.is_none() {
+        if key == ToolKey::Escape
+            && let Some(b) = self.border.take()
+        {
+            self.start = None;
+            return if b.begun { vec![Action::Cancel] } else { vec![] };
+        }
+        // The IME owns the keys while it composes (the UI holds them back; this is a guard).
+        if cx.selection.text.is_none() || self.preedit.is_some() {
             return vec![];
         }
-        let mv = |dir: &str| {
-            vec![Action::Exec("text.move".into(), json!({"dir": dir, "extend": mods.shift, "word": mods.alt || mods.ctrl, "far": mods.cmd}))]
+        // Words: Cmd+arrow on macOS, Ctrl+arrow elsewhere (`cmd`); Option/Alt+Shift+arrow extends
+        // by words too.
+        let mv =
+            |dir: &str| vec![Action::Exec("text.move".into(), json!({"dir": dir, "extend": mods.shift, "word": mods.cmd || mods.ctrl || mods.alt}))];
+        // Option/Alt+Left/Right: kerning at the caret, tracking of a selection; with Cmd (Ctrl
+        // elsewhere), five times the increment.
+        let kern = |sign: f64| {
+            let steps = if mods.cmd || mods.ctrl { 5.0 } else { 1.0 };
+            vec![Action::Exec("type.kernStep".into(), json!({"steps": sign * steps}))]
         };
         match key {
+            ToolKey::Left if mods.alt && !mods.shift => kern(-1.0),
+            ToolKey::Right if mods.alt && !mods.shift => kern(1.0),
             ToolKey::Left => mv("left"),
             ToolKey::Right => mv("right"),
             ToolKey::Up => mv("up"),
@@ -164,22 +390,121 @@ impl Tool for TypeTool {
         }
     }
 
-    fn overlays(&self, _cx: &ToolContext) -> Vec<Overlay> {
-        if self.drawing { self.guides.clone() } else { vec![] }
+    fn overlays(&self, cx: &ToolContext) -> Vec<Overlay> {
+        if self.drawing {
+            return self.guides.clone();
+        }
+        let (Some(p), Some(ts)) = (&self.preedit, cx.selection.text) else { return vec![] };
+        // Marked text: a thin underline, a thick one under the clause being converted.
+        let start = marked_start(cx, ts, p);
+        let line = |(a, b): (Point, Point)| Overlay::Line { a, b, color: [0, 0, 0], dashed: false };
+        let mut o: Vec<Overlay> = underlines(cx, ts, start..start + p.text.len()).into_iter().map(line).collect();
+        match &p.active {
+            Some(r) if !r.is_empty() => {
+                for (a, b) in underlines(cx, ts, start + r.start..start + r.end) {
+                    // A second line a pixel further from the text.
+                    let d = b - a;
+                    let n = Vec2::new(-d.y, d.x) * (cx.tol(1.0) / d.hypot().max(1e-9));
+                    o.push(line((a + n, b + n)));
+                }
+            }
+            // The IME's cursor inside the marked text (the text caret stays at its end).
+            Some(r) if r.start < p.text.len() => o.extend(caret_line(cx, ts, start + r.start).map(line)),
+            _ => {}
+        }
+        o
     }
 
     fn cursor(&self, cx: &ToolContext, p: Point, _m: Mods) -> Cursor {
-        match cx.hit(p) {
-            Some((_, id)) if cx.doc.item(id).is_some_and(|i| i.is_text_frame()) => Cursor::Text,
-            _ => Cursor::Text,
+        if let Some(b) = self.border.as_ref().copied().or_else(|| if self.start.is_none() { border_at(cx, p) } else { None }) {
+            return b.cursor();
         }
+        Cursor::Text
     }
 
     fn busy(&self) -> bool {
-        self.drawing
+        self.drawing || self.border.is_some()
     }
 
     fn wants_text(&self, cx: &ToolContext) -> bool {
         cx.selection.text.is_some()
+    }
+
+    fn ime_preedit(&mut self, cx: &ToolContext, text: &str, active_chars: Option<Range<usize>>) -> Vec<Action> {
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        // A cancelled composition: the preview goes, leaving no undo step. A clear with nothing
+        // marked (some integrations send one when the IME is enabled) changes nothing, so it never
+        // deletes the selected text.
+        if text.is_empty() || cx.selection.text.is_none() {
+            return if self.preedit.take().is_some() { vec![Action::Cancel] } else { vec![] };
+        }
+        let mut out = Vec::new();
+        if self.preedit.is_none() {
+            out.push(Action::Begin("Type".into()));
+        }
+        // Each update replaces the previous marked text (or the selected text). Marked text shows
+        // as it is: typographer's quotes and autocorrect wait for the commit.
+        out.push(Action::Preview("text.insert".into(), json!({"text": text, "raw": true})));
+        self.preedit = Some(Preedit { active: active_chars.and_then(|r| char_range_to_bytes(&text, r)), text });
+        out
+    }
+
+    /// Normalize commit text, cancel marked text, and emit one `text.insert` when text remains and a text selection is active.
+    fn ime_commit(&mut self, cx: &ToolContext, text: &str) -> Vec<Action> {
+        let text = ime_commit_text(text);
+        // The marked text goes; the result is typed in its place like any typing: one command,
+        // one undo step.
+        let mut out = if self.preedit.take().is_some() { vec![Action::Cancel] } else { vec![] };
+        if !text.is_empty() && cx.selection.text.is_some() {
+            out.push(Action::Exec("text.insert".into(), json!({"text": text})));
+        }
+        out
+    }
+
+    fn ime_end(&mut self, cx: &ToolContext) -> Vec<Action> {
+        match self.preedit.as_ref().map(|p| p.text.clone()) {
+            Some(text) => self.ime_commit(cx, &text),
+            None => vec![],
+        }
+    }
+
+    fn composing(&self) -> bool {
+        self.preedit.is_some()
+    }
+
+    fn ime_caret(&self, cx: &ToolContext) -> Option<(Point, Point)> {
+        let ts = cx.selection.text?;
+        // The candidate window follows the clause being converted (or the IME's cursor), else the
+        // caret.
+        let at = match &self.preedit {
+            Some(p) => marked_start(cx, ts, p) + p.active.as_ref().map_or(0, |r| r.start),
+            None => ts.range().start,
+        };
+        caret_line(cx, ts, at).or_else(|| {
+            // Overset text has no caret on a page: the window goes to the out port of the story's
+            // last frame.
+            let fid = cx.doc.story(ts.story).and_then(|s| s.frames.last().copied()).or(ts.frame)?;
+            let it = cx.doc.item(fid)?;
+            let m = cx.item_canvas_xf(fid)? * it.xf;
+            let r = it.inner_bounds();
+            Some((m * Point::new(r.x1, r.y1 - 12.0), m * Point::new(r.x1, r.y1)))
+        })
+    }
+}
+
+#[cfg(test)]
+mod ime_tests {
+    use super::char_range_to_bytes;
+
+    #[test]
+    fn ime_character_ranges_become_byte_ranges() {
+        assert_eq!(char_range_to_bytes("雅楽", 0..2), Some(0..6));
+        assert_eq!(char_range_to_bytes("がg", 1..2), Some(3..4));
+        assert_eq!(char_range_to_bytes("がg", 2..2), Some(4..4));
+        // Past the end or backwards: no clause.
+        assert_eq!(char_range_to_bytes("が", 1..3), None);
+        #[allow(clippy::reversed_empty_ranges)]
+        let backwards = 1..0;
+        assert_eq!(char_range_to_bytes("がg", backwards), None);
     }
 }

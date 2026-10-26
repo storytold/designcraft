@@ -184,6 +184,38 @@ fn a_link_back_to_a_parent_folder_ends_the_scan() {
     assert_eq!(db.load_system_fonts(), 2);
 }
 
+/// The folder a font service keeps its fonts in, outside the font folders, and the font folder
+/// of [`fonts_the_platform_lists_outside_the_font_folders_are_cataloged_once`].
+fn service_dirs() -> (PathBuf, PathBuf) {
+    let tmp = std::env::temp_dir();
+    let id = std::process::id();
+    (tmp.join(format!("dc-sysfonts-{id}-service")), tmp.join(format!("dc-sysfonts-{id}-platform")))
+}
+
+/// The platform's list: a font service's file without an extension (twice, as for each face of a
+/// collection), a font folder's file by another path, a file gone since and a folder.
+fn service_files() -> Vec<PathBuf> {
+    let (service, folder) = service_dirs();
+    vec![service.join(".r/.12345"), folder.join("Sub/../Sysfont-Regular.ttf"), service.join(".r/.12345"), service.join("gone.otf"), service.clone()]
+}
+
+#[test]
+fn fonts_the_platform_lists_outside_the_font_folders_are_cataloged_once() {
+    let (service, folder) = service_dirs();
+    let dir = font_dir("platform");
+    assert_eq!(dir, folder);
+    let _ = std::fs::remove_dir_all(&service);
+    std::fs::create_dir_all(service.join(".r")).unwrap();
+    std::fs::write(service.join(".r/.12345"), renamed("SourceSans3-It.ttf")).unwrap();
+    let db = FontDb { font_files: service_files, ..FontDb::with_font_dirs(vec![dir]) };
+    assert_eq!(db.styles(FAMILY), ["Regular", "Bold", "Italic"]);
+    assert_eq!(db.load_system_fonts(), 3, "the font folder's Regular listed again isn't cataloged twice");
+    let italic = db.face(FAMILY, "Italic");
+    assert_eq!(italic.style, "Italic");
+    assert_eq!(italic.source.path(), Some(service.join(".r/.12345").as_path()));
+    let _ = std::fs::remove_dir_all(&service);
+}
+
 #[test]
 fn a_familys_kind_is_read_without_keeping_it_loaded() {
     let dir = font_dir("kind");
@@ -209,6 +241,25 @@ fn the_scan_reads_names_without_loading_the_font() {
     assert!(file_face_names(&dir.join("damaged.ttf")).is_empty());
     assert!(file_face_names(&dir.join("readme.txt")).is_empty());
     assert!(file_face_names(&dir.join("missing.ttf")).is_empty());
+}
+
+#[test]
+fn faces_without_outlines_are_not_cataloged() {
+    // A face whose glyphs live in a table nothing draws from (`hvgl`, say) lists no face; in a
+    // collection, its drawable sibling is still listed.
+    let regular = renamed("SourceSans3-Regular.ttf");
+    let mut hvgl = renamed("SourceSans3-It.ttf");
+    let tables = u16::from_be_bytes([hvgl[4], hvgl[5]]) as usize;
+    let glyf = (0..tables).map(|r| 12 + r * 16).find(|&at| &hvgl[at..at + 4] == b"glyf").unwrap();
+    hvgl[glyf..glyf + 4].copy_from_slice(b"hvgl");
+    let dir = std::env::temp_dir().join(format!("dc-sysfonts-outlines-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("hvgl.ttf"), &hvgl).unwrap();
+    std::fs::write(dir.join("mixed.ttc"), collection(&[hvgl, regular])).unwrap();
+    assert!(file_face_names(&dir.join("hvgl.ttf")).is_empty());
+    let names: Vec<String> = file_face_names(&dir.join("mixed.ttc")).into_iter().map(|f| f.style).collect();
+    assert_eq!(names, ["Regular"]);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -241,6 +292,85 @@ fn font_menus_group_installed_and_loaded_fonts_without_loading_them() {
 }
 
 #[test]
+fn rescanning_retries_missing_glyphs_and_absent_fallback_families() {
+    use crate::testing::font_with;
+    let dir = font_dir("rescan-fallback-ttf");
+    // Only synthetic TTF files in this folder are scanned. Keep the loaded Latin fallback
+    // alone so optional craft-fonts cannot provide the characters used by this fixture.
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    db.faces.write().unwrap().retain(|f| f.family == FALLBACK_FAMILY);
+    let c = '\u{1e900}';
+    assert!(db.fallback_for(c, 0, None).is_none());
+    // A loaded non-chain face supplies Hangul while all installed Korean chain faces are absent.
+    db.add_font(font_with("Earlier Korean Fallback", &['가']).unwrap());
+    let chain_family = "Noto Serif CJK KR";
+    assert!(!db.has_family(chain_family));
+    assert_eq!(db.fallback_for('가', 0, Some("ko")).unwrap().family, "Earlier Korean Fallback");
+    let family = "Installed After Glyph Miss";
+    std::fs::write(dir.join("Later.ttf"), font_with(family, &[c]).unwrap()).unwrap();
+    std::fs::write(dir.join("LaterKorean.ttf"), font_with(chain_family, &['가']).unwrap()).unwrap();
+    // Before an explicit rescan, both fallbacks still use the previous catalog.
+    assert!(db.fallback_for(c, 0, None).is_none());
+    assert_eq!(db.fallback_for('가', 0, Some("ko")).unwrap().family, "Earlier Korean Fallback");
+    assert_eq!(db.load_system_fonts(), 4);
+    assert!(db.has_family(family) && db.has_family(chain_family));
+    assert_eq!(db.fallback_for(c, 0, None).unwrap().family, family);
+    assert_eq!(db.fallback_for('가', 0, Some("ko")).unwrap().family, chain_family);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rescan_does_not_cache_an_older_in_flight_glyph_miss() {
+    use crate::testing::font_with;
+    use std::sync::{Barrier, mpsc};
+    use std::time::Duration;
+
+    let dir = font_dir("rescan-in-flight-ttf");
+    let db = Arc::new(FontDb::with_font_dirs(vec![dir.clone()]));
+    // Optional craft-fonts must not supply the test glyph from an already loaded face.
+    db.faces.write().unwrap().retain(|f| f.family == FALLBACK_FAMILY);
+    let c = '\u{1e900}';
+    let family = "Installed During Glyph Lookup";
+    let font = font_with(family, &[c]).unwrap();
+    assert!(db.read_faces().iter().all(|f| !f.covers(c)));
+    assert_eq!(db.load_system_fonts(), 2);
+
+    let deadline = Duration::from_secs(10);
+    let (reached_tx, reached_rx) = mpsc::sync_channel(1);
+    let resume = Arc::new(Barrier::new(2));
+    *db.fallback_snapshot_hook.lock().unwrap() = Some(FallbackSnapshotHook { reached: reached_tx, resume: resume.clone() });
+    let (lookup_tx, lookup_rx) = mpsc::sync_channel(1);
+    let lookup_db = db.clone();
+    let lookup = std::thread::spawn(move || {
+        let face = lookup_db.fallback_for(c, 0, None).map(|f| f.family.clone());
+        let _ = lookup_tx.send(face);
+    });
+    reached_rx.recv_timeout(deadline).expect("the lookup must reach its old catalog snapshot");
+
+    // Finish the rescan while the old lookup is paused. A timeout also detects accidentally
+    // holding sys/catalog locks at the hook; release the lookup before reporting that failure.
+    let (scan_tx, scan_rx) = mpsc::sync_channel(1);
+    let scan_db = db.clone();
+    let scan = std::thread::spawn(move || {
+        let result = std::fs::write(dir.join("Later.ttf"), font).map(|()| scan_db.load_system_fonts());
+        let _ = scan_tx.send(result);
+    });
+    let scanned = scan_rx.recv_timeout(deadline);
+    resume.wait();
+    let old_face = lookup_rx.recv_timeout(deadline).expect("the old lookup must finish after release");
+    lookup.join().unwrap();
+    assert_eq!(scanned.expect("the rescan must finish before releasing the old lookup").unwrap(), 3);
+    scan.join().unwrap();
+    assert!(old_face.is_none(), "the paused lookup only searched the old paths");
+    assert!(db.has_family(family));
+    assert!(!db.is_loaded(family), "a rescan catalogs the font without loading it");
+    // The old miss must not hide the new catalog entry; no second rescan is performed.
+    assert_eq!(db.fallback_for(c, 0, None).unwrap().family, family);
+    std::fs::remove_dir_all(db.font_dirs.first().unwrap()).unwrap();
+}
+
+#[test]
 fn installed_and_loaded_fonts_are_found_by_postscript_name() {
     let dir = std::env::temp_dir().join(format!("dc-sysfonts-postscript-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -258,4 +388,54 @@ fn installed_and_loaded_fonts_are_found_by_postscript_name() {
     // A family name isn't a PostScript name.
     assert_eq!(db.postscript_face("Source Serif 4"), None);
     assert_eq!(db.postscript_face("NoSuchFont-Regular"), None);
+}
+
+/// Write `font` to `path` with a modification time `secs` from now, so a rewrite of the same
+/// length still reads as changed however coarse the file system's clock.
+fn write_font(path: &Path, font: &[u8], secs: u64) {
+    std::fs::write(path, font).unwrap();
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(secs)).unwrap();
+}
+
+#[test]
+fn reloading_reads_changed_font_files_again_and_keeps_the_others() {
+    use crate::testing::font_with_glyph;
+    let dir = font_dir("reload");
+    let family = "DC Test Reloaded";
+    let path = dir.join("Reloaded.ttf");
+    write_font(&path, &font_with_glyph(family, &['a'], 'W').unwrap(), 10);
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let before = db.face(family, "Regular");
+    let wide = before.advance(before.glyph_for('a'));
+    let kept = db.face(FAMILY, "Regular");
+    // The font is edited and installed again under the same name (#328).
+    write_font(&path, &font_with_glyph(family, &['a'], 'i').unwrap(), 20);
+    assert_eq!(db.face(family, "Regular").id(), before.id(), "a lookup alone doesn't read the file again");
+    let reloaded = db.reload_fonts();
+    assert_eq!(reloaded.changed, std::slice::from_ref(&path));
+    assert_eq!(reloaded.cataloged, 3);
+    let after = db.face(family, "Regular");
+    assert_ne!(after.id(), before.id());
+    let narrow = after.advance(after.glyph_for('a'));
+    assert!(narrow < wide, "the edited font sets 'a' as its i: {narrow} vs {wide}");
+    assert_eq!(db.face(FAMILY, "Regular").id(), kept.id(), "unchanged files aren't read again");
+    assert_eq!(db.reload_fonts().changed, Vec::<PathBuf>::new(), "nothing changed since");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reloading_lets_go_of_removed_fonts_and_finds_new_ones() {
+    let dir = font_dir("reload-removed");
+    let removed = dir.join("Removed.ttf");
+    write_font(&removed, &crate::testing::font_with("DC Test Removed", &['a']).unwrap(), 10);
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    assert_eq!(db.face("DC Test Removed", "Regular").family, "DC Test Removed");
+    std::fs::remove_file(&removed).unwrap();
+    write_font(&dir.join("Added.ttf"), &crate::testing::font_with("DC Test Added Later", &['a']).unwrap(), 10);
+    assert_eq!(db.reload_fonts().changed, [removed]);
+    assert!(!db.has_family("DC Test Removed"));
+    assert_eq!(db.face("DC Test Removed", "Regular").family, FALLBACK_FAMILY);
+    assert!(db.has_family("DC Test Added Later"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

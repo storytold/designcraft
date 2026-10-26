@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::*;
-use crate::testing::{font_with, font_with_wws, with_fs_type};
+use super::{Arc, DOCUMENT_FONTS_FOLDER, FALLBACK_FAMILY, FontDb, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES};
+use crate::testing::{font_with, font_with_names, font_with_wws, with_fs_type};
 
 /// An empty temporary folder unique to `name` and this process.
 fn temp_dir(name: &str) -> PathBuf {
@@ -208,5 +208,25 @@ fn optical_size_face_is_found_by_its_wws_names() {
     assert!(fonts.has_family("DocFont Kepler"));
     assert_eq!(fonts.face("DocFont Kepler", "Light Display").style, "Light Display");
     assert_eq!(fonts.styles("DocFont Kepler"), ["Light Display"]);
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn a_wws_family_that_is_also_the_legacy_family_finds_the_optical_size_face() {
+    // Optical-size faces usually carry their WWS family as the legacy family (name ID 1) too.
+    let folder = temp_dir("wws-legacy");
+    let display =
+        [(1, "DocFont Kepler Display"), (2, "Regular"), (16, "DocFont Kepler"), (17, "Light Display"), (21, "DocFont Kepler Display"), (22, "Light")];
+    let text = [(1, "DocFont Kepler Light"), (2, "Regular"), (16, "DocFont Kepler"), (17, "Light")];
+    std::fs::write(folder.join("light-display.otf"), font_with_names(&display, &['k']).unwrap()).unwrap();
+    std::fs::write(folder.join("light.otf"), font_with_names(&text, &['k']).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![]);
+    let r = db.load_document_fonts(&folder, &|_| Ok(()));
+    assert_eq!((r.faces, r.skipped.len()), (2, 0), "{:?}", r.skipped);
+    let fonts = db.scoped(r.scope);
+    assert_eq!(fonts.face("DocFont Kepler Display", "Light").style, "Light Display", "the display face, not the text size");
+    assert_eq!(fonts.styles("DocFont Kepler Display"), ["Light"]);
+    assert!(fonts.has_style("DocFont Kepler Display", "Light"));
+    assert_eq!(fonts.face("DocFont Kepler", "Light").style, "Light");
     let _ = std::fs::remove_dir_all(&folder);
 }

@@ -57,7 +57,7 @@ impl Tool for HandTool {
 
 /// Zoom tool: click zooms in (Alt: out); dragging left or right zooms out or in continuously
 /// around the press point (scrubby zoom).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ZoomTool {
     /// Press point (canvas), zoom at the press, whether it has been dragged.
     press: Option<(Point, f64, bool)>,
@@ -434,8 +434,8 @@ impl Tool for PageTool {
                 p: d.cur,
                 text: format!(
                     "W: {}\nH: {}",
-                    designcraft_geom::format_measure(pg.width, cx.unit),
-                    designcraft_geom::format_measure(pg.height, cx.unit)
+                    designcraft_geom::format_measure(pg.width, cx.doc.settings.horizontal_units),
+                    designcraft_geom::format_measure(pg.height, cx.doc.settings.vertical_units)
                 ),
             });
         }

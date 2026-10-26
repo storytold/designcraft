@@ -13,7 +13,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::StoryId;
-use crate::item::{StrokeType, VerticalJustification};
+use crate::item::{FirstBaseline, StrokeType, VerticalJustification};
 use crate::story::{CharFormat, ParaFormat, Story, TABLE_ANCHOR};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,11 +62,30 @@ pub struct CellStroke {
     pub color: String,
     pub tint: f32,
     pub kind: StrokeType,
+    /// Painted in the gaps of dashed, dotted and striped types.
+    #[serde(skip_serializing_if = "is_no_swatch")]
+    pub gap_color: String,
+    #[serde(skip_serializing_if = "is_full")]
+    pub gap_tint: f32,
+}
+
+fn is_no_swatch(s: &str) -> bool {
+    s == designcraft_color::swatch::NONE
+}
+fn is_full(t: &f32) -> bool {
+    *t == 1.0
 }
 
 impl Default for CellStroke {
     fn default() -> Self {
-        CellStroke { weight: 1.0, color: designcraft_color::swatch::BLACK.into(), tint: 1.0, kind: StrokeType::Solid }
+        CellStroke {
+            weight: 1.0,
+            color: designcraft_color::swatch::BLACK.into(),
+            tint: 1.0,
+            kind: StrokeType::Solid,
+            gap_color: designcraft_color::swatch::NONE.into(),
+            gap_tint: 1.0,
+        }
     }
 }
 
@@ -140,6 +159,12 @@ fn full() -> f32 {
 fn no_fill() -> String {
     designcraft_color::swatch::NONE.into()
 }
+fn is_ascent(f: &FirstBaseline) -> bool {
+    *f == FirstBaseline::Ascent
+}
+fn is_zero_min(v: &f64) -> bool {
+    *v == 0.0
+}
 fn default_insets() -> [f64; 4] {
     [4.0; 4]
 }
@@ -162,6 +187,12 @@ pub struct Cell {
     pub insets: [f64; 4],
     #[serde(default)]
     pub vj: VerticalJustification,
+    /// Cell Options › Text › First Baseline: how far the first line's baseline sits below the
+    /// top inset (IDML `FirstBaselineOffset`), and its minimum (`MinimumFirstBaselineOffset`).
+    #[serde(default, skip_serializing_if = "is_ascent")]
+    pub first_baseline: FirstBaseline,
+    #[serde(default, skip_serializing_if = "is_zero_min")]
+    pub first_baseline_min: f64,
     /// Text rotation in degrees (only 0 is composed for now).
     #[serde(default)]
     pub rotation: f64,
@@ -197,6 +228,8 @@ impl Default for Cell {
             fill_tint: 1.0,
             insets: default_insets(),
             vj: VerticalJustification::Top,
+            first_baseline: FirstBaseline::Ascent,
+            first_baseline_min: 0.0,
             rotation: 0.0,
             strokes: Default::default(),
             border_overrides: [false; 4],
@@ -878,7 +911,8 @@ impl Table {
     }
 
     /// Move row `from` to position `to` (indices before the move). Refused when merged cells span
-    /// rows (the move would cut them).
+    /// rows (the move would cut them) or when the move would take a row across a header/footer
+    /// boundary (`from` and `to` must be the same kind of row).
     pub fn move_row(&mut self, from: usize, to: usize) -> Result<(), String> {
         let (nr, nc) = (self.nrows(), self.ncols());
         if from >= nr || to >= nr {
@@ -886,6 +920,9 @@ impl Table {
         }
         if self.regions().iter().any(|r| r.2 > 1) {
             return Err("unmerge cells that span rows first".into());
+        }
+        if self.rows[from].kind != self.rows[to].kind {
+            return Err("header and footer rows must stay first and last".into());
         }
         let row = self.rows.remove(from);
         self.rows.insert(to, row);
@@ -931,6 +968,47 @@ impl Table {
         }
     }
 
+    /// Header and footer row counts after Table ▸ Convert Rows turns rows `r0..=r1` into `kind`
+    /// rows. Header rows grow from the top and footer rows from the bottom, so the rows must
+    /// touch the table's edge or the rows already converted; back to body, they must touch the
+    /// body. One body row stays, and no merged cell may straddle a moved boundary.
+    pub fn convert_rows_counts(&self, r0: usize, r1: usize, kind: RowKind) -> Result<(usize, usize), String> {
+        let (r0, r1) = (r0.min(r1), r0.max(r1));
+        let n = self.nrows();
+        if r1 >= n {
+            return Err("row out of range".into());
+        }
+        let (h, f) = (self.header_rows(), self.footer_rows());
+        let body_end = n - f;
+        let (nh, nf) = match kind {
+            RowKind::Header if r0 > h => return Err("select rows at the top of the table or right after its header rows".into()),
+            RowKind::Header if r1 >= body_end => return Err("footer rows can't become header rows".into()),
+            RowKind::Header => (h.max(r1 + 1), f),
+            RowKind::Footer if r1 + 1 < body_end => return Err("select rows at the bottom of the table or right before its footer rows".into()),
+            RowKind::Footer if r0 < h => return Err("header rows can't become footer rows".into()),
+            RowKind::Footer => (h, f.max(n - r0)),
+            RowKind::Body => {
+                if (r0 < h && r1 + 1 < h) || (r1 >= body_end && r0 > body_end) {
+                    return Err("select the header or footer rows next to the body".into());
+                }
+                (if r0 < h { r0 } else { h }, if r1 >= body_end { n - 1 - r1 } else { f })
+            }
+        };
+        if (nh, nf) == (h, f) {
+            return Err("the rows already are of that kind".into());
+        }
+        if nh + nf >= n {
+            return Err("a table keeps at least one body row".into());
+        }
+        let owners = self.owners();
+        let nc = self.ncols();
+        let straddled = |b: usize| (0..nc).any(|c| owners.get(b * nc + c).is_some_and(|o| o.0 < b));
+        if (nh != h && straddled(nh)) || (nf != f && straddled(n - nf)) {
+            return Err("unmerge the cells that span header, body and footer rows first".into());
+        }
+        Ok((nh, nf))
+    }
+
     /// Cell texts, rows separated by `\n`, cells by `\t` (Convert Table to Text, search, agents).
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
@@ -962,6 +1040,15 @@ impl Table {
         if self.rows[h..self.nrows() - f].iter().any(|r| r.kind != RowKind::Body) {
             return Err(format!("table {}: header/footer rows out of order", self.id));
         }
+        self.check_spans()?;
+        for cell in &self.cells {
+            cell.text.check()?;
+        }
+        Ok(())
+    }
+
+    /// Every merged cell stays inside the grid and no two merged cells overlap.
+    fn check_spans(&self) -> Result<(), String> {
         let mut seen = vec![false; self.cells.len()];
         for r in 0..self.nrows() {
             for c in 0..self.ncols() {
@@ -986,9 +1073,6 @@ impl Table {
                 }
             }
         }
-        for cell in &self.cells {
-            cell.text.check()?;
-        }
         Ok(())
     }
 }
@@ -997,7 +1081,7 @@ impl Table {
 fn append_story(s: &mut Story, other: &Story) {
     if s.is_empty() {
         *s = Story { id: s.id, ..other.clone() };
-        s.rev += 1;
+        s.rev = s.rev.wrapping_add(1);
         return;
     }
     let base = s.len();
@@ -1074,7 +1158,7 @@ impl Story {
     /// Mutable table (copy-on-write); bumps the story revision.
     pub fn table_mut(&mut self, id: u64) -> Option<&mut Table> {
         let t = self.tables.get_mut(&id)?;
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         Some(Arc::make_mut(t))
     }
 
@@ -1099,7 +1183,7 @@ impl Story {
         let api = self.para_at(anchor);
         self.paras[api].table = Some(id);
         self.fix_tables();
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         anchor
     }
 
@@ -1193,6 +1277,17 @@ mod tests {
 
     fn story(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
+    }
+
+    #[test]
+    fn move_row_keeps_header_and_footer_rows_in_place() {
+        let mut t = Table::new(1, 3, 2, 1, 1, 120.0);
+        for (from, to) in [(0, 2), (0, 4), (2, 0), (2, 4), (4, 2), (4, 0)] {
+            assert!(t.move_row(from, to).is_err(), "move_row({from}, {to}) should be refused");
+            t.check().unwrap();
+        }
+        t.move_row(1, 3).unwrap();
+        t.check().unwrap();
     }
 
     #[test]

@@ -168,38 +168,26 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(7.0, 4.0), (16.0, 4.0)]);
             pen.line(&[(13.5, 2.0), (16.0, 4.0), (13.5, 6.0)]);
         }
-        "tool-rotate" => {
+        "tool-rotate" | "rotate-clockwise" => {
+            let direction = if name == "rotate-clockwise" { -1.0 } else { 1.0 };
             let pts: Vec<(f32, f32)> = (0..24)
                 .map(|i| {
                     let a = (i as f32 / 23.0) * 4.6 - 0.6;
-                    (10.0 + 6.5 * a.cos(), 10.0 - 6.5 * a.sin())
+                    (10.0 + direction * 6.5 * a.cos(), 10.0 - 6.5 * a.sin())
                 })
                 .collect();
             pen.line(&pts);
-            pen.line(&[(13.0, 4.0), (15.5, 6.0), (16.5, 2.8)]);
+            pen.line(&[(10.0 + direction * 3.0, 4.0), (10.0 + direction * 5.5, 6.0), (10.0 + direction * 6.5, 2.8)]);
         }
-        // Properties › Transform: rotate a quarter turn (an arc over a square), flip (a shape and its
-        // mirror image across a dashed axis).
-        "rotate-cw" | "rotate-ccw" => {
-            let m = |x: f32| if name == "rotate-ccw" { 20.0 - x } else { x };
-            pen.rect(m(3.0).min(m(11.0)), 9.0, m(3.0).max(m(11.0)), 17.0);
-            let pts: Vec<(f32, f32)> = (0..12)
-                .map(|i| {
-                    let a = std::f32::consts::PI * (1.0 - i as f32 / 11.0);
-                    (m(11.0 + 5.0 * a.cos()), 9.0 - 5.0 * a.sin())
-                })
-                .collect();
-            pen.line(&pts);
-            pen.line(&[(m(14.0), 7.0), (m(16.0), 9.5), (m(18.0), 7.0)]);
+        "flip-horizontal" => {
+            pen.line(&[(10.0, 2.0), (10.0, 18.0)]);
+            pen.fill(&[(3.0, 4.0), (8.0, 10.0), (3.0, 16.0)]);
+            pen.closed(&[(17.0, 4.0), (12.0, 10.0), (17.0, 16.0)]);
         }
-        "flip-h" | "flip-v" => {
-            let t = |x: f32, y: f32| if name == "flip-v" { (y, x) } else { (x, y) };
-            pen.fill(&[t(3.0, 16.0), t(8.5, 4.0), t(8.5, 16.0)]);
-            pen.closed(&[t(11.5, 16.0), t(11.5, 4.0), t(17.0, 16.0)]);
-            for k in 0..4 {
-                let y0 = 2.5 + k as f32 * 4.0;
-                pen.line(&[t(10.0, y0), t(10.0, y0 + 2.0)]);
-            }
+        "flip-vertical" => {
+            pen.line(&[(2.0, 10.0), (18.0, 10.0)]);
+            pen.fill(&[(4.0, 3.0), (10.0, 8.0), (16.0, 3.0)]);
+            pen.closed(&[(4.0, 17.0), (10.0, 12.0), (16.0, 17.0)]);
         }
         "tool-gradient" | "tool-gradient-feather" => {
             for i in 0..6 {
@@ -333,6 +321,24 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(3.0, 3.0), (3.0, 17.0)]);
             pen.frect(5.0, 5.0, 15.0, 9.0);
             pen.frect(5.0, 11.0, 11.0, 15.0);
+        }
+        "objdistribute-h" => {
+            pen.frect(2.5, 5.0, 6.0, 15.0);
+            pen.frect(14.0, 5.0, 17.5, 15.0);
+            pen.line(&[(7.5, 10.0), (12.5, 10.0)]);
+            pen.line(&[(7.5, 10.0), (9.0, 8.5)]);
+            pen.line(&[(7.5, 10.0), (9.0, 11.5)]);
+            pen.line(&[(12.5, 10.0), (11.0, 8.5)]);
+            pen.line(&[(12.5, 10.0), (11.0, 11.5)]);
+        }
+        "objdistribute-v" => {
+            pen.frect(5.0, 2.5, 15.0, 6.0);
+            pen.frect(5.0, 14.0, 15.0, 17.5);
+            pen.line(&[(10.0, 7.5), (10.0, 12.5)]);
+            pen.line(&[(10.0, 7.5), (8.5, 9.0)]);
+            pen.line(&[(10.0, 7.5), (11.5, 9.0)]);
+            pen.line(&[(10.0, 12.5), (8.5, 11.0)]);
+            pen.line(&[(10.0, 12.5), (11.5, 11.0)]);
         }
         "panel-transform" => {
             pen.rect(4.0, 4.0, 16.0, 16.0);
@@ -486,6 +492,36 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 };
                 pen.line(&[(x0, y), (x1, y)]);
             }
+        }
+        // Tab stops: a stem standing on a foot that runs the way the text runs from the stop.
+        "tab-left" | "tab-center" | "tab-right" | "tab-char" => {
+            pen.w = 1.8;
+            pen.line(&[(10.0, 4.0), (10.0, 15.0)]);
+            let (x0, x1) = match name {
+                "tab-left" => (10.0, 16.0),
+                "tab-right" => (4.0, 10.0),
+                _ => (5.0, 15.0),
+            };
+            pen.line(&[(x0, 15.0), (x1, 15.0)]);
+            if name == "tab-char" {
+                pen.fcircle(14.0, 10.0, 1.4);
+            }
+        }
+        // Position the panel above the text frame: a horseshoe magnet.
+        "tab-snap" => {
+            pen.w = 1.6;
+            let arc: Vec<(f32, f32)> = (0..=12)
+                .map(|i| {
+                    let a = i as f32 / 12.0 * std::f32::consts::PI;
+                    (10.0 + 5.5 * a.cos(), 10.0 + 5.5 * a.sin())
+                })
+                .collect();
+            let mut pts = vec![(15.5, 3.5)];
+            pts.extend(arc);
+            pts.push((4.5, 3.5));
+            pen.line(&pts);
+            pen.line(&[(3.0, 5.5), (6.0, 5.5)]);
+            pen.line(&[(14.0, 5.5), (17.0, 5.5)]);
         }
         "ref-point" => {
             for i in 0..9 {
@@ -703,6 +739,15 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.frect(8.5, 6.5, 11.5, 9.5);
         }
         // ---- Properties panel glyphs (original drawings)
+        "clock" => {
+            pen.circle(10.0, 10.0, 7.5);
+            pen.line(&[(10.0, 5.5), (10.0, 10.0), (13.5, 12.5)]);
+        }
+        "preset-save" => {
+            pen.line(&[(3.0, 11.0), (3.0, 17.0), (17.0, 17.0), (17.0, 11.0)]);
+            pen.line(&[(10.0, 3.0), (10.0, 13.0)]);
+            pen.line(&[(6.5, 9.5), (10.0, 13.0), (13.5, 9.5)]);
+        }
         "orient-portrait" => {
             pen.rect(5.5, 3.0, 14.5, 17.0);
             pen.fcircle(10.0, 8.0, 1.8);
@@ -751,6 +796,12 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 let v = 9.0 + k as f32 * 2.2;
                 pen.line(&[(v, 3.0), (v, 5.0)]);
                 pen.line(&[(3.0, v), (5.0, v)]);
+            }
+        }
+        // Do Not Align to Baseline Grid: ragged lines of text, free of any grid.
+        "grid-none" => {
+            for (y, x1) in [(5.0, 17.0), (8.5, 12.0), (12.0, 17.0), (15.5, 14.0)] {
+                pen.line(&[(3.0, y), (x1, y)]);
             }
         }
         "grid-baseline" => {
@@ -871,6 +922,13 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(12.0, 3.5), (12.0, 16.5)]);
             pen.line(&[(9.0, 10.0), (11.0, 10.0)]);
         }
+        "small-caps" => {
+            // Two original T shapes share a baseline; no phonetic small-cap glyph is required.
+            pen.line(&[(3.0, 5.0), (10.0, 5.0)]);
+            pen.line(&[(6.5, 5.0), (6.5, 15.0)]);
+            pen.line(&[(12.0, 8.0), (17.0, 8.0)]);
+            pen.line(&[(14.5, 8.0), (14.5, 15.0)]);
+        }
         "font-size" => {
             pen.text(6.0, 12.5, "T", 10.0);
             pen.text(13.0, 10.5, "T", 17.0);
@@ -891,6 +949,86 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 pen.line(&[(3.0, 15.5), (17.0, 15.5)]);
                 pen.line(&[(5.0, 13.5), (3.0, 15.5), (5.0, 17.5)]);
                 pen.line(&[(15.0, 13.5), (17.0, 15.5), (15.0, 17.5)]);
+            }
+        }
+        "vscale" => {
+            pen.text(13.0, 10.5, "T", 15.0);
+            pen.line(&[(4.0, 3.0), (4.0, 17.0)]);
+            pen.line(&[(2.5, 5.0), (4.0, 3.0), (5.5, 5.0)]);
+            pen.line(&[(2.5, 15.0), (4.0, 17.0), (5.5, 15.0)]);
+        }
+        "hscale" => {
+            pen.text(10.0, 8.0, "T", 13.0);
+            pen.line(&[(3.0, 16.5), (17.0, 16.5)]);
+            pen.line(&[(5.0, 14.5), (3.0, 16.5), (5.0, 18.5)]);
+            pen.line(&[(15.0, 14.5), (17.0, 16.5), (15.0, 18.5)]);
+        }
+        "baseline-shift" => {
+            pen.text(7.0, 11.0, "A", 13.0);
+            pen.text(15.5, 5.5, "a", 8.0);
+            pen.line(&[(15.5, 17.5), (15.5, 10.0)]);
+            pen.line(&[(13.5, 12.0), (15.5, 10.0), (17.5, 12.0)]);
+        }
+        "skew" => {
+            pen.w = 1.8;
+            pen.line(&[(7.0, 4.0), (17.0, 4.0)]);
+            pen.line(&[(12.0, 4.0), (8.0, 17.0)]);
+        }
+        "indent-left" | "indent-right" | "indent-first" | "indent-last" => {
+            // Text lines, and an arrow at the side (or line) indented.
+            let (x0, x1) = match name {
+                "indent-left" => (9.0, 18.0),
+                "indent-right" => (2.0, 11.0),
+                _ => (2.0, 18.0),
+            };
+            for (k, y) in [4.0, 8.0, 12.0, 16.0].into_iter().enumerate() {
+                let (a, z) = match (name, k) {
+                    ("indent-first", 0) => (9.0, x1),
+                    ("indent-last", 3) => (x0, 11.0),
+                    _ => (x0, x1),
+                };
+                pen.line(&[(a, y), (z, y)]);
+            }
+            let (y, from, to) = match name {
+                "indent-left" => (10.0, 2.0, 7.0),
+                "indent-right" => (10.0, 18.0, 13.0),
+                "indent-first" => (4.0, 2.0, 7.0),
+                _ => (16.0, 18.0, 13.0),
+            };
+            pen.line(&[(from, y), (to, y)]);
+            let d = if to > from { -2.0 } else { 2.0 };
+            pen.line(&[(to + d, y - 2.0), (to, y), (to + d, y + 2.0)]);
+        }
+        "space-before" | "space-after" => {
+            let before = name == "space-before";
+            let (bar, lines) = if before { (3.0, [11.0, 14.5, 18.0]) } else { (17.0, [2.0, 5.5, 9.0]) };
+            pen.line(&[(2.0, bar), (18.0, bar)]);
+            for y in lines {
+                pen.line(&[(8.0, y), (18.0, y)]);
+            }
+            let (a, z) = if before { (5.0, 10.0) } else { (10.0, 15.0) };
+            pen.line(&[(4.0, a), (4.0, z)]);
+            pen.line(&[(2.5, a + 1.5), (4.0, a), (5.5, a + 1.5)]);
+            pen.line(&[(2.5, z - 1.5), (4.0, z), (5.5, z - 1.5)]);
+        }
+        // Space Between Paragraphs Using Same Style: two paragraphs and the space between them.
+        "space-same" => {
+            for y in [2.0, 5.0, 15.0, 18.0] {
+                pen.line(&[(8.0, y), (18.0, y)]);
+            }
+            pen.line(&[(4.0, 6.5), (4.0, 13.5)]);
+            pen.line(&[(2.5, 8.0), (4.0, 6.5), (5.5, 8.0)]);
+            pen.line(&[(2.5, 12.0), (4.0, 13.5), (5.5, 12.0)]);
+        }
+        "drop-lines" | "drop-chars" => {
+            pen.text(5.5, 8.0, "A", 14.0);
+            if name == "drop-chars" {
+                pen.text(13.5, 4.5, "a", 8.0);
+            }
+            for (y, x) in [(if name == "drop-chars" { 8.5 } else { 3.5 }, 11.0), (8.5, 11.0), (13.5, 11.0), (17.5, 2.0)] {
+                if name == "drop-lines" || y > 5.0 {
+                    pen.line(&[(x, y), (18.0, y)]);
+                }
             }
         }
         "corner" => {
@@ -929,6 +1067,20 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
                 pen.text(4.0, *y, ["1", "2", "3"][k], 6.0);
                 pen.line(&[(7.5, *y), (if k == 1 { 14.0 } else { 17.0 }, *y)]);
             }
+        }
+        // Paragraph shading: a square with a checked fill (the Control panel's Shading).
+        "para-shading" => {
+            pen.w = 1.0;
+            pen.rect(4.0, 4.0, 16.0, 16.0);
+            pen.frect(4.0, 4.0, 10.0, 10.0);
+            pen.frect(10.0, 10.0, 16.0, 16.0);
+        }
+        // Paragraph border: a box with its corner drawn heavy (the Control panel's Border).
+        "para-border" => {
+            pen.w = 1.0;
+            pen.rect(4.0, 4.0, 16.0, 16.0);
+            pen.w = 2.5;
+            pen.line(&[(5.0, 12.0), (5.0, 5.0), (12.0, 5.0)]);
         }
         "pilcrow-menu" => {
             pen.text(9.0, 10.0, "¶", 14.0);
@@ -1013,7 +1165,7 @@ pub fn button(ui: &mut egui::Ui, name: &str, size: f32, selected: bool, tip: &st
     let pad = size * 0.16;
     paint(ui.painter(), r.shrink(pad), name, if selected { t.text_strong } else { t.icon });
     let enabled = ui.is_enabled();
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, tip));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, tip));
     if tip.is_empty() {
         resp
     } else {
@@ -1105,5 +1257,26 @@ mod tests {
     fn selection_arrow_is_filled_and_direct_selection_hollow() {
         assert!(arrow_filled("tool-selection"), "Selection draws a hollow arrow");
         assert!(!arrow_filled("tool-direct"), "Direct Selection draws a filled arrow");
+    }
+
+    #[test]
+    fn distribute_icons_are_distinct_from_align_and_each_other() {
+        // `objalign-*` ship upstream and back the Properties Align row; only the
+        // two `objdistribute-*` icons are new here, so they must be real glyphs and
+        // must not collide with any `objalign-*` (one glyph per command).
+        let distribute = ["objdistribute-h", "objdistribute-v"];
+        let align = ["objalign-left", "objalign-hcenter", "objalign-right", "objalign-top", "objalign-vcenter", "objalign-bottom"];
+        let unknown = drawing("no-such-icon");
+        let d: Vec<String> = distribute.iter().map(|n| drawing(n)).collect();
+        for (n, g) in distribute.iter().zip(&d) {
+            assert_ne!(*g, unknown, "{n} falls back to the placeholder");
+        }
+        assert_ne!(d[0], d[1], "objdistribute-h and objdistribute-v draw alike");
+        for dn in &d {
+            for an in &align {
+                let ag = drawing(an);
+                assert_ne!(*dn, ag, "distribute icon draws like {an}");
+            }
+        }
     }
 }

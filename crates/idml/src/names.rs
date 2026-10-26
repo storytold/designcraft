@@ -2,8 +2,8 @@
 
 use designcraft_color::BlendMode;
 use designcraft_doc::{
-    Align, Arrowhead, AutoSize, Cap, Capitalization, FirstBaseline, Join, Leading, NumberStyle, Position, StartParagraph, StrokeAlign, StrokeType,
-    TabAlign, VerticalJustification, WrapMode, WrapSide,
+    Align, Arrowhead, AutoSize, Cap, Capitalization, ClippingKind, ContourType, FirstBaseline, Join, Leading, NumberStyle, Position, StartParagraph,
+    StrokeAlign, StrokeType, TabAlign, VerticalJustification, WrapMode, WrapSide,
 };
 use designcraft_geom::Unit;
 use designcraft_geom::corners::CornerShape;
@@ -42,6 +42,26 @@ pub fn anchor_rel_in(s: &str) -> designcraft_doc::anchored::AnchorRelative {
         "PageEdge" => R::PageEdge,
         _ => R::Anchor,
     }
+}
+
+/// `PDFAttribute` `PDFCrop` for a placed PDF's crop choice.
+pub fn pdf_crop_out(c: designcraft_doc::PdfCrop) -> &'static str {
+    use designcraft_doc::PdfCrop as C;
+    match c {
+        C::Crop => "CropPDF",
+        C::Art => "CropArt",
+        C::Trim => "CropTrim",
+        C::Bleed => "CropBleed",
+        C::Media => "CropMedia",
+        C::ContentVisible => "CropContentVisibleLayers",
+        C::ContentAll => "CropContentAllLayers",
+    }
+}
+
+/// A placed PDF's crop choice from `PDFCrop` (the crop box when unknown).
+pub fn pdf_crop_in(s: &str) -> designcraft_doc::PdfCrop {
+    use designcraft_doc::PdfCrop as C;
+    C::ALL.into_iter().find(|c| pdf_crop_out(*c) == s).unwrap_or(C::Crop)
 }
 
 pub fn anchor_out(i: u8) -> &'static str {
@@ -106,6 +126,16 @@ pub fn unescape_id(s: &str) -> String {
     s.replace("%3a", ":").replace("%3A", ":").replace("%25", "%")
 }
 
+/// An `AppliedFont` value → font family. InDesign can write the family with its `$ID/` prefix
+/// (`$ID/Arial`), and `$ID/` alone for no font; some writers append the style after a tab.
+pub fn font_family_in(v: &str) -> Option<String> {
+    // Spaces are part of a family's name ("Minion Pro " is another font than "Minion Pro").
+    let v = v.trim_matches(['\n', '\r']);
+    let family = v.split('\t').next().unwrap_or(v);
+    let family = family.trim_start().strip_prefix("$ID/").unwrap_or(family);
+    (!family.trim().is_empty()).then(|| family.to_string())
+}
+
 /// Built-in style names: (ours, IDML `Name`).
 pub const PARA_BUILTINS: &[(&str, &str)] = &[("[No Paragraph Style]", "$ID/[No paragraph style]"), ("[Basic Paragraph]", "$ID/NormalParagraphStyle")];
 pub const CHAR_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[No character style]")];
@@ -114,16 +144,37 @@ pub const TABLE_BUILTINS: &[(&str, &str)] = &[("[Basic Table]", "$ID/[Basic Tabl
 pub const OBJECT_BUILTINS: &[(&str, &str)] =
     &[("[None]", "$ID/[None]"), ("[Basic Graphics Frame]", "$ID/[Normal Graphics Frame]"), ("[Basic Text Frame]", "$ID/[Normal Text Frame]")];
 
-/// Our style name → IDML `Name` (groups: `A/B` → `A:B`).
+/// Our style name → IDML `Name` (groups: `A/B` → `A:B`; a literal `:` or `\` is escaped as `\:`
+/// or `\\`, so it is not read back as a group separator).
 pub fn style_name_out(builtins: &[(&str, &str)], name: &str) -> String {
-    builtins.iter().find(|(o, _)| *o == name).map(|(_, i)| i.to_string()).unwrap_or_else(|| name.replace('/', ":"))
+    builtins
+        .iter()
+        .find(|(o, _)| *o == name)
+        .map(|(_, i)| i.to_string())
+        .unwrap_or_else(|| name.replace('\\', "\\\\").replace(':', "\\:").replace('/', ":"))
 }
 /// IDML `Name` → our style name.
 pub fn style_name_in(builtins: &[(&str, &str)], name: &str) -> String {
     if let Some((o, _)) = builtins.iter().find(|(_, i)| *i == name) {
         return o.to_string();
     }
-    name.strip_prefix("$ID/").unwrap_or(name).replace(':', "/")
+    let name = name.strip_prefix("$ID/").unwrap_or(name);
+    let mut out = String::with_capacity(name.len());
+    let mut chars = name.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.clone().next() {
+                Some(next @ ('\\' | ':')) => {
+                    out.push(next);
+                    chars.next();
+                }
+                _ => out.push('\\'),
+            },
+            ':' => out.push('/'),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 /// `ParagraphStyle/…` Self id for one of our names.
 pub fn style_self(kind: &str, builtins: &[(&str, &str)], name: &str) -> String {
@@ -233,7 +284,7 @@ pub fn leading_out(l: Leading) -> (String, &'static str) {
     }
 }
 pub fn leading_in(s: &str) -> Option<Leading> {
-    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse().ok().map(Leading::Points) }
+    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse::<f64>().ok().filter(|v| v.is_finite()).map(Leading::Points) }
 }
 
 pub fn stroke_align_out(a: StrokeAlign) -> &'static str {
@@ -356,6 +407,63 @@ pub fn arrow_in(s: &str) -> Arrowhead {
     .unwrap_or(Arrowhead::None)
 }
 
+pub fn box_width_out(w: designcraft_doc::BoxWidth) -> &'static str {
+    match w {
+        designcraft_doc::BoxWidth::Column => "ColumnWidth",
+        designcraft_doc::BoxWidth::Text => "TextWidth",
+    }
+}
+pub fn box_width_in(s: &str) -> designcraft_doc::BoxWidth {
+    if s == "TextWidth" { designcraft_doc::BoxWidth::Text } else { designcraft_doc::BoxWidth::Column }
+}
+
+pub fn box_top_out(t: designcraft_doc::BoxTop) -> &'static str {
+    match t {
+        designcraft_doc::BoxTop::Ascent => "AscentTopOrigin",
+        designcraft_doc::BoxTop::Baseline => "BaselineTopOrigin",
+        designcraft_doc::BoxTop::EmBox => "EmBoxTopOrigin",
+        designcraft_doc::BoxTop::Leading => "LeadingTopOrigin",
+    }
+}
+pub fn box_top_in(s: &str) -> designcraft_doc::BoxTop {
+    match s {
+        "BaselineTopOrigin" => designcraft_doc::BoxTop::Baseline,
+        "EmBoxTopOrigin" => designcraft_doc::BoxTop::EmBox,
+        "LeadingTopOrigin" => designcraft_doc::BoxTop::Leading,
+        _ => designcraft_doc::BoxTop::Ascent,
+    }
+}
+
+pub fn box_bottom_out(b: designcraft_doc::BoxBottom) -> &'static str {
+    match b {
+        designcraft_doc::BoxBottom::Descent => "DescentBottomOrigin",
+        designcraft_doc::BoxBottom::Baseline => "BaselineBottomOrigin",
+        designcraft_doc::BoxBottom::EmBox => "EmBoxBottomOrigin",
+    }
+}
+pub fn box_bottom_in(s: &str) -> designcraft_doc::BoxBottom {
+    match s {
+        "BaselineBottomOrigin" => designcraft_doc::BoxBottom::Baseline,
+        "EmBoxBottomOrigin" => designcraft_doc::BoxBottom::EmBox,
+        _ => designcraft_doc::BoxBottom::Descent,
+    }
+}
+
+pub fn list_align_out(a: designcraft_doc::ListAlign) -> &'static str {
+    match a {
+        designcraft_doc::ListAlign::Left => "LeftAlign",
+        designcraft_doc::ListAlign::Center => "CenterAlign",
+        designcraft_doc::ListAlign::Right => "RightAlign",
+    }
+}
+pub fn list_align_in(s: &str) -> designcraft_doc::ListAlign {
+    match s {
+        "CenterAlign" => designcraft_doc::ListAlign::Center,
+        "RightAlign" => designcraft_doc::ListAlign::Right,
+        _ => designcraft_doc::ListAlign::Left,
+    }
+}
+
 pub fn corner_out(c: CornerShape) -> &'static str {
     match c {
         CornerShape::None => "None",
@@ -403,11 +511,41 @@ pub fn wrap_mode_out(m: WrapMode) -> &'static str {
         WrapMode::JumpToNextColumn => "NextColumnTextWrap",
     }
 }
+pub fn clipping_kind_out(k: ClippingKind) -> &'static str {
+    match k {
+        ClippingKind::DetectEdges => "DetectEdges",
+        ClippingKind::AlphaChannel => "AlphaChannel",
+        ClippingKind::PhotoshopPath => "PhotoshopPath",
+        ClippingKind::UserModifiedPath => "UserModifiedPath",
+    }
+}
+/// `None` for `ClippingType="None"` and unknown types.
+pub fn clipping_kind_in(s: &str) -> Option<ClippingKind> {
+    [ClippingKind::DetectEdges, ClippingKind::AlphaChannel, ClippingKind::PhotoshopPath, ClippingKind::UserModifiedPath]
+        .into_iter()
+        .find(|k| clipping_kind_out(*k) == s)
+}
 pub fn wrap_mode_in(s: &str) -> WrapMode {
     [WrapMode::BoundingBox, WrapMode::Contour, WrapMode::JumpObject, WrapMode::JumpToNextColumn]
         .into_iter()
         .find(|m| wrap_mode_out(*m) == s)
         .unwrap_or(WrapMode::None)
+}
+pub fn contour_type_out(c: ContourType) -> &'static str {
+    match c {
+        ContourType::BoundingBox => "BoundingBox",
+        ContourType::DetectEdges => "DetectEdges",
+        ContourType::AlphaChannel => "AlphaChannel",
+        ContourType::PhotoshopPath => "PhotoshopPath",
+        ContourType::GraphicFrame => "GraphicFrame",
+        ContourType::SameAsClipping => "SameAsClipping",
+    }
+}
+pub fn contour_type_in(s: &str) -> ContourType {
+    [ContourType::BoundingBox, ContourType::DetectEdges, ContourType::AlphaChannel, ContourType::PhotoshopPath, ContourType::GraphicFrame]
+        .into_iter()
+        .find(|c| contour_type_out(*c) == s)
+        .unwrap_or(ContourType::SameAsClipping)
 }
 pub fn wrap_side_out(s: WrapSide) -> &'static str {
     match s {
@@ -487,23 +625,32 @@ pub const REF_POINTS: [&str; 9] = [
     "BottomRightPoint",
 ];
 
+/// IDML `PageNumberStyle` of a section, also written for `FootnoteNumberingStyle`.
 pub fn number_style_out(n: NumberStyle) -> &'static str {
     match n {
-        NumberStyle::Arabic | NumberStyle::ArabicLeadingZero | NumberStyle::ArabicThreeDigits | NumberStyle::ArabicFourDigits => "Arabic",
+        NumberStyle::Arabic => "Arabic",
+        NumberStyle::ArabicLeadingZero => "SingleLeadingZeros",
+        NumberStyle::ArabicThreeDigits => "DoubleLeadingZeros",
+        NumberStyle::ArabicFourDigits => "TripleLeadingZeros",
         NumberStyle::UpperRoman => "UpperRoman",
         NumberStyle::LowerRoman => "LowerRoman",
         NumberStyle::UpperLetters => "UpperLetters",
         NumberStyle::LowerLetters => "LowerLetters",
         NumberStyle::Symbols => "Symbols",
+        NumberStyle::Kanji => "Kanji",
     }
 }
 pub fn number_style_in(s: &str) -> NumberStyle {
     match s {
+        "SingleLeadingZeros" => NumberStyle::ArabicLeadingZero,
+        "DoubleLeadingZeros" => NumberStyle::ArabicThreeDigits,
+        "TripleLeadingZeros" => NumberStyle::ArabicFourDigits,
         "UpperRoman" => NumberStyle::UpperRoman,
         "LowerRoman" => NumberStyle::LowerRoman,
         "UpperLetters" => NumberStyle::UpperLetters,
         "LowerLetters" => NumberStyle::LowerLetters,
         "Symbols" => NumberStyle::Symbols,
+        "Kanji" => NumberStyle::Kanji,
         _ => NumberStyle::Arabic,
     }
 }
@@ -571,7 +718,7 @@ pub fn pt(x: f64, y: f64) -> String {
 // ---------- list numbering ----------
 
 /// A paragraph's `NumberingFormat` ("A, B, C, D...", "001, 002, 003...", …), told apart by its
-/// first item. None for formats with no counterpart (CJK, Arabic, Hebrew, …).
+/// first item. None for formats with no counterpart (other CJK forms, Arabic, Hebrew, …).
 pub fn numbering_format_in(s: &str) -> Option<NumberStyle> {
     Some(match s.split(',').next().unwrap_or("").trim() {
         "1" => NumberStyle::Arabic,
@@ -582,6 +729,7 @@ pub fn numbering_format_in(s: &str) -> Option<NumberStyle> {
         "i" => NumberStyle::LowerRoman,
         "A" => NumberStyle::UpperLetters,
         "a" => NumberStyle::LowerLetters,
+        "一" => NumberStyle::Kanji,
         _ => return None,
     })
 }
@@ -595,6 +743,7 @@ pub fn numbering_format_out(n: NumberStyle) -> &'static str {
         NumberStyle::LowerRoman => "i, ii, iii, iv...",
         NumberStyle::UpperLetters => "A, B, C, D...",
         NumberStyle::LowerLetters => "a, b, c, d...",
+        NumberStyle::Kanji => "一, 二, 三, 四...",
     }
 }
 /// Label text in IDML metacharacters (a tab is `^t`).
@@ -604,19 +753,9 @@ pub fn list_text_out(s: &str) -> String {
 
 // ---------- footnote options ----------
 
-pub fn note_style_out(n: NumberStyle) -> &'static str {
-    match n {
-        NumberStyle::ArabicLeadingZero => "SingleLeadingZeros",
-        NumberStyle::ArabicThreeDigits => "DoubleLeadingZeros",
-        NumberStyle::ArabicFourDigits => "TripleLeadingZeros",
-        n => number_style_out(n),
-    }
-}
+/// IDML `FootnoteNumberingStyle`: the page number styles and `Asterisks`.
 pub fn note_style_in(s: &str) -> NumberStyle {
     match s {
-        "SingleLeadingZeros" => NumberStyle::ArabicLeadingZero,
-        "DoubleLeadingZeros" => NumberStyle::ArabicThreeDigits,
-        "TripleLeadingZeros" => NumberStyle::ArabicFourDigits,
         "Asterisks" => NumberStyle::Symbols,
         s => number_style_in(s),
     }

@@ -290,20 +290,14 @@ fn core(p: &Package) -> String {
     s
 }
 
-/// Unix seconds → UTC civil date and time (proleptic Gregorian).
+/// Unix seconds → UTC civil date and time (proleptic Gregorian), year clamped to the W3CDTF
+/// `0..=9999` range. A time outside chrono's year range still converts (the calendar repeats every
+/// 400 years, so the instant is moved into range by whole cycles and only the year is carried,
+/// matching the old `civil`), then the year is clamped — never a silent reset to the epoch.
 fn civil(t: i64) -> (i64, u32, u32, u32, u32, u32) {
-    let days = t.div_euclid(86_400);
-    let secs = t.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    (y.clamp(0, 9999), m, d, (secs / 3600) as u32, (secs / 60 % 60) as u32, (secs % 60) as u32)
+    use chrono::{Datelike, Timelike};
+    let (y, t) = designcraft_doc::time::utc_parts(t, 0);
+    (y.clamp(0, 9999), t.month(), t.day(), t.hour(), t.minute(), t.second())
 }
 
 /// A neutral theme: text sets its own fonts and colours, so these only matter for new objects.
@@ -331,5 +325,13 @@ mod tests {
         assert_eq!(civil(0), (1970, 1, 1, 0, 0, 0));
         assert_eq!(civil(951_782_400), (2000, 2, 29, 0, 0, 0));
         assert_eq!(civil(1_791_504_000 + 3_723), (2026, 10, 9, 1, 2, 3));
+        // Beyond chrono's year range the old `civil` still converted and clamped only the year to
+        // the W3CDTF `0..=9999` range; pin that (month/day/time keep the real instant), never the
+        // epoch, in both directions and at the `i64` extremes.
+        assert_eq!(civil(253_402_300_800), (9999, 1, 1, 0, 0, 0));
+        assert_eq!(civil(10_000_000_000_000), (9999, 5, 20, 17, 46, 40));
+        assert_eq!(civil(-10_000_000_000_000), (0, 8, 13, 6, 13, 20));
+        assert_eq!(civil(i64::MAX), (9999, 12, 4, 15, 30, 7));
+        assert_eq!(civil(i64::MIN), (0, 1, 27, 8, 29, 52));
     }
 }

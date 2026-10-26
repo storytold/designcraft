@@ -2,6 +2,7 @@
 
 use designcraft_pdf::{Marks, PdfOptions, Standard};
 use serde_json::{Value, json};
+use std::{borrow::Cow, sync::Arc};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
@@ -9,11 +10,33 @@ use crate::{EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.exportPdf", "Export PDF…", ["File"], None,
-        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
+        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised; with standard x1a, the resolution complex transparent regions are rasterized at: high 300, medium 150, low 72, default 300), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"x1a\"|\"a2b\" (x1a: PDF/X-1a:2003, the PDF/X-4 file flattened in its inks by craft-prepress: no transparency, only CMYK, gray and spot color), compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?, created?: int (creation date in Unix seconds; default now, for reproducible files)} → {path, bytes, pages, warnings} (no path: {base64, …})",
         has_doc, export_pdf),
         cmd!(noundo "file.exportEpub", "Export EPUB (Reflowable)…", ["File"], None,
-        "{path?, title?, author?, language?: \"en\", identifier?: str (dc:identifier; a stable urn:uuid by default), coverImage?: path (a PNG or JPEG as the cover), tocTitle?: str (the table of contents' title; from the language by default), cover?: bool (the first page as the cover image), embedFonts?: bool (package the stylesheet's fonts whose licence allows it, whole files), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes, warnings} (no path: {base64, bytes, warnings}); warnings name images without alt text, exported as decorative, and fonts that could not be embedded",
+        "{path?, title?, author?, language?: \"en\", identifier?: str (dc:identifier; a stable urn:uuid by default), coverImage?: path (a PNG or JPEG as the cover), tocTitle?: str (the table of contents' title; from the language by default), cover?: bool (the first page as the cover image), embedFonts?: bool (package the stylesheet's fonts whose licence allows it, whole files), split?: \"off\"|\"exportTags\"|{style: name} (Split Document for this export, not stored; the document's `document.epubSplit` by default), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes, warnings} (no path: {base64, bytes, warnings}); warnings name images without alt text, exported as decorative, and fonts that could not be embedded",
         has_doc, export_epub),
+        cmd!(
+            "document.epubSplit",
+            "EPUB Split Document",
+            [],
+            None,
+            "{split?: \"off\"|\"exportTags\"|{style: name}} — EPUB Export Options › Split Document, stored with the document: one content file (off, the default), a file before each paragraph whose style has Export Tagging › Split Document on (exportTags), or before each paragraph of one style → {split}",
+            has_doc,
+            |s, p| {
+                const ID: &str = "document.epubSplit";
+                let cur = s.doc()?.doc.settings.epub_split.clone();
+                let Some(v) = p.get("split") else { return Ok(json!({"split": cur})) };
+                let split = epub_split_param(ID, &s.doc()?.doc, v)?;
+                if split != cur {
+                    let stored = split.clone();
+                    s.edit(move |d, _| {
+                        d.settings.epub_split = stored;
+                        Ok(Value::Null)
+                    })?;
+                }
+                Ok(json!({"split": split}))
+            }
+        ),
         cmd!(noundo "file.exportFixedEpub", "Export EPUB (Fixed Layout)…", ["File"], None,
         "{path?, title?, author?, language?} — pre-paginated EPUB → {path, bytes} (no path: {base64, bytes})",
         has_doc, |s, p| {
@@ -23,7 +46,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, type?: saddleStitch|twoUpConsecutive, spaceBetween? (pt)} — printer spreads as PDF (pages imposed in booklet order) → {path, bytes, sheets} (no path: {base64, …})",
         has_doc, print_booklet),
         cmd!(noundo "file.exportHtml", "Export HTML…", ["File"], None,
-        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes} (no path: {text, bytes})",
+        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes, warnings} (no path: {text, bytes, warnings})",
         has_doc, export_html),
         cmd!(noundo "file.exportPptx", "Export PowerPoint…", ["File"], None,
         "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: DesignCraft's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
@@ -39,11 +62,14 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     let kind = match str_param(p, "type").unwrap_or("saddleStitch") {
         "saddleStitch" => designcraft_pdf::BookletKind::SaddleStitch,
         "twoUpConsecutive" | "twoUp" => designcraft_pdf::BookletKind::TwoUpConsecutive,
-        t => return Err(bad(ID, format!("unknown type `{t}` (saddleStitch, twoUpConsecutive)"))),
+        t => {
+            return Err(bad(ID, format!("unknown type `{t}` (saddleStitch, twoUpConsecutive)")));
+        }
     };
     let opts = designcraft_pdf::BookletOptions { kind, space_between: p.get("spaceBetween").and_then(Value::as_f64).unwrap_or(0.0), title: None };
     let st = s.doc()?;
-    let r = designcraft_pdf::export_booklet(&st.doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let r = designcraft_pdf::export_booklet(&super::interchange::with_pdf_boxes(&st.doc), &s.cache, &opts)
+        .map_err(|e| EngineError::Other(e.to_string()))?;
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +80,45 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
+/// HTML and reflowable EPUB embed the EPS preview; keep the session's source bytes intact.
+fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Document>, Vec<String>) {
+    // Match the exporter's reading order (including Article exclusions), not every asset
+    // in the document: unused or hidden graphics must not prevent an export.
+    let mut used = std::collections::BTreeSet::new();
+    for block in designcraft_epub::reading_order(d) {
+        let designcraft_epub::Block::Image(id) = block else {
+            continue;
+        };
+        let Some(it) = d.item(id) else { continue };
+        let designcraft_doc::Content::Graphic(g) = &it.content else {
+            continue;
+        };
+        used.insert(g.asset);
+        if d.assets.get(&g.asset).is_some_and(|a| designcraft_doc::media_kind(&a.mime).is_some())
+            && let Some(poster) = it.media.as_ref().and_then(|m| m.poster)
+        {
+            used.insert(poster);
+        }
+    }
+    let mut out = Cow::Borrowed(d);
+    let mut warnings = Vec::new();
+    for id in used {
+        let Some(a) = d.assets.get(&id).filter(|a| designcraft_images::is_eps(&a.data)) else {
+            continue;
+        };
+        let png = designcraft_images::eps_png(&a.data);
+        if png.is_none() {
+            warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
+        }
+        if let Some(a) = out.to_mut().assets.get_mut(&id) {
+            let a = Arc::make_mut(a);
+            a.mime = "image/png".into();
+            a.data = Arc::new(png.unwrap_or_default());
+        }
+    }
+    (out, warnings)
+}
+
 fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts = designcraft_epub::HtmlOptions {
@@ -61,14 +126,15 @@ fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
         language: str_param(p, "language").map(str::to_string),
         generic_families: generic_families(&st.doc),
     };
-    let text = designcraft_epub::export_html(&st.doc, &opts);
+    let (doc, warnings) = eps_previews(&st.doc);
+    let text = designcraft_epub::export_html(&doc, &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(path, text.as_bytes()).map_err(EngineError::Other)?;
-            Ok(json!({"path": path, "bytes": text.len()}))
+            Ok(json!({"path": path, "bytes": text.len(), "warnings": warnings}))
         }
-        None => Ok(json!({"bytes": text.len(), "text": text})),
+        None => Ok(json!({"bytes": text.len(), "text": text, "warnings": warnings})),
     }
 }
 
@@ -91,7 +157,7 @@ fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
     // Object Export Options › Rasterize, and what PowerPoint has no objects for (a threaded frame
     // stays text: a picture of it would drop the rest of its story).
     let auto = p.get("rasterize").and_then(Value::as_bool).unwrap_or(true);
-    let (raster, rasterized) = rasterize_where(&st.doc, &s.cache, 300.0, |it| {
+    let (raster, rasterized) = rasterize_where(&st.doc, &s.cache, 300.0, true, |it| {
         !threaded(&st.doc, it) && (it.export_options.rasterize || (auto && designcraft_pptx::needs_raster(&st.doc, it)))
     });
     let doc: &designcraft_doc::Document = raster.as_ref().unwrap_or(&st.doc);
@@ -206,10 +272,24 @@ fn embedded_fonts(d: &designcraft_doc::Document, warnings: &mut Vec<String>) -> 
     out
 }
 
+/// A Split Document setting (`"off"`, `"exportTags"` or `{"style": name}`), naming a paragraph
+/// style the document has.
+pub(crate) fn epub_split_param(id: &str, doc: &designcraft_doc::Document, v: &Value) -> Result<designcraft_doc::EpubSplit> {
+    let split: designcraft_doc::EpubSplit =
+        serde_json::from_value(v.clone()).map_err(|_| bad(id, "`split`: \"off\", \"exportTags\" or {\"style\": name}"))?;
+    if let designcraft_doc::EpubSplit::Style(name) = &split
+        && doc.styles.para(name).is_none()
+    {
+        return Err(bad(id, format!("no paragraph style `{name}`")));
+    }
+    Ok(split)
+}
+
 fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
+    let split = p.get("split").map(|v| epub_split_param("file.exportEpub", &st.doc, v)).transpose()?;
     // Object Export Options › Rasterize: those objects go in as images.
-    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, |it| it.export_options.rasterize && !threaded(&st.doc, it));
+    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, false, |it| it.export_options.rasterize && !threaded(&st.doc, it));
     let epub_doc: &designcraft_doc::Document = raster.as_ref().unwrap_or(&st.doc);
     let fixed = p.get("fixedLayout").and_then(Value::as_bool).unwrap_or(false);
     let want_cover = p.get("cover").and_then(Value::as_bool).unwrap_or(false);
@@ -234,6 +314,7 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
         identifier: p.get("identifier").and_then(Value::as_str).map(str::to_string),
         cover,
         toc_title: p.get("tocTitle").and_then(Value::as_str).map(str::to_string),
+        split,
         generic_families: generic_families(&st.doc),
         fonts: if p.get("embedFonts").and_then(Value::as_bool).unwrap_or(false) && !fixed {
             embedded_fonts(&st.doc, &mut warnings)
@@ -250,9 +331,13 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
         let d = &st.doc;
         let mut pages = Vec::new();
         for i in 0..d.page_count() {
-            let Some((si, pi)) = d.page_loc(i) else { continue };
+            let Some((si, pi)) = d.page_loc(i) else {
+                continue;
+            };
             let b = d.spreads[si].pages[pi].bounds();
-            let Some(img) = rr.render_page(d, &s.cache, i, 2.0, false, &ropts) else { continue };
+            let Some(img) = rr.render_page(d, &s.cache, i, 2.0, false, &ropts) else {
+                continue;
+            };
             pages.push(designcraft_epub::FixedPage { png: img.to_png(), width: b.width(), height: b.height(), text: page_text(d, &s.cache, i) });
         }
         let bytes = designcraft_epub::export_fixed_epub(d, &pages, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
@@ -264,9 +349,11 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
             None => Ok(serde_json::json!({"base64": super::base64_encode(&bytes), "bytes": bytes.len(), "pages": pages.len()})),
         };
     }
-    let bytes = designcraft_epub::export_epub(epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+    let (epub_doc, eps_warnings) = eps_previews(epub_doc);
+    warnings.extend(eps_warnings);
+    let bytes = designcraft_epub::export_epub(&epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
     warnings.extend(
-        designcraft_epub::images_without_alt(epub_doc)
+        designcraft_epub::images_without_alt(&epub_doc)
             .into_iter()
             .map(|name| format!("{name}: no alt text (Object Export Options); exported as decorative (alt=\"\")")),
     );
@@ -293,7 +380,12 @@ fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Option<Vec<usiz
                     .and_then(|n| usize::try_from(n).ok())
                     .filter(|n| *n >= 1 && *n <= page_count)
                     .ok_or_else(|| bad(id, format!("bad page {x}")))?;
-                v.push(n - 1);
+                // A page named twice is one page, as `"2,2"` already is: the list says which
+                // pages to export, not how many times. `[2, 2]` exported two copies of page 2
+                // while `"2,2"` exported one.
+                if !v.contains(&(n - 1)) {
+                    v.push(n - 1);
+                }
             }
             Some(v)
         }
@@ -330,8 +422,12 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         _ => Marks::NONE,
     };
     let standard = match str_param(p, "standard") {
-        Some(s) => Standard::parse(s).ok_or_else(|| bad(ID, format!("unknown standard `{s}` (none, x4, a2b)")))?,
+        Some(s) => Standard::parse(s).ok_or_else(|| bad(ID, format!("unknown standard `{s}` (none, x4, x1a, a2b)")))?,
         None => Standard::None,
+    };
+    let created = match p.get("created") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_i64().ok_or_else(|| bad(ID, "`created`: Unix seconds, an integer"))?),
     };
     Ok(PdfOptions {
         pages,
@@ -344,6 +440,7 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         author: str_param(p, "author").map(str::to_string),
         tagged: p.get("tagged").and_then(Value::as_bool).unwrap_or(false),
         media: p.get("media").and_then(Value::as_bool).unwrap_or(false),
+        created,
         ..PdfOptions::default()
     })
 }
@@ -365,7 +462,8 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
     rr.threads = designcraft_render::default_threads();
     let k = ppi / 72.0;
     let parent_transparent = |pid: Option<designcraft_doc::SpreadId>| {
-        pid.and_then(|id| d.parents.iter().find(|p| p.id == id)).is_some_and(|p| p.items.iter().any(|it| transparent(it)))
+        pid.and_then(|id| d.parent_index(id))
+            .is_some_and(|pi| d.parent_chain(pi).iter().filter_map(|&i| d.parents.get(i)).any(|p| p.items.iter().any(|it| transparent(it))))
     };
     // An opaque image item showing `img` over `r`.
     let image_item =
@@ -375,24 +473,27 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
             out.assets.insert(
                 aid,
                 std::sync::Arc::new(Asset {
-                    page: 0,
                     id: aid,
                     name: format!("flattened-{}.png", aid.0),
                     mime: "image/png".into(),
-                    link: None,
                     data: std::sync::Arc::new(img.to_png()),
                     pixels: Some((w, h)),
+                    ..Default::default()
                 }),
             );
             let mut it = Item::new(ItemId(out.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (w as f64, h as f64),
                 xf: designcraft_geom::Affine::translate((r.x0, r.y0))
                     * designcraft_geom::Affine::scale_non_uniform(r.width() / w as f64, r.height() / h as f64),
+                clip: None,
                 auto_fit: Default::default(),
                 fit_align: 4,
                 crop: [0.0; 4],
+                wrap: Default::default(),
+                fill: Default::default(),
             });
             it.stroke.weight = 0.0;
             it
@@ -451,7 +552,9 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
             );
             let new = image_item(&mut out, reach, img, it.layer);
             let osp = std::sync::Arc::make_mut(&mut out.spreads[si]);
-            let Some(pos) = osp.items.iter().position(|x| x.id == it.id) else { continue };
+            let Some(pos) = osp.items.iter().position(|x| x.id == it.id) else {
+                continue;
+            };
             if threaded(d, it) {
                 // Keep the frame (its story flows on) under the image.
                 osp.items.insert(pos + 1, std::sync::Arc::new(new));
@@ -472,9 +575,7 @@ fn threaded(d: &designcraft_doc::Document, it: &designcraft_doc::Item) -> bool {
 /// Soft effects other than the gradient feather (which PDF export draws itself).
 fn raster_effects(it: &designcraft_doc::Item) -> bool {
     let e = &it.effects;
-    // Knockout groups too: PDF output here has no knockout transparency groups.
-    it.knockout
-        || e.drop_shadow.on
+    e.drop_shadow.on
         || e.feather > 0.0
         || e.inner_shadow.on
         || e.outer_glow.on
@@ -485,17 +586,118 @@ fn raster_effects(it: &designcraft_doc::Item) -> bool {
 }
 
 /// A copy of `d` where spread-level objects with soft effects are 300 ppi images of their whole
-/// appearance (transparent around them, so they composite over what's behind).
-fn rasterize_effects(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache) -> (Option<designcraft_doc::Document>, usize) {
-    rasterize_where(d, cache, 300.0, |it| raster_effects(it) && !threaded(d, it))
+/// appearance (transparent around them, so they composite over what's behind). Objects in `skip`
+/// stay as they are.
+fn rasterize_effects(
+    d: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    skip: &std::collections::HashMap<designcraft_doc::ItemId, designcraft_pdf::ShadowMask>,
+) -> (Option<designcraft_doc::Document>, usize) {
+    rasterize_where(d, cache, 300.0, true, |it| raster_effects(it) && !threaded(d, it) && !skip.contains_key(&it.id))
+}
+
+/// A drop shadow is the object's only soft effect, and the PDF writer draws its shadow itself
+/// (a leaf object, not a group or a frame with items pasted into it).
+fn shadow_only(it: &designcraft_doc::Item) -> bool {
+    let e = &it.effects;
+    e.drop_shadow.on
+        && !(e.feather > 0.0
+            || e.inner_shadow.on
+            || e.outer_glow.on
+            || e.inner_glow.on
+            || e.bevel.on
+            || e.satin.on
+            || e.directional_feather.on
+            || e.gradient_feather.on)
+        && it.children().is_empty()
+        && !it.has_nested_items()
+}
+
+/// For PDF/X-1a: the coverage of each spread object's soft drop shadow at `ppi`, so the PDF draws
+/// the shadow in its own swatch's inks through a mask (which craft-prepress flattens per ink)
+/// instead of an RGB image of the object. Objects whose only soft effect is the drop shadow.
+///
+/// The coverage comes from the object drawn alone, at full opacity and Normal blending, with its
+/// shadow and without it ([`shadow_coverage`]): the shadow's own alpha, its opacity included. The
+/// object's own opacity and blend mode stay on the object's group in the PDF.
+fn shadow_masks(
+    d: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    ppi: f64,
+) -> std::collections::HashMap<designcraft_doc::ItemId, designcraft_pdf::ShadowMask> {
+    use designcraft_doc::SpreadRef;
+    let mut out = std::collections::HashMap::new();
+    let todo: Vec<(usize, designcraft_doc::ItemId)> = d
+        .spreads
+        .iter()
+        .enumerate()
+        .flat_map(|(si, sp)| sp.items.iter().filter(|it| !it.hidden && shadow_only(it)).map(move |it| (si, it.id)))
+        .collect();
+    if todo.is_empty() {
+        return out;
+    }
+    let mut rr = designcraft_render::Renderer::new();
+    rr.threads = designcraft_render::default_threads();
+    let k = ppi.clamp(36.0, 1200.0) / 72.0;
+    for (si, id) in todo {
+        let Some(it) = d.item(id) else { continue };
+        let grow = designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0;
+        let reach = it.bounds().inflate(grow, grow);
+        let (w, h) = ((reach.width() * k).ceil().max(1.0), (reach.height() * k).ceil().max(1.0));
+        if !(w.is_finite() && h.is_finite()) || w * h > 60_000_000.0 {
+            continue;
+        }
+        let (w, h) = (w as u32, h as u32);
+        let mut alpha = |shadow: bool| {
+            let mut solo = d.clone();
+            let Some(sp) = solo.spreads.get_mut(si) else { return Vec::new() };
+            let sp = std::sync::Arc::make_mut(sp);
+            sp.items.retain(|x| x.id == id);
+            for pg in &mut sp.pages {
+                pg.show_parent_items = false;
+            }
+            if let Some(x) = sp.items.first_mut() {
+                let x = std::sync::Arc::make_mut(x);
+                x.opacity = 1.0;
+                x.blend = Default::default();
+                x.effects.drop_shadow.on = shadow;
+            }
+            let view = designcraft_geom::Affine::scale(k) * designcraft_geom::Affine::translate((-reach.x0, -reach.y0));
+            let opts = designcraft_render::RenderOptions { paper: false, background: None, printing_only: true, ..Default::default() };
+            let placed = [designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::IDENTITY }];
+            rr.render(&solo, cache, &placed, w, h, view, &opts).pixels.as_chunks::<4>().0.iter().map(|px| px[3]).collect::<Vec<u8>>()
+        };
+        let (with, without) = (alpha(true), alpha(false));
+        let n = w as usize * h as usize;
+        if with.len() != n || without.len() != n {
+            continue;
+        }
+        let coverage: Vec<u8> = with.iter().zip(&without).map(|(a, b)| shadow_coverage(*a, *b)).collect();
+        out.insert(id, designcraft_pdf::ShadowMask { rect: reach, width: w, height: h, coverage: std::sync::Arc::new(coverage) });
+    }
+    out
+}
+
+/// The shadow's alpha `s` at a pixel where the object alone has alpha `without` and the object
+/// over its shadow `with`: `with = a + s(1 − a)` for the object's alpha `a`, so the PDF, which
+/// draws the object over the shadow, gets the same pixel back. 0 where the object is opaque.
+fn shadow_coverage(with: u8, without: u8) -> u8 {
+    let rest = 255 - u32::from(without);
+    if rest == 0 {
+        return 0;
+    }
+    let shown = u32::from(with.saturating_sub(without));
+    u8::try_from(((shown * 255 + rest / 2) / rest).min(255)).unwrap_or(u8::MAX)
 }
 
 /// A copy of `d` where the spread-level objects `pred` picks are images of their appearance at
-/// `ppi` (transparent around them).
+/// `ppi` (transparent around them). With `keep_wrap`, each object also stays behind as a
+/// nonprinting [`wrap_stand_in`], so text wraps around it as before.
 fn rasterize_where(
     d: &designcraft_doc::Document,
     cache: &designcraft_compose::Cache,
     ppi: f64,
+    keep_wrap: bool,
     pred: impl Fn(&designcraft_doc::Item) -> bool,
 ) -> (Option<designcraft_doc::Document>, usize) {
     use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
@@ -541,23 +743,26 @@ fn rasterize_where(
         out.assets.insert(
             aid,
             std::sync::Arc::new(Asset {
-                page: 0,
                 id: aid,
                 name: format!("effects-{}.png", id.0),
                 mime: "image/png".into(),
-                link: None,
                 data: std::sync::Arc::new(img.to_png()),
                 pixels: Some((w, h)),
+                ..Default::default()
             }),
         );
         let mut img_item = Item::new(ItemId(out.alloc()), it.layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(reach));
         img_item.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: aid,
             size: (w as f64, h as f64),
             xf: designcraft_geom::Affine::translate((reach.x0, reach.y0)) * designcraft_geom::Affine::scale(1.0 / k),
+            clip: None,
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         img_item.stroke.weight = 0.0;
         img_item.alt_text = it.alt_text.clone();
@@ -566,49 +771,109 @@ fn rasterize_where(
         let osp = std::sync::Arc::make_mut(&mut out.spreads[si]);
         if let Some(pos) = osp.items.iter().position(|x| x.id == id) {
             osp.items[pos] = std::sync::Arc::new(img_item);
+            if keep_wrap && has_wrap(it, 0) {
+                osp.items.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
+            }
             n += 1;
         }
     }
     (Some(out), n)
 }
 
+/// Whether `it`, its placed graphic or an item in it wraps text.
+fn has_wrap(it: &designcraft_doc::Item, depth: usize) -> bool {
+    use designcraft_doc::{Content, WrapMode};
+    if depth > MAX_STAND_IN_DEPTH {
+        return false;
+    }
+    it.wrap.mode != WrapMode::None
+        || match &it.content {
+            Content::Graphic(g) => g.wrap.mode != WrapMode::None,
+            Content::Group { items } => items.iter().any(|c| has_wrap(c, depth + 1)),
+            _ => false,
+        }
+}
+
+/// Nesting depth past which groups inside a rasterised object keep no wrap stand-ins.
+const MAX_STAND_IN_DEPTH: usize = 64;
+
+/// A nonprinting copy of `it` that keeps its text wrap (and its graphic's and its items') and
+/// nothing else that reaches the PDF: no text, form field, button or media. The image of the
+/// object stands in for all of that, as it does without the copy.
+fn wrap_stand_in(it: &designcraft_doc::Item, depth: usize) -> designcraft_doc::Item {
+    use designcraft_doc::Content;
+    let mut c = it.clone();
+    c.nonprinting = true;
+    c.form_field = None;
+    c.button = None;
+    c.media = None;
+    c.content = match &it.content {
+        Content::Text(_) => Content::Unassigned,
+        Content::Group { items } if depth < MAX_STAND_IN_DEPTH => {
+            Content::Group { items: items.iter().map(|i| std::sync::Arc::new(wrap_stand_in(i, depth + 1))).collect() }
+        }
+        Content::Group { .. } => Content::Group { items: Vec::new() },
+        other => other.clone(),
+    };
+    c
+}
+
 /// A copy of `d` where placed PDFs with Object Layer Options hidden layers are 300 ppi images.
-fn rasterize_layered(d: &designcraft_doc::Document) -> (Option<designcraft_doc::Document>, usize) {
-    let ids: Vec<designcraft_doc::ItemId> =
-        d.all_items().into_iter().filter(|id| d.item(*id).is_some_and(|it| !it.pdf_hidden_layers.is_empty() && it.graphic().is_some())).collect();
-    if ids.is_empty() {
-        return (None, 0);
+///
+/// Parent-page and anchored placements count too, including anchors inside table-cell,
+/// footnote and endnote text. Only the export copy is rewritten.
+fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option<designcraft_doc::Document>, usize)> {
+    let choices: Vec<_> = d
+        .placed_items()
+        .into_iter()
+        .filter(|it| it.has_pdf_layer_override())
+        .filter_map(|it| {
+            let g = it.graphic()?;
+            let a = d.assets.get(&g.asset).filter(|a| designcraft_render::is_pdf(&a.data))?;
+            Some((it.id, g.clone(), a.clone(), it.pdf_hidden_layers.clone()))
+        })
+        .collect();
+    if choices.is_empty() {
+        return Ok((None, 0));
     }
     let mut out = d.clone();
+    let mut images = std::collections::HashMap::new();
     let mut n = 0;
-    for id in ids {
-        let Some((g, hidden)) = out.item(id).and_then(|it| Some((it.graphic()?.clone(), it.pdf_hidden_layers.clone()))) else { continue };
-        let Some(a) = out.assets.get(&g.asset).cloned() else { continue };
-        if !designcraft_render::is_pdf(&a.data) {
-            continue;
-        }
-        let side = (g.size.0.max(g.size.1) * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
-        let Some(png) = designcraft_render::pdf_page_png(&a.data, a.page as usize, side, &hidden) else { continue };
+    for (id, g, a, hidden) in choices {
+        // The whole page at 300 ppi (the graphic may show only a box of it).
+        let shown = designcraft_render::shown_box(&a);
+        let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let page_side = (g.size.0 / (r - l)).max(g.size.1 / (b - t));
+        let side = (page_side * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
+        let png = designcraft_render::pdf_page_png_options_checked(&a.data, a.page as usize, side, Some(&hidden), shown)
+            .map_err(|e| EngineError::Other(format!("{}: {e}", a.name)))?;
         let px = designcraft_render::image_size(&png);
         let aid = designcraft_doc::AssetId(out.alloc());
         out.assets.insert(
             aid,
             std::sync::Arc::new(designcraft_doc::Asset {
-                page: 0,
                 id: aid,
                 name: format!("{}.png", a.name),
                 mime: "image/png".into(),
-                link: None,
                 data: std::sync::Arc::new(png),
                 pixels: px,
+                ..Default::default()
             }),
         );
-        if let Some(designcraft_doc::Content::Graphic(gg)) = out.item_mut(id).map(|it| &mut it.content) {
-            gg.asset = aid;
-        }
+        images.insert(id, aid);
         n += 1;
     }
-    (Some(out), n)
+    out.update_placed_items(
+        |it| images.contains_key(&it.id),
+        |it| {
+            if let designcraft_doc::Content::Graphic(gg) = &mut it.content
+                && let Some(aid) = images.get(&it.id)
+            {
+                gg.asset = *aid;
+            }
+        },
+    );
+    Ok((Some(out), n))
 }
 
 /// Object number of the first page of a PDF (its page tree's first kid).
@@ -619,37 +884,93 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
 }
 
 fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
-    let st = s.doc()?;
-    let opts = options(p, st.doc.page_count())?;
-    // Transparency Flattener presets: High / Medium / Low Resolution, or a ppi.
-    let ppi = match p.get("flatten") {
+    let r = pdf_export(s, p)?;
+    match str_param(p, "path") {
+        Some(path) => {
+            write_file(path, &r.bytes)?;
+            Ok(json!({"path": path, "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings}))
+        }
+        None => Ok(json!({"base64": super::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
+    }
+}
+
+/// Transparency Flattener presets (`flatten`): High / Medium / Low Resolution, or a ppi.
+pub(crate) fn flatten_ppi(id: &str, p: &Value) -> Result<Option<f64>> {
+    Ok(match p.get("flatten") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => None,
         Some(Value::String(s)) if s == "high" => Some(300.0),
         Some(Value::String(s)) if s == "medium" => Some(150.0),
         Some(Value::String(s)) if s == "low" => Some(72.0),
         Some(Value::Bool(true)) => Some(300.0),
-        Some(v) => Some(
-            v.as_f64().filter(|v| (36.0..=1200.0).contains(v)).ok_or_else(|| bad("file.exportPdf", "`flatten`: high|medium|low or 36–1200 ppi"))?,
-        ),
-    };
-    let flattened = ppi.map(|ppi| flatten(&st.doc, &s.cache, ppi));
-    // Placed PDFs with hidden layers go out as images showing just their visible layers.
-    let base: &designcraft_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
-    let (layered, layer_count) = rasterize_layered(base);
+        Some(v) => Some(v.as_f64().filter(|v| (36.0..=1200.0).contains(v)).ok_or_else(|| bad(id, "`flatten`: high|medium|low or 36–1200 ppi"))?),
+    })
+}
+
+/// The print PDF of `opts`' pages: the transparency flattener at `ppi` (if any), placed PDFs
+/// with hidden layers and soft effects as images, the PDF boxes of placed graphics, the PDF
+/// itself and its transparency blend space. Export PDF and File › Print add their view options
+/// to it ([`pdf_export`]); Separations Preview separates it as it is.
+pub(crate) fn print_pdf(
+    d: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    opts: &PdfOptions,
+    ppi: Option<f64>,
+) -> Result<designcraft_pdf::ExportReport> {
+    // PDF/X-1a: craft-prepress flattens the PDF in its inks; `ppi` sets its resolution.
+    let x1a = opts.standard == Standard::PdfX1a;
+    let mut opts = opts.clone();
+    if x1a {
+        opts.flatten_dpi = ppi.unwrap_or(300.0) as f32;
+    }
+    let flattened = if x1a { None } else { ppi.map(|ppi| flatten(d, cache, ppi)) };
+    let base: &designcraft_doc::Document = flattened.as_ref().map_or(d, |f| &f.0);
+    let (layered, layer_count) = if opts.standard == Standard::PdfA2b { rasterize_layered(base)? } else { (None, 0) };
     let base2: &designcraft_doc::Document = layered.as_ref().unwrap_or(base);
-    let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache);
+    let shadows = if x1a { shadow_masks(base2, cache, f64::from(opts.flatten_dpi)) } else { Default::default() };
+    let (fx_doc, fx_count) = rasterize_effects(base2, cache, &shadows);
+    opts.shadows = std::sync::Arc::new(shadows);
+    let opts = &opts;
     let doc: &designcraft_doc::Document = fx_doc.as_ref().unwrap_or(base2);
-    let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
-    let mut r = r;
-    // Transparency Blend Space: the page group of pages with transparency.
-    let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
+    let boxed = super::interchange::with_pdf_boxes(doc);
+    let doc: &designcraft_doc::Document = &boxed;
+    let mut r = designcraft_pdf::export_pdf_with_report(doc, cache, opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    // Flattening and effect rasterization replace placements, so inspect the source too.
+    if d.has_graphic_layer_visibility_overrides() && !r.warnings.iter().any(|w| w == designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING) {
+        r.warnings.push(designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING.into());
+    }
+    // Transparency Blend Space: the page group of pages with transparency. CMYK print output
+    // gets its CMYK page groups from the writer.
+    let spreads = designcraft_pdf::sheet_spreads(doc, opts);
     let blended: Vec<bool> = spreads.iter().map(|si| doc.spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))).collect();
-    if blended.iter().any(|b| *b) {
+    if !designcraft_pdf::print_color(doc, opts) && blended.iter().any(|b| *b) {
         match designcraft_pdf::add_blend_space(&r.bytes, &blended, doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk) {
             Some(b) => r.bytes = b,
             None => r.warnings.push("the transparency blend space couldn't be set".into()),
         }
     }
+    if fx_count > 0 {
+        r.warnings.push(format!("{fx_count} object(s) with soft effects (shadows, glows, feathers, bevels) exported as images"));
+    }
+    if layer_count > 0 {
+        r.warnings.push(format!("{layer_count} placed PDF(s) with hidden layers exported as images"));
+    }
+    if let Some((_, n)) = &flattened
+        && *n > 0
+    {
+        r.warnings.push(format!("transparency flattened: {n} region(s) rasterised"));
+    }
+    Ok(r)
+}
+
+/// The PDF that File › Export PDF writes for `p`, with its warnings: the print PDF
+/// ([`print_pdf`]) with its view options, timings and transitions. File › Print prints it.
+pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    let st = s.doc()?;
+    let opts = options(p, st.doc.page_count())?;
+    let ppi = flatten_ppi("file.exportPdf", p)?;
+    let mut r = print_pdf(&st.doc, &s.cache, &opts, ppi)?;
+    let doc: &designcraft_doc::Document = &st.doc;
+    let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     // Interactive PDF view options.
     let mut cat = String::new();
     if p.get("fullScreen").and_then(Value::as_bool) == Some(true) {
@@ -672,7 +993,9 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
             "fitPage" => "/Fit",
             "fitWidth" => "/FitH null",
             "actual" => "/XYZ null null 1",
-            o => return Err(bad("file.exportPdf", format!("unknown view `{o}` (fitPage, fitWidth, actual)"))),
+            o => {
+                return Err(bad("file.exportPdf", format!("unknown view `{o}` (fitPage, fitWidth, actual)")));
+            }
         };
         if let Some(first) = first_page_ref(&r.bytes) {
             cat.push_str(&format!("/OpenAction[{first} 0 R{dest}]"));
@@ -702,23 +1025,184 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
             None => r.warnings.push("page transitions couldn't be added to this PDF".into()),
         }
     }
-    if fx_count > 0 {
-        r.warnings.push(format!("{fx_count} object(s) with soft effects (shadows, glows, feathers, bevels) or knockout groups exported as images"));
-    }
-    if layer_count > 0 {
-        r.warnings.push(format!("{layer_count} placed PDF(s) with hidden layers exported as images"));
-    }
-    if let Some((_, n)) = &flattened
-        && *n > 0
-    {
-        r.warnings.push(format!("transparency flattened: {n} region(s) rasterised"));
-    }
-    match str_param(p, "path") {
-        Some(path) => {
-            write_file(path, &r.bytes)?;
-            Ok(json!({"path": path, "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings}))
+    Ok(r)
+}
+
+#[cfg(test)]
+mod placed_layer_tests {
+    use std::sync::Arc;
+
+    use designcraft_doc::{AnchoredObject, Document, Item, ItemId, SpreadRef, StoryId, Table};
+    use designcraft_geom::Rect;
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn two_layer_pdf() -> Vec<u8> {
+        let content = "/OC /a BDC 0 0 1 rg 0 0 50 100 re f EMC /OC /b BDC 1 0 0 rg 50 0 50 100 re f EMC";
+        let objs = [
+            "<</Type/Catalog/Lang(en-GB)/Pages 2 0 R/OCProperties<</OCGs[5 0 R 6 0 R]/D<</Order[5 0 R 6 0 R]/Name(Default)/Locked[5 0 R]>>>>>>"
+                .to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</Properties<</a 5 0 R/b 6 0 R>>>>/Contents 4 0 R>>".to_string(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+            "<</Type/OCG/Name(Blue)>>".to_string(),
+            "<</Type/OCG/Name(Red)>>".to_string(),
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", i + 1, o).as_bytes());
         }
-        None => Ok(json!({"base64": super::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
+        let x = out.len();
+        let mut t = format!("xref\n0 {}\n0000000000 65535 f\r\n", objs.len() + 1);
+        for o in offs {
+            t.push_str(&format!("{o:010} 00000 n\r\n"));
+        }
+        t.push_str(&format!("trailer\n<</Size {}/Root 1 0 R>>\nstartxref\n{x}\n%%EOF\n", objs.len() + 1));
+        out.extend_from_slice(t.as_bytes());
+        out
+    }
+
+    fn placement<'a>(d: &'a Document, location: &str, id: ItemId, sid: StoryId) -> &'a Item {
+        match location {
+            "cell" => &d.story(sid).unwrap().tables.values().next().unwrap().cells[0].text.objects[0].item,
+            "footnote" => &d.story(sid).unwrap().notes[0].text.objects[0].item,
+            "endnote" => &d.story(sid).unwrap().endnotes[0].text.objects[0].item,
+            "anchor" => &d.story(sid).unwrap().objects[0].item,
+            _ => d.item(id).unwrap(),
+        }
+    }
+
+    #[test]
+    fn stale_layer_fields_on_non_pdf_placements_do_not_block_pdf_a() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let result = s
+            .execute(
+                "file.place",
+                &json!({
+                    "base64": super::super::file::base64_encode(&two_layer_pdf()), "name": "layers.pdf",
+                }),
+            )
+            .unwrap();
+        let id = ItemId(result["id"].as_u64().unwrap());
+        s.execute("object.layerOptions", &json!({"ids": [id.0], "hidden": ["Blue"]})).unwrap();
+        // Relinking to an ordinary image can leave legacy fields on the placement.
+        // They are not an actionable placed-PDF override and must not fail closed.
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let aid = d.item(id).unwrap().graphic().unwrap().asset;
+        let asset = Arc::make_mut(d.assets.get_mut(&aid).unwrap());
+        asset.mime = "image/png".into();
+        asset.data = Arc::new(designcraft_render::Rendered { width: 1, height: 1, pixels: vec![0, 0, 0, 0] }.to_png());
+        let (copy, count) = super::rasterize_layered(d).unwrap();
+        assert_eq!(count, 0);
+        assert!(copy.is_none());
+        s.execute("file.exportPdf", &json!({"standard": "a2b"})).unwrap();
+    }
+
+    fn check_placement(location: &str) {
+        for all_on in [false, true] {
+            check_choice(location, all_on);
+        }
+    }
+
+    fn check_choice(location: &str, all_on: bool) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 100, "height": 100, "pages": 1})).unwrap();
+        let placed = s
+            .execute(
+                "file.place",
+                &json!({
+                    "base64": super::super::file::base64_encode(&two_layer_pdf()), "name": "layers.pdf",
+                    "x": 0, "y": 0, "width": 100,
+                    "spread": {"kind": if location == "parent" { "parent" } else { "doc" }, "index": 0}
+                }),
+            )
+            .unwrap();
+        let id = ItemId(placed["id"].as_u64().unwrap());
+        let hidden = if all_on { vec![] } else { vec!["Blue"] };
+        s.execute("object.layerOptions", &json!({"ids": [id.0], "hidden": hidden, "useDefaults": false})).unwrap();
+        let sid = {
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let layer = d.default_layer();
+            let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 80.0), layer, "Body", Default::default()).unwrap();
+            if !matches!(location, "doc" | "parent") {
+                let item = (**d.spreads[0].items.iter().find(|it| it.id == id).unwrap()).clone();
+                Arc::make_mut(&mut d.spreads[0]).items.retain(|it| it.id != id);
+                let object = AnchoredObject { item, position: Default::default() };
+                let story = d.story_mut(sid).unwrap();
+                match location {
+                    "cell" => {
+                        let mut table = Table::new(1, 1, 1, 0, 0, 20.0);
+                        table.cells[0].text.insert_object(0, object);
+                        story.insert_table(0, table);
+                    }
+                    "footnote" => {
+                        story.insert_note(0, "Note", Default::default()).unwrap();
+                        Arc::make_mut(&mut story.notes[0]).text.insert_object(0, object);
+                    }
+                    "endnote" => {
+                        story.insert_endnote(0, "Endnote", Default::default()).unwrap();
+                        Arc::make_mut(&mut story.endnotes[0]).text.insert_object(0, object);
+                    }
+                    "anchor" => story.insert_object(0, object),
+                    _ => assert!(matches!(location, "doc" | "parent")),
+                }
+            }
+            sid
+        };
+        // Exercise the real export command for each location, not just the traversal helper.
+        let result = s.execute("file.exportPdf", &json!({"standard": "a2b"})).unwrap();
+        assert!(
+            result["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("1 placed PDF(s)")),
+            "{location}: {}",
+            result["warnings"]
+        );
+        // Check the rewritten placement, including its pixels. Counting a placement without
+        // updating the nested object would still export the file's default layer visibility.
+        let source = &s.doc().unwrap().doc;
+        let (copy, count) = super::rasterize_layered(source).unwrap();
+        assert_eq!(count, 1, "{location}");
+        let copy = copy.unwrap();
+        let item = placement(&copy, location, id, sid);
+        let asset = &copy.assets[&item.graphic().unwrap().asset];
+        assert_eq!(asset.mime, "image/png", "{location}");
+        let image = designcraft_render::images::decoded(&asset.data, 0);
+        let image = image.unwrap();
+        let pixel = image.data()[usize::from(image.height()) / 2 * usize::from(image.width()) + usize::from(image.width()) / 4];
+        assert_eq!(pixel.a, if all_on { 255 } else { 0 }, "Blue visibility at {location}, all_on={all_on}");
+        // Export preparation must not change the open document's placement or source asset.
+        let original = placement(source, location, id, sid);
+        assert_eq!(original.pdf_hidden_layers, hidden);
+        assert!(original.pdf_layer_override);
+        assert_eq!(source.assets[&original.graphic().unwrap().asset].mime, "application/pdf");
+    }
+
+    #[test]
+    fn layered_pdf_a_document_placement() {
+        check_placement("doc");
+    }
+    #[test]
+    fn layered_pdf_a_parent_placement() {
+        check_placement("parent");
+    }
+    #[test]
+    fn layered_pdf_a_story_anchor() {
+        check_placement("anchor");
+    }
+    #[test]
+    fn layered_pdf_a_table_cell_anchor() {
+        check_placement("cell");
+    }
+    #[test]
+    fn layered_pdf_a_footnote_anchor() {
+        check_placement("footnote");
+    }
+    #[test]
+    fn layered_pdf_a_endnote_anchor() {
+        check_placement("endnote");
     }
 }
 
@@ -745,6 +1229,40 @@ mod text_tests {
         let mut s = String::new();
         std::io::Read::read_to_string(&mut z.by_name(name).unwrap(), &mut s).unwrap();
         s
+    }
+
+    /// Split Document is stored with the document as one undo step, follows a renamed style, and
+    /// an export can override it without storing its own.
+    #[test]
+    fn epub_split_document_setting() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "One\nText\nTwo\nMore"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Chapter"})).unwrap();
+        for at in [0, 9] {
+            s.execute("text.select", &json!({"story": sid, "anchor": at, "focus": at})).unwrap();
+            s.execute("style.paragraph.apply", &json!({"name": "Chapter"})).unwrap();
+        }
+        let files = |s: &mut Session, p: serde_json::Value| {
+            let mut z = unzip(s.execute("file.exportEpub", &p).unwrap()["base64"].as_str().unwrap());
+            (1..).take_while(|n| z.by_name(&if *n == 1 { "OEBPS/content.xhtml".into() } else { format!("OEBPS/content{n}.xhtml") }).is_ok()).count()
+        };
+        assert_eq!(s.execute("document.epubSplit", &json!({})).unwrap()["split"], "off");
+        assert_eq!(files(&mut s, json!({})), 1, "one content file by default");
+        assert!(s.execute("document.epubSplit", &json!({"split": {"style": "Nope"}})).is_err());
+        assert!(s.execute("document.epubSplit", &json!({"split": "h1"})).is_err());
+        assert!(s.execute("file.exportEpub", &json!({"split": {"style": "Nope"}})).is_err());
+        assert_eq!(s.execute("document.epubSplit", &json!({"split": {"style": "Chapter"}})).unwrap()["split"], json!({"style": "Chapter"}));
+        assert_eq!(files(&mut s, json!({})), 2);
+        assert_eq!(files(&mut s, json!({"split": "off"})), 1);
+        assert_eq!(s.doc().unwrap().doc.settings.epub_split, designcraft_doc::EpubSplit::Style("Chapter".into()), "the override isn't stored");
+        s.execute("style.paragraph.edit", &json!({"name": "Chapter", "rename": "Part"})).unwrap();
+        assert_eq!(s.execute("document.epubSplit", &json!({})).unwrap()["split"], json!({"style": "Part"}));
+        assert_eq!(files(&mut s, json!({})), 2);
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("document.epubSplit", &json!({})).unwrap()["split"], "off");
     }
 
     #[test]
@@ -881,6 +1399,125 @@ mod text_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The color spaces of every image XObject in `pdf`, as the families and colorant names.
+    fn image_spaces(pdf: &[u8]) -> Vec<String> {
+        use hayro_syntax::object::{Name, Object};
+        let file = hayro_syntax::Pdf::new(pdf.to_vec()).unwrap();
+        file.objects()
+            .into_iter()
+            .filter_map(|o| o.into_stream())
+            .filter(|s| s.dict().get::<Name<'_>>(b"Subtype").is_some_and(|n| n.as_ref() == b"Image"))
+            .filter_map(|s| match s.dict().get::<Object<'_>>(b"ColorSpace")? {
+                Object::Name(n) => Some(n.as_str().to_string()),
+                Object::Array(a) => {
+                    let mut it = a.iter::<Object<'_>>();
+                    let family = it.next()?.into_name()?.as_str().to_string();
+                    let names = match it.next() {
+                        Some(Object::Array(n)) => n.iter::<Name<'_>>().map(|n| n.as_str().to_string()).collect::<Vec<_>>().join(" "),
+                        Some(Object::Name(n)) => n.as_str().to_string(),
+                        _ => String::new(),
+                    };
+                    Some(format!("{family} {names}"))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The (Black, Gold) samples of every flattened DeviceN image that has both colorants.
+    fn black_and_gold(pdf: &[u8]) -> Vec<(u8, u8)> {
+        use hayro_syntax::object::{Array, Name, Object};
+        let file = hayro_syntax::Pdf::new(pdf.to_vec()).unwrap();
+        let mut out = Vec::new();
+        for st in file.objects().into_iter().filter_map(|o| o.into_stream()) {
+            let d = st.dict();
+            if !d.get::<Name<'_>>(b"Subtype").is_some_and(|n| n.as_ref() == b"Image") || d.get::<i32>(b"BitsPerComponent") != Some(8) {
+                continue;
+            }
+            let Some(cs) = d.get::<Array<'_>>(b"ColorSpace") else { continue };
+            let mut it = cs.iter::<Object<'_>>();
+            if !it.next().and_then(|o| o.into_name()).is_some_and(|n| n.as_ref() == b"DeviceN") {
+                continue;
+            }
+            let Some(Object::Array(names)) = it.next() else { continue };
+            let names: Vec<String> = names.iter::<Name<'_>>().map(|n| n.as_str().to_string()).collect();
+            let (Some(k), Some(g)) = (names.iter().position(|n| n == "Black"), names.iter().position(|n| n == "Gold")) else { continue };
+            let data = st.decoded().unwrap();
+            out.extend(data.chunks(names.len()).filter(|px| px.len() == names.len()).map(|px| (px[k], px[g])));
+        }
+        out
+    }
+
+    /// The shadow coverage gives the rendered pixel back when the PDF draws the object over the
+    /// shadow, also under a partly transparent object (an anti-aliased edge, a soft-alpha image).
+    #[test]
+    fn shadow_coverage_composites_back() {
+        for a in (0..=255u32).step_by(15) {
+            for s in (0..=255u32).step_by(15) {
+                let over = |c: u32| a + (c * (255 - a) + 127) / 255;
+                let with = over(s) as u8;
+                let c = u32::from(super::shadow_coverage(with, a as u8));
+                assert!(over(c).abs_diff(u32::from(with)) <= 1, "object {a}, shadow {s}: coverage {c}");
+            }
+        }
+        assert_eq!(super::shadow_coverage(255, 255), 0);
+        assert_eq!(super::shadow_coverage(10, 20), 0);
+    }
+
+    /// PDF/X-1a through craft-prepress: a soft drop shadow over a spot, a 50% object and a
+    /// knockout group leave no transparency and no RGB; the shadow is flattened in the page's
+    /// inks (Black over the spot), not exported as an RGB image of the object; text stays text and
+    /// overprint stays `/op`; `flatten` sets the resolution.
+    #[test]
+    fn x1a_export_flattens_in_inks() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Gold", "color": {"c": 0, "m": 30, "y": 90, "k": 10}, "spot": true})).unwrap();
+        let bg = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"ids": [bg], "swatch": "Gold"})).unwrap();
+        let shadowed = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"ids": [shadowed], "swatch": "C=0 M=100 Y=0 K=0"})).unwrap();
+        s.execute("object.dropShadow", &json!({"ids": [shadowed], "on": true, "distance": 8, "size": 6})).unwrap();
+        let half = s.execute("frame.create", &json!({"rect": [300, 72, 400, 172]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"ids": [half], "swatch": "C=100 M=0 Y=0 K=0"})).unwrap();
+        s.execute("object.opacity", &json!({"ids": [half], "opacity": 0.5})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 300, 172, 400]})).unwrap()["id"].clone();
+        let b = s.execute("frame.create", &json!({"rect": [122, 350, 222, 450]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"ids": [a, b], "swatch": "C=0 M=0 Y=100 K=0"})).unwrap();
+        s.execute("object.opacity", &json!({"ids": [a, b], "opacity": 0.5})).unwrap();
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].clone();
+        s.execute("object.transparencyGroup", &json!({"ids": [g], "knockout": true})).unwrap();
+        let op = s.execute("frame.create", &json!({"rect": [300, 300, 400, 400]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"ids": [op], "swatch": "C=0 M=100 Y=0 K=0"})).unwrap();
+        s.execute("object.attributes", &json!({"ids": [op], "overprintFill": true})).unwrap();
+        s.execute("frame.create", &json!({"rect": [72, 500, 400, 560], "content": "text", "text": "Live text", "caret": false})).unwrap();
+
+        let r = s.execute("file.exportPdf", &json!({"standard": "x1a", "flatten": "low"})).unwrap();
+        let pdf = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+        let text = String::from_utf8_lossy(&pdf).to_string();
+        assert_eq!(designcraft_pdf::check_pdfx1a(&pdf), Vec::<String>::new());
+        assert!(pdf.starts_with(b"%PDF-1.4") && text.contains("/GTS_PDFXVersion(PDF/X-1:2003)") && text.contains("/S/GTS_PDFX"));
+        assert!(text.contains("/GTS_PDFXConformance(PDF/X-1a:2003)"), "the conformance level");
+        let warnings = r["warnings"].to_string();
+        assert!(!warnings.contains("soft effects"), "the shadow isn't an RGB image of the object: {warnings}");
+        assert!(warnings.contains("at 72 ppi"), "{warnings}");
+        let spaces = image_spaces(&pdf);
+        assert!(spaces.iter().all(|cs| !cs.contains("RGB") && !cs.contains("ICC")), "{spaces:?}");
+        assert!(
+            spaces.iter().any(|cs| cs.starts_with("DeviceN") && cs.contains("Black") && cs.contains("Gold")),
+            "the shadow over the spot: {spaces:?}"
+        );
+        // The shadow multiplies: the spot stays at 100% where the shadow's black is.
+        let shadowed: Vec<(u8, u8)> = black_and_gold(&pdf).into_iter().filter(|(k, _)| *k > 100).collect();
+        assert!(!shadowed.is_empty(), "no shadow pixels");
+        assert!(shadowed.iter().all(|(_, gold)| *gold >= 250), "the spot under the shadow: {:?}", &shadowed[..shadowed.len().min(8)]);
+        assert!(text.contains("/op true") && text.contains("/OPM 1"), "overprint");
+        assert!(text.contains("/FontFile"), "the text is still text");
+        // The default resolution.
+        let r = s.execute("file.exportPdf", &json!({"standard": "x1a"})).unwrap();
+        assert!(r["warnings"].to_string().contains("at 300 ppi"), "{}", r["warnings"]);
+    }
+
     #[test]
     fn flattener_rasterises_spreads_with_transparency() {
         let mut s = Session::new();
@@ -915,6 +1552,39 @@ mod text_tests {
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
         let text = String::from_utf8_lossy(&super::super::file::base64_decode(r["base64"].as_str().unwrap())).to_string();
         assert_eq!(text.matches("/S/Transparency/CS/DeviceCMYK").count(), 1, "only the page with transparency");
+    }
+
+    #[test]
+    fn objects_with_soft_effects_keep_their_text_wrap_in_pdf() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = "Words wrap around the objects on this page. ".repeat(60);
+        let t = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": text, "caret": false})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        // A feathered frame with a contour wrap of the frame itself.
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [a]})).unwrap();
+        s.execute("object.textWrap", &json!({"ids": [a], "mode": "contour", "contour": "sameAsClipping", "offset": 6})).unwrap();
+        // A feathered frame whose placed graphic has a bounding-box wrap.
+        let png = designcraft_render::Rendered { width: 40, height: 40, pixels: vec![90; 40 * 40 * 4] }.to_png();
+        let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 500]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": b})).unwrap();
+        s.execute("object.textWrap", &json!({"ids": [b], "content": true, "mode": "boundingBox", "offset": 6})).unwrap();
+        s.execute("object.feather", &json!({"ids": [a, b], "width": 14})).unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        let sid = d.item(designcraft_doc::ItemId(t)).and_then(|it| it.text_frame()).unwrap().story;
+        let before = designcraft_compose::frame_specs(d, sid)[0].exclusions.clone();
+        assert_eq!(before.len(), 2);
+        let (fx, n) = super::rasterize_effects(d, &s.cache, &Default::default());
+        assert_eq!(n, 2);
+        let fx = fx.unwrap();
+        assert_eq!(designcraft_compose::frame_specs(&fx, sid)[0].exclusions, before);
+        // The objects that keep the wrap don't print; their images do.
+        let sp = &fx.spreads[0];
+        assert_eq!(sp.items.iter().filter(|it| it.nonprinting).count(), 2);
+        assert_eq!(sp.items.iter().filter(|it| !it.nonprinting && it.graphic().is_some()).count(), 2);
     }
 
     #[test]
@@ -970,7 +1640,9 @@ mod variable_font_tests {
 
     #[test]
     fn variable_font_instance_exports_to_pdf() {
-        let Ok(data) = std::fs::read("/System/Library/Fonts/Supplemental/Skia.ttf") else { return };
+        let Ok(data) = std::fs::read("/System/Library/Fonts/Supplemental/Skia.ttf") else {
+            return;
+        };
         designcraft_fonts::FontDb::global().add_font(data);
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -1124,17 +1796,19 @@ mod print_group_tests {
         s
     }
 
-    /// The placed PDF's transparency group blended in DeviceRGB in a print document
-    /// (`/Group<</Type/Group/S/Transparency/I true/CS/DeviceRGB>>`).
+    /// A placed PDF's transparency group blends in CMYK in a print document and in RGB in a
+    /// screen one.
     #[test]
     fn print_transparency_groups_blend_in_cmyk() {
         let mut s = page_with(&logo());
         let text = |s: &mut Session| {
-            let r = s.execute("file.exportPdf", &json!({"compress": false})).unwrap();
+            let r = s.execute("file.exportPdf", &json!({"compressImages": false})).unwrap();
             String::from_utf8_lossy(&base64_decode(r["base64"].as_str().unwrap())).into_owned()
         };
         let t = text(&mut s);
-        assert!(t.contains("/S/Transparency/I true/CS/DeviceCMYK>>"), "CMYK group");
+        // The placed page's group inherits the page group, which blends in CMYK.
+        assert!(t.contains("/Group<</Type/Group/S/Transparency/I true>>"), "placed page group without a blending space");
+        assert!(t.contains("/Group<</Type/Group/S/Transparency/CS/DeviceCMYK>>"), "CMYK page group");
         assert!(!t.contains("DeviceRGB"), "no RGB left");
         assert!(!designcraft_pdf::has_rgb_groups(t.as_bytes()));
         // The file still reads, with the same page.
@@ -1199,5 +1873,55 @@ mod pptx_tests {
         s.execute("object.exportOptions", &json!({"ids": [r["id"]], "rasterize": true})).unwrap();
         let x = shapes(&mut s);
         assert!(x.contains("<p:pic>") && !x.contains("prst=\"ellipse\""), "{x}");
+    }
+}
+
+#[cfg(test)]
+mod page_list_tests {
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    fn doc(pages: u64) -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 200, "height": 200, "pages": pages, "facingPages": false, "margins": 0})).unwrap();
+        s
+    }
+
+    /// The same selection written two ways exported different files: `"2,2"` is one page, because
+    /// `parse_page_range` keeps the first of a repeat, while `[2, 2]` was two copies of page 2.
+    /// The list says which pages to export, not how many times.
+    #[test]
+    fn a_page_named_twice_is_exported_once_either_way() {
+        let mut s = doc(4);
+        for (pages, want) in [
+            (json!("2,2"), 1),
+            (json!([2, 2]), 1),
+            (json!([2, 2, 2]), 1),
+            (json!("2-2,2"), 1),
+            (json!([1, 2, 1]), 2),
+            (json!("1,2,1"), 2),
+            (json!([4, 1]), 2),
+            (json!("4,1"), 2),
+            (json!("all"), 4),
+        ] {
+            let r = s.execute("file.exportPdf", &json!({"pages": pages.clone()})).unwrap();
+            assert_eq!(r["pages"].as_u64(), Some(want), "pdf {pages}");
+            let r = s.execute("file.exportPptx", &json!({"pages": pages.clone()})).unwrap();
+            assert_eq!(r["slides"].as_u64(), Some(want), "pptx {pages}");
+        }
+        // The two forms now agree byte for byte, and the pages come out in the document's order
+        // whichever order the list names them in (which is how the export already behaved).
+        // A fixed creation time: exports a second apart would differ in their dates.
+        let mut file = |pages: Value| {
+            let r = s.execute("file.exportPdf", &json!({"pages": pages, "created": 0})).unwrap();
+            r["base64"].as_str().unwrap_or_default().to_string()
+        };
+        assert_eq!(file(json!([4, 1])), file(json!("4,1")), "the array and the string agree");
+        assert_eq!(file(json!([4, 1])), file(json!([1, 4])), "pages 1 and 4, in the document's order");
+        assert_eq!(file(json!([2, 2])), file(json!("2")), "a repeat is the single page");
+        // A page that does not exist is still refused, and an empty list still exports nothing.
+        assert!(s.execute("file.exportPdf", &json!({"pages": [5]})).is_err());
+        assert!(s.execute("file.exportPdf", &json!({"pages": []})).is_err());
     }
 }

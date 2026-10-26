@@ -72,7 +72,7 @@ fn select_stacked(s: &mut Session, how: Step) -> Result<Value> {
         (Step::Down, Some(i)) => i.saturating_sub(1),
     };
     st.selection = Selection::items(vec![order[i]]);
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"id": order[i].0}))
 }
 
@@ -90,7 +90,7 @@ fn select_container(s: &mut Session) -> Result<Value> {
     } else {
         return ok();
     }
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"id": st.selection.items[0].0}))
 }
 
@@ -105,7 +105,7 @@ fn select_content(s: &mut Session) -> Result<Value> {
     } else {
         return ok();
     }
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"id": st.selection.items[0].0}))
 }
 
@@ -125,7 +125,7 @@ fn select_sibling(s: &mut Session, dir: isize) -> Result<Value> {
     let j = (i as isize - dir).rem_euclid(n) as usize;
     let Some(next) = kids.get(j).map(|k| k.id) else { return ok() };
     st.selection = Selection::items(vec![next]);
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"id": next.0}))
 }
 

@@ -204,7 +204,7 @@ fn pictures_are_cropped_to_their_frames() {
             link: None,
             data: Arc::new(png(200, 100)),
             pixels: Some((200, 100)),
-            page: 0,
+            ..Default::default()
         }),
     );
     let id = rect_item(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0), Shape::Rectangle);
@@ -212,12 +212,16 @@ fn pictures_are_cropped_to_their_frames() {
         it.fill = Fill::none();
         // 200 × 100 image at 1:1, its left quarter cut off by the frame.
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset,
             size: (200.0, 100.0),
             xf: Affine::translate((50.0, 100.0)),
             auto_fit: designcraft_doc::Fitting::None,
             fit_align: 0,
             crop: [0.0; 4],
+            clip: None,
+            wrap: Default::default(),
+            fill: Default::default(),
         });
     });
     let mut z = export(&d, &PptxOptions::default());

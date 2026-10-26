@@ -7,10 +7,11 @@ use std::sync::Arc;
 use designcraft_color::cms::lab;
 use designcraft_color::{Color, ColorType, Gradient, GradientKind, GradientStop, Swatch, SwatchValue, swatch};
 use designcraft_doc::{
-    Asset, AssetId, BaselineGrid, CellRange, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind, Content, DocSettings, Document,
-    DropShadow, Effects, Fill, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer, LayerId, ListType, Margins, ObjectStyle,
-    Orientation, Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode, Rule, Section, Shape, SpanColumns, Spread,
-    SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap, story as st,
+    Asset, AssetId, BaselineGrid, CellRange, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind, Content, DirectionalFeather,
+    DocSettings, Document, DropShadow, Effects, Fill, GradientFeather, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer,
+    LayerId, ListType, Margins, ObjectStyle, Orientation, Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode,
+    Rule, Section, Shape, SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap,
+    story as st,
 };
 use designcraft_geom::corners::{Corner, CornerOptions};
 use designcraft_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
@@ -26,7 +27,15 @@ fn uniform_cell_stroke(edges: &[designcraft_doc::CellStrokeAttrs; 4]) -> Option<
     if edges.iter().any(|edge| edge != first) {
         return None;
     }
-    Some(designcraft_doc::CellStroke { weight: first.weight?, color: first.color.clone()?, tint: first.tint?, kind: first.kind.clone()? })
+    let mut stroke = designcraft_doc::CellStroke {
+        weight: first.weight?,
+        color: first.color.clone()?,
+        tint: first.tint?,
+        kind: first.kind.clone()?,
+        ..Default::default()
+    };
+    first.apply_to(&mut stroke);
+    Some(stroke)
 }
 
 /// Import an IDML package without reading its linked images from disk: this crate never touches
@@ -52,6 +61,17 @@ pub struct Imported {
 
 /// Import with a custom reader for linked files, reporting the problems that did not stop it.
 pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Imported> {
+    import_idml_report_with_previews(bytes, read_link, &HashMap::new())
+}
+
+/// [`import_idml_report`], with stand-in images for graphics whose file neither the package nor
+/// `read_link` provides: `previews` maps a graphic's `Self` to an image (an InDesign document's
+/// screen preview of a linked file). The graphic keeps its link, so relinking replaces it.
+pub fn import_idml_report_with_previews(
+    bytes: &[u8],
+    read_link: &dyn Fn(&str) -> Option<Vec<u8>>,
+    previews: &HashMap<String, Arc<Vec<u8>>>,
+) -> Result<Imported> {
     let mut pkg = Package::open(bytes)?;
     if let Some(m) = pkg.part("mimetype")?
         && String::from_utf8_lossy(&m).trim() != MIMETYPE
@@ -66,8 +86,6 @@ pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u
     // Flatten includes: every `idPkg:*` child is replaced by the children of its part's root.
     let mut top: Vec<El> = Vec::new();
     let mut warnings = Vec::new();
-    // Only the parts the import reads count (unreferenced entries are never decompressed).
-    let mut japanese_composer = names_japanese_composer(&dm);
     for c in root.elements() {
         if c.name.starts_with("idPkg:") {
             let Some(src) = c.get("src") else { continue };
@@ -75,31 +93,50 @@ pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u
                 warnings.push(format!("{src}: listed in designmap.xml but missing from the package; its contents were not imported"));
                 continue;
             };
-            japanese_composer |= names_japanese_composer(&data);
             let el = parse(&data).map_err(|msg| IdmlError::Part { part: src.into(), msg })?;
             top.extend(el.elements().cloned());
         } else {
             top.push(c.clone());
         }
     }
-    let mut im = Importer::new(read_link);
-    im.japanese_composer = japanese_composer;
+    let mut im = Importer::new(read_link, previews);
+    if let Some(m) = pkg.part("META-INF/metadata.xml")? {
+        let m = String::from_utf8_lossy(&m);
+        im.created = xmp_date(&m, "xmp:CreateDate");
+        im.modified = xmp_date(&m, "xmp:ModifyDate");
+    }
     im.run(&root, &top)?;
-    let document = im.finish(&root).map_err(|e| match e {
+    if im.repaired_tab_lists > 0 {
+        warnings.push(format!(
+            "tab lists repaired to fit the limits (at most {} stops, finite positions up to {} in, leaders of at most {} characters, one stop per position): {}",
+            designcraft_doc::MAX_TAB_STOPS,
+            designcraft_doc::MAX_TAB_POSITION / 72.0,
+            designcraft_doc::MAX_TAB_LEADER,
+            im.repaired_tab_lists,
+        ));
+    }
+    warnings.append(&mut im.warnings);
+    let mut document = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
         e => e,
     })?;
+    warnings.extend(document.fix_parent_bases());
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
     Ok(Imported { document, warnings })
 }
 
-/// View Preferences › Ruler Origin.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RulerOrigin {
-    Spread,
-    Page,
-    Spine,
+/// Whether sanitizing a file's tab list dropped, moved or shortened a stop. Sorting, and the `.`
+/// a char stop with no character aligns on, change nothing.
+fn tab_list_repaired(read: &[TabStop], sanitized: &[TabStop]) -> bool {
+    let kept = |t: &TabStop| {
+        sanitized.iter().any(|o| {
+            o.position == t.position
+                && o.leader == t.leader
+                && (o.align_on == t.align_on || (t.align_on.is_empty() && o.align == designcraft_doc::TabAlign::Char))
+        })
+    };
+    read.len() != sanitized.len() || !read.iter().all(kept)
 }
 
 /// Most entries an IDML package may hold.
@@ -164,23 +201,6 @@ impl<'a> Package<'a> {
     }
 }
 
-/// Does this package part apply one of InDesign's Japanese composers (`HL Composer J`,
-/// `HL Single J`) anywhere? Only they use the CJK leading model.
-fn names_japanese_composer(data: &[u8]) -> bool {
-    const KEY: &[u8] = b"Composer=\"";
-    let mut rest = data;
-    while let Some(at) = rest.windows(KEY.len()).position(|w| w == KEY) {
-        let value = rest.get(at + KEY.len()..).unwrap_or_default();
-        let end = value.iter().position(|b| *b == b'"').unwrap_or(value.len());
-        let name = String::from_utf8_lossy(value.get(..end).unwrap_or_default());
-        if name.ends_with(" J") || name.contains("Japanese") {
-            return true;
-        }
-        rest = value.get(end..).unwrap_or_default();
-    }
-    false
-}
-
 /// A package part name in the form the lookup compares: InDesign and other IDML writers differ
 /// in percent-encoding, case, path separators and a leading `./` or `/`.
 fn normalize_part_name(name: &str) -> String {
@@ -217,6 +237,19 @@ pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// An XMP date property, written as an element or an attribute.
+fn xmp_date(xmp: &str, key: &str) -> Option<i64> {
+    let value = if let Some(i) = xmp.find(&format!("<{key}>")) {
+        let rest = xmp.get(i + key.len() + 2..)?;
+        rest.get(..rest.find('<')?)?
+    } else {
+        let i = xmp.find(&format!("{key}=\""))?;
+        let rest = xmp.get(i + key.len() + 2..)?;
+        rest.get(..rest.find('"')?)?
+    };
+    designcraft_doc::vars::parse_iso_date(value)
+}
+
 struct ItemCtx {
     /// Self → (story self, prev self, next self)
     threads: Vec<(ItemId, String, String, String)>,
@@ -224,10 +257,8 @@ struct ItemCtx {
 
 struct Importer<'r> {
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
-    /// View Preferences › Ruler Origin: where a guide's Location is measured from.
-    ruler_origin: RulerOrigin,
-    /// The package applies a Japanese composer somewhere (see [`names_japanese_composer`]).
-    japanese_composer: bool,
+    /// Graphic `Self` → stand-in image for a linked file that can't be read.
+    previews: &'r HashMap<String, Arc<Vec<u8>>>,
     next_id: u64,
     settings: DocSettings,
     default_margins: Option<(Margins, Columns)>,
@@ -244,6 +275,8 @@ struct Importer<'r> {
     inks: designcraft_doc::InkManager,
     stroke_styles: Vec<designcraft_doc::StrokeStyleDef>,
     styles: Styles,
+    composite_names: HashMap<String, String>,
+    mojikumi_names: HashMap<String, String>,
     kinsoku: HashMap<String, designcraft_doc::cjk::Kinsoku>,
     para_names: HashMap<String, String>,
     char_names: HashMap<String, String>,
@@ -253,19 +286,27 @@ struct Importer<'r> {
     table_names: HashMap<String, String>,
     /// Object style Self → element (attribute fallback for page items).
     object_els: HashMap<String, El>,
+    /// Paragraph style Self → element (attribute fallback for partly overridden settings).
+    para_els: HashMap<String, El>,
     layers: Vec<Layer>,
     layer_ids: HashMap<String, LayerId>,
     stories: BTreeMap<StoryId, Story>,
     story_ids: HashMap<String, StoryId>,
     parents: Vec<Spread>,
+    /// Things read but not kept as they were, for the import report.
+    warnings: Vec<String>,
+    /// Cells whose text is rotated (Cell Options › Text › Rotation): the angle is kept and
+    /// written back, but only 0 is composed, so a narrow header column of vertical labels comes
+    /// in horizontal and wraps mid-word (#1468).
+    rotated_cells: usize,
     parent_ids: HashMap<String, SpreadId>,
     spreads: Vec<Spread>,
     page_index: HashMap<String, usize>,
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
-    /// Assets read from a link path at a page, so later placements of that path and page reuse
-    /// them unread.
-    linked_assets: HashMap<(String, u32), AssetId>,
+    /// Assets read from a link path at a page and crop, so later placements of that path, page
+    /// and crop reuse them unread.
+    linked_assets: HashMap<(String, u32, designcraft_doc::PdfCrop), AssetId>,
     ctx: ItemCtx,
     sections: Vec<Section>,
     footnote_options: designcraft_doc::FootnoteOptions,
@@ -279,6 +320,14 @@ struct Importer<'r> {
     /// Index topic Self → topic path and per-level sort keys; topic cross-references.
     index_topics: HashMap<String, IndexTopic>,
     index_xrefs: Vec<designcraft_doc::IndexRef>,
+    /// The file's text variables (`None`: it defines none) and their Self → index.
+    text_vars: Option<Vec<designcraft_doc::vars::TextVariable>>,
+    text_var_ids: HashMap<String, usize>,
+    /// Creation and modification times (Unix seconds) from the package metadata.
+    created: Option<i64>,
+    modified: Option<i64>,
+    /// Tab lists [`TabStop::sanitized_list`] had to repair (an import warning).
+    repaired_tab_lists: usize,
     toc: Option<designcraft_doc::Toc>,
 }
 
@@ -308,8 +357,45 @@ fn lab_to_color(l: f32, a: f32, b: f32) -> Color {
     Color::rgb(rgb[0], rgb[1], rgb[2])
 }
 
+fn mojikumi_row(e: &El) -> Result<designcraft_doc::cjk::MojikumiAki> {
+    let number = |key: &str| -> Result<f64> {
+        let Some(raw) = e.prop(key) else {
+            return Ok(0.0);
+        };
+        raw.trim().parse::<f64>().ok().filter(|v| v.is_finite()).ok_or_else(|| IdmlError::Invalid(format!("Mojikumi row has invalid {key}")))
+    };
+    let integer = |key: &str| -> Result<i16> {
+        let v = number(key)?;
+        if v.fract() != 0.0 || v < f64::from(i16::MIN) || v > f64::from(i16::MAX) {
+            return Err(IdmlError::Invalid(format!("Mojikumi {key} must be an in-range integer")));
+        }
+        Ok(v as i16)
+    };
+    let boolean = |key: &str| -> Result<bool> {
+        match e.prop(key).as_deref().map(str::trim) {
+            None | Some("false") => Ok(false),
+            Some("true") => Ok(true),
+            _ => Err(IdmlError::Invalid(format!("Mojikumi row has invalid {key}"))),
+        }
+    };
+    let row = designcraft_doc::cjk::MojikumiAki {
+        target_class: integer("TargetMojikumiClass")?,
+        side_class: integer("SideMojikumiClass")?,
+        after: boolean("SideIsAfterTarget")?,
+        minimum: number("Minimum")?,
+        desired: number("Desired")?,
+        maximum: number("Maximum")?,
+        priority: integer("CompressionPriority")?,
+        does_not_float: boolean("AkiDoesNotFloat")?,
+    };
+    Ok(row)
+}
+
+/// The numbers in a whitespace-separated list; empty when any number is NaN or infinite (JSON
+/// can't store them, and dropping just those would shift the rest).
 fn nums(s: &str) -> Vec<f64> {
-    s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
+    let v: Vec<f64> = s.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    if v.iter().all(|x| x.is_finite()) { v } else { Vec::new() }
 }
 
 /// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
@@ -357,6 +443,26 @@ fn parse_affine(s: Option<&str>) -> Affine {
     }
 }
 
+/// View › Rotate Spread from a `Spread` element's `ItemTransform`: quarter turns clockwise on
+/// screen (IDML y points down, so `0 1 -1 0` is one clockwise turn). The spread's items and
+/// pages stay in unrotated spread coordinates, so only the rotation part is read. Anything other
+/// than an exact quarter turn (identity, scale, other angles, malformed numbers) is no rotation.
+fn spread_view_rotation(s: Option<&str>) -> u8 {
+    let parsed: std::result::Result<Vec<f64>, _> = s.unwrap_or("").split_whitespace().take(7).map(str::parse::<f64>).collect();
+    let Some([a, b, c, d, _, _]) = parsed.ok().and_then(|v| <[f64; 6]>::try_from(v).ok()) else { return 0 };
+    let is = |x: f64, y: f64| (x - y).abs() < 1e-6;
+    let quarter = |m: [f64; 4]| is(a, m[0]) && is(b, m[1]) && is(c, m[2]) && is(d, m[3]);
+    if quarter([0.0, 1.0, -1.0, 0.0]) {
+        1
+    } else if quarter([-1.0, 0.0, 0.0, -1.0]) {
+        2
+    } else if quarter([0.0, -1.0, 1.0, 0.0]) {
+        3
+    } else {
+        0
+    }
+}
+
 fn parse_point(s: Option<&str>) -> Option<Point> {
     let v = nums(s?);
     (v.len() >= 2).then(|| Point::new(v[0], v[1]))
@@ -365,13 +471,30 @@ fn parse_point(s: Option<&str>) -> Option<Point> {
 /// InDesign's corner size where a file gives a corner shape without one.
 const INDESIGN_CORNER_SIZE: f64 = 12.0;
 
+/// The four corners of a paragraph border or shading (`prefix` `ParagraphBorder` /
+/// `ParagraphShading`): top left, top right, bottom right, bottom left. Unset when none is given.
+fn corners(e: &El, prefix: &str) -> Option<[Corner; 4]> {
+    let keys = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
+    let shapes = keys.map(|n| e.prop(&format!("{prefix}{n}CornerOption")));
+    let sizes = keys.map(|n| e.num(&format!("{prefix}{n}CornerRadius")));
+    if shapes.iter().all(Option::is_none) && sizes.iter().all(Option::is_none) {
+        return None;
+    }
+    let mut out = [Corner::default(); 4];
+    for (c, (shape, size)) in out.iter_mut().zip(shapes.iter().zip(sizes)) {
+        c.shape = shape.as_deref().map_or(designcraft_geom::corners::CornerShape::None, |s| names::corner_in(s.trim()));
+        c.size = size.filter(|v| v.is_finite()).map_or(12.0, |v| v.max(0.0));
+    }
+    Some(out)
+}
+
 /// IDML tint (percent; `-1` = the colour's own tint, 100 %) → 0..1.
 fn tint(v: Option<f64>) -> Option<f32> {
     v.map(|t| if t < 0.0 || t.is_nan() { 1.0 } else { (t / 100.0).min(1.0) as f32 })
 }
 
 impl<'r> Importer<'r> {
-    fn new(read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>) -> Self {
+    fn new(read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>, previews: &'r HashMap<String, Arc<Vec<u8>>>) -> Self {
         let specials: Vec<Swatch> = designcraft_color::default_swatches().into_iter().filter(|s| s.locked).collect();
         let mut swatch_names = HashMap::new();
         swatch_names.insert("Swatch/None".to_string(), swatch::NONE.to_string());
@@ -383,8 +506,7 @@ impl<'r> Importer<'r> {
         styles.paragraph.iter_mut().for_each(|s| s.based_on = None);
         Importer {
             read_link,
-            ruler_origin: RulerOrigin::Spread,
-            japanese_composer: false,
+            previews,
             next_id: 0,
             settings: DocSettings::default(),
             default_margins: None,
@@ -398,6 +520,8 @@ impl<'r> Importer<'r> {
             inks: Default::default(),
             stroke_styles: Vec::new(),
             styles,
+            composite_names: HashMap::new(),
+            mojikumi_names: HashMap::new(),
             kinsoku: HashMap::new(),
             para_names: HashMap::new(),
             char_names: HashMap::new(),
@@ -406,11 +530,14 @@ impl<'r> Importer<'r> {
             cell_names: HashMap::new(),
             table_names: HashMap::new(),
             object_els: HashMap::new(),
+            para_els: HashMap::new(),
             layers: Vec::new(),
             layer_ids: HashMap::new(),
             stories: BTreeMap::new(),
             story_ids: HashMap::new(),
             parents: Vec::new(),
+            warnings: Vec::new(),
+            rotated_cells: 0,
             parent_ids: HashMap::new(),
             spreads: Vec::new(),
             page_index: HashMap::new(),
@@ -426,6 +553,11 @@ impl<'r> Importer<'r> {
             xref_formats: designcraft_doc::xref::default_formats(),
             index_topics: HashMap::new(),
             index_xrefs: Vec::new(),
+            text_vars: None,
+            text_var_ids: HashMap::new(),
+            created: None,
+            modified: None,
+            repaired_tab_lists: 0,
             toc: None,
         }
     }
@@ -472,11 +604,12 @@ impl<'r> Importer<'r> {
                     if let Some(v) = e.num("CursorKeyIncrement") {
                         self.settings.keyboard_increment = v;
                     }
-                    self.ruler_origin = match e.get("RulerOrigin") {
-                        Some("PageOrigin") => RulerOrigin::Page,
-                        Some("SpineOrigin") => RulerOrigin::Spine,
-                        _ => RulerOrigin::Spread,
-                    };
+                    match e.get("RulerOrigin") {
+                        Some("PageOrigin") => self.settings.ruler_origin = designcraft_doc::RulerOrigin::Page,
+                        Some("SpineOrigin") => self.settings.ruler_origin = designcraft_doc::RulerOrigin::Spine,
+                        Some("SpreadOrigin") => self.settings.ruler_origin = designcraft_doc::RulerOrigin::Spread,
+                        _ => {}
+                    }
                 }
                 "GridPreference" => self.grid_prefs(e),
                 "PasteboardPreference" => {
@@ -492,21 +625,28 @@ impl<'r> Importer<'r> {
             }
         }
         for e in top.iter().filter(|e| e.local() == "CompositeFont") {
+            let name =
+                e.get("Name").map(str::to_string).unwrap_or_else(|| unescape_id(e.get("Self").unwrap_or("").trim_start_matches("CompositeFont/")));
+            if let Some(id) = e.get("Self") {
+                self.composite_names.insert(id.to_string(), format!("CompositeFont/{name}"));
+            }
             let entries = e
                 .find_all("CompositeFontEntry")
                 .map(|c| designcraft_doc::cjk::CompositeFontEntry {
                     name: c.get("Name").unwrap_or("").into(),
                     characters: c.get("CustomCharacters").unwrap_or("").into(),
-                    family: c.prop("AppliedFont").unwrap_or_default(),
+                    family: c.prop("AppliedFont").as_deref().and_then(names::font_family_in).unwrap_or_default(),
                     style: c.get("FontStyle").unwrap_or("Regular").trim_start_matches("$ID/").into(),
-                    relative_size: c.num("RelativeSize").unwrap_or(100.0) / 100.0,
-                    horizontal_scale: c.num("HorizontalScale").unwrap_or(100.0) / 100.0,
-                    vertical_scale: c.num("VerticalScale").unwrap_or(100.0) / 100.0,
-                    baseline_shift: c.num("BaselineShift").unwrap_or(0.0) / 100.0,
+                    // A metric `Document::check` refuses would make the whole file fail to
+                    // open, so one that is unusable here falls back to full size / no shift.
+                    relative_size: c.num("RelativeSize").map(|v| v / 100.0).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0),
+                    horizontal_scale: c.num("HorizontalScale").map(|v| v / 100.0).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0),
+                    vertical_scale: c.num("VerticalScale").map(|v| v / 100.0).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0),
+                    baseline_shift: c.num("BaselineShift").filter(|v| v.is_finite()).unwrap_or(0.0) / 100.0,
                     scale_option: c.boolean("ScaleOption").unwrap_or(true),
                 })
                 .collect();
-            self.styles.composite_fonts.push(designcraft_doc::cjk::CompositeFont { name: unescape_id(e.get("Name").unwrap_or("")), entries });
+            self.styles.composite_fonts.push(designcraft_doc::cjk::CompositeFont { name, entries });
         }
         for e in top.iter().filter(|e| e.local() == "KinsokuTable") {
             if e.get("CantBeginLineChars").is_some() || e.get("CantEndLineChars").is_some() {
@@ -523,23 +663,14 @@ impl<'r> Importer<'r> {
             }
         }
         for e in top.iter().filter(|e| e.local() == "MojikumiTable") {
-            let overrides = e
-                .prop_el("OverrideMojikumiAkiList")
-                .map(|l| {
-                    l.find_all("OverrideMojikumiAkiType")
-                        .map(|r| designcraft_doc::cjk::MojikumiAki {
-                            target_class: r.num("TargetMojikumiClass").unwrap_or(0.0) as i16,
-                            side_class: r.num("SideMojikumiClass").unwrap_or(0.0) as i16,
-                            after: r.boolean("SideIsAfterTarget").unwrap_or(false),
-                            minimum: r.num("Minimum").unwrap_or(0.0),
-                            desired: r.num("Desired").unwrap_or(0.0),
-                            maximum: r.num("Maximum").unwrap_or(0.0),
-                            priority: r.num("CompressionPriority").unwrap_or(0.0) as i16,
-                            does_not_float: r.boolean("AkiDoesNotFloat").unwrap_or(false),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            if let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) {
+                self.mojikumi_names.insert(id.into(), format!("MojikumiTable/{}", unescape_id(name)));
+            }
+            let overrides = if let Some(list) = e.prop_el("OverrideMojikumiAkiList") {
+                list.find_all("OverrideMojikumiAkiType").map(mojikumi_row).collect::<Result<Vec<_>>>()?
+            } else {
+                Vec::new()
+            };
             self.styles.mojikumi_tables.push(designcraft_doc::cjk::MojikumiTable {
                 name: unescape_id(e.get("Name").unwrap_or("")),
                 based_on: e.get("BasedOnMojikumiSet").unwrap_or("").into(),
@@ -550,6 +681,9 @@ impl<'r> Importer<'r> {
         self.styles(top);
         if let Some(e) = top.iter().find(|e| e.local() == "FootnoteOption") {
             self.footnote_option(e);
+        }
+        if let Some(e) = top.iter().find(|e| e.local() == "EPubExportPreference") {
+            self.epub_split(e);
         }
         for e in top.iter().filter(|e| e.local() == "Layer") {
             let id = LayerId(self.alloc());
@@ -596,12 +730,19 @@ impl<'r> Importer<'r> {
         if let Some(ix) = top.iter().find(|e| e.local() == "Index") {
             self.index_topics_of(ix, &IndexTopic::default());
         }
+        for e in top.iter().filter(|e| e.local() == "TextVariable") {
+            self.text_variable(e);
+        }
         // Stories (ids first so frames can reference them).
+        let mut pending_stories = Vec::new();
         for e in top.iter().filter(|e| e.local() == "Story") {
             let id = StoryId(self.alloc());
             if let Some(s) = e.get("Self") {
                 self.story_ids.insert(s.to_string(), id);
             }
+            pending_stories.push((id, e));
+        }
+        for (id, e) in pending_stories {
             let story = self.story(id, e);
             self.stories.insert(id, story);
         }
@@ -654,6 +795,12 @@ impl<'r> Importer<'r> {
                 marker: e.get("Marker").unwrap_or("").to_string(),
                 include_prefix: e.get("IncludeSectionPrefix") == Some("true"),
             });
+        }
+        if self.rotated_cells > 0 {
+            let n = self.rotated_cells;
+            self.warnings.push(format!(
+                "{n} table cell(s) have rotated text (Cell Options › Text › Rotation): the angle is kept and written back, but the text is composed horizontally"
+            ));
         }
         self.sections.sort_by_key(|s| s.start);
         self.sections.dedup_by_key(|s| s.start);
@@ -714,6 +861,9 @@ impl<'r> Importer<'r> {
         if let Some(v) = e.boolean("CreatePrimaryTextFrame") {
             s.primary_text_frame = v;
         }
+        if let Some(v) = e.boolean("ColumnGuideLocked") {
+            s.column_guides_locked = v;
+        }
     }
 
     fn grid_prefs(&mut self, e: &El) {
@@ -756,8 +906,56 @@ impl<'r> Importer<'r> {
             _ if v.len() >= 4 => Color::cmyk((v[0] / 100.0) as f32, (v[1] / 100.0) as f32, (v[2] / 100.0) as f32, (v[3] / 100.0) as f32),
             _ => return None,
         };
+        // Huge values (1e300) overflow `f32` to infinity.
+        let parts = match c {
+            Color::Rgb { r, g, b } => [r, g, b, 0.0],
+            Color::Cmyk { c, m, y, k } => [c, m, y, k],
+            Color::Gray { k } => [k, 0.0, 0.0, 0.0],
+        };
+        if !parts.iter().all(|v| v.is_finite()) {
+            return None;
+        }
         let ty = if e.get("Model") == Some("Spot") { ColorType::Spot } else { ColorType::Process };
         Some((c, ty))
+    }
+
+    /// Custom stroke styles.
+    fn read_stroke_styles(&mut self, top: &[El]) {
+        for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
+            let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
+            let kind = match e.local() {
+                "StripedStrokeStyle" => designcraft_doc::StrokeType::Stripes {
+                    bands: nums(e.get("StripeArray").unwrap_or(""))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
+                        .collect(),
+                },
+                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: nums(e.get("DashArray").unwrap_or("")) },
+                _ => designcraft_doc::StrokeType::Dotted,
+            };
+            let _ = id;
+            self.stroke_styles.push(designcraft_doc::StrokeStyleDef { name: name.to_string(), kind });
+        }
+    }
+
+    /// Ink Manager settings: inks converted to process and ink aliases.
+    fn read_inks(&mut self, top: &[El]) {
+        for e in top.iter().filter(|e| e.local() == "Ink") {
+            let Some(name) = e
+                .get("Name")
+                .filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
+            else {
+                continue;
+            };
+            if e.get("ConvertToProcess") == Some("true") {
+                self.inks.to_process.push(name.to_string());
+            }
+            if let Some(a) = e.get("AliasInkName").filter(|a| !a.is_empty() && *a != name && !a.starts_with("$ID/")) {
+                self.inks.aliases.push((name.to_string(), a.to_string()));
+            }
+        }
     }
 
     fn graphics(&mut self, top: &[El]) {
@@ -803,45 +1001,23 @@ impl<'r> Importer<'r> {
                 Swatch { name, value: SwatchValue::Tint { base, tint: (t / 100.0) as f32 }, locked: false, named: true, hidden: false },
             ));
         }
-        // Custom stroke styles.
-        for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
-            let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
-            let nums = |k: &str| e.get(k).unwrap_or("").split_whitespace().filter_map(|x| x.parse::<f64>().ok()).collect::<Vec<_>>();
-            let kind = match e.local() {
-                "StripedStrokeStyle" => designcraft_doc::StrokeType::Stripes {
-                    bands: nums("StripeArray").as_chunks::<2>().0.iter().map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0)).collect(),
-                },
-                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: nums("DashArray") },
-                _ => designcraft_doc::StrokeType::Dotted,
-            };
-            let _ = id;
-            self.stroke_styles.push(designcraft_doc::StrokeStyleDef { name: name.to_string(), kind });
-        }
-        // Ink Manager.
-        for e in top.iter().filter(|e| e.local() == "Ink") {
-            let Some(name) = e
-                .get("Name")
-                .filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
-            else {
-                continue;
-            };
-            if e.get("ConvertToProcess") == Some("true") {
-                self.inks.to_process.push(name.to_string());
-            }
-            if let Some(a) = e.get("AliasInkName").filter(|a| !a.is_empty() && *a != name && !a.starts_with("$ID/")) {
-                self.inks.aliases.push((name.to_string(), a.to_string()));
-            }
-        }
+        self.read_stroke_styles(top);
+        self.read_inks(top);
         for e in top.iter().filter(|e| e.local() == "Gradient") {
             let Some(id) = e.get("Self") else { continue };
             let mut stops: Vec<GradientStop> = Vec::new();
             for s in e.find_all("GradientStop") {
-                let c = s.get("StopColor").map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
+                let r = s.get("StopColor");
+                let c = r.map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
+                // A stop on a named swatch (a spot, a tint, [Paper]) keeps it for its inks;
+                // unnamed colors stay plain. The id becomes the swatch's name below, once
+                // repeated names are numbered.
+                let swatch = r.filter(|r| self.swatch_names.get(*r).is_some_and(|n| n != swatch::NONE)).map(str::to_string);
                 let loc = s.num("Location").unwrap_or(0.0) / 100.0;
                 if let (Some(prev), Some(m)) = (stops.last_mut(), s.num("Midpoint")) {
                     prev.midpoint = (m / 100.0) as f32;
                 }
-                stops.push(GradientStop { offset: loc as f32, color: c, opacity: 1.0, midpoint: 0.5 });
+                stops.push(GradientStop { swatch, ..GradientStop::new(loc as f32, c) });
             }
             let kind = if e.get("Type") == Some("Radial") { GradientKind::Radial } else { GradientKind::Linear };
             let unnamed = e.get("Visible") == Some("false") || e.get("Name").is_none_or(|n| n.is_empty() || n == "$ID/");
@@ -866,6 +1042,7 @@ impl<'r> Importer<'r> {
             order.sort_by_key(|(id, _)| group_order.iter().position(|g| g == id).unwrap_or(usize::MAX));
         }
         let mut names: HashSet<String> = self.swatches.iter().map(|s| s.name.clone()).collect();
+        let first_new = self.swatches.len();
         for (id, mut s) in order {
             if names.contains(&s.name) {
                 let base = s.name.clone();
@@ -874,6 +1051,16 @@ impl<'r> Importer<'r> {
             }
             names.insert(s.name.clone());
             self.swatches.push(s);
+        }
+        let stop_names = |stops: &mut Vec<GradientStop>, ids: &HashMap<String, String>| {
+            for stop in stops {
+                stop.swatch = stop.swatch.take().and_then(|id| ids.get(&id).cloned());
+            }
+        };
+        for s in self.swatches.iter_mut().skip(first_new).chain(self.hidden_swatches.values_mut()) {
+            if let SwatchValue::Gradient { gradient } = &mut s.value {
+                stop_names(&mut gradient.stops, &self.swatch_names);
+            }
         }
         // Colour groups other than the root one become Swatches panel folders.
         for g in top.iter().filter(|e| e.local() == "ColorGroup" && e.get("IsRootColorGroup") != Some("true")) {
@@ -907,7 +1094,6 @@ impl<'r> Importer<'r> {
         Color::BLACK
     }
 
-    /// A swatch reference (Self id) → our swatch name; unnamed colours become value-named swatches.
     /// A `TextFramePreference`, with its column rule colour resolved to a swatch.
     fn frame_options(&mut self, prefs: &[&El]) -> TextFrameOptions {
         let mut o = text_frame_options(prefs);
@@ -917,6 +1103,7 @@ impl<'r> Importer<'r> {
         o
     }
 
+    /// A swatch reference (Self id) → our swatch name; unnamed colours become value-named swatches.
     fn swatch_ref(&mut self, r: &str) -> String {
         if let Some(n) = self.swatch_names.get(r) {
             return n.clone();
@@ -1013,22 +1200,27 @@ impl<'r> Importer<'r> {
             self.object_names.insert(id.clone(), n);
             self.object_els.insert(id.clone(), e.clone());
         }
+        for (id, e) in &paras {
+            self.para_els.insert(id.clone(), e.clone());
+        }
         for (_, e) in &paras {
             let name = names::style_name_in(PARA_BUILTINS, e.get("Name").unwrap_or(""));
             let based_on = if name == designcraft_doc::NO_PARA_STYLE { None } else { self.based_on(e, true) };
             let next_style = e.get("NextStyle").map(|n| self.para_style_ref(n)).filter(|n| *n != name);
             let para = self.para_attrs(e);
-            let mut chars = self.char_attrs(e);
-            // InDesign writes its CJK leading model (Aki Below) on [No paragraph style] of every
-            // document; only the Japanese composers use it, so a document set with the Paragraph or
-            // Single-line Composer spaces its lines baseline to baseline.
-            if name == designcraft_doc::NO_PARA_STYLE && !self.japanese_composer {
-                chars.leading_model = None;
-            }
+            let chars = self.char_attrs(e);
             let s = ParagraphStyle { name: name.clone(), based_on, next_style, para, chars, shortcut: String::new() };
             match self.styles.para_mut(&name) {
                 Some(slot) => *slot = s,
                 None => self.styles.paragraph.push(s),
+            }
+            // Split Document (EPUB only): on the style, and on its EPUB export tag map. Files write
+            // `false` on every style, so either place saying `true` turns it on.
+            let split = e.get("SplitDocument") == Some("true")
+                || e.elements()
+                    .any(|m| m.local() == "StyleExportTagMap" && m.get("ExportType") == Some("EPUB") && m.get("SplitDocument") == Some("true"));
+            if split {
+                self.styles.export_tags.entry(format!("p:{name}")).or_default().split = true;
             }
         }
         for (_, e) in &chars {
@@ -1062,6 +1254,8 @@ impl<'r> Importer<'r> {
                 cs.inset_overrides = [None; 4];
             }
             cs.vj = e.get("VerticalJustification").map(names::vj_in);
+            cs.first_baseline = e.get("FirstBaselineOffset").map(names::first_baseline_in);
+            cs.first_baseline_min = e.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 8640.0));
             cs.strokes = ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].map(|side| self.cell_stroke_attrs(e, side));
             if let Some(stroke) = uniform_cell_stroke(&cs.strokes) {
                 cs.stroke = Some(stroke);
@@ -1131,7 +1325,8 @@ impl<'r> Importer<'r> {
             } else {
                 None
             };
-            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, text_frame };
+            let effects = self.style_effects(e);
+            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, text_frame, effects };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
                 None => self.styles.object.push(s),
@@ -1188,6 +1383,88 @@ impl<'r> Importer<'r> {
     }
 
     /// `CrossReferenceFormat`: building blocks back to a format definition.
+    /// A `TextVariable` definition. Types that aren't computed here keep their settings and show
+    /// the result of their first instance.
+    fn text_variable(&mut self, e: &El) {
+        use designcraft_doc::vars::{TextVariable, Use, VAR_MAX, VarKind};
+        let ty = e.get("VariableType").unwrap_or("");
+        // Cross-reference internals; export writes its own.
+        if ty.is_empty() || ty.starts_with("Xref") {
+            return;
+        }
+        let vars = self.text_vars.get_or_insert_with(Vec::new);
+        if vars.len() >= VAR_MAX {
+            return;
+        }
+        let pref = e.elements().find(|c| c.local().ends_with("Preference"));
+        let attr = |k: &str| pref.and_then(|p| p.get(k)).unwrap_or("");
+        let date = || Some(attr("Format")).filter(|f| !f.is_empty()).unwrap_or("MM/dd/yy").to_string();
+        let kind = match ty {
+            "CustomTextType" => Some(VarKind::Custom { text: attr("Contents").into() }),
+            "LastPageNumberType" => Some(VarKind::LastPageNumber { section: attr("Scope") == "SectionScope" }),
+            "ChapterNumberType" => Some(VarKind::ChapterNumber),
+            "FileNameType" if attr("IncludePath") != "true" => Some(VarKind::FileName { extension: attr("IncludeExtension") == "true" }),
+            "CreationDateType" => Some(VarKind::CreationDate { format: date() }),
+            "ModificationDateType" => Some(VarKind::ModificationDate { format: date() }),
+            "OutputDateType" => Some(VarKind::OutputDate { format: date() }),
+            "MatchParagraphStyleType" | "MatchCharacterStyleType" => {
+                let character = ty == "MatchCharacterStyleType";
+                let r = attr(if character { "AppliedCharacterStyle" } else { "AppliedParagraphStyle" });
+                let use_ = if attr("SearchStrategy") == "LastOnPage" { Use::LastOnPage } else { Use::FirstOnPage };
+                // Change Case and Delete End Punctuation aren't modelled: the header shows the text as set.
+                (!r.is_empty()).then(|| VarKind::RunningHeader {
+                    style: if character { self.char_style_ref(r) } else { self.para_style_ref(r) },
+                    use_,
+                    character,
+                })
+            }
+            _ => None,
+        };
+        let name = e.get("Name").unwrap_or("").to_string();
+        let v = match kind {
+            Some(kind) => {
+                let mut v = TextVariable::new(&name, kind);
+                v.before = attr("TextBefore").into();
+                v.after = attr("TextAfter").into();
+                v
+            }
+            None => TextVariable::new(
+                &name,
+                VarKind::Imported {
+                    variable_type: ty.into(),
+                    result: String::new(),
+                    settings_element: pref.map(|p| p.name.clone()).unwrap_or_default(),
+                    settings: pref.map(|p| p.attrs.clone()).unwrap_or_default(),
+                },
+            ),
+        };
+        let vars = self.text_vars.get_or_insert_with(Vec::new);
+        if let Some(s) = e.get("Self") {
+            self.text_var_ids.insert(s.to_string(), vars.len());
+        }
+        vars.push(v);
+    }
+
+    /// A `TextVariableInstance`: the variable's character, or its recorded text when the file
+    /// doesn't define the variable.
+    fn text_variable_instance(&mut self, e: &El) -> String {
+        use designcraft_doc::vars::{VarKind, var_char};
+        let result = e.get("ResultText").unwrap_or("");
+        let found = e.get("AssociatedTextVariable").and_then(|r| self.text_var_ids.get(r)).copied();
+        let var = found.and_then(|i| Some((i, self.text_vars.as_mut()?.get_mut(i)?)));
+        match var.and_then(|(i, v)| Some((var_char(i)?, v))) {
+            Some((c, v)) => {
+                if let VarKind::Imported { result: r, .. } = &mut v.kind
+                    && r.is_empty()
+                {
+                    *r = result.to_string();
+                }
+                c.to_string()
+            }
+            None => result.to_string(),
+        }
+    }
+
     fn xref_format(&mut self, e: &El) {
         let name = e.get("Name").unwrap_or("Format").to_string();
         let mut def = String::new();
@@ -1217,6 +1494,21 @@ impl<'r> Importer<'r> {
             Some(f) => f.definition = def,
             None => self.xref_formats.push(designcraft_doc::XrefFormat { name, definition: def }),
         }
+    }
+
+    /// Preferences › `EPubExportPreference`: Split Document (after styles: it can name one). An
+    /// empty style name splits on the styles' export tags; a style the file lacks splits nothing.
+    fn epub_split(&mut self, e: &El) {
+        if e.boolean("BreakDocument") != Some(true) {
+            return;
+        }
+        let name = e.get("ParagraphStyleName").unwrap_or("$ID/NormalParagraphStyle");
+        self.settings.epub_split = if name.trim().is_empty() {
+            designcraft_doc::EpubSplit::ExportTags
+        } else {
+            let style = self.para_style_ref(name);
+            if self.styles.para(&style).is_some() { designcraft_doc::EpubSplit::Style(style) } else { designcraft_doc::EpubSplit::Off }
+        };
     }
 
     /// Preferences › `FootnoteOption` (after styles: it names the footnote text and marker styles).
@@ -1277,6 +1569,10 @@ impl<'r> Importer<'r> {
             Some((ts, *self.story_ids.get(story.get("Self")?)?))
         })?;
         let known = |r: Option<&str>| r.map(|r| self.para_style_ref(r)).filter(|n| self.styles.para(n).is_some());
+        // Character styles the document has; [None] is stored as no style.
+        let known_chars = |r: Option<&str>| {
+            r.map(|r| self.char_style_ref(r)).filter(|n| n != designcraft_doc::NO_CHAR_STYLE && self.styles.char_style(n).is_some())
+        };
         let entries: Vec<TocEntry> = ts
             .elements()
             .filter(|e| e.local() == "TOCStyleEntry")
@@ -1293,7 +1589,10 @@ impl<'r> Importer<'r> {
                 };
                 let separator = e.get("Separator").map(crate::names::toc_separator_in).filter(|s| s != "\t" && s.chars().count() <= 64);
                 let entry_style = known(e.get("FormatStyle")).filter(|n| *n != format!("TOC Level {level}"));
-                Some(TocEntry { style, level, entry_style, page_number, separator })
+                let page_number_style = known_chars(e.get("PageNumberStyle"));
+                let separator_style = known_chars(e.get("SeparatorStyle"));
+                let sort = e.get("Sort").is_some_and(|v| v.trim() == "true");
+                Some(TocEntry { style, level, entry_style, page_number, separator, page_number_style, separator_style, sort })
             })
             .take(64)
             .collect();
@@ -1308,6 +1607,13 @@ impl<'r> Importer<'r> {
     fn para_style_ref(&self, r: &str) -> String {
         self.para_names.get(r).cloned().unwrap_or_else(|| names::style_name_in(PARA_BUILTINS, &unescape_id(r.trim_start_matches("ParagraphStyle/"))))
     }
+    /// A character style reference written as an element's text (nested, line and GREP styles).
+    /// A style name may end in a space, so the reference is used as written when it names a
+    /// style; only otherwise is surrounding whitespace dropped.
+    fn listed_char_style_ref(&self, r: &str) -> String {
+        if self.char_names.contains_key(r) { self.char_style_ref(r) } else { self.char_style_ref(r.trim()) }
+    }
+
     fn char_style_ref(&self, r: &str) -> String {
         self.char_names.get(r).cloned().unwrap_or_else(|| names::style_name_in(CHAR_BUILTINS, &unescape_id(r.trim_start_matches("CharacterStyle/"))))
     }
@@ -1315,14 +1621,13 @@ impl<'r> Importer<'r> {
     fn char_attrs(&mut self, e: &El) -> CharAttrs {
         let mut a = CharAttrs::default();
         if let Some(f) = e.prop("AppliedFont") {
-            let f = f.trim();
-            // Some writers append the style after a tab.
-            let fam = f.split('\t').next().unwrap_or(f);
-            if !fam.is_empty() && fam != "$ID/" {
-                a.font_family = Some(fam.to_string());
-            }
+            // Some writers append the style after a tab. Spaces are part of a family's name
+            // ("Minion Pro " is another font than "Minion Pro"); line breaks around it aren't.
+            let fam = f.split('\t').next().unwrap_or(&f).trim_matches(['\n', '\r']);
+            a.font_family = self.composite_names.get(fam.trim()).cloned().or_else(|| names::font_family_in(fam));
         }
-        a.font_style = e.prop("FontStyle");
+        // "Nothing" leaves the style unset: it comes from the paragraph style.
+        a.font_style = e.prop("FontStyle").filter(|s| !matches!(s.trim(), "Nothing" | "$ID/Nothing"));
         a.size = e.num("PointSize");
         a.leading = e.prop("Leading").and_then(|l| names::leading_in(l.trim()));
         // Automatic kerning may carry an inactive numeric value (including the
@@ -1386,28 +1691,7 @@ impl<'r> Importer<'r> {
                 a.strikethrough_tint = tint;
             }
         }
-        // OpenType features (only when the element sets any).
-        let mut otf_list: Vec<String> = Vec::new();
-        let mut any = false;
-        for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
-            if let Some(on) = e.boolean(attr) {
-                designcraft_doc::otf::set(&mut otf_list, tag, on);
-                any = true;
-            }
-        }
-        if let Some(fig) = e.prop("OTFFigureStyle")
-            && let Some((id, ..)) = designcraft_doc::otf::FIGURES.iter().find(|f| f.3 == fig.trim())
-        {
-            designcraft_doc::otf::set_figures(&mut otf_list, id);
-            any = true;
-        }
-        if let Some(m) = e.num("OTFStylisticSets") {
-            designcraft_doc::otf::set_stylistic_sets(&mut otf_list, m.max(0.0) as u32);
-            any = true;
-        }
-        if any {
-            a.otf_features = Some(otf_list);
-        }
+        read_otf_features(e, &mut a);
         a.glyph_form = e.prop("GlyphForm");
         a.no_break = e.boolean("NoBreak");
         a.tate_chu_yoko = e.boolean("Tatechuyoko");
@@ -1420,9 +1704,11 @@ impl<'r> Importer<'r> {
         a.warichu_alignment = e.prop("WarichuAlignment").as_deref().and_then(crate::cjk::warichu_align_in);
         a.warichu_chars_before_break = e.num("WarichuCharsBeforeBreak").map(|v| v.max(0.0) as u32);
         a.warichu_chars_after_break = e.num("WarichuCharsAfterBreak").map(|v| v.max(0.0) as u32);
-        if let Some(on) = e.boolean("RubyFlag") {
+        // InDesign writes the flag as a number (1); older writers wrote a boolean.
+        if let Some(on) = e.boolean("RubyFlag").or_else(|| e.num("RubyFlag").map(|v| v != 0.0)) {
             a.ruby = Some(if on { e.prop("RubyString").unwrap_or_default() } else { String::new() });
         }
+        crate::ruby::read(e, &mut a, |r| self.swatch_ref(r));
         if let Some(k) = e.get("KentenKind") {
             a.kenten = Some(k != "None");
             a.kenten_character = crate::cjk::kenten_character(k).map(str::to_string);
@@ -1437,6 +1723,7 @@ impl<'r> Importer<'r> {
         a.diacritic_x_offset = e.num("XOffsetDiacritic").filter(|v| v.is_finite());
         a.diacritic_y_offset = e.num("YOffsetDiacritic").filter(|v| v.is_finite());
         a.positional_form = e.prop("PositionalForm");
+        self.cjk_settings_chars(e, &mut a);
         if let Some(v) = e.get("AppliedConditions").filter(|v| !v.trim().is_empty()) {
             let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();
             if !names.is_empty() {
@@ -1458,11 +1745,12 @@ impl<'r> Importer<'r> {
             "KinsokuHangForce" => Some(designcraft_doc::cjk::KinsokuHang::Force),
             _ => None,
         });
-        a.mojikumi = e.prop("Mojikumi");
+        a.mojikumi = e.prop("Mojikumi").map(|name| self.mojikumi_names.get(&name).cloned().unwrap_or_else(|| unescape_id(&name)));
         a.kinsoku_type = e.prop("KinsokuType");
         a.bunri_kinshi = e.boolean("BunriKinshi");
         a.rensuuji = e.boolean("Rensuuji");
         a.treat_ideographic_space_as_space = e.boolean("TreatIdeographicSpaceAsSpace");
+        cjk_settings_para(e, &mut a);
         if let Some(k) = e.prop("KinsokuSet") {
             if k == "Nothing" || k == "None" {
                 a.kinsoku = Some(Some(Default::default()));
@@ -1500,7 +1788,7 @@ impl<'r> Importer<'r> {
                     let t = |k: &str| it.find(k).map(|x| x.text_content()).unwrap_or_default();
                     let d = it.find("Delimiter");
                     designcraft_doc::NestedStyle {
-                        style: self.char_style_ref(t("AppliedCharacterStyle").trim()),
+                        style: self.listed_char_style_ref(&t("AppliedCharacterStyle")),
                         through: t("Inclusive").trim() != "false",
                         count: t("Repetition").trim().parse().unwrap_or(1),
                         until: names::nested_until_in(d.and_then(|d| d.get("type")).unwrap_or("enumeration"), &t("Delimiter")),
@@ -1518,7 +1806,7 @@ impl<'r> Importer<'r> {
                 .map(|it| {
                     let t = |k: &str| it.find(k).map(|x| x.text_content()).unwrap_or_default();
                     designcraft_doc::NestedLineStyle {
-                        style: self.char_style_ref(t("AppliedCharacterStyle").trim()),
+                        style: self.listed_char_style_ref(&t("AppliedCharacterStyle")),
                         lines: t("LineCount").trim().parse().unwrap_or(1),
                     }
                 })
@@ -1530,12 +1818,14 @@ impl<'r> Importer<'r> {
                 .find_all("ListItem")
                 .map(|it| {
                     let t = |k: &str| it.find(k).map(|x| x.text_content()).unwrap_or_default();
-                    designcraft_doc::GrepStyle { style: self.char_style_ref(t("AppliedCharacterStyle").trim()), pattern: t("GrepExpression") }
+                    designcraft_doc::GrepStyle { style: self.listed_char_style_ref(&t("AppliedCharacterStyle")), pattern: t("GrepExpression") }
                 })
                 .collect();
             a.grep_styles = Some(v);
         }
         a.space_after = e.num("SpaceAfter");
+        // A number, or an enumeration (Ignore) that turns it off even over a based-on style's value.
+        a.same_para_style_spacing = e.prop("SameParaStyleSpacing").map(|v| v.trim().parse::<f64>().ok().filter(|v| v.is_finite()));
         a.drop_cap_lines = u("DropCapLines");
         a.drop_cap_chars = u("DropCapCharacters");
         // DropcapDetail bits: 1 = Align Left Edge, 2 = Scale for Descenders.
@@ -1545,17 +1835,18 @@ impl<'r> Importer<'r> {
             a.drop_cap_scale_descenders = Some(bits & 2 != 0);
         }
         if let Some(g) = e.prop("GridAlignment") {
-            a.grid_align = Some(if g == "None" {
+            a.grid_align = Some(if g.trim() == "None" {
                 GridAlign::None
             } else if e.boolean("GridAlignFirstLineOnly") == Some(true) {
                 GridAlign::FirstLineOnly
             } else {
                 GridAlign::AllLines
             });
+            if g.trim() != "None" {
+                a.grid_reference = Some(crate::cjk::grid_reference_in(&g));
+            }
         }
-        a.composer = e
-            .prop("Composer")
-            .map(|c| if c.contains("Single") { designcraft_doc::Composer::SingleLine } else { designcraft_doc::Composer::Paragraph });
+        a.composer = e.prop("Composer").map(|c| composer_in(&c));
         a.hyphenate = e.boolean("Hyphenation");
         a.hyph_min_word = u("HyphenateWordsLongerThan");
         a.hyph_after_first = u("HyphenateAfterFirst");
@@ -1579,6 +1870,7 @@ impl<'r> Importer<'r> {
         a.single_word_justify = e.prop("SingleWordJustification").and_then(|v| names::align_in(v.trim()));
         a.keep_with_next = u("KeepWithNext");
         a.keep_lines_together = e.boolean("KeepLinesTogether");
+        a.ignore_optical_margin = e.boolean("IgnoreEdgeAlignment");
         a.keep_all_lines = e.boolean("KeepAllLinesTogether");
         a.keep_first = u("KeepFirstLines");
         a.keep_last = u("KeepLastLines");
@@ -1600,13 +1892,17 @@ impl<'r> Importer<'r> {
             for li in tl.find_all("ListItem") {
                 let get = |k: &str| li.find(k).map(|x| x.text_content());
                 tabs.push(TabStop {
-                    position: get("Position").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
+                    position: get("Position").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0),
                     align: names::tab_align_in(get("Alignment").unwrap_or_default().trim()),
                     leader: get("Leader").unwrap_or_default(),
                     align_on: get("AlignmentCharacter").filter(|c| c != ".").unwrap_or_default(),
                 });
             }
-            a.tabs = Some(tabs);
+            let sanitized = TabStop::sanitized_list(tabs.clone());
+            if tab_list_repaired(&tabs, &sanitized) {
+                self.repaired_tab_lists = self.repaired_tab_lists.saturating_add(1);
+            }
+            a.tabs = Some(sanitized);
         }
         a.list_type = e.prop("BulletsAndNumberingListType").map(|v| match v.trim() {
             "BulletList" => ListType::Bullets,
@@ -1642,18 +1938,78 @@ impl<'r> Importer<'r> {
         a.border_tint = tint(e.num("ParagraphBorderTint"));
         a.border_weights = sides(&|s| format!("ParagraphBorder{s}LineWeight"));
         a.border_offsets = sides(&|s| format!("ParagraphBorder{s}Offset"));
+        a.border_type = e.prop("ParagraphBorderType").map(|v| names::stroke_type_in(v.trim()));
+        a.border_cap = e.prop("ParagraphBorderStrokeEndCap").map(|v| names::cap_in(v.trim()));
+        a.border_join = e.prop("ParagraphBorderStrokeEndJoin").map(|v| names::join_in(v.trim()));
+        a.border_corners = corners(e, "ParagraphBorder");
+        a.border_width = e.prop("ParagraphBorderWidth").map(|v| names::box_width_in(v.trim()));
+        a.border_top = e.prop("ParagraphBorderTopOrigin").map(|v| names::box_top_in(v.trim()));
+        a.border_bottom = e.prop("ParagraphBorderBottomOrigin").map(|v| names::box_bottom_in(v.trim()));
+        a.border_display_if_splits = e.boolean("ParagraphBorderDisplayIfSplits");
+        a.border_merge = e.boolean("MergeConsecutiveParaBorders");
+        if let Some(c) = e.prop("ParagraphBorderGapColor") {
+            a.border_gap_color = Some(self.swatch_ref(c.trim()));
+        }
+        a.border_gap_tint = tint(e.num("ParagraphBorderGapTint"));
+        a.shading_corners = corners(e, "ParagraphShading");
+        a.shading_width = e.prop("ParagraphShadingWidth").map(|v| names::box_width_in(v.trim()));
+        a.shading_top = e.prop("ParagraphShadingTopOrigin").map(|v| names::box_top_in(v.trim()));
+        a.shading_bottom = e.prop("ParagraphShadingBottomOrigin").map(|v| names::box_bottom_in(v.trim()));
+        a.shading_clip = e.boolean("ParagraphShadingClipToFrame");
+        a.shading_nonprinting = e.boolean("ParagraphShadingSuppressPrinting");
+        a.span_space_before = e.num("SpanColumnMinSpaceBefore").filter(|v| v.is_finite());
+        a.span_space_after = e.num("SpanColumnMinSpaceAfter").filter(|v| v.is_finite());
+        a.list_level = e.num("NumberingLevel").filter(|v| v.is_finite()).map(|v| v.round().clamp(1.0, designcraft_doc::LIST_LEVELS as f64) as u32);
+        if let Some(c) = e.prop("BulletsCharacterStyle") {
+            a.bullet_char_style = Some(self.char_style_ref(c.trim()));
+        }
+        if let Some(c) = e.prop("NumberingCharacterStyle") {
+            a.number_char_style = Some(self.char_style_ref(c.trim()));
+        }
+        a.bullet_align = e.prop("BulletsAlignment").map(|v| names::list_align_in(v.trim()));
+        a.number_align = e.prop("NumberingAlignment").map(|v| names::list_align_in(v.trim()));
+        a.restart_numbers = e.boolean("NumberingApplyRestartPolicy");
+        if let Some(r) = e.prop_el("NumberingRestartPolicies") {
+            // A specific level restarts after that level; any other policy after any higher one.
+            let level = r.get("LowerLevel").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+            a.restart_after_level = Some(if r.get("RestartPolicy").map(str::trim) == Some("SpecificPreviousLevel") { level } else { 0 });
+        }
+        if let Some(f) = e.prop("BulletsFont") {
+            let f = f.trim();
+            a.bullet_font = Some(if f == "$ID/" { String::new() } else { f.split('\t').next().unwrap_or(f).to_string() });
+        }
+        if let Some(f) = e.prop("BulletsFontStyle") {
+            let f = f.trim();
+            a.bullet_font_style = Some(if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() });
+        }
         a
     }
 
     fn rule(&mut self, e: &El, k: &str) -> Option<Rule> {
-        let on = e.boolean(k);
-        let weight = e.num(&format!("{k}LineWeight"));
+        // A style or range can set some of a rule's settings (such as only its colour); the others
+        // come from its paragraph style chain, so the rule is whole.
+        let fields = ["", "LineWeight", "Color", "Tint", "Width", "Offset", "LeftIndent", "RightIndent"];
+        if !fields.iter().any(|f| e.prop(&format!("{k}{f}")).is_some()) {
+            return None;
+        }
+        let v: Vec<Option<String>> = fields.iter().map(|f| self.para_setting(e, &format!("{k}{f}"))).collect();
+        let get = |i: usize| v.get(i).cloned().flatten();
+        let num = |i: usize| get(i).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite());
+        let on = get(0).map(|v| v.trim() == "true");
+        let weight = num(1);
         on.or(weight.map(|_| false))?;
         let mut r = Rule { on: on.unwrap_or(false), ..Rule::default() };
         if let Some(w) = weight {
             r.weight = w;
         }
-        if let Some(c) = e.prop(&format!("{k}Color")) {
+        if let Some(t) = tint(num(3)) {
+            r.tint = t;
+        }
+        r.column_width = get(4).is_none_or(|w| w.trim() != "TextWidth");
+        r.offset = num(5).unwrap_or(0.0);
+        r.left_indent = num(6).unwrap_or(0.0);
+        r.right_indent = num(7).unwrap_or(0.0);
+        if let Some(c) = get(2) {
             let c = c.trim();
             if c == designcraft_doc::TEXT_COLOR {
                 r.color = c.to_string();
@@ -1661,14 +2017,27 @@ impl<'r> Importer<'r> {
                 r.color = self.swatch_ref(c);
             }
         }
-        if let Some(t) = tint(e.num(&format!("{k}Tint"))) {
-            r.tint = t;
-        }
-        r.column_width = e.prop(&format!("{k}Width")).is_none_or(|w| w.trim() != "TextWidth");
-        r.offset = e.num(&format!("{k}Offset")).unwrap_or(0.0);
-        r.left_indent = e.num(&format!("{k}LeftIndent")).unwrap_or(0.0);
-        r.right_indent = e.num(&format!("{k}RightIndent")).unwrap_or(0.0);
         Some(r)
+    }
+
+    /// Paragraph setting `k` of `e` (a paragraph style or a range): its own, else from its
+    /// paragraph style chain (`BasedOn` of a style, the applied style of a range).
+    fn para_setting(&self, e: &El, k: &str) -> Option<String> {
+        if let Some(v) = e.prop(k) {
+            return Some(v);
+        }
+        let style_ref = |r: String| if r.starts_with("ParagraphStyle/") { r } else { format!("ParagraphStyle/{}", names::escape_id(&r)) };
+        let mut next =
+            if e.local() == "ParagraphStyle" { e.prop("BasedOn") } else { e.get("AppliedParagraphStyle").map(str::to_string) }.map(style_ref);
+        for _ in 0..16 {
+            let Some(id) = next else { break };
+            let s = self.para_els.get(&id)?;
+            if let Some(v) = s.prop(k) {
+                return Some(v);
+            }
+            next = s.prop("BasedOn").map(style_ref);
+        }
+        None
     }
 
     fn cell_style_ref(&self, reference: &str) -> String {
@@ -1693,6 +2062,8 @@ impl<'r> Importer<'r> {
             color: el.prop(&format!("{prefix}StrokeColor")).map(|v| self.swatch_ref(&v)),
             tint: tint(el.num(&format!("{prefix}StrokeTint"))),
             kind: el.prop(&format!("{prefix}StrokeType")).map(|v| names::stroke_type_in(&v)),
+            gap_color: el.prop(&format!("{prefix}StrokeGapColor")).map(|v| self.swatch_ref(&v)),
+            gap_tint: tint(el.num(&format!("{prefix}StrokeGapTint"))),
         }
     }
 
@@ -1775,6 +2146,14 @@ impl<'r> Importer<'r> {
             let format = self.xref_format_names.get(&fmt).cloned().unwrap_or_else(|| "Full Paragraph & Page Number".into());
             xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format }));
         }
+        let pref = e.find("StoryPreference");
+        let optical_margin = designcraft_doc::OpticalMargin {
+            on: pref.and_then(|p| p.boolean("OpticalMarginAlignment")).unwrap_or(false),
+            size: pref
+                .and_then(|p| p.num("OpticalMarginSize"))
+                .and_then(designcraft_doc::OpticalMargin::clamp_size)
+                .unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE),
+        };
         let mut st = Story {
             id,
             text,
@@ -1787,6 +2166,7 @@ impl<'r> Importer<'r> {
                 designcraft_doc::TextDirection::LeftToRight
             },
             vertical: e.find("StoryPreference").and_then(|p| p.get("StoryOrientation")) == Some("Vertical"),
+            optical_margin,
             rev: 0,
             tables,
             notes,
@@ -1846,9 +2226,12 @@ impl<'r> Importer<'r> {
         }
         // Table-local options override the named table style. Cell styles are already
         // materialized independently, so their edges retain their higher precedence.
+        let mut border_unset = style.border.is_none() && style.borders.iter().all(|b| b.is_empty());
         let mut borders = std::array::from_fn::<_, 4, _>(|i| t.options.border_for(i).clone());
         for (side, border) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&mut borders) {
-            self.cell_stroke_attrs(e, side).apply_to(border);
+            let attrs = self.cell_stroke_attrs(e, side);
+            border_unset &= attrs.is_empty();
+            attrs.apply_to(border);
         }
         t.options.border = borders[0].clone();
         t.options.borders = borders.map(Some);
@@ -1880,8 +2263,8 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            let rs = (ce.num("RowSpan").unwrap_or(1.0).max(1.0) as usize).min(nr - r);
-            let cs = (ce.num("ColumnSpan").unwrap_or(1.0).max(1.0) as usize).min(nc - c);
+            let rs = (span(ce, "RowSpan").max(1.0) as usize).min(nr - r);
+            let cs = (span(ce, "ColumnSpan").max(1.0) as usize).min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();
             let cell_style = ce.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| designcraft_doc::NO_CELL_STYLE.into());
             if cell_style != designcraft_doc::NO_CELL_STYLE {
@@ -1890,30 +2273,7 @@ impl<'r> Importer<'r> {
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
             cell.text = self.story_with_para(StoryId(0), ce, default_para);
-            if let Some(fc) = ce.get("FillColor") {
-                cell.fill = self.swatch_ref(fc);
-            }
-            if let Some(tint) = tint(ce.num("FillTint")) {
-                cell.fill_tint = tint;
-            }
-            for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
-                if let Some(v) = ce.num(k) {
-                    cell.insets[i] = v.max(0.0);
-                }
-            }
-            if let Some(vj) = ce.get("VerticalJustification") {
-                cell.vj = names::vj_in(vj);
-            }
-            cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
-            for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
-                let attrs = self.cell_stroke_attrs(ce, side);
-                attrs.apply_to(&mut cell.strokes[i]);
-                cell.stroke_defined[i] |= !attrs.is_empty();
-                let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
-                cell.stroke_priorities[i] = priority;
-                // Preserve style-defined edges and #102's positive-priority local overrides.
-                cell.border_overrides[i] |= priority > 0;
-            }
+            self.read_cell_attrs(&mut cell, ce, border_unset);
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
             }
@@ -1927,12 +2287,54 @@ impl<'r> Importer<'r> {
         t
     }
 
+    /// A cell's local fill, insets, alignment, rotation and edge strokes.
+    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, ce: &El, border_unset: bool) {
+        if let Some(fc) = ce.get("FillColor") {
+            cell.fill = self.swatch_ref(fc);
+        }
+        if let Some(tint) = tint(ce.num("FillTint")) {
+            cell.fill_tint = tint;
+        }
+        for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
+            if let Some(v) = ce.num(k) {
+                cell.insets[i] = v.max(0.0);
+            }
+        }
+        if let Some(vj) = ce.get("VerticalJustification") {
+            cell.vj = names::vj_in(vj);
+        }
+        if let Some(fb) = ce.get("FirstBaselineOffset") {
+            cell.first_baseline = names::first_baseline_in(fb);
+        }
+        if let Some(min) = ce.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()) {
+            cell.first_baseline_min = min.clamp(0.0, 8640.0);
+        }
+        cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
+        if cell.rotation != 0.0 {
+            self.rotated_cells += 1;
+        }
+        for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
+            let attrs = self.cell_stroke_attrs(ce, side);
+            attrs.apply_to(&mut cell.strokes[i]);
+            cell.stroke_defined[i] |= !attrs.is_empty();
+            let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+            cell.stroke_priorities[i] = priority;
+            // Preserve style-defined edges and #102's positive-priority local overrides.
+            cell.border_overrides[i] |= priority > 0;
+            // No table or table style border is given anywhere, so the built-in 1 pt default must not
+            // draw over an outer edge the cell explicitly hides (weight 0 or the None swatch), as InDesign draws nothing.
+            let hidden = attrs.weight == Some(0.0) || attrs.color.as_deref() == Some(swatch::NONE);
+            cell.border_overrides[i] |= border_unset && hidden;
+        }
+    }
+
     /// The format of the text in a `CharacterStyleRange`: its style, and its local attributes over
-    /// the enclosing paragraph range's.
-    fn range_format(&mut self, c: &El, pchars: &CharAttrs) -> CharFormat {
+    /// the enclosing paragraph range's, inside a tracked change if `outer` (the enclosing format) is.
+    fn range_format(&mut self, c: &El, pchars: &CharAttrs, outer: &CharFormat) -> CharFormat {
         let style = c.get("AppliedCharacterStyle").map(|r| self.char_style_ref(r)).unwrap_or_else(|| st::NO_CHAR_STYLE.into());
         let mut over = pchars.clone();
         over.merge(&self.char_attrs(c));
+        over.change = over.change.or(outer.over.change);
         CharFormat { style, over }
     }
 
@@ -1943,7 +2345,9 @@ impl<'r> Importer<'r> {
                     "ParagraphStyleRange" => {
                         let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
                         let para = self.para_attrs(c);
-                        let chars = self.char_attrs(c);
+                        let mut chars = self.char_attrs(c);
+                        // A paragraph range inside a tracked change is part of that change.
+                        chars.change = chars.change.or(cf.over.change);
                         let npf = ParaFormat { style, para, chars: CharAttrs::default(), table: None };
                         if b.fresh
                             && let Some(last) = b.paras.last_mut()
@@ -1956,7 +2360,7 @@ impl<'r> Importer<'r> {
                         self.walk_story(c, b, &npf, &chars, &pcf, None);
                     }
                     "CharacterStyleRange" => {
-                        let ncf = self.range_format(c, pchars);
+                        let ncf = self.range_format(c, pchars, cf);
                         let bt = c.get("ParagraphBreakType").filter(|t| *t != "Anywhere");
                         b.last = ncf.clone();
                         self.walk_story(c, b, pf, pchars, &ncf, bt);
@@ -2022,7 +2426,7 @@ impl<'r> Importer<'r> {
                         b.xrefs.push((c.get("Self").unwrap_or("").to_string(), c.get("AppliedFormat").unwrap_or("").to_string()));
                         // A source at paragraph level wraps a range; inside a range it holds the
                         // text directly and takes that range's format.
-                        let f = c.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars));
+                        let f = c.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars, cf));
                         b.push(&designcraft_doc::XREF_MARK.to_string(), &f);
                     }
                     "Footnote" => {
@@ -2038,26 +2442,38 @@ impl<'r> Importer<'r> {
                         rcf.over.position = None;
                         b.push(&designcraft_doc::FOOTNOTE_REF.to_string(), &rcf);
                     }
-                    // Not supported yet: skip their content entirely.
-                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" => {
-                        // An anchored object (text frames inside stories aren't supported yet).
-                        let has_text = c.find_all("TextFrame").next().is_some();
-                        if !has_text && let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY) {
+                    // Anchored page items, including groups containing text frames.
+                    "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
+                        if let Some(item) = self.item(c, designcraft_geom::Affine::IDENTITY) {
                             use designcraft_doc::anchored::AnchorAlign as A;
-                            let set = c.find("AnchoredObjectSetting");
-                            let get = |k: &str| set.and_then(|s| s.num(k)).unwrap_or(0.0);
-                            let position = match set.and_then(|s| s.get("AnchoredPosition")) {
-                                Some("AboveLine") => designcraft_doc::AnchorPosition::AboveLine {
-                                    align: match set.and_then(|s| s.get("HorizontalAlignment")) {
-                                        Some("CenterAlign") => A::Center,
-                                        Some("RightAlign") => A::Right,
+                            // Each setting the item leaves unset comes from its object style chain,
+                            // then from the IDML defaults.
+                            let levels: Vec<&El> = std::iter::once(c).chain(self.object_style_chain(c)).collect();
+                            let s = |k: &str| {
+                                let set = levels.iter().filter_map(|l| l.find("AnchoredObjectSetting")).find_map(|x| x.get(k));
+                                set.unwrap_or(match k {
+                                    "AnchoredPosition" => "InlinePosition",
+                                    "AnchorPoint" => "BottomRightAnchor",
+                                    "HorizontalAlignment" => "LeftAlign",
+                                    "HorizontalReferencePoint" => "TextFrame",
+                                    "VerticalAlignment" => "BottomAlign",
+                                    "VerticalReferencePoint" => "LineBaseline",
+                                    "PinPosition" => "true",
+                                    _ => "",
+                                })
+                            };
+                            let get = |k: &str| s(k).trim().parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(0.0);
+                            let position = match s("AnchoredPosition") {
+                                "AboveLine" => designcraft_doc::AnchorPosition::AboveLine {
+                                    align: match s("HorizontalAlignment") {
+                                        "CenterAlign" => A::Center,
+                                        "RightAlign" => A::Right,
                                         _ => A::Left,
                                     },
                                     space_before: get("AnchorSpaceAbove"),
                                     space_after: get("AnchorYoffset"),
                                 },
-                                Some("Anchored") => {
-                                    let s = |k: &str| set.and_then(|x| x.get(k)).unwrap_or("");
+                                "Anchored" => {
                                     let col = match s("HorizontalAlignment") {
                                         "CenterAlign" => 1,
                                         "RightAlign" => 2,
@@ -2071,11 +2487,13 @@ impl<'r> Importer<'r> {
                                     designcraft_doc::AnchorPosition::Custom {
                                         x_relative: names::anchor_rel_in(s("HorizontalReferencePoint")),
                                         y_relative: names::anchor_rel_in(s("VerticalReferencePoint")),
-                                        x_offset: get("AnchorXoffset"),
+                                        // IDML measures a left-aligned object's X offset leftwards.
+                                        x_offset: if col == 0 { 0.0 - get("AnchorXoffset") } else { get("AnchorXoffset") },
                                         y_offset: get("AnchorYoffset"),
                                         object_point: names::anchor_in(s("AnchorPoint")),
                                         ref_point: row * 3 + col,
                                         keep_within_column: s("PinPosition") == "true",
+                                        spine_relative: s("SpineRelative") == "true",
                                     }
                                 }
                                 _ => designcraft_doc::AnchorPosition::Inline { y_offset: get("AnchorYoffset") },
@@ -2084,7 +2502,22 @@ impl<'r> Importer<'r> {
                             b.push(&designcraft_doc::OBJECT_MARK.to_string(), cf);
                         }
                     }
-                    "Properties" | "Note" | "TextFrame" | "StoryPreference" | "InCopyExportOption" | "TextVariableInstance" => {}
+                    "TextVariableInstance" => {
+                        let t = self.text_variable_instance(c);
+                        b.push(&t, cf);
+                    }
+                    "Change" => {
+                        // Tracked changes: deleted text stays in the story, marked, and takes no
+                        // room in the layout.
+                        let mut ncf = cf.clone();
+                        match c.get("ChangeType") {
+                            Some("DeletedText") => ncf.over.change = Some(designcraft_doc::ChangeMark::Deleted),
+                            Some("InsertedText" | "MovedText") => ncf.over.change = Some(designcraft_doc::ChangeMark::Inserted),
+                            _ => {}
+                        }
+                        self.walk_story(c, b, pf, pchars, &ncf, brk);
+                    }
+                    "Properties" | "Note" | "StoryPreference" | "InCopyExportOption" => {}
                     _ => self.walk_story(c, b, pf, pchars, cf, brk),
                 },
                 Node::Pi(t, v) if t == "ACE" => {
@@ -2107,12 +2540,12 @@ impl<'r> Importer<'r> {
             .filter_map(|g| {
                 let at = g.num("Location").filter(|v| v.is_finite() && v.abs() < 1e7)?;
                 let orientation = if g.get("Orientation") == Some("Horizontal") { Orientation::Horizontal } else { Orientation::Vertical };
-                let position = match (orientation, self.ruler_origin) {
-                    (Orientation::Horizontal, RulerOrigin::Page) => page.y0 + at,
+                let position = match (orientation, self.settings.ruler_origin) {
+                    (Orientation::Horizontal, designcraft_doc::RulerOrigin::Page) => page.y0 + at,
                     (Orientation::Horizontal, _) => at,
-                    (Orientation::Vertical, RulerOrigin::Page) => page.x0 + at,
-                    (Orientation::Vertical, RulerOrigin::Spine) => spine + at,
-                    (Orientation::Vertical, RulerOrigin::Spread) => at,
+                    (Orientation::Vertical, designcraft_doc::RulerOrigin::Page) => page.x0 + at,
+                    (Orientation::Vertical, designcraft_doc::RulerOrigin::Spine) => spine + at,
+                    (Orientation::Vertical, designcraft_doc::RulerOrigin::Spread) => at,
                 };
                 Some(Guide {
                     orientation,
@@ -2120,16 +2553,15 @@ impl<'r> Importer<'r> {
                     spread: g.get("FitToPage") == Some("false"),
                     locked: g.get("Locked") == Some("true"),
                     layer: g.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied(),
-                    liquid: false,
+                    liquid: g.get("GuideType") == Some("Liquid"),
                 })
             })
             .collect()
     }
 
-    fn spread(&mut self, e: &El, id: SpreadId, master: bool) -> Spread {
-        let facing = self.settings.facing_pages;
-        // Page rectangles in IDML spread coordinates.
-        let mut pages: Vec<(Rect, &El)> = Vec::new();
+    /// The page rectangles of a spread element, in IDML spread coordinates.
+    fn page_rects<'a>(&self, e: &'a El) -> Vec<(Rect, &'a El)> {
+        let mut pages: Vec<(Rect, &'a El)> = Vec::new();
         for p in e.find_all("Page") {
             let gb = nums(p.get("GeometricBounds").unwrap_or(""));
             let (t, l, bt, r) =
@@ -2139,6 +2571,40 @@ impl<'r> Importer<'r> {
             let c = xf * Point::new(r, bt);
             pages.push((Rect::from_points(a, c), p));
         }
+        pages
+    }
+
+    /// A page's margins and columns, and whether they are local (differ from its parent page's).
+    fn page_margins(&self, p: &El, r: &Rect, master: bool, parent: Option<SpreadId>, side: PageSide) -> (Margins, Columns, bool) {
+        // A document page's margins are local when they differ from its parent page's; a
+        // page without its own takes the parent page's.
+        let from_parent = if master {
+            None
+        } else {
+            parent
+                .and_then(|id| self.parents.iter().find(|sp| sp.id == id))
+                .and_then(|sp| sp.pages.get(sp.parent_page_for_side(side)?))
+                .map(|q| (q.margins, q.columns.clone()))
+        };
+        let (margins, columns) = match (p.find("MarginPreference"), &from_parent) {
+            (Some(m), _) => {
+                let (margins, columns) = margins_of(m);
+                (margins, fit_columns(columns, &margins, r.width()))
+            }
+            (None, Some(own)) => own.clone(),
+            (None, None) => {
+                let (margins, columns) = self.default_margins.clone().unwrap_or((Margins::uniform(36.0), Columns::default()));
+                (margins, fit_columns(columns, &margins, r.width()))
+            }
+        };
+        let local_margins = from_parent.is_some_and(|(m, c)| m != margins || c != columns);
+        (margins, columns, local_margins)
+    }
+
+    fn spread(&mut self, e: &El, id: SpreadId, master: bool) -> Spread {
+        let facing = self.settings.facing_pages;
+        // Page rectangles in IDML spread coordinates.
+        let pages = self.page_rects(e);
         let min_x = pages.iter().map(|(r, _)| r.x0).fold(f64::INFINITY, f64::min);
         let min_y = pages.iter().map(|(r, _)| r.y0).fold(f64::INFINITY, f64::min);
         let (min_x, min_y) = if min_x.is_finite() { (min_x, min_y) } else { (0.0, 0.0) };
@@ -2148,6 +2614,7 @@ impl<'r> Importer<'r> {
         let spine = if spine.is_finite() && facing { spine } else { 0.0 };
         let show = e.get("ShowMasterItems") != Some("false");
         let first_abs: usize = self.spreads.iter().map(|s| s.pages.len()).sum();
+        let view_rotation = if master { 0 } else { spread_view_rotation(e.get("ItemTransform")) };
         let mut out_pages = Vec::new();
         for (i, (r, p)) in pages.iter().enumerate() {
             let pid = PageId(self.alloc());
@@ -2156,10 +2623,6 @@ impl<'r> Importer<'r> {
             {
                 self.page_index.insert(s.to_string(), first_abs + i);
             }
-            let (margins, columns) = match p.find("MarginPreference") {
-                Some(m) => margins_of(m),
-                None => self.default_margins.clone().unwrap_or((Margins::uniform(36.0), Columns::default())),
-            };
             let side = if !facing {
                 PageSide::Single
             } else if r.x1 <= 1e-6 {
@@ -2168,6 +2631,7 @@ impl<'r> Importer<'r> {
                 PageSide::Right
             };
             let parent = p.get("AppliedMaster").and_then(|m| self.parent_ids.get(m)).copied();
+            let (margins, columns, local_margins) = self.page_margins(p, r, master, parent, side);
             out_pages.push(Page {
                 id: pid,
                 width: r.width(),
@@ -2175,6 +2639,7 @@ impl<'r> Importer<'r> {
                 x: r.x0 - min_x,
                 margins,
                 columns,
+                local_margins,
                 parent,
                 side,
                 overridden: vec![],
@@ -2182,7 +2647,7 @@ impl<'r> Importer<'r> {
                 show_parent_items: show,
                 liquid: names::liquid_rule_in(p.get("LayoutRule").unwrap_or("Off")),
                 transition: None,
-                view_rotation: 0,
+                view_rotation: if i == 0 { view_rotation } else { 0 },
                 show_parent_overlay: false,
             });
         }
@@ -2204,7 +2669,18 @@ impl<'r> Importer<'r> {
                 let n = e.get("Name").unwrap_or("Parent");
                 n.split_once('-').map(|(_, b)| b.to_string()).unwrap_or_else(|| n.to_string())
             });
-            let based_on = pages.first().and_then(|(_, p)| p.get("AppliedMaster")).and_then(|m| self.parent_ids.get(m)).copied().filter(|b| *b != id);
+            // A parent spread has one base: its first page's. Pages that disagree lose theirs.
+            let applied: Vec<Option<SpreadId>> =
+                pages.iter().map(|(_, p)| p.get("AppliedMaster").and_then(|m| self.parent_ids.get(m)).copied()).collect();
+            let label = format!("{prefix}-{name}");
+            if applied.windows(2).any(|w| w[0] != w[1]) {
+                self.warnings.push(format!("parent {label}: its pages are based on different parents; only the first page's is kept"));
+            }
+            let based_on = applied.first().copied().flatten();
+            if applied.contains(&Some(id)) {
+                self.warnings.push(format!("parent {label}: a page names its own parent as its base, which is ignored"));
+            }
+            let based_on = based_on.filter(|b| *b != id);
             Some(ParentInfo { prefix, name, based_on })
         } else {
             None
@@ -2230,8 +2706,19 @@ impl<'r> Importer<'r> {
     /// An item's object style chain: its applied style, the styles that one is based on, then
     /// `[None]` (cycle-safe).
     fn object_style_chain(&self, e: &El) -> Vec<&El> {
+        let mut chain = self.object_style_bases(e.get("AppliedObjectStyle").map(str::to_string));
+        if let Some(none) = self.object_els.get("ObjectStyle/$ID/[None]")
+            && !chain.iter().any(|c| std::ptr::eq(*c, none))
+        {
+            chain.push(none);
+        }
+        chain
+    }
+
+    /// Object style `id` and the styles it is based on, nearest first (cycle-safe, at most 16).
+    fn object_style_bases(&self, id: Option<String>) -> Vec<&El> {
         let mut chain: Vec<&El> = Vec::new();
-        let mut os = e.get("AppliedObjectStyle").map(str::to_string);
+        let mut os = id;
         while let Some(id) = os {
             let Some(s) = self.object_els.get(&id) else { break };
             if chain.len() >= 16 || chain.iter().any(|c| std::ptr::eq(*c, s)) {
@@ -2243,17 +2730,123 @@ impl<'r> Importer<'r> {
                 if b.starts_with("ObjectStyle/") { b.to_string() } else { format!("ObjectStyle/{}", names::escape_id(b)) }
             });
         }
-        if let Some(none) = self.object_els.get("ObjectStyle/$ID/[None]")
-            && !chain.iter().any(|c| std::ptr::eq(*c, none))
-        {
-            chain.push(none);
-        }
         chain
     }
 
     /// Resolve an item attribute, falling back to its object style chain.
     fn attr_or_style(&self, e: &El, k: &str) -> Option<String> {
         e.get(k).or_else(|| self.object_style_chain(e).into_iter().find_map(|s| s.get(k))).map(str::to_string)
+    }
+
+    /// The item's child element `name` laid over the same element of each style in its object style
+    /// chain: attributes and nested elements merge one by one, nearer levels winning. IDML writes on an
+    /// item only the values that differ from its style. Effects whose category the applied style turns
+    /// off (`ObjectStyle*EffectsCategorySettings`) come from the item alone.
+    fn with_style(&self, e: &El, name: &str) -> Option<El> {
+        let chain = self.object_style_chain(e);
+        let category = match name {
+            "TransparencySetting" => Some("ObjectStyleObjectEffectsCategorySettings"),
+            "StrokeTransparencySetting" => Some("ObjectStyleStrokeEffectsCategorySettings"),
+            "FillTransparencySetting" => Some("ObjectStyleFillEffectsCategorySettings"),
+            "ContentTransparencySetting" => Some("ObjectStyleContentEffectsCategorySettings"),
+            _ => None,
+        };
+        let enabled = |effect: &str| {
+            let Some(flag) = category.and_then(|_| effect_flag(effect)) else { return true };
+            chain.iter().find_map(|s| category.and_then(|c| s.find(c)).and_then(|c| c.get(flag))) != Some("false")
+        };
+        let mut out: Option<El> = None;
+        for s in chain.iter().rev() {
+            let Some(c) = s.find(name) else { continue };
+            let mut c = c.clone();
+            c.children.retain(|n| !matches!(n, Node::El(x) if !enabled(x.local())));
+            match &mut out {
+                Some(o) => overlay(o, &c, 0),
+                None => out = Some(c),
+            }
+        }
+        if let Some(c) = e.find(name) {
+            match &mut out {
+                Some(o) => overlay(o, c, 0),
+                None => out = Some(c.clone()),
+            }
+        }
+        out
+    }
+
+    /// Reads the drop shadow, feather, gradient feather and directional feather of a
+    /// `TransparencySetting` into `fx`.
+    fn effects_in(&mut self, t: &El, fx: &mut Effects) {
+        if let Some(ds) = t.find("DropShadowSetting")
+            && ds.get("Mode") == Some("Drop")
+        {
+            let x = ds.num("XOffset").unwrap_or(4.95);
+            let y = ds.num("YOffset").unwrap_or(4.95);
+            let def = DropShadow::default();
+            fx.drop_shadow = DropShadow {
+                on: true,
+                color: ds.get("EffectColor").map(|c| self.swatch_ref(c)).unwrap_or(def.color),
+                opacity: ds.num("Opacity").map(|o| (o / 100.0) as f32).unwrap_or(def.opacity),
+                angle: names_angle(x, y),
+                distance: x.hypot(y),
+                size: ds.num("Size").unwrap_or(def.size),
+                spread: ds.num("Spread").unwrap_or(def.spread),
+                global_light: false,
+            };
+        }
+        if let Some(f) = t.find("FeatherSetting")
+            && f.get("Mode").is_some_and(|m| m != "None")
+        {
+            fx.feather = f.num("Width").unwrap_or(9.0);
+            fx.feather_options.choke = finite(f.num("ChokeAmount")).unwrap_or(0.0).clamp(0.0, 100.0);
+            fx.feather_options.corners = match f.get("CornerType") {
+                Some("Sharp") => designcraft_doc::FeatherCorners::Sharp,
+                Some("Rounded") => designcraft_doc::FeatherCorners::Rounded,
+                _ => designcraft_doc::FeatherCorners::Diffused,
+            };
+        }
+        if let Some(g) = t.find("GradientFeatherSetting")
+            && g.boolean("Applied") == Some(true)
+        {
+            fx.gradient_feather = gradient_feather_in(g);
+        }
+        if let Some(df) = t.find("DirectionalFeatherSetting")
+            && df.boolean("Applied") == Some(true)
+        {
+            let w = |k: &str| finite(df.num(k)).unwrap_or(0.0).max(0.0);
+            fx.directional_feather = DirectionalFeather { on: true, widths: [w("TopWidth"), w("LeftWidth"), w("BottomWidth"), w("RightWidth")] };
+        }
+    }
+
+    /// An object style's drop shadow and feather. Each is read when the effects category turns it
+    /// on (without category settings: when its setting is on), from the nearest style in the
+    /// BasedOn chain that has the setting. `None` when the style sets neither.
+    fn style_effects(&mut self, e: &El) -> Option<Effects> {
+        let mut chain = self.object_style_bases(e.get("Self").map(str::to_string));
+        if chain.is_empty() {
+            chain.push(e);
+        }
+        let category = chain.iter().find_map(|s| s.find("ObjectStyleObjectEffectsCategorySettings")).cloned();
+        let setting = |name: &str| chain.iter().find_map(|s| s.find("TransparencySetting")?.find(name)).cloned();
+        let mut t = El::new("TransparencySetting");
+        let mut any = false;
+        for (name, flag) in [("DropShadowSetting", "EnableDropShadow"), ("FeatherSetting", "EnableFeather")] {
+            let el = setting(name);
+            let on = match &category {
+                Some(c) => c.get(flag) == Some("true"),
+                None => el.as_ref().and_then(|x| x.get("Mode")).is_some_and(|m| m != "None"),
+            };
+            any |= on;
+            if let (true, Some(el)) = (on, el) {
+                t.push(el);
+            }
+        }
+        if !any {
+            return None;
+        }
+        let mut fx = Effects::default();
+        self.effects_in(&t, &mut fx);
+        Some(fx)
     }
 
     fn stroke_from(&mut self, e: &El, item: Option<&El>) -> Stroke {
@@ -2263,7 +2856,7 @@ impl<'r> Importer<'r> {
         if let Some(c) = color {
             s.swatch = self.swatch_ref(&c);
         }
-        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse().ok()) {
+        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
             s.weight = w;
         }
         if let Some(t) = g(self, "StrokeTint").and_then(|v| v.parse().ok()) {
@@ -2281,7 +2874,7 @@ impl<'r> Importer<'r> {
         if let Some(v) = g(self, "EndJoin") {
             s.join = names::join_in(&v);
         }
-        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse().ok()) {
+        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
             s.miter_limit = v;
         }
         if let Some(v) = g(self, "LeftLineEnd") {
@@ -2347,7 +2940,7 @@ impl<'r> Importer<'r> {
             {
                 it.fill.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect());
+            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| nums(&s));
             if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientFillLength"))
                 && len > 0.0
             {
@@ -2365,7 +2958,7 @@ impl<'r> Importer<'r> {
             {
                 it.stroke.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientStrokeStart").map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect());
+            let start: Option<Vec<f64>> = e.prop("GradientStrokeStart").map(|s| nums(&s));
             if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientStrokeLength"))
                 && len > 0.0
             {
@@ -2390,7 +2983,7 @@ impl<'r> Importer<'r> {
             }
         }
         // Transparency.
-        if let Some(t) = e.find("TransparencySetting") {
+        if let Some(t) = self.with_style(e, "TransparencySetting") {
             if let Some(bs) = t.find("BlendingSetting") {
                 if let Some(o) = bs.num("Opacity") {
                     it.opacity = (o / 100.0).clamp(0.0, 1.0) as f32;
@@ -2399,40 +2992,16 @@ impl<'r> Importer<'r> {
                     it.blend = names::blend_in(m);
                 }
             }
-            if let Some(ds) = t.find("DropShadowSetting")
-                && ds.get("Mode") == Some("Drop")
-            {
-                let x = ds.num("XOffset").unwrap_or(4.95);
-                let y = ds.num("YOffset").unwrap_or(4.95);
-                let def = DropShadow::default();
-                it.effects.drop_shadow = DropShadow {
-                    on: true,
-                    color: ds.get("EffectColor").map(|c| self.swatch_ref(c)).unwrap_or(def.color),
-                    opacity: ds.num("Opacity").map(|o| (o / 100.0) as f32).unwrap_or(def.opacity),
-                    angle: names_angle(x, y),
-                    distance: x.hypot(y),
-                    size: ds.num("Size").unwrap_or(def.size),
-                    spread: ds.num("Spread").unwrap_or(def.spread),
-                    global_light: false,
-                };
-            }
-            if let Some(f) = t.find("FeatherSetting")
-                && f.get("Mode").is_some_and(|m| m != "None")
-            {
-                it.effects = Effects { feather: f.num("Width").unwrap_or(9.0), ..it.effects.clone() };
-            }
+            self.effects_in(&t, &mut it.effects);
         }
         // Text wrap.
-        if let Some(w) = e.find("TextWrapPreference") {
-            let mut tw = TextWrap {
-                mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
-                invert: w.get("Inverse") == Some("true"),
-                side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
-                ..TextWrap::default()
-            };
-            if let Some(o) = w.prop_el("TextWrapOffset") {
-                tw.offsets =
-                    [o.num("Top").unwrap_or(0.0), o.num("Left").unwrap_or(0.0), o.num("Bottom").unwrap_or(0.0), o.num("Right").unwrap_or(0.0)];
+        if let Some(w) = self.with_style(e, "TextWrapPreference") {
+            let mut tw = text_wrap(&w);
+            if let Some(pg) = w.prop_el("PathGeometry") {
+                match wrap_path_of(pg) {
+                    Ok(p) => tw.path = Some(p),
+                    Err(why) => log::warn!("IDML: custom text wrap boundary of {} dropped: {why}", e.get("Self").unwrap_or("an item")),
+                }
             }
             it.wrap = tw;
         }
@@ -2479,11 +3048,14 @@ impl<'r> Importer<'r> {
                 if let Some(r) = Prefs(&prefs).prop("ColumnRuleStrokeColor") {
                     options.column_rule_color = self.swatch_ref(&r);
                 }
-                if let Some(g) = e.find("BaselineFrameGridOption")
+                if let Some(g) = self.with_style(e, "BaselineFrameGridOption")
                     && g.get("UseCustomBaselineFrameGrid") == Some("true")
                 {
-                    options.baseline_grid =
-                        Some((g.num("StartingOffsetForBaselineFrameGrid").unwrap_or(0.0), g.num("BaselineFrameGridIncrement").unwrap_or(12.0)));
+                    options.baseline_grid = Some(designcraft_doc::FrameBaselineGrid {
+                        start: g.num("StartingOffsetForBaselineFrameGrid").unwrap_or(0.0),
+                        increment: g.num("BaselineFrameGridIncrement").unwrap_or(12.0),
+                        relative_to: g.get("BaselineFrameGridRelativeOption").map(frame_grid_relative).unwrap_or_default(),
+                    });
                 }
                 it.content = Content::Text(TextFrame { story, options });
                 self.ctx.threads.push((
@@ -2507,7 +3079,11 @@ impl<'r> Importer<'r> {
             _ => {
                 if let Some(g) = e.elements().find(|c| matches!(c.local(), "Image" | "PDF" | "EPS" | "ImportedPage" | "WMF" | "PICT" | "SVG")) {
                     it.content = self.graphic(g);
-                    if let (Some(ff), Content::Graphic(gr)) = (e.elements().find(|c| c.local() == "FrameFittingOption"), &mut it.content) {
+                    let fill = self.image_fill(g);
+                    if let Content::Graphic(gr) = &mut it.content {
+                        gr.fill = fill;
+                    }
+                    if let (Some(ff), Content::Graphic(gr)) = (self.with_style(e, "FrameFittingOption"), &mut it.content) {
                         gr.crop = [ff.num("TopCrop"), ff.num("LeftCrop"), ff.num("BottomCrop"), ff.num("RightCrop")].map(|v| v.unwrap_or(0.0));
                         gr.fit_align = ff.get("FittingAlignment").map_or(4, names::anchor_in);
                         if ff.get("AutoFit") == Some("true") {
@@ -2534,7 +3110,39 @@ impl<'r> Importer<'r> {
         Some(it)
     }
 
+    /// The swatch applied to a placed image (`FillColor`, `FillTint`): it colours a greyscale or
+    /// bitmap image. Black at 100% is how InDesign writes an image nobody coloured: no swatch.
+    fn image_fill(&mut self, g: &El) -> Fill {
+        let Some(r) = g.get("FillColor") else { return Fill::none() };
+        let swatch = self.swatch_ref(r);
+        let tint = tint(g.num("FillTint")).unwrap_or(1.0);
+        if swatch == swatch::BLACK && tint >= 1.0 {
+            return Fill::none();
+        }
+        Fill { swatch, tint, ..Fill::none() }
+    }
+
     fn graphic(&mut self, g: &El) -> Content {
+        let layer_options = g.find("GraphicLayerOption").map(|options| {
+            let attrs = |e: &El| e.attrs.iter().filter(|(key, _)| key != "Self").cloned().collect();
+            let mut out = designcraft_doc::GraphicLayerOptions { attributes: attrs(options), ..Default::default() };
+            let mut pending: Vec<_> = options.find_all("GraphicLayer").map(|e| (e, None)).collect();
+            pending.reverse();
+            while let Some((layer, parent)) = pending.pop() {
+                let index = out.layers.len();
+                out.layers.push(attrs(layer));
+                out.parents.push(parent);
+                let children: Vec<_> = layer.find_all("GraphicLayer").collect();
+                pending.extend(children.into_iter().rev().map(|e| (e, Some(index))));
+            }
+            if out.parents.iter().all(Option::is_none) {
+                out.parents.clear();
+            }
+            out
+        });
+        if layer_options.as_ref().is_some_and(designcraft_doc::GraphicLayerOptions::has_visibility_overrides) {
+            self.warnings.push(format!("graphic {}: {}", g.get("Self").unwrap_or("(unnamed)"), designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING));
+        }
         let gxf = parse_affine(g.get("ItemTransform"));
         let (l, t, r, b) = match g.prop_el("GraphicBounds") {
             Some(gb) => {
@@ -2543,35 +3151,39 @@ impl<'r> Importer<'r> {
             None => (0.0, 0.0, 0.0, 0.0),
         };
         let size = ((r - l).abs(), (b - t).abs());
+        let wrap =
+            if g.get("AppliedObjectStyle").is_some() { self.with_style(g, "TextWrapPreference") } else { g.find("TextWrapPreference").cloned() };
+        let wrap = wrap.map(|w| text_wrap(&w)).unwrap_or_default();
+        let clip = clipping_path(g, Affine::translate((-l, -t)));
         let link = g.find("Link");
         let uri = link.and_then(|k| k.get("LinkResourceURI")).map(uri_to_path);
         let graphic = |asset, size| {
             Content::Graphic(designcraft_doc::Graphic {
+                layer_options: layer_options.clone(),
                 asset,
                 size,
                 xf: gxf * Affine::translate((l, t)),
+                clip: clip.clone(),
                 auto_fit: Default::default(),
                 fit_align: 4,
                 crop: [0.0; 4],
+                // A wrap set on the placed graphic (Direct Selection) is stored on the graphic element,
+                // over the graphic's own object style when it names one.
+                wrap,
+                fill: Default::default(),
             })
         };
         let mut data = g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default();
-        // PDF Import Options: `PDFAttribute/@PageNumber` is 1-based; `Asset.page` is 0-based. A
-        // missing or malformed value means page 1, and an out-of-range page later fails to render
-        // rather than panicking.
-        let page = g
-            .find("PDFAttribute")
-            .or_else(|| g.prop_el("PDFAttribute"))
-            .and_then(|a| a.get("PageNumber"))
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .and_then(|n| u32::try_from(n.saturating_sub(1)).ok())
-            .unwrap_or(0);
+        let page = pdf_page_in(g);
+        // Where the box sits on the page needs the PDF parsed: the engine finds it after import.
+        let pdf_crop = pdf_attribute(g).and_then(|a| a.get("PDFCrop")).map_or(designcraft_doc::PdfCrop::Crop, names::pdf_crop_in);
         let mut read_from = None;
         if data.is_empty()
             && let Some(p) = &uri
         {
-            // Every placement of a linked file at one page shares one asset; read the file once.
-            let key = (p.clone(), page);
+            // Every placement of a linked file with one page and crop shares one asset; read the
+            // file once.
+            let key = (p.clone(), page, pdf_crop);
             if let Some(id) = self.linked_assets.get(&key) {
                 let size = self.assets.get(id).and_then(|a| svg_viewbox_size(&a.data)).unwrap_or(size);
                 return graphic(*id, size);
@@ -2581,11 +3193,15 @@ impl<'r> Importer<'r> {
                 read_from = Some(key);
             }
         }
+        // A linked file that can't be read shows the document's preview of it, if it has one. The
+        // preview only stands in for the file: format and pixel size still describe the link.
+        let preview = data.is_empty().then(|| g.get("Self").and_then(|s| self.previews.get(s))).flatten();
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
         let size = svg_viewbox_size(&data).unwrap_or(size);
-        let (mime, px) = sniff_image(&data);
+        let (mime, px) = if preview.is_some() { (None, None) } else { sniff_image(&data) };
         let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {
+            f if f.contains("EPS") || g.local() == "EPS" => "application/postscript".into(),
             f if f.contains("JPEG") => "image/jpeg".into(),
             f if f.contains("TIFF") => "image/tiff".into(),
             f if f.contains("PDF") || g.local() == "PDF" => "application/pdf".into(),
@@ -2600,8 +3216,20 @@ impl<'r> Importer<'r> {
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
         let fresh = AssetId(self.alloc());
         let link_path = uri.filter(|p| p.contains('/') || p.contains('\\'));
-        let id =
-            designcraft_doc::insert_asset(&mut self.assets, Asset { page, id: fresh, name, mime, link: link_path, data: Arc::new(data), pixels });
+        let id = designcraft_doc::insert_asset(
+            &mut self.assets,
+            Asset {
+                page,
+                id: fresh,
+                name,
+                mime,
+                link: link_path,
+                data: preview.cloned().unwrap_or_else(|| Arc::new(data)),
+                pixels,
+                pdf_crop,
+                ..Default::default()
+            },
+        );
         if let Some(key) = read_from {
             self.linked_assets.insert(key, id);
         }
@@ -2612,8 +3240,8 @@ impl<'r> Importer<'r> {
         let threads = std::mem::take(&mut self.ctx.threads);
         let by_self: HashMap<String, ItemId> = self.item_ids.clone();
         let mut per_story: BTreeMap<StoryId, Vec<usize>> = BTreeMap::new();
-        for (i, (id, _, _, _)) in threads.iter().enumerate() {
-            let sid = self.frame_story(*id);
+        for (i, (id, story, _, _)) in threads.iter().enumerate() {
+            let sid = self.story_ids.get(story).copied().or_else(|| self.frame_story(*id));
             if let Some(sid) = sid {
                 per_story.entry(sid).or_default().push(i);
             }
@@ -2699,8 +3327,9 @@ impl<'r> Importer<'r> {
         self.settings.lists = std::mem::take(&mut self.lists);
         self.clear_inherited_drop_cap_styles();
         // Make sure built-in paragraph styles exist and are first.
-        let d = Document {
+        let mut d = Document {
             title,
+            file_info: Default::default(),
             settings: self.settings.clone(),
             spreads: std::mem::take(&mut self.spreads).into_iter().map(Arc::new).collect(),
             parents: std::mem::take(&mut self.parents).into_iter().map(Arc::new).collect(),
@@ -2724,20 +3353,147 @@ impl<'r> Importer<'r> {
             user_words: vec![],
             hyphenation_exceptions: vec![],
             toc: self.toc.take(),
-            text_variables: designcraft_doc::vars::defaults(),
+            text_variables: self.text_vars.take().unwrap_or_else(designcraft_doc::vars::defaults),
             footnote_options: std::mem::take(&mut self.footnote_options),
             xref_formats: std::mem::take(&mut self.xref_formats),
             index: None,
-            created: designcraft_doc::vars::now(),
-            modified: 0,
+            created: self.created.unwrap_or_else(designcraft_doc::vars::now),
+            modified: self.modified.unwrap_or(0),
             next_id: self.next_id,
             font_scope: 0,
         };
+        if let [x, y] = root.get("ZeroPoint").map(nums).unwrap_or_default()[..]
+            && let Some(zp) = d.clamp_zero_point([x, y])
+        {
+            d.settings.zero_point = zp;
+        }
         Ok(d)
     }
 }
 
+/// The object style category flag that turns an effect element on or off.
+fn effect_flag(effect: &str) -> Option<&'static str> {
+    Some(match effect {
+        "BlendingSetting" => "EnableTransparency",
+        "DropShadowSetting" => "EnableDropShadow",
+        "FeatherSetting" => "EnableFeather",
+        "InnerShadowSetting" => "EnableInnerShadow",
+        "OuterGlowSetting" => "EnableOuterGlow",
+        "InnerGlowSetting" => "EnableInnerGlow",
+        "BevelAndEmbossSetting" => "EnableBevelEmboss",
+        "SatinSetting" => "EnableSatin",
+        "DirectionalFeatherSetting" => "EnableDirectionalFeather",
+        "GradientFeatherSetting" => "EnableGradientFeather",
+        _ => return None,
+    })
+}
+
+/// Lays `top` over `base`: attributes one by one, child elements matched by name and merged the same
+/// way, text replaced. A property given in one form (attribute or `Properties` child) replaces the
+/// other form in `base`.
+fn overlay(base: &mut El, top: &El, depth: usize) {
+    if depth > 32 {
+        *base = top.clone();
+        return;
+    }
+    for (k, v) in &top.attrs {
+        base.set(k, v);
+        if let Some(Node::El(p)) = base.children.iter_mut().find(|n| matches!(n, Node::El(p) if p.local() == "Properties")) {
+            p.children.retain(|n| !matches!(n, Node::El(x) if x.local() == k));
+        }
+    }
+    if let Some(p) = top.find("Properties") {
+        let names: Vec<&str> = p.elements().map(El::local).collect();
+        base.attrs.retain(|(k, _)| !names.contains(&k.as_str()));
+    }
+    let has_text = top.children.iter().any(|n| matches!(n, Node::Text(t) | Node::CData(t) if !t.trim().is_empty()));
+    if has_text {
+        base.children.retain(|n| !matches!(n, Node::Text(_) | Node::CData(_)));
+    }
+    // The k-th child of a name merges with the k-th child of that name in `base` (repeated elements
+    // such as gradient stops pair up in order).
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for n in &top.children {
+        match n {
+            Node::El(c) => {
+                let k = seen.entry(c.local()).or_insert(0);
+                let slot = base
+                    .children
+                    .iter_mut()
+                    .filter_map(|b| match b {
+                        Node::El(b) if b.local() == c.local() => Some(b),
+                        _ => None,
+                    })
+                    .nth(*k);
+                *k += 1;
+                match slot {
+                    Some(b) => overlay(b, c, depth + 1),
+                    None => base.children.push(n.clone()),
+                }
+            }
+            Node::Text(_) | Node::CData(_) if has_text => base.children.push(n.clone()),
+            _ => {}
+        }
+    }
+}
+
+/// A cell span count; an infinite span is kept so it clamps to the table edge.
+fn span(e: &El, k: &str) -> f64 {
+    e.prop(k).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0)
+}
+
+fn finite(v: Option<f64>) -> Option<f64> {
+    v.filter(|v| v.is_finite())
+}
+
+/// A `GradientFeatherSetting`. The model holds two opacity stops at the ends of the gradient: the
+/// first and last `OpacityGradientStop` give them; with a linear vector, their `Location`s move its
+/// ends.
+fn gradient_feather_in(g: &El) -> GradientFeather {
+    let def = GradientFeather::default();
+    let angle = finite(g.num("Angle")).unwrap_or(0.0);
+    let mut stops: Vec<(f64, f64)> = g
+        .find_all("OpacityGradientStop")
+        .filter_map(|s| Some((finite(s.num("Location"))?.clamp(0.0, 100.0) / 100.0, finite(s.num("Opacity"))?.clamp(0.0, 100.0) / 100.0)))
+        .collect();
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (first, last) = match (stops.first(), stops.last()) {
+        (Some(&a), Some(&b)) => (a, b),
+        _ => ((0.0, def.start as f64), (1.0, def.end as f64)),
+    };
+    let start: Option<[f64; 2]> = g
+        .prop("GradientStart")
+        .and_then(|s| s.split_whitespace().map(|v| v.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<Vec<f64>>>())
+        .and_then(|v| v.try_into().ok());
+    let radial = g.get("Type") == Some("Radial");
+    let vector = match (start, finite(g.num("Length"))) {
+        (Some([x, y]), Some(len)) if len > 0.0 => {
+            let a = angle.to_radians();
+            let (dx, dy) = (len * a.cos(), -len * a.sin());
+            let (l0, l1) = if !radial && last.0 > first.0 { (first.0, last.0) } else { (0.0, 1.0) };
+            Some([x + dx * l0, y + dy * l0, x + dx * l1, y + dy * l1])
+        }
+        _ => None,
+    };
+    GradientFeather { on: true, radial, angle, start: first.1 as f32, end: last.1 as f32, vector }
+}
+
 /// Drop-shadow angle (degrees) from IDML offsets (inverse of export's mapping).
+/// A `TextWrapPreference` element (of a page item or a placed graphic).
+fn text_wrap(w: &El) -> TextWrap {
+    let mut tw = TextWrap {
+        mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
+        invert: w.get("Inverse") == Some("true"),
+        side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
+        contour: names::contour_type_in(w.find("ContourOption").and_then(|c| c.get("ContourType")).unwrap_or("SameAsClipping")),
+        ..TextWrap::default()
+    };
+    if let Some(o) = w.prop_el("TextWrapOffset") {
+        tw.offsets = [o.num("Top").unwrap_or(0.0), o.num("Left").unwrap_or(0.0), o.num("Bottom").unwrap_or(0.0), o.num("Right").unwrap_or(0.0)];
+    }
+    tw
+}
+
 fn names_angle(x: f64, y: f64) -> f64 {
     if x == 0.0 && y == 0.0 {
         return 135.0;
@@ -2813,12 +3569,66 @@ fn ace_char(v: &str) -> Option<char> {
     }
 }
 
+/// `HL Composer` and `HL Single`, their World-Ready (`… Optyca`) and Japanese (`… J`) forms.
+fn composer_in(name: &str) -> designcraft_doc::Composer {
+    use designcraft_doc::Composer as C;
+    let name = name.trim().trim_start_matches("$ID/");
+    match (name.contains("Single"), name.ends_with(" J") || name.contains("Japanese")) {
+        (false, false) => C::Paragraph,
+        (true, false) => C::SingleLine,
+        (false, true) => C::Japanese,
+        (true, true) => C::JapaneseSingleLine,
+    }
+}
+
 fn margins_of(m: &El) -> (Margins, Columns) {
     let g = |k: &str, d: f64| m.num(k).filter(|v| v.is_finite()).unwrap_or(d);
-    (
-        Margins { top: g("Top", 36.0), bottom: g("Bottom", 36.0), inside: g("Left", 36.0), outside: g("Right", 36.0) },
-        Columns { count: g("ColumnCount", 1.0).clamp(1.0, 216.0) as u32, gutter: g("ColumnGutter", 12.0), positions: None },
-    )
+    let margins = Margins { top: g("Top", 36.0), bottom: g("Bottom", 36.0), inside: g("Left", 36.0), outside: g("Right", 36.0) };
+    let count = g("ColumnCount", 1.0).clamp(1.0, f64::from(designcraft_doc::MAX_COLUMNS)) as u32;
+    let gutter = g("ColumnGutter", 12.0);
+    let positions = m.get("ColumnsPositions").and_then(|s| custom_columns(s, count, gutter));
+    (margins, Columns { count, gutter, positions })
+}
+
+/// `ColumnsPositions` when the column guides have been dragged off the even split: `2 × count`
+/// offsets from the margin box's left edge, valid as [`designcraft_doc::valid_column_positions`]
+/// over the box they span. InDesign writes the attribute whether or not they have been moved, so
+/// an even set is dropped: `positions` means "custom", and keeping an even copy would freeze the
+/// columns against a later change of count or gutter. Anything malformed is the even split; at
+/// most one number past `2 × count` is parsed, so a long list costs nothing.
+fn custom_columns(s: &str, count: u32, gutter: f64) -> Option<Vec<f64>> {
+    let want = 2 * count as usize;
+    let pos = s.split_whitespace().take(want + 1).map(|v| v.parse::<f64>().ok()).collect::<Option<Vec<f64>>>()?;
+    let width = *pos.last()?;
+    if !designcraft_doc::valid_column_positions(&pos, count, width) {
+        return None;
+    }
+    let even = Columns { count, gutter, positions: None }.edges(width);
+    // The tolerance only absorbs float noise in InDesign's arithmetic; a dragged guide moves far more.
+    pos.iter().zip(&even).any(|(a, b)| (a - b).abs() > 1e-4).then_some(pos)
+}
+
+/// `columns` with custom positions only when they fit the margin box of a `page_width`-wide page
+/// with these margins (the box's width doesn't depend on which side of the spine it is).
+fn fit_columns(mut columns: Columns, margins: &Margins, page_width: f64) -> Columns {
+    let width = (page_width - margins.inside - margins.outside).max(0.0);
+    if columns.valid_positions(width).is_none() {
+        columns.positions = None;
+    }
+    columns
+}
+
+/// A `BaselineFrameGridRelativeOption` value (`TopOfInsetOfBaselineFrameGridRelativeOption`, or a
+/// short form such as `TopOfInset`); unknown values measure from the top of the page.
+fn frame_grid_relative(v: &str) -> designcraft_doc::FrameGridRelative {
+    use designcraft_doc::FrameGridRelative as R;
+    let v = v.strip_suffix("OfBaselineFrameGridRelativeOption").unwrap_or(v);
+    match v {
+        "TopOfMargin" | "TopMargin" => R::TopMargin,
+        "TopOfFrame" => R::TopOfFrame,
+        "TopOfInset" | "TopInset" => R::TopInset,
+        _ => R::TopOfPage,
+    }
 }
 
 /// Text Frame Options from `TextFramePreference` elements: each attribute from the first that sets it.
@@ -2868,6 +3678,12 @@ fn text_frame_options(prefs: &[&El]) -> TextFrameOptions {
     if let Some(v) = e.prop("AutoSizingReferencePoint") {
         o.auto_size_ref = names::REF_POINTS.iter().position(|p| *p == v.trim()).unwrap_or(1) as u8;
     }
+    let size = |k: &str| e.num(k).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 10_000.0));
+    o.auto_size_use_min_height = e.prop("UseMinimumHeightForAutoSizing").as_deref().map(str::trim) == Some("true");
+    o.auto_size_min_height = size("MinimumHeightForAutoSizing").unwrap_or(0.0);
+    o.auto_size_use_min_width = e.prop("UseMinimumWidthForAutoSizing").as_deref().map(str::trim) == Some("true");
+    o.auto_size_min_width = size("MinimumWidthForAutoSizing").unwrap_or(0.0);
+    o.auto_size_no_line_breaks = e.prop("UseNoLineBreaksForAutoSizing").as_deref().map(str::trim) == Some("true");
     // Column rules (the colour is a swatch reference: see `Importer::frame_options`).
     o.column_rule = e.prop("ColumnRuleOverride").as_deref().map(str::trim) == Some("true");
     let finite = |k: &str| e.num(k).filter(|v| v.is_finite());
@@ -2969,19 +3785,58 @@ fn inset_spacing(e: &El) -> Option<[f64; 4]> {
     }
 }
 
+/// A graphic's `ClippingPathSettings` with its saved geometry, moved into graphic space by
+/// `to_graphic`. `None` for type None, an unknown type, or no geometry (the outline is never
+/// traced here).
+fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<designcraft_doc::ClippingPath>> {
+    let cs = g.find("ClippingPathSettings")?;
+    let kind = names::clipping_kind_in(cs.get("ClippingType").unwrap_or("None"))?;
+    let geometry = cs.prop_el("ClippingPathGeometry").or_else(|| cs.find("ClippingPathGeometry")).or_else(|| g.prop_el("ClippingPathGeometry"))?;
+    let mut path = path_capped(geometry, designcraft_doc::MAX_CLIP_ANCHORS);
+    path.subpaths.retain(|sp| sp.anchors.len() > 1 && sp.anchors.iter().all(|a| a.p.is_finite() && a.h_in.is_finite() && a.h_out.is_finite()));
+    if path.is_empty() {
+        return None;
+    }
+    path.transform(to_graphic);
+    let finite = |v: Option<f64>, def: f64| v.filter(|v| v.is_finite()).unwrap_or(def);
+    let mut c = designcraft_doc::ClippingPath::new(kind, path);
+    c.invert = cs.boolean("InvertPath").unwrap_or(false);
+    c.include_inside_edges = cs.boolean("IncludeInsideEdges").unwrap_or(false);
+    c.restrict_to_frame = cs.boolean("RestrictToFrame").unwrap_or(false);
+    c.use_high_resolution = cs.boolean("UseHighResolutionImage").unwrap_or(true);
+    c.threshold = finite(cs.num("Threshold"), c.threshold).clamp(0.0, 255.0);
+    c.tolerance = finite(cs.num("Tolerance"), c.tolerance).clamp(0.0, 10.0);
+    c.inset = finite(cs.num("InsetFrame"), 0.0);
+    c.source_name = cs.get("AppliedPathName").filter(|n| *n != "$ID/").unwrap_or("").to_string();
+    c.source_index = cs.num("Index").filter(|v| v.is_finite()).map_or(-1, |v| v.clamp(-1.0, i32::MAX as f64) as i32);
+    Some(Arc::new(c))
+}
+
 fn path_of(pg: &El) -> PathData {
+    path_capped(pg, usize::MAX)
+}
+
+/// The path of a `…Geometry` element, keeping at most `max` anchors.
+fn path_capped(pg: &El, max: usize) -> PathData {
     let mut subs = Vec::new();
+    let mut left = max;
     for g in pg.find_all("GeometryPathType") {
         let closed = g.get("PathOpen") != Some("true");
         let mut anchors = Vec::new();
         if let Some(arr) = g.find("PathPointArray") {
-            for p in arr.find_all("PathPointType") {
+            // A NaN or infinite point drops its subpath (JSON can't store it).
+            let non_finite = |s: Option<&str>| s.is_some_and(|s| s.split_whitespace().any(|v| v.parse::<f64>().is_ok_and(|x| !x.is_finite())));
+            if arr.find_all("PathPointType").take(left).any(|p| ["Anchor", "LeftDirection", "RightDirection"].iter().any(|k| non_finite(p.get(k)))) {
+                continue;
+            }
+            for p in arr.find_all("PathPointType").take(left) {
                 let Some(a) = parse_point(p.get("Anchor")) else { continue };
                 let hin = parse_point(p.get("LeftDirection")).unwrap_or(a);
                 let hout = parse_point(p.get("RightDirection")).unwrap_or(a);
                 anchors.push(Anchor::with_handles(a, hin, hout));
             }
         }
+        left = left.saturating_sub(anchors.len());
         if !anchors.is_empty() {
             subs.push(SubPath::new(anchors, closed));
         }
@@ -2989,15 +3844,168 @@ fn path_of(pg: &El) -> PathData {
     PathData::new(subs)
 }
 
-/// IDML link URI → file system path (`file:/a%20b` → `/a b`, `file:///C:/x` → `C:/x`).
+/// A placed PDF's `PDFAttribute` (Image Import Options), as a child or a property.
+fn pdf_attribute(g: &El) -> Option<&El> {
+    g.find("PDFAttribute").or_else(|| g.prop_el("PDFAttribute"))
+}
+
+/// The page a placed PDF shows (0-based), from `PDFAttribute/@PageNumber` (1-based). A missing or
+/// malformed value means page 1; a page the PDF lacks draws nothing and is left out of PDF export.
+fn pdf_page_in(g: &El) -> u32 {
+    pdf_attribute(g)
+        .and_then(|a| a.get("PageNumber"))
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .and_then(|n| u32::try_from(n.saturating_sub(1)).ok())
+        .unwrap_or(0)
+}
+
+/// Anchors a custom text wrap boundary may have.
+const MAX_WRAP_PATH_ANCHORS: usize = 4096;
+
+/// A custom text wrap boundary (`TextWrapPreference/Properties/PathGeometry`), in the item's inner
+/// space like its own path. Hostile input is an error: too many anchors, a malformed or non-finite
+/// point, or no points at all.
+fn wrap_path_of(pg: &El) -> std::result::Result<PathData, &'static str> {
+    let finite = |s: Option<&str>| -> std::result::Result<Option<Point>, &'static str> {
+        let Some(s) = s else { return Ok(None) };
+        let v = nums(s);
+        match (v.first(), v.get(1)) {
+            (Some(&x), Some(&y)) if v.len() == 2 && x.is_finite() && y.is_finite() => Ok(Some(Point::new(x, y))),
+            _ => Err("malformed or non-finite point"),
+        }
+    };
+    let mut subs = Vec::new();
+    let mut n = 0usize;
+    for g in pg.find_all("GeometryPathType") {
+        let closed = g.get("PathOpen") != Some("true");
+        let mut anchors = Vec::new();
+        for p in g.find("PathPointArray").into_iter().flat_map(|arr| arr.find_all("PathPointType")) {
+            n = n.saturating_add(1);
+            if n > MAX_WRAP_PATH_ANCHORS {
+                return Err("too many points");
+            }
+            let a = finite(p.get("Anchor"))?.ok_or("point without an anchor")?;
+            let hin = finite(p.get("LeftDirection"))?.unwrap_or(a);
+            let hout = finite(p.get("RightDirection"))?.unwrap_or(a);
+            anchors.push(Anchor::with_handles(a, hin, hout));
+        }
+        if !anchors.is_empty() {
+            subs.push(SubPath::new(anchors, closed));
+        }
+    }
+    if subs.is_empty() {
+        return Err("no points");
+    }
+    Ok(PathData::new(subs))
+}
+
+/// IDML link URI → file system path (`file:/a%20b` → `/a b`, `file:///C:/x` → `C:/x`). A URI
+/// naming another computer keeps it as a network path (`file://host/s/x` → `//host/s/x`).
 pub(crate) fn uri_to_path(uri: &str) -> String {
-    let rest = uri.strip_prefix("file://").or_else(|| uri.strip_prefix("file:")).unwrap_or(uri);
+    let rest = match uri.strip_prefix("file://") {
+        Some(rest) => {
+            let host_end = rest.find(['/', '\\']).unwrap_or(rest.len());
+            let host = rest.get(..host_end).unwrap_or_default();
+            if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
+                rest.get(host_end..).unwrap_or(rest)
+            } else if matches!(host.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic()) {
+                rest
+            } else {
+                return format!("//{}", percent_decode(rest));
+            }
+        }
+        None => uri.strip_prefix("file:").unwrap_or(uri),
+    };
     // `file:///C:/…` → `/C:/…` → `C:/…`
     let rest = match rest.as_bytes() {
         [b'/', _, b':', _, ..] => rest.get(1..).unwrap_or(rest),
         _ => rest,
     };
     percent_decode(rest)
+}
+
+/// Auto tate-chu-yoko, Japanese composition and grid settings of a paragraph range or style.
+fn cjk_settings_para(e: &El, a: &mut ParaAttrs) {
+    let count = |k: &str| e.num(k).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1000.0) as u32);
+    a.auto_tcy = count("AutoTcy");
+    a.auto_tcy_include_roman = e.boolean("AutoTcyIncludeRoman");
+    a.rotate_roman = e.boolean("RotateSingleByteCharacters");
+    // 欧文泣き別れ: the name is inferred (it follows TreatIdeographicSpaceAsSpace).
+    a.roman_word_break = e.boolean("AllowArbitraryHyphenation");
+    a.grid_gyoudori = count("GridGyoudori");
+    a.paragraph_gyoudori = e.boolean("ParagraphGyoudori");
+}
+
+impl Importer<'_> {
+    /// Kenten Settings, Kenten Color and Shatai of a character range or style.
+    fn cjk_settings_chars(&mut self, e: &El, a: &mut CharAttrs) {
+        let finite = |k: &str| e.num(k).filter(|v| v.is_finite());
+        if let Some(kind) = e.get("KentenKind").and_then(crate::cjk::kenten_kind_in) {
+            a.kenten_kind = Some(kind);
+            if a.kenten_character.as_deref().is_none_or(str::is_empty)
+                && let Some(mark) = kind.mark()
+            {
+                a.kenten_character = Some(mark.to_string());
+            }
+        }
+        if let Some(f) = e.prop("KentenFont") {
+            let f = f.trim();
+            a.kenten_font = Some(if f == "$ID/" { String::new() } else { f.to_string() });
+        }
+        if let Some(st) = e.prop("KentenFontStyle") {
+            let st = st.trim();
+            a.kenten_font_style = Some(if st == "Nothing" { String::new() } else { st.to_string() });
+        }
+        a.kenten_size = finite("KentenFontSize").map(|v| (v > 0.0).then_some(v));
+        a.kenten_x_scale = finite("KentenXScale").map(|v| v / 100.0);
+        a.kenten_y_scale = finite("KentenYScale").map(|v| v / 100.0);
+        a.kenten_distance = finite("KentenPlacement");
+        a.kenten_position = e.prop("KentenPosition").and_then(|v| crate::cjk::kenten_position_in(&v));
+        a.kenten_alignment = e.prop("KentenAlignment").and_then(|v| crate::cjk::kenten_alignment_in(&v));
+        a.kenten_character_set = e.prop("KentenCharacterSet");
+        // "Text Color" is the text's own colour; it resets an inherited swatch.
+        if let Some(r) = e.prop("KentenFillColor") {
+            a.kenten_fill = Some(if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
+        }
+        if let Some(r) = e.prop("KentenStrokeColor") {
+            a.kenten_stroke = Some(if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
+        }
+        // Tints and weight: -1 is the text's.
+        a.kenten_fill_tint = finite("KentenTint").map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
+        a.kenten_stroke_tint = finite("KentenStrokeTint").map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
+        a.kenten_stroke_weight = finite("KentenWeight").map(|v| (v >= 0.0).then_some(v));
+        a.kenten_overprint_fill = e.prop("KentenOverprintFill").and_then(|v| crate::cjk::overprint_in(&v));
+        a.kenten_overprint_stroke = e.prop("KentenOverprintStroke").and_then(|v| crate::cjk::overprint_in(&v));
+        a.shatai_magnification = finite("ShataiMagnification");
+        a.shatai_angle = finite("ShataiDegreeAngle").map(|v| v / crate::cjk::SHATAI_ANGLE_UNITS);
+        a.shatai_adjust_rotation = e.boolean("ShataiAdjustRotation");
+        a.shatai_adjust_tsume = e.boolean("ShataiAdjustTsume");
+    }
+}
+
+/// OpenType features (only when the element sets any).
+fn read_otf_features(e: &El, a: &mut CharAttrs) {
+    let mut otf_list: Vec<String> = Vec::new();
+    let mut any = false;
+    for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
+        if let Some(on) = e.boolean(attr) {
+            designcraft_doc::otf::set(&mut otf_list, tag, on);
+            any = true;
+        }
+    }
+    if let Some(fig) = e.prop("OTFFigureStyle")
+        && let Some((id, ..)) = designcraft_doc::otf::FIGURES.iter().find(|f| f.3 == fig.trim())
+    {
+        designcraft_doc::otf::set_figures(&mut otf_list, id);
+        any = true;
+    }
+    if let Some(m) = e.num("OTFStylisticSets") {
+        designcraft_doc::otf::set_stylistic_sets(&mut otf_list, m.max(0.0) as u32);
+        any = true;
+    }
+    if any {
+        a.otf_features = Some(otf_list);
+    }
 }
 
 #[cfg(test)]
@@ -3176,6 +4184,48 @@ mod page_column_import_safety_tests {
             assert_eq!(columns.gutter, 12.);
             assert_eq!(margins, Margins::uniform(36.));
         }
+    }
+
+    /// Hostile `ColumnsPositions` are the even split: never half-read, never a panic, and a long
+    /// list is not parsed past what `ColumnCount` allows (#1096).
+    #[test]
+    fn hostile_column_positions_fall_back_to_the_even_split() {
+        let positions = |count: &str, raw: &str| {
+            let m = El::new("MarginPreference").attr("ColumnCount", count).attr("ColumnGutter", "20").attr("ColumnsPositions", raw);
+            margins_of(&m).1.positions
+        };
+        assert_eq!(positions("2", "0 150 170 450"), Some(vec![0., 150., 170., 450.]));
+        let huge = (0..10_000).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
+        for (count, raw) in [
+            ("2", "0 215 235 450"),         // the even split
+            ("2", "0 150 170"),             // odd
+            ("2", "0 450"),                 // too few for the count
+            ("2", "0 100 120 200 220 450"), // too many for the count
+            ("2", "0 150 90 450"),          // descending
+            ("2", "0 NaN 170 450"),
+            ("2", "0 inf 170 450"),
+            ("2", "0 150 170 1e309"),
+            ("2", "0 x 170 450"),
+            ("2", "10 150 170 450"), // not from the margin
+            ("2", ""),
+            ("2", huge.as_str()),
+            ("4000000000", huge.as_str()), // the count is capped at 216, so is the list
+            ("216", huge.as_str()),
+            ("NaN", "0 150 170 450"),
+        ] {
+            assert_eq!(positions(count, raw), None, "{count}: {}", raw.get(..raw.len().min(40)).unwrap_or(""));
+        }
+        // The cap itself: 216 one-point columns with no gutter are the even split; one edge moved
+        // makes them custom.
+        let gapless = |raw: &str| {
+            let m = El::new("MarginPreference").attr("ColumnCount", "216").attr("ColumnGutter", "0").attr("ColumnsPositions", raw);
+            margins_of(&m).1.positions
+        };
+        let edges = |first_right: &str| {
+            (0..432).map(|i| if i == 1 { first_right.to_string() } else { ((i + 1) / 2).to_string() }).collect::<Vec<_>>().join(" ")
+        };
+        assert_eq!(gapless(&edges("1")), None);
+        assert_eq!(gapless(&edges("0.5")).map(|p| p.len()), Some(432));
     }
 }
 

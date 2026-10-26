@@ -9,8 +9,10 @@
 //! - `num` instances of one abstractNum share their counters, so a list carries on across
 //!   them and across paragraphs that aren't in a list. A `num` with a `w:startOverride` counts
 //!   on its own, starting at the override.
-//! - Parent levels in a label (`%1.%2.`) are written as text: the model's labels number only
-//!   the paragraph's own level.
+//! - Levels map to the model's list levels (`ilvl` + 1). Parent levels in a label (`%1.%2.`)
+//!   become the model's level references (`^1.^2.`); where the model's level numbers would differ
+//!   from Word's (a legal-style label, a level the model hasn't numbered), the importer writes
+//!   them as text instead ([`ListPara::fixed_expression`]).
 
 use std::collections::HashMap;
 
@@ -80,6 +82,11 @@ pub(crate) struct ListPara {
     pub(crate) attrs: ParaAttrs,
     /// The paragraph's number at its level (also counted for bullets).
     pub(crate) number: u32,
+    /// Parent levels the number expression refers to (`^k`, 1-based) and the text Word shows
+    /// for each.
+    pub(crate) parents: Vec<(u32, String)>,
+    /// The number expression with Word's parent level numbers written as text.
+    pub(crate) fixed_expression: Option<String>,
 }
 
 /// The lists of a Word document and the numbering state while its paragraphs are read in order.
@@ -122,7 +129,8 @@ fn number_style(fmt: &str) -> Format {
 }
 
 fn parse_level(e: &El) -> Level {
-    let tw = |v: Option<&str>| v.and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v / 20.0);
+    // Twips, clamped as elsewhere: a level's indent is a measure, not any number (#1593).
+    let tw = |v: Option<&str>| v.and_then(|v| v.trim().parse::<f64>().ok()).map(|v| v / 20.0).and_then(designcraft_doc::attrs::imported_measure);
     let ind = e.child("pPr").and_then(|p| p.child("ind"));
     Level {
         format: e.val("numFmt").map_or(Format::Number(NumberStyle::Arabic), |f| number_style(&f)),
@@ -257,7 +265,9 @@ impl Numbering {
                 _ => String::new(),
             }
         };
-        let label = |own_level: &str, escape: bool| -> String {
+        // `refs`: a parent number level becomes the model's `^k`; otherwise Word's text.
+        let mut parents = Vec::new();
+        let mut label = |own_level: &str, escape: bool, refs: bool| -> String {
             let mut out = String::new();
             let mut it = def.text.chars().peekable();
             while let Some(c) = it.next() {
@@ -266,8 +276,13 @@ impl Numbering {
                 {
                     it.next();
                     let k = k as usize - 1;
+                    let number = matches!(level(k).map(|l| l.format), Some(Format::Number(_)));
                     if k == lv {
                         out.push_str(own_level);
+                    } else if refs && number && !def.legal {
+                        out.push('^');
+                        out.push_str(&(k + 1).to_string());
+                        parents.push((k as u32 + 1, parent(k)));
                     } else {
                         let p = parent(k);
                         out.push_str(&if escape { p.replace('^', "^^") } else { p });
@@ -287,11 +302,13 @@ impl Numbering {
             Suffix::Nothing => ("", ""),
         };
         let mut a = ParaAttrs::default();
+        let mut fixed_expression = None;
         match def.format {
             Format::Number(style) => {
                 a.list_type = Some(ListType::Numbers);
                 a.number_style = Some(style);
-                a.number_expression = Some(format!("{}{number_sep}", label("^#", true)));
+                a.number_expression = Some(format!("{}{number_sep}", label("^#", true, true)));
+                fixed_expression = Some(format!("{}{number_sep}", label("^#", true, false)));
             }
             Format::Bullet => {
                 a.list_type = Some(ListType::Bullets);
@@ -300,13 +317,19 @@ impl Numbering {
             }
             Format::Nothing => {
                 a.list_type = Some(ListType::Bullets);
-                a.bullet_char = Some(label("", false));
+                a.bullet_char = Some(label("", false, false));
                 a.list_separator = Some(bullet_sep.into());
             }
         }
         a.left_indent = def.left;
         a.first_line_indent = def.first_line;
-        Some(ListPara { attrs: a, number: n })
+        a.list_level = Some(ilvl + 1);
+        match def.restart {
+            None => {}
+            Some(0) => a.restart_numbers = Some(false),
+            Some(r) => a.restart_after_level = Some(r),
+        }
+        Some(ListPara { attrs: a, number: n, parents, fixed_expression })
     }
 }
 

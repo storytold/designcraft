@@ -88,13 +88,14 @@ impl El {
         if let Some(v) = self.get(k) {
             return Some(v.to_string());
         }
-        self.prop_el(k).map(|e| e.text_content())
+        self.prop_el(k).map(El::text_content)
     }
     pub fn prop_el(&self, k: &str) -> Option<&El> {
         self.find("Properties").and_then(|p| p.find(k))
     }
+    /// A finite numeric property; `NaN` and infinities count as absent.
     pub fn num(&self, k: &str) -> Option<f64> {
-        self.prop(k).and_then(|v| v.trim().parse().ok())
+        self.prop(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())
     }
     pub fn boolean(&self, k: &str) -> Option<bool> {
         match self.prop(k)?.trim() {
@@ -194,6 +195,11 @@ pub fn document_with_pi(root: &El, pi: &str) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// How deep elements may nest. InDesign's packages stay under a few dozen levels; the tree is
+/// walked and dropped recursively afterwards, so unbounded nesting is refused here, not left to
+/// run into the stack (#712).
+pub const MAX_DEPTH: usize = 256;
+
 /// Parse a document into its root element.
 pub fn parse(bytes: &[u8]) -> Result<El, String> {
     let mut r = quick_xml::Reader::from_reader(bytes);
@@ -205,6 +211,9 @@ pub fn parse(bytes: &[u8]) -> Result<El, String> {
         let ev = r.read_event_into(&mut buf).map_err(|e| format!("XML error at {}: {e}", pos(&r)))?;
         match ev {
             Event::Start(e) => {
+                if stack.len() > MAX_DEPTH {
+                    return Err(format!("XML elements nested deeper than {MAX_DEPTH} levels at {}", pos(&r)));
+                }
                 let el = start_el(&e)?;
                 stack.push(el);
             }
@@ -296,6 +305,16 @@ fn start_el(e: &quick_xml::events::BytesStart) -> Result<El, String> {
 mod tests {
     use super::*;
 
+    /// Issue #712: nesting past the budget is an error from the parser, not a stack overflow later.
+    #[test]
+    fn nesting_past_the_budget_is_refused() {
+        let nested = |n: usize| format!("{}{}", "<A>".repeat(n), "</A>".repeat(n)).into_bytes();
+        assert!(parse(&nested(MAX_DEPTH)).is_ok(), "the budget itself parses");
+        let err = parse(&nested(MAX_DEPTH + 1)).expect_err("one level more is refused");
+        assert!(err.contains("nested deeper"), "{err}");
+        assert!(parse(&nested(100_000)).is_err());
+    }
+
     #[test]
     fn roundtrip_text_pi_and_entities() {
         let root = El::new("Root").attr("A", "x\"<&\t").child(El::new("Content").text("a\tb & <c>"));
@@ -318,5 +337,13 @@ mod tests {
         assert_eq!(e.num("PointSize"), Some(9.0));
         assert_eq!(e.num("Leading"), Some(14.0));
         assert_eq!(e.prop("Missing"), None);
+    }
+
+    /// `NaN` and infinities parse as `f64` but are not usable numbers.
+    #[test]
+    fn non_finite_numbers_count_as_absent() {
+        let x = br#"<A W="NaN" X="inf"><Properties><Y type="unit">-inf</Y><Z>2.5</Z></Properties></A>"#;
+        let e = parse(x).unwrap();
+        assert_eq!((e.num("W"), e.num("X"), e.num("Y"), e.num("Z")), (None, None, None, Some(2.5)));
     }
 }

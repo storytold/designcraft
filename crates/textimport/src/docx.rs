@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use designcraft_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE};
-use designcraft_doc::{CharAttrs, CharFormat, ListType, ParaAttrs, ParaFormat, Story, StoryId, Table};
+use designcraft_doc::{CharAttrs, CharFormat, ListCounter, ListType, ParaAttrs, ParaFormat, ParaProps, Story, StoryId, Table};
 use quick_xml::events::Event;
 
 use crate::docx_numbering::{ListPara, Numbering};
@@ -47,8 +47,9 @@ impl El {
     pub(crate) fn val(&self, name: &str) -> Option<String> {
         self.child(name).map(|e| e.attr("val").unwrap_or("true").to_string())
     }
+    /// A toggle property (`ST_OnOff`: a boolean, or the words `on` and `off`). None when unset.
     pub(crate) fn on(&self, name: &str) -> Option<bool> {
-        self.val(name).map(|v| !matches!(v.as_str(), "0" | "false" | "none"))
+        self.val(name).map(|v| !matches!(v.as_str(), "0" | "false" | "none" | "off"))
     }
 }
 
@@ -57,12 +58,20 @@ fn local(n: &[u8]) -> String {
     s.rsplit(':').next().unwrap_or(&s).to_string()
 }
 
+/// How deep elements may nest. Word's own XML stays well under a hundred levels; the tree is read
+/// recursively afterwards (`El::text`, the block walk) and dropped recursively, so a document
+/// nested without bound must be refused here, not run into the stack (#712).
+pub(crate) const MAX_DEPTH: usize = 256;
+
 pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
     let mut r = quick_xml::Reader::from_str(xml);
     let mut stack: Vec<El> = vec![El::default()];
     loop {
         match r.read_event().map_err(|e| ImportError::Corrupt(e.to_string()))? {
             Event::Start(e) => {
+                if stack.len() > MAX_DEPTH {
+                    return Err(ImportError::Corrupt(format!("XML elements nested deeper than {MAX_DEPTH} levels")));
+                }
                 let el = El {
                     name: local(e.name().as_ref()),
                     attrs: e
@@ -102,6 +111,12 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
             Event::Text(t) => {
                 let s = t.decode().map(|s| s.to_string()).unwrap_or_default();
                 let s = quick_xml::escape::unescape(&s).map(|s| s.to_string()).unwrap_or(s);
+                if let Some(p) = stack.last_mut() {
+                    p.kids.push(Node::Text(s));
+                }
+            }
+            Event::CData(t) => {
+                let s = t.decode().map(|s| s.to_string()).unwrap_or_default();
                 if let Some(p) = stack.last_mut() {
                     p.kids.push(Node::Text(s));
                 }
@@ -166,13 +181,14 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
         _ => None,
     };
     if let Some(u) = r.val("u") {
-        a.underline = Some(u != "none" && u != "0" && u != "false");
+        a.underline = Some(!matches!(u.as_str(), "none" | "0" | "false" | "off"));
     }
     if let Some(s) = r.on("strike") {
         a.strikethrough = Some(s);
     }
-    if let Some(sz) = r.val("sz").and_then(|v| v.parse::<f64>().ok()) {
-        a.size = Some(sz / 2.0);
+    // Half-points; a size the engine cannot mean is dropped (#1593).
+    if let Some(pt) = r.val("sz").and_then(|v| v.parse::<f64>().ok()).map(|sz| sz / 2.0).and_then(designcraft_doc::attrs::imported_type_size) {
+        a.size = Some(pt);
     }
     if let Some(f) = r.child("rFonts").and_then(|f| f.attr("ascii").or(f.attr("hAnsi"))) {
         a.font_family = Some(f.to_string());
@@ -194,7 +210,8 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
 fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
     let mut a = ParaAttrs::default();
     let Some(p) = ppr else { return a };
-    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).map(|v| v / 20.0);
+    // Twips, clamped: a file can hold 1e300, which became a 5e298 pt indent (#1593).
+    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).map(|v| v / 20.0).and_then(designcraft_doc::attrs::imported_measure);
     if let Some(sp) = p.child("spacing") {
         a.space_before = tw(sp.attr("before"));
         a.space_after = tw(sp.attr("after"));
@@ -226,7 +243,8 @@ struct Ctx {
     style_lists: HashMap<String, (Option<String>, Option<String>)>,
     /// The number the model's own list counter is at (it restarts after a paragraph that isn't
     /// in a list), to tell where a numbered paragraph needs an explicit Start At.
-    model_counter: u32,
+    /// The model's unnamed-list numbering as composition will count it.
+    model_counter: ListCounter,
     /// The style of paragraphs without `w:pStyle` (Word's default paragraph style, usually Normal).
     default_para: String,
 }
@@ -260,8 +278,12 @@ impl Ctx {
                     let at = st.len();
                     st.format_paras(at..at, |f| *f = ParaFormat { style: style.clone(), para: attrs.clone(), ..Default::default() });
                     self.inline(e, st, allow_notes);
-                    if let Some(n) = self.start_at(list.as_ref(), st.len() == at) {
+                    let (start_at, expression) = self.start_at(list.as_ref(), st.len() == at);
+                    if let Some(n) = start_at {
                         st.format_paras(at..at, |f| f.para.start_at = Some(Some(n)));
+                    }
+                    if let Some(e) = expression {
+                        st.format_paras(at..at, |f| f.para.number_expression = Some(e.clone()));
                     }
                 }
                 "tbl" => {
@@ -282,7 +304,7 @@ impl Ctx {
                     let t = Table::from_strings(self.next_table, &rows, 300.0, &ParaFormat::default(), &CharFormat::default());
                     let len = st.len();
                     st.insert_table(len, t);
-                    first = false;
+                    first = st.text.ends_with('\n');
                 }
                 "sdt" => {
                     if let Some(c) = e.child("sdtContent") {
@@ -292,35 +314,6 @@ impl Ctx {
                 _ => {}
             }
         }
-    }
-
-    /// The list a paragraph is in (its own `w:numPr`, else its style's), counting it.
-    fn list(&mut self, ppr: Option<&El>) -> Option<ListPara> {
-        let direct = ppr.and_then(|p| p.child("numPr"));
-        let style = ppr.and_then(|p| p.val("pStyle")).and_then(|id| self.style_lists.get(&id));
-        let num_id = direct.and_then(|n| n.val("numId")).or_else(|| style.and_then(|s| s.0.clone()))?;
-        let ilvl = direct.and_then(|n| n.val("ilvl")).or_else(|| style.and_then(|s| s.1.clone()));
-        // A level that isn't a small number is no list.
-        let ilvl = ilvl.map_or(Some(0), |l| l.trim().parse::<u32>().ok())?;
-        self.numbering.next(num_id.trim(), ilvl)
-    }
-
-    /// Start At for a paragraph, so that the model numbers it as Word does: only where the
-    /// model's counter (which follows the previous numbered paragraph, and restarts after one
-    /// that isn't in a list) would give a different number.
-    fn start_at(&mut self, list: Option<&ListPara>, empty: bool) -> Option<u32> {
-        let Some(l) = list else {
-            self.model_counter = 0;
-            return None;
-        };
-        // Bullets and empty paragraphs leave the counter alone (they show no number).
-        if l.attrs.list_type != Some(ListType::Numbers) || empty {
-            return None;
-        }
-        let want = l.number.max(1);
-        let next = self.model_counter.saturating_add(1);
-        self.model_counter = want;
-        (want != next).then_some(want)
     }
 
     /// The text of each paragraph in a table cell, read by the same run rules as body text.
@@ -344,6 +337,46 @@ impl Ctx {
         }
     }
 
+    /// The list a paragraph is in (its own `w:numPr`, else its style's), counting it.
+    fn list(&mut self, ppr: Option<&El>) -> Option<ListPara> {
+        let direct = ppr.and_then(|p| p.child("numPr"));
+        let style = ppr.and_then(|p| p.val("pStyle")).and_then(|id| self.style_lists.get(&id));
+        let num_id = direct.and_then(|n| n.val("numId")).or_else(|| style.and_then(|s| s.0.clone()))?;
+        let ilvl = direct.and_then(|n| n.val("ilvl")).or_else(|| style.and_then(|s| s.1.clone()));
+        // A level that isn't a small number is no list.
+        let ilvl = ilvl.map_or(Some(0), |l| l.trim().parse::<u32>().ok())?;
+        self.numbering.next(num_id.trim(), ilvl)
+    }
+
+    /// Start At for a paragraph, so that the model numbers it as Word does: only where the
+    /// model's counter (per level; restarted after a paragraph that isn't in a list) would give a
+    /// different number. And the number expression with parent levels as text, where the model's
+    /// numbers for those levels differ from Word's.
+    fn start_at(&mut self, list: Option<&ListPara>, empty: bool) -> (Option<u32>, Option<String>) {
+        let Some(l) = list else {
+            self.model_counter = ListCounter::default();
+            return (None, None);
+        };
+        // Bullets and empty paragraphs leave the counter alone (they show no number).
+        if l.attrs.list_type != Some(ListType::Numbers) || empty {
+            return (None, None);
+        }
+        let want = l.number.max(1);
+        let mut pp = ParaProps::default();
+        pp.apply(&l.attrs);
+        let mut model = self.model_counter.clone();
+        let start = (model.advance(&pp) != want).then_some(want);
+        if start.is_some() {
+            model = self.model_counter.clone();
+            pp.start_at = start;
+            model.advance(&pp);
+        }
+        let level_text = |k: u32| ParaProps { number_expression: format!("^{k}"), ..ParaProps::default() }.number_label_in(&model);
+        let expression = l.parents.iter().any(|(k, text)| level_text(*k) != *text).then(|| l.fixed_expression.clone()).flatten();
+        self.model_counter = model;
+        (start, expression)
+    }
+
     /// Runs (and hyperlinks, fields' results) of a paragraph.
     fn inline(&mut self, p: &El, st: &mut Story, allow_notes: bool) {
         for e in p.els() {
@@ -352,6 +385,12 @@ impl Ctx {
                 // Tracked changes import as accepted: insertions and move destinations are kept,
                 // deletions (`del`) and move sources (`moveFrom`) are dropped.
                 "hyperlink" | "smartTag" | "ins" | "moveTo" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes),
+                // A content control (date picker, drop-down, plain text) keeps its runs in `sdtContent`.
+                "sdt" => {
+                    if let Some(c) = e.child("sdtContent") {
+                        self.inline(c, st, allow_notes);
+                    }
+                }
                 _ => {}
             }
         }
@@ -380,9 +419,13 @@ impl Ctx {
                         self.model_counter = counter;
                         // Word puts the reference mark in the note text: we generate the number.
                         let len = st.len();
-                        let id = st.insert_note(len, "", ParaFormat::default());
-                        if let Some(n) = st.note_mut(id) {
-                            n.text = ns;
+                        match st.insert_note(len, "", ParaFormat::default()) {
+                            Some(id) => {
+                                if let Some(n) = st.note_mut(id) {
+                                    n.text = ns;
+                                }
+                            }
+                            None => self.warnings.push("A footnote in the Word file could not be imported.".into()),
                         }
                     }
                     continue;
@@ -446,7 +489,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         next_table: 0,
         numbering: Numbering::default(),
         style_lists: HashMap::new(),
-        model_counter: 0,
+        model_counter: ListCounter::default(),
         default_para: BASIC_PARAGRAPH.into(),
     };
     // Lists that can't be read leave plain paragraphs, not a failed import.
@@ -543,6 +586,40 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    fn cdata_text() {
+        let el = parse("<a><t><![CDATA[x < y]]></t></a>").unwrap();
+        assert_eq!(el.child("t").unwrap().text(), "x < y");
+    }
+
+    /// Issue #712: nesting past the budget is an error from the parser, not a stack overflow later.
+    #[test]
+    fn nesting_past_the_budget_is_refused() {
+        let nested = |n: usize| format!("{}{}", "<w:p>".repeat(n), "</w:p>".repeat(n));
+        let ok = parse(&nested(MAX_DEPTH)).expect("the budget itself parses");
+        assert_eq!(ok.name, "p");
+        let err = parse(&nested(MAX_DEPTH + 1)).expect_err("one level more is refused");
+        assert!(err.to_string().contains("nested deeper"), "{err}");
+        assert!(parse(&nested(100_000)).is_err());
+    }
+
+    #[test]
+    fn table_adds_no_empty_paragraph() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t>Before</w:t></w:r></w:p>
+              <w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+              <w:p><w:r><w:t>After</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        st.check().unwrap();
+        let paras: Vec<&str> = st.para_ranges().into_iter().map(|r| &st.text[r]).collect();
+        assert_eq!(paras.len(), 3, "{paras:?}");
+        assert_eq!(paras[0], "Before");
+        assert_eq!(paras[2], "After");
+    }
+
     pub(crate) fn docx(document: &str, styles: &str, footnotes: &str) -> Vec<u8> {
         docx_parts(&[("word/document.xml", document), ("word/styles.xml", styles), ("word/footnotes.xml", footnotes)])
     }
@@ -572,6 +649,29 @@ mod tests {
         // At or under the cap reads fine; a missing part is `None`.
         assert_eq!(part_capped(&mut zip, "word/document.xml", 64 * 1024).unwrap().map(|s| s.len()), Some(64 * 1024));
         assert_eq!(part_capped(&mut zip, "word/missing.xml", 4096).unwrap(), None);
+    }
+
+    /// A DOCX can hold any number where a measure belongs: `1e300` twips became a 5e298 pt
+    /// indent, and `w:sz` of `1e300` a 5e299 pt type size. Measures are clamped to the widest
+    /// page and a size the engine cannot mean is dropped (#1593).
+    #[test]
+    fn a_measure_or_size_a_file_cannot_mean_is_bounded() {
+        use designcraft_doc::attrs::MAX_MEASURE;
+        let doc = format!(
+            r#"<w:document {W}><w:body><w:p><w:pPr>
+                 <w:spacing w:before="1e300" w:after="-1e300"/><w:ind w:left="1e300" w:firstLine="-1e300"/>
+               </w:pPr><w:r><w:rPr><w:sz w:val="1e300"/></w:rPr><w:t>big</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let i = import(&docx(&doc, "", "")).unwrap();
+        let p = &i.story.paras[0].para;
+        for (what, v) in
+            [("space before", p.space_before), ("space after", p.space_after), ("left indent", p.left_indent), ("first line", p.first_line_indent)]
+        {
+            let v = v.expect("the value is kept, bounded");
+            assert!(v.is_finite() && v.abs() <= MAX_MEASURE, "{what} is within the widest page: {v}");
+        }
+        let size = i.story.char_format_at(i.story.text.find("big").unwrap() + 1).over.size;
+        assert_eq!(size, None, "a size the engine cannot mean is dropped, so the style's size stands");
     }
 
     #[test]
@@ -620,22 +720,53 @@ mod tests {
         assert_eq!(i.char_styles[0].chars.font_style.as_deref(), Some("Italic"));
     }
 
-    /// A page break ends its paragraph: the text after it is a paragraph of its own (same style).
+    /// A content control inside a paragraph (`w:sdt`) keeps its text, also around a hyperlink.
     #[test]
-    fn page_break_ends_its_paragraph() {
-        let styles = format!(r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="H"><w:name w:val="Chapter"/></w:style></w:styles>"#);
+    fn inline_content_control_text_is_kept() {
         let document = format!(
             r#"<w:document {W}><w:body>
-              <w:p><w:r><w:t>End of one</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>
-              <w:p><w:pPr><w:pStyle w:val="H"/></w:pPr><w:r><w:br w:type="page"/><w:t>Two</w:t><w:br w:type="column"/></w:r></w:p>
+              <w:p><w:r><w:t xml:space="preserve">Date: </w:t></w:r><w:sdt><w:sdtPr><w:alias w:val="d"/></w:sdtPr><w:sdtContent><w:r><w:t>1 May 2026</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t>.</w:t></w:r></w:p>
+              <w:p><w:sdt><w:sdtContent><w:hyperlink><w:r><w:t>Link</w:t></w:r></w:hyperlink></w:sdtContent></w:sdt></w:p>
             </w:body></w:document>"#
         );
-        let st = import(&docx(&document, &styles, "")).unwrap().story;
+        let st = import(&docx(&document, "", "")).unwrap().story;
         st.check().unwrap();
-        let (pb, cb) = (designcraft_doc::PAGE_BREAK, designcraft_doc::COLUMN_BREAK);
-        assert_eq!(st.text, format!("End of one{pb}\n{pb}\nTwo{cb}\n"));
-        let styles: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
-        assert_eq!(styles, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
+        assert_eq!(st.text, "Date: 1 May 2026.\nLink");
+    }
+
+    /// `str::parse::<f64>` accepts "NaN"/"inf"; sizes, spacing and indents must ignore them.
+    #[test]
+    fn non_finite_sizes_spacing_and_indents_are_ignored() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:pPr><w:spacing w:before="NaN" w:after="inf"/><w:ind w:left="-inf" w:right="NaN" w:firstLine="-inf"/></w:pPr>
+                <w:r><w:rPr><w:sz w:val="NaN"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:sz w:val="inf"/></w:rPr><w:t>b</w:t></w:r></w:p>
+              <w:p><w:pPr><w:ind w:hanging="inf"/></w:pPr><w:r><w:t>c</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        let fin = |v: Option<f64>| v.is_none_or(f64::is_finite);
+        for p in &st.paras {
+            let p = &p.para;
+            assert!(fin(p.space_before) && fin(p.space_after), "{p:?}");
+            assert!(fin(p.left_indent) && fin(p.right_indent) && fin(p.first_line_indent), "{p:?}");
+        }
+        for at in [0, 1] {
+            assert!(fin(st.format_after(at).over.size), "{:?}", st.format_after(at).over.size);
+        }
+    }
+
+    #[test]
+    fn out_of_range_sizes_are_dropped() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:rPr><w:sz w:val="0"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:sz w:val="99999999"/></w:rPr><w:t>b</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        for at in [0, 1] {
+            assert_eq!(st.format_after(at).over.size, None, "run {at}");
+        }
     }
 
     #[test]
@@ -657,6 +788,24 @@ mod tests {
         assert_eq!(i.story.text, "Kept text. MOVED HERE. Plain INSERTED\nEnd.");
     }
 
+    /// A page break ends its paragraph: the text after it is a paragraph of its own (same style).
+    #[test]
+    fn page_break_ends_its_paragraph() {
+        let styles = format!(r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="H"><w:name w:val="Chapter"/></w:style></w:styles>"#);
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t>End of one</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>
+              <w:p><w:pPr><w:pStyle w:val="H"/></w:pPr><w:r><w:br w:type="page"/><w:t>Two</w:t><w:br w:type="column"/></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, &styles, "")).unwrap().story;
+        st.check().unwrap();
+        let (pb, cb) = (designcraft_doc::PAGE_BREAK, designcraft_doc::COLUMN_BREAK);
+        assert_eq!(st.text, format!("End of one{pb}\n{pb}\nTwo{cb}\n"));
+        let styles: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
+        assert_eq!(styles, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
+    }
+
     /// A paragraph in a Word list: `w:numPr` with `numId` and, unless `None`, `ilvl`.
     fn list_p(num_id: &str, ilvl: Option<&str>, text: &str) -> String {
         let ilvl = ilvl.map(|l| format!(r#"<w:ilvl w:val="{l}"/>"#)).unwrap_or_default();
@@ -674,15 +823,28 @@ mod tests {
         i
     }
 
-    /// The label the model gives paragraph `i` when its number is `n`.
-    fn label(st: &Story, i: usize, n: u32) -> String {
-        let mut p = designcraft_doc::ParaProps::default();
-        p.apply(&st.paras[i].para);
-        match p.list_type {
-            ListType::Numbers => p.number_label(n),
-            ListType::Bullets => p.bullet_label(),
-            ListType::None => String::new(),
+    /// The label composition gives paragraph `i`: numbered paragraphs count per level on one
+    /// counter that a paragraph outside a list restarts; bullets and empty paragraphs leave it.
+    fn label(st: &Story, i: usize) -> String {
+        let mut counter = designcraft_doc::ListCounter::default();
+        let mut label = String::new();
+        for (f, r) in st.paras.iter().zip(st.para_ranges()).take(i + 1) {
+            let mut p = designcraft_doc::ParaProps::default();
+            p.apply(&f.para);
+            label = match p.list_type {
+                _ if r.is_empty() => String::new(),
+                ListType::Numbers => {
+                    counter.advance(&p);
+                    p.number_label_in(&counter)
+                }
+                ListType::Bullets => p.bullet_label(),
+                ListType::None => {
+                    counter = designcraft_doc::ListCounter::default();
+                    String::new()
+                }
+            };
         }
+        label
     }
 
     /// Regression (#626): pandoc's Markdown list example lost its bullets and numbers.
@@ -708,9 +870,9 @@ mod tests {
         let st = lists_docx(&numbering, "", &body).story;
         let types: Vec<Option<ListType>> = st.paras.iter().map(|p| p.para.list_type).collect();
         assert_eq!(types, [None, Some(ListType::Bullets), Some(ListType::Bullets), Some(ListType::Numbers), Some(ListType::Numbers)]);
-        assert_eq!(label(&st, 1, 1), "•\t");
+        assert_eq!(label(&st, 1), "•\t");
         assert_eq!(st.paras[3].para.number_style, Some(designcraft_doc::NumberStyle::Arabic));
-        assert_eq!((label(&st, 3, 1), label(&st, 4, 2)), ("1.\t".to_string(), "2.\t".to_string()));
+        assert_eq!((label(&st, 3), label(&st, 4)), ("1.\t".to_string(), "2.\t".to_string()));
         // The model's own counter already starts at 1 and carries on: no Start At needed.
         assert_eq!((st.paras[3].para.start_at, st.paras[4].para.start_at), (None, None));
         assert_eq!((st.paras[1].para.left_indent, st.paras[1].para.first_line_indent), (Some(24.0), Some(-24.0)));
@@ -746,13 +908,42 @@ mod tests {
         ];
         let st = lists_docx(&numbering, "", &body).story;
         let start: Vec<Option<Option<u32>>> = st.paras.iter().map(|p| p.para.start_at).collect();
-        // Word's numbers: 1, a, b, 1.b.I, 2, –, 3, 1 (own counter), 4 (shares numId 1's). E's 2
-        // follows the model's counter (1 after D).
-        assert_eq!(start, [None, Some(Some(1)), None, Some(Some(1)), None, None, Some(Some(3)), Some(Some(1)), Some(Some(4))]);
-        assert_eq!(label(&st, 1, 1), "a) ");
-        assert_eq!(label(&st, 3, 1), "1.b.I\t");
+        // Word's numbers: 1, a, b, 1.b.I, 2, –, 3, 1 (own counter), 4 (shares numId 1's). The
+        // model numbers each level on its own, so only the paragraphs after the plain one need
+        // Start At.
+        assert_eq!(start, [None, None, None, None, None, None, Some(Some(3)), Some(Some(1)), Some(Some(4))]);
+        let levels: Vec<Option<u32>> = st.paras.iter().map(|p| p.para.list_level).collect();
+        assert_eq!(levels, [Some(1), Some(2), Some(2), Some(3), Some(1), None, Some(1), Some(1), Some(1)]);
+        assert_eq!(label(&st, 1), "a) ");
+        // Parent numbers are the model's level references.
+        assert_eq!(st.paras[3].para.number_expression.as_deref(), Some("^1.^2.^#^t"));
+        assert_eq!(label(&st, 3), "1.b.I\t");
+        let labels: Vec<String> = (0..st.paras.len()).map(|i| label(&st, i)).collect();
+        assert_eq!(labels, ["1.\t", "a) ", "b) ", "1.b.I\t", "2.\t", "", "3.\t", "1.\t", "4.\t"]);
         assert_eq!(st.paras[1].para.left_indent, Some(72.0));
         assert_eq!(st.paras[1].para.first_line_indent, Some(-18.0));
+    }
+
+    /// Parent numbers the model's levels can't give are written as text: a list that starts at
+    /// level 1 (level 0 never numbered), and a legal-style label (decimal parents).
+    #[test]
+    fn parent_numbers_the_model_lacks_are_text() {
+        let numbering = format!(
+            r#"<w:numbering {W}>
+              <w:abstractNum w:abstractNumId="1">
+                <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="upperRoman"/><w:lvlText w:val="%1."/></w:lvl>
+                <w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2"/></w:lvl>
+                <w:lvl w:ilvl="2"><w:start w:val="1"/><w:isLgl/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2.%3"/></w:lvl>
+              </w:abstractNum>
+              <w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>
+            </w:numbering>"#
+        );
+        let body = [list_p("1", Some("1"), "A"), list_p("1", Some("0"), "B"), list_p("1", Some("1"), "C"), list_p("1", Some("2"), "D")];
+        let st = lists_docx(&numbering, "", &body).story;
+        let labels: Vec<String> = (0..st.paras.len()).map(|i| label(&st, i)).collect();
+        assert_eq!(labels, ["I.1\t", "I.\t", "I.1\t", "1.1.1\t"]);
+        assert_eq!(st.paras[0].para.number_expression.as_deref(), Some("I.^#^t"));
+        assert_eq!(st.paras[2].para.number_expression.as_deref(), Some("^1.^#^t"));
     }
 
     /// A paragraph style's `w:numPr` (inherited through `w:basedOn`) makes its paragraphs a list;
@@ -783,8 +974,8 @@ mod tests {
             styled("ListBullet", r#"<w:numPr><w:ilvl w:val="0"/><w:numId w:val="0"/></w:numPr>"#, "not a list"),
         ];
         let st = lists_docx(&numbering, &styles, &body).story;
-        assert_eq!(label(&st, 0, 1), "•\t");
-        assert_eq!(label(&st, 1, 1), "◦\t");
+        assert_eq!(label(&st, 0), "•\t");
+        assert_eq!(label(&st, 1), "◦\t");
         assert_eq!(st.paras[2].para.list_type, None);
         assert_eq!(st.paras[2].style, "List Bullet");
     }
@@ -832,7 +1023,7 @@ mod tests {
         let expr = st.paras[8].para.number_expression.clone().unwrap_or_default();
         assert!(expr.starts_with("^#x") && expr.chars().count() < 80, "{expr}");
         // A start below 0 counts from 0, which the model shows as 1; `^` in a label is literal.
-        assert_eq!(label(&st, 9, 1), "1^\t");
+        assert_eq!(label(&st, 9), "1^\t");
         // Unreadable list definitions leave plain paragraphs and a warning, not a failed import.
         let document = format!(r#"<w:document {W}><w:body>{}</w:body></w:document>"#, list_p("1", None, "x"));
         let i = import(&docx_parts(&[("word/document.xml", &document), ("word/numbering.xml", "<w:numbering></w:num>")])).unwrap();
@@ -893,5 +1084,25 @@ mod tests {
         let quote = i.para_styles.iter().find(|s| s.name == "Quote").unwrap();
         assert_eq!(quote.based_on.as_deref(), Some("Normal"));
         assert_eq!(quote.chars.size, None, "inherited from Normal, not copied");
+    }
+
+    /// `ST_OnOff` is a boolean plus the words `on` and `off`: an explicit `off` is off.
+    #[test]
+    fn off_valued_toggles_stay_off() {
+        let document = format!(
+            r#"<w:document {W}><w:body><w:p>
+              <w:r><w:rPr><w:b w:val="off"/><w:i w:val="0"/><w:strike w:val="off"/><w:u w:val="off"/><w:caps w:val="off"/></w:rPr><w:t>plain</w:t></w:r>
+              <w:r><w:rPr><w:b w:val="on"/></w:rPr><w:t>bold</w:t></w:r>
+            </w:p></w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        st.check().unwrap();
+        let plain = st.format_after(st.text.find("plain").unwrap()).clone().over;
+        assert_eq!(plain.font_style.as_deref(), Some("Regular"), "an explicit `off` is not bold");
+        assert_eq!(plain.strikethrough, Some(false));
+        assert_eq!(plain.underline, Some(false));
+        assert_eq!(plain.capitalization, None, "no all-caps");
+        let on = st.format_after(st.text.find("bold").unwrap()).clone().over;
+        assert_eq!(on.font_style.as_deref(), Some("Bold"), "`on` is still on");
     }
 }

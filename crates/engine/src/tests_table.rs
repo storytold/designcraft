@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use super::*;
+use super::{Session, doc};
 
 fn session_with_frame() -> (Session, u64, u64) {
     let mut s = Session::new();
@@ -209,7 +209,9 @@ fn selected_merged_owners_receive_cell_options_and_unique_style_counts() {
 }
 
 #[test]
-fn covered_owner_strokes_keep_literal_edge_masks_and_neighbors() {
+fn selecting_part_of_a_merged_cell_strokes_its_whole_outline() {
+    // Row 0 is one merged cell; selecting its second grid position selects the whole cell, so
+    // all four of its edges are outer edges.
     for rtl in [false, true] {
         for outer in [false, true] {
             let (mut s, sid, tid, _) = selected_merged_table(true);
@@ -218,23 +220,25 @@ fn covered_owner_strokes_keep_literal_edge_masks_and_neighbors() {
             }
             s.execute("table.select", &json!({"rows": [0, 0], "cols": [1, 1]})).unwrap();
             let before = table_for(&s, sid, tid).clone();
-            s.execute("table.setCell", &json!({"stroke": {"weight": 3, "edges": if outer { "outer" } else { "inner" }}})).unwrap();
+            let edges = if outer { "outer" } else { "inner" };
+            s.execute("table.setCell", &json!({"stroke": {"weight": 3, "edges": edges}})).unwrap();
             let after = table_for(&s, sid, tid);
-            let mask = if rtl { [true, true, true, false] } else { [true, false, true, true] };
-            let expected = mask.map(|edge| if outer { edge } else { !edge });
             let owner = after.cell(0, 0).unwrap();
-            assert_eq!(owner.border_overrides, expected);
-            assert_eq!(owner.stroke_defined, expected);
-            for (i, on) in expected.into_iter().enumerate() {
-                if on {
-                    assert_eq!(owner.strokes[i].weight, 3.0);
-                    assert_eq!(owner.stroke_priorities[i], 1);
-                } else {
-                    assert_eq!(owner.strokes[i], before.cell(0, 0).unwrap().strokes[i]);
-                }
+            if outer {
+                assert_eq!(owner.border_overrides, [true; 4]);
+                assert_eq!(owner.stroke_defined, [true; 4]);
+                assert!(owner.strokes.iter().all(|e| e.weight == 3.0));
+                assert_eq!(owner.stroke_priorities, [1; 4]);
+            } else {
+                assert_eq!(Some(owner), before.cell(0, 0), "a single merged cell has no inner edges");
             }
             for (r, c) in [(0, 1), (1, 0), (1, 1)] {
                 assert_eq!(after.cell(r, c), before.cell(r, c), "strict merged/covered mirror guard preserves {r},{c}");
+            }
+            let shown = s.execute("table.getCellStroke", &json!({"edges": "outer"})).unwrap();
+            assert!(shown["edges"].as_u64().unwrap() >= 4, "the merged cell's outline is read: {shown}");
+            if outer {
+                assert_eq!(shown["weight"], 3.0);
             }
             assert_eq!(s.doc().unwrap().selection.cells.unwrap().range, doc::CellRange::cell(0, 1));
             check(&s);
@@ -485,7 +489,7 @@ fn file_roundtrip_keeps_tables() {
     s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
     s.execute("text.insert", &json!({"text": "A1"})).unwrap();
     let d = s.doc().unwrap().doc.clone();
-    let bytes = crate::cmd::file_bytes(&d);
+    let bytes = crate::cmd::file_bytes(&d).unwrap();
     let back = crate::cmd::file_from(&bytes).unwrap();
     back.check().unwrap();
     let st = back.story(designcraft_doc::StoryId(sid)).unwrap();
@@ -497,7 +501,7 @@ fn backspace_and_paste_between_tables_keep_both_and_the_file_reopens() {
     let n = designcraft_doc::TABLE_ANCHOR.len_utf8();
     let anchor_of = |s: &Session, sid: u64, tid: u64| s.doc().unwrap().doc.story(doc::StoryId(sid)).unwrap().table_anchor(tid).unwrap();
     let reopens_with = |s: &Session, sid: u64, ids: &[u64]| {
-        let back = crate::cmd::file_from(&crate::cmd::file_bytes(&s.doc().unwrap().doc)).unwrap();
+        let back = crate::cmd::file_from(&crate::cmd::file_bytes(&s.doc().unwrap().doc).unwrap()).unwrap();
         let st = back.story(doc::StoryId(sid)).unwrap();
         assert!(ids.iter().all(|id| st.table_anchor(*id).is_some()), "{:?}", st.tables.keys());
         assert_eq!(st.tables.len(), ids.len());
@@ -582,7 +586,7 @@ fn explicit_cell_edges_win_imported_priorities_and_keep_undo_and_file_roundtrip(
             assert_eq!(table_for(&s, sid, tid), &before);
             s.execute("edit.redo", &json!({})).unwrap();
             assert_eq!(table_for(&s, sid, tid), &after);
-            let bytes = crate::cmd::file_bytes(&s.doc().unwrap().doc);
+            let bytes = crate::cmd::file_bytes(&s.doc().unwrap().doc).unwrap();
             let back = crate::cmd::file_from(&bytes).unwrap();
             assert_eq!(back.story(doc::StoryId(sid)).unwrap().tables.get(&tid).unwrap().as_ref(), &after);
             check(&s);
@@ -753,6 +757,137 @@ fn editing_beside_a_merged_cell_only_changes_the_selected_edge_segment() {
 }
 
 #[test]
+fn cell_stroke_gap_colour_on_inner_horizontal_edges_of_a_selection_undoes_and_saves() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.execute("table.select", &json!({"what": "table"})).unwrap();
+    let before = table_for(&s, sid, tid).clone();
+    let cyan = "C=100 M=0 Y=0 K=0";
+    let stroke = json!({"weight": 3, "type": "dashed", "gapColor": cyan, "gapTint": 0.5, "edges": ["innerHorizontal"]});
+    s.execute("table.setCell", &json!({ "stroke": stroke })).unwrap();
+    let t = table_for(&s, sid, tid).clone();
+    let edge = |r: usize, c: usize, side: usize| t.cell(r, c).unwrap().strokes[side].clone();
+    for (r, c, side) in [(0, 0, 2), (0, 1, 2), (1, 0, 0), (1, 1, 0)] {
+        let e = edge(r, c, side);
+        assert_eq!((e.weight, e.gap_color.as_str(), e.gap_tint), (3.0, cyan, 0.5), "inner horizontal {r},{c} side {side}");
+        assert!(matches!(e.kind, doc::StrokeType::Dashed { .. }));
+    }
+    for (r, c, side) in [(0, 0, 0), (0, 0, 1), (0, 0, 3), (1, 1, 2), (1, 1, 1), (0, 1, 3)] {
+        assert_eq!(&edge(r, c, side), &before.cell(r, c).unwrap().strokes[side], "{r},{c} side {side} keeps its stroke");
+    }
+    // The query reports the chosen edges, and mixed values as null.
+    let inner = s.execute("table.getCellStroke", &json!({"edges": "innerHorizontal"})).unwrap();
+    assert_eq!((inner["weight"].as_f64(), inner["gapColor"].as_str(), inner["edges"].as_u64()), (Some(3.0), Some(cyan), Some(2)));
+    let all = s.execute("table.getCellStroke", &json!({})).unwrap();
+    assert!(all["weight"].is_null() && all["gapColor"].is_null());
+    // Bad values are errors and change nothing.
+    for bad in
+        [json!({"gapTint": 2}), json!({"gapColor": "No Such Swatch"}), json!({"weight": -1}), json!({"type": "zigzag"}), json!({"edges": "middle"})]
+    {
+        assert!(s.execute("table.setCell", &json!({ "stroke": bad })).is_err(), "{bad}");
+        assert_eq!(table_for(&s, sid, tid), &t);
+    }
+    let bytes = crate::cmd::file_bytes(&s.doc().unwrap().doc).unwrap();
+    let back = crate::cmd::file_from(&bytes).unwrap();
+    assert_eq!(back.story(doc::StoryId(sid)).unwrap().tables.get(&tid).unwrap().as_ref(), &t);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(table_for(&s, sid, tid), &before);
+}
+
+#[test]
+fn shared_edge_edits_and_queries_start_from_the_drawn_stroke() {
+    let cyan = "C=100 M=0 Y=0 K=0";
+    let thin = doc::CellStroke { weight: 0.25, color: cyan.into(), ..Default::default() };
+    // The higher-priority copy of a shared edge is drawn: 2 pt cyan over 0.5 pt black.
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+    s.edit(|d, _| {
+        let t = d.story_mut(doc::StoryId(sid)).unwrap().table_mut(tid).unwrap();
+        let upper = t.cell_mut(0, 0).unwrap();
+        upper.strokes[2] = doc::CellStroke { weight: 2.0, color: cyan.into(), ..Default::default() };
+        (upper.stroke_defined[2], upper.stroke_priorities[2]) = (true, 5);
+        let lower = t.cell_mut(1, 0).unwrap();
+        lower.strokes[0] = doc::CellStroke { weight: 0.5, ..Default::default() };
+        (lower.stroke_defined[0], lower.stroke_priorities[0]) = (true, 1);
+        Ok(())
+    })
+    .unwrap();
+    let q = s.execute("table.getCellStroke", &json!({"table": tid, "edges": "innerHorizontal"})).unwrap();
+    assert_eq!((q["weight"].as_f64(), q["color"].as_str(), q["edges"].as_u64()), (Some(2.0), Some(cyan), Some(1)));
+    s.execute("table.setCell", &json!({"table": tid, "stroke": {"color": "[Paper]", "edges": "innerHorizontal"}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    for e in [&t.cell(0, 0).unwrap().strokes[2], &t.cell(1, 0).unwrap().strokes[0]] {
+        assert_eq!((e.weight, e.color.as_str()), (2.0, "[Paper]"));
+    }
+    let composed = s.cache.get(&s.doc().unwrap().doc, doc::StoryId(sid), None);
+    let frag = composed.frames.iter().flat_map(|f| &f.tables).next().unwrap();
+    assert!(frag.strokes.iter().any(|x| x.stroke.weight == 2.0 && x.stroke.color == "[Paper]"));
+    assert!(!frag.strokes.iter().any(|x| x.stroke.weight == 0.5), "the edge stays 2 pt");
+
+    // An interior edge no cell supplies is drawn from the table's row pattern.
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.edit(|d, _| {
+        let t = d.story_mut(doc::StoryId(sid)).unwrap().table_mut(tid).unwrap();
+        t.options.row_strokes = Some(doc::AltStrokes { first: 1, next: 0, first_stroke: thin.clone(), ..Default::default() });
+        for cell in &mut t.cells {
+            (cell.stroke_defined, cell.border_overrides, cell.stroke_priorities) = ([false; 4], [false; 4], [0; 4]);
+        }
+        Ok(())
+    })
+    .unwrap();
+    let q = s.execute("table.getCellStroke", &json!({"table": tid, "edges": "innerHorizontal"})).unwrap();
+    assert_eq!((q["weight"].as_f64(), q["color"].as_str(), q["edges"].as_u64()), (Some(0.25), Some(cyan), Some(2)));
+    s.execute("table.setCell", &json!({"table": tid, "stroke": {"color": "[Paper]", "edges": "innerHorizontal"}})).unwrap();
+    let t = table_for(&s, sid, tid);
+    for (r, c, side) in [(0, 0, 2), (0, 1, 2), (1, 0, 0), (1, 1, 0)] {
+        let e = &t.cell(r, c).unwrap().strokes[side];
+        assert_eq!((e.weight, e.color.as_str()), (0.25, "[Paper]"), "{r},{c} side {side}");
+    }
+}
+
+#[test]
+fn degenerate_dash_patterns_are_rejected() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let before = table_for(&s, sid, tid).clone();
+    for pattern in [json!([1e-6, 1e-6]), json!([0.05, 3]), json!([]), json!([0, 0]), json!(vec![1.0; 65]), json!([20000, 1])] {
+        let stroke = json!({"table": tid, "stroke": {"type": {"kind": "dashed", "pattern": pattern}}});
+        assert!(s.execute("table.setCell", &stroke).is_err(), "{pattern}");
+        assert_eq!(table_for(&s, sid, tid), &before);
+        assert!(s.execute("strokeStyle.new", &json!({"name": "Fine", "type": "dash", "pattern": pattern})).is_err(), "{pattern}");
+    }
+    s.execute("table.setCell", &json!({"table": tid, "stroke": {"type": {"kind": "dashed", "pattern": [0.1, 0, 3]}}})).unwrap();
+}
+
+#[test]
+fn cell_and_table_style_strokes_take_type_and_gap_colour_with_validation() {
+    let (mut s, sid, _) = session_with_frame();
+    let tid = s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    let stroke = json!({"weight": 2, "type": "dotted", "gapColor": "[Paper]", "gapTint": 0.4});
+    s.execute("style.cell.create", &json!({"name": "Dotted", "stroke": stroke})).unwrap();
+    s.execute("style.cell.apply", &json!({"name": "Dotted", "table": tid})).unwrap();
+    let edges = s.execute("table.getCellStroke", &json!({"table": tid})).unwrap();
+    assert_eq!((edges["weight"].as_f64(), edges["type"]["kind"].as_str()), (Some(2.0), Some("dotted")));
+    assert_eq!((edges["gapColor"].as_str(), edges["gapTint"].as_f64().map(|t| (t * 10.0).round())), (Some("[Paper]"), Some(4.0)));
+    s.execute("style.table.create", &json!({"name": "Framed", "border": {"type": "thickThin", "gapSwatch": "[Black]"}})).unwrap();
+    let framed = s.doc().unwrap().doc.styles.table.iter().find(|t| t.name == "Framed").unwrap().border.clone().unwrap();
+    assert_eq!((framed.kind, framed.gap_color.as_str()), (doc::StrokeType::ThickThin, "[Black]"));
+    let styles = s.doc().unwrap().doc.styles.clone();
+    let table = table_for(&s, sid, tid).clone();
+    for (cmd, p) in [
+        ("style.cell.edit", json!({"name": "Dotted", "stroke": {"gapTint": 3}})),
+        ("style.cell.create", json!({"name": "Bad", "stroke": {"type": "zigzag"}})),
+        ("style.table.edit", json!({"name": "Framed", "border": {"gapColor": "No Such Swatch"}})),
+        ("style.table.create", json!({"name": "Bad", "border": {"weight": -2}})),
+    ] {
+        assert!(s.execute(cmd, &p).is_err(), "{cmd} {p}");
+        assert_eq!(s.doc().unwrap().doc.styles, styles, "{cmd} changed the styles");
+        assert_eq!(table_for(&s, sid, tid), &table);
+    }
+}
+
+#[test]
 fn split_selected_row_or_column_splits_both_cells() {
     for horizontal in [true, false] {
         let (mut s, sid, _) = session_with_frame();
@@ -866,10 +1001,122 @@ fn split_selected_block_and_merged_cells_preserves_geometry_and_history() {
             s.execute("edit.redo", &json!({})).unwrap();
             assert!(std::sync::Arc::ptr_eq(&s.doc().unwrap().doc, &after_doc));
             assert_eq!(s.doc().unwrap().selection, after_selection);
-            let bytes = crate::cmd::file_bytes(&s.doc().unwrap().doc);
+            let bytes = crate::cmd::file_bytes(&s.doc().unwrap().doc).unwrap();
             let reopened = crate::cmd::file_from(&bytes).unwrap();
             reopened.check().unwrap();
             assert_eq!(reopened.story(doc::StoryId(sid)).unwrap().tables.get(&tid).unwrap().as_ref(), &after);
         }
     }
+}
+
+fn header_footer(s: &mut Session) -> (u64, u64) {
+    let t = s.execute("table.get", &json!({})).unwrap();
+    (t["headerRows"].as_u64().unwrap(), t["footerRows"].as_u64().unwrap())
+}
+
+fn convert_enabled(s: &Session, to: &str) -> bool {
+    crate::cmd::find_command(&format!("table.convertRowsTo{to}")).unwrap().info(s).enabled
+}
+
+fn select_rows(s: &mut Session, a: usize, b: usize) {
+    s.execute("table.select", &json!({"what": "row", "rows": [a, b]})).unwrap();
+}
+
+#[test]
+fn convert_rows_follows_the_table_edges() {
+    let (mut s, _, _) = session_with_frame();
+    s.execute("table.insert", &json!({"rows": 6, "cols": 2})).unwrap();
+    // Rows at the top become header rows, in one undo step.
+    select_rows(&mut s, 0, 1);
+    let undo = s.doc().unwrap().history.undo.len();
+    s.execute("table.convertRowsToHeader", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (2, 0));
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (0, 0));
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (2, 0));
+    // A row with a body row between it and the header rows can't become a header row.
+    select_rows(&mut s, 3, 3);
+    assert!(!convert_enabled(&s, "Header"));
+    assert!(s.execute("table.convertRowsToHeader", &json!({})).is_err());
+    assert_eq!(header_footer(&mut s), (2, 0));
+    // The row right after the header rows can.
+    select_rows(&mut s, 2, 2);
+    s.execute("table.convertRowsToHeader", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (3, 0));
+    // Footer rows come from the bottom.
+    select_rows(&mut s, 3, 3);
+    assert!(!convert_enabled(&s, "Footer"));
+    select_rows(&mut s, 5, 5);
+    s.execute("table.convertRowsToFooter", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (3, 1));
+    select_rows(&mut s, 4, 4);
+    s.execute("table.convertRowsToFooter", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (3, 2));
+    // The last body row stays a body row.
+    select_rows(&mut s, 3, 3);
+    assert!(!convert_enabled(&s, "Header") && !convert_enabled(&s, "Footer") && !convert_enabled(&s, "Body"));
+    // Back to body: only header rows next to the body, and footer rows next to it.
+    select_rows(&mut s, 0, 0);
+    assert!(!convert_enabled(&s, "Body"));
+    select_rows(&mut s, 1, 2);
+    s.execute("table.convertRowsToBody", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (1, 2));
+    select_rows(&mut s, 5, 5);
+    assert!(!convert_enabled(&s, "Body"));
+    select_rows(&mut s, 4, 4);
+    s.execute("table.convertRowsToBody", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (1, 1));
+    // Header rows can't jump to the footer, nor footer rows to the header.
+    select_rows(&mut s, 0, 0);
+    assert!(!convert_enabled(&s, "Footer"));
+    select_rows(&mut s, 5, 5);
+    assert!(!convert_enabled(&s, "Header"));
+    // The whole table back to body rows.
+    s.execute("table.select", &json!({"what": "table"})).unwrap();
+    s.execute("table.convertRowsToBody", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (0, 0));
+    check(&s);
+}
+
+#[test]
+fn convert_rows_keeps_merged_cells_on_one_side() {
+    let (mut s, _, _) = session_with_frame();
+    s.execute("table.insert", &json!({"rows": 4, "cols": 2})).unwrap();
+    s.execute("table.select", &json!({"rows": [0, 1], "cols": [1, 1]})).unwrap();
+    s.execute("table.merge", &json!({})).unwrap();
+    // Row 0 alone would split the merged cell between header and body.
+    select_rows(&mut s, 0, 0);
+    assert!(!convert_enabled(&s, "Header"));
+    select_rows(&mut s, 0, 1);
+    s.execute("table.convertRowsToHeader", &json!({})).unwrap();
+    assert_eq!(header_footer(&mut s), (2, 0));
+    // Likewise back: row 1 alone would leave half of it in the header.
+    select_rows(&mut s, 1, 1);
+    assert!(!convert_enabled(&s, "Body"));
+    check(&s);
+}
+
+#[test]
+fn alternating_fill_counts_saturate_instead_of_wrapping() {
+    let (mut s, _, _) = session_with_frame();
+    s.execute("table.insert", &json!({"rows": 3, "cols": 2})).unwrap();
+    s.execute("table.options", &json!({"altRows": {"first": 4294967297u64, "next": 1, "skipFirst": 4294967296u64, "skipLast": 9999999999u64}}))
+        .unwrap();
+    let t = s.execute("table.get", &json!({})).unwrap();
+    let a = &t["options"]["altRows"];
+    assert_eq!(a["first"], u32::MAX);
+    assert_eq!(a["skipFirst"], u32::MAX);
+    assert_eq!(a["skipLast"], u32::MAX);
+    assert_eq!(a["next"], 1);
+}
+
+#[test]
+fn index_next_paragraphs_saturates_instead_of_wrapping() {
+    let (mut s, _, _) = session_with_frame();
+    s.execute("index.addReference", &json!({"topic": "Intro", "range": "nextParagraphs", "paragraphs": 4294967296u64})).unwrap();
+    let l = s.execute("index.list", &json!({})).unwrap();
+    assert_eq!(l[0]["range"]["type"], "nextParagraphs");
+    assert_eq!(l[0]["range"]["value"], u32::MAX);
 }
