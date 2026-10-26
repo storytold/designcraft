@@ -39,6 +39,12 @@ impl UiState {
             ui.control_bar = true;
             ui.task_bar = true;
             ui.task_bar_pin = None;
+            for workspace in &mut ui.custom_workspaces {
+                if !workspace.keep_panels {
+                    workspace.control_bar = true;
+                    workspace.task_bar = true;
+                }
+            }
             ui.control_bar_upgrade_seen = true;
         }
         clear_stale_open_panels(&mut ui);
@@ -271,6 +277,34 @@ mod tests {
         assert!(!again.control_bar && !again.task_bar);
         assert_eq!(again.task_bar_pin, Some([30.0, 40.0]));
         assert!(UiState::default().control_bar);
+    }
+
+    #[test]
+    fn toolbar_upgrade_migrates_saved_workspaces_once_and_respects_keep_panels() {
+        let saved = json!({
+            "controlBar": false, "taskBar": false,
+            "customWorkspaces": [
+                {"name": "Layout", "controlBar": false, "taskBar": false, "taskBarPin": [30, 40]},
+                {"name": "Menus", "keepPanels": true, "controlBar": false, "taskBar": false, "taskBarPin": [50, 60]}
+            ]
+        });
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.ui = UiState::from_preferences_json(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        let kept = &app.ui.custom_workspaces[1];
+        assert!(!kept.control_bar && !kept.task_bar && kept.keep_panels);
+        assert_eq!(kept.task_bar_pin, Some([50.0, 60.0]));
+        app.run("window.workspace", json!({"name": "Layout"})).unwrap();
+        assert!(app.ui.control_bar && app.ui.task_bar, "switching to an old workspace must not hide the restored bars");
+        assert_eq!(app.ui.task_bar_pin, Some([30.0, 40.0]), "the saved position is retained");
+        app.ui.task_bar = false;
+        app.run("window.workspace", json!({"name": "Menus"})).unwrap();
+        assert!(app.ui.control_bar && !app.ui.task_bar, "keep_panels leaves the current visibility alone");
+        // After the one-time upgrade, a user's saved visibility choices must survive reload.
+        app.ui.custom_workspaces[0].control_bar = false;
+        app.ui.custom_workspaces[0].task_bar = false;
+        app.ui = UiState::from_preferences_json(&serde_json::to_vec(&app.ui).unwrap()).unwrap();
+        app.run("window.workspace", json!({"name": "Layout"})).unwrap();
+        assert!(!app.ui.control_bar && !app.ui.task_bar);
     }
 
     #[test]

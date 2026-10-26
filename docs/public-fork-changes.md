@@ -6,7 +6,7 @@ The branch is updated to current DesignCraft rather than replacing its newer imp
 
 ## Changes in this update
 
-- The Control bar is visible in new preferences. Older saved preferences receive a one-time restoration of the Control and contextual bars, with any off-screen contextual pin cleared. Later visibility and pin choices are respected.
+- The Control bar is visible in new preferences. Older saved preferences receive a one-time restoration of the Control and contextual bars, with any off-screen contextual pin cleared. Saved workspaces that capture panel locations also receive visible bars; workspaces that keep the current panels are unchanged. Later visibility and pin choices are respected.
 - The contextual bar stays within the canvas even when the selected frame is off-screen.
 - The fill/stroke swap arrow has a larger clickable target.
 - Page size, liquid-page rule, character style and language dropdowns in the now-visible Control bar have accessible names.

@@ -380,6 +380,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-26 · PUBLIC-1** · Extend the one-time toolbar visibility upgrade to saved workspaces that capture panel locations, preserving keep-panels workspaces and later saved visibility choices.
+
 - **2026-10-26 · PUBLIC-1** · Add ruler-aware guide Copy to with one-step Undo, restore top and contextual controls once for older preferences, keep contextual controls on-screen, enlarge the fill/stroke swap target, and label INDD files by format. Current upstream import and guide-selection behavior is retained.
 
 - **2026-10-20** · Edit › Keyboard Shortcuts is craft-keymap's shared dialog: commands grouped by menu with Show and Filter, recording that asks before taking a key from another command, undo and redo, named shortcut sets (edits of Default become Custom; an imported set becomes a set of its own), an on-screen US keyboard, InDesign Show Set files reviewed before they apply, JSON export and an HTML summary. ui.json keeps the `shortcuts` map earlier versions read, for the active set. No readiness percentage change.
